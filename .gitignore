@@ -1,0 +1,26 @@
+# deps
+node_modules/
+*/node_modules/
+
+# build output
+server/dist/
+web/dist/
+*.tsbuildinfo
+
+# runtime state
+server/data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+
+# secrets / env
+.env
+.env.local
+*/.env
+*/.env.local
+
+# editor
+.vscode/
+.idea/
+.DS_Store
