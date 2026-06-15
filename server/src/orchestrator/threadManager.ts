@@ -8,6 +8,7 @@ import { createBusServer } from "../bus/busServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { config } from "../config.js";
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import type {
   AgentEvent,
@@ -266,6 +267,10 @@ export class ThreadManager implements OrchestratorApi {
   private async runPipeline(threadId: string): Promise<void> {
     const thread = this.db.getThread(threadId);
     if (!thread) return;
+    if (!existsSync(thread.workspace)) {
+      this.setState(threadId, "failed", `Workspace "${thread.workspace}" does not exist on disk — agents can't run there. Re-dispatch with a valid path.`);
+      return;
+    }
     try {
       // Researcher first, THEN planner — the planner grounds its plan in the research
       // (relevant files, gotchas, facts, memory) instead of both exploring the repo blind in
@@ -560,6 +565,10 @@ export class ThreadManager implements OrchestratorApi {
   async resumeThread(threadId: string, message?: string): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    if (!existsSync(thread.workspace)) {
+      this.setState(threadId, "failed", `Can't resume — workspace "${thread.workspace}" does not exist. Re-dispatch this task with a valid path.`);
+      return { ok: false, error: `Workspace "${thread.workspace}" does not exist.` };
+    }
     const live = this.live.get(threadId);
     if (live) {
       live.run.send(message ?? "Continue.", { priority: "now" });
