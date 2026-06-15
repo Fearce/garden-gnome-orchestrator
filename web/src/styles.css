@@ -347,3 +347,81 @@ button { font-family: inherit; cursor: pointer; }
 .mono { font-family: var(--font-mono); }
 .dim { color: var(--text-dim); }
 .faint { color: var(--text-faint); }
+
+/* The bottom tab bar exists only on mobile; the breakpoint below reveals it. */
+.mobile-nav { display: none; }
+
+/* ============================================================
+   Mobile — ≤768px. Single swappable workbench pane, native-feeling
+   bottom tab bar, full-screen detail overlay. Everything lives behind
+   the breakpoint so the desktop three-column layout above is untouched.
+   ============================================================ */
+@media (max-width: 768px) {
+  /* topbar (auto, wraps) · workbench (1fr) · bottom nav (auto) */
+  .app { grid-template-rows: auto 1fr auto; }
+
+  /* topbar wraps to two rows: brand + controls, then a full-width
+     horizontally-scrollable accounts strip that never widens the viewport. */
+  .topbar { flex-wrap: wrap; gap: 10px; row-gap: 8px; padding: 9px 12px; }
+  .wordmark { font-size: 18px; }
+  .wordmark .sub { display: none; }
+  .stat { display: none; }
+  .conn { font-size: 0; gap: 0; }            /* drop the "live" label, keep the dot */
+  .accounts {
+    order: 5; flex-basis: 100%; flex-wrap: nowrap;
+    overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch;
+    padding-bottom: 2px;
+  }
+  .acct { flex: 0 0 auto; min-width: 108px; }
+
+  /* tappable topbar controls */
+  .gate { height: 44px; padding: 0 13px; }
+  .bell { width: 44px; height: 44px; }
+
+  /* single pane, toggled by the .pane-* class on the workbench */
+  .workbench, .workbench.detail-open { grid-template-columns: 1fr; }
+  .workbench.pane-director .board { display: none; }
+  .workbench.pane-board .rail { display: none; }
+  .rail { border-right: none; }
+
+  /* detail becomes a full-screen overlay; its existing ✕ closes it */
+  .detail { position: fixed; inset: 0; z-index: 40; border-left: none; }
+  .inject-bar { padding-bottom: calc(11px + env(safe-area-inset-bottom)); }
+
+  /* feed filter scrolls sideways instead of stacking into 2–3 rows */
+  .feed-filter { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .feed-filter .fchip { flex: 0 0 auto; min-height: 34px; padding: 7px 11px; font-size: 11px; }
+  .feed-filter .tools-toggle { margin-left: 4px; }
+
+  /* bottom tab bar — native feel, clears the iOS home indicator */
+  .mobile-nav {
+    display: flex; border-top: 1px solid var(--line);
+    background: linear-gradient(to top, var(--bg-1), var(--bg));
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .mnav-btn {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    min-height: 54px; border: none; background: transparent; color: var(--text-faint);
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+    transition: color 0.12s;
+  }
+  .mnav-btn.on { color: var(--accent); }
+  .mnav-btn:active { background: var(--bg-2); }
+
+  /* board breathing room */
+  .board { padding: 12px; }
+
+  /* 16px inputs stop iOS Safari from zooming on focus */
+  .composer textarea,
+  .composer input.ws,
+  .inject-bar textarea,
+  .approval-reject textarea,
+  .login-body input,
+  .modal textarea { font-size: 16px; }
+
+  /* tap-friendly small buttons — 44px min target, centered content */
+  .btn.sm { min-height: 44px; padding: 0 14px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+
+  /* changes modal: title + close on one row (QuestionModal/login keep block stacking) */
+  .modal.changes .m-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+}

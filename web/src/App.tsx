@@ -8,6 +8,8 @@ import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
 import { runActive } from "./lib/format.js";
 
+type MobilePane = "director" | "board";
+
 export function App() {
   const connected = useStore((s) => s.connected);
   const authRequired = useStore((s) => s.authRequired);
@@ -15,6 +17,7 @@ export function App() {
   const selected = useStore((s) => s.selectedThreadId);
   const threads = useStore((s) => s.threads);
   const runs = useStore((s) => s.runs);
+  const [mobilePane, setMobilePane] = useState<MobilePane>("board");
 
   if (authRequired && !authed) return <Login />;
 
@@ -40,11 +43,12 @@ export function App() {
           {connected ? "live" : "reconnecting…"}
         </div>
       </header>
-      <div className={"workbench" + (selected ? " detail-open" : "")}>
+      <div className={"workbench pane-" + mobilePane + (selected ? " detail-open" : "")}>
         <Director />
         <Board />
         {selected ? <ThreadDetail key={selected} /> : null}
       </div>
+      <MobileNav pane={mobilePane} setPane={setMobilePane} />
       <QuestionModal />
     </div>
   );
@@ -154,6 +158,36 @@ function ApprovalToggle() {
       </svg>
       <span>gate</span>
     </button>
+  );
+}
+
+function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePane) => void }) {
+  return (
+    <nav className="mobile-nav">
+      <button
+        className={"mnav-btn" + (pane === "director" ? " on" : "")}
+        aria-current={pane === "director" ? "page" : undefined}
+        onClick={() => setPane("director")}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+        Director
+      </button>
+      <button
+        className={"mnav-btn" + (pane === "board" ? " on" : "")}
+        aria-current={pane === "board" ? "page" : undefined}
+        onClick={() => setPane("board")}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect width="7" height="7" x="3" y="3" rx="1" />
+          <rect width="7" height="7" x="14" y="3" rx="1" />
+          <rect width="7" height="7" x="14" y="14" rx="1" />
+          <rect width="7" height="7" x="3" y="14" rx="1" />
+        </svg>
+        Tasks
+      </button>
+    </nav>
   );
 }
 
