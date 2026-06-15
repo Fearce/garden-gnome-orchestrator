@@ -246,6 +246,18 @@ export class Db {
     return (this.raw.prepare("SELECT * FROM agent_runs ORDER BY started_at ASC").all() as Row[]).map(rowToRun);
   }
 
+  /** Runs the DB still believes are live (no terminal state, no end time) — orphans after a
+   *  restart, since every in-memory AgentRun is gone. Used to reconcile the live count on boot. */
+  listActiveRuns(): AgentRun[] {
+    return (
+      this.raw
+        .prepare(
+          "SELECT * FROM agent_runs WHERE state IN ('starting','running','idle') AND ended_at IS NULL ORDER BY started_at ASC",
+        )
+        .all() as Row[]
+    ).map(rowToRun);
+  }
+
   // ---- findings ----
   addFinding(input: {
     threadId: string;

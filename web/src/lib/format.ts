@@ -36,6 +36,32 @@ export function runActive(state: AgentRunState): boolean {
   return state === "running" || state === "starting";
 }
 
+/** Whether a task's clock should be ticking — i.e. a role is actively working it. Parked
+ *  (paused / awaiting / review) and terminal states freeze the clock at its last duration. */
+export function threadRunning(state: ThreadState): boolean {
+  switch (state) {
+    case "intake":
+    case "enriching":
+    case "planning":
+    case "researching":
+    case "implementing":
+    case "qa":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Compact running-or-final duration: "9s", "2m 34s", "1h 12m". */
+export function elapsed(startMs: number, endMs?: number | null): string {
+  const s = Math.max(0, Math.floor(((endMs ?? Date.now()) - startMs) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 export function sevColor(sev: string): string {
   switch (sev) {
     case "critical":

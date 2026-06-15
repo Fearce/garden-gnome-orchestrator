@@ -1,7 +1,8 @@
 import { type CSSProperties } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
-import { roleColor, runActive, stateColor, stateLabel } from "../lib/format.js";
+import { roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { Elapsed } from "../lib/timing.js";
 
 const ROLES: Role[] = ["planner", "researcher", "implementor", "qa"];
 
@@ -69,6 +70,7 @@ function Card({ thread }: { thread: Thread }) {
             <span key={role} className={"pip " + cls} style={{ "--role": roleColor(role) } as CSSProperties}>
               <span className="led" />
               {role[0]!.toUpperCase() + role.slice(1, 4)}
+              {r ? <Elapsed className="pip-time" startMs={r.startedAt} endMs={r.endedAt} running={!!active} /> : null}
             </span>
           );
         })}
@@ -85,7 +87,16 @@ function Card({ thread }: { thread: Thread }) {
             </span>
           ) : null}
         </span>
-        {findCount > 0 ? <span className="findcount">⚑ {findCount}</span> : <span />}
+        <span className="foot-right">
+          <Elapsed
+            className="task-elapsed"
+            startMs={thread.createdAt}
+            endMs={thread.updatedAt}
+            running={threadRunning(thread.state)}
+            title="Time since the task was dispatched"
+          />
+          {findCount > 0 ? <span className="findcount">⚑ {findCount}</span> : null}
+        </span>
       </div>
     </div>
   );
