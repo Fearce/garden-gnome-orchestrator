@@ -1,14 +1,23 @@
-import { type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
 import { roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 
 const ROLES: Role[] = ["planner", "researcher", "implementor", "qa"];
+const PER_PAGE = 15;
 
 export function Board() {
   const threads = useStore((s) => s.threads);
   const list = Object.values(threads).sort((a, b) => b.createdAt - a.createdAt);
+  const [page, setPage] = useState(0);
+
+  const pageCount = Math.max(1, Math.ceil(list.length / PER_PAGE));
+  useEffect(() => {
+    if (page > pageCount - 1) setPage(pageCount - 1);
+  }, [pageCount, page]);
+  const cur = Math.min(page, pageCount - 1);
+  const pageItems = list.slice(cur * PER_PAGE, cur * PER_PAGE + PER_PAGE);
 
   return (
     <main className="board">
@@ -24,11 +33,26 @@ export function Board() {
           <div className="faint">Dispatch one from the Director on the left.</div>
         </div>
       ) : (
-        <div className="lanes">
-          {list.map((t) => (
-            <Card key={t.id} thread={t} />
-          ))}
-        </div>
+        <>
+          <div className="lanes">
+            {pageItems.map((t) => (
+              <Card key={t.id} thread={t} />
+            ))}
+          </div>
+          {pageCount > 1 ? (
+            <div className="pager">
+              <button className="btn ghost sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={cur === 0}>
+                ‹ Prev
+              </button>
+              <span className="pager-info mono">
+                {cur * PER_PAGE + 1}–{Math.min((cur + 1) * PER_PAGE, list.length)} of {list.length} · page {cur + 1}/{pageCount}
+              </span>
+              <button className="btn ghost sm" onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={cur >= pageCount - 1}>
+                Next ›
+              </button>
+            </div>
+          ) : null}
+        </>
       )}
     </main>
   );

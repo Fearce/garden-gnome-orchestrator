@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
 import { clock, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
@@ -43,6 +43,7 @@ export function ThreadDetail() {
   const select = useStore((s) => s.select);
   const approve = useStore((s) => s.approve);
   const loadChanges = useStore((s) => s.loadChanges);
+  const setDetailWidth = useStore((s) => s.setDetailWidth);
   const pendingPlan = useStore((s) => (s.selectedThreadId ? s.pendingPlans[s.selectedThreadId] : undefined));
   const changes = useStore((s) => (s.selectedThreadId ? s.threadChanges[s.selectedThreadId] : undefined));
   const [msg, setMsg] = useState("");
@@ -129,8 +130,25 @@ export function ThreadDetail() {
     stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
+  const startResize = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const onMove = (ev: MouseEvent) => {
+      const max = Math.max(420, window.innerWidth - 480);
+      setDetailWidth(Math.min(Math.max(window.innerWidth - ev.clientX, 360), max));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.classList.remove("col-resizing");
+    };
+    document.body.classList.add("col-resizing");
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
   return (
     <section className="detail">
+      <div className="resize-handle" onMouseDown={startResize} title="Drag to resize this panel" />
       <div className="detail-head">
         <div className="top">
           <div>
