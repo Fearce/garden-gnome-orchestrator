@@ -81,7 +81,7 @@ button { font-family: inherit; cursor: pointer; }
 .acct {
   display: flex; flex-direction: column; gap: 3px; justify-content: center;
   padding: 4px 9px; border-radius: var(--r-sm); border: 1px solid var(--line);
-  background: var(--bg-2); min-width: 122px;
+  background: var(--bg-2); min-width: 168px;
 }
 .acct.active { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 8%, var(--bg-2)); }
 .acct.limited { border-color: oklch(0.68 0.2 25 / 0.55); }
@@ -91,13 +91,14 @@ button { font-family: inherit; cursor: pointer; }
 .acct-label { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim); letter-spacing: 0.03em; text-transform: uppercase; }
 .acct-tag { font-family: var(--font-mono); font-size: 8.5px; text-transform: uppercase; color: var(--danger); margin-left: auto; }
 .acct-meters { display: flex; flex-direction: column; gap: 2px; }
-.meter { display: grid; grid-template-columns: 15px 1fr 30px; align-items: center; gap: 5px; }
+.meter { display: grid; grid-template-columns: 15px 1fr 30px 44px; align-items: center; gap: 5px; }
 .meter-k { font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); }
 .meter-track { height: 4px; background: var(--bg); border-radius: 3px; overflow: hidden; }
 .meter-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
 .meter-fill.five { background: var(--accent); }
 .meter-fill.week { background: var(--role-researcher); }
 .meter-v { font-family: var(--font-mono); font-size: 9px; color: var(--text-dim); text-align: right; }
+.meter-r { font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); text-align: right; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
 .acct.stale .meter-fill { opacity: 0.4; }
 .acct.stale .meter-v { color: var(--text-faint); }
 .acct-tag.dim { color: var(--text-faint); }
@@ -386,7 +387,7 @@ button { font-family: inherit; cursor: pointer; }
     overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch;
     padding-bottom: 2px;
   }
-  .acct { flex: 0 0 auto; min-width: 108px; }
+  .acct { flex: 0 0 auto; min-width: 154px; }
 
   /* tappable topbar controls */
   .gate { height: 44px; padding: 0 13px; }

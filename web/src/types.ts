@@ -116,6 +116,8 @@ export interface AccountDTO {
   label: string;
   fiveHour: number | null;
   sevenDay: number | null;
+  fiveHourReset?: number | null;
+  sevenDayReset?: number | null;
   stale?: boolean;
   rateLimited: boolean;
   resetsAt?: number | null;
