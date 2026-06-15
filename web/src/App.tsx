@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type CSSProperties } from "react";
 import { useStore, login } from "./store.js";
 import { notifyEnabled, setNotifyEnabled } from "./lib/notify.js";
 import { Director } from "./components/Director.js";
@@ -17,6 +17,8 @@ export function App() {
   const selected = useStore((s) => s.selectedThreadId);
   const threads = useStore((s) => s.threads);
   const runs = useStore((s) => s.runs);
+  const railHidden = useStore((s) => s.railHidden);
+  const detailWidth = useStore((s) => s.detailWidth);
   const [mobilePane, setMobilePane] = useState<MobilePane>("board");
 
   if (authRequired && !authed) return <Login />;
@@ -31,6 +33,7 @@ export function App() {
           Claude&nbsp;<em>Orchestrator</em>
           <span className="sub">director&nbsp;console</span>
         </div>
+        <RailToggle />
         <div className="spacer" />
         <Accounts />
         <span className="stat">
@@ -43,7 +46,10 @@ export function App() {
           {connected ? "live" : "reconnecting…"}
         </div>
       </header>
-      <div className={"workbench pane-" + mobilePane + (selected ? " detail-open" : "")}>
+      <div
+        className={"workbench pane-" + mobilePane + (selected ? " detail-open" : "") + (railHidden ? " rail-hidden" : "")}
+        style={{ "--detail-w": detailWidth + "px" } as CSSProperties}
+      >
         <Director />
         <Board />
         {selected ? <ThreadDetail key={selected} /> : null}
@@ -139,6 +145,25 @@ function Login() {
         </div>
       </div>
     </div>
+  );
+}
+
+function RailToggle() {
+  const hidden = useStore((s) => s.railHidden);
+  const toggle = useStore((s) => s.toggleRail);
+  return (
+    <button
+      className={"rail-toggle" + (hidden ? " off" : "")}
+      title={hidden ? "Show the director chat" : "Hide the director chat"}
+      aria-label="Toggle director chat panel"
+      onClick={toggle}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <path d="M9 3v18" />
+        {hidden ? null : <rect x="3" y="3" width="6" height="18" rx="2" fill="currentColor" stroke="none" opacity="0.32" />}
+      </svg>
+    </button>
   );
 }
 

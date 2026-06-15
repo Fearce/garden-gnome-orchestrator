@@ -44,6 +44,8 @@ interface State {
   approvalMode: boolean;
   pendingPlans: Record<string, string>;
   threadChanges: Record<string, { diff: string; log: string }>;
+  railHidden: boolean;
+  detailWidth: number;
 
   select: (id: string | null) => void;
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
@@ -55,7 +57,34 @@ interface State {
   setApproval: (on: boolean) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
   loadChanges: (threadId: string) => void;
+  toggleRail: () => void;
+  setDetailWidth: (px: number) => void;
 }
+
+const lsBool = (k: string, d: boolean): boolean => {
+  try {
+    const v = localStorage.getItem(k);
+    return v == null ? d : v === "1";
+  } catch {
+    return d;
+  }
+};
+const lsNum = (k: string, d: number): number => {
+  try {
+    const v = localStorage.getItem(k);
+    const n = v == null ? d : Number(v);
+    return Number.isFinite(n) ? n : d;
+  } catch {
+    return d;
+  }
+};
+const lsSet = (k: string, v: string): void => {
+  try {
+    localStorage.setItem(k, v);
+  } catch {
+    /* private mode */
+  }
+};
 
 // Cap each agent RUN's feed items INDEPENDENTLY (not one global cap) so a chatty
 // implementor/QA run can't evict the finished planner/researcher output you want to
@@ -92,6 +121,8 @@ export const useStore = create<State>((set) => ({
   approvalMode: false,
   pendingPlans: {},
   threadChanges: {},
+  railHidden: lsBool("orch-rail-hidden", false),
+  detailWidth: lsNum("orch-detail-w", 480),
 
   select: (id) => {
     set({ selectedThreadId: id });
@@ -108,6 +139,16 @@ export const useStore = create<State>((set) => ({
   setApproval: (on) => sendCommand({ type: "approval.set", on }),
   approve: (threadId, approved, feedback) => sendCommand({ type: "thread.approve", threadId, approved, feedback }),
   loadChanges: (threadId) => sendCommand({ type: "thread.changes", threadId }),
+  toggleRail: () =>
+    set((s) => {
+      const v = !s.railHidden;
+      lsSet("orch-rail-hidden", v ? "1" : "0");
+      return { railHidden: v };
+    }),
+  setDetailWidth: (px) => {
+    lsSet("orch-detail-w", String(Math.round(px)));
+    set({ detailWidth: px });
+  },
 }));
 
 /** Which agent RUN a feed item belongs to. Keyed by runId (stable on the item) so retention
