@@ -143,3 +143,27 @@ director; main = concurrent thread lanes (state, live agent text, tool calls,
 findings); a thread opens to a detail view with the inject/interrupt controls.
 Design: intentional type + OKLCH palette, mission-control density — no AI-slop
 defaults (see root CLAUDE.md doctrine).
+
+## 10. Multi-subscription load balancing (`server/src/accounts/`)
+
+Run agents across **two (or more) Claude subscriptions**, routing each dispatch
+to whichever sub has the most headroom so neither is wasted.
+
+- **Tokens, per-run.** Each account is `{ id, label, token }` from
+  `ACCOUNT_<n>_TOKEN` (long-lived `claude setup-token` tokens). The runner sets
+  `CLAUDE_CODE_OAUTH_TOKEN` **per agent run** (`AgentRunConfig.oauthToken`), so
+  concurrent agents can run on **different** accounts at once — unlike the trading
+  orchestrator's global credential swap. We deliberately do **not** touch that
+  orchestrator's live credential files.
+- **UsageProbe** (`usageProbe.ts`) opens a streaming session with an account's
+  token, awaits init, and calls the SDK `usage_EXPERIMENTAL…()` control request
+  **without sending a prompt** (zero model tokens) to read 5-hour + 7-day
+  utilization (0-100) and reset times.
+- **AccountManager** (`accountManager.ts`) probes every account on an interval
+  (`ACCOUNT_PROBE_INTERVAL_MS`, default 120s), updates from live `rate_limit`
+  events during real runs, and `select()`s the account with the most **weekly**
+  headroom that isn't 5h-throttled/rejected (falling back to least-burned if all
+  are near the cap). Snapshots stream to the GUI as `accounts` events → the
+  topbar burn strip; each run records its account.
+- Degrades to single-account (inherited login) when fewer than two tokens are
+  configured — still shows that account's live burn bars.

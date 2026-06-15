@@ -11,6 +11,7 @@ export const T = {
   postFinding: `mcp__${BUS_SERVER}__post_finding`,
   readFindings: `mcp__${BUS_SERVER}__read_findings`,
   notifyThread: `mcp__${BUS_SERVER}__notify_thread`,
+  busAskUser: `mcp__${BUS_SERVER}__ask_user`,
   askUser: `mcp__${DIRECTOR_SERVER}__ask_user`,
   dispatch: `mcp__${DIRECTOR_SERVER}__dispatch`,
   listThreads: `mcp__${DIRECTOR_SERVER}__list_threads`,
@@ -20,7 +21,7 @@ export const T = {
   readFindingsAll: `mcp__${DIRECTOR_SERVER}__read_findings`,
 } as const;
 
-export const BUS_TOOLS = [T.postFinding, T.readFindings, T.notifyThread];
+export const BUS_TOOLS = [T.postFinding, T.readFindings, T.notifyThread, T.busAskUser];
 export const DIRECTOR_TOOLS = [
   T.searchMemory,
   T.askUser,

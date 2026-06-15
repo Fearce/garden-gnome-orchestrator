@@ -10,6 +10,7 @@ export function stateColor(state: ThreadState): string {
     case "planning":
     case "researching":
     case "enriching":
+    case "qa":
       return "var(--accent)";
     case "done":
       return "var(--ok)";

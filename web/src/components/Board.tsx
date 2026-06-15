@@ -3,7 +3,7 @@ import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
 import { roleColor, runActive, stateColor, stateLabel } from "../lib/format.js";
 
-const ROLES: Role[] = ["planner", "researcher", "implementor"];
+const ROLES: Role[] = ["planner", "researcher", "implementor", "qa"];
 
 export function Board() {
   const threads = useStore((s) => s.threads);

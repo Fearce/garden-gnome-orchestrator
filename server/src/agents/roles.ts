@@ -1,13 +1,16 @@
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.js";
+import type { Effort } from "../types.js";
 import type { AgentRunConfig } from "./runner.js";
 import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, MEMORY_SERVER, T } from "./toolNames.js";
-import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
+import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
 
+// Only `summary` is required so a planner/researcher that hits a blocker (and
+// asks the user) can still emit valid output instead of looping on the schema.
 export const PLAN_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "steps", "risks", "openQuestions"],
+  required: ["summary"],
   properties: {
     summary: { type: "string" },
     steps: {
@@ -25,13 +28,15 @@ export const PLAN_SCHEMA: Record<string, unknown> = {
     },
     risks: { type: "array", items: { type: "string" } },
     openQuestions: { type: "array", items: { type: "string" } },
+    effort: { type: "string", enum: ["low", "medium", "high", "xhigh", "max"] },
+    parallelism: { type: "string" },
   },
 };
 
 export const RESEARCH_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "relevantFiles", "facts", "memories", "warnings"],
+  required: ["summary"],
   properties: {
     summary: { type: "string" },
     relevantFiles: {
@@ -65,6 +70,29 @@ export const RESEARCH_SCHEMA: Record<string, unknown> = {
   },
 };
 
+export const QA_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["pass", "summary"],
+  properties: {
+    pass: { type: "boolean" },
+    summary: { type: "string" },
+    issues: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["description"],
+        properties: {
+          severity: { type: "string", enum: ["blocker", "major", "minor", "nit"] },
+          description: { type: "string" },
+          location: { type: "string" },
+        },
+      },
+    },
+  },
+};
+
 export function directorConfig(servers: { director: McpServerConfig; memory: McpServerConfig }): AgentRunConfig {
   return {
     model: config.models.director,
@@ -72,7 +100,7 @@ export function directorConfig(servers: { director: McpServerConfig; memory: Mcp
     systemPrompt: DIRECTOR_PROMPT,
     permissionMode: "bypassPermissions",
     allowedTools: [...DIRECTOR_TOOLS, "Read", "Grep", "Glob"],
-    disallowedTools: ["Write", "Edit", "NotebookEdit", "Bash"],
+    disallowedTools: ["Write", "Edit", "NotebookEdit", "Bash", "AskUserQuestion"],
     mcpServers: { [DIRECTOR_SERVER]: servers.director, [MEMORY_SERVER]: servers.memory },
     settingSources: [],
     includePartialMessages: true,
@@ -86,6 +114,7 @@ export function plannerConfig(cwd: string, servers: { bus: McpServerConfig }): A
     systemPrompt: PLANNER_PROMPT,
     permissionMode: "plan",
     allowedTools: ["Read", "Grep", "Glob", ...BUS_TOOLS],
+    disallowedTools: ["AskUserQuestion"],
     mcpServers: { [BUS_SERVER]: servers.bus },
     settingSources: ["project"],
     outputFormat: { type: "json_schema", schema: PLAN_SCHEMA },
@@ -101,6 +130,7 @@ export function researcherConfig(cwd: string, servers: { bus: McpServerConfig; m
     systemPrompt: RESEARCHER_PROMPT,
     permissionMode: "plan",
     allowedTools: ["Read", "Grep", "Glob", "WebSearch", "WebFetch", T.searchMemory, ...BUS_TOOLS],
+    disallowedTools: ["AskUserQuestion"],
     mcpServers: { [BUS_SERVER]: servers.bus, [MEMORY_SERVER]: servers.memory },
     settingSources: ["project"],
     outputFormat: { type: "json_schema", schema: RESEARCH_SCHEMA },
@@ -112,21 +142,39 @@ export function researcherConfig(cwd: string, servers: { bus: McpServerConfig; m
 export function implementorConfig(
   cwd: string,
   servers: { bus: McpServerConfig },
-  opts?: { resume?: string },
+  opts?: { resume?: string; effort?: Effort },
 ): AgentRunConfig {
   const cfg: AgentRunConfig = {
     model: config.models.implementor,
     cwd,
     systemPrompt: { type: "preset", preset: "claude_code", append: IMPLEMENTOR_APPEND },
     // Fully autonomous: bypassPermissions auto-approves every tool (Read/Write/
-    // Edit/Bash/…) so dispatched implementors run unsupervised. The bus tools are
-    // available via mcpServers; no allowedTools list is needed under bypass.
+    // Edit/Bash/…) so dispatched implementors run unsupervised — but the broken
+    // built-in question tool is disallowed so it uses the bus ask_user instead.
     permissionMode: "bypassPermissions",
+    disallowedTools: ["AskUserQuestion"],
     mcpServers: { [BUS_SERVER]: servers.bus },
     settingSources: ["user", "project", "local"],
-    effort: "high",
+    effort: opts?.effort ?? "high",
     includePartialMessages: true,
   };
   if (opts?.resume) cfg.resume = opts.resume;
   return cfg;
+}
+
+export function qaConfig(cwd: string, servers: { bus: McpServerConfig }): AgentRunConfig {
+  return {
+    model: config.models.qa,
+    cwd,
+    systemPrompt: QA_PROMPT,
+    // Needs Bash to run tests/build; cannot edit (it reviews, it doesn't implement).
+    permissionMode: "bypassPermissions",
+    disallowedTools: ["Write", "Edit", "NotebookEdit", "AskUserQuestion"],
+    mcpServers: { [BUS_SERVER]: servers.bus },
+    settingSources: ["project"],
+    outputFormat: { type: "json_schema", schema: QA_SCHEMA },
+    effort: "high",
+    includePartialMessages: true,
+    maxTurns: 60,
+  };
 }

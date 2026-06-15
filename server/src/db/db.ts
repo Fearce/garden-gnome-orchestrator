@@ -45,6 +45,7 @@ function rowToRun(r: Row): AgentRun {
     threadId: r.thread_id as string,
     role: r.role as Role,
     model: r.model as string,
+    account: (r.account as string | null) ?? null,
     sessionId: (r.session_id as string | null) ?? null,
     state: r.state as AgentRunState,
     costUsd: (r.cost_usd as number | null) ?? null,
@@ -104,6 +105,19 @@ export class Db {
     this.raw = new Database(path);
     this.raw.pragma("journal_mode = WAL");
     this.raw.exec(SCHEMA);
+    this.migrate();
+  }
+
+  private migrate(): void {
+    // Add columns introduced after a DB may already exist. Duplicate-column
+    // errors are expected on an up-to-date DB and ignored.
+    for (const stmt of ["ALTER TABLE agent_runs ADD COLUMN account TEXT"]) {
+      try {
+        this.raw.exec(stmt);
+      } catch {
+        /* column already present */
+      }
+    }
   }
 
   // ---- kv ----
@@ -161,12 +175,13 @@ export class Db {
   }
 
   // ---- agent runs ----
-  createRun(input: { threadId: string; role: Role; model: string }): AgentRun {
+  createRun(input: { threadId: string; role: Role; model: string; account?: string | null }): AgentRun {
     const r: AgentRun = {
       id: newId(),
       threadId: input.threadId,
       role: input.role,
       model: input.model,
+      account: input.account ?? null,
       sessionId: null,
       state: "starting",
       costUsd: null,
@@ -177,8 +192,8 @@ export class Db {
     };
     this.raw
       .prepare(
-        `INSERT INTO agent_runs(id, thread_id, role, model, session_id, state, cost_usd, num_turns, error, started_at, ended_at)
-         VALUES(@id, @threadId, @role, @model, @sessionId, @state, @costUsd, @numTurns, @error, @startedAt, @endedAt)`,
+        `INSERT INTO agent_runs(id, thread_id, role, model, account, session_id, state, cost_usd, num_turns, error, started_at, ended_at)
+         VALUES(@id, @threadId, @role, @model, @account, @sessionId, @state, @costUsd, @numTurns, @error, @startedAt, @endedAt)`,
       )
       .run(r);
     return r;

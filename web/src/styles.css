@@ -18,6 +18,7 @@
   --role-planner: oklch(0.73 0.13 248);
   --role-researcher: oklch(0.76 0.12 195);
   --role-implementor: oklch(0.8 0.14 72);
+  --role-qa: oklch(0.79 0.15 150);
 
   --ok: oklch(0.77 0.15 152);
   --warn: oklch(0.82 0.14 92);
@@ -74,6 +75,29 @@ button { font-family: inherit; cursor: pointer; }
 
 .stat { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
 .stat b { color: var(--text-dim); font-weight: 600; }
+
+/* ---- account burn strip ---- */
+.accounts { display: flex; align-items: stretch; gap: 8px; }
+.acct {
+  display: flex; flex-direction: column; gap: 3px; justify-content: center;
+  padding: 4px 9px; border-radius: var(--r-sm); border: 1px solid var(--line);
+  background: var(--bg-2); min-width: 122px;
+}
+.acct.active { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 8%, var(--bg-2)); }
+.acct.limited { border-color: oklch(0.68 0.2 25 / 0.55); }
+.acct-head { display: flex; align-items: center; gap: 6px; }
+.acct-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+.acct-dot.on { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.acct-label { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim); letter-spacing: 0.03em; text-transform: uppercase; }
+.acct-tag { font-family: var(--font-mono); font-size: 8.5px; text-transform: uppercase; color: var(--danger); margin-left: auto; }
+.acct-meters { display: flex; flex-direction: column; gap: 2px; }
+.meter { display: grid; grid-template-columns: 15px 1fr 30px; align-items: center; gap: 5px; }
+.meter-k { font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); }
+.meter-track { height: 4px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+.meter-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+.meter-fill.five { background: var(--accent); }
+.meter-fill.week { background: var(--role-researcher); }
+.meter-v { font-family: var(--font-mono); font-size: 9px; color: var(--text-dim); text-align: right; }
 
 .workbench { display: grid; grid-template-columns: 384px 1fr; min-height: 0; }
 .workbench.detail-open { grid-template-columns: 384px minmax(360px, 1fr) minmax(420px, 1.1fr); }
@@ -199,6 +223,7 @@ button { font-family: inherit; cursor: pointer; }
 .scrim { position: fixed; inset: 0; background: oklch(0 0 0 / 0.55); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; z-index: 50; }
 .modal { width: min(560px, 92vw); background: var(--bg-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-2); overflow: hidden; }
 .modal .m-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+.q-context { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--warn); margin-bottom: 8px; }
 .modal .chip { display: inline-block; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--role-director); background: color-mix(in oklch, var(--role-director) 16%, transparent); padding: 3px 9px; border-radius: 100px; margin-bottom: 9px; }
 .modal h3 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.3; }
 .modal .m-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 9px; }

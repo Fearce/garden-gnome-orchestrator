@@ -4,13 +4,15 @@ import type { Question } from "../types.js";
 
 export function QuestionModal() {
   const questions = useStore((s) => s.questions);
+  const threads = useStore((s) => s.threads);
   const answer = useStore((s) => s.answer);
   const q = useMemo(() => questions.find((x) => x.threadId === null) ?? questions[0], [questions]);
   if (!q) return null;
-  return <QuestionCard key={q.id} q={q} onAnswer={(a) => answer(q.id, a)} />;
+  const context = q.threadId ? threads[q.threadId]?.title ?? "Task" : "Director";
+  return <QuestionCard key={q.id} q={q} context={context} onAnswer={(a) => answer(q.id, a)} />;
 }
 
-function QuestionCard({ q, onAnswer }: { q: Question; onAnswer: (a: string) => void }) {
+function QuestionCard({ q, context, onAnswer }: { q: Question; context: string; onAnswer: (a: string) => void }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [custom, setCustom] = useState("");
   const [showCustom, setShowCustom] = useState(q.options.length === 0);
@@ -37,6 +39,7 @@ function QuestionCard({ q, onAnswer }: { q: Question; onAnswer: (a: string) => v
     <div className="scrim">
       <div className="modal">
         <div className="m-head">
+          <div className="q-context">{q.threadId ? `${context} needs your input` : context}</div>
           <span className="chip">{q.header}</span>
           <h3>{q.question}</h3>
         </div>

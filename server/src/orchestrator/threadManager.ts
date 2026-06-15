@@ -1,15 +1,18 @@
+import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
 import { AgentRun } from "../agents/runner.js";
-import { implementorConfig, plannerConfig, researcherConfig } from "../agents/roles.js";
+import { implementorConfig, plannerConfig, qaConfig, researcherConfig } from "../agents/roles.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { config } from "../config.js";
 import type {
   AgentEvent,
+  Effort,
   Finding,
   PlanOutput,
+  QaOutput,
   ResearchOutput,
   Role,
   Thread,
@@ -29,10 +32,22 @@ interface LiveImplementor {
 
 const MAX_RESULT_PREVIEW = 600;
 const QUESTION_TIMEOUT_MS = 20 * 60 * 1000;
+const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
+  "intake",
+  "enriching",
+  "awaiting_user",
+  "planning",
+  "researching",
+  "implementing",
+  "qa",
+  "paused",
+]);
 
 export class ThreadManager implements OrchestratorApi {
   private readonly live = new Map<string, LiveImplementor>();
+  private readonly activeRuns = new Map<string, Set<AgentRun>>();
   private readonly pendingQuestions = new Map<string, (answer: string) => void>();
+  private readonly awaitingPrev = new Map<string, Thread["state"]>();
   private readonly lastImplementorSession = new Map<string, string>();
   private readonly stopping = new Set<string>();
 
@@ -40,7 +55,36 @@ export class ThreadManager implements OrchestratorApi {
     readonly db: Db,
     readonly hub: EventHub,
     readonly memory: MemoryService,
-  ) {}
+    readonly accounts: AccountManager,
+  ) {
+    this.markInterrupted();
+  }
+
+  /** Any task left mid-flight by a server restart is dead in memory — fail it. */
+  private markInterrupted(): void {
+    for (const t of this.db.listThreads()) {
+      if (IN_FLIGHT.has(t.state)) {
+        this.db.updateThread(t.id, { state: "failed", error: "interrupted by server restart — re-dispatch to retry" });
+      }
+    }
+  }
+
+  private dispatchAccount(): { id: string; label: string; token: string | undefined } {
+    const { account } = this.accounts.select();
+    return { id: account.id, label: account.label, token: account.token || undefined };
+  }
+
+  private track(threadId: string, agent: AgentRun): void {
+    let set = this.activeRuns.get(threadId);
+    if (!set) {
+      set = new Set();
+      this.activeRuns.set(threadId, set);
+    }
+    set.add(agent);
+  }
+  private untrack(threadId: string, agent: AgentRun): void {
+    this.activeRuns.get(threadId)?.delete(agent);
+  }
 
   // ---- OrchestratorApi: reads ----
 
@@ -51,7 +95,7 @@ export class ThreadManager implements OrchestratorApi {
     return this.db.getThread(id);
   }
 
-  // ---- clarifying questions ----
+  // ---- questions (clarify / blockers) ----
 
   askUser(input: AskUserInput): Promise<string> {
     const q = this.db.addQuestion({
@@ -62,15 +106,22 @@ export class ThreadManager implements OrchestratorApi {
       options: input.options,
       multiSelect: input.multiSelect,
     });
+    // A task-scoped question pauses the task into awaiting_user; restore on answer.
+    if (input.threadId) {
+      const t = this.db.getThread(input.threadId);
+      if (t && t.state !== "awaiting_user") {
+        this.awaitingPrev.set(q.id, t.state);
+        this.setState(input.threadId, "awaiting_user");
+      }
+    }
     this.hub.publish({ type: "question.ask", question: q });
-    // Resolve (never reject) after a bound so an unanswered question can't wedge
-    // the director's streaming turn for the whole CLAUDE_CODE_STREAM_CLOSE_TIMEOUT.
     return new Promise<string>((resolve) => {
       const timer = setTimeout(() => {
         if (!this.pendingQuestions.has(q.id)) return;
         this.pendingQuestions.delete(q.id);
         this.db.answerQuestion(q.id, "(no answer — timed out)");
         this.hub.publish({ type: "question.resolved", questionId: q.id, answer: "(timed out)" });
+        this.restoreAfterQuestion(q.id);
         resolve("(Kevin did not answer this in time — proceed using your best judgment, and ask again only if essential.)");
       }, QUESTION_TIMEOUT_MS);
       this.pendingQuestions.set(q.id, (answer) => {
@@ -84,6 +135,7 @@ export class ThreadManager implements OrchestratorApi {
     const resolver = this.pendingQuestions.get(questionId);
     this.db.answerQuestion(questionId, answer);
     this.hub.publish({ type: "question.resolved", questionId, answer });
+    this.restoreAfterQuestion(questionId);
     if (resolver) {
       this.pendingQuestions.delete(questionId);
       resolver(answer);
@@ -92,15 +144,21 @@ export class ThreadManager implements OrchestratorApi {
     return false;
   }
 
+  private restoreAfterQuestion(questionId: string): void {
+    const prev = this.awaitingPrev.get(questionId);
+    if (prev === undefined) return;
+    this.awaitingPrev.delete(questionId);
+    const q = this.db.getQuestion(questionId);
+    if (q?.threadId) {
+      const t = this.db.getThread(q.threadId);
+      if (t && t.state === "awaiting_user") this.setState(q.threadId, prev);
+    }
+  }
+
   // ---- dispatch + pipeline ----
 
   async dispatch(input: DispatchInput): Promise<string> {
-    const thread = this.db.createThread({
-      title: input.title,
-      workspace: input.workspace,
-      rawPrompt: "",
-      brief: input.brief,
-    });
+    const thread = this.db.createThread({ title: input.title, workspace: input.workspace, rawPrompt: "", brief: input.brief });
     this.hub.publish({ type: "thread.upsert", thread });
     this.hub.log("info", `Dispatched task ${thread.id.slice(0, 8)} "${thread.title}"`);
     void this.runPipeline(thread.id);
@@ -110,6 +168,10 @@ export class ThreadManager implements OrchestratorApi {
   private setState(threadId: string, state: Thread["state"], error?: string | null): void {
     const t = this.db.updateThread(threadId, { state, error: error ?? null });
     if (t) this.hub.publish({ type: "thread.upsert", thread: t });
+  }
+
+  private cancelled(threadId: string): boolean {
+    return this.db.getThread(threadId)?.state === "cancelled";
   }
 
   private async runPipeline(threadId: string): Promise<void> {
@@ -127,91 +189,144 @@ export class ThreadManager implements OrchestratorApi {
           return undefined;
         }),
       ]);
-
-      const current = this.db.getThread(threadId);
-      if (!current || current.state === "cancelled") return;
-
+      if (this.cancelled(threadId)) return;
       const kickoff = composeKickoff(thread, plan, research);
-      await this.startImplementor(thread, kickoff);
+      await this.runImplementorQa(thread, kickoff, plan?.effort);
     } catch (err) {
-      this.setState(threadId, "failed", err instanceof Error ? err.message : String(err));
+      if (!this.cancelled(threadId)) this.setState(threadId, "failed", err instanceof Error ? err.message : String(err));
     }
   }
 
   private async runPlanner(thread: Thread): Promise<PlanOutput | undefined> {
-    const run = this.db.createRun({ threadId: thread.id, role: "planner", model: config.models.planner });
+    const acct = this.dispatchAccount();
+    const run = this.db.createRun({ threadId: thread.id, role: "planner", model: config.models.planner, account: acct.label });
     this.emitRun(run.id);
     const bus = createBusServer(this, { threadId: thread.id, role: "planner", getRunId: () => run.id });
-    const agent = new AgentRun(plannerConfig(thread.workspace, { bus }));
-    this.wireRun(agent, thread.id, run.id, "planner");
+    const cfg = plannerConfig(thread.workspace, { bus });
+    cfg.oauthToken = acct.token;
+    const agent = new AgentRun(cfg);
+    this.wireRun(agent, thread.id, run.id, "planner", acct.id);
+    this.track(thread.id, agent);
     agent.start(thread.brief);
     const res = await agent.result();
     await agent.stop();
-    this.db.updateRun(run.id, {
-      state: res?.isError ? "error" : "done",
-      endedAt: Date.now(),
-      costUsd: res?.costUsd ?? null,
-      numTurns: res?.numTurns ?? null,
-      sessionId: agent.sessionId ?? null,
-    });
-    this.emitRun(run.id);
+    this.untrack(thread.id, agent);
+    this.finishRun(run.id, res, agent);
     return res?.structuredOutput as PlanOutput | undefined;
   }
 
   private async runResearcher(thread: Thread): Promise<ResearchOutput | undefined> {
-    const run = this.db.createRun({ threadId: thread.id, role: "researcher", model: config.models.researcher });
+    const acct = this.dispatchAccount();
+    const run = this.db.createRun({ threadId: thread.id, role: "researcher", model: config.models.researcher, account: acct.label });
     this.emitRun(run.id);
     const bus = createBusServer(this, { threadId: thread.id, role: "researcher", getRunId: () => run.id });
     const memory = createMemoryServer(this.memory);
-    const agent = new AgentRun(researcherConfig(thread.workspace, { bus, memory }));
-    this.wireRun(agent, thread.id, run.id, "researcher");
+    const cfg = researcherConfig(thread.workspace, { bus, memory });
+    cfg.oauthToken = acct.token;
+    const agent = new AgentRun(cfg);
+    this.wireRun(agent, thread.id, run.id, "researcher", acct.id);
+    this.track(thread.id, agent);
     agent.start(thread.brief);
     const res = await agent.result();
     await agent.stop();
-    this.db.updateRun(run.id, {
-      state: res?.isError ? "error" : "done",
-      endedAt: Date.now(),
-      costUsd: res?.costUsd ?? null,
-      numTurns: res?.numTurns ?? null,
-      sessionId: agent.sessionId ?? null,
-    });
-    this.emitRun(run.id);
+    this.untrack(thread.id, agent);
+    this.finishRun(run.id, res, agent);
     return res?.structuredOutput as ResearchOutput | undefined;
   }
 
-  private async startImplementor(thread: Thread, kickoff: string, opts?: { resume?: string }): Promise<void> {
+  private async runQA(thread: Thread): Promise<QaOutput | undefined> {
+    const acct = this.dispatchAccount();
+    const run = this.db.createRun({ threadId: thread.id, role: "qa", model: config.models.qa, account: acct.label });
+    this.emitRun(run.id);
+    const bus = createBusServer(this, { threadId: thread.id, role: "qa", getRunId: () => run.id });
+    const cfg = qaConfig(thread.workspace, { bus });
+    cfg.oauthToken = acct.token;
+    const agent = new AgentRun(cfg);
+    this.wireRun(agent, thread.id, run.id, "qa", acct.id);
+    this.track(thread.id, agent);
+    agent.start(qaKickoff(thread));
+    const res = await agent.result();
+    await agent.stop();
+    this.untrack(thread.id, agent);
+    this.finishRun(run.id, res, agent);
+    return res?.structuredOutput as QaOutput | undefined;
+  }
+
+  /** Start the implementor (stays live for QA fix-rounds + injects). Returns the handle. */
+  private startImplementor(thread: Thread, kickoff: string, opts?: { resume?: string; effort?: Effort }): { run: AgentRun; runId: string } {
     this.setState(thread.id, "implementing");
-    const run = this.db.createRun({ threadId: thread.id, role: "implementor", model: config.models.implementor });
+    const acct = this.dispatchAccount();
+    const run = this.db.createRun({ threadId: thread.id, role: "implementor", model: config.models.implementor, account: acct.label });
     this.emitRun(run.id);
     const bus = createBusServer(this, { threadId: thread.id, role: "implementor", getRunId: () => run.id });
-    const agent = new AgentRun(implementorConfig(thread.workspace, { bus }, opts));
-    this.wireRun(agent, thread.id, run.id, "implementor");
+    const cfg = implementorConfig(thread.workspace, { bus }, opts);
+    cfg.oauthToken = acct.token;
+    const agent = new AgentRun(cfg);
+    this.wireRun(agent, thread.id, run.id, "implementor", acct.id);
     this.live.set(thread.id, { run: agent, runId: run.id });
-
+    this.track(thread.id, agent);
+    agent.onEvent((e) => {
+      if (e.type === "init" && e.sessionId) this.lastImplementorSession.set(thread.id, e.sessionId);
+    });
     agent.onEnd(() => {
       this.live.delete(thread.id);
-      if (this.stopping.has(thread.id)) {
-        this.stopping.delete(thread.id);
-        return; // deliberate teardown (cancel) sets the terminal state itself
-      }
-      const cur = this.db.getThread(thread.id);
-      if (cur && cur.state !== "cancelled" && cur.state !== "review" && cur.state !== "done") {
-        this.setState(thread.id, "done");
-      }
+      this.untrack(thread.id, agent);
+      this.stopping.delete(thread.id);
     });
-
-    // When the implementor finishes a turn (a result), move to review but keep
-    // the session alive so the director / Kevin can inject follow-ups.
-    const off = agent.onEvent((e: AgentEvent) => {
-      if (e.type === "result") {
-        if (agent.sessionId) this.lastImplementorSession.set(thread.id, agent.sessionId);
-        const cur = this.db.getThread(thread.id);
-        if (cur && cur.state === "implementing") this.setState(thread.id, "review");
-      }
-    });
-    void off;
-
     agent.start(kickoff);
+    return { run: agent, runId: run.id };
+  }
+
+  /** Implementor → QA → fix, repeated until QA passes or we run out of rounds. */
+  private async runImplementorQa(thread: Thread, kickoff: string, effort?: Effort): Promise<void> {
+    const { run } = this.startImplementor(thread, kickoff, { effort });
+    let res = await run.result();
+
+    for (let round = 1; round <= config.maxQaRounds; round++) {
+      if (this.cancelled(thread.id)) return;
+      if (!res) {
+        this.setState(thread.id, "review", "Implementor ended without completing — needs your review.");
+        return;
+      }
+      this.setState(thread.id, "qa");
+      const qa = await this.runQA(thread).catch((e) => {
+        this.hub.log("warn", `QA failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
+        return undefined;
+      });
+      if (this.cancelled(thread.id)) return;
+
+      if (!qa) {
+        this.postFinding({ threadId: thread.id, fromRole: "qa", summary: "QA could not complete — needs your review", severity: "warning" });
+        this.setState(thread.id, "review");
+        return;
+      }
+      if (qa.pass) {
+        this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed: ${qa.summary}`, severity: "info" });
+        this.setState(thread.id, "done");
+        return;
+      }
+      if (round >= config.maxQaRounds) {
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "qa",
+          summary: `QA still not satisfied after ${config.maxQaRounds} rounds — needs your review`,
+          detail: qa.summary,
+          severity: "warning",
+        });
+        this.setState(thread.id, "review");
+        return;
+      }
+
+      const live = this.live.get(thread.id);
+      if (!live) {
+        this.setState(thread.id, "review", "Implementor is no longer live for the QA fix round.");
+        return;
+      }
+      this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA round ${round}: ${qa.summary}`, severity: "note" });
+      this.setState(thread.id, "implementing");
+      live.run.send(`QA review found issues — fix ALL of these, then we'll re-check:\n${formatQaIssues(qa)}`, { priority: "now" });
+      res = await live.run.nextResult();
+    }
   }
 
   // ---- live thread controls ----
@@ -228,7 +343,6 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.log("info", `Injected (${mode}) into ${threadId.slice(0, 8)}`);
       return { ok: true, state: "implementing" };
     }
-    // No live implementor — resume the session with the message.
     return this.resumeThread(threadId, message);
   }
 
@@ -250,19 +364,34 @@ export class ThreadManager implements OrchestratorApi {
       return { ok: true, state: "implementing" };
     }
     const resume = this.lastImplementorSession.get(threadId);
-    const kickoff = message ?? "Continue where you left off.";
-    await this.startImplementor(thread, kickoff, resume ? { resume } : undefined);
+    const { run } = this.startImplementor(thread, message ?? "Continue where you left off.", resume ? { resume } : undefined);
+    // Manual resume isn't part of the QA loop — settle to review when it finishes.
+    void run.result().then(() => {
+      if (this.db.getThread(threadId)?.state === "implementing") this.setState(threadId, "review");
+    });
     return { ok: true, state: "implementing" };
   }
 
   async cancelThread(threadId: string): Promise<ThreadActionResult> {
-    const live = this.live.get(threadId);
-    if (live) {
-      this.stopping.add(threadId);
-      await live.run.stop();
-      this.live.delete(threadId);
+    this.stopping.add(threadId);
+    const set = this.activeRuns.get(threadId);
+    if (set) {
+      for (const r of set) {
+        try {
+          await r.stop();
+        } catch {
+          /* already down */
+        }
+      }
+      set.clear();
+    }
+    this.live.delete(threadId);
+    // Unblock any agent waiting on a question for this task.
+    for (const q of this.db.listOpenQuestions()) {
+      if (q.threadId === threadId) this.resolveQuestion(q.id, "(task cancelled)");
     }
     this.setState(threadId, "cancelled");
+    this.stopping.delete(threadId);
     return { ok: true, state: "cancelled" };
   }
 
@@ -278,19 +407,12 @@ export class ThreadManager implements OrchestratorApi {
   private route(finding: Finding): void {
     const live = this.live.get(finding.threadId);
     if (!live) return;
-    // Never re-inject a finding the live implementor posted itself.
-    if (finding.fromRunId && finding.fromRunId === live.runId) return;
+    if (finding.fromRunId && finding.fromRunId === live.runId) return; // not its own
     if (finding.severity === "critical") {
-      void this.injectThread(
-        finding.threadId,
-        `${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`,
-        "interrupt",
-      );
+      void this.injectThread(finding.threadId, `${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`, "interrupt");
       this.db.markFindingRouted(finding.id);
     } else if (finding.severity === "warning") {
-      live.run.send(`[Heads-up finding] ${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`, {
-        priority: "next",
-      });
+      live.run.send(`[Heads-up finding] ${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`, { priority: "next" });
       this.db.markFindingRouted(finding.id);
     }
   }
@@ -302,7 +424,18 @@ export class ThreadManager implements OrchestratorApi {
     if (run) this.hub.publish({ type: "run.upsert", run });
   }
 
-  private wireRun(agent: AgentRun, threadId: string, runId: string, role: Role): void {
+  private finishRun(runId: string, res: Extract<AgentEvent, { type: "result" }> | undefined, agent: AgentRun): void {
+    this.db.updateRun(runId, {
+      state: res?.isError ? "error" : "done",
+      endedAt: Date.now(),
+      costUsd: res?.costUsd ?? null,
+      numTurns: res?.numTurns ?? null,
+      sessionId: agent.sessionId ?? null,
+    });
+    this.emitRun(runId);
+  }
+
+  private wireRun(agent: AgentRun, threadId: string, runId: string, role: Role, accountId: string): void {
     const off = agent.onEvent((e: AgentEvent) => {
       switch (e.type) {
         case "init":
@@ -324,27 +457,19 @@ export class ThreadManager implements OrchestratorApi {
           this.hub.publish({ type: "agent.tool", threadId, runId, role, name: e.name, input: e.input, id: e.id });
           break;
         case "tool_result":
-          this.hub.publish({
-            type: "agent.tool_result",
-            threadId,
-            runId,
-            id: e.id,
-            isError: e.isError,
-            preview: preview(e.content),
-          });
+          this.hub.publish({ type: "agent.tool_result", threadId, runId, id: e.id, isError: e.isError, preview: preview(e.content) });
           break;
         case "result":
-          this.db.updateRun(runId, {
-            costUsd: e.costUsd ?? null,
-            numTurns: e.numTurns ?? null,
-            state: e.isError ? "error" : "idle",
-          });
+          this.db.updateRun(runId, { costUsd: e.costUsd ?? null, numTurns: e.numTurns ?? null, state: e.isError ? "error" : "idle" });
           this.emitRun(runId);
           break;
         case "error":
           this.db.updateRun(runId, { state: "error", error: e.message });
           this.emitRun(runId);
           this.hub.log("error", `${role} on ${threadId.slice(0, 8)}: ${e.message}`);
+          break;
+        case "rate_limit":
+          this.accounts.updateFromRateLimit(accountId, e.info);
           break;
         default:
           break;
@@ -360,13 +485,17 @@ function composeKickoff(thread: Thread, plan: PlanOutput | undefined, research: 
   parts.push("## Plan (from the planner)");
   if (plan) {
     parts.push(plan.summary, "");
-    parts.push("Steps:");
-    plan.steps.forEach((s, i) => {
-      const files = s.files?.length ? ` [files: ${s.files.join(", ")}]` : "";
-      parts.push(`${i + 1}. ${s.title} — ${s.detail}${files}`);
-    });
-    if (plan.risks.length) parts.push("", `Risks: ${plan.risks.join("; ")}`);
-    if (plan.openQuestions.length) parts.push(`Open questions: ${plan.openQuestions.join("; ")}`);
+    const steps = plan.steps ?? [];
+    if (steps.length) {
+      parts.push("Steps:");
+      steps.forEach((s, i) => {
+        const files = s.files?.length ? ` [files: ${s.files.join(", ")}]` : "";
+        parts.push(`${i + 1}. ${s.title} — ${s.detail}${files}`);
+      });
+    }
+    if (plan.risks?.length) parts.push("", `Risks: ${plan.risks.join("; ")}`);
+    if (plan.openQuestions?.length) parts.push(`Open questions: ${plan.openQuestions.join("; ")}`);
+    if (plan.parallelism) parts.push(`Parallelism: ${plan.parallelism}`);
   } else {
     parts.push("(planner produced no structured plan — proceed from the brief and your own analysis)");
   }
@@ -375,25 +504,44 @@ function composeKickoff(thread: Thread, plan: PlanOutput | undefined, research: 
   parts.push("## Research (from the researcher)");
   if (research) {
     parts.push(research.summary, "");
-    if (research.relevantFiles.length) {
+    if (research.relevantFiles?.length) {
       parts.push("Relevant files:");
       research.relevantFiles.forEach((f) => parts.push(`- ${f.path} — ${f.why}`));
     }
-    if (research.facts.length) {
+    if (research.facts?.length) {
       parts.push("Key facts:");
       research.facts.forEach((f) => parts.push(`- ${f.claim}${f.source ? ` (${f.source})` : ""}`));
     }
-    if (research.memories.length) {
+    if (research.memories?.length) {
       parts.push("Relevant memory:");
       research.memories.forEach((m) => parts.push(`- ${m.name} — ${m.gist}`));
     }
-    if (research.warnings.length) parts.push("Warnings: " + research.warnings.join("; "));
+    if (research.warnings?.length) parts.push("Warnings: " + research.warnings.join("; "));
   } else {
     parts.push("(researcher produced no structured brief — gather any context you need yourself)");
   }
   parts.push("");
-  parts.push("Implement this now, completely, at high effort. Post findings as you go. When done, commit and push per the doctrine.");
+  parts.push(
+    "Implement this now, completely. Post findings as you go; ask_user immediately if you hit a blocker only Kevin can fix. A QA agent will then test and review your work and send back issues to fix. When QA is satisfied, commit and push per the doctrine.",
+  );
   return parts.join("\n");
+}
+
+function qaKickoff(thread: Thread): string {
+  return [
+    `# QA review for task: ${thread.title}`,
+    "",
+    "The implementor just finished an attempt at this brief:",
+    "",
+    thread.brief,
+    "",
+    "Verify the work in this repo: inspect the changes (git diff), run the project's build/typecheck/tests, and check correctness and completeness against the brief. Then return your structured verdict (pass + issues). Pass only if you'd actually ship it.",
+  ].join("\n");
+}
+
+function formatQaIssues(qa: QaOutput): string {
+  const lines = (qa.issues ?? []).map((i) => `- [${i.severity ?? "issue"}] ${i.description}${i.location ? ` (${i.location})` : ""}`);
+  return (qa.summary ? `${qa.summary}\n` : "") + (lines.length ? lines.join("\n") : "(see QA summary)");
 }
 
 function safeJson(v: unknown): string {

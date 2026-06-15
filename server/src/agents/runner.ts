@@ -11,7 +11,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { EventEmitter } from "node:events";
 import { config } from "../config.js";
-import type { AgentEvent } from "../types.js";
+import type { AgentEvent, RateLimitInfo } from "../types.js";
 
 export type UserContent = string | unknown[];
 
@@ -36,6 +36,8 @@ export interface AgentRunConfig {
   canUseTool?: CanUseTool;
   resume?: string;
   forkSession?: boolean;
+  /** Per-run subscription token — lets concurrent agents run on different accounts. */
+  oauthToken?: string;
 }
 
 /**
@@ -43,11 +45,12 @@ export interface AgentRunConfig {
  * through, so agents authenticate via the Max subscription only. A long stream
  * close timeout keeps a human-blocked MCP tool (e.g. ask_user) from aborting.
  */
-function buildEnv(): Record<string, string | undefined> {
+function buildEnv(token?: string): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
   env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT ?? "1800000";
-  if (config.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = config.oauthToken;
+  const oauth = token ?? config.oauthToken;
+  if (oauth) env.CLAUDE_CODE_OAUTH_TOKEN = oauth;
   return env;
 }
 
@@ -135,7 +138,7 @@ export class AgentRun {
       permissionMode: this.cfg.permissionMode ?? "default",
       includePartialMessages: this.cfg.includePartialMessages ?? true,
       settingSources: this.cfg.settingSources ?? [],
-      env: buildEnv(),
+      env: buildEnv(this.cfg.oauthToken),
     };
     if (this.cfg.systemPrompt !== undefined) options.systemPrompt = this.cfg.systemPrompt;
     if (this.cfg.allowedTools) options.allowedTools = this.cfg.allowedTools;
@@ -206,6 +209,11 @@ export class AgentRun {
   /** Resolves on the next result event (or run end). For one-shot agents. */
   result(): Promise<ResultEvent | undefined> {
     if (this.lastResult) return Promise.resolve(this.lastResult);
+    return this.nextResult();
+  }
+
+  /** Resolves on the NEXT result event regardless of any cached one — for the QA loop. */
+  nextResult(): Promise<ResultEvent | undefined> {
     return new Promise((resolve) => {
       const off = this.onEvent((e) => {
         if (e.type === "result") {
@@ -274,6 +282,9 @@ export class AgentRun {
         }
         break;
       }
+      case "rate_limit_event":
+        if (m.rate_limit_info) this.emit({ type: "rate_limit", info: m.rate_limit_info as RateLimitInfo });
+        break;
       case "result": {
         const evt: ResultEvent = {
           type: "result",
