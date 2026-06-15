@@ -5,9 +5,11 @@ import type { Account } from "./account.js";
 
 interface AccountState {
   account: Account;
-  fiveHour: number | null; // utilization 0-100, null until first observed
-  sevenDay: number | null; // utilization 0-100
+  // Per-window utilization (0-100), keyed by rate_limit_event `rateLimitType`.
+  // Each window is set authoritatively by its own events; never conflated.
+  util: Map<string, number>;
   rateLimited: boolean;
+  rateLimitWindow: string | null; // which window 429-rejected (only it can clear the flag)
   rateLimitResetAt: number | null; // epoch ms
   lastPick: number; // monotonic selection sequence — round-robin tiebreak
   updatedAt: number;
@@ -16,10 +18,22 @@ interface AccountState {
 // At/above this on the tightest window, treat the account as effectively capped.
 const HARD_LIMIT = 98;
 
-const tightest = (s: AccountState): number => Math.max(s.fiveHour ?? 0, s.sevenDay ?? 0);
-const weeklyHeadroom = (s: AccountState): number => 100 - (s.sevenDay ?? 0);
-const fiveHeadroom = (s: AccountState): number => 100 - (s.fiveHour ?? 0);
-const hasBurnData = (s: AccountState): boolean => s.fiveHour != null || s.sevenDay != null;
+// seven_day, plus the per-model weekly sub-caps — opus binds our Opus implementor.
+const WEEKLY_FAMILY = ["seven_day", "seven_day_opus", "seven_day_sonnet"];
+
+const fiveHourOf = (s: AccountState): number | null => s.util.get("five_hour") ?? null;
+const weeklyOf = (s: AccountState): number | null => {
+  let m: number | null = null;
+  for (const k of WEEKLY_FAMILY) {
+    const v = s.util.get(k);
+    if (v != null) m = m == null ? v : Math.max(m, v);
+  }
+  return m;
+};
+const tightest = (s: AccountState): number => Math.max(fiveHourOf(s) ?? 0, weeklyOf(s) ?? 0);
+const weeklyHeadroom = (s: AccountState): number => 100 - (weeklyOf(s) ?? 0);
+const fiveHeadroom = (s: AccountState): number => 100 - (fiveHourOf(s) ?? 0);
+const hasBurnData = (s: AccountState): boolean => s.util.size > 0;
 
 /**
  * Routes dispatches across the subscriptions to drain both evenly.
@@ -47,9 +61,9 @@ export class AccountManager {
     for (const a of accounts) {
       this.states.set(a.id, {
         account: a,
-        fiveHour: null,
-        sevenDay: null,
+        util: new Map(),
         rateLimited: false,
+        rateLimitWindow: null,
         rateLimitResetAt: null,
         lastPick: 0,
         updatedAt: 0,
@@ -60,8 +74,8 @@ export class AccountManager {
   start(): void {
     if (!this.accounts.length) return;
     this.publish();
-    // Liveness tick: lazily clear expired rate-limits and republish. No network
-    // probe — burn data arrives via updateFromRateLimit during real runs.
+    // Liveness tick: lazily expire rate-limits and republish. No network probe —
+    // burn data arrives via updateFromRateLimit during real runs.
     this.timer = setInterval(() => this.sweep(), this.tickMs);
     this.timer.unref?.();
   }
@@ -75,7 +89,10 @@ export class AccountManager {
     let changed = false;
     for (const s of this.states.values()) {
       if (s.rateLimited && s.rateLimitResetAt != null && now > s.rateLimitResetAt) {
+        // Window reset: drop its (capped) utilization so it re-learns, and lift the limit.
+        if (s.rateLimitWindow) s.util.delete(s.rateLimitWindow);
         s.rateLimited = false;
+        s.rateLimitWindow = null;
         s.rateLimitResetAt = null;
         changed = true;
       }
@@ -87,18 +104,19 @@ export class AccountManager {
   updateFromRateLimit(accountId: string, info: RateLimitInfo): void {
     const st = this.states.get(accountId);
     if (!st) return;
-    if (info.utilization != null) {
-      if (info.rateLimitType === "five_hour") st.fiveHour = info.utilization;
-      else if (info.rateLimitType === "seven_day") st.sevenDay = info.utilization;
+    if (info.utilization != null && info.rateLimitType) {
+      st.util.set(info.rateLimitType, info.utilization);
     }
     if (info.status === "rejected") {
       st.rateLimited = true;
+      st.rateLimitWindow = info.rateLimitType ?? null;
       st.rateLimitResetAt = info.resetsAt ?? null;
-      // A rejection means the binding window is at its cap.
-      if (info.rateLimitType === "five_hour") st.fiveHour = Math.max(st.fiveHour ?? 0, 100);
-      else if (info.rateLimitType === "seven_day") st.sevenDay = Math.max(st.sevenDay ?? 0, 100);
-    } else {
+      if (info.rateLimitType) st.util.set(info.rateLimitType, 100);
+    } else if (st.rateLimited && (st.rateLimitWindow == null || st.rateLimitWindow === info.rateLimitType)) {
+      // Only an "allowed" on the window that set the limit (or an untyped event) clears it —
+      // an allowed five_hour event must not unblock a rejected weekly window.
       st.rateLimited = false;
+      st.rateLimitWindow = null;
       st.rateLimitResetAt = null;
     }
     st.updatedAt = Date.now();
@@ -112,6 +130,7 @@ export class AccountManager {
       this.preferredId = first?.id;
       return { account: first ?? { id: "default", label: "logged-in", token: "" }, reason: "single account" };
     }
+    this.sweep(); // lift any rate-limits whose reset has passed before choosing
     const now = Date.now();
     const all = [...this.states.values()];
     const usable = all.filter((s) => {
@@ -134,7 +153,7 @@ export class AccountManager {
     const reason = !usable.length
       ? "all accounts near limit — using least-burned"
       : pool.some(hasBurnData)
-        ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} — most headroom`
+        ? `weekly ${fmt(weeklyOf(chosen))} · 5h ${fmt(fiveHourOf(chosen))} — most headroom`
         : "round-robin (no burn data yet)";
     return { account: chosen.account, reason };
   }
@@ -143,8 +162,8 @@ export class AccountManager {
     return [...this.states.values()].map((s) => ({
       id: s.account.id,
       label: s.account.label,
-      fiveHour: s.fiveHour,
-      sevenDay: s.sevenDay,
+      fiveHour: fiveHourOf(s),
+      sevenDay: weeklyOf(s),
       rateLimited: s.rateLimited,
       resetsAt: s.rateLimitResetAt,
       active: s.account.id === this.preferredId,
