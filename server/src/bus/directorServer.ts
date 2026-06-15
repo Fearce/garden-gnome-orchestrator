@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { OrchestratorApi } from "../orchestrator/api.js";
 import type { ImageAttachment } from "../types.js";
 import { DIRECTOR_SERVER } from "../agents/toolNames.js";
+import { existsSync } from "node:fs";
 
 /**
  * The director's control surface: clarify with the user, dispatch tasks, and
@@ -40,7 +41,11 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
     "Dispatch a task: spins up the planner + researcher, then an Opus 4.8 implementor in the target repo, seeded with the enriched brief. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). Any image(s) Kevin attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.",
     {
       title: z.string().describe("Short task title for the board lane."),
-      workspace: z.string().describe("Absolute path of the repo/dir the implementor should work in, e.g. C:\\sprogbroen."),
+      workspace: z
+        .string()
+        .describe(
+          "Absolute path of an EXISTING repo/dir the implementor works in, e.g. C:\\sprogbroen. It must already be on disk — agents can't run in a path that isn't there, so don't guess folder names.",
+        ),
       brief: z
         .string()
         .describe(
@@ -48,6 +53,17 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
         ),
     },
     async (args) => {
+      if (!existsSync(args.workspace)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Workspace "${args.workspace}" does not exist on disk. Do NOT dispatch — a task can only run in a directory that already exists. Confirm the exact absolute path with Kevin (ask_user) and retry with the corrected path.`,
+            },
+          ],
+          isError: true,
+        };
+      }
       const id = await api.dispatch({ title: args.title, workspace: args.workspace, brief: args.brief, images: getImages() });
       return { content: [{ type: "text", text: `Dispatched task ${id} ("${args.title}") in ${args.workspace}.` }] };
     },
