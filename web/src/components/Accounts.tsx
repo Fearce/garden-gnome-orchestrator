@@ -9,7 +9,14 @@ export function Accounts() {
   if (!accounts.length) return null;
   const multi = accounts.length > 1;
   return (
-    <div className="accounts" title={multi ? "Dispatch routes to the account with the most weekly headroom" : "Subscription usage"}>
+    <div
+      className="accounts"
+      title={
+        multi
+          ? "Dispatch alternates between subscriptions and favors more weekly headroom. Burn fills in from each run as the windows are used."
+          : "Subscription usage"
+      }
+    >
       {accounts.map((a) => (
         <AccountChip key={a.id} a={a} multi={multi} />
       ))}
@@ -20,7 +27,7 @@ export function Accounts() {
 function AccountChip({ a, multi }: { a: AccountDTO; multi: boolean }) {
   const cls = "acct" + (multi && a.active ? " active" : "") + (a.rateLimited ? " limited" : "");
   return (
-    <div className={cls} title={a.error ? `error: ${a.error}` : a.email ?? a.label}>
+    <div className={cls} title={a.error ? `error: ${a.error}` : a.label}>
       <div className="acct-head">
         {multi ? <span className={"acct-dot" + (a.active ? " on" : "")} /> : null}
         <span className="acct-label">{a.label}</span>
