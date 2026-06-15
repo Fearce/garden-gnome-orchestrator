@@ -208,6 +208,13 @@ export class AccountManager {
     return chosen.account;
   }
 
+  /** Is this account currently cap-rejected and not yet past its reset? */
+  isRateLimited(accountId: string): boolean {
+    const st = this.states.get(accountId);
+    if (!st) return false;
+    return st.rateLimited && (st.rateLimitResetAt == null || st.rateLimitResetAt > Date.now());
+  }
+
   dto(): AccountDTO[] {
     return [...this.states.values()].map((s) => ({
       id: s.account.id,
