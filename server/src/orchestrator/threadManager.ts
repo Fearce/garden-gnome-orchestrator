@@ -377,7 +377,7 @@ export class ThreadManager implements OrchestratorApi {
   ): { run: AgentRun; runId: string; accountId: string } {
     this.setState(thread.id, "implementing");
     const acct = opts?.account ?? this.dispatchAccount();
-    const run = this.db.createRun({ threadId: thread.id, role: "implementor", model: config.models.implementor, account: acct.label });
+    const run = this.db.createRun({ threadId: thread.id, role: "implementor", model: config.models.implementor, account: acct.label, effort: opts?.effort ?? "high" });
     this.emitRun(run.id);
     const bus = createBusServer(this, { threadId: thread.id, role: "implementor", getRunId: () => run.id });
     const cfg = implementorConfig(thread.workspace, { bus }, { resume: opts?.resume, effort: opts?.effort });

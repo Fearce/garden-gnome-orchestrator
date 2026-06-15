@@ -47,6 +47,7 @@ export interface AgentRun {
   role: Role;
   model: string;
   account?: string | null; // which subscription account ran it
+  effort?: Effort | null; // planner-chosen effort (implementor); null for other roles
   sessionId?: string | null; // Claude SDK session id, for resume/fork
   state: AgentRunState;
   costUsd?: number | null;
