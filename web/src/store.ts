@@ -57,7 +57,12 @@ interface State {
   loadChanges: (threadId: string) => void;
 }
 
-const FEED_CAP = 500;
+// Cap each agent RUN's feed items INDEPENDENTLY (not one global cap) so a chatty
+// implementor/QA run can't evict the finished planner/researcher output you want to
+// scroll back and read. A bounded run (planner ~tens of items) is never trimmed.
+// FEED_HARD_CAP is an absolute per-thread backstop for pathological many-run threads.
+const PER_RUN_CAP = 800;
+const FEED_HARD_CAP = 5000;
 
 let socket: WebSocket | null = null;
 
@@ -105,10 +110,25 @@ export const useStore = create<State>((set) => ({
   loadChanges: (threadId) => sendCommand({ type: "thread.changes", threadId }),
 }));
 
+/** Which agent RUN a feed item belongs to. Keyed by runId (stable on the item) so retention
+ *  never depends on run-arrival timing; a tool_result is grouped with its own run's items. */
+export function feedBucket(f: FeedItem): string {
+  if (f.kind === "text" || f.kind === "tool" || f.kind === "tool_result") return f.runId;
+  if (f.kind === "finding") return f.finding.fromRunId ?? "other";
+  return "other";
+}
+
 function pushFeed(threadId: string, item: FeedItem): void {
   useStore.setState((s) => {
-    const prev = s.threadFeeds[threadId] ?? [];
-    const next = prev.length >= FEED_CAP ? [...prev.slice(prev.length - FEED_CAP + 1), item] : [...prev, item];
+    const bucket = feedBucket(item);
+    let next = [...(s.threadFeeds[threadId] ?? []), item];
+    let count = 0;
+    for (const f of next) if (feedBucket(f) === bucket) count++;
+    if (count > PER_RUN_CAP) {
+      const idx = next.findIndex((f) => feedBucket(f) === bucket);
+      if (idx >= 0) next = [...next.slice(0, idx), ...next.slice(idx + 1)];
+    }
+    if (next.length > FEED_HARD_CAP) next = next.slice(next.length - FEED_HARD_CAP);
     return { threadFeeds: { ...s.threadFeeds, [threadId]: next } };
   });
 }

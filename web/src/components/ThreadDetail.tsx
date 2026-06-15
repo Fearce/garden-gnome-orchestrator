@@ -1,10 +1,20 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
 import type { FeedItem, Role } from "../types.js";
 import { clock, roleColor, sevColor, stateColor, stateLabel } from "../lib/format.js";
 import { AttachButton, ComposerThumbs, useAttachments } from "../lib/attachments.js";
 
 const roleVar = (role: Role): CSSProperties => ({ "--role": roleColor(role) } as CSSProperties);
+
+const ROLE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
+
+/** Which agent a feed row belongs to, for the per-agent filter (tool_result resolves via its run). */
+function itemRoleOf(f: FeedItem, runRole: Record<string, Role>): Role | null {
+  if (f.kind === "text" || f.kind === "tool") return f.role;
+  if (f.kind === "tool_result") return runRole[f.runId] ?? null;
+  if (f.kind === "finding") return f.finding.fromRole ?? null;
+  return null;
+}
 
 function summarize(input: unknown): string {
   try {
@@ -41,9 +51,54 @@ export function ThreadDetail() {
   const feed = id ? feeds[id] ?? [] : [];
   const draft = id ? drafts[id] : undefined;
 
+  const [roleFilter, setRoleFilter] = useState<Role | "all">("all");
+  const [showTools, setShowTools] = useState(true);
+  const stickRef = useRef(true);
+
+  const runRole = useMemo(() => {
+    const m: Record<string, Role> = {};
+    for (const r of Object.values(runs)) if (r.threadId === id) m[r.id] = r.role;
+    return m;
+  }, [runs, id]);
+
+  const counts = useMemo(() => {
+    const c: Partial<Record<Role, number>> = {};
+    for (const f of feed) {
+      const r = itemRoleOf(f, runRole);
+      if (r) c[r] = (c[r] ?? 0) + 1;
+    }
+    return c;
+  }, [feed, runRole]);
+
+  const activeRoles = useMemo(() => ROLE_ORDER.filter((r) => (counts[r] ?? 0) > 0), [counts]);
+
+  const visible = useMemo(
+    () =>
+      feed.filter((f) => {
+        if (!showTools && (f.kind === "tool" || f.kind === "tool_result")) return false;
+        if (roleFilter === "all") return true;
+        return itemRoleOf(f, runRole) === roleFilter;
+      }),
+    [feed, roleFilter, showTools, runRole],
+  );
+
+  // Stick to the bottom only when already near it, so reading an earlier agent
+  // isn't yanked down when a live agent appends below.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [feed.length, draft]);
+    if (stickRef.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [visible.length, draft]);
+  // Switching filter: jump to the start of a specific agent (read top-down), or to live for "all".
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (roleFilter === "all") {
+      el.scrollTo({ top: el.scrollHeight });
+      stickRef.current = true;
+    } else {
+      el.scrollTo({ top: 0 });
+      stickRef.current = false;
+    }
+  }, [roleFilter, showTools]);
 
   if (!id || !thread) return null;
 
@@ -61,6 +116,12 @@ export function ThreadDetail() {
     inject(id, t, mode, att.images);
     setMsg("");
     att.clear();
+  };
+
+  const onFeedScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
   return (
@@ -152,16 +213,45 @@ export function ThreadDetail() {
         </div>
       )}
 
-      <div className="feed" ref={scrollRef}>
-        {feed.length === 0 && !draft && (
+      {feed.length > 0 && (
+        <div className="feed-filter">
+          <button className={"fchip" + (roleFilter === "all" ? " on" : "")} onClick={() => setRoleFilter("all")}>
+            all <span className="n">{feed.length}</span>
+          </button>
+          {activeRoles.map((role) => (
+            <button
+              key={role}
+              className={"fchip" + (roleFilter === role ? " on" : "")}
+              style={{ "--role": roleColor(role) } as CSSProperties}
+              onClick={() => setRoleFilter(role)}
+            >
+              {role} <span className="n">{counts[role] ?? 0}</span>
+            </button>
+          ))}
+          <button
+            className={"fchip tools-toggle" + (showTools ? "" : " off")}
+            onClick={() => setShowTools((v) => !v)}
+            title={showTools ? "Hide tool calls — show just the prose/findings" : "Show tool calls"}
+          >
+            ⛏ tools
+          </button>
+        </div>
+      )}
+
+      <div className="feed" ref={scrollRef} onScroll={onFeedScroll}>
+        {visible.length === 0 && !draft && (
           <div className="faint" style={{ fontSize: 13 }}>
-            Planner and researcher are warming up. Their findings and the implementor's work will stream here.
+            {feed.length === 0
+              ? "Planner and researcher are warming up. Their findings and the implementor's work will stream here."
+              : roleFilter === "all"
+                ? "Nothing to show."
+                : `No ${roleFilter} output${showTools ? "" : " (tool calls hidden)"} yet.`}
           </div>
         )}
-        {feed.map((f, i) => (
+        {visible.map((f, i) => (
           <FeedRow key={`${f.kind}:${f.at}:${i}`} item={f} />
         ))}
-        {draft && (
+        {draft && (roleFilter === "all" || draft.role === roleFilter) && (
           <div className="fi draft" style={roleVar(draft.role)}>
             <div className="head">
               <span className="role-tag" style={{ color: roleColor(draft.role) }}>
