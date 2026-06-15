@@ -177,3 +177,30 @@ to whichever sub has the most headroom so neither is wasted.
 - Degrades to single-account (inherited login) when fewer than two tokens are
   configured. Burn bars read `—` until a run's `rate_limit_event` reports a
   window (typically as it approaches a warning/cap), then fill in live.
+
+## 11. Image attachments (paste / drop / pick → vision)
+
+Pasted, dropped, or picked images ride the prompt as native Anthropic **image
+content blocks** (base64), so every agent — the Sonnet director and the
+Opus/Sonnet pipeline roles — *sees* them via vision (no Read-tool round-trip).
+CLI/SDK image input is base64-only; there is no file-path image source.
+
+- **Capture** (`web/src/lib/attachments.tsx`). `useAttachments()` handles paste
+  (clipboard `file` items), drag-drop, and a paperclip file-picker; caps at 8
+  images / 5 MB each; images only. Both composers (Director new-task +
+  ThreadDetail inject) share it. Previews render from data URLs; sent bubbles
+  render from `/api/attachment/:id`.
+- **Transport.** `prompt.new` / `thread.inject` carry `images: [{name, mediaType,
+  dataBase64}]` (zod-validated, `.max(8)`; `ws` `maxPayload` lifted to 64 MB).
+- **Fan-out — the hard part.** Each role is an isolated session and the
+  director's `dispatch` tool is text-only, so the bytes can't ride the brief. The
+  director stashes the turn's images (`pendingImages`); a getter handed to
+  `createDirectorServer` forwards them into `ThreadManager.dispatch`, which keeps
+  them in `threadImages[threadId]`. `kickoffContent()` then wraps **every** role's
+  `agent.start` (planner/researcher/QA/implementor) so each one sees them; live
+  QA-fix rounds and resumes reuse the session, which already holds them. The map
+  entry is freed when the pipeline ends.
+- **Persistence.** Bytes live in an `attachments` table (base64); director
+  messages store lightweight refs (`{id, name, mediaType}` JSON). Refs travel over
+  WS; bytes are fetched on demand via `GET /api/attachment/:id` (clamped to known
+  image types + `nosniff`) — keeping base64 off the streaming hot path.

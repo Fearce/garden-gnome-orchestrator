@@ -65,13 +65,13 @@ export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
 async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientCommand): Promise<void> {
   switch (cmd.type) {
     case "prompt.new":
-      ctx.director.handleUserMessage(cmd.text, cmd.workspace);
+      ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images);
       break;
     case "question.answer":
       ctx.manager.resolveQuestion(cmd.questionId, cmd.answer);
       break;
     case "thread.inject":
-      await ctx.manager.injectThread(cmd.threadId, cmd.message, cmd.mode);
+      await ctx.manager.injectThread(cmd.threadId, cmd.message, cmd.mode, cmd.images);
       break;
     case "thread.interrupt":
       await ctx.manager.interruptThread(cmd.threadId);

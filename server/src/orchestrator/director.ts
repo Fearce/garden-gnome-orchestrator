@@ -1,10 +1,11 @@
-import { AgentRun } from "../agents/runner.js";
+import { AgentRun, type UserContent } from "../agents/runner.js";
 import { directorConfig } from "../agents/roles.js";
 import { createDirectorServer } from "../bus/directorServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
+import { contentWithImages, toImageBlock } from "../attachments.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
-import type { AgentEvent } from "../types.js";
+import type { AgentEvent, ImageAttachment } from "../types.js";
 import type { ThreadManager } from "./threadManager.js";
 
 /**
@@ -17,6 +18,8 @@ export class Director {
   private sessionId: string | undefined;
   private accountId: string | undefined;
   private busy = false;
+  /** Images from the current user turn — carried past the text-only dispatch tool to the pipeline. */
+  private pendingImages: ImageAttachment[] = [];
 
   constructor(
     private readonly api: ThreadManager,
@@ -24,17 +27,23 @@ export class Director {
     private readonly hub: EventHub,
   ) {}
 
-  handleUserMessage(text: string, workspaceHint?: string): void {
-    const content = workspaceHint ? `${text}\n\n(Kevin's current repo context: ${workspaceHint})` : text;
-    const msg = this.db.addDirectorMessage({ role: "user", kind: "text", content: text });
+  handleUserMessage(text: string, workspaceHint?: string, images?: ImageAttachment[]): void {
+    const refs = (images ?? []).map((img) =>
+      this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
+    );
+    const msg = this.db.addDirectorMessage({ role: "user", kind: "text", content: text, attachments: refs });
     this.hub.publish({ type: "director.message", message: msg });
+
+    this.pendingImages = images ?? [];
+    const base = workspaceHint ? `${text}\n\n(Kevin's current repo context: ${workspaceHint})` : text;
+    const content = contentWithImages(base, this.pendingImages.map(toImageBlock));
     if (!this.run || this.run.finished) this.start(content);
     else this.run.send(content);
     this.setBusy(true);
   }
 
-  private start(firstText: string): void {
-    const director = createDirectorServer(this.api);
+  private start(firstContent: UserContent): void {
+    const director = createDirectorServer(this.api, () => this.pendingImages);
     const memory = createMemoryServer(this.api.memory);
     const cfg = directorConfig({ director, memory });
     const { account } = this.api.accounts.select();
@@ -44,7 +53,7 @@ export class Director {
     const run = new AgentRun(cfg);
     this.run = run;
     this.wire(run);
-    run.start(firstText);
+    run.start(firstContent);
   }
 
   private setBusy(b: boolean): void {
@@ -72,6 +81,7 @@ export class Director {
           break;
         case "result":
           this.setBusy(false);
+          this.pendingImages = []; // turn done — don't hold base64 between turns
           break;
         case "rate_limit":
           if (this.accountId) this.api.accounts.updateFromRateLimit(this.accountId, e.info);

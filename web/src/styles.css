@@ -137,6 +137,30 @@ button { font-family: inherit; cursor: pointer; }
 }
 .composer input.ws:focus { outline: none; border-color: var(--line-strong); color: var(--text); }
 
+/* ---- image attachments (composer previews + chat thumbnails) ---- */
+.composer.dragging, .inject-bar.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; border-radius: var(--r-md); }
+.composer-thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+.thumb { position: relative; width: 52px; height: 52px; }
+.thumb img {
+  width: 52px; height: 52px; object-fit: cover; display: block;
+  border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--bg-2);
+}
+.thumb-x {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; line-height: 1;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  border-radius: 100px; border: 1px solid var(--line-strong); background: var(--bg-1);
+  color: var(--text-dim); font-family: var(--font-mono); font-size: 13px;
+}
+.thumb-x:hover { color: var(--danger); border-color: var(--danger); }
+.attach-btn { display: inline-flex; align-items: center; justify-content: center; padding: 5px 7px; color: var(--text-dim); }
+.attach-btn:hover { color: var(--accent); }
+.msg-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.msg-thumb { display: block; line-height: 0; }
+.msg-thumb img {
+  max-width: 200px; max-height: 160px; object-fit: cover;
+  border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--bg-2);
+}
+
 /* ---- buttons ---- */
 .btn {
   border: 1px solid var(--line-strong); background: var(--bg-2); color: var(--text);

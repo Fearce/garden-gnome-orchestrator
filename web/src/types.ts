@@ -76,11 +76,24 @@ export interface Finding {
   createdAt: number;
 }
 
+export interface ImageAttachment {
+  name: string;
+  mediaType: string;
+  dataBase64: string;
+}
+
+export interface AttachmentRef {
+  id: string;
+  name: string;
+  mediaType: string;
+}
+
 export interface DirectorMessage {
   id: string;
   role: "user" | "director";
   kind: string;
   content: string;
+  attachments?: AttachmentRef[];
   createdAt: number;
 }
 
@@ -135,9 +148,9 @@ export type ServerEvent =
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
 export type ClientCommand =
-  | { type: "prompt.new"; text: string; workspace?: string }
+  | { type: "prompt.new"; text: string; workspace?: string; images?: ImageAttachment[] }
   | { type: "question.answer"; questionId: string; answer: string }
-  | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt" }
+  | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt"; images?: ImageAttachment[] }
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.cancel"; threadId: string }
@@ -158,5 +171,6 @@ export interface DirectorItem {
   kind: "user" | "director" | "tool";
   text: string;
   toolName?: string;
+  attachments?: AttachmentRef[];
   at: number;
 }

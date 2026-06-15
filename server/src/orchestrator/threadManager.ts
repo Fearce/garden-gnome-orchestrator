@@ -7,10 +7,12 @@ import { implementorConfig, plannerConfig, qaConfig, researcherConfig } from "..
 import { createBusServer } from "../bus/busServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { config } from "../config.js";
+import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import type {
   AgentEvent,
   Effort,
   Finding,
+  ImageAttachment,
   PlanOutput,
   QaOutput,
   ResearchOutput,
@@ -50,6 +52,7 @@ export class ThreadManager implements OrchestratorApi {
   private readonly awaitingPrev = new Map<string, Thread["state"]>();
   private readonly lastImplementorSession = new Map<string, string>();
   private readonly stopping = new Set<string>();
+  private readonly threadImages = new Map<string, ImageBlock[]>();
 
   constructor(
     readonly db: Db,
@@ -159,10 +162,16 @@ export class ThreadManager implements OrchestratorApi {
 
   async dispatch(input: DispatchInput): Promise<string> {
     const thread = this.db.createThread({ title: input.title, workspace: input.workspace, rawPrompt: "", brief: input.brief });
+    if (input.images?.length) this.threadImages.set(thread.id, input.images.map(toImageBlock));
     this.hub.publish({ type: "thread.upsert", thread });
     this.hub.log("info", `Dispatched task ${thread.id.slice(0, 8)} "${thread.title}"`);
     void this.runPipeline(thread.id);
     return thread.id;
+  }
+
+  /** Wrap a role's kickoff text with the thread's pasted images so each isolated agent sees them. */
+  private kickoffContent(threadId: string, text: string): string | unknown[] {
+    return contentWithImages(text, this.threadImages.get(threadId) ?? []);
   }
 
   private setState(threadId: string, state: Thread["state"], error?: string | null): void {
@@ -194,6 +203,11 @@ export class ThreadManager implements OrchestratorApi {
       await this.runImplementorQa(thread, kickoff, plan?.effort);
     } catch (err) {
       if (!this.cancelled(threadId)) this.setState(threadId, "failed", err instanceof Error ? err.message : String(err));
+    } finally {
+      // Every role's kickoff has been built by now; free the base64 blocks. A live
+      // implementor still remembers them, and a later resume reloads them from its
+      // session, so dropping them here doesn't blind anything.
+      this.threadImages.delete(threadId);
     }
   }
 
@@ -207,7 +221,7 @@ export class ThreadManager implements OrchestratorApi {
     const agent = new AgentRun(cfg);
     this.wireRun(agent, thread.id, run.id, "planner", acct.id);
     this.track(thread.id, agent);
-    agent.start(thread.brief);
+    agent.start(this.kickoffContent(thread.id, thread.brief));
     const res = await agent.result();
     await agent.stop();
     this.untrack(thread.id, agent);
@@ -226,7 +240,7 @@ export class ThreadManager implements OrchestratorApi {
     const agent = new AgentRun(cfg);
     this.wireRun(agent, thread.id, run.id, "researcher", acct.id);
     this.track(thread.id, agent);
-    agent.start(thread.brief);
+    agent.start(this.kickoffContent(thread.id, thread.brief));
     const res = await agent.result();
     await agent.stop();
     this.untrack(thread.id, agent);
@@ -244,7 +258,7 @@ export class ThreadManager implements OrchestratorApi {
     const agent = new AgentRun(cfg);
     this.wireRun(agent, thread.id, run.id, "qa", acct.id);
     this.track(thread.id, agent);
-    agent.start(qaKickoff(thread));
+    agent.start(this.kickoffContent(thread.id, qaKickoff(thread)));
     const res = await agent.result();
     await agent.stop();
     this.untrack(thread.id, agent);
@@ -273,7 +287,7 @@ export class ThreadManager implements OrchestratorApi {
       this.untrack(thread.id, agent);
       this.stopping.delete(thread.id);
     });
-    agent.start(kickoff);
+    agent.start(this.kickoffContent(thread.id, kickoff));
     return { run: agent, runId: run.id };
   }
 
@@ -331,18 +345,34 @@ export class ThreadManager implements OrchestratorApi {
 
   // ---- live thread controls ----
 
-  async injectThread(threadId: string, message: string, mode: "append" | "interrupt"): Promise<ThreadActionResult> {
+  async injectThread(
+    threadId: string,
+    message: string,
+    mode: "append" | "interrupt",
+    images?: ImageAttachment[],
+  ): Promise<ThreadActionResult> {
     const live = this.live.get(threadId);
     if (live) {
       if (mode === "interrupt") {
         await live.run.interrupt();
         this.setState(threadId, "implementing");
       }
-      live.run.send(`[New information from the director]\n${message}`, mode === "interrupt" ? { priority: "now" } : undefined);
-      this.db.addMessage({ threadId, role: "director", kind: "system", content: `inject(${mode}): ${message}` });
+      const blocks = images?.length ? images.map(toImageBlock) : [];
+      live.run.send(
+        contentWithImages(`[New information from the director]\n${message}`, blocks),
+        mode === "interrupt" ? { priority: "now" } : undefined,
+      );
+      this.db.addMessage({
+        threadId,
+        role: "director",
+        kind: "system",
+        content: `inject(${mode}): ${message}${blocks.length ? ` [+${blocks.length} image(s)]` : ""}`,
+      });
       this.hub.log("info", `Injected (${mode}) into ${threadId.slice(0, 8)}`);
       return { ok: true, state: "implementing" };
     }
+    // Not live → resume. Stash any images so the resumed implementor's kickoff carries them.
+    if (images?.length) this.threadImages.set(threadId, images.map(toImageBlock));
     return this.resumeThread(threadId, message);
   }
 
@@ -386,6 +416,7 @@ export class ThreadManager implements OrchestratorApi {
       set.clear();
     }
     this.live.delete(threadId);
+    this.threadImages.delete(threadId);
     // Unblock any agent waiting on a question for this task.
     for (const q of this.db.listOpenQuestions()) {
       if (q.threadId === threadId) this.resolveQuestion(q.id, "(task cancelled)");
