@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { config } from "../config.js";
 
 export interface MemorySearchHit {
@@ -11,6 +11,8 @@ export interface MemorySearchHit {
 
 export interface MemoryService {
   search(query: string, k?: number): Promise<MemorySearchHit[]>;
+  /** Full content of one memory file by its frontmatter name, filename, or path. Scoped to the memory dir. */
+  read(nameOrPath: string): string | null;
   index(): string;
 }
 
@@ -71,6 +73,20 @@ export class FileMemoryService implements MemoryService {
       .slice(0, k);
   }
 
+  read(nameOrPath: string): string | null {
+    const raw = (nameOrPath ?? "").trim();
+    if (!raw) return null;
+    // 1) exact frontmatter-name match (what search_memory returns as `name`).
+    const byName = this.load().find((d) => d.name === raw);
+    if (byName) return readSafe(byName.path);
+    // 2) treat as a filename: strip to basename + safe chars so it can't escape the memory dir.
+    const base = basename(raw).replace(/\.md$/i, "").replace(/[^a-z0-9_-]/gi, "");
+    if (!base) return null;
+    const p = join(this.dir, `${base}.md`);
+    if (existsSync(p) && statSync(p).isFile()) return readSafe(p);
+    return null;
+  }
+
   private load(): MemoryDoc[] {
     const now = Date.now();
     if (this.cache && now - this.cache.at < this.ttlMs) return this.cache.docs;
@@ -94,6 +110,15 @@ export class FileMemoryService implements MemoryService {
     }
     this.cache = { at: now, docs };
     return docs;
+  }
+}
+
+function readSafe(path: string): string | null {
+  try {
+    const body = readFileSync(path, "utf8");
+    return body.length > 20000 ? body.slice(0, 20000) + "\n…(truncated)" : body;
+  } catch {
+    return null;
   }
 }
 
