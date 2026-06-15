@@ -16,6 +16,8 @@ export interface AccountDTO {
   label: string;
   fiveHour: number | null; // utilization 0-100
   sevenDay: number | null; // utilization 0-100
+  fiveHourReset?: number | null; // epoch ms the 5h window rolls over
+  sevenDayReset?: number | null; // epoch ms the weekly window rolls over
   stale?: boolean; // usage is from a snapshot/old cache, not a live read
   rateLimited: boolean;
   resetsAt?: number | null;

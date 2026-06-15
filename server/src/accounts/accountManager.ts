@@ -214,6 +214,8 @@ export class AccountManager {
       label: s.account.label,
       fiveHour: s.fiveHour,
       sevenDay: s.sevenDay,
+      fiveHourReset: s.fiveHourReset,
+      sevenDayReset: s.sevenDayReset,
       stale: s.usageStale,
       rateLimited: s.rateLimited,
       resetsAt: s.rateLimitResetAt,
