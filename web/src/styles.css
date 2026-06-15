@@ -180,6 +180,14 @@ button { font-family: inherit; cursor: pointer; }
 .btn.danger:hover { background: oklch(0.68 0.2 25 / 0.12); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.sm { padding: 4px 9px; font-size: 12px; }
+.btn.google {
+  display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  background: #fff; color: #1f1f1f; border-color: transparent; font-weight: 600;
+  text-decoration: none; padding: 9px 13px;
+}
+.btn.google:hover { background: #f2f2f2; }
+.switch-acct { text-align: center; font-size: 12px; text-decoration: none; }
+.switch-acct:hover { color: var(--text); }
 
 .bell {
   display: inline-flex; align-items: center; justify-content: center;

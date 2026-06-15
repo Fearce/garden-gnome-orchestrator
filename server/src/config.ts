@@ -33,15 +33,27 @@ function loadAccounts(): Account[] {
 const requestedHost = process.env.HOST ?? "127.0.0.1";
 const localOnly = ["127.0.0.1", "localhost", "::1"].includes(requestedHost);
 const authToken = process.env.AUTH_TOKEN || undefined;
-const exposeBlocked = !localOnly && !authToken;
+const googleClientId = process.env.GOOGLE_CLIENT_ID || undefined;
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || undefined;
+const authConfigured = !!authToken || !!(googleClientId && googleClientSecret);
+const exposeBlocked = !localOnly && !authConfigured;
 
 export const config = {
   serverRoot,
   port: Number(process.env.PORT ?? 4317),
   host: exposeBlocked ? "127.0.0.1" : requestedHost,
   authToken,
+  googleClientId,
+  googleClientSecret,
+  allowedEmail: (process.env.ALLOWED_EMAIL || "user@example.com").toLowerCase(),
+  // Public origin Google redirects back to (e.g. https://host.tailnet.ts.net). When set,
+  // the OAuth redirect_uri is pinned to it instead of the request Host header, so the
+  // registered URI can't diverge and a spoofed Host can't influence it. Localhost dev
+  // leaves it unset and derives the origin from the request.
+  publicOrigin: (process.env.PUBLIC_ORIGIN || "").replace(/\/$/, "") || undefined,
+  sessionSecret: process.env.SESSION_SECRET || googleClientSecret || authToken || "orchestrator-dev-secret",
   hostWarning: exposeBlocked
-    ? `HOST=${requestedHost} requested but AUTH_TOKEN is unset — refusing to expose bypassPermissions agents on the LAN unauthenticated; bound to 127.0.0.1. Set AUTH_TOKEN to enable LAN access.`
+    ? `HOST=${requestedHost} requested but no auth is set — refusing to expose bypassPermissions agents on the LAN unauthenticated; bound to 127.0.0.1. Set GOOGLE_CLIENT_ID/SECRET (or AUTH_TOKEN) to enable LAN access.`
     : undefined,
   dataDir: resolve(serverRoot, "data"),
   dbPath: resolve(serverRoot, "data", "orchestrator.sqlite"),

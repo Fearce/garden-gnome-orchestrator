@@ -213,11 +213,22 @@ Three controls that make the console a hands-off, anywhere replacement for the C
   a Web `Notification` + a short Web-Audio chime — so you don't watch the tab. The
   server also pings an external webhook on those events if `NOTIFY_WEBHOOK_URL` is
   set (`ThreadManager.notifyExternal`), for when you're away from the machine.
-- **LAN / tablet access** (`server/src/auth.ts`). `AUTH_TOKEN` gates a shared-secret
-  cookie: `POST /api/login` sets an httpOnly cookie, the `/ws` upgrade + the
-  attachment endpoint check it, and the SPA shows a login until `/api/me` says
-  authed. Safety: the server **refuses to bind a non-localhost `HOST` without
-  `AUTH_TOKEN`** (it drives bypassPermissions agents), falling back to 127.0.0.1.
+- **Access auth** (`server/src/auth.ts`). Three modes, picked by env:
+  - **`google`** (preferred) — Google OIDC code flow restricted to one email
+    (`ALLOWED_EMAIL`). `/api/auth/google` 302s to Google (no `prompt` ⇒ silent when
+    already signed in + consented — the "skip-if-logged-in" path); `/api/auth/callback`
+    exchanges the code, decodes the trusted `id_token`, checks `aud` + `email_verified`
+    + the allowlist, and sets a **signed** (`HMAC(email|exp)`) httpOnly session cookie.
+    The SPA auto-redirects to Google on boot when unauthed; a wrong account lands on
+    `/?e=forbidden` with a "use a different account" (`prompt=select_account`) escape.
+  - **`token`** — legacy shared secret (`AUTH_TOKEN`); `POST /api/login` sets the
+    cookie. Simplest option for a raw-LAN-IP tablet (Google rejects private-IP redirect
+    URIs, so Google needs `localhost` or an https hostname).
+  - **`none`** — no auth (localhost dev).
+  `isAuthed` validates the active mode's cookie; the `/ws` upgrade + attachment
+  endpoint enforce it. Safety: the server **refuses to bind a non-localhost `HOST`
+  without auth configured** (it drives bypassPermissions agents), falling back to
+  127.0.0.1.
 - **Plan-approval gate** (global toggle, persisted in `kv:require_plan_approval`).
   When on, `runPipeline` pauses after planning into `awaiting_approval`, emits
   `plan.ready` (the composed kickoff), and `await`s a pending promise resolved by
