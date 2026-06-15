@@ -123,6 +123,9 @@ export class AgentRun {
   sessionId: string | undefined;
   finished = false;
   lastResult: ResultEvent | undefined;
+  /** Set when this run's account was cap-rejected (5h/weekly) — the signal to fail over. */
+  rateLimited = false;
+  rateLimitInfo: RateLimitInfo | undefined;
 
   private readonly input = new InputQueue();
   private q: Query | undefined;
@@ -283,7 +286,14 @@ export class AgentRun {
         break;
       }
       case "rate_limit_event":
-        if (m.rate_limit_info) this.emit({ type: "rate_limit", info: m.rate_limit_info as RateLimitInfo });
+        if (m.rate_limit_info) {
+          const info = m.rate_limit_info as RateLimitInfo;
+          if (info.status === "rejected") {
+            this.rateLimited = true;
+            this.rateLimitInfo = info;
+          }
+          this.emit({ type: "rate_limit", info });
+        }
         break;
       case "result": {
         const evt: ResultEvent = {

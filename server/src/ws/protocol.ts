@@ -43,10 +43,10 @@ export type ServerEvent =
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
-  | { type: "agent.text"; threadId: string; runId: string; role: Role; text: string }
+  | { type: "agent.text"; threadId: string; runId: string; role: Role; text: string; messageId: string }
   | { type: "agent.thinking"; threadId: string; runId: string; role: Role; text: string }
-  | { type: "agent.tool"; threadId: string; runId: string; role: Role; name: string; input: unknown; id: string }
-  | { type: "agent.tool_result"; threadId: string; runId: string; id: string; isError: boolean; preview: string }
+  | { type: "agent.tool"; threadId: string; runId: string; role: Role; name: string; input: unknown; id: string; messageId: string }
+  | { type: "agent.tool_result"; threadId: string; runId: string; id: string; isError: boolean; preview: string; messageId: string }
   | { type: "finding"; finding: Finding }
   | { type: "question.ask"; question: Question }
   | { type: "question.resolved"; questionId: string; answer: string }

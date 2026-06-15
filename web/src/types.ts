@@ -140,10 +140,10 @@ export type ServerEvent =
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
-  | { type: "agent.text"; threadId: string; runId: string; role: Role; text: string }
+  | { type: "agent.text"; threadId: string; runId: string; role: Role; text: string; messageId: string }
   | { type: "agent.thinking"; threadId: string; runId: string; role: Role; text: string }
-  | { type: "agent.tool"; threadId: string; runId: string; role: Role; name: string; input: unknown; id: string }
-  | { type: "agent.tool_result"; threadId: string; runId: string; id: string; isError: boolean; preview: string }
+  | { type: "agent.tool"; threadId: string; runId: string; role: Role; name: string; input: unknown; id: string; messageId: string }
+  | { type: "agent.tool_result"; threadId: string; runId: string; id: string; isError: boolean; preview: string; messageId: string }
   | { type: "finding"; finding: Finding }
   | { type: "question.ask"; question: Question }
   | { type: "question.resolved"; questionId: string; answer: string }
@@ -168,12 +168,16 @@ export type ClientCommand =
 
 // ---- client-only view models ----
 
+// `id` (when present) is the stable DB message-row id used to dedup a live-streamed
+// item against the same message re-delivered by thread.history. The tool_result's
+// separate `id` is the SDK tool-use id (correlates a result to its tool call); its
+// `messageId` is the DB row id used for the same dedup.
 export type FeedItem =
-  | { kind: "text"; at: number; role: Role; runId: string; text: string }
-  | { kind: "tool"; at: number; role: Role; runId: string; name: string; input: unknown }
-  | { kind: "tool_result"; at: number; runId: string; id: string; isError: boolean; preview: string }
+  | { kind: "text"; at: number; role: Role; runId: string; id?: string; text: string }
+  | { kind: "tool"; at: number; role: Role; runId: string; id?: string; name: string; input: unknown }
+  | { kind: "tool_result"; at: number; runId: string; id: string; messageId?: string; isError: boolean; preview: string }
   | { kind: "finding"; at: number; finding: Finding }
-  | { kind: "system"; at: number; text: string };
+  | { kind: "system"; at: number; id?: string; text: string };
 
 export interface DirectorItem {
   id: string;

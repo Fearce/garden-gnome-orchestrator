@@ -118,10 +118,21 @@ export function feedBucket(f: FeedItem): string {
   return "other";
 }
 
+/** The stable DB message-row id of a feed item, if it has one. Live-streamed items and the
+ *  same message re-delivered by thread.history share this id, so it's how we dedup the two. */
+export function feedMessageId(f: FeedItem): string | undefined {
+  if (f.kind === "text" || f.kind === "tool" || f.kind === "system") return f.id;
+  if (f.kind === "tool_result") return f.messageId;
+  return undefined;
+}
+
 function pushFeed(threadId: string, item: FeedItem): void {
   useStore.setState((s) => {
+    const existing = s.threadFeeds[threadId] ?? [];
+    const id = feedMessageId(item);
+    if (id && existing.some((f) => feedMessageId(f) === id)) return {}; // history already merged this row
     const bucket = feedBucket(item);
-    let next = [...(s.threadFeeds[threadId] ?? []), item];
+    let next = [...existing, item];
     let count = 0;
     for (const f of next) if (feedBucket(f) === bucket) count++;
     if (count > PER_RUN_CAP) {
@@ -148,6 +159,11 @@ function applyEvent(ev: ServerEvent): void {
         at: m.createdAt,
       }));
       useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode });
+      // hello also fires on WS reconnect (server restart / network blip). The feed kept its
+      // pre-disconnect items but missed anything that streamed while we were gone — re-fetch
+      // the open thread's history; the id-keyed merge fills the gap without dropping live items.
+      const selected = useStore.getState().selectedThreadId;
+      if (selected) sendCommand({ type: "thread.history", threadId: selected });
       break;
     }
     case "accounts":
@@ -171,16 +187,35 @@ function applyEvent(ev: ServerEvent): void {
       });
       break;
     case "thread.history":
+      // Merge the authoritative DB history with whatever streamed live, keyed by stable id —
+      // NOT all-or-nothing. The old guard dropped the full history whenever live events had
+      // already populated the feed (the ~20-message / reconnect bug). The DB row wins on a
+      // collision; live-only artifacts (in-flight tool_results, system notes) are preserved.
       useStore.setState((s) => {
-        if ((s.threadFeeds[ev.threadId]?.length ?? 0) > 0) return {};
-        const items: FeedItem[] = [];
+        const dbItems: FeedItem[] = [];
         for (const m of ev.messages) {
           const fi = messageToFeed(m);
-          if (fi) items.push(fi);
+          if (fi) dbItems.push(fi);
         }
-        for (const f of ev.findings) items.push({ kind: "finding", at: f.createdAt, finding: f });
-        items.sort((a, b) => a.at - b.at);
-        return { threadFeeds: { ...s.threadFeeds, [ev.threadId]: items } };
+        for (const f of ev.findings) dbItems.push({ kind: "finding", at: f.createdAt, finding: f });
+
+        const dbMessageIds = new Set<string>();
+        const dbFindingIds = new Set<string>();
+        for (const it of dbItems) {
+          const mid = feedMessageId(it);
+          if (mid) dbMessageIds.add(mid);
+          if (it.kind === "finding") dbFindingIds.add(it.finding.id);
+        }
+
+        const liveOnly = (s.threadFeeds[ev.threadId] ?? []).filter((it) => {
+          const mid = feedMessageId(it);
+          if (mid) return !dbMessageIds.has(mid);
+          if (it.kind === "finding") return !dbFindingIds.has(it.finding.id);
+          return true;
+        });
+
+        const merged = [...dbItems, ...liveOnly].sort((a, b) => a.at - b.at);
+        return { threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged } };
       });
       break;
     case "run.upsert":
@@ -200,13 +235,13 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "agent.text":
       useStore.setState((s) => ({ threadDrafts: { ...s.threadDrafts, [ev.threadId]: undefined } }));
-      pushFeed(ev.threadId, { kind: "text", at: Date.now(), role: ev.role, runId: ev.runId, text: ev.text });
+      pushFeed(ev.threadId, { kind: "text", at: Date.now(), role: ev.role, runId: ev.runId, id: ev.messageId, text: ev.text });
       break;
     case "agent.tool":
-      pushFeed(ev.threadId, { kind: "tool", at: Date.now(), role: ev.role, runId: ev.runId, name: ev.name, input: ev.input });
+      pushFeed(ev.threadId, { kind: "tool", at: Date.now(), role: ev.role, runId: ev.runId, id: ev.messageId, name: ev.name, input: ev.input });
       break;
     case "agent.tool_result":
-      pushFeed(ev.threadId, { kind: "tool_result", at: Date.now(), runId: ev.runId, id: ev.id, isError: ev.isError, preview: ev.preview });
+      pushFeed(ev.threadId, { kind: "tool_result", at: Date.now(), runId: ev.runId, id: ev.id, messageId: ev.messageId, isError: ev.isError, preview: ev.preview });
       break;
     case "agent.thinking":
       break;
@@ -265,15 +300,19 @@ function notifyThreadState(t: Thread): void {
 }
 
 function messageToFeed(m: Message): FeedItem | null {
-  if (m.role === "user") return { kind: "system", at: m.createdAt, text: m.content };
+  if (m.role === "user") return { kind: "system", at: m.createdAt, id: m.id, text: m.content };
   const role = m.role as Role;
   switch (m.kind) {
     case "text":
-      return { kind: "text", at: m.createdAt, role, runId: m.runId ?? "", text: m.content };
+      return { kind: "text", at: m.createdAt, role, runId: m.runId ?? "", id: m.id, text: m.content };
     case "tool":
-      return { kind: "tool", at: m.createdAt, role, runId: m.runId ?? "", name: m.content, input: undefined };
+      return { kind: "tool", at: m.createdAt, role, runId: m.runId ?? "", id: m.id, name: m.content, input: undefined };
+    case "result":
+      // Persisted tool-result preview. `id` doubles as the React key here; `messageId` carries
+      // the dedup key. isError isn't stored, so a reloaded result renders without the error tint.
+      return { kind: "tool_result", at: m.createdAt, runId: m.runId ?? "", id: m.id, messageId: m.id, isError: false, preview: m.content };
     case "system":
-      return { kind: "system", at: m.createdAt, text: m.content };
+      return { kind: "system", at: m.createdAt, id: m.id, text: m.content };
     default:
       return null;
   }

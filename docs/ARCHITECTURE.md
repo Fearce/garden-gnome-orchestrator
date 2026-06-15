@@ -178,6 +178,15 @@ to whichever sub has the most headroom so neither is wasted.
   `rateLimited` fast mid-burst (the ping owns the %). State streams to the GUI as
   `accounts` events → the topbar burn strip; a failed ping marks the value
   "stale" (dimmed) after 20 min.
+- **Mid-task failover** (`threadManager.ts`). The account is picked per run, but if it
+  hits a 5h/weekly cap *mid-run* (`rate_limit_event` `status:"rejected"` →
+  `AgentRun.rateLimited`), the task doesn't stall: `selectFailover` picks another account
+  with headroom and the run is **relaunched resuming the session** (`resume: sessionId`,
+  re-sent a "continue where you left off" nudge) on it — so the work-so-far is preserved
+  and the task continues uninterrupted. Applies to every role (planner/researcher via
+  `runRole`, implementor + QA-fix rounds via `awaitImplementorResult`) and to manual
+  resume; up to 3 hops, then it settles to `review` only if *no* account has headroom (it
+  never runs QA on a half-finished implementation). A webhook ping fires on each switch.
 - Degrades to single-account (inherited login) when fewer than two tokens are
   configured. A bar reads `—` only before the first successful ping for that
   account.
