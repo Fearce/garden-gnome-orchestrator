@@ -184,6 +184,30 @@ export class AccountManager {
     return { account: chosen.account, reason };
   }
 
+  /**
+   * Pick a usable account OTHER than `excludeId` for mid-task failover — skips any that are
+   * cap-rejected or near the hard limit, and never falls back to the excluded account. Returns
+   * null when no alternative has headroom (so the caller settles the task to review instead).
+   */
+  selectFailover(excludeId: string): Account | null {
+    if (this.accounts.length <= 1) return null;
+    const now = Date.now();
+    const candidates = [...this.states.values()].filter((s) => {
+      if (s.account.id === excludeId) return false;
+      const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
+      return !limited && tightest(s) < HARD_LIMIT;
+    });
+    if (!candidates.length) return null;
+    candidates.sort(
+      (x, y) => weeklyHeadroom(y) - weeklyHeadroom(x) || fiveHeadroom(y) - fiveHeadroom(x) || x.lastPick - y.lastPick,
+    );
+    const chosen = candidates[0]!;
+    chosen.lastPick = ++this.selSeq;
+    this.preferredId = chosen.account.id;
+    this.publish();
+    return chosen.account;
+  }
+
   dto(): AccountDTO[] {
     return [...this.states.values()].map((s) => ({
       id: s.account.id,
