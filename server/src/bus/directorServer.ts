@@ -5,6 +5,8 @@ import type { OrchestratorApi } from "../orchestrator/api.js";
 import type { ImageAttachment } from "../types.js";
 import { DIRECTOR_SERVER } from "../agents/toolNames.js";
 import { existsSync } from "node:fs";
+import { config } from "../config.js";
+import { findWorkspaces } from "../workspace/findWorkspace.js";
 
 /**
  * The director's control surface: clarify with the user, dispatch tasks, and
@@ -33,6 +35,27 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
         multiSelect: args.multiSelect,
       });
       return { content: [{ type: "text", text: `Kevin answered: ${answer}` }] };
+    },
+  );
+
+  const findWorkspace = tool(
+    "find_workspace",
+    "Resolve a project/repo NAME to its real absolute path on disk. ALWAYS use this to get the workspace before dispatch instead of guessing a path — pass the project name or keywords from Kevin's request (e.g. 'wowps party inventory', 'sprogbroen'). Returns ranked EXISTING directories (git repos preferred). One clear match → use it as the workspace; several plausible → ask Kevin which; none → ask Kevin for the path.",
+    { query: z.string().describe("Project name / keywords to locate, e.g. 'sprogbroen' or 'wowps party inventory'.") },
+    async (args) => {
+      const matches = findWorkspaces(args.query, config.workspaceSearchRoots);
+      if (!matches.length) {
+        return { content: [{ type: "text", text: `No directory matched "${args.query}" under the search roots. Ask Kevin for the exact absolute path.` }] };
+      }
+      const text = matches.map((m, i) => `${i + 1}. ${m.path}${m.isGitRepo ? "  (git repo)" : ""}`).join("\n");
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Candidates for "${args.query}" (best first):\n${text}\n\nUse the top match as the dispatch workspace unless it's clearly wrong; if two are equally plausible, ask Kevin which.`,
+          },
+        ],
+      };
     },
   );
 
@@ -151,6 +174,6 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
   return createSdkMcpServer({
     name: DIRECTOR_SERVER,
     version: "0.1.0",
-    tools: [askUser, dispatch, listThreads, threadStatus, inject, interruptThread, readFindings],
+    tools: [askUser, findWorkspace, dispatch, listThreads, threadStatus, inject, interruptThread, readFindings],
   });
 }

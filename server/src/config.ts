@@ -61,6 +61,11 @@ export const config = {
   dbPath: resolve(serverRoot, "data", "orchestrator.sqlite"),
   webDist: resolve(serverRoot, "..", "web", "dist"),
   defaultWorkspace: process.env.DEFAULT_WORKSPACE ?? "C:\\",
+  // Roots the director's find_workspace tool scans to resolve a project name → real path.
+  workspaceSearchRoots: (process.env.WORKSPACE_SEARCH_ROOTS || "C:\\;D:\\;C:\\Users\\theke\\.openclaw\\workspace")
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean),
   memoryDir: process.env.MEMORY_DIR ?? "C:\\Users\\theke\\.claude\\memory",
   oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN || undefined,
   accounts: loadAccounts(),
