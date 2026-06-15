@@ -177,8 +177,10 @@ to whichever sub has the most headroom so neither is wasted.
   the GUI as `accounts` events → the topbar burn strip (stale entries dimmed);
   each run records its account.
 - Degrades to single-account (inherited login) when fewer than two tokens are
-  configured. Burn bars read `—` until a run's `rate_limit_event` reports a
-  window (typically as it approaches a warning/cap), then fill in live.
+  configured. A bar reads `—` only when neither source has data for that account
+  (no background-file match yet **and** no `rate_limit_event` observed). The account
+  label must match the background index `name` for the file source to apply (a
+  mismatch is logged once at startup).
 
 ## 11. Image attachments (paste / drop / pick → vision)
 

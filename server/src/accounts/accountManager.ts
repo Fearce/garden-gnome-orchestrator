@@ -67,6 +67,7 @@ export class AccountManager {
   start(): void {
     if (!this.accounts.length) return;
     this.refreshFromTrading();
+    this.warnUnmatchedLabels();
     this.publish();
     // Liveness tick: pull the latest background usage and expire rate-limits. No
     // network call — usage is read from local files / run events.
@@ -90,6 +91,26 @@ export class AccountManager {
       }
     }
     if (changed) this.publish();
+  }
+
+  /** Burn-strip data only flows if an account's label matches a background-index `name`; warn once if it doesn't. */
+  private warnUnmatchedLabels(): void {
+    let usage: ReturnType<typeof readTradingUsage>;
+    try {
+      usage = readTradingUsage();
+    } catch {
+      return;
+    }
+    if (!usage.size) return; // background files absent — nothing to match against
+    for (const a of this.accounts) {
+      if (!usage.has(a.label.toLowerCase())) {
+        this.hub.log(
+          "warn",
+          `account "${a.label}" has no match in the background usage index (${[...usage.keys()].join(", ")}); ` +
+            `its burn bars will rely on run events only — set ACCOUNT_*_LABEL to the background account name`,
+        );
+      }
+    }
   }
 
   /** Pull the agent-orchestrator's usage files; update any account with fresher data. Returns whether anything changed. */
