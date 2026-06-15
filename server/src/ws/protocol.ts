@@ -14,8 +14,6 @@ import type {
 export interface AccountDTO {
   id: string;
   label: string;
-  email?: string;
-  subscriptionType?: string;
   fiveHour: number | null; // utilization 0-100
   sevenDay: number | null; // utilization 0-100
   rateLimited: boolean;

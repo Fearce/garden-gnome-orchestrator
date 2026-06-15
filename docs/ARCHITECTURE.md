@@ -155,15 +155,25 @@ to whichever sub has the most headroom so neither is wasted.
   concurrent agents can run on **different** accounts at once — unlike the background
   orchestrator's global credential swap. We deliberately do **not** touch that
   orchestrator's live credential files.
-- **UsageProbe** (`usageProbe.ts`) opens a streaming session with an account's
-  token, awaits init, and calls the SDK `usage_EXPERIMENTAL…()` control request
-  **without sending a prompt** (zero model tokens) to read 5-hour + 7-day
-  utilization (0-100) and reset times.
-- **AccountManager** (`accountManager.ts`) probes every account on an interval
-  (`ACCOUNT_PROBE_INTERVAL_MS`, default 120s), updates from live `rate_limit`
-  events during real runs, and `select()`s the account with the most **weekly**
-  headroom that isn't 5h-throttled/rejected (falling back to least-burned if all
-  are near the cap). Snapshots stream to the GUI as `accounts` events → the
-  topbar burn strip; each run records its account.
+- **Burn signal — why not the usage endpoint.** `claude setup-token` tokens
+  **cannot** read `/api/oauth/usage`: it returns `403` for anything but an
+  interactive OAuth access token (the kind the agent-orchestrator reads from
+  `~/.claude/.credentials.json`, for the *active* account only). So this console
+  can't poll usage like that orchestrator does. Instead, per-account burn comes
+  from each run's **`rate_limit_event`** — the message API returns `utilization`
+  (0-100), `rateLimitType` (`five_hour`/`seven_day`/…), and `status`
+  (`allowed`/`allowed_warning`/`rejected`) for the account actually running. This
+  needs no extra calls and works with setup-tokens.
+- **AccountManager** (`accountManager.ts`) keeps each account's last-known 5h/7d
+  utilization (from `updateFromRateLimit`, fed by those events). `select()`
+  round-robins (least-recently-selected) while burn is unknown — so both subs are
+  used from the first dispatch — and once a window's utilization is known, favors
+  the account with the most **weekly** headroom, skipping any that 429-rejected
+  until its reset passes (falling back to least-burned if all are near the cap). A
+  light liveness tick (`ACCOUNT_TICK_MS`, default 60s) only clears expired
+  rate-limits and republishes; it makes **no** network call. Snapshots stream to
+  the GUI as `accounts` events → the topbar burn strip; each run records its
+  account.
 - Degrades to single-account (inherited login) when fewer than two tokens are
-  configured — still shows that account's live burn bars.
+  configured. Burn bars read `—` until a run's `rate_limit_event` reports a
+  window (typically as it approaches a warning/cap), then fill in live.

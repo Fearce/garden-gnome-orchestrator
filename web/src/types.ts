@@ -97,8 +97,6 @@ export interface Message {
 export interface AccountDTO {
   id: string;
   label: string;
-  email?: string;
-  subscriptionType?: string;
   fiveHour: number | null;
   sevenDay: number | null;
   rateLimited: boolean;
