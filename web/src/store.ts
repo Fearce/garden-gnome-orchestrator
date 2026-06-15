@@ -26,7 +26,8 @@ interface State {
   connected: boolean;
   authed: boolean;
   authRequired: boolean;
-  authMode: string;
+  authGoogle: boolean;
+  authPassword: boolean;
   authError: string | null;
   accounts: AccountDTO[];
   threads: Record<string, Thread>;
@@ -68,7 +69,8 @@ export const useStore = create<State>((set) => ({
   connected: false,
   authed: false,
   authRequired: false,
-  authMode: "none",
+  authGoogle: false,
+  authPassword: false,
   authError: null,
   accounts: [],
   threads: {},
@@ -272,36 +274,35 @@ function summarizeToolInput(input: unknown): string {
 export async function init(): Promise<void> {
   try {
     const r = await fetch("/api/me");
-    const j = (await r.json()) as { authed?: boolean; required?: boolean; mode?: string };
+    const j = (await r.json()) as { authed?: boolean; required?: boolean; google?: boolean; password?: boolean };
     if (j.required && !j.authed) {
       const err = new URLSearchParams(location.search).get("e");
       if (err) history.replaceState(null, "", location.pathname); // consume once — don't wedge the login screen
-      if (j.mode === "google" && !err) {
-        location.href = "/api/auth/google"; // skip-if-signed-in: instant when a Google session + consent exist
-        return;
-      }
-      useStore.setState({ authRequired: true, authed: false, authMode: j.mode ?? "token", authError: err });
+      useStore.setState({ authRequired: true, authed: false, authGoogle: !!j.google, authPassword: !!j.password, authError: err });
       return;
     }
-    useStore.setState({ authRequired: false, authed: true, authMode: j.mode ?? "none" });
+    useStore.setState({ authRequired: false, authed: true });
   } catch {
     /* server unreachable (dev) — try to connect anyway */
   }
   connect();
 }
 
-export async function login(token: string): Promise<boolean> {
+export async function login(password: string): Promise<{ ok: boolean; retryMs?: number }> {
   try {
     const r = await fetch("/api/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ password }),
     });
-    if (!r.ok) return false;
-    await init();
-    return true;
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; retryMs?: number };
+    if (r.ok && j.ok) {
+      await init();
+      return { ok: true };
+    }
+    return { ok: false, retryMs: typeof j.retryMs === "number" ? j.retryMs : undefined };
   } catch {
-    return false;
+    return { ok: false };
   }
 }
 
@@ -314,10 +315,6 @@ export function connect(): void {
   ws.onclose = (e) => {
     useStore.setState({ connected: false });
     if (e.code === 4401) {
-      if (useStore.getState().authMode === "google") {
-        location.href = "/api/auth/google";
-        return;
-      }
       useStore.setState({ authRequired: true, authed: false });
       return; // auth lost — show login instead of reconnect-looping
     }

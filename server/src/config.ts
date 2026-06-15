@@ -32,17 +32,19 @@ function loadAccounts(): Account[] {
 // refuse to bind a non-localhost host unless AUTH_TOKEN gates it.
 const requestedHost = process.env.HOST ?? "127.0.0.1";
 const localOnly = ["127.0.0.1", "localhost", "::1"].includes(requestedHost);
-const authToken = process.env.AUTH_TOKEN || undefined;
+const authPassword = process.env.AUTH_PASSWORD || process.env.AUTH_TOKEN || undefined;
 const googleClientId = process.env.GOOGLE_CLIENT_ID || undefined;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || undefined;
-const authConfigured = !!authToken || !!(googleClientId && googleClientSecret);
+const authConfigured = !!authPassword || !!(googleClientId && googleClientSecret);
 const exposeBlocked = !localOnly && !authConfigured;
 
 export const config = {
   serverRoot,
   port: Number(process.env.PORT ?? 4317),
   host: exposeBlocked ? "127.0.0.1" : requestedHost,
-  authToken,
+  authPassword,
+  // Wrong-password lockout per client IP (anti-brute-force). A short PIN is safe behind this.
+  loginCooldownMs: Number(process.env.LOGIN_COOLDOWN_MS ?? 30_000),
   googleClientId,
   googleClientSecret,
   allowedEmail: (process.env.ALLOWED_EMAIL || "user@example.com").toLowerCase(),
@@ -51,9 +53,9 @@ export const config = {
   // registered URI can't diverge and a spoofed Host can't influence it. Localhost dev
   // leaves it unset and derives the origin from the request.
   publicOrigin: (process.env.PUBLIC_ORIGIN || "").replace(/\/$/, "") || undefined,
-  sessionSecret: process.env.SESSION_SECRET || googleClientSecret || authToken || "orchestrator-dev-secret",
+  sessionSecret: process.env.SESSION_SECRET || googleClientSecret || authPassword || "orchestrator-dev-secret",
   hostWarning: exposeBlocked
-    ? `HOST=${requestedHost} requested but no auth is set — refusing to expose bypassPermissions agents on the LAN unauthenticated; bound to 127.0.0.1. Set GOOGLE_CLIENT_ID/SECRET (or AUTH_TOKEN) to enable LAN access.`
+    ? `HOST=${requestedHost} requested but no auth is set — refusing to expose bypassPermissions agents on the LAN unauthenticated; bound to 127.0.0.1. Set AUTH_PASSWORD (or GOOGLE_CLIENT_ID/SECRET) to enable LAN access.`
     : undefined,
   dataDir: resolve(serverRoot, "data"),
   dbPath: resolve(serverRoot, "data", "orchestrator.sqlite"),

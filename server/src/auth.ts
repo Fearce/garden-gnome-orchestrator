@@ -1,16 +1,21 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
 
-export const AUTH_COOKIE = "orch_auth"; // legacy shared-token mode
-export const SESSION_COOKIE = "orch_session"; // google mode (signed email session)
+export const AUTH_COOKIE = "orch_auth"; // legacy cookie — cleared on logout, no longer trusted
+export const SESSION_COOKIE = "orch_session"; // signed session (set by Google callback OR password login)
 export const OAUTH_STATE_COOKIE = "orch_oauth"; // short-lived per-browser CSRF nonce
 
-export type AuthMode = "none" | "token" | "google";
-
-export function authMode(): AuthMode {
-  if (config.googleClientId && config.googleClientSecret) return "google";
-  if (config.authToken) return "token";
-  return "none";
+// Both methods can be active at once: a correct password OR a Google sign-in for the
+// allowlisted email is a valid login. Each path mints the same signed session cookie.
+export function googleEnabled(): boolean {
+  return !!(config.googleClientId && config.googleClientSecret);
+}
+export function passwordEnabled(): boolean {
+  return !!config.authPassword;
+}
+/** Is any auth method active? If not, the console is open (localhost dev only). */
+export function authRequired(): boolean {
+  return googleEnabled() || passwordEnabled();
 }
 
 export function cookieValue(cookieHeader: string | undefined, name: string): string | undefined {
@@ -54,16 +59,17 @@ function sessionEmail(cookie: string | undefined): string | null {
   return email;
 }
 
-/** True when auth is disabled, or the request carries valid credentials for the active mode. */
+/** True when no auth is required, or the request carries a valid signed session for the allowed email. */
 export function isAuthed(cookieHeader: string | undefined): boolean {
-  const mode = authMode();
-  if (mode === "none") return true;
-  if (mode === "token") {
-    const v = cookieValue(cookieHeader, AUTH_COOKIE);
-    return !!v && !!config.authToken && safeEq(v, config.authToken);
-  }
+  if (!authRequired()) return true;
   const email = sessionEmail(cookieValue(cookieHeader, SESSION_COOKIE));
   return !!email && email.toLowerCase() === config.allowedEmail;
+}
+
+/** Constant-time password check. The cookie minted on success is a signed session (NOT the
+ *  password), so the password is only ever verified here — where the brute-force cooldown lives. */
+export function checkPassword(input: string | undefined): boolean {
+  return passwordEnabled() && !!input && safeEq(input, config.authPassword as string);
 }
 
 // ---- Google OAuth (OIDC code flow) ----
