@@ -6,6 +6,7 @@ import { config } from "./config.js";
 import { Db } from "./db/db.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
+import { AccountManager } from "./accounts/accountManager.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
 import { registerWs } from "./ws/hub.js";
@@ -14,13 +15,15 @@ async function main(): Promise<void> {
   const db = new Db(config.dbPath);
   const hub = new EventHub();
   const memory = new FileMemoryService();
-  const manager = new ThreadManager(db, hub, memory);
+  const accounts = new AccountManager(config.accounts, hub, config.accountProbeIntervalMs);
+  const manager = new ThreadManager(db, hub, memory, accounts);
   const director = new Director(manager, db, hub);
+  accounts.start();
 
   const app = Fastify({ logger: false });
 
   await app.register(websocket);
-  registerWs(app, { db, hub, manager, director });
+  registerWs(app, { db, hub, manager, director, accounts });
 
   app.get("/api/health", async () => ({
     ok: true,
@@ -52,6 +55,7 @@ async function main(): Promise<void> {
         `  Claude Orchestrator server`,
         `  http://${config.host}:${config.port}   (ws: /ws)`,
         `  auth: ${config.oauthToken ? "CLAUDE_CODE_OAUTH_TOKEN" : "inherited Claude Code login"} (subscription, no API credits)`,
+        `  accounts: ${config.accounts.length} (${config.accounts.map((a) => a.label).join(", ")})${config.accounts.length > 1 ? " — load-balancing by burn ratio" : ""}`,
         `  data: ${config.dbPath}`,
         apiKeyWarning,
         ``,

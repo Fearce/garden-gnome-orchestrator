@@ -3,6 +3,7 @@ import { Director } from "./components/Director.js";
 import { Board } from "./components/Board.js";
 import { ThreadDetail } from "./components/ThreadDetail.js";
 import { QuestionModal } from "./components/QuestionModal.js";
+import { Accounts } from "./components/Accounts.js";
 import { runActive } from "./lib/format.js";
 
 export function App() {
@@ -22,6 +23,7 @@ export function App() {
           <span className="sub">director&nbsp;console</span>
         </div>
         <div className="spacer" />
+        <Accounts />
         <span className="stat">
           <b>{taskCount}</b> {taskCount === 1 ? "task" : "tasks"} · <b>{liveAgents}</b> {liveAgents === 1 ? "agent" : "agents"} live
         </span>

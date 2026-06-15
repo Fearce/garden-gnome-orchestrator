@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   thread_id   TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
   role        TEXT NOT NULL,
   model       TEXT NOT NULL,
+  account     TEXT,
   session_id  TEXT,
   state       TEXT NOT NULL,
   cost_usd    REAL,

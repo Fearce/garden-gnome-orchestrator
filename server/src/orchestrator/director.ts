@@ -15,6 +15,7 @@ import type { ThreadManager } from "./threadManager.js";
 export class Director {
   private run: AgentRun | undefined;
   private sessionId: string | undefined;
+  private accountId: string | undefined;
   private busy = false;
 
   constructor(
@@ -36,6 +37,9 @@ export class Director {
     const director = createDirectorServer(this.api);
     const memory = createMemoryServer(this.api.memory);
     const cfg = directorConfig({ director, memory });
+    const { account } = this.api.accounts.select();
+    this.accountId = account.id;
+    cfg.oauthToken = account.token || undefined;
     if (this.sessionId) cfg.resume = this.sessionId;
     const run = new AgentRun(cfg);
     this.run = run;
@@ -68,6 +72,9 @@ export class Director {
           break;
         case "result":
           this.setBusy(false);
+          break;
+        case "rate_limit":
+          if (this.accountId) this.api.accounts.updateFromRateLimit(this.accountId, e.info);
           break;
         case "error":
           this.hub.log("error", `Director: ${e.message}`);

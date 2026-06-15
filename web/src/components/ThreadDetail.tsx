@@ -71,7 +71,7 @@ export function ThreadDetail() {
           </div>
         </div>
         <div className="meta">
-          {impl ? `${impl.model} · ${impl.state}` : "—"}
+          {impl ? `${impl.model}${impl.account ? ` · ${impl.account}` : ""} · ${impl.state}` : "—"}
           {totalCost > 0 ? ` · ~$${totalCost.toFixed(2)} equiv (subscription)` : ""}
           {thread.error ? ` · ERROR: ${thread.error}` : ""}
         </div>

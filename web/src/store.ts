@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  AccountDTO,
   AgentRun,
   ClientCommand,
   DirectorItem,
@@ -21,6 +22,7 @@ interface ThreadDraft {
 
 interface State {
   connected: boolean;
+  accounts: AccountDTO[];
   threads: Record<string, Thread>;
   runs: Record<string, AgentRun>;
   findings: Finding[];
@@ -52,6 +54,7 @@ function sendCommand(cmd: ClientCommand): void {
 
 export const useStore = create<State>((set) => ({
   connected: false,
+  accounts: [],
   threads: {},
   runs: {},
   findings: [],
@@ -97,9 +100,12 @@ function applyEvent(ev: ServerEvent): void {
         text: m.content,
         at: m.createdAt,
       }));
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts });
       break;
     }
+    case "accounts":
+      useStore.setState({ accounts: ev.accounts });
+      break;
     case "thread.upsert":
       useStore.setState((s) => ({ threads: { ...s.threads, [ev.thread.id]: ev.thread } }));
       break;

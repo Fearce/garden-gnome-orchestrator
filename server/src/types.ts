@@ -1,19 +1,22 @@
 // Shared domain types — the contract the whole server builds against.
 
-export type Role = "director" | "planner" | "researcher" | "implementor";
+export type Role = "director" | "planner" | "researcher" | "implementor" | "qa";
 
 export type ThreadState =
   | "intake" // just created, brief not yet built
   | "enriching" // director is enriching / about to clarify
-  | "awaiting_user" // blocked on a clarifying question
+  | "awaiting_user" // blocked on a question for the user
   | "planning" // planner + researcher running
   | "researching"
   | "implementing" // implementor live
+  | "qa" // QA reviewing/testing the implementor's work
   | "paused" // implementor interrupted, awaiting resume/inject
-  | "review" // implementor done, awaiting acceptance
+  | "review" // done but QA wasn't satisfied — needs the user
   | "done"
   | "failed"
   | "cancelled";
+
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type AgentRunState =
   | "starting"
@@ -42,6 +45,7 @@ export interface AgentRun {
   threadId: string;
   role: Role;
   model: string;
+  account?: string | null; // which subscription account ran it
   sessionId?: string | null; // Claude SDK session id, for resume/fork
   state: AgentRunState;
   costUsd?: number | null;
@@ -114,6 +118,20 @@ export interface PlanOutput {
   steps: PlanStep[];
   risks: string[];
   openQuestions: string[];
+  effort?: Effort; // how hard the implementor should work
+  parallelism?: string; // guidance on spawning subagents / parallel work
+}
+
+export interface QaIssue {
+  severity?: string;
+  description: string;
+  location?: string;
+}
+
+export interface QaOutput {
+  pass: boolean;
+  summary: string;
+  issues?: QaIssue[];
 }
 
 export interface ResearchOutput {
@@ -122,6 +140,13 @@ export interface ResearchOutput {
   facts: { claim: string; source?: string }[];
   memories: { name: string; gist: string }[];
   warnings: string[];
+}
+
+export interface RateLimitInfo {
+  status: "allowed" | "allowed_warning" | "rejected";
+  resetsAt?: number;
+  rateLimitType?: "five_hour" | "seven_day" | "seven_day_opus" | "seven_day_sonnet" | "overage";
+  utilization?: number;
 }
 
 // ---- Normalized agent stream events (decoupled from SDK message shapes) ----
@@ -134,6 +159,7 @@ export type AgentEvent =
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; content: unknown; isError: boolean }
   | { type: "permission_request"; requestId: string; toolName: string; input: unknown }
+  | { type: "rate_limit"; info: RateLimitInfo }
   | { type: "question"; question: Question }
   | {
       type: "result";

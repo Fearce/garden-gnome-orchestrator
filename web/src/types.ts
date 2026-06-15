@@ -1,6 +1,6 @@
 // Mirror of the server's protocol + domain types (kept in sync by hand).
 
-export type Role = "director" | "planner" | "researcher" | "implementor";
+export type Role = "director" | "planner" | "researcher" | "implementor" | "qa";
 
 export type ThreadState =
   | "intake"
@@ -9,6 +9,7 @@ export type ThreadState =
   | "planning"
   | "researching"
   | "implementing"
+  | "qa"
   | "paused"
   | "review"
   | "done"
@@ -35,6 +36,7 @@ export interface AgentRun {
   threadId: string;
   role: Role;
   model: string;
+  account?: string | null;
   sessionId?: string | null;
   state: AgentRunState;
   costUsd?: number | null;
@@ -92,8 +94,31 @@ export interface Message {
   createdAt: number;
 }
 
+export interface AccountDTO {
+  id: string;
+  label: string;
+  email?: string;
+  subscriptionType?: string;
+  fiveHour: number | null;
+  sevenDay: number | null;
+  rateLimited: boolean;
+  resetsAt?: number | null;
+  active: boolean;
+  updatedAt: number;
+  error?: string | null;
+}
+
 export type ServerEvent =
-  | { type: "hello"; threads: Thread[]; runs: AgentRun[]; findings: Finding[]; questions: Question[]; director: DirectorMessage[] }
+  | {
+      type: "hello";
+      threads: Thread[];
+      runs: AgentRun[];
+      findings: Finding[];
+      questions: Question[];
+      director: DirectorMessage[];
+      accounts: AccountDTO[];
+    }
+  | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }

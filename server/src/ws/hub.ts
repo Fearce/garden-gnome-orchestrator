@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
+import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { Director } from "../orchestrator/director.js";
@@ -11,6 +12,7 @@ export interface WsContext {
   hub: EventHub;
   manager: ThreadManager;
   director: Director;
+  accounts: AccountManager;
 }
 
 const STREAMING_EVENTS = new Set(["agent.delta", "agent.thinking", "director.delta"]);
@@ -23,20 +25,21 @@ function send(socket: WebSocket, event: ServerEvent): void {
   socket.send(JSON.stringify(event));
 }
 
-function buildHello(db: Db): ServerEvent {
+function buildHello(ctx: WsContext): ServerEvent {
   return {
     type: "hello",
-    threads: db.listThreads(),
-    runs: db.listAllRuns(),
-    findings: db.listFindings(),
-    questions: db.listOpenQuestions(),
-    director: db.listDirectorMessages(),
+    threads: ctx.db.listThreads(),
+    runs: ctx.db.listAllRuns(),
+    findings: ctx.db.listFindings(),
+    questions: ctx.db.listOpenQuestions(),
+    director: ctx.db.listDirectorMessages(),
+    accounts: ctx.accounts.dto(),
   };
 }
 
 export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
   fastify.get("/ws", { websocket: true }, (socket) => {
-    send(socket, buildHello(ctx.db));
+    send(socket, buildHello(ctx));
     const unsubscribe = ctx.hub.subscribe((event) => send(socket, event));
 
     socket.on("message", (raw: Buffer) => {
@@ -91,7 +94,7 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       break;
     }
     case "snapshot.request":
-      send(socket, buildHello(ctx.db));
+      send(socket, buildHello(ctx));
       break;
     default:
       break;

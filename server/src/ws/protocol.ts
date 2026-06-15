@@ -11,8 +11,31 @@ import type {
 
 // ---- Server -> Client events (outbound; not validated) ----
 
+export interface AccountDTO {
+  id: string;
+  label: string;
+  email?: string;
+  subscriptionType?: string;
+  fiveHour: number | null; // utilization 0-100
+  sevenDay: number | null; // utilization 0-100
+  rateLimited: boolean;
+  resetsAt?: number | null;
+  active: boolean; // last/preferred account for dispatch
+  updatedAt: number;
+  error?: string | null;
+}
+
 export type ServerEvent =
-  | { type: "hello"; threads: Thread[]; runs: AgentRun[]; findings: Finding[]; questions: Question[]; director: DirectorMessage[] }
+  | {
+      type: "hello";
+      threads: Thread[];
+      runs: AgentRun[];
+      findings: Finding[];
+      questions: Question[];
+      director: DirectorMessage[];
+      accounts: AccountDTO[];
+    }
+  | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }

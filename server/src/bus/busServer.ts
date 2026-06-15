@@ -55,6 +55,31 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
     },
   );
 
+  const askUser = tool(
+    "ask_user",
+    "Ask the user for help when you hit a blocker only HE can resolve — a missing file/credential, a needed secret or access, or a decision you can't make yourself. Pauses this task until he answers. Use it EARLY: the moment you identify a hard blocker, ask — do NOT spend turns hunting workarounds for something he can fix in seconds. Prefer multiple-choice options when you can.",
+    {
+      header: z.string().describe("A 1-3 word chip label, e.g. 'Missing creds'."),
+      question: z.string().describe("What you need from the user, with enough context for him to act."),
+      options: z
+        .array(z.object({ label: z.string(), description: z.string().optional() }))
+        .optional()
+        .describe("Multiple-choice options. Omit for a free-text answer."),
+      multiSelect: z.boolean().default(false),
+    },
+    async (args) => {
+      const answer = await api.askUser({
+        threadId: ctx.threadId,
+        runId: ctx.getRunId() ?? null,
+        header: args.header,
+        question: args.question,
+        options: args.options ?? [],
+        multiSelect: args.multiSelect,
+      });
+      return { content: [{ type: "text", text: `the user answered: ${answer}` }] };
+    },
+  );
+
   const notifyThread = tool(
     "notify_thread",
     "Flag a DIFFERENT in-progress task with information it needs (use its task id). Records a finding on that task and, if important, interrupts its implementor to deliver it now.",
@@ -78,5 +103,9 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
     },
   );
 
-  return createSdkMcpServer({ name: BUS_SERVER, version: "0.1.0", tools: [postFinding, readFindings, notifyThread] });
+  return createSdkMcpServer({
+    name: BUS_SERVER,
+    version: "0.1.0",
+    tools: [postFinding, readFindings, notifyThread, askUser],
+  });
 }
