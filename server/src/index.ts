@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   const db = new Db(config.dbPath);
   const hub = new EventHub();
   const memory = new FileMemoryService();
-  const accounts = new AccountManager(config.accounts, hub, config.accountTickMs);
+  const accounts = new AccountManager(config.accounts, hub, config.accountPingMs);
   const manager = new ThreadManager(db, hub, memory, accounts);
   const director = new Director(manager, db, hub);
   accounts.start();
