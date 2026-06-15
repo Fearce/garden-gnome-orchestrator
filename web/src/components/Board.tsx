@@ -46,6 +46,7 @@ function Card({ thread }: { thread: Thread }) {
   const select = useStore((s) => s.select);
 
   const threadRuns = Object.values(runs).filter((r) => r.threadId === thread.id);
+  const impl = latestRun(threadRuns, "implementor");
   const findCount = findings.filter((f) => f.threadId === thread.id).length;
   const feed = feeds[thread.id] ?? [];
   const lastText = [...feed].reverse().find((f): f is Extract<FeedItem, { kind: "text" }> => f.kind === "text");
@@ -74,8 +75,15 @@ function Card({ thread }: { thread: Thread }) {
       </div>
       <div className="activity">{activity}</div>
       <div className="foot">
-        <span className="badge" style={{ "--state-color": stateColor(thread.state) } as CSSProperties}>
-          {stateLabel(thread.state)}
+        <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+          <span className="badge" style={{ "--state-color": stateColor(thread.state) } as CSSProperties}>
+            {stateLabel(thread.state)}
+          </span>
+          {impl?.effort ? (
+            <span className={"effort-badge eff-" + impl.effort} title="Implementor effort (planner-chosen)">
+              {impl.effort}
+            </span>
+          ) : null}
         </span>
         {findCount > 0 ? <span className="findcount">⚑ {findCount}</span> : <span />}
       </div>

@@ -235,6 +235,20 @@ button { font-family: inherit; cursor: pointer; }
   border: 1px solid color-mix(in oklch, var(--state-color, var(--text-faint)) 35%, transparent);
 }
 
+/* Implementor effort, scaled muted (low) → hot (max). --eff drives color/border/bg. */
+.effort-badge {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700;
+  padding: 2px 7px; border-radius: 100px; white-space: nowrap;
+  color: var(--eff, var(--text-dim));
+  background: color-mix(in oklch, var(--eff, var(--text-dim)) 13%, transparent);
+  border: 1px solid color-mix(in oklch, var(--eff, var(--text-dim)) 45%, transparent);
+}
+.effort-badge.eff-low { --eff: var(--text-faint); }
+.effort-badge.eff-medium { --eff: var(--text-dim); }
+.effort-badge.eff-high { --eff: var(--accent); }
+.effort-badge.eff-xhigh { --eff: var(--warn); }
+.effort-badge.eff-max { --eff: var(--danger); }
+
 .pip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
 .pip .led { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .pip.active { color: var(--role); }

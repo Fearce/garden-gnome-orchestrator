@@ -2,6 +2,8 @@
 
 export type Role = "director" | "planner" | "researcher" | "implementor" | "qa";
 
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
 export type ThreadState =
   | "intake"
   | "enriching"
@@ -38,6 +40,7 @@ export interface AgentRun {
   role: Role;
   model: string;
   account?: string | null;
+  effort?: Effort | null;
   sessionId?: string | null;
   state: AgentRunState;
   costUsd?: number | null;

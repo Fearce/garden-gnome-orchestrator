@@ -133,6 +133,11 @@ export function ThreadDetail() {
             <div className="meta">{thread.workspace}</div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {impl?.effort ? (
+              <span className={"effort-badge eff-" + impl.effort} title="Implementor effort level (chosen by the planner)">
+                {impl.effort}
+              </span>
+            ) : null}
             <span className="badge" style={{ "--state-color": stateColor(thread.state) } as CSSProperties}>
               {stateLabel(thread.state)}
             </span>
@@ -142,7 +147,7 @@ export function ThreadDetail() {
           </div>
         </div>
         <div className="meta">
-          {impl ? `${impl.model}${impl.account ? ` · ${impl.account}` : ""} · ${impl.state}` : "—"}
+          {impl ? `${impl.model}${impl.account ? ` · ${impl.account}` : ""}${impl.effort ? ` · ${impl.effort} effort` : ""} · ${impl.state}` : "—"}
           {totalCost > 0 ? ` · ~$${totalCost.toFixed(2)} equiv (subscription)` : ""}
           {thread.error ? ` · ERROR: ${thread.error}` : ""}
         </div>

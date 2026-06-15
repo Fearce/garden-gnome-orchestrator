@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   role        TEXT NOT NULL,
   model       TEXT NOT NULL,
   account     TEXT,
+  effort      TEXT,
   session_id  TEXT,
   state       TEXT NOT NULL,
   cost_usd    REAL,
