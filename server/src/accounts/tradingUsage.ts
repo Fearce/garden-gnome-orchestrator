@@ -32,6 +32,9 @@ export function readTradingUsage(now = Date.now()): Map<string, TradingUsage> {
 
   // The cache holds the *active* account's live usage but doesn't name it; the
   // weekly-reset day-of-week is a stable per-account fingerprint that does.
+  // (Requires distinct weekly-reset DOW per account; a third sub sharing a DOW
+  // would attach the cache to whichever appears first — the liveUsed guard below
+  // at least caps it to one.)
   const cache = readJson(CACHE_PATH);
   const u = cache?.usage;
   const live =
@@ -44,13 +47,15 @@ export function readTradingUsage(now = Date.now()): Map<string, TradingUsage> {
         }
       : null;
 
+  let liveUsed = false;
   for (const a of accounts) {
     const name = String(a?.name ?? "").toLowerCase();
     if (!name) continue;
     const snap = (a?.usage_snapshot ?? {}) as Record<string, unknown>;
     const snapDow = dayOfWeek(snap.weekly_reset_at as string | undefined);
 
-    if (live && live.dow != null && live.dow === snapDow) {
+    if (live && !liveUsed && live.dow != null && live.dow === snapDow) {
+      liveUsed = true; // the cache belongs to exactly one account
       out.set(name, {
         fiveHour: live.fiveHour,
         sevenDay: live.sevenDay,
@@ -64,7 +69,9 @@ export function readTradingUsage(now = Date.now()): Map<string, TradingUsage> {
       out.set(name, {
         fiveHour: fiveReset && now < fiveReset ? numOrNull(snap.five_h_used_pct) : null,
         sevenDay: weekReset && now < weekReset ? numOrNull(snap.weekly_used_pct) : null,
-        at: Date.parse(String(snap.taken_at ?? "")) || 0,
+        // Small positive fallback so a snapshot with valid data but no taken_at
+        // still surfaces once (1 > initial usageAt=0) yet never beats a real run event.
+        at: Date.parse(String(snap.taken_at ?? "")) || 1,
         stale: true,
       });
     }
