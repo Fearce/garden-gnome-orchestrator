@@ -29,5 +29,20 @@ export function createMemoryServer(memory: MemoryService): McpServerConfig {
     },
   );
 
-  return createSdkMcpServer({ name: MEMORY_SERVER, version: "0.1.0", tools: [searchMemory] });
+  const readMemory = tool(
+    "read_memory",
+    "Read the full content of ONE of Kevin's memory files, by the `name` (or path) returned from search_memory. Use this when a hit looks load-bearing and its one-line description isn't enough to fold the full lesson/decision into a brief. This reads ONLY Kevin's memory — it is not a way to read the codebase (you dispatch a thread for that).",
+    {
+      name: z.string().describe("The memory's name or path exactly as returned by search_memory."),
+    },
+    async (args) => {
+      const body = memory.read(args.name);
+      if (!body) {
+        return { content: [{ type: "text", text: `No memory found for "${args.name}". Use search_memory to get a valid name/path.` }] };
+      }
+      return { content: [{ type: "text", text: body }] };
+    },
+  );
+
+  return createSdkMcpServer({ name: MEMORY_SERVER, version: "0.1.0", tools: [searchMemory, readMemory] });
 }

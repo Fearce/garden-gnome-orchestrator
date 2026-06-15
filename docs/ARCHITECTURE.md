@@ -55,10 +55,15 @@ Model + tool policy per role:
 
 | Role        | Model            | permissionMode | Tools |
 |-------------|------------------|----------------|-------|
-| Director    | claude-sonnet-4-6| default        | memory + orchestration MCP, AskUserQuestion, Read/Grep/Glob |
+| Director    | claude-sonnet-4-6| bypassPermissions | memory (search_memory/read_memory) + orchestration MCP only — **no Read/Grep/Glob/Bash** |
 | Planner     | claude-opus-4-8  | plan           | Read/Grep/Glob, bus(post_finding) |
 | Researcher  | claude-sonnet-4-6| plan           | Read/Grep/Glob, WebSearch/WebFetch, memory, bus |
 | Implementor | claude-opus-4-8  | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
+
+The **director only directs** — it has no filesystem or shell tools, so it cannot
+investigate a repo itself; any "figure out / debug / why is X" request is forced into
+a `dispatch`. Memory recall goes through the scoped `search_memory` / `read_memory` MCP
+tools (memory dir only), never a generic `Read`.
 
 The implementor runs **fully autonomous** (`bypassPermissions`): every tool is
 auto-approved so dispatched tasks run unsupervised — the same trust model as

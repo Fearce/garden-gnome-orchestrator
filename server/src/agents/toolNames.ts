@@ -8,6 +8,7 @@ export const DIRECTOR_SERVER = "director";
 
 export const T = {
   searchMemory: `mcp__${MEMORY_SERVER}__search_memory`,
+  readMemory: `mcp__${MEMORY_SERVER}__read_memory`,
   postFinding: `mcp__${BUS_SERVER}__post_finding`,
   readFindings: `mcp__${BUS_SERVER}__read_findings`,
   notifyThread: `mcp__${BUS_SERVER}__notify_thread`,
@@ -24,6 +25,7 @@ export const T = {
 export const BUS_TOOLS = [T.postFinding, T.readFindings, T.notifyThread, T.busAskUser];
 export const DIRECTOR_TOOLS = [
   T.searchMemory,
+  T.readMemory,
   T.askUser,
   T.dispatch,
   T.listThreads,

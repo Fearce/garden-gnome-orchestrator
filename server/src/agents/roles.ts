@@ -99,8 +99,11 @@ export function directorConfig(servers: { director: McpServerConfig; memory: Mcp
     cwd: config.defaultWorkspace,
     systemPrompt: DIRECTOR_PROMPT,
     permissionMode: "bypassPermissions",
-    allowedTools: [...DIRECTOR_TOOLS, "Read", "Grep", "Glob"],
-    disallowedTools: ["Write", "Edit", "NotebookEdit", "Bash", "AskUserQuestion"],
+    // The director ONLY directs: it has no filesystem/shell tools, so it cannot investigate
+    // the codebase itself — any "figure out / debug / explain" is forced into a dispatch.
+    // Memory recall goes through the scoped search_memory + read_memory MCP tools, not Read.
+    allowedTools: [...DIRECTOR_TOOLS],
+    disallowedTools: ["Read", "Grep", "Glob", "Write", "Edit", "NotebookEdit", "Bash", "AskUserQuestion"],
     mcpServers: { [DIRECTOR_SERVER]: servers.director, [MEMORY_SERVER]: servers.memory },
     settingSources: [],
     includePartialMessages: true,
