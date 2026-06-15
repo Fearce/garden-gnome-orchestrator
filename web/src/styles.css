@@ -259,6 +259,13 @@ button { font-family: inherit; cursor: pointer; }
 
 .findcount { font-family: var(--font-mono); font-size: 10.5px; color: var(--warn); }
 
+/* ---- elapsed timers ---- */
+.card .foot .foot-right { display: inline-flex; align-items: center; gap: 8px; }
+.task-elapsed { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.detail-head .task-elapsed { font-size: 11px; color: var(--text-dim); }
+.pip .pip-time { margin-left: 1px; opacity: 0.75; font-variant-numeric: tabular-nums; }
+.feed-filter .fchip .fchip-time { font-size: 9px; opacity: 0.6; font-variant-numeric: tabular-nums; }
+
 /* ---- detail panel ---- */
 .detail { border-left: 1px solid var(--line); background: var(--bg-1); display: flex; flex-direction: column; min-height: 0; }
 .detail-head { padding: 13px 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px; }

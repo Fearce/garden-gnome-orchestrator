@@ -11,6 +11,7 @@ import { execFile } from "node:child_process";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import type {
   AgentEvent,
+  AgentRunState,
   Effort,
   Finding,
   ImageAttachment,
@@ -72,12 +73,18 @@ export class ThreadManager implements OrchestratorApi {
     this.markInterrupted();
   }
 
-  /** Any task left mid-flight by a server restart is dead in memory — fail it. */
+  /** Any task left mid-flight by a server restart is dead in memory — fail it, and stamp its
+   *  orphaned runs terminal. The DB still has them as starting/running/idle but their in-memory
+   *  AgentRun is gone, so without this they'd inflate the live counter forever. */
   private markInterrupted(): void {
     for (const t of this.db.listThreads()) {
       if (IN_FLIGHT.has(t.state)) {
         this.db.updateThread(t.id, { state: "failed", error: "interrupted by server restart — re-dispatch to retry" });
       }
+    }
+    const at = Date.now();
+    for (const r of this.db.listActiveRuns()) {
+      this.db.updateRun(r.id, { state: "interrupted", endedAt: r.endedAt ?? at });
     }
   }
 
@@ -260,17 +267,21 @@ export class ThreadManager implements OrchestratorApi {
     const thread = this.db.getThread(threadId);
     if (!thread) return;
     try {
+      // Researcher first, THEN planner — the planner grounds its plan in the research
+      // (relevant files, gotchas, facts, memory) instead of both exploring the repo blind in
+      // parallel. Sequencing also removes the duplicate code-exploration the planner would
+      // otherwise redo, which partly offsets the added latency.
+      this.setState(threadId, "researching");
+      const research = await this.runResearcher(thread).catch((e) => {
+        this.hub.log("warn", `Researcher failed on ${threadId.slice(0, 8)}: ${String(e)}`);
+        return undefined;
+      });
+      if (this.cancelled(threadId)) return;
       this.setState(threadId, "planning");
-      const [plan, research] = await Promise.all([
-        this.runPlanner(thread).catch((e) => {
-          this.hub.log("warn", `Planner failed on ${threadId.slice(0, 8)}: ${String(e)}`);
-          return undefined;
-        }),
-        this.runResearcher(thread).catch((e) => {
-          this.hub.log("warn", `Researcher failed on ${threadId.slice(0, 8)}: ${String(e)}`);
-          return undefined;
-        }),
-      ]);
+      const plan = await this.runPlanner(thread, research).catch((e) => {
+        this.hub.log("warn", `Planner failed on ${threadId.slice(0, 8)}: ${String(e)}`);
+        return undefined;
+      });
       if (this.cancelled(threadId)) return;
       const kickoff = composeKickoff(thread, plan, research);
       if (this.approvalMode()) {
@@ -334,8 +345,11 @@ export class ThreadManager implements OrchestratorApi {
     return undefined;
   }
 
-  private async runPlanner(thread: Thread): Promise<PlanOutput | undefined> {
-    const res = await this.runRole(thread, "planner", config.models.planner, this.kickoffContent(thread.id, thread.brief), ({ token, resume, runId }) => {
+  private async runPlanner(thread: Thread, research: ResearchOutput | undefined): Promise<PlanOutput | undefined> {
+    const brief = research
+      ? `${thread.brief}\n\n## Researcher's findings — ground your plan in these (don't re-explore what they already cover)\n${formatResearch(research)}`
+      : thread.brief;
+    const res = await this.runRole(thread, "planner", config.models.planner, this.kickoffContent(thread.id, brief), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "planner", getRunId: () => runId });
       const cfg = plannerConfig(thread.workspace, { bus });
       cfg.oauthToken = token;
@@ -395,6 +409,7 @@ export class ThreadManager implements OrchestratorApi {
       if (this.live.get(thread.id)?.run === agent) this.live.delete(thread.id);
       this.untrack(thread.id, agent);
       this.stopping.delete(thread.id);
+      this.finalizeRun(run.id, agent);
     });
     agent.start(this.kickoffContent(thread.id, kickoff));
     return { run: agent, runId: run.id, accountId: acct.id };
@@ -431,8 +446,18 @@ export class ThreadManager implements OrchestratorApi {
     return undefined;
   }
 
-  /** Implementor → QA → fix, repeated until QA passes or we run out of rounds. */
+  /** Implementor → QA → fix, repeated until QA passes or we run out of rounds. The live
+   *  implementor is stopped on every exit so a finished/parked task stops counting as live;
+   *  later injects fall back to the resume path (lastImplementorSession). */
   private async runImplementorQa(thread: Thread, kickoff: string, effort?: Effort): Promise<void> {
+    try {
+      await this.runImplementorQaLoop(thread, kickoff, effort);
+    } finally {
+      await this.stopLive(thread.id);
+    }
+  }
+
+  private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort): Promise<void> {
     const start = this.startImplementor(thread, kickoff, { effort });
     let res = await this.awaitImplementorResult(
       thread,
@@ -544,10 +569,14 @@ export class ThreadManager implements OrchestratorApi {
     const resume = this.lastImplementorSession.get(threadId);
     const msg = message ?? "Continue where you left off.";
     const start = this.startImplementor(thread, msg, resume ? { resume } : undefined);
-    // Manual resume isn't part of the QA loop — settle to review when it finishes (failover-aware).
-    void this.awaitImplementorResult(thread, undefined, start.run, start.accountId, false, msg).then(() => {
-      if (this.db.getThread(threadId)?.state === "implementing") this.setState(threadId, "review");
-    });
+    // Manual resume isn't part of the QA loop — settle to review when it finishes (failover-aware),
+    // then stop the live run so it stops counting as live (a later inject re-resumes the session).
+    void this.awaitImplementorResult(thread, undefined, start.run, start.accountId, false, msg)
+      .then(() => {
+        if (this.db.getThread(threadId)?.state === "implementing") this.setState(threadId, "review");
+      })
+      .catch((e) => this.hub.log("warn", `Resume on ${threadId.slice(0, 8)} ended in error: ${String(e)}`))
+      .finally(() => void this.stopLive(threadId));
     return { ok: true, state: "implementing" };
   }
 
@@ -620,6 +649,36 @@ export class ThreadManager implements OrchestratorApi {
     this.emitRun(runId);
   }
 
+  /** Idempotently stamp a run terminal (state + endedAt). Implementor runs go through this on
+   *  their `onEnd` because they aren't part of runRole's explicit finishRun. The endedAt guard
+   *  makes repeated calls (stop → onEnd, boot sweep) no-ops, so the clock freezes once. */
+  private finalizeRun(runId: string, agent: AgentRun): void {
+    const run = this.db.getRun(runId);
+    if (!run || run.endedAt != null) return;
+    const res = agent.lastResult;
+    const state: AgentRunState = res ? (res.isError ? "error" : "done") : "interrupted";
+    this.db.updateRun(runId, {
+      state,
+      endedAt: Date.now(),
+      costUsd: res?.costUsd ?? run.costUsd ?? null,
+      numTurns: res?.numTurns ?? run.numTurns ?? null,
+      sessionId: agent.sessionId ?? run.sessionId ?? null,
+    });
+    this.emitRun(runId);
+  }
+
+  /** Stop the live implementor for a thread, if any. Closing its session ends the run, whose
+   *  onEnd finalizes the DB row — so a completed/parked task stops counting agents as live. */
+  private async stopLive(threadId: string): Promise<void> {
+    const live = this.live.get(threadId);
+    if (!live) return;
+    try {
+      await live.run.stop();
+    } catch {
+      /* already down */
+    }
+  }
+
   private wireRun(agent: AgentRun, threadId: string, runId: string, role: Role, accountId: string): void {
     const off = agent.onEvent((e: AgentEvent) => {
       switch (e.type) {
@@ -669,6 +728,26 @@ export class ThreadManager implements OrchestratorApi {
   }
 }
 
+/** The researcher's structured brief as markdown — shared by the planner kickoff and the
+ *  implementor kickoff so both read the same findings. */
+function formatResearch(research: ResearchOutput): string {
+  const parts: string[] = [research.summary];
+  if (research.relevantFiles?.length) {
+    parts.push("", "Relevant files:");
+    research.relevantFiles.forEach((f) => parts.push(`- ${f.path} — ${f.why}`));
+  }
+  if (research.facts?.length) {
+    parts.push("", "Key facts:");
+    research.facts.forEach((f) => parts.push(`- ${f.claim}${f.source ? ` (${f.source})` : ""}`));
+  }
+  if (research.memories?.length) {
+    parts.push("", "Relevant memory:");
+    research.memories.forEach((m) => parts.push(`- ${m.name} — ${m.gist}`));
+  }
+  if (research.warnings?.length) parts.push("", "Warnings: " + research.warnings.join("; "));
+  return parts.join("\n");
+}
+
 function composeKickoff(thread: Thread, plan: PlanOutput | undefined, research: ResearchOutput | undefined): string {
   const parts: string[] = [`# Task: ${thread.title}`, "", "## Brief", thread.brief, ""];
 
@@ -692,24 +771,7 @@ function composeKickoff(thread: Thread, plan: PlanOutput | undefined, research: 
   parts.push("");
 
   parts.push("## Research (from the researcher)");
-  if (research) {
-    parts.push(research.summary, "");
-    if (research.relevantFiles?.length) {
-      parts.push("Relevant files:");
-      research.relevantFiles.forEach((f) => parts.push(`- ${f.path} — ${f.why}`));
-    }
-    if (research.facts?.length) {
-      parts.push("Key facts:");
-      research.facts.forEach((f) => parts.push(`- ${f.claim}${f.source ? ` (${f.source})` : ""}`));
-    }
-    if (research.memories?.length) {
-      parts.push("Relevant memory:");
-      research.memories.forEach((m) => parts.push(`- ${m.name} — ${m.gist}`));
-    }
-    if (research.warnings?.length) parts.push("Warnings: " + research.warnings.join("; "));
-  } else {
-    parts.push("(researcher produced no structured brief — gather any context you need yourself)");
-  }
+  parts.push(research ? formatResearch(research) : "(researcher produced no structured brief — gather any context you need yourself)");
   parts.push("");
   parts.push(
     "Implement this now, completely. Post findings as you go; ask_user immediately if you hit a blocker only Kevin can fix. A QA agent will then test and review your work and send back issues to fix. When QA is satisfied, commit and push per the doctrine.",

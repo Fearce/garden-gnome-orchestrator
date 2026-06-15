@@ -98,15 +98,17 @@ identity into a tool), so each agent's bus instance is scoped to its thread.
 (the state machine):
 
 ```
-intake → enriching → awaiting_user? → planning ─┐
-                                                ├─▶ implementing → review → done
-                       researching ─────────────┘                 ↑
-                                                          paused (inject/resume)
+intake → enriching → awaiting_user? → researching → planning → implementing → review → done
+                                                                     ↑ paused (inject/resume)
 ```
 
-- Planner + researcher run **concurrently** (both read-only).
-- Their structured outputs (`outputFormat: json_schema`) compose the
-  implementor's kickoff message.
+- **Researcher → planner → implementor, sequential** (both read-only roles first).
+  The researcher gathers context first; its structured findings are fed into the
+  planner's brief so the plan is grounded in research — not made blind, in parallel,
+  while both independently grep the repo. The planner builds on the findings instead
+  of redoing that exploration (so the added latency is partly recovered).
+- Both structured outputs (`outputFormat: json_schema`) compose the implementor's
+  kickoff message (`formatResearch` is shared by the planner + implementor kickoffs).
 - **Finding routing:** when a finding lands on a thread whose implementor is
   live, the manager either (a) `inject`s it as a follow-up user message, or
   (b) `interrupt → resume(sessionId)` with augmented context — chosen by

@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
-import type { FeedItem, Role } from "../types.js";
-import { clock, roleColor, sevColor, stateColor, stateLabel } from "../lib/format.js";
+import type { AgentRun, FeedItem, Role } from "../types.js";
+import { clock, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { Elapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, useAttachments } from "../lib/attachments.js";
+
+function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
+  return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
+}
 
 const roleVar = (role: Role): CSSProperties => ({ "--role": roleColor(role) } as CSSProperties);
 
@@ -133,6 +138,13 @@ export function ThreadDetail() {
             <div className="meta">{thread.workspace}</div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Elapsed
+              className="task-elapsed"
+              startMs={thread.createdAt}
+              endMs={thread.updatedAt}
+              running={threadRunning(thread.state)}
+              title="Time since the task was dispatched"
+            />
             {impl?.effort ? (
               <span className={"effort-badge eff-" + impl.effort} title="Implementor effort level (chosen by the planner)">
                 {impl.effort}
@@ -148,6 +160,12 @@ export function ThreadDetail() {
         </div>
         <div className="meta">
           {impl ? `${impl.model}${impl.account ? ` · ${impl.account}` : ""}${impl.effort ? ` · ${impl.effort} effort` : ""} · ${impl.state}` : "—"}
+          {impl ? (
+            <>
+              {" · "}
+              <Elapsed startMs={impl.startedAt} endMs={impl.endedAt} running={runActive(impl.state)} title="Implementor run time" />
+            </>
+          ) : null}
           {totalCost > 0 ? ` · ~$${totalCost.toFixed(2)} equiv (subscription)` : ""}
           {thread.error ? ` · ERROR: ${thread.error}` : ""}
         </div>
@@ -223,16 +241,20 @@ export function ThreadDetail() {
           <button className={"fchip" + (roleFilter === "all" ? " on" : "")} onClick={() => setRoleFilter("all")}>
             all <span className="n">{feed.length}</span>
           </button>
-          {activeRoles.map((role) => (
-            <button
-              key={role}
-              className={"fchip" + (roleFilter === role ? " on" : "")}
-              style={{ "--role": roleColor(role) } as CSSProperties}
-              onClick={() => setRoleFilter(role)}
-            >
-              {role} <span className="n">{counts[role] ?? 0}</span>
-            </button>
-          ))}
+          {activeRoles.map((role) => {
+            const r = latestRunOf(threadRuns, role);
+            return (
+              <button
+                key={role}
+                className={"fchip" + (roleFilter === role ? " on" : "")}
+                style={{ "--role": roleColor(role) } as CSSProperties}
+                onClick={() => setRoleFilter(role)}
+              >
+                {role} <span className="n">{counts[role] ?? 0}</span>
+                {r ? <Elapsed className="fchip-time" startMs={r.startedAt} endMs={r.endedAt} running={runActive(r.state)} /> : null}
+              </button>
+            );
+          })}
           <button
             className={"fchip tools-toggle" + (showTools ? "" : " off")}
             onClick={() => setShowTools((v) => !v)}
