@@ -213,22 +213,21 @@ Three controls that make the console a hands-off, anywhere replacement for the C
   a Web `Notification` + a short Web-Audio chime — so you don't watch the tab. The
   server also pings an external webhook on those events if `NOTIFY_WEBHOOK_URL` is
   set (`ThreadManager.notifyExternal`), for when you're away from the machine.
-- **Access auth** (`server/src/auth.ts`). Three modes, picked by env:
-  - **`google`** (preferred) — Google OIDC code flow restricted to one email
-    (`ALLOWED_EMAIL`). `/api/auth/google` 302s to Google (no `prompt` ⇒ silent when
-    already signed in + consented — the "skip-if-logged-in" path); `/api/auth/callback`
-    exchanges the code, decodes the trusted `id_token`, checks `aud` + `email_verified`
-    + the allowlist, and sets a **signed** (`HMAC(email|exp)`) httpOnly session cookie.
-    The SPA auto-redirects to Google on boot when unauthed; a wrong account lands on
-    `/?e=forbidden` with a "use a different account" (`prompt=select_account`) escape.
-  - **`token`** — legacy shared secret (`AUTH_TOKEN`); `POST /api/login` sets the
-    cookie. Simplest option for a raw-LAN-IP tablet (Google rejects private-IP redirect
-    URIs, so Google needs `localhost` or an https hostname).
-  - **`none`** — no auth (localhost dev).
-  `isAuthed` validates the active mode's cookie; the `/ws` upgrade + attachment
-  endpoint enforce it. Safety: the server **refuses to bind a non-localhost `HOST`
-  without auth configured** (it drives bypassPermissions agents), falling back to
-  127.0.0.1.
+- **Access auth** (`server/src/auth.ts`). A **password and/or Google sign-in**, both valid
+  when configured — each mints the same HMAC-signed (`email|exp`) httpOnly session cookie, and
+  `isAuthed` accepts that one cookie. `authRequired()` is true if either method is set; the `/ws`
+  upgrade + attachment endpoint enforce it.
+  - **Password** (`AUTH_PASSWORD`) — `POST /api/login` checks it (timing-safe) behind a **per-IP
+    wrong-password cooldown** (`LOGIN_COOLDOWN_MS`, default 30s; 429 + `retryMs` while locked), so a
+    short PIN is brute-force-safe. The cookie holds the *signed session*, never the password, so the
+    PIN is only testable through the cooldown-gated endpoint. Works over the raw LAN IP (the tablet).
+  - **Google OIDC** (`GOOGLE_CLIENT_ID`/`SECRET`, `ALLOWED_EMAIL`) — `/api/auth/google` 302s to Google
+    with a CSRF `state` bound to a one-time cookie; `/api/auth/callback` decodes the trusted `id_token`,
+    checks `aud` + `email_verified` + the allowlist, sets the session. Google **rejects raw private-IP
+    redirect URIs**, so it's `localhost`/desktop only (or an https `PUBLIC_ORIGIN`, e.g. Tailscale) —
+    the tablet falls back to the password. Wrong account → `/?e=forbidden` (with a `select_account` escape).
+  The login screen shows whichever methods are enabled (Google button + password field). Safety: the
+  server **refuses to bind a non-localhost `HOST` without auth configured**, falling back to 127.0.0.1.
 - **Plan-approval gate** (global toggle, persisted in `kv:require_plan_approval`).
   When on, `runPipeline` pauses after planning into `awaiting_approval`, emits
   `plan.ready` (the composed kickoff), and `await`s a pending promise resolved by

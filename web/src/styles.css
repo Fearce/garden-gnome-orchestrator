@@ -188,6 +188,8 @@ button { font-family: inherit; cursor: pointer; }
 .btn.google:hover { background: #f2f2f2; }
 .switch-acct { text-align: center; font-size: 12px; text-decoration: none; }
 .switch-acct:hover { color: var(--text); }
+.or-sep { display: flex; align-items: center; gap: 10px; color: var(--text-faint); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; margin: 1px 0; }
+.or-sep::before, .or-sep::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 
 .bell {
   display: inline-flex; align-items: center; justify-content: center;

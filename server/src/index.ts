@@ -13,7 +13,10 @@ import { registerWs } from "./ws/hub.js";
 import { randomUUID } from "node:crypto";
 import {
   isAuthed,
-  authMode,
+  authRequired,
+  googleEnabled,
+  passwordEnabled,
+  checkPassword,
   cookieValue,
   AUTH_COOKIE,
   SESSION_COOKIE,
@@ -47,28 +50,29 @@ async function main(): Promise<void> {
     models: config.models,
   }));
 
-  // ---- access auth: Google OIDC (email allowlist) / legacy shared-token / none ----
+  // ---- access auth: Google sign-in AND/OR a password (both valid) → signed session cookie ----
   const cookie30d = (name: string, value: string) =>
     `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`;
 
   app.get("/api/me", async (req) => ({
     authed: isAuthed(req.headers.cookie),
-    required: authMode() !== "none",
-    mode: authMode(),
+    required: authRequired(),
+    google: googleEnabled(),
+    password: passwordEnabled(),
   }));
 
   const callbackUri = (req: { headers: { host?: string; "x-forwarded-proto"?: string | string[] } }) =>
     `${config.publicOrigin || `${(req.headers["x-forwarded-proto"] as string) || "http"}://${req.headers.host}`}/api/auth/callback`;
 
   app.get<{ Querystring: { select?: string } }>("/api/auth/google", async (req, reply) => {
-    if (authMode() !== "google") return reply.code(404).send({ error: "google auth not configured" });
+    if (!googleEnabled()) return reply.code(404).send({ error: "google auth not configured" });
     const nonce = randomUUID();
     reply.header("set-cookie", `${OAUTH_STATE_COOKIE}=${nonce}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`);
     return reply.redirect(googleAuthUrl(callbackUri(req), signState(nonce), req.query.select ? "select_account" : undefined));
   });
 
   app.get<{ Querystring: { code?: string; state?: string; error?: string } }>("/api/auth/callback", async (req, reply) => {
-    if (authMode() !== "google") return reply.redirect("/");
+    if (!googleEnabled()) return reply.redirect("/");
     const clearState = `${OAUTH_STATE_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
     const fail = (e: string) => {
       reply.header("set-cookie", clearState);
@@ -85,14 +89,26 @@ async function main(): Promise<void> {
     return reply.redirect("/");
   });
 
-  // Legacy shared-token login (only when AUTH_TOKEN mode is active).
-  app.post<{ Body: { token?: string } }>("/api/login", async (req, reply) => {
-    if (authMode() !== "token") return { ok: authMode() === "none" };
-    if (req.body && config.authToken && req.body.token === config.authToken) {
-      reply.header("set-cookie", cookie30d(AUTH_COOKIE, config.authToken));
+  // Password login with a per-IP wrong-password cooldown (anti-brute-force). On success it mints
+  // the same signed session cookie as Google — the password itself is never stored in any cookie.
+  const loginCooldown = new Map<string, number>();
+  app.post<{ Body: { password?: string; token?: string } }>("/api/login", async (req, reply) => {
+    if (!passwordEnabled()) return { ok: !authRequired() };
+    const ip = req.ip || "?";
+    const now = Date.now();
+    if (loginCooldown.size > 256) for (const [k, v] of loginCooldown) if (v <= now) loginCooldown.delete(k);
+    // Keep this get→set window await-free: the per-IP cooldown's brute-force safety relies on it
+    // running synchronously per request. If checkPassword ever becomes async (argon2/bcrypt), add
+    // atomic locking here or a parallel burst from one IP could bypass the cooldown.
+    const until = loginCooldown.get(ip) ?? 0;
+    if (now < until) return reply.code(429).send({ ok: false, error: "too many attempts", retryMs: until - now });
+    if (checkPassword(req.body?.password ?? req.body?.token)) {
+      loginCooldown.delete(ip);
+      reply.header("set-cookie", cookie30d(SESSION_COOKIE, makeSession(config.allowedEmail)));
       return { ok: true };
     }
-    return reply.code(401).send({ ok: false, error: "invalid token" });
+    loginCooldown.set(ip, now + config.loginCooldownMs);
+    return reply.code(401).send({ ok: false, error: "wrong password", retryMs: config.loginCooldownMs });
   });
 
   app.get("/api/logout", async (_req, reply) => {
@@ -143,11 +159,9 @@ async function main(): Promise<void> {
         `  auth: ${config.oauthToken ? "CLAUDE_CODE_OAUTH_TOKEN" : "inherited Claude Code login"} (subscription, no API credits)`,
         `  accounts: ${config.accounts.length} (${config.accounts.map((a) => a.label).join(", ")})${config.accounts.length > 1 ? " — load-balancing by burn ratio" : ""}`,
         `  data: ${config.dbPath}`,
-        authMode() === "google"
-          ? `  access: Google sign-in required — allowlisted to ${config.allowedEmail}`
-          : authMode() === "token"
-            ? `  access: AUTH_TOKEN required (LAN/tablet access enabled)`
-            : ``,
+        authRequired()
+          ? `  access: ${[googleEnabled() ? "Google sign-in" : null, passwordEnabled() ? "password" : null].filter(Boolean).join(" or ")} — allowlisted to ${config.allowedEmail}`
+          : ``,
         config.hostWarning ? `  ⚠ ${config.hostWarning}` : ``,
         apiKeyWarning,
         ``,
