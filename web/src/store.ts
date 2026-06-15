@@ -126,21 +126,34 @@ export function feedMessageId(f: FeedItem): string | undefined {
   return undefined;
 }
 
+/** Enforce the per-run and absolute feed caps on an already-chronological list. Used by both
+ *  the live append path and the thread.history merge so a long-running thread re-fetched on
+ *  reconnect (listMessages has no SQL LIMIT) can't balloon the feed past the render backstop. */
+function capFeed(items: FeedItem[]): FeedItem[] {
+  const totals = new Map<string, number>();
+  for (const f of items) {
+    const b = feedBucket(f);
+    totals.set(b, (totals.get(b) ?? 0) + 1);
+  }
+  const seen = new Map<string, number>();
+  const kept: FeedItem[] = [];
+  for (const f of items) {
+    const b = feedBucket(f);
+    const total = totals.get(b)!;
+    const idxInBucket = seen.get(b) ?? 0;
+    seen.set(b, idxInBucket + 1);
+    if (total > PER_RUN_CAP && idxInBucket < total - PER_RUN_CAP) continue; // drop this bucket's oldest overflow
+    kept.push(f);
+  }
+  return kept.length > FEED_HARD_CAP ? kept.slice(kept.length - FEED_HARD_CAP) : kept;
+}
+
 function pushFeed(threadId: string, item: FeedItem): void {
   useStore.setState((s) => {
     const existing = s.threadFeeds[threadId] ?? [];
     const id = feedMessageId(item);
     if (id && existing.some((f) => feedMessageId(f) === id)) return {}; // history already merged this row
-    const bucket = feedBucket(item);
-    let next = [...existing, item];
-    let count = 0;
-    for (const f of next) if (feedBucket(f) === bucket) count++;
-    if (count > PER_RUN_CAP) {
-      const idx = next.findIndex((f) => feedBucket(f) === bucket);
-      if (idx >= 0) next = [...next.slice(0, idx), ...next.slice(idx + 1)];
-    }
-    if (next.length > FEED_HARD_CAP) next = next.slice(next.length - FEED_HARD_CAP);
-    return { threadFeeds: { ...s.threadFeeds, [threadId]: next } };
+    return { threadFeeds: { ...s.threadFeeds, [threadId]: capFeed([...existing, item]) } };
   });
 }
 
@@ -214,7 +227,7 @@ function applyEvent(ev: ServerEvent): void {
           return true;
         });
 
-        const merged = [...dbItems, ...liveOnly].sort((a, b) => a.at - b.at);
+        const merged = capFeed([...dbItems, ...liveOnly].sort((a, b) => a.at - b.at));
         return { threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged } };
       });
       break;
