@@ -22,7 +22,9 @@ async function main(): Promise<void> {
 
   const app = Fastify({ logger: false });
 
-  await app.register(websocket);
+  // Pasted images travel inline (base64) in a single prompt.new frame; lift the
+  // default ws payload cap so a few screenshots don't get dropped on send.
+  await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
   registerWs(app, { db, hub, manager, director, accounts });
 
   app.get("/api/health", async () => ({
@@ -30,6 +32,19 @@ async function main(): Promise<void> {
     auth: config.oauthToken ? "oauth-token" : "inherited-cli-login",
     models: config.models,
   }));
+
+  // Serve pasted-image bytes on demand (refs travel over WS; bytes stay off it).
+  const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+  app.get<{ Params: { id: string } }>("/api/attachment/:id", async (req, reply) => {
+    const a = db.getAttachment(req.params.id);
+    if (!a) return reply.code(404).send({ error: "not found" });
+    const type = ALLOWED_IMAGE_TYPES.has(a.mediaType) ? a.mediaType : "application/octet-stream";
+    return reply
+      .header("content-type", type)
+      .header("x-content-type-options", "nosniff")
+      .header("cache-control", "private, max-age=31536000, immutable")
+      .send(Buffer.from(a.data, "base64"));
+  });
 
   // Serve the built frontend in production (single origin). In dev, Vite serves it.
   if (existsSync(config.webDist)) {

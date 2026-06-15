@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
 import type { FeedItem, Role } from "../types.js";
 import { clock, roleColor, sevColor, stateColor, stateLabel } from "../lib/format.js";
+import { AttachButton, ComposerThumbs, useAttachments } from "../lib/attachments.js";
 
 const roleVar = (role: Role): CSSProperties => ({ "--role": roleColor(role) } as CSSProperties);
 
@@ -26,6 +27,7 @@ export function ThreadDetail() {
   const cancel = useStore((s) => s.cancel);
   const select = useStore((s) => s.select);
   const [msg, setMsg] = useState("");
+  const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const thread = id ? threads[id] : undefined;
@@ -49,8 +51,9 @@ export function ThreadDetail() {
   const doInject = (mode: "append" | "interrupt") => {
     const t = msg.trim();
     if (!t) return;
-    inject(id, t, mode);
+    inject(id, t, mode, att.images);
     setMsg("");
+    att.clear();
   };
 
   return (
@@ -115,11 +118,12 @@ export function ThreadDetail() {
         )}
       </div>
 
-      <div className="inject-bar">
+      <div className={"inject-bar" + (att.dragging ? " dragging" : "")} {...att.dropHandlers}>
         <textarea
           value={msg}
-          placeholder="Feed new information to the implementor…  (⌘/Ctrl+Enter = inject)"
+          placeholder="Feed new information to the implementor…  (paste/drop images · ⌘/Ctrl+Enter = inject)"
           onChange={(e) => setMsg(e.target.value)}
+          onPaste={att.onPaste}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
               e.preventDefault();
@@ -127,7 +131,9 @@ export function ThreadDetail() {
             }
           }}
         />
+        <ComposerThumbs images={att.images} onRemove={att.remove} />
         <div className="row">
+          <AttachButton onPick={att.addFiles} />
           <button className="btn primary sm" onClick={() => doInject("append")} disabled={!msg.trim()}>
             Inject
           </button>

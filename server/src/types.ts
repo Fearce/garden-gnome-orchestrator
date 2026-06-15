@@ -102,7 +102,24 @@ export interface DirectorMessage {
   role: "user" | "director";
   kind: MessageKind;
   content: string;
+  attachments?: AttachmentRef[];
   createdAt: number;
+}
+
+export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
+/** An image the user pasted/dropped, carried inline (base64) from the GUI on send. */
+export interface ImageAttachment {
+  name: string;
+  mediaType: ImageMediaType;
+  dataBase64: string;
+}
+
+/** Lightweight reference to a stored attachment — carried over WS instead of the bytes. */
+export interface AttachmentRef {
+  id: string;
+  name: string;
+  mediaType: string;
 }
 
 // ---- Structured outputs from planner / researcher ----

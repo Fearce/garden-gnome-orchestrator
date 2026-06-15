@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { OrchestratorApi } from "../orchestrator/api.js";
+import type { ImageAttachment } from "../types.js";
 import { DIRECTOR_SERVER } from "../agents/toolNames.js";
 
 /**
@@ -9,7 +10,7 @@ import { DIRECTOR_SERVER } from "../agents/toolNames.js";
  * steer live threads. ask_user blocks the tool call until the GUI answers — the
  * runner sets a long CLAUDE_CODE_STREAM_CLOSE_TIMEOUT so that wait is safe.
  */
-export function createDirectorServer(api: OrchestratorApi): McpServerConfig {
+export function createDirectorServer(api: OrchestratorApi, getImages: () => ImageAttachment[]): McpServerConfig {
   const askUser = tool(
     "ask_user",
     "Ask the user a clarifying question BEFORE dispatching work, when the request is ambiguous or you're filling a gap he likely forgot to mention. Prefer multiple-choice options when you can; leave options empty for a free-text answer. Blocks until he answers. Don't over-ask — bundle related questions, and only ask what actually changes what you'd dispatch.",
@@ -36,7 +37,7 @@ export function createDirectorServer(api: OrchestratorApi): McpServerConfig {
 
   const dispatch = tool(
     "dispatch",
-    "Dispatch a task: spins up the planner + researcher, then an Opus 4.8 implementor in the target repo, seeded with the enriched brief. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions).",
+    "Dispatch a task: spins up the planner + researcher, then an Opus 4.8 implementor in the target repo, seeded with the enriched brief. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). Any image(s) the user attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.",
     {
       title: z.string().describe("Short task title for the board lane."),
       workspace: z.string().describe("Absolute path of the repo/dir the implementor should work in, e.g. C:\\example."),
@@ -47,7 +48,7 @@ export function createDirectorServer(api: OrchestratorApi): McpServerConfig {
         ),
     },
     async (args) => {
-      const id = await api.dispatch({ title: args.title, workspace: args.workspace, brief: args.brief });
+      const id = await api.dispatch({ title: args.title, workspace: args.workspace, brief: args.brief, images: getImages() });
       return { content: [{ type: "text", text: `Dispatched task ${id} ("${args.title}") in ${args.workspace}.` }] };
     },
   );

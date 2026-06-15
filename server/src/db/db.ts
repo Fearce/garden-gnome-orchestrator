@@ -6,6 +6,7 @@ import { SCHEMA } from "./schema.js";
 import type {
   AgentRun,
   AgentRunState,
+  AttachmentRef,
   DirectorMessage,
   Finding,
   Message,
@@ -111,7 +112,10 @@ export class Db {
   private migrate(): void {
     // Add columns introduced after a DB may already exist. Duplicate-column
     // errors are expected on an up-to-date DB and ignored.
-    for (const stmt of ["ALTER TABLE agent_runs ADD COLUMN account TEXT"]) {
+    for (const stmt of [
+      "ALTER TABLE agent_runs ADD COLUMN account TEXT",
+      "ALTER TABLE director_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
+    ]) {
       try {
         this.raw.exec(stmt);
       } catch {
@@ -358,27 +362,68 @@ export class Db {
   }
 
   // ---- director conversation ----
-  addDirectorMessage(input: { role: "user" | "director"; kind: Message["kind"]; content: string }): DirectorMessage {
+  addDirectorMessage(input: {
+    role: "user" | "director";
+    kind: Message["kind"];
+    content: string;
+    attachments?: AttachmentRef[];
+  }): DirectorMessage {
     const m: DirectorMessage = {
       id: newId(),
       role: input.role,
       kind: input.kind,
       content: input.content,
+      attachments: input.attachments?.length ? input.attachments : undefined,
       createdAt: now(),
     };
     this.raw
-      .prepare(`INSERT INTO director_messages(id, role, kind, content, created_at) VALUES(@id, @role, @kind, @content, @createdAt)`)
-      .run(m);
+      .prepare(
+        `INSERT INTO director_messages(id, role, kind, content, attachments, created_at)
+         VALUES(@id, @role, @kind, @content, @attachments, @createdAt)`,
+      )
+      .run({ ...m, attachments: JSON.stringify(m.attachments ?? []) });
     return m;
   }
 
   listDirectorMessages(): DirectorMessage[] {
-    return (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at ASC").all() as Row[]).map((r) => ({
-      id: r.id as string,
-      role: r.role as DirectorMessage["role"],
-      kind: r.kind as DirectorMessage["kind"],
-      content: r.content as string,
-      createdAt: r.created_at as number,
-    }));
+    return (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at ASC").all() as Row[]).map((r) => {
+      const refs = parseAttachments(r.attachments);
+      return {
+        id: r.id as string,
+        role: r.role as DirectorMessage["role"],
+        kind: r.kind as DirectorMessage["kind"],
+        content: r.content as string,
+        attachments: refs.length ? refs : undefined,
+        createdAt: r.created_at as number,
+      };
+    });
+  }
+
+  // ---- attachments (image bytes; served on demand over HTTP, refs over WS) ----
+  addAttachment(input: { name: string; mediaType: string; data: string }): AttachmentRef {
+    const id = newId();
+    this.raw
+      .prepare(`INSERT INTO attachments(id, name, media_type, data, created_at) VALUES(?, ?, ?, ?, ?)`)
+      .run(id, input.name, input.mediaType, input.data, now());
+    return { id, name: input.name, mediaType: input.mediaType };
+  }
+
+  getAttachment(id: string): { name: string; mediaType: string; data: string } | null {
+    const r = this.raw.prepare("SELECT name, media_type, data FROM attachments WHERE id = ?").get(id) as Row | undefined;
+    return r ? { name: r.name as string, mediaType: r.media_type as string, data: r.data as string } : null;
+  }
+}
+
+function parseAttachments(raw: unknown): AttachmentRef[] {
+  if (typeof raw !== "string" || !raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (x): x is AttachmentRef =>
+        !!x && typeof x.id === "string" && typeof x.name === "string" && typeof x.mediaType === "string",
+    );
+  } catch {
+    return [];
   }
 }

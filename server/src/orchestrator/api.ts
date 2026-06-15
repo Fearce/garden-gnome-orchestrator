@@ -1,12 +1,13 @@
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import type { Finding, QuestionOption, Role, Severity, Thread } from "../types.js";
+import type { Finding, ImageAttachment, QuestionOption, Role, Severity, Thread } from "../types.js";
 
 export interface DispatchInput {
   title: string;
   workspace: string;
   brief: string;
+  images?: ImageAttachment[];
 }
 
 export interface AskUserInput {
@@ -55,7 +56,12 @@ export interface OrchestratorApi {
   /** Record a finding and route it (inject into a live implementor if apt). */
   postFinding(input: PostFindingInput): Finding;
 
-  injectThread(threadId: string, message: string, mode: "append" | "interrupt"): Promise<ThreadActionResult>;
+  injectThread(
+    threadId: string,
+    message: string,
+    mode: "append" | "interrupt",
+    images?: ImageAttachment[],
+  ): Promise<ThreadActionResult>;
   interruptThread(threadId: string): Promise<ThreadActionResult>;
   resumeThread(threadId: string, message?: string): Promise<ThreadActionResult>;
   cancelThread(threadId: string): Promise<ThreadActionResult>;

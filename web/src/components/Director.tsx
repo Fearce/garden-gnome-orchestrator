@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
+import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import type { DirectorItem } from "../types.js";
 
 export function Director() {
@@ -9,6 +10,7 @@ export function Director() {
   const sendPrompt = useStore((s) => s.sendPrompt);
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
+  const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -18,8 +20,9 @@ export function Director() {
   const submit = () => {
     const t = text.trim();
     if (!t) return;
-    sendPrompt(t, ws.trim() || undefined);
+    sendPrompt(t, ws.trim() || undefined, att.images);
     setText("");
+    att.clear();
   };
 
   return (
@@ -54,11 +57,12 @@ export function Director() {
         )}
       </div>
 
-      <div className="composer">
+      <div className={"composer" + (att.dragging ? " dragging" : "")} {...att.dropHandlers}>
         <textarea
           value={text}
-          placeholder="Describe a task…  (⌘/Ctrl+Enter to send)"
+          placeholder="Describe a task…  (paste or drop images · ⌘/Ctrl+Enter to send)"
           onChange={(e) => setText(e.target.value)}
+          onPaste={att.onPaste}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
               e.preventDefault();
@@ -66,7 +70,9 @@ export function Director() {
             }
           }}
         />
+        <ComposerThumbs images={att.images} onRemove={att.remove} />
         <div className="row">
+          <AttachButton onPick={att.addFiles} />
           <input
             className="ws"
             value={ws}
@@ -94,7 +100,10 @@ function DirectorBubble({ item }: { item: DirectorItem }) {
   return (
     <div className={"msg " + item.kind}>
       <div className="by">{item.kind === "user" ? "you" : "director"}</div>
-      <div className="bubble">{item.text}</div>
+      <div className="bubble">
+        {item.text}
+        <MessageThumbs refs={item.attachments} />
+      </div>
     </div>
   );
 }

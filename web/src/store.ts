@@ -7,6 +7,7 @@ import type {
   DirectorMessage,
   FeedItem,
   Finding,
+  ImageAttachment,
   Message,
   Question,
   Role,
@@ -36,9 +37,9 @@ interface State {
   logs: { level: string; message: string; at: number }[];
 
   select: (id: string | null) => void;
-  sendPrompt: (text: string, workspace?: string) => void;
+  sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
   answer: (questionId: string, answer: string) => void;
-  inject: (threadId: string, message: string, mode: "append" | "interrupt") => void;
+  inject: (threadId: string, message: string, mode: "append" | "interrupt", images?: ImageAttachment[]) => void;
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   cancel: (threadId: string) => void;
@@ -71,9 +72,11 @@ export const useStore = create<State>((set) => ({
     set({ selectedThreadId: id });
     if (id) sendCommand({ type: "thread.history", threadId: id });
   },
-  sendPrompt: (text, workspace) => sendCommand({ type: "prompt.new", text, workspace: workspace || undefined }),
+  sendPrompt: (text, workspace, images) =>
+    sendCommand({ type: "prompt.new", text, workspace: workspace || undefined, images: images?.length ? images : undefined }),
   answer: (questionId, answer) => sendCommand({ type: "question.answer", questionId, answer }),
-  inject: (threadId, message, mode) => sendCommand({ type: "thread.inject", threadId, message, mode }),
+  inject: (threadId, message, mode, images) =>
+    sendCommand({ type: "thread.inject", threadId, message, mode, images: images?.length ? images : undefined }),
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
@@ -98,6 +101,7 @@ function applyEvent(ev: ServerEvent): void {
         id: m.id,
         kind: m.role,
         text: m.content,
+        attachments: m.attachments,
         at: m.createdAt,
       }));
       useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts });
@@ -164,7 +168,16 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "director.message":
       useStore.setState((s) => ({
-        director: [...s.director, { id: ev.message.id, kind: ev.message.role, text: ev.message.content, at: ev.message.createdAt }],
+        director: [
+          ...s.director,
+          {
+            id: ev.message.id,
+            kind: ev.message.role,
+            text: ev.message.content,
+            attachments: ev.message.attachments,
+            at: ev.message.createdAt,
+          },
+        ],
         directorDraft: ev.message.role === "director" ? "" : s.directorDraft,
       }));
       break;

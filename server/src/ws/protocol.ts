@@ -53,14 +53,22 @@ export type ServerEvent =
 
 // ---- Client -> Server commands (inbound; zod-validated) ----
 
+const imageAttachmentSchema = z.object({
+  name: z.string(),
+  mediaType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+  dataBase64: z.string(),
+});
+const imagesField = z.array(imageAttachmentSchema).max(8).optional();
+
 export const clientCommandSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("prompt.new"), text: z.string().min(1), workspace: z.string().optional() }),
+  z.object({ type: z.literal("prompt.new"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField }),
   z.object({ type: z.literal("question.answer"), questionId: z.string(), answer: z.string() }),
   z.object({
     type: z.literal("thread.inject"),
     threadId: z.string(),
     message: z.string().min(1),
     mode: z.enum(["append", "interrupt"]).default("append"),
+    images: imagesField,
   }),
   z.object({ type: z.literal("thread.interrupt"), threadId: z.string() }),
   z.object({ type: z.literal("thread.resume"), threadId: z.string(), message: z.string().optional() }),

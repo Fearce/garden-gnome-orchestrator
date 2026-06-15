@@ -71,6 +71,15 @@ CREATE TABLE IF NOT EXISTS director_messages (
   role        TEXT NOT NULL,
   kind        TEXT NOT NULL,
   content     TEXT NOT NULL,
+  attachments TEXT NOT NULL DEFAULT '[]',
+  created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  media_type  TEXT NOT NULL,
+  data        TEXT NOT NULL,
   created_at  INTEGER NOT NULL
 );
 
