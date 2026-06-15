@@ -10,6 +10,7 @@ import { AccountManager } from "./accounts/accountManager.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
 import { registerWs } from "./ws/hub.js";
+import { isAuthed, AUTH_COOKIE } from "./auth.js";
 
 async function main(): Promise<void> {
   const db = new Db(config.dbPath);
@@ -33,9 +34,24 @@ async function main(): Promise<void> {
     models: config.models,
   }));
 
+  // ---- access auth (only enforced when AUTH_TOKEN is set; for LAN/tablet use) ----
+  app.get("/api/me", async (req) => ({ authed: isAuthed(req.headers.cookie), required: !!config.authToken }));
+  app.post<{ Body: { token?: string } }>("/api/login", async (req, reply) => {
+    if (!config.authToken) return { ok: true };
+    if (req.body && req.body.token === config.authToken) {
+      reply.header(
+        "set-cookie",
+        `${AUTH_COOKIE}=${encodeURIComponent(config.authToken)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`,
+      );
+      return { ok: true };
+    }
+    return reply.code(401).send({ ok: false, error: "invalid token" });
+  });
+
   // Serve pasted-image bytes on demand (refs travel over WS; bytes stay off it).
   const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
   app.get<{ Params: { id: string } }>("/api/attachment/:id", async (req, reply) => {
+    if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
     const a = db.getAttachment(req.params.id);
     if (!a) return reply.code(404).send({ error: "not found" });
     const type = ALLOWED_IMAGE_TYPES.has(a.mediaType) ? a.mediaType : "application/octet-stream";
@@ -72,6 +88,8 @@ async function main(): Promise<void> {
         `  auth: ${config.oauthToken ? "CLAUDE_CODE_OAUTH_TOKEN" : "inherited Claude Code login"} (subscription, no API credits)`,
         `  accounts: ${config.accounts.length} (${config.accounts.map((a) => a.label).join(", ")})${config.accounts.length > 1 ? " — load-balancing by burn ratio" : ""}`,
         `  data: ${config.dbPath}`,
+        config.authToken ? `  access: AUTH_TOKEN required (LAN/tablet access enabled)` : ``,
+        config.hostWarning ? `  ⚠ ${config.hostWarning}` : ``,
         apiKeyWarning,
         ``,
       ]

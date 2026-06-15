@@ -14,6 +14,7 @@ import type {
   ServerEvent,
   Thread,
 } from "./types.js";
+import { notify } from "./lib/notify.js";
 
 interface ThreadDraft {
   runId: string;
@@ -23,6 +24,8 @@ interface ThreadDraft {
 
 interface State {
   connected: boolean;
+  authed: boolean;
+  authRequired: boolean;
   accounts: AccountDTO[];
   threads: Record<string, Thread>;
   runs: Record<string, AgentRun>;
@@ -35,6 +38,9 @@ interface State {
   threadDrafts: Record<string, ThreadDraft | undefined>;
   selectedThreadId: string | null;
   logs: { level: string; message: string; at: number }[];
+  approvalMode: boolean;
+  pendingPlans: Record<string, string>;
+  threadChanges: Record<string, { diff: string; log: string }>;
 
   select: (id: string | null) => void;
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
@@ -43,6 +49,9 @@ interface State {
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   cancel: (threadId: string) => void;
+  setApproval: (on: boolean) => void;
+  approve: (threadId: string, approved: boolean, feedback?: string) => void;
+  loadChanges: (threadId: string) => void;
 }
 
 const FEED_CAP = 500;
@@ -55,6 +64,8 @@ function sendCommand(cmd: ClientCommand): void {
 
 export const useStore = create<State>((set) => ({
   connected: false,
+  authed: false,
+  authRequired: false,
   accounts: [],
   threads: {},
   runs: {},
@@ -67,6 +78,9 @@ export const useStore = create<State>((set) => ({
   threadDrafts: {},
   selectedThreadId: null,
   logs: [],
+  approvalMode: false,
+  pendingPlans: {},
+  threadChanges: {},
 
   select: (id) => {
     set({ selectedThreadId: id });
@@ -80,6 +94,9 @@ export const useStore = create<State>((set) => ({
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
+  setApproval: (on) => sendCommand({ type: "approval.set", on }),
+  approve: (threadId, approved, feedback) => sendCommand({ type: "thread.approve", threadId, approved, feedback }),
+  loadChanges: (threadId) => sendCommand({ type: "thread.changes", threadId }),
 }));
 
 function pushFeed(threadId: string, item: FeedItem): void {
@@ -104,14 +121,28 @@ function applyEvent(ev: ServerEvent): void {
         attachments: m.attachments,
         at: m.createdAt,
       }));
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode });
       break;
     }
     case "accounts":
       useStore.setState({ accounts: ev.accounts });
       break;
+    case "plan.ready":
+      useStore.setState((s) => ({ pendingPlans: { ...s.pendingPlans, [ev.threadId]: ev.brief } }));
+      notify("Plan ready for approval", "Review and approve to start building.");
+      break;
+    case "approval.mode":
+      useStore.setState({ approvalMode: ev.on });
+      break;
+    case "thread.changes":
+      useStore.setState((s) => ({ threadChanges: { ...s.threadChanges, [ev.threadId]: { diff: ev.diff, log: ev.log } } }));
+      break;
     case "thread.upsert":
-      useStore.setState((s) => ({ threads: { ...s.threads, [ev.thread.id]: ev.thread } }));
+      useStore.setState((s) => {
+        const prev = s.threads[ev.thread.id];
+        if (prev && prev.state !== ev.thread.state) notifyThreadState(ev.thread);
+        return { threads: { ...s.threads, [ev.thread.id]: ev.thread } };
+      });
       break;
     case "thread.history":
       useStore.setState((s) => {
@@ -159,6 +190,7 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "question.ask":
       useStore.setState((s) => ({ questions: [...s.questions, ev.question] }));
+      notify("Claude needs you", `${ev.question.header}: ${ev.question.question}`);
       break;
     case "question.resolved":
       useStore.setState((s) => ({ questions: s.questions.filter((q) => q.id !== ev.questionId) }));
@@ -200,6 +232,12 @@ function applyEvent(ev: ServerEvent): void {
   }
 }
 
+function notifyThreadState(t: Thread): void {
+  if (t.state === "done") notify("✓ Task done", t.title);
+  else if (t.state === "review") notify("⚠ Task needs your review", t.title);
+  else if (t.state === "failed") notify("✗ Task failed", t.title);
+}
+
 function messageToFeed(m: Message): FeedItem | null {
   if (m.role === "user") return { kind: "system", at: m.createdAt, text: m.content };
   const role = m.role as Role;
@@ -226,14 +264,49 @@ function summarizeToolInput(input: unknown): string {
   return "";
 }
 
+/** Boot: check auth; connect the WS if allowed, else surface the login screen. */
+export async function init(): Promise<void> {
+  try {
+    const r = await fetch("/api/me");
+    const j = (await r.json()) as { authed?: boolean; required?: boolean };
+    if (j.required && !j.authed) {
+      useStore.setState({ authRequired: true, authed: false });
+      return;
+    }
+    useStore.setState({ authRequired: false, authed: true });
+  } catch {
+    /* server unreachable (dev) — try to connect anyway */
+  }
+  connect();
+}
+
+export async function login(token: string): Promise<boolean> {
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (!r.ok) return false;
+    await init();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function connect(): void {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const url = `${proto}://${location.host}/ws`;
   const ws = new WebSocket(url);
   socket = ws;
   ws.onopen = () => useStore.setState({ connected: true });
-  ws.onclose = () => {
+  ws.onclose = (e) => {
     useStore.setState({ connected: false });
+    if (e.code === 4401) {
+      useStore.setState({ authRequired: true, authed: false });
+      return; // auth lost — show login instead of reconnect-looping
+    }
     setTimeout(connect, 1200);
   };
   ws.onmessage = (e) => {

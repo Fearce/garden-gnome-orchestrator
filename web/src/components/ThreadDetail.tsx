@@ -26,7 +26,14 @@ export function ThreadDetail() {
   const resume = useStore((s) => s.resume);
   const cancel = useStore((s) => s.cancel);
   const select = useStore((s) => s.select);
+  const approve = useStore((s) => s.approve);
+  const loadChanges = useStore((s) => s.loadChanges);
+  const pendingPlan = useStore((s) => (s.selectedThreadId ? s.pendingPlans[s.selectedThreadId] : undefined));
+  const changes = useStore((s) => (s.selectedThreadId ? s.threadChanges[s.selectedThreadId] : undefined));
   const [msg, setMsg] = useState("");
+  const [showChanges, setShowChanges] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [feedback, setFeedback] = useState("");
   const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -89,6 +96,15 @@ export function ThreadDetail() {
               ▶ Resume
             </button>
           )}
+          <button
+            className="btn ghost sm"
+            onClick={() => {
+              setShowChanges(true);
+              loadChanges(id);
+            }}
+          >
+            Diff
+          </button>
           {!terminal && (
             <button className="btn danger sm" onClick={() => cancel(id)}>
               Cancel
@@ -96,6 +112,45 @@ export function ThreadDetail() {
           )}
         </div>
       </div>
+      {thread.state === "awaiting_approval" && (
+        <div className="approval">
+          <div className="approval-head">⏸ Plan ready — approve to build, or reject with feedback</div>
+          <pre className="approval-plan">{pendingPlan ?? "(plan not captured — see the planner output in the feed)"}</pre>
+          {rejecting ? (
+            <div className="approval-reject">
+              <textarea
+                value={feedback}
+                placeholder="What should change? (sent back as the rejection reason)"
+                onChange={(e) => setFeedback(e.target.value)}
+              />
+              <div className="row">
+                <button
+                  className="btn danger sm"
+                  onClick={() => {
+                    approve(id, false, feedback.trim() || undefined);
+                    setRejecting(false);
+                    setFeedback("");
+                  }}
+                >
+                  Reject plan
+                </button>
+                <button className="btn ghost sm" onClick={() => setRejecting(false)}>
+                  Back
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="row">
+              <button className="btn primary sm" onClick={() => approve(id, true)}>
+                ✓ Approve &amp; build
+              </button>
+              <button className="btn ghost sm" onClick={() => setRejecting(true)}>
+                Reject…
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="feed" ref={scrollRef}>
         {feed.length === 0 && !draft && (
@@ -146,6 +201,30 @@ export function ThreadDetail() {
           </span>
         </div>
       </div>
+      {showChanges && (
+        <div className="scrim" onClick={() => setShowChanges(false)}>
+          <div className="modal changes" onClick={(e) => e.stopPropagation()}>
+            <div className="m-head">
+              <h3>Changes · {thread.workspace}</h3>
+              <button className="btn ghost sm" onClick={() => setShowChanges(false)}>
+                ✕
+              </button>
+            </div>
+            <div className="changes-body">
+              {changes ? (
+                <>
+                  <div className="changes-sec">recent commits</div>
+                  <pre>{changes.log}</pre>
+                  <div className="changes-sec">uncommitted diff</div>
+                  <pre>{changes.diff}</pre>
+                </>
+              ) : (
+                <div className="faint">loading…</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

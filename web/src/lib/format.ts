@@ -18,6 +18,7 @@ export function stateColor(state: ThreadState): string {
       return "var(--danger)";
     case "paused":
     case "awaiting_user":
+    case "awaiting_approval":
     case "review":
       return "var(--warn)";
     case "cancelled":
