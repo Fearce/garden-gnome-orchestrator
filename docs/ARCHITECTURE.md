@@ -155,25 +155,27 @@ to whichever sub has the most headroom so neither is wasted.
   concurrent agents can run on **different** accounts at once — unlike the trading
   orchestrator's global credential swap. We deliberately do **not** touch that
   orchestrator's live credential files.
-- **Burn signal — why not the usage endpoint.** `claude setup-token` tokens
-  **cannot** read `/api/oauth/usage`: it returns `403` for anything but an
-  interactive OAuth access token (the kind the trading orchestrator reads from
-  `~/.claude/.credentials.json`, for the *active* account only). So this console
-  can't poll usage like that orchestrator does. Instead, per-account burn comes
-  from each run's **`rate_limit_event`** — the message API returns `utilization`
-  (0-100), `rateLimitType` (`five_hour`/`seven_day`/…), and `status`
-  (`allowed`/`allowed_warning`/`rejected`) for the account actually running. This
-  needs no extra calls and works with setup-tokens.
-- **AccountManager** (`accountManager.ts`) keeps each account's last-known 5h/7d
-  utilization (from `updateFromRateLimit`, fed by those events). `select()`
-  round-robins (least-recently-selected) while burn is unknown — so both subs are
-  used from the first dispatch — and once a window's utilization is known, favors
-  the account with the most **weekly** headroom, skipping any that 429-rejected
-  until its reset passes (falling back to least-burned if all are near the cap). A
-  light liveness tick (`ACCOUNT_TICK_MS`, default 60s) only clears expired
-  rate-limits and republishes; it makes **no** network call. Snapshots stream to
-  the GUI as `accounts` events → the topbar burn strip; each run records its
-  account.
+- **Burn signal — two sources, no usage endpoint.** `claude setup-token` tokens
+  **cannot** read `/api/oauth/usage` (it `403`s for anything but an interactive
+  OAuth access token). So per-account burn comes from two places, merged by
+  recency: **(1) the trading orchestrator's usage files** (`tradingUsage.ts`,
+  read-only, no tokens, no API calls) — its cache holds the *active* account's
+  live 5h/weekly, and `accounts/index.json` holds a per-account snapshot for the
+  other; the live cache is attributed to the right account by **weekly-reset
+  day-of-week** (a stable per-account fingerprint), and any snapshot window whose
+  reset has passed is nulled (the rest shown dimmed / `~` / "stale"). **(2) each
+  run's `rate_limit_event`** — `utilization` + `rateLimitType` + `status` for the
+  account actually running, freshest when we burn it. Both work with setup-tokens.
+- **AccountManager** (`accountManager.ts`) keeps each account's 5h/weekly
+  utilization, taking the fresher of `refreshFromTrading` (on start + the liveness
+  tick) and `updateFromRateLimit` (run events). `select()` round-robins
+  (least-recently-selected) while burn is unknown, and once it's known favors the
+  account with the most **weekly** headroom, skipping any that 429-rejected until
+  its reset passes (falling back to least-burned if all are near the cap). The
+  liveness tick (`ACCOUNT_TICK_MS`, default 60s) re-reads the trading files and
+  clears expired rate-limits; it makes **no** network call. Snapshots stream to
+  the GUI as `accounts` events → the topbar burn strip (stale entries dimmed);
+  each run records its account.
 - Degrades to single-account (inherited login) when fewer than two tokens are
   configured. Burn bars read `—` until a run's `rate_limit_event` reports a
   window (typically as it approaches a warning/cap), then fill in live.

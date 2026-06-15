@@ -2,12 +2,14 @@ import type { EventHub } from "../events.js";
 import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
 import type { Account } from "./account.js";
+import { readTradingUsage } from "./tradingUsage.js";
 
 interface AccountState {
   account: Account;
-  // Per-window utilization (0-100), keyed by rate_limit_event `rateLimitType`.
-  // Each window is set authoritatively by its own events; never conflated.
-  util: Map<string, number>;
+  fiveHour: number | null; // utilization 0-100
+  sevenDay: number | null; // overall weekly utilization 0-100
+  usageAt: number; // when fiveHour/sevenDay were last set (for source-recency merge)
+  usageStale: boolean; // displayed usage is from a snapshot/old cache, not live
   rateLimited: boolean;
   rateLimitWindow: string | null; // which window 429-rejected (only it can clear the flag)
   rateLimitResetAt: number | null; // epoch ms
@@ -18,34 +20,22 @@ interface AccountState {
 // At/above this on the tightest window, treat the account as effectively capped.
 const HARD_LIMIT = 98;
 
-// seven_day, plus the per-model weekly sub-caps — opus binds our Opus implementor.
-const WEEKLY_FAMILY = ["seven_day", "seven_day_opus", "seven_day_sonnet"];
-
-const fiveHourOf = (s: AccountState): number | null => s.util.get("five_hour") ?? null;
-const weeklyOf = (s: AccountState): number | null => {
-  let m: number | null = null;
-  for (const k of WEEKLY_FAMILY) {
-    const v = s.util.get(k);
-    if (v != null) m = m == null ? v : Math.max(m, v);
-  }
-  return m;
-};
-const tightest = (s: AccountState): number => Math.max(fiveHourOf(s) ?? 0, weeklyOf(s) ?? 0);
-const weeklyHeadroom = (s: AccountState): number => 100 - (weeklyOf(s) ?? 0);
-const fiveHeadroom = (s: AccountState): number => 100 - (fiveHourOf(s) ?? 0);
-const hasBurnData = (s: AccountState): boolean => s.util.size > 0;
+const tightest = (s: AccountState): number => Math.max(s.fiveHour ?? 0, s.sevenDay ?? 0);
+const weeklyHeadroom = (s: AccountState): number => 100 - (s.sevenDay ?? 0);
+const fiveHeadroom = (s: AccountState): number => 100 - (s.fiveHour ?? 0);
+const hasBurnData = (s: AccountState): boolean => s.fiveHour != null || s.sevenDay != null;
 
 /**
- * Routes dispatches across the subscriptions to drain both evenly.
+ * Tracks each subscription's 5h/weekly burn and routes dispatches to drain both
+ * evenly.
  *
- * Setup-tokens (what this console runs on) can't read the /api/oauth/usage
- * endpoint — it 403s for anything but an interactive OAuth access token — so
- * per-account burn comes instead from each run's `rate_limit_event`, which the
- * message API returns for the account that's actually running (utilization +
- * which window + allowed/warning/rejected). Until an account reports burn,
- * routing round-robins so both subs get used; once a window's utilization is
- * known, traffic favors the account with more weekly headroom and avoids any
- * that 429-rejected (until its reset passes).
+ * Burn comes from two sources, merged by recency: (1) the trading orchestrator's
+ * usage files — read-only, no tokens — which give the active account's *live*
+ * usage plus a per-account snapshot for the other (our own `setup-token`s 403 on
+ * the usage endpoint, so this is how the strip shows real numbers); and (2) each
+ * run's `rate_limit_event`, freshest for an account we're actively burning.
+ * `select()` round-robins while burn is unknown, then favors the account with the
+ * most weekly headroom and avoids any that 429-rejected until its reset passes.
  */
 export class AccountManager {
   private readonly states = new Map<string, AccountState>();
@@ -61,7 +51,10 @@ export class AccountManager {
     for (const a of accounts) {
       this.states.set(a.id, {
         account: a,
-        util: new Map(),
+        fiveHour: null,
+        sevenDay: null,
+        usageAt: 0,
+        usageStale: false,
         rateLimited: false,
         rateLimitWindow: null,
         rateLimitResetAt: null,
@@ -73,10 +66,11 @@ export class AccountManager {
 
   start(): void {
     if (!this.accounts.length) return;
+    this.refreshFromTrading();
     this.publish();
-    // Liveness tick: lazily expire rate-limits and republish. No network probe —
-    // burn data arrives via updateFromRateLimit during real runs.
-    this.timer = setInterval(() => this.sweep(), this.tickMs);
+    // Liveness tick: pull the latest trading usage and expire rate-limits. No
+    // network call — usage is read from local files / run events.
+    this.timer = setInterval(() => this.tick(), this.tickMs);
     this.timer.unref?.();
   }
 
@@ -84,13 +78,11 @@ export class AccountManager {
     if (this.timer) clearInterval(this.timer);
   }
 
-  private sweep(): void {
+  private tick(): void {
     const now = Date.now();
-    let changed = false;
+    let changed = this.refreshFromTrading();
     for (const s of this.states.values()) {
       if (s.rateLimited && s.rateLimitResetAt != null && now > s.rateLimitResetAt) {
-        // Window reset: drop its (capped) utilization so it re-learns, and lift the limit.
-        if (s.rateLimitWindow) s.util.delete(s.rateLimitWindow);
         s.rateLimited = false;
         s.rateLimitWindow = null;
         s.rateLimitResetAt = null;
@@ -100,26 +92,66 @@ export class AccountManager {
     if (changed) this.publish();
   }
 
-  /** Burn signal from a real run's rate_limit_event — the only usage source for setup-token accounts. */
+  /** Pull the trading orchestrator's usage files; update any account with fresher data. Returns whether anything changed. */
+  private refreshFromTrading(): boolean {
+    let usage: ReturnType<typeof readTradingUsage>;
+    try {
+      usage = readTradingUsage();
+    } catch {
+      return false;
+    }
+    let changed = false;
+    for (const st of this.states.values()) {
+      const u = usage.get(st.account.label.toLowerCase());
+      if (!u || u.at <= st.usageAt) continue; // keep fresher (e.g. a recent rate_limit_event)
+      st.fiveHour = u.fiveHour;
+      st.sevenDay = u.sevenDay;
+      st.usageAt = u.at;
+      st.usageStale = u.stale;
+      st.updatedAt = Date.now();
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Burn signal from a real run's rate_limit_event — freshest for an account we're burning. */
   updateFromRateLimit(accountId: string, info: RateLimitInfo): void {
     const st = this.states.get(accountId);
     if (!st) return;
-    if (info.utilization != null && info.rateLimitType) {
-      st.util.set(info.rateLimitType, info.utilization);
+    const now = Date.now();
+    if (info.utilization != null) {
+      if (info.rateLimitType === "five_hour") {
+        st.fiveHour = info.utilization;
+        st.usageAt = now;
+        st.usageStale = false;
+      } else if (info.rateLimitType === "seven_day") {
+        st.sevenDay = info.utilization;
+        st.usageAt = now;
+        st.usageStale = false;
+      }
+      // opus/sonnet/overage utilization isn't the overall weekly number — a
+      // rejection on those still flags rateLimited below, but we don't show it.
     }
     if (info.status === "rejected") {
       st.rateLimited = true;
       st.rateLimitWindow = info.rateLimitType ?? null;
       st.rateLimitResetAt = info.resetsAt ?? null;
-      if (info.rateLimitType) st.util.set(info.rateLimitType, 100);
+      if (info.rateLimitType === "five_hour") {
+        st.fiveHour = 100;
+        st.usageAt = now;
+        st.usageStale = false;
+      } else if (info.rateLimitType === "seven_day") {
+        st.sevenDay = 100;
+        st.usageAt = now;
+        st.usageStale = false;
+      }
     } else if (st.rateLimited && (st.rateLimitWindow == null || st.rateLimitWindow === info.rateLimitType)) {
-      // Only an "allowed" on the window that set the limit (or an untyped event) clears it —
-      // an allowed five_hour event must not unblock a rejected weekly window.
+      // Only an "allowed" on the window that set the limit clears it.
       st.rateLimited = false;
       st.rateLimitWindow = null;
       st.rateLimitResetAt = null;
     }
-    st.updatedAt = Date.now();
+    st.updatedAt = now;
     this.publish();
   }
 
@@ -130,7 +162,7 @@ export class AccountManager {
       this.preferredId = first?.id;
       return { account: first ?? { id: "default", label: "logged-in", token: "" }, reason: "single account" };
     }
-    this.sweep(); // lift any rate-limits whose reset has passed before choosing
+    this.tick(); // refresh + lift expired rate-limits before choosing
     const now = Date.now();
     const all = [...this.states.values()];
     const usable = all.filter((s) => {
@@ -153,7 +185,7 @@ export class AccountManager {
     const reason = !usable.length
       ? "all accounts near limit — using least-burned"
       : pool.some(hasBurnData)
-        ? `weekly ${fmt(weeklyOf(chosen))} · 5h ${fmt(fiveHourOf(chosen))} — most headroom`
+        ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} — most headroom`
         : "round-robin (no burn data yet)";
     return { account: chosen.account, reason };
   }
@@ -162,8 +194,9 @@ export class AccountManager {
     return [...this.states.values()].map((s) => ({
       id: s.account.id,
       label: s.account.label,
-      fiveHour: fiveHourOf(s),
-      sevenDay: weeklyOf(s),
+      fiveHour: s.fiveHour,
+      sevenDay: s.sevenDay,
+      stale: s.usageStale,
       rateLimited: s.rateLimited,
       resetsAt: s.rateLimitResetAt,
       active: s.account.id === this.preferredId,

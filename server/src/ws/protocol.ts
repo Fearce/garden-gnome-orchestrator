@@ -16,6 +16,7 @@ export interface AccountDTO {
   label: string;
   fiveHour: number | null; // utilization 0-100
   sevenDay: number | null; // utilization 0-100
+  stale?: boolean; // usage is from a snapshot/old cache, not a live read
   rateLimited: boolean;
   resetsAt?: number | null;
   active: boolean; // last/preferred account for dispatch
