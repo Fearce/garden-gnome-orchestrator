@@ -98,6 +98,9 @@ button { font-family: inherit; cursor: pointer; }
 .meter-fill.five { background: var(--accent); }
 .meter-fill.week { background: var(--role-researcher); }
 .meter-v { font-family: var(--font-mono); font-size: 9px; color: var(--text-dim); text-align: right; }
+.acct.stale .meter-fill { opacity: 0.4; }
+.acct.stale .meter-v { color: var(--text-faint); }
+.acct-tag.dim { color: var(--text-faint); }
 
 .workbench { display: grid; grid-template-columns: 384px 1fr; min-height: 0; }
 .workbench.detail-open { grid-template-columns: 384px minmax(360px, 1fr) minmax(420px, 1.1fr); }
