@@ -7,6 +7,7 @@ import { implementorConfig, plannerConfig, qaConfig, researcherConfig } from "..
 import { createBusServer } from "../bus/busServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { config } from "../config.js";
+import { execFile } from "node:child_process";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import type {
   AgentEvent,
@@ -53,6 +54,7 @@ export class ThreadManager implements OrchestratorApi {
   private readonly lastImplementorSession = new Map<string, string>();
   private readonly stopping = new Set<string>();
   private readonly threadImages = new Map<string, ImageBlock[]>();
+  private readonly pendingApprovals = new Map<string, (d: { approved: boolean; feedback?: string }) => void>();
 
   constructor(
     readonly db: Db,
@@ -117,6 +119,7 @@ export class ThreadManager implements OrchestratorApi {
         this.setState(input.threadId, "awaiting_user");
       }
     }
+    this.notifyExternal(`🔔 needs you: ${input.header} — ${input.question}`);
     this.hub.publish({ type: "question.ask", question: q });
     return new Promise<string>((resolve) => {
       const timer = setTimeout(() => {
@@ -174,9 +177,60 @@ export class ThreadManager implements OrchestratorApi {
     return contentWithImages(text, this.threadImages.get(threadId) ?? []);
   }
 
+  approvalMode(): boolean {
+    return this.db.kvGet("require_plan_approval") === "1";
+  }
+
+  setApprovalMode(on: boolean): void {
+    this.db.kvSet("require_plan_approval", on ? "1" : "0");
+    this.hub.publish({ type: "approval.mode", on });
+  }
+
+  private waitForApproval(threadId: string): Promise<{ approved: boolean; feedback?: string }> {
+    return new Promise((resolve) => this.pendingApprovals.set(threadId, resolve));
+  }
+
+  /** Resolve an awaiting_approval thread; false if it wasn't waiting. */
+  approvePlan(threadId: string, approved: boolean, feedback?: string): boolean {
+    const resolve = this.pendingApprovals.get(threadId);
+    if (!resolve) return false;
+    this.pendingApprovals.delete(threadId);
+    resolve({ approved, feedback });
+    return true;
+  }
+
+  /** git diff + recent log of a thread's workspace, for in-GUI change review. */
+  async getChanges(threadId: string): Promise<{ diff: string; log: string }> {
+    const t = this.db.getThread(threadId);
+    if (!t) return { diff: "", log: "(no such task)" };
+    const run = (args: string[]): Promise<string> =>
+      new Promise((res) =>
+        execFile("git", ["-C", t.workspace, "--no-pager", ...args], { maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) =>
+          res(stdout || stderr || (err ? err.message : "")),
+        ),
+      );
+    const [diff, log] = await Promise.all([run(["diff"]), run(["log", "--oneline", "-10"])]);
+    return { diff: diff.trim() || "(no uncommitted changes)", log: log.trim() || "(no commits / not a git repo)" };
+  }
+
   private setState(threadId: string, state: Thread["state"], error?: string | null): void {
     const t = this.db.updateThread(threadId, { state, error: error ?? null });
-    if (t) this.hub.publish({ type: "thread.upsert", thread: t });
+    if (!t) return;
+    this.hub.publish({ type: "thread.upsert", thread: t });
+    if (state === "done") this.notifyExternal(`✓ done: "${t.title}"`);
+    else if (state === "review") this.notifyExternal(`⚠ needs your review: "${t.title}"`);
+    else if (state === "failed") this.notifyExternal(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`);
+  }
+
+  /** One-line ping to an external webhook (Discord etc.) when configured — for when you're away from the tab. */
+  private notifyExternal(text: string): void {
+    const url = config.notifyWebhookUrl;
+    if (!url) return;
+    void fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: `[orchestrator] ${text}` }),
+    }).catch(() => {});
   }
 
   private cancelled(threadId: string): boolean {
@@ -200,6 +254,22 @@ export class ThreadManager implements OrchestratorApi {
       ]);
       if (this.cancelled(threadId)) return;
       const kickoff = composeKickoff(thread, plan, research);
+      if (this.approvalMode()) {
+        this.setState(threadId, "awaiting_approval");
+        this.hub.publish({ type: "plan.ready", threadId, brief: kickoff });
+        const decision = await this.waitForApproval(threadId);
+        if (this.cancelled(threadId)) return;
+        if (!decision.approved) {
+          this.postFinding({
+            threadId,
+            fromRole: "planner",
+            summary: `Plan rejected${decision.feedback ? `: ${decision.feedback}` : ""}`,
+            severity: "warning",
+          });
+          this.setState(threadId, "review", decision.feedback ? `Plan rejected: ${decision.feedback}` : "Plan rejected.");
+          return;
+        }
+      }
       await this.runImplementorQa(thread, kickoff, plan?.effort);
     } catch (err) {
       if (!this.cancelled(threadId)) this.setState(threadId, "failed", err instanceof Error ? err.message : String(err));
@@ -417,6 +487,11 @@ export class ThreadManager implements OrchestratorApi {
     }
     this.live.delete(threadId);
     this.threadImages.delete(threadId);
+    const pendingApproval = this.pendingApprovals.get(threadId);
+    if (pendingApproval) {
+      this.pendingApprovals.delete(threadId);
+      pendingApproval({ approved: false });
+    }
     // Unblock any agent waiting on a question for this task.
     for (const q of this.db.listOpenQuestions()) {
       if (q.threadId === threadId) this.resolveQuestion(q.id, "(task cancelled)");

@@ -28,10 +28,21 @@ function loadAccounts(): Account[] {
   return [{ id: "default", label: "logged-in", token: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "" }];
 }
 
+// LAN exposure safety: the orchestrator drives bypassPermissions agents, so we
+// refuse to bind a non-localhost host unless AUTH_TOKEN gates it.
+const requestedHost = process.env.HOST ?? "127.0.0.1";
+const localOnly = ["127.0.0.1", "localhost", "::1"].includes(requestedHost);
+const authToken = process.env.AUTH_TOKEN || undefined;
+const exposeBlocked = !localOnly && !authToken;
+
 export const config = {
   serverRoot,
   port: Number(process.env.PORT ?? 4317),
-  host: process.env.HOST ?? "127.0.0.1",
+  host: exposeBlocked ? "127.0.0.1" : requestedHost,
+  authToken,
+  hostWarning: exposeBlocked
+    ? `HOST=${requestedHost} requested but AUTH_TOKEN is unset — refusing to expose bypassPermissions agents on the LAN unauthenticated; bound to 127.0.0.1. Set AUTH_TOKEN to enable LAN access.`
+    : undefined,
   dataDir: resolve(serverRoot, "data"),
   dbPath: resolve(serverRoot, "data", "orchestrator.sqlite"),
   webDist: resolve(serverRoot, "..", "web", "dist"),
@@ -40,6 +51,7 @@ export const config = {
   oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN || undefined,
   accounts: loadAccounts(),
   accountPingMs: Number(process.env.ACCOUNT_PING_MS ?? 600_000),
+  notifyWebhookUrl: process.env.NOTIFY_WEBHOOK_URL || undefined,
   models: {
     director: "claude-sonnet-4-6",
     planner: "claude-opus-4-8",

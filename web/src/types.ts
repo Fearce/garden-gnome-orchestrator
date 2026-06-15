@@ -8,6 +8,7 @@ export type ThreadState =
   | "awaiting_user"
   | "planning"
   | "researching"
+  | "awaiting_approval"
   | "implementing"
   | "qa"
   | "paused"
@@ -129,8 +130,12 @@ export type ServerEvent =
       questions: Question[];
       director: DirectorMessage[];
       accounts: AccountDTO[];
+      approvalMode: boolean;
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  | { type: "plan.ready"; threadId: string; brief: string }
+  | { type: "approval.mode"; on: boolean }
+  | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
@@ -156,6 +161,9 @@ export type ClientCommand =
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.cancel"; threadId: string }
   | { type: "thread.history"; threadId: string }
+  | { type: "thread.approve"; threadId: string; approved: boolean; feedback?: string }
+  | { type: "approval.set"; on: boolean }
+  | { type: "thread.changes"; threadId: string }
   | { type: "snapshot.request" };
 
 // ---- client-only view models ----

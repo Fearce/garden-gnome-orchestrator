@@ -203,3 +203,26 @@ CLI/SDK image input is base64-only; there is no file-path image source.
   messages store lightweight refs (`{id, name, mediaType}` JSON). Refs travel over
   WS; bytes are fetched on demand via `GET /api/attachment/:id` (clamped to known
   image types + `nosniff`) — keeping base64 off the streaming hot path.
+
+## 12. Notifications, LAN access, plan-gate + diff review
+
+Three controls that make the console a hands-off, anywhere replacement for the CLI.
+
+- **Notifications** (`web/src/lib/notify.ts`, opt-in via the topbar bell). On a
+  `question.ask` (a task needs you) or a thread reaching done/review/failed, fire
+  a Web `Notification` + a short Web-Audio chime — so you don't watch the tab. The
+  server also pings an external webhook on those events if `NOTIFY_WEBHOOK_URL` is
+  set (`ThreadManager.notifyExternal`), for when you're away from the machine.
+- **LAN / tablet access** (`server/src/auth.ts`). `AUTH_TOKEN` gates a shared-secret
+  cookie: `POST /api/login` sets an httpOnly cookie, the `/ws` upgrade + the
+  attachment endpoint check it, and the SPA shows a login until `/api/me` says
+  authed. Safety: the server **refuses to bind a non-localhost `HOST` without
+  `AUTH_TOKEN`** (it drives bypassPermissions agents), falling back to 127.0.0.1.
+- **Plan-approval gate** (global toggle, persisted in `kv:require_plan_approval`).
+  When on, `runPipeline` pauses after planning into `awaiting_approval`, emits
+  `plan.ready` (the composed kickoff), and `await`s a pending promise resolved by
+  `thread.approve` (approve → implement; reject+feedback → `review`). Off by
+  default — tasks build autonomously.
+- **Diff review.** `thread.changes` runs `git -C <workspace> diff` + `log` and
+  returns it; the ThreadDetail "Diff" button shows it in a modal — review changes
+  without leaving the console.

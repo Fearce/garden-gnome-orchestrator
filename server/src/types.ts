@@ -8,6 +8,7 @@ export type ThreadState =
   | "awaiting_user" // blocked on a question for the user
   | "planning" // planner + researcher running
   | "researching"
+  | "awaiting_approval" // plan ready, blocked on your approve/reject
   | "implementing" // implementor live
   | "qa" // QA reviewing/testing the implementor's work
   | "paused" // implementor interrupted, awaiting resume/inject

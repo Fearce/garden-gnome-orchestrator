@@ -6,6 +6,7 @@ import type { EventHub } from "../events.js";
 import type { Director } from "../orchestrator/director.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
 import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./protocol.js";
+import { isAuthed } from "../auth.js";
 
 export interface WsContext {
   db: Db;
@@ -34,11 +35,20 @@ function buildHello(ctx: WsContext): ServerEvent {
     questions: ctx.db.listOpenQuestions(),
     director: ctx.db.listDirectorMessages(),
     accounts: ctx.accounts.dto(),
+    approvalMode: ctx.manager.approvalMode(),
   };
 }
 
 export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
-  fastify.get("/ws", { websocket: true }, (socket) => {
+  fastify.get("/ws", { websocket: true }, (socket, request) => {
+    if (!isAuthed(request.headers.cookie)) {
+      try {
+        socket.close(4401, "unauthorized");
+      } catch {
+        /* already closed */
+      }
+      return;
+    }
     send(socket, buildHello(ctx));
     const unsubscribe = ctx.hub.subscribe((event) => send(socket, event));
 
@@ -91,6 +101,17 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
         findings: ctx.db.listFindings(cmd.threadId),
         brief: thread?.brief ?? "",
       });
+      break;
+    }
+    case "thread.approve":
+      ctx.manager.approvePlan(cmd.threadId, cmd.approved, cmd.feedback);
+      break;
+    case "approval.set":
+      ctx.manager.setApprovalMode(cmd.on);
+      break;
+    case "thread.changes": {
+      const changes = await ctx.manager.getChanges(cmd.threadId);
+      send(socket, { type: "thread.changes", threadId: cmd.threadId, diff: changes.diff, log: changes.log });
       break;
     }
     case "snapshot.request":
