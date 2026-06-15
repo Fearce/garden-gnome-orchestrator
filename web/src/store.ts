@@ -26,6 +26,8 @@ interface State {
   connected: boolean;
   authed: boolean;
   authRequired: boolean;
+  authMode: string;
+  authError: string | null;
   accounts: AccountDTO[];
   threads: Record<string, Thread>;
   runs: Record<string, AgentRun>;
@@ -66,6 +68,8 @@ export const useStore = create<State>((set) => ({
   connected: false,
   authed: false,
   authRequired: false,
+  authMode: "none",
+  authError: null,
   accounts: [],
   threads: {},
   runs: {},
@@ -268,12 +272,18 @@ function summarizeToolInput(input: unknown): string {
 export async function init(): Promise<void> {
   try {
     const r = await fetch("/api/me");
-    const j = (await r.json()) as { authed?: boolean; required?: boolean };
+    const j = (await r.json()) as { authed?: boolean; required?: boolean; mode?: string };
     if (j.required && !j.authed) {
-      useStore.setState({ authRequired: true, authed: false });
+      const err = new URLSearchParams(location.search).get("e");
+      if (err) history.replaceState(null, "", location.pathname); // consume once — don't wedge the login screen
+      if (j.mode === "google" && !err) {
+        location.href = "/api/auth/google"; // skip-if-signed-in: instant when a Google session + consent exist
+        return;
+      }
+      useStore.setState({ authRequired: true, authed: false, authMode: j.mode ?? "token", authError: err });
       return;
     }
-    useStore.setState({ authRequired: false, authed: true });
+    useStore.setState({ authRequired: false, authed: true, authMode: j.mode ?? "none" });
   } catch {
     /* server unreachable (dev) — try to connect anyway */
   }
@@ -304,6 +314,10 @@ export function connect(): void {
   ws.onclose = (e) => {
     useStore.setState({ connected: false });
     if (e.code === 4401) {
+      if (useStore.getState().authMode === "google") {
+        location.href = "/api/auth/google";
+        return;
+      }
       useStore.setState({ authRequired: true, authed: false });
       return; // auth lost — show login instead of reconnect-looping
     }

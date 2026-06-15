@@ -10,7 +10,20 @@ import { AccountManager } from "./accounts/accountManager.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
 import { registerWs } from "./ws/hub.js";
-import { isAuthed, AUTH_COOKIE } from "./auth.js";
+import { randomUUID } from "node:crypto";
+import {
+  isAuthed,
+  authMode,
+  cookieValue,
+  AUTH_COOKIE,
+  SESSION_COOKIE,
+  OAUTH_STATE_COOKIE,
+  googleAuthUrl,
+  signState,
+  checkState,
+  exchangeCodeForEmail,
+  makeSession,
+} from "./auth.js";
 
 async function main(): Promise<void> {
   const db = new Db(config.dbPath);
@@ -34,18 +47,60 @@ async function main(): Promise<void> {
     models: config.models,
   }));
 
-  // ---- access auth (only enforced when AUTH_TOKEN is set; for LAN/tablet use) ----
-  app.get("/api/me", async (req) => ({ authed: isAuthed(req.headers.cookie), required: !!config.authToken }));
+  // ---- access auth: Google OIDC (email allowlist) / legacy shared-token / none ----
+  const cookie30d = (name: string, value: string) =>
+    `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`;
+
+  app.get("/api/me", async (req) => ({
+    authed: isAuthed(req.headers.cookie),
+    required: authMode() !== "none",
+    mode: authMode(),
+  }));
+
+  const callbackUri = (req: { headers: { host?: string; "x-forwarded-proto"?: string | string[] } }) =>
+    `${config.publicOrigin || `${(req.headers["x-forwarded-proto"] as string) || "http"}://${req.headers.host}`}/api/auth/callback`;
+
+  app.get<{ Querystring: { select?: string } }>("/api/auth/google", async (req, reply) => {
+    if (authMode() !== "google") return reply.code(404).send({ error: "google auth not configured" });
+    const nonce = randomUUID();
+    reply.header("set-cookie", `${OAUTH_STATE_COOKIE}=${nonce}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`);
+    return reply.redirect(googleAuthUrl(callbackUri(req), signState(nonce), req.query.select ? "select_account" : undefined));
+  });
+
+  app.get<{ Querystring: { code?: string; state?: string; error?: string } }>("/api/auth/callback", async (req, reply) => {
+    if (authMode() !== "google") return reply.redirect("/");
+    const clearState = `${OAUTH_STATE_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
+    const fail = (e: string) => {
+      reply.header("set-cookie", clearState);
+      return reply.redirect(`/?e=${e}`);
+    };
+    // state must match both our signature AND the per-browser cookie nonce (CSRF binding)
+    if (req.query.error || !req.query.code || !checkState(req.query.state, cookieValue(req.headers.cookie, OAUTH_STATE_COOKIE))) {
+      return fail("auth");
+    }
+    const email = await exchangeCodeForEmail(req.query.code, callbackUri(req));
+    if (!email) return fail("auth");
+    if (email.toLowerCase() !== config.allowedEmail) return fail("forbidden");
+    reply.header("set-cookie", [clearState, cookie30d(SESSION_COOKIE, makeSession(email))]);
+    return reply.redirect("/");
+  });
+
+  // Legacy shared-token login (only when AUTH_TOKEN mode is active).
   app.post<{ Body: { token?: string } }>("/api/login", async (req, reply) => {
-    if (!config.authToken) return { ok: true };
-    if (req.body && req.body.token === config.authToken) {
-      reply.header(
-        "set-cookie",
-        `${AUTH_COOKIE}=${encodeURIComponent(config.authToken)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`,
-      );
+    if (authMode() !== "token") return { ok: authMode() === "none" };
+    if (req.body && config.authToken && req.body.token === config.authToken) {
+      reply.header("set-cookie", cookie30d(AUTH_COOKIE, config.authToken));
       return { ok: true };
     }
     return reply.code(401).send({ ok: false, error: "invalid token" });
+  });
+
+  app.get("/api/logout", async (_req, reply) => {
+    reply.header("set-cookie", [
+      `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`,
+      `${AUTH_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`,
+    ]);
+    return reply.redirect("/");
   });
 
   // Serve pasted-image bytes on demand (refs travel over WS; bytes stay off it).
@@ -88,7 +143,11 @@ async function main(): Promise<void> {
         `  auth: ${config.oauthToken ? "CLAUDE_CODE_OAUTH_TOKEN" : "inherited Claude Code login"} (subscription, no API credits)`,
         `  accounts: ${config.accounts.length} (${config.accounts.map((a) => a.label).join(", ")})${config.accounts.length > 1 ? " — load-balancing by burn ratio" : ""}`,
         `  data: ${config.dbPath}`,
-        config.authToken ? `  access: AUTH_TOKEN required (LAN/tablet access enabled)` : ``,
+        authMode() === "google"
+          ? `  access: Google sign-in required — allowlisted to ${config.allowedEmail}`
+          : authMode() === "token"
+            ? `  access: AUTH_TOKEN required (LAN/tablet access enabled)`
+            : ``,
         config.hostWarning ? `  ⚠ ${config.hostWarning}` : ``,
         apiKeyWarning,
         ``,
