@@ -2,23 +2,28 @@ import type { EventHub } from "../events.js";
 import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
 import type { Account } from "./account.js";
-import { readTradingUsage } from "./tradingUsage.js";
+import { pingUsage } from "./usagePing.js";
 
 interface AccountState {
   account: Account;
   fiveHour: number | null; // utilization 0-100
   sevenDay: number | null; // overall weekly utilization 0-100
-  usageAt: number; // when fiveHour/sevenDay were last set (for source-recency merge)
-  usageStale: boolean; // displayed usage is from a snapshot/old cache, not live
+  fiveHourReset: number | null; // epoch ms
+  sevenDayReset: number | null; // epoch ms
+  usageAt: number; // when usage was last read
+  usageStale: boolean; // last ping failed and the value is getting old
   rateLimited: boolean;
-  rateLimitWindow: string | null; // which window 429-rejected (only it can clear the flag)
-  rateLimitResetAt: number | null; // epoch ms
+  rateLimitWindow: string | null;
+  rateLimitResetAt: number | null;
   lastPick: number; // monotonic selection sequence — round-robin tiebreak
   updatedAt: number;
 }
 
 // At/above this on the tightest window, treat the account as effectively capped.
 const HARD_LIMIT = 98;
+const STALE_MS = 20 * 60 * 1000; // a value older than this (ping failing) shows "stale"
+const RESET_BUFFER_MS = 3_000; // ping this long after a window reset to catch the rollover
+const MIN_RESET_DELAY_MS = 1_000;
 
 const tightest = (s: AccountState): number => Math.max(s.fiveHour ?? 0, s.sevenDay ?? 0);
 const weeklyHeadroom = (s: AccountState): number => 100 - (s.sevenDay ?? 0);
@@ -29,30 +34,34 @@ const hasBurnData = (s: AccountState): boolean => s.fiveHour != null || s.sevenD
  * Tracks each subscription's 5h/weekly burn and routes dispatches to drain both
  * evenly.
  *
- * Burn comes from two sources, merged by recency: (1) the trading orchestrator's
- * usage files — read-only, no tokens — which give the active account's *live*
- * usage plus a per-account snapshot for the other (our own `setup-token`s 403 on
- * the usage endpoint, so this is how the strip shows real numbers); and (2) each
- * run's `rate_limit_event`, freshest for an account we're actively burning.
- * `select()` round-robins while burn is unknown, then favors the account with the
- * most weekly headroom and avoids any that 429-rejected until its reset passes.
+ * Usage comes from a "super tiny" Haiku ping per account (`usagePing.ts`): the
+ * /v1/messages response headers carry exact live 5h + weekly utilization for the
+ * token's account — works with setup-tokens, which 403 on the /usage endpoint.
+ * Pings run on an interval (fresh display) and are also scheduled right at each
+ * window's reset, which both flips the strip to ~0% the moment a window resets
+ * AND starts the new window's timer immediately. `select()` round-robins until
+ * burn is known, then favors the account with the most weekly headroom and
+ * avoids any that 429-rejected until its reset passes.
  */
 export class AccountManager {
   private readonly states = new Map<string, AccountState>();
-  private timer: NodeJS.Timeout | undefined;
+  private periodic: NodeJS.Timeout | undefined;
+  private readonly resetTimers = new Map<string, NodeJS.Timeout>();
   private preferredId: string | undefined;
-  private selSeq = 0; // ever-increasing dispatch counter; drives round-robin without clock collisions
+  private selSeq = 0;
 
   constructor(
     private readonly accounts: Account[],
     private readonly hub: EventHub,
-    private readonly tickMs = 60_000,
+    private readonly pingIntervalMs = 600_000, // 10 min
   ) {
     for (const a of accounts) {
       this.states.set(a.id, {
         account: a,
         fiveHour: null,
         sevenDay: null,
+        fiveHourReset: null,
+        sevenDayReset: null,
         usageAt: 0,
         usageStale: false,
         rateLimited: false,
@@ -66,113 +75,79 @@ export class AccountManager {
 
   start(): void {
     if (!this.accounts.length) return;
-    this.refreshFromTrading();
-    this.warnUnmatchedLabels();
-    this.publish();
-    // Liveness tick: pull the latest trading usage and expire rate-limits. No
-    // network call — usage is read from local files / run events.
-    this.timer = setInterval(() => this.tick(), this.tickMs);
-    this.timer.unref?.();
+    void this.pingAll(); // immediate, so the strip fills within a few seconds
+    this.periodic = setInterval(() => void this.pingAll(), this.pingIntervalMs);
+    this.periodic.unref?.();
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
+    if (this.periodic) clearInterval(this.periodic);
+    for (const t of this.resetTimers.values()) clearTimeout(t);
+    this.resetTimers.clear();
   }
 
-  private tick(): void {
+  private async pingAll(): Promise<void> {
+    await Promise.all(this.accounts.map((a) => this.pingOne(a)));
+    this.publish();
+  }
+
+  /** Tiny Haiku ping → live usage from rate-limit headers; also (re)schedules the reset ping. */
+  private async pingOne(a: Account): Promise<void> {
+    const u = await pingUsage(a.token);
+    const st = this.states.get(a.id);
+    if (!st) return;
     const now = Date.now();
-    let changed = this.refreshFromTrading();
-    for (const s of this.states.values()) {
-      if (s.rateLimited && s.rateLimitResetAt != null && now > s.rateLimitResetAt) {
-        s.rateLimited = false;
-        s.rateLimitWindow = null;
-        s.rateLimitResetAt = null;
-        changed = true;
+    if (!u) {
+      if (st.usageAt && now - st.usageAt > STALE_MS && !st.usageStale) {
+        st.usageStale = true;
+        st.updatedAt = now;
       }
-    }
-    if (changed) this.publish();
-  }
-
-  /** Burn-strip data only flows if an account's label matches a trading-index `name`; warn once if it doesn't. */
-  private warnUnmatchedLabels(): void {
-    let usage: ReturnType<typeof readTradingUsage>;
-    try {
-      usage = readTradingUsage();
-    } catch {
       return;
     }
-    if (!usage.size) return; // trading files absent — nothing to match against
-    for (const a of this.accounts) {
-      if (!usage.has(a.label.toLowerCase())) {
-        this.hub.log(
-          "warn",
-          `account "${a.label}" has no match in the trading usage index (${[...usage.keys()].join(", ")}); ` +
-            `its burn bars will rely on run events only — set ACCOUNT_*_LABEL to the trading account name`,
-        );
-      }
-    }
+    st.fiveHour = u.fiveHour;
+    st.sevenDay = u.sevenDay;
+    st.fiveHourReset = u.fiveHourReset;
+    st.sevenDayReset = u.sevenDayReset;
+    st.usageAt = now;
+    st.usageStale = false;
+    st.rateLimited = u.fiveHourRejected || u.sevenDayRejected;
+    st.rateLimitWindow = u.fiveHourRejected ? "five_hour" : u.sevenDayRejected ? "seven_day" : null;
+    st.rateLimitResetAt = u.fiveHourRejected ? u.fiveHourReset : u.sevenDayRejected ? u.sevenDayReset : null;
+    st.updatedAt = now;
+    this.scheduleResetPing(a, u);
   }
 
-  /** Pull the trading orchestrator's usage files; update any account with fresher data. Returns whether anything changed. */
-  private refreshFromTrading(): boolean {
-    let usage: ReturnType<typeof readTradingUsage>;
-    try {
-      usage = readTradingUsage();
-    } catch {
-      return false;
-    }
-    let changed = false;
-    for (const st of this.states.values()) {
-      const u = usage.get(st.account.label.toLowerCase());
-      if (!u || u.at <= st.usageAt) continue; // keep fresher (e.g. a recent rate_limit_event)
-      st.fiveHour = u.fiveHour;
-      st.sevenDay = u.sevenDay;
-      st.usageAt = u.at;
-      st.usageStale = u.stale;
-      st.updatedAt = Date.now();
-      changed = true;
-    }
-    return changed;
+  /**
+   * Schedule a one-shot ping just after the soonest upcoming window reset — so a
+   * new window's timer starts immediately and the strip flips to ~0% the moment
+   * it resets, rather than waiting for the next periodic ping.
+   */
+  private scheduleResetPing(a: Account, u: { fiveHourReset: number | null; sevenDayReset: number | null }): void {
+    const now = Date.now();
+    const upcoming = [u.fiveHourReset, u.sevenDayReset].filter((r): r is number => r != null && r > now);
+    const prev = this.resetTimers.get(a.id);
+    if (prev) clearTimeout(prev);
+    if (!upcoming.length) return;
+    const delay = Math.max(Math.min(...upcoming) - now + RESET_BUFFER_MS, MIN_RESET_DELAY_MS);
+    const t = setTimeout(() => void this.pingOne(a).then(() => this.publish()), delay);
+    t.unref?.();
+    this.resetTimers.set(a.id, t);
   }
 
-  /** Burn signal from a real run's rate_limit_event — freshest for an account we're burning. */
+  /** Cap signal from a real run's rate_limit_event — flags rateLimited fast mid-burst; pings own the %. */
   updateFromRateLimit(accountId: string, info: RateLimitInfo): void {
     const st = this.states.get(accountId);
     if (!st) return;
-    const now = Date.now();
-    if (info.utilization != null) {
-      if (info.rateLimitType === "five_hour") {
-        st.fiveHour = info.utilization;
-        st.usageAt = now;
-        st.usageStale = false;
-      } else if (info.rateLimitType === "seven_day") {
-        st.sevenDay = info.utilization;
-        st.usageAt = now;
-        st.usageStale = false;
-      }
-      // opus/sonnet/overage utilization isn't the overall weekly number — a
-      // rejection on those still flags rateLimited below, but we don't show it.
-    }
     if (info.status === "rejected") {
       st.rateLimited = true;
       st.rateLimitWindow = info.rateLimitType ?? null;
       st.rateLimitResetAt = info.resetsAt ?? null;
-      if (info.rateLimitType === "five_hour") {
-        st.fiveHour = 100;
-        st.usageAt = now;
-        st.usageStale = false;
-      } else if (info.rateLimitType === "seven_day") {
-        st.sevenDay = 100;
-        st.usageAt = now;
-        st.usageStale = false;
-      }
     } else if (st.rateLimited && (st.rateLimitWindow == null || st.rateLimitWindow === info.rateLimitType)) {
-      // Only an "allowed" on the window that set the limit clears it.
       st.rateLimited = false;
       st.rateLimitWindow = null;
       st.rateLimitResetAt = null;
     }
-    st.updatedAt = now;
+    st.updatedAt = Date.now();
     this.publish();
   }
 
@@ -183,7 +158,6 @@ export class AccountManager {
       this.preferredId = first?.id;
       return { account: first ?? { id: "default", label: "logged-in", token: "" }, reason: "single account" };
     }
-    this.tick(); // refresh + lift expired rate-limits before choosing
     const now = Date.now();
     const all = [...this.states.values()];
     const usable = all.filter((s) => {
@@ -191,8 +165,7 @@ export class AccountManager {
       return !limited && tightest(s) < HARD_LIMIT;
     });
     const pool = usable.length ? usable : all;
-    // Prefer weekly headroom, then 5h headroom, then least-recently-selected —
-    // so equal/unknown burn alternates evenly instead of always hitting acct 1.
+    // Prefer weekly headroom, then 5h headroom, then least-recently-selected.
     pool.sort(
       (x, y) =>
         weeklyHeadroom(y) - weeklyHeadroom(x) ||

@@ -39,7 +39,7 @@ export const config = {
   memoryDir: process.env.MEMORY_DIR ?? "C:\\Users\\theke\\.claude\\memory",
   oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN || undefined,
   accounts: loadAccounts(),
-  accountTickMs: Number(process.env.ACCOUNT_TICK_MS ?? 60_000),
+  accountPingMs: Number(process.env.ACCOUNT_PING_MS ?? 600_000),
   models: {
     director: "claude-sonnet-4-6",
     planner: "claude-opus-4-8",
