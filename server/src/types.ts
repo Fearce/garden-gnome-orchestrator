@@ -139,6 +139,7 @@ export interface PlanOutput {
   openQuestions: string[];
   effort?: Effort; // how hard the implementor should work
   parallelism?: string; // guidance on spawning subagents / parallel work
+  nextAgent?: "researcher" | "implementor"; // the planner routes the pipeline: external research, or straight to build
 }
 
 export interface QaIssue {
@@ -155,10 +156,23 @@ export interface QaOutput {
 
 export interface ResearchOutput {
   summary: string;
-  relevantFiles: { path: string; why: string }[];
-  facts: { claim: string; source?: string }[];
+  facts: { claim: string; source?: string }[]; // external claims, each with the source it came from
   memories: { name: string; gist: string }[];
   warnings: string[];
+}
+
+/**
+ * Per-stage pipeline outputs persisted to disk so a task that dies mid-pipeline (crash, restart,
+ * timeout, Claude exit error) can resume from where it failed instead of redoing finished stages.
+ * The implementor's "output" isn't JSON — it's the working tree plus its SDK session, recovered
+ * from the latest implementor agent_run's session_id, so only the upstream stages live here.
+ */
+export interface StageOutputs {
+  plan?: PlanOutput | null; // the planner's structured plan (null = planner ran but produced nothing)
+  research?: ResearchOutput | null; // the researcher's brief, when the planner routed to it
+  researchDone?: boolean; // the researcher stage ran (true even if it produced nothing) — don't re-run on resume
+  approved?: boolean; // the plan cleared the approval gate — don't re-prompt on resume
+  kickoff?: string | null; // the composed brief the implementor was handed (record of what it got)
 }
 
 export interface RateLimitInfo {

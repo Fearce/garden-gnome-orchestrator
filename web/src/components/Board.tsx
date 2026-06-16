@@ -4,7 +4,9 @@ import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
 import { roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 
-const ROLES: Role[] = ["planner", "researcher", "implementor", "qa"];
+// Pipeline order for laying out the role pips. The path is agent-routed, so which of these
+// actually run varies (the researcher is conditional) — pips are derived from real runs below.
+const PIPELINE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
 const PER_PAGE = 15;
 
 export function Board() {
@@ -62,6 +64,14 @@ function latestRun(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
 }
 
+/** The roles to show as pips: the ones that actually ran, in pipeline order (so the researcher pip
+ *  appears only when the planner routed to it). Before any run exists, show the planner — it's
+ *  always next — so a just-dispatched card isn't blank. */
+function pipRoles(runs: AgentRun[]): Role[] {
+  const ran = PIPELINE_ORDER.filter((role) => runs.some((r) => r.role === role));
+  return ran.length ? ran : ["planner"];
+}
+
 function Card({ thread }: { thread: Thread }) {
   const runs = useStore((s) => s.runs);
   const feeds = useStore((s) => s.threadFeeds);
@@ -86,7 +96,7 @@ function Card({ thread }: { thread: Thread }) {
       <div className="title">{thread.title}</div>
       <div className="ws-path">{thread.workspace}</div>
       <div className="pips">
-        {ROLES.map((role) => {
+        {pipRoles(threadRuns).map((role) => {
           const r = latestRun(threadRuns, role);
           const active = r && runActive(r.state);
           const cls = active ? "active" : r ? "done" : "idle";

@@ -5,12 +5,14 @@ import type { AgentRunConfig } from "./runner.js";
 import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, MEMORY_SERVER, T } from "./toolNames.js";
 import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
 
-// Only `summary` is required so a planner/researcher that hits a blocker (and
-// asks the user) can still emit valid output instead of looping on the schema.
+// `summary` and `nextAgent` are required: the plan must always declare its next step (the routing
+// decision the planner always makes — a trivial enum pick even when blocked). Everything else stays
+// optional so a planner that hits a blocker (and asks the user) can still emit valid output instead
+// of being forced to fabricate steps/risks to satisfy the schema.
 export const PLAN_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["summary"],
+  required: ["summary", "nextAgent"],
   properties: {
     summary: { type: "string" },
     steps: {
@@ -30,6 +32,9 @@ export const PLAN_SCHEMA: Record<string, unknown> = {
     openQuestions: { type: "array", items: { type: "string" } },
     effort: { type: "string", enum: ["low", "medium", "high", "xhigh", "max"] },
     parallelism: { type: "string" },
+    // The planner routes the pipeline: 'researcher' to gather external info first, else straight
+    // to the implementor. Absent ⇒ implementor (don't burn a researcher unless asked for).
+    nextAgent: { type: "string", enum: ["researcher", "implementor"] },
   },
 };
 
@@ -39,15 +44,6 @@ export const RESEARCH_SCHEMA: Record<string, unknown> = {
   required: ["summary"],
   properties: {
     summary: { type: "string" },
-    relevantFiles: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["path", "why"],
-        properties: { path: { type: "string" }, why: { type: "string" } },
-      },
-    },
     facts: {
       type: "array",
       items: {
@@ -132,8 +128,11 @@ export function researcherConfig(cwd: string, servers: { bus: McpServerConfig; m
     cwd,
     systemPrompt: RESEARCHER_PROMPT,
     permissionMode: "plan",
-    allowedTools: ["Read", "Grep", "Glob", "WebSearch", "WebFetch", T.searchMemory, ...BUS_TOOLS],
-    disallowedTools: ["AskUserQuestion"],
+    // External-info-only: the researcher gathers web/docs/changelogs + the user's memory, never the
+    // codebase. Read/Grep/Glob are disallowed (the planner owns code reading) so it can't duplicate
+    // that work even if tempted — its system prompt forbids it too.
+    allowedTools: ["WebSearch", "WebFetch", T.searchMemory, ...BUS_TOOLS],
+    disallowedTools: ["Read", "Grep", "Glob", "AskUserQuestion"],
     mcpServers: { [BUS_SERVER]: servers.bus, [MEMORY_SERVER]: servers.memory },
     settingSources: ["project"],
     outputFormat: { type: "json_schema", schema: RESEARCH_SCHEMA },

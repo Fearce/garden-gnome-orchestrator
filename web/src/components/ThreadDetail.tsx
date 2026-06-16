@@ -13,6 +13,17 @@ const roleVar = (role: Role): CSSProperties => ({ "--role": roleColor(role) } as
 
 const ROLE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
 
+/** The actual agent path taken, in first-run order — planner, then whichever of researcher/
+ *  implementor/QA actually ran. Reflects the agent-routed pipeline (the researcher may be absent;
+ *  a QA→implementor bounce still reads planner → implementor → qa since first occurrences order it). */
+function pipelinePath(runs: AgentRun[]): Role[] {
+  const seen: Role[] = [];
+  for (const r of [...runs].sort((a, b) => a.startedAt - b.startedAt)) {
+    if (ROLE_ORDER.includes(r.role) && !seen.includes(r.role)) seen.push(r.role);
+  }
+  return seen;
+}
+
 /** Which agent a feed row belongs to, for the per-agent filter (tool_result resolves via its run). */
 function itemRoleOf(f: FeedItem, runRole: Record<string, Role>): Role | null {
   if (f.kind === "text" || f.kind === "tool") return f.role;
@@ -111,9 +122,12 @@ export function ThreadDetail() {
   const threadRuns = Object.values(runs).filter((r) => r.threadId === id);
   const impl = threadRuns.filter((r) => r.role === "implementor").sort((a, b) => b.startedAt - a.startedAt)[0];
   const totalCost = threadRuns.reduce((a, r) => a + (r.costUsd ?? 0), 0);
+  const path = pipelinePath(threadRuns);
 
   const isLive = thread.state === "implementing";
-  const isPaused = thread.state === "paused" || thread.state === "review";
+  // Resume covers a failed task too: the pipeline is resume-aware and re-runs from the stage that
+  // died (reusing saved plan/research and the implementor's prior session) instead of from scratch.
+  const isResumable = thread.state === "paused" || thread.state === "review" || thread.state === "failed";
   const terminal = thread.state === "done" || thread.state === "cancelled" || thread.state === "failed";
 
   const doInject = (mode: "append" | "interrupt") => {
@@ -187,13 +201,23 @@ export function ThreadDetail() {
           {totalCost > 0 ? ` · ~$${totalCost.toFixed(2)} equiv (subscription)` : ""}
           {thread.error ? ` · ERROR: ${thread.error}` : ""}
         </div>
+        {path.length > 0 && (
+          <div className="meta" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }} title="The actual agent path this task took">
+            {path.map((role, i) => (
+              <span key={role} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                {i > 0 ? <span style={{ opacity: 0.4 }}>→</span> : null}
+                <span style={{ color: roleColor(role), textTransform: "capitalize", fontWeight: 600 }}>{role}</span>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="detail-controls">
           {isLive && (
             <button className="btn ghost sm" onClick={() => interrupt(id)}>
               ⏸ Interrupt
             </button>
           )}
-          {isPaused && (
+          {isResumable && (
             <button className="btn primary sm" onClick={() => resume(id)}>
               ▶ Resume
             </button>

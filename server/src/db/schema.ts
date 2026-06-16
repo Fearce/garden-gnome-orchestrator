@@ -5,15 +5,16 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS threads (
-  id          TEXT PRIMARY KEY,
-  title       TEXT NOT NULL,
-  state       TEXT NOT NULL,
-  workspace   TEXT NOT NULL,
-  brief       TEXT NOT NULL DEFAULT '',
-  raw_prompt  TEXT NOT NULL DEFAULT '',
-  error       TEXT,
-  created_at  INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL
+  id            TEXT PRIMARY KEY,
+  title         TEXT NOT NULL,
+  state         TEXT NOT NULL,
+  workspace     TEXT NOT NULL,
+  brief         TEXT NOT NULL DEFAULT '',
+  raw_prompt    TEXT NOT NULL DEFAULT '',
+  error         TEXT,
+  stage_outputs TEXT,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS agent_runs (

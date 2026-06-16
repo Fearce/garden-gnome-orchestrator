@@ -15,6 +15,7 @@ import type {
   QuestionOption,
   Role,
   Severity,
+  StageOutputs,
   Thread,
   ThreadState,
 } from "../types.js";
@@ -118,6 +119,7 @@ export class Db {
       "ALTER TABLE agent_runs ADD COLUMN account TEXT",
       "ALTER TABLE agent_runs ADD COLUMN effort TEXT",
       "ALTER TABLE director_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -179,6 +181,23 @@ export class Db {
       )
       .run(next);
     return next;
+  }
+
+  /** Saved per-stage pipeline outputs for resume, or {} if none yet. Deliberately NOT folded into
+   *  rowToThread/the Thread DTO: this JSON (plan + research + kickoff) can be multi-KB and the UI
+   *  never needs it, so it stays off every thread.upsert frame — only the resume path reads it. */
+  getThreadStageOutputs(id: string): StageOutputs {
+    const r = this.raw.prepare("SELECT stage_outputs FROM threads WHERE id = ?").get(id) as Row | undefined;
+    return r ? parseStageOutputs(r.stage_outputs) : {};
+  }
+
+  /** Additively merge a stage's output into the saved set — read-merge-write so persisting a later
+   *  stage (e.g. research) never wipes an earlier one (plan). Sibling keys are preserved. */
+  updateThreadStageOutputs(id: string, patch: Partial<StageOutputs>): void {
+    const r = this.raw.prepare("SELECT stage_outputs FROM threads WHERE id = ?").get(id) as Row | undefined;
+    if (!r) return;
+    const next = { ...parseStageOutputs(r.stage_outputs), ...patch };
+    this.raw.prepare("UPDATE threads SET stage_outputs = ? WHERE id = ?").run(JSON.stringify(next), id);
   }
 
   // ---- agent runs ----
@@ -427,6 +446,16 @@ export class Db {
   getAttachment(id: string): { name: string; mediaType: string; data: string } | null {
     const r = this.raw.prepare("SELECT name, media_type, data FROM attachments WHERE id = ?").get(id) as Row | undefined;
     return r ? { name: r.name as string, mediaType: r.media_type as string, data: r.data as string } : null;
+  }
+}
+
+function parseStageOutputs(raw: unknown): StageOutputs {
+  if (typeof raw !== "string" || !raw) return {};
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as StageOutputs) : {};
+  } catch {
+    return {};
   }
 }
 
