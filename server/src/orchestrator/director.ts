@@ -34,7 +34,7 @@ export class Director {
     private readonly hub: EventHub,
   ) {}
 
-  handleUserMessage(text: string, workspaceHint?: string, images?: ImageAttachment[]): void {
+  handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[]): void {
     const refs = (images ?? []).map((img) =>
       this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
     );
@@ -42,7 +42,11 @@ export class Director {
     this.hub.publish({ type: "director.message", message: msg });
 
     this.pendingImages = images ?? [];
-    const base = workspaceHint ? `${text}\n\n(Kevin's current repo context: ${workspaceHint})` : text;
+    // A path Kevin typed in the path field is AUTHORITATIVE — it's the exact dispatch workspace, not
+    // a hint to re-resolve. Tell the director to use it verbatim and skip find_workspace entirely.
+    const base = workspace
+      ? `${text}\n\n[TARGET WORKSPACE — Kevin set this explicitly. Use this EXACT absolute path as the dispatch workspace; do NOT call find_workspace and do NOT substitute another path: ${workspace}]`
+      : text;
     const content = contentWithImages(base, this.pendingImages.map(toImageBlock));
     this.pending = content;
     this.failovers = 0;
