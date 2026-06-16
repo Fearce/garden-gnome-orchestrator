@@ -50,6 +50,7 @@ const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
   "awaiting_user",
   "planning",
   "researching",
+  "awaiting_approval",
   "implementing",
   "qa",
   "paused",
@@ -80,7 +81,7 @@ export class ThreadManager implements OrchestratorApi {
   private markInterrupted(): void {
     for (const t of this.db.listThreads()) {
       if (IN_FLIGHT.has(t.state)) {
-        this.db.updateThread(t.id, { state: "failed", error: "interrupted by server restart — re-dispatch to retry" });
+        this.db.updateThread(t.id, { state: "failed", error: "interrupted by a server restart — click Resume to continue from where it left off (finished stages are reused)" });
       }
     }
     const at = Date.now();
@@ -264,6 +265,18 @@ export class ThreadManager implements OrchestratorApi {
     return this.db.getThread(threadId)?.state === "cancelled";
   }
 
+  /**
+   * The agent-routed pipeline. There is no fixed sequence: the **planner always runs first**,
+   * reads the codebase, and routes to either a **researcher** (external info) or straight to the
+   * **implementor**; the implementor always hands off to **QA**; and QA is the only role that can
+   * declare the task done (or bounce it back to the implementor). The shape is
+   *   planner → [researcher →] implementor → QA → [implementor → QA → …].
+   *
+   * It is also resume-aware: every completed stage is persisted (updateThreadStageOutputs), so a
+   * task that died mid-pipeline re-enters here (via resumeThread on a 'failed' thread) and skips
+   * the stages already done — feeding their saved outputs forward — instead of starting over. A
+   * fresh dispatch simply finds no saved stages and runs them all.
+   */
   private async runPipeline(threadId: string): Promise<void> {
     const thread = this.db.getThread(threadId);
     if (!thread) return;
@@ -271,25 +284,37 @@ export class ThreadManager implements OrchestratorApi {
       this.setState(threadId, "failed", `Workspace "${thread.workspace}" does not exist on disk — agents can't run there. Re-dispatch with a valid path.`);
       return;
     }
+    const saved = this.db.getThreadStageOutputs(threadId);
     try {
-      // Researcher first, THEN planner — the planner grounds its plan in the research
-      // (relevant files, gotchas, facts, memory) instead of both exploring the repo blind in
-      // parallel. Sequencing also removes the duplicate code-exploration the planner would
-      // otherwise redo, which partly offsets the added latency.
-      this.setState(threadId, "researching");
-      const research = await this.runResearcher(thread).catch((e) => {
-        this.hub.log("warn", `Researcher failed on ${threadId.slice(0, 8)}: ${String(e)}`);
-        return undefined;
-      });
-      if (this.cancelled(threadId)) return;
-      this.setState(threadId, "planning");
-      const plan = await this.runPlanner(thread, research).catch((e) => {
-        this.hub.log("warn", `Planner failed on ${threadId.slice(0, 8)}: ${String(e)}`);
-        return undefined;
-      });
-      if (this.cancelled(threadId)) return;
+      // 1. Planner — always first. It owns codebase reading and decides what comes next.
+      let plan = saved.plan ?? undefined;
+      if (!plan) {
+        this.setState(threadId, "planning");
+        plan = await this.runPlanner(thread).catch((e) => {
+          this.hub.log("warn", `Planner failed on ${threadId.slice(0, 8)}: ${String(e)}`);
+          return undefined;
+        });
+        if (this.cancelled(threadId)) return;
+        this.db.updateThreadStageOutputs(threadId, { plan: plan ?? null });
+      }
+
+      // 2. Researcher — only when the planner routed to it (external info needed). Always →
+      //    implementor afterward. researchDone guards against re-running it on resume.
+      let research = saved.research ?? undefined;
+      if (plan?.nextAgent === "researcher" && !saved.researchDone) {
+        this.setState(threadId, "researching");
+        research = await this.runResearcher(thread, plan).catch((e) => {
+          this.hub.log("warn", `Researcher failed on ${threadId.slice(0, 8)}: ${String(e)}`);
+          return undefined;
+        });
+        if (this.cancelled(threadId)) return;
+        this.db.updateThreadStageOutputs(threadId, { research: research ?? null, researchDone: true });
+      }
+
+      // 3. Approval gate — after the full context (plan + any research) exists, so the human sees
+      //    everything before approving. Skipped on resume if already approved.
       const kickoff = composeKickoff(thread, plan, research);
-      if (this.approvalMode()) {
+      if (this.approvalMode() && !saved.approved) {
         this.setState(threadId, "awaiting_approval");
         this.hub.publish({ type: "plan.ready", threadId, brief: kickoff });
         const decision = await this.waitForApproval(threadId);
@@ -304,8 +329,13 @@ export class ThreadManager implements OrchestratorApi {
           this.setState(threadId, "review", decision.feedback ? `Plan rejected: ${decision.feedback}` : "Plan rejected.");
           return;
         }
+        this.db.updateThreadStageOutputs(threadId, { approved: true });
       }
-      await this.runImplementorQa(thread, kickoff, plan?.effort);
+      this.db.updateThreadStageOutputs(threadId, { kickoff });
+
+      // 4. Implementor → QA. On resume, pick up the implementor's prior SDK session (recovered from
+      //    its agent_run, which survives a restart) so its work-in-progress isn't thrown away.
+      await this.runImplementorQa(thread, kickoff, plan?.effort, this.latestImplementorSession(threadId));
     } catch (err) {
       if (!this.cancelled(threadId)) this.setState(threadId, "failed", err instanceof Error ? err.message : String(err));
     } finally {
@@ -314,6 +344,19 @@ export class ThreadManager implements OrchestratorApi {
       // session, so dropping them here doesn't blind anything.
       this.threadImages.delete(threadId);
     }
+  }
+
+  /** The most recent implementor run's SDK session id for a thread, or undefined if none has one.
+   *  Sourced from the DB (not the in-memory lastImplementorSession map) so it survives a server
+   *  restart — that's the whole point of resume. Latest-by-startedAt handles failover (one role,
+   *  several runs): we want the session the implementor was actually on when it died. */
+  private latestImplementorSession(threadId: string): string | undefined {
+    return (
+      this.db
+        .listRuns(threadId)
+        .filter((r) => r.role === "implementor" && r.sessionId)
+        .sort((a, b) => b.startedAt - a.startedAt)[0]?.sessionId ?? undefined
+    );
   }
 
   /** Run a one-shot role (planner/researcher/qa) to a result. If its account hits a 5h/weekly
@@ -350,11 +393,8 @@ export class ThreadManager implements OrchestratorApi {
     return undefined;
   }
 
-  private async runPlanner(thread: Thread, research: ResearchOutput | undefined): Promise<PlanOutput | undefined> {
-    const brief = research
-      ? `${thread.brief}\n\n## Researcher's findings — ground your plan in these (don't re-explore what they already cover)\n${formatResearch(research)}`
-      : thread.brief;
-    const res = await this.runRole(thread, "planner", config.models.planner, this.kickoffContent(thread.id, brief), ({ token, resume, runId }) => {
+  private async runPlanner(thread: Thread): Promise<PlanOutput | undefined> {
+    const res = await this.runRole(thread, "planner", config.models.planner, this.kickoffContent(thread.id, thread.brief), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "planner", getRunId: () => runId });
       const cfg = plannerConfig(thread.workspace, { bus });
       cfg.oauthToken = token;
@@ -364,8 +404,8 @@ export class ThreadManager implements OrchestratorApi {
     return res?.structuredOutput as PlanOutput | undefined;
   }
 
-  private async runResearcher(thread: Thread): Promise<ResearchOutput | undefined> {
-    const res = await this.runRole(thread, "researcher", config.models.researcher, this.kickoffContent(thread.id, thread.brief), ({ token, resume, runId }) => {
+  private async runResearcher(thread: Thread, plan: PlanOutput | undefined): Promise<ResearchOutput | undefined> {
+    const res = await this.runRole(thread, "researcher", config.models.researcher, this.kickoffContent(thread.id, researcherKickoff(thread, plan)), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "researcher", getRunId: () => runId });
       const memory = createMemoryServer(this.memory);
       const cfg = researcherConfig(thread.workspace, { bus, memory });
@@ -454,16 +494,21 @@ export class ThreadManager implements OrchestratorApi {
   /** Implementor → QA → fix, repeated until QA passes or we run out of rounds. The live
    *  implementor is stopped on every exit so a finished/parked task stops counting as live;
    *  later injects fall back to the resume path (lastImplementorSession). */
-  private async runImplementorQa(thread: Thread, kickoff: string, effort?: Effort): Promise<void> {
+  private async runImplementorQa(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string): Promise<void> {
     try {
-      await this.runImplementorQaLoop(thread, kickoff, effort);
+      await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession);
     } finally {
       await this.stopLive(thread.id);
     }
   }
 
-  private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort): Promise<void> {
-    const start = this.startImplementor(thread, kickoff, { effort });
+  private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string): Promise<void> {
+    // On resume, hand the implementor its prior session + a short continue prompt rather than the
+    // full kickoff (the session already holds the whole brief and the work it did before it died).
+    const firstMsg = resumeSession
+      ? "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done."
+      : kickoff;
+    const start = this.startImplementor(thread, firstMsg, { effort, resume: resumeSession });
     let res = await this.awaitImplementorResult(
       thread,
       effort,
@@ -575,7 +620,16 @@ export class ThreadManager implements OrchestratorApi {
       this.setState(threadId, "implementing");
       return { ok: true, state: "implementing" };
     }
-    const resume = this.lastImplementorSession.get(threadId);
+    // A task that died mid-pipeline re-enters the resume-aware pipeline: it may have failed before
+    // the implementor ever ran (during planning/research/approval), so we can't assume an
+    // implementor session exists. runPipeline skips the stages already persisted and continues from
+    // the failure point — and clears the error via the first stage's setState.
+    if (thread.state === "failed") {
+      if (message?.trim()) this.db.addMessage({ threadId, role: "director", kind: "system", content: `resume: ${message}` });
+      void this.runPipeline(threadId);
+      return { ok: true, state: "planning" };
+    }
+    const resume = this.lastImplementorSession.get(threadId) ?? this.latestImplementorSession(threadId);
     const msg = message ?? "Continue where you left off.";
     const start = this.startImplementor(thread, msg, resume ? { resume } : undefined);
     // Manual resume isn't part of the QA loop — settle to review when it finishes (failover-aware),
@@ -737,14 +791,10 @@ export class ThreadManager implements OrchestratorApi {
   }
 }
 
-/** The researcher's structured brief as markdown — shared by the planner kickoff and the
- *  implementor kickoff so both read the same findings. */
+/** The researcher's structured brief as markdown, folded into the implementor's kickoff (the
+ *  planner runs first and no longer reads it — the researcher now enriches the build, not the plan). */
 function formatResearch(research: ResearchOutput): string {
   const parts: string[] = [research.summary];
-  if (research.relevantFiles?.length) {
-    parts.push("", "Relevant files:");
-    research.relevantFiles.forEach((f) => parts.push(`- ${f.path} — ${f.why}`));
-  }
   if (research.facts?.length) {
     parts.push("", "Key facts:");
     research.facts.forEach((f) => parts.push(`- ${f.claim}${f.source ? ` (${f.source})` : ""}`));
@@ -779,11 +829,37 @@ function composeKickoff(thread: Thread, plan: PlanOutput | undefined, research: 
   }
   parts.push("");
 
-  parts.push("## Research (from the researcher)");
-  parts.push(research ? formatResearch(research) : "(researcher produced no structured brief — gather any context you need yourself)");
-  parts.push("");
+  // The researcher only runs when the planner routed to it; omit the section entirely otherwise so
+  // the implementor isn't told to "go gather context yourself" when the plan already has all it needs.
+  if (research) {
+    parts.push("## Research (from the researcher) — external findings only; the plan above covers the codebase");
+    parts.push(formatResearch(research));
+    parts.push("");
+  }
   parts.push(
     "Implement this now, completely. Post findings as you go; ask_user immediately if you hit a blocker only Kevin can fix. A QA agent will then test and review your work and send back issues to fix. When QA is satisfied, commit and push per the doctrine.",
+  );
+  return parts.join("\n");
+}
+
+/** The researcher's kickoff. Planner-first means the researcher is handed the plan and told to
+ *  resolve its open questions with EXTERNAL sources only — it must not re-read the codebase. */
+function researcherKickoff(thread: Thread, plan: PlanOutput | undefined): string {
+  const parts: string[] = [`# Research request for task: ${thread.title}`, "", "## Brief", thread.brief, ""];
+  if (plan) {
+    parts.push(
+      "## The planner read the codebase and flagged that this task needs EXTERNAL information before it can be built",
+      "",
+      `Planner's working plan: ${plan.summary}`,
+    );
+    if (plan.openQuestions?.length) {
+      parts.push("", "Open questions to resolve with external sources:");
+      plan.openQuestions.forEach((q) => parts.push(`- ${q}`));
+    }
+    parts.push("");
+  }
+  parts.push(
+    "Gather ONLY external context: web search, official docs, library/API references, GitHub issues, Stack Overflow, changelogs/release notes, error-message lookups, plus relevant entries from Kevin's memory (search_memory). Do NOT read the codebase — the planner already did. Return your structured brief with sourced facts so the implementor inherits them.",
   );
   return parts.join("\n");
 }

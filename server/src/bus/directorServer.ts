@@ -61,7 +61,7 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
 
   const dispatch = tool(
     "dispatch",
-    "Dispatch a task: spins up the planner + researcher, then an Opus 4.8 implementor in the target repo, seeded with the enriched brief. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). Any image(s) Kevin attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.",
+    "Dispatch a task: the planner runs first in the target repo (reading the code and deciding whether external research is needed), routes to a researcher or straight to an Opus 4.8 implementor, then QA reviews — all seeded with the enriched brief and self-assembling; you don't choose the agents. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). Any image(s) Kevin attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.",
     {
       title: z.string().describe("Short task title for the board lane."),
       workspace: z
