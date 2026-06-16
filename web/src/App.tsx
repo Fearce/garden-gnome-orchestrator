@@ -19,6 +19,7 @@ export function App() {
   const runs = useStore((s) => s.runs);
   const railHidden = useStore((s) => s.railHidden);
   const detailWidth = useStore((s) => s.detailWidth);
+  const directorWidth = useStore((s) => s.directorWidth);
   const [mobilePane, setMobilePane] = useState<MobilePane>("board");
 
   if (authRequired && !authed) return <Login />;
@@ -48,7 +49,7 @@ export function App() {
       </header>
       <div
         className={"workbench pane-" + mobilePane + (selected ? " detail-open" : "") + (railHidden ? " rail-hidden" : "")}
-        style={{ "--detail-w": detailWidth + "px" } as CSSProperties}
+        style={{ "--detail-w": detailWidth + "px", "--rail-w": directorWidth + "px" } as CSSProperties}
       >
         <Director />
         <Board />

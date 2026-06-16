@@ -103,8 +103,8 @@ button { font-family: inherit; cursor: pointer; }
 .acct.stale .meter-v { color: var(--text-faint); }
 .acct-tag.dim { color: var(--text-faint); }
 
-.workbench { display: grid; grid-template-columns: 384px 1fr; min-height: 0; }
-.workbench.detail-open { grid-template-columns: 384px minmax(320px, 1fr) var(--detail-w, 480px); }
+.workbench { display: grid; grid-template-columns: var(--rail-w, 384px) 1fr; min-height: 0; }
+.workbench.detail-open { grid-template-columns: var(--rail-w, 384px) minmax(320px, 1fr) var(--detail-w, 480px); }
 /* Desktop-only: hiding the director rail + resizable detail — kept out of the mobile
    single-pane layout (which overrides .workbench at max-width:768px) via min-width. */
 @media (min-width: 769px) {
@@ -114,7 +114,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 
 /* ---- director rail ---- */
-.rail { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--bg-1); }
+.rail { position: relative; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--bg-1); }
 .rail-head { padding: 13px 16px 10px; border-bottom: 1px solid var(--line); }
 .rail-head h2 { margin: 0; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); font-weight: 600; }
 .rail-head .who { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
@@ -125,14 +125,17 @@ button { font-family: inherit; cursor: pointer; }
 .msg .by { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
 .msg.user .bubble { background: var(--bg-3); border: 1px solid var(--line); }
 .msg.director .bubble { background: transparent; border-left: 2px solid var(--role-director); padding-left: 11px; border-radius: 0; }
-.bubble { padding: 9px 12px; border-radius: var(--r-md); white-space: pre-wrap; word-break: break-word; color: var(--text); }
+.bubble { padding: 9px 12px; border-radius: var(--r-md); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; color: var(--text); }
 .msg.draft .bubble { color: var(--text-dim); }
+/* max-width caps the chip to the rail; the args span truncates so a long tool payload
+   (e.g. a comma-joined allowedTools list) can't blow out the panel width. Full text on hover. */
 .tool-chip {
-  align-self: flex-start; display: inline-flex; align-items: center; gap: 7px;
+  align-self: flex-start; max-width: 100%; display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);
   background: var(--bg-2); border: 1px solid var(--line); padding: 4px 9px; border-radius: 100px;
 }
-.tool-chip .k { color: var(--accent); }
+.tool-chip .k { color: var(--accent); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-chip .arg { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .composer { border-top: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .composer textarea {
@@ -288,6 +291,9 @@ button { font-family: inherit; cursor: pointer; }
 .resize-handle { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px; z-index: 6; cursor: col-resize; }
 .resize-handle::after { content: ""; position: absolute; left: 2px; top: 0; bottom: 0; width: 2px; background: transparent; transition: background 0.12s; }
 .resize-handle:hover::after { background: var(--accent); }
+/* Director rail handle lives on the panel's RIGHT edge (the detail handle is on its left). */
+.rail-resize { left: auto; right: -3px; }
+.rail-resize::after { left: auto; right: 2px; }
 body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
 .detail-head { padding: 13px 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px; }
 .detail-head .top { display: flex; align-items: start; gap: 10px; justify-content: space-between; }
