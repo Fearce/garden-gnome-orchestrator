@@ -98,7 +98,8 @@ export function Director() {
           <input
             className="ws"
             value={ws}
-            placeholder="repo path hint (optional)  e.g. C:\example"
+            placeholder="exact repo path (optional — used as-is)  e.g. C:\example"
+            title="If set, this exact path is the dispatch workspace — the director uses it verbatim instead of resolving a path itself. Leave blank to let the director find the repo from your description."
             onChange={(e) => setWs(e.target.value)}
           />
           <button className="btn primary" onClick={submit} disabled={!text.trim()}>

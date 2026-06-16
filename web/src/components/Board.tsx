@@ -72,6 +72,30 @@ function pipRoles(runs: AgentRun[]): Role[] {
   return ran.length ? ran : ["planner"];
 }
 
+/** Split a workspace path into its parent and its last segment (the repo folder). The leaf carries
+ *  its leading separator so it reads naturally, and it's the part the user scans for — so it's never
+ *  truncated; the parent is what gives way when space is tight. */
+function splitWorkspace(p: string): { parent: string; leaf: string } {
+  const norm = p.replace(/[\\/]+$/, "");
+  const i = Math.max(norm.lastIndexOf("\\"), norm.lastIndexOf("/"));
+  return i < 0 ? { parent: "", leaf: norm } : { parent: norm.slice(0, i), leaf: norm.slice(i) };
+}
+
+/** The target repo, foregrounded on the card — it's how you tell tasks apart at a glance (and decide
+ *  which to resume). Repo folder is bold/bright and always shown; the parent path dims and truncates. */
+function WorkspacePath({ path }: { path: string }) {
+  const { parent, leaf } = splitWorkspace(path);
+  return (
+    <div className="ws-path" title={path}>
+      <svg className="ws-ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      </svg>
+      {parent ? <span className="ws-parent">{parent}</span> : null}
+      <span className="ws-leaf">{leaf}</span>
+    </div>
+  );
+}
+
 function Card({ thread }: { thread: Thread }) {
   const runs = useStore((s) => s.runs);
   const feeds = useStore((s) => s.threadFeeds);
@@ -94,7 +118,7 @@ function Card({ thread }: { thread: Thread }) {
       onClick={() => select(thread.id)}
     >
       <div className="title">{thread.title}</div>
-      <div className="ws-path">{thread.workspace}</div>
+      <WorkspacePath path={thread.workspace} />
       <div className="pips">
         {pipRoles(threadRuns).map((role) => {
           const r = latestRun(threadRuns, role);

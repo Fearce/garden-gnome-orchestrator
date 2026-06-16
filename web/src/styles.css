@@ -241,10 +241,23 @@ button { font-family: inherit; cursor: pointer; }
   display: flex; flex-direction: column; gap: 11px; position: relative; overflow: hidden;
 }
 .card:hover { border-color: var(--line-strong); background: var(--bg-2); }
-.card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.card.sel {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent), 0 6px 22px -4px color-mix(in oklch, var(--accent) 50%, transparent);
+  background: color-mix(in oklch, var(--accent) 7%, var(--bg-1));
+}
 .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--state-color, var(--text-faint)); }
 .card .title { font-size: 15px; font-weight: 600; line-height: 1.3; padding-right: 6px; }
-.card .ws-path { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The target repo is a primary scan target (which task to open/resume), so it's a distinct chip:
+   the repo folder (leaf) is bright + bold and never truncates; the parent path dims and gives way. */
+.card .ws-path {
+  display: flex; align-items: center; gap: 5px; max-width: 100%; overflow: hidden;
+  font-family: var(--font-mono); font-size: 11.5px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 3px 8px;
+}
+.card .ws-ico { flex: 0 0 auto; color: var(--accent); }
+.card .ws-parent { color: var(--text-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .ws-leaf { flex: 0 0 auto; color: var(--text); font-weight: 700; white-space: nowrap; }
 .card .pips { display: flex; gap: 6px; }
 .card .activity { font-size: 12.5px; color: var(--text-dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 18px; }
 .card .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
