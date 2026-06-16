@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useStore } from "../store.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import type { DirectorItem } from "../types.js";
@@ -10,8 +10,29 @@ export function Director() {
   const sendPrompt = useStore((s) => s.sendPrompt);
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
+  const setDirectorWidth = useStore((s) => s.setDirectorWidth);
   const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Drag the rail's right edge to resize, mirroring the detail panel. Width is clamped so the
+  // board (and an open detail panel) always keep room; persisted via the store.
+  const startResize = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const onMove = (ev: MouseEvent) => {
+      const { selectedThreadId, detailWidth } = useStore.getState();
+      const reserved = 320 + (selectedThreadId ? detailWidth : 0) + 16;
+      const max = Math.min(760, window.innerWidth - reserved);
+      setDirectorWidth(Math.min(Math.max(ev.clientX, 280), Math.max(280, max)));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.classList.remove("col-resizing");
+    };
+    document.body.classList.add("col-resizing");
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -27,6 +48,7 @@ export function Director() {
 
   return (
     <aside className="rail">
+      <div className="resize-handle rail-resize" onMouseDown={startResize} title="Drag to resize the director panel" />
       <div className="rail-head">
         <h2>Director</h2>
         <div className="who">
@@ -91,9 +113,9 @@ export function Director() {
 function DirectorBubble({ item }: { item: DirectorItem }) {
   if (item.kind === "tool") {
     return (
-      <div className="tool-chip">
+      <div className="tool-chip" title={item.toolName + (item.text ? ` · ${item.text}` : "")}>
         <span className="k">{item.toolName}</span>
-        {item.text ? <span>· {item.text}</span> : null}
+        {item.text ? <span className="arg">· {item.text}</span> : null}
       </div>
     );
   }

@@ -46,6 +46,7 @@ interface State {
   threadChanges: Record<string, { diff: string; log: string }>;
   railHidden: boolean;
   detailWidth: number;
+  directorWidth: number;
 
   select: (id: string | null) => void;
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
@@ -59,6 +60,7 @@ interface State {
   loadChanges: (threadId: string) => void;
   toggleRail: () => void;
   setDetailWidth: (px: number) => void;
+  setDirectorWidth: (px: number) => void;
 }
 
 const lsBool = (k: string, d: boolean): boolean => {
@@ -123,6 +125,7 @@ export const useStore = create<State>((set) => ({
   threadChanges: {},
   railHidden: lsBool("orch-rail-hidden", false),
   detailWidth: lsNum("orch-detail-w", 480),
+  directorWidth: lsNum("orch-rail-w", 384),
 
   select: (id) => {
     set({ selectedThreadId: id });
@@ -148,6 +151,10 @@ export const useStore = create<State>((set) => ({
   setDetailWidth: (px) => {
     lsSet("orch-detail-w", String(Math.round(px)));
     set({ detailWidth: px });
+  },
+  setDirectorWidth: (px) => {
+    lsSet("orch-rail-w", String(Math.round(px)));
+    set({ directorWidth: px });
   },
 }));
 
