@@ -113,12 +113,15 @@ function Card({ thread }: { thread: Thread }) {
   const lastText = [...feed].reverse().find((f): f is Extract<FeedItem, { kind: "text" }> => f.kind === "text");
   const activity = draft?.text || lastText?.text || thread.brief.split("\n")[0] || "—";
 
+  const live = threadRunning(thread.state);
+
   return (
     <div
-      className={"card" + (selected === thread.id ? " sel" : "")}
+      className={"card" + (selected === thread.id ? " sel" : "") + (live ? " live" : "")}
       style={{ "--state-color": stateColor(thread.state) } as CSSProperties}
       onClick={() => select(thread.id)}
     >
+      {live ? <span className="live-dot" title="Active — an agent is working on this task right now" /> : null}
       <div className="title">{thread.title}</div>
       <WorkspacePath path={thread.workspace} />
       <div className="pips">
