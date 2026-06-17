@@ -247,6 +247,18 @@ button { font-family: inherit; cursor: pointer; }
   background: color-mix(in oklch, var(--accent) 7%, var(--bg-1));
 }
 .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--state-color, var(--text-faint)); }
+/* Live indicator: a small green glow that pulses while an agent is actively working the task —
+   a clearer at-a-glance "running" signal than the state label. Sized to stay inside overflow:hidden. */
+.card .live-dot {
+  position: absolute; top: 14px; right: 14px; z-index: 2;
+  width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
+  animation: live-pulse 1.7s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 0 var(--ok); }
+  50% { opacity: 0.5; box-shadow: 0 0 11px 2px var(--ok); }
+}
+@media (prefers-reduced-motion: reduce) { .card .live-dot { animation: none; box-shadow: 0 0 7px 1px var(--ok); } }
 .card .title { font-size: 15px; font-weight: 600; line-height: 1.3; padding-right: 6px; }
 /* The target repo is a primary scan target (which task to open/resume), so it's a distinct chip:
    the repo folder (leaf) is bright + bold and never truncates; the parent path dims and gives way. */
