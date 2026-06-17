@@ -63,13 +63,30 @@ export function ThreadDetail() {
   const [feedback, setFeedback] = useState("");
   const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastSentRef = useRef(""); // last injected message, recalled with ↑ when the field is empty
 
   const thread = id ? threads[id] : undefined;
   const feed = id ? feeds[id] ?? [] : [];
   const draft = id ? drafts[id] : undefined;
 
   const [roleFilter, setRoleFilter] = useState<Role | "all">("all");
-  const [showTools, setShowTools] = useState(true);
+  // Persisted globally: the detail panel remounts per task (key={selected}), so without this the
+  // tools toggle would reset to "shown" every time you switch tasks.
+  const [showTools, setShowToolsState] = useState(() => {
+    try {
+      return localStorage.getItem("orch-show-tools") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const setShowTools = (v: boolean) => {
+    try {
+      localStorage.setItem("orch-show-tools", v ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+    setShowToolsState(v);
+  };
   const stickRef = useRef(true);
 
   const runRole = useMemo(() => {
@@ -133,6 +150,7 @@ export function ThreadDetail() {
   const doInject = (mode: "append" | "interrupt") => {
     const t = msg.trim();
     if (!t) return;
+    lastSentRef.current = t;
     inject(id, t, mode, att.images);
     setMsg("");
     att.clear();
@@ -299,7 +317,7 @@ export function ThreadDetail() {
           })}
           <button
             className={"fchip tools-toggle" + (showTools ? "" : " off")}
-            onClick={() => setShowTools((v) => !v)}
+            onClick={() => setShowTools(!showTools)}
             title={showTools ? "Hide tool calls — show just the prose/findings" : "Show tool calls"}
           >
             ⛏ tools
@@ -342,6 +360,9 @@ export function ThreadDetail() {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
               e.preventDefault();
               doInject("append");
+            } else if (e.key === "ArrowUp" && !msg && lastSentRef.current) {
+              e.preventDefault();
+              setMsg(lastSentRef.current);
             }
           }}
         />

@@ -11,7 +11,9 @@ const PER_PAGE = 15;
 
 export function Board() {
   const threads = useStore((s) => s.threads);
-  const list = Object.values(threads).sort((a, b) => b.createdAt - a.createdAt);
+  // Most-recently-active first: a state change, an inject, or a resume bumps updatedAt, so a task
+  // you just touched jumps to the front. Ties (and brand-new tasks) fall back to creation order.
+  const list = Object.values(threads).sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
   const [page, setPage] = useState(0);
 
   const pageCount = Math.max(1, Math.ceil(list.length / PER_PAGE));

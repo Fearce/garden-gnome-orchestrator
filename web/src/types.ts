@@ -142,6 +142,7 @@ export type ServerEvent =
   | { type: "approval.mode"; on: boolean }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.upsert"; thread: Thread }
+  | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }

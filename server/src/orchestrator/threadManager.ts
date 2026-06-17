@@ -241,6 +241,14 @@ export class ThreadManager implements OrchestratorApi {
     return { diff: diff.trim() || "(no uncommitted changes)", log: log.trim() || "(no commits / not a git repo)" };
   }
 
+  /** Bump a thread's updatedAt (recent-activity timestamp) without changing its state, and
+   *  republish it so the board re-sorts it to the front. Used for events like inject that are
+   *  "activity" but not state transitions. */
+  private touchThread(threadId: string): void {
+    const t = this.db.updateThread(threadId, {});
+    if (t) this.hub.publish({ type: "thread.upsert", thread: t });
+  }
+
   private setState(threadId: string, state: Thread["state"], error?: string | null): void {
     const t = this.db.updateThread(threadId, { state, error: error ?? null });
     if (!t) return;
@@ -585,12 +593,16 @@ export class ThreadManager implements OrchestratorApi {
         contentWithImages(`[New information from the director]\n${message}`, blocks),
         mode === "interrupt" ? { priority: "now" } : undefined,
       );
-      this.db.addMessage({
+      const m = this.db.addMessage({
         threadId,
         role: "director",
         kind: "system",
-        content: `inject(${mode}): ${message}${blocks.length ? ` [+${blocks.length} image(s)]` : ""}`,
+        content: `↪ injected: ${message}${blocks.length ? ` [+${blocks.length} image(s)]` : ""}`,
       });
+      // Echo it into the task feed live (otherwise the injected note only appears on a later
+      // history refetch) and bump recency so the task jumps to the front of the board.
+      this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.touchThread(threadId);
       this.hub.log("info", `Injected (${mode}) into ${threadId.slice(0, 8)}`);
       return { ok: true, state: "implementing" };
     }
