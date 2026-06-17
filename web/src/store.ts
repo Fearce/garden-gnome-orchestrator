@@ -279,6 +279,13 @@ function applyEvent(ev: ServerEvent): void {
         return { threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged } };
       });
       break;
+    case "thread.message": {
+      // A server-originated thread message (e.g. a director inject) — show it in the feed live.
+      // messageToFeed + the id-keyed dedup in pushFeed keep it from doubling on a later history merge.
+      const fi = messageToFeed(ev.message);
+      if (fi) pushFeed(ev.threadId, fi);
+      break;
+    }
     case "run.upsert":
       useStore.setState((s) => ({ runs: { ...s.runs, [ev.run.id]: ev.run } }));
       break;

@@ -13,6 +13,7 @@ export function Director() {
   const setDirectorWidth = useStore((s) => s.setDirectorWidth);
   const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastSentRef = useRef(""); // last sent prompt, recalled with ↑ when the field is empty
 
   // Drag the rail's right edge to resize, mirroring the detail panel. Width is clamped so the
   // board (and an open detail panel) always keep room; persisted via the store.
@@ -41,6 +42,7 @@ export function Director() {
   const submit = () => {
     const t = text.trim();
     if (!t) return;
+    lastSentRef.current = t;
     sendPrompt(t, ws.trim() || undefined, att.images);
     setText("");
     att.clear();
@@ -89,6 +91,9 @@ export function Director() {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
               e.preventDefault();
               submit();
+            } else if (e.key === "ArrowUp" && !text && lastSentRef.current) {
+              e.preventDefault();
+              setText(lastSentRef.current);
             }
           }}
         />
