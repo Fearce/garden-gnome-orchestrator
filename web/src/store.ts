@@ -40,7 +40,6 @@ interface State {
   threadFeeds: Record<string, FeedItem[]>;
   threadDrafts: Record<string, ThreadDraft | undefined>;
   selectedThreadId: string | null;
-  logs: { level: string; message: string; at: number }[];
   approvalMode: boolean;
   pendingPlans: Record<string, string>;
   threadChanges: Record<string, { diff: string; log: string }>;
@@ -119,7 +118,6 @@ export const useStore = create<State>((set) => ({
   threadFeeds: {},
   threadDrafts: {},
   selectedThreadId: null,
-  logs: [],
   approvalMode: false,
   pendingPlans: {},
   threadChanges: {},
@@ -353,9 +351,8 @@ function applyEvent(ev: ServerEvent): void {
     case "director.busy":
       useStore.setState({ directorBusy: ev.busy });
       break;
-    case "log":
-      useStore.setState((s) => ({ logs: [...s.logs.slice(-200), { level: ev.level, message: ev.message, at: Date.now() }] }));
-      break;
+    // `log` events are intentionally ignored client-side — there is no log surface in the UI, and
+    // buffering them was dead state. Re-add a slice here if a log panel is ever built.
     default:
       break;
   }

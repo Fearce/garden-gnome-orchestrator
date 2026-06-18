@@ -15,17 +15,17 @@ export function App() {
   const authRequired = useStore((s) => s.authRequired);
   const authed = useStore((s) => s.authed);
   const selected = useStore((s) => s.selectedThreadId);
-  const threads = useStore((s) => s.threads);
-  const runs = useStore((s) => s.runs);
+  // Subscribe to the derived SCALARS, not the whole threads/runs maps — these compare equal under
+  // Object.is, so the topbar only re-renders when a displayed count actually changes, not on every
+  // run/thread upsert that replaces those maps by reference.
+  const taskCount = useStore((s) => Object.keys(s.threads).length);
+  const liveAgents = useStore((s) => Object.values(s.runs).filter((r) => runActive(r.state)).length);
   const railHidden = useStore((s) => s.railHidden);
   const detailWidth = useStore((s) => s.detailWidth);
   const directorWidth = useStore((s) => s.directorWidth);
   const [mobilePane, setMobilePane] = useState<MobilePane>("board");
 
   if (authRequired && !authed) return <Login />;
-
-  const taskCount = Object.keys(threads).length;
-  const liveAgents = Object.values(runs).filter((r) => runActive(r.state)).length;
 
   return (
     <div className="app">

@@ -1,9 +1,9 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { memo, useEffect, useState, type CSSProperties } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
-import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
+import type { AgentRun, Role, Thread } from "../types.js";
 import { roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
-import { Gnome } from "./Gnome.js";
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -99,26 +99,29 @@ function WorkspacePath({ path }: { path: string }) {
   );
 }
 
-function Card({ thread }: { thread: Thread }) {
-  const runs = useStore((s) => s.runs);
-  const feeds = useStore((s) => s.threadFeeds);
-  const draft = useStore((s) => s.threadDrafts[thread.id]);
-  const findings = useStore((s) => s.findings);
-  const selected = useStore((s) => s.selectedThreadId);
+// Memoized + each subscription is narrowed to THIS thread, so a card re-renders only when its own
+// runs/findings/feed/draft/selection change — not on every WS event for any task on the board.
+const Card = memo(function Card({ thread }: { thread: Thread }) {
+  // useShallow keeps the array reference stable when this thread's run set is unchanged.
+  const threadRuns = useStore(useShallow((s) => Object.values(s.runs).filter((r) => r.threadId === thread.id)));
+  const findCount = useStore((s) => s.findings.reduce((n, f) => (f.threadId === thread.id ? n + 1 : n), 0));
+  const draftText = useStore((s) => s.threadDrafts[thread.id]?.text);
+  const lastText = useStore((s) => {
+    const feed = s.threadFeeds[thread.id];
+    if (feed) for (let i = feed.length - 1; i >= 0; i--) if (feed[i]!.kind === "text") return (feed[i] as { text: string }).text;
+    return undefined;
+  });
+  const selected = useStore((s) => s.selectedThreadId === thread.id);
   const select = useStore((s) => s.select);
 
-  const threadRuns = Object.values(runs).filter((r) => r.threadId === thread.id);
   const impl = latestRun(threadRuns, "implementor");
-  const findCount = findings.filter((f) => f.threadId === thread.id).length;
-  const feed = feeds[thread.id] ?? [];
-  const lastText = [...feed].reverse().find((f): f is Extract<FeedItem, { kind: "text" }> => f.kind === "text");
-  const activity = draft?.text || lastText?.text || thread.brief.split("\n")[0] || "—";
+  const activity = draftText || lastText || thread.brief.split("\n")[0] || "—";
 
   const live = threadRunning(thread.state);
 
   return (
     <div
-      className={"card" + (selected === thread.id ? " sel" : "") + (live ? " live" : "")}
+      className={"card" + (selected ? " sel" : "") + (live ? " live" : "")}
       style={{ "--state-color": stateColor(thread.state) } as CSSProperties}
       onClick={() => select(thread.id)}
     >
@@ -132,7 +135,7 @@ function Card({ thread }: { thread: Thread }) {
           const cls = active ? "active" : r ? "done" : "idle";
           return (
             <span key={role} className={"pip " + cls} style={{ "--role": roleColor(role) } as CSSProperties}>
-              <Gnome role={role} size={26} active={!!active} />
+              <span className="pip-dot" aria-hidden="true" />
               <span className="pip-text">
                 <span className="pip-role">{role[0]!.toUpperCase() + role.slice(1, 4)}</span>
                 {r ? <Elapsed className="pip-time" startMs={r.startedAt} endMs={r.endedAt} running={!!active} /> : null}
@@ -166,4 +169,4 @@ function Card({ thread }: { thread: Thread }) {
       </div>
     </div>
   );
-}
+});
