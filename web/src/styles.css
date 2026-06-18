@@ -302,12 +302,20 @@ button { font-family: inherit; cursor: pointer; }
 .effort-badge.eff-xhigh { --eff: var(--warn); }
 .effort-badge.eff-max { --eff: var(--danger); }
 
-.pip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
-/* Only the actively-working role's gnome carries colour (set via the `active` prop, which greys
-   the rest); the active one also breathes gently — the live signal the old LED dot used to give. */
+.pip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+/* A small role-status dot stands in for the role: it inherits the pip's colour (faint for a
+   done/idle role, the role hue when active), and the active one breathes gently with a soft ring —
+   the live signal the old LED dot, and then the gnome, used to give. */
+.pip-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+/* A finished role keeps a muted hint of its own hue, so the completed pipeline still reads at a
+   glance (vs. a not-yet-run role, which stays the plain faint grey of currentColor). */
+.pip.done .pip-dot { background: color-mix(in oklch, var(--role) 55%, var(--text-faint)); }
 .pip.active { color: var(--role); }
+.pip.active .pip-dot { box-shadow: 0 0 0 3px color-mix(in oklch, var(--role) 22%, transparent); animation: pulse 1.6s ease-in-out infinite; }
+/* The director rail-head is still a Gnome inside a `.pip active`, so keep it breathing too — the
+   ring above is dot-specific, but the gentle pulse is the shared "this role is working" signal. */
 .pip.active .gnome { animation: pulse 1.6s ease-in-out infinite; }
-@media (prefers-reduced-motion: reduce) { .pip.active .gnome { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .pip.active .pip-dot, .pip.active .gnome { animation: none; } }
 @keyframes pulse { 50% { opacity: 0.5; } }
 /* Role name stacked over its timer (reads tidier than side-by-side, and keeps each pip narrow
    enough that the row stays on one line). */
@@ -316,7 +324,8 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ---- gnome mascot ---- */
 /* One tomte per role, colored from var(--role-*). It nudges up a hair to sit on the optical
-   baseline of the mono labels it accompanies (pips, filter chips, feed role-tags, pipeline path). */
+   baseline of the mono labels it accompanies (filter chips, feed role-tags, pipeline path, and the
+   director avatar — the board cards now use a .pip-dot, not a gnome). */
 .gnome { display: inline-flex; vertical-align: middle; transform: translateY(-0.5px); }
 .gnome svg { display: block; }
 
