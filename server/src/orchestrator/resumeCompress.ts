@@ -4,8 +4,10 @@
 // (old tool output, the model's thinking, big tool inputs, images) and keeps the conversation +
 // a files-touched list; (2) a cheap Haiku summary of the OLD turns (recent turns stay verbatim).
 //
-// Mirrors the standalone tool at C:\claude-resume-lite (compress.mjs + summarize.mjs); vendored
-// here so the orchestrator service stays self-contained and doesn't depend on that path existing.
+// Mirrors the standalone `claude-resume-lite` tool (compress.mjs + summarize.mjs), vendored here so
+// the orchestrator service stays self-contained and doesn't depend on that tool being installed.
+// NOTE: this is a hand-maintained TS port — if you change the compression/summary logic here,
+// update the upstream tool too (and vice-versa), or the two will drift.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
