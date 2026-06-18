@@ -277,7 +277,7 @@ button { font-family: inherit; cursor: pointer; }
 .card .ws-ico { flex: 0 0 auto; color: var(--accent); }
 .card .ws-parent { color: var(--text-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .ws-leaf { flex: 0 0 auto; color: var(--text); font-weight: 700; white-space: nowrap; }
-.card .pips { display: flex; gap: 6px; }
+.card .pips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .card .activity { font-size: 12.5px; color: var(--text-dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 18px; }
 .card .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
@@ -303,11 +303,22 @@ button { font-family: inherit; cursor: pointer; }
 .effort-badge.eff-max { --eff: var(--danger); }
 
 .pip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
-.pip .led { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+/* Only the actively-working role's gnome carries colour (set via the `active` prop, which greys
+   the rest); the active one also breathes gently — the live signal the old LED dot used to give. */
 .pip.active { color: var(--role); }
-.pip.active .led { box-shadow: 0 0 7px currentColor; animation: pulse 1.4s ease-in-out infinite; }
-.pip.idle .led { opacity: 0.35; }
-@keyframes pulse { 50% { opacity: 0.45; } }
+.pip.active .gnome { animation: pulse 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .pip.active .gnome { animation: none; } }
+@keyframes pulse { 50% { opacity: 0.5; } }
+/* Role name stacked over its timer (reads tidier than side-by-side, and keeps each pip narrow
+   enough that the row stays on one line). */
+.pip .pip-text { display: inline-flex; flex-direction: column; line-height: 1.2; }
+.pip .pip-role { font-weight: 600; letter-spacing: 0.02em; }
+
+/* ---- gnome mascot ---- */
+/* One tomte per role, colored from var(--role-*). It nudges up a hair to sit on the optical
+   baseline of the mono labels it accompanies (pips, filter chips, feed role-tags, pipeline path). */
+.gnome { display: inline-flex; vertical-align: middle; transform: translateY(-0.5px); }
+.gnome svg { display: block; }
 
 .findcount { font-family: var(--font-mono); font-size: 10.5px; color: var(--warn); }
 
@@ -315,7 +326,7 @@ button { font-family: inherit; cursor: pointer; }
 .card .foot .foot-right { display: inline-flex; align-items: center; gap: 8px; }
 .task-elapsed { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .detail-head .task-elapsed { font-size: 11px; color: var(--text-dim); }
-.pip .pip-time { margin-left: 1px; opacity: 0.75; font-variant-numeric: tabular-nums; }
+.pip .pip-time { opacity: 0.75; font-variant-numeric: tabular-nums; }
 .feed-filter .fchip .fchip-time { font-size: 9px; opacity: 0.6; font-variant-numeric: tabular-nums; }
 
 /* ---- detail panel ---- */
@@ -336,7 +347,10 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .feed-filter { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .feed-filter .fchip {
   font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase;
-  padding: 3px 9px; border-radius: 100px; border: 1px solid var(--line); background: transparent;
+  /* Fixed height + border-box so every chip lines up regardless of whether it carries a gnome
+     (the gnome is taller than the text, which otherwise made the role chips balloon past "all"). */
+  min-height: 28px; box-sizing: border-box; padding: 1px 10px; border-radius: 100px;
+  border: 1px solid var(--line); background: transparent;
   color: var(--text-dim); cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
