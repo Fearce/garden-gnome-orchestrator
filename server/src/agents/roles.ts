@@ -5,14 +5,16 @@ import type { AgentRunConfig } from "./runner.js";
 import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, MEMORY_SERVER, T } from "./toolNames.js";
 import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
 
-// `summary` and `nextAgent` are required: the plan must always declare its next step (the routing
-// decision the planner always makes — a trivial enum pick even when blocked). Everything else stays
-// optional so a planner that hits a blocker (and asks the user) can still emit valid output instead
-// of being forced to fabricate steps/risks to satisfy the schema.
+// Only `summary` is required. `nextAgent` is intentionally OPTIONAL: the code already defaults a
+// missing route to the implementor (threadManager: anything but "researcher" ⇒ implementor), and
+// the model occasionally omits an optional enum — marking it `required` turned that normal omission
+// into a hard json_schema-validation failure that killed the whole plan. Everything else stays
+// optional too so a planner that hits a blocker can emit valid output instead of fabricating
+// steps/risks to satisfy the schema.
 export const PLAN_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "nextAgent"],
+  required: ["summary"],
   properties: {
     summary: { type: "string" },
     steps: {
