@@ -64,6 +64,12 @@ export class ThreadManager implements OrchestratorApi {
   private readonly awaitingPrev = new Map<string, Thread["state"]>();
   private readonly lastImplementorSession = new Map<string, string>();
   private readonly stopping = new Set<string>();
+  // Threads whose manual resume is still *materializing* (compressing the prior session on the cold
+  // path) — `live` isn't populated yet. Guards against a second resume/inject double-starting an
+  // implementor in that window; injects that arrive are buffered in pendingResumeMsgs and flushed
+  // once the implementor is live.
+  private readonly resuming = new Set<string>();
+  private readonly pendingResumeMsgs = new Map<string, string[]>();
   private readonly threadImages = new Map<string, ImageBlock[]>();
   private readonly pendingApprovals = new Map<string, (d: { approved: boolean; feedback?: string }) => void>();
 
@@ -296,15 +302,17 @@ export class ThreadManager implements OrchestratorApi {
     const saved = this.db.getThreadStageOutputs(threadId);
     try {
       // 1. Planner — always first. It owns codebase reading and decides what comes next.
+      // planDone (mirrors researchDone) makes a deliberate "no structured plan" outcome sticky across
+      // resume — without it, a planner that ran but produced null re-runs a whole Opus pass every resume.
       let plan = saved.plan ?? undefined;
-      if (!plan) {
+      if (!saved.planDone) {
         this.setState(threadId, "planning");
         plan = await this.runPlanner(thread).catch((e) => {
           this.hub.log("warn", `Planner failed on ${threadId.slice(0, 8)}: ${String(e)}`);
           return undefined;
         });
         if (this.cancelled(threadId)) return;
-        this.db.updateThreadStageOutputs(threadId, { plan: plan ?? null });
+        this.db.updateThreadStageOutputs(threadId, { plan: plan ?? null, planDone: true });
       }
 
       // 2. Researcher — only when the planner routed to it (external info needed). Always →
@@ -368,6 +376,17 @@ export class ThreadManager implements OrchestratorApi {
     );
   }
 
+  /** The most recent QA run's SDK session id, so fix-rounds 2..N can resume it. DB-sourced (like
+   *  latestImplementorSession) so it survives a restart and reflects whichever account QA ended on. */
+  private latestQaSession(threadId: string): string | undefined {
+    return (
+      this.db
+        .listRuns(threadId)
+        .filter((r) => r.role === "qa" && r.sessionId)
+        .sort((a, b) => b.startedAt - a.startedAt)[0]?.sessionId ?? undefined
+    );
+  }
+
   /** Run a one-shot role (planner/researcher/qa) to a result. If its account hits a 5h/weekly
    *  cap mid-run, relaunch on another account resuming the session — transparently. */
   private async runRole(
@@ -376,9 +395,10 @@ export class ThreadManager implements OrchestratorApi {
     model: string,
     kickoff: string | unknown[],
     makeCfg: (ctx: { token: string | undefined; resume?: string; runId: string }) => AgentRunConfig,
+    initialResume?: string,
   ): Promise<ResultEvent | undefined> {
     let acct = this.dispatchAccount();
-    let resume: string | undefined;
+    let resume: string | undefined = initialResume;
     let message: string | unknown[] = kickoff;
     for (let attempt = 0; attempt <= MAX_ACCOUNT_FAILOVERS; attempt++) {
       const run = this.db.createRun({ threadId: thread.id, role, model, account: acct.label });
@@ -425,14 +445,33 @@ export class ThreadManager implements OrchestratorApi {
     return res?.structuredOutput as ResearchOutput | undefined;
   }
 
-  private async runQA(thread: Thread): Promise<QaOutput | undefined> {
-    const res = await this.runRole(thread, "qa", config.models.qa, this.kickoffContent(thread.id, qaKickoff(thread)), ({ token, resume, runId }) => {
-      const bus = createBusServer(this, { threadId: thread.id, role: "qa", getRunId: () => runId });
-      const cfg = qaConfig(thread.workspace, { bus });
-      cfg.oauthToken = token;
-      if (resume) cfg.resume = resume;
-      return cfg;
-    });
+  private async runQA(thread: Thread, opts: { round: number }): Promise<QaOutput | undefined> {
+    // Fix-rounds 2..N resume the SAME QA session — a warm cache read of the diff/files/tests it
+    // already ingested — instead of a fresh Opus session that re-reads everything from scratch. QA
+    // still re-runs `git diff` and the checks itself (independent verification preserved); it just
+    // doesn't re-pay to reconstruct context it holds. Round 1, or a cold/missing prior session, is fresh.
+    const prior = opts.round > 1 ? this.latestQaSession(thread.id) : undefined;
+    const ageMs = prior ? sessionAgeMs(prior) : null;
+    const resume = prior && (config.resumeFullSession || (ageMs != null && ageMs < config.resumeWarmMinutes * 60_000)) ? prior : undefined;
+    // A fresh QA session gets a scope hint (plan summary + touched files) so it starts from the real
+    // change surface instead of spending Opus turns rediscovering it; resumed QA already knows it.
+    const plan = resume ? undefined : (this.db.getThreadStageOutputs(thread.id).plan ?? undefined);
+    const kickoff = resume ? qaRecheckKickoff() : qaKickoff(thread, plan);
+    const res = await this.runRole(
+      thread,
+      "qa",
+      config.models.qa,
+      // On resume the QA session already holds the pasted images; only wrap them for a fresh start.
+      resume ? kickoff : this.kickoffContent(thread.id, kickoff),
+      ({ token, resume: r, runId }) => {
+        const bus = createBusServer(this, { threadId: thread.id, role: "qa", getRunId: () => runId });
+        const cfg = qaConfig(thread.workspace, { bus });
+        cfg.oauthToken = token;
+        if (r) cfg.resume = r;
+        return cfg;
+      },
+      resume,
+    );
     return res?.structuredOutput as QaOutput | undefined;
   }
 
@@ -465,8 +504,57 @@ export class ThreadManager implements OrchestratorApi {
       this.stopping.delete(thread.id);
       this.finalizeRun(run.id, agent);
     });
-    agent.start(this.kickoffContent(thread.id, kickoff));
+    // Wrap pasted images into the kickoff only when STARTING a fresh session. On a resume the prior
+    // session already holds them in context, so re-attaching the base64 would re-bill vision tokens
+    // for no gain (and a failover can relaunch several times).
+    agent.start(opts?.resume ? kickoff : this.kickoffContent(thread.id, kickoff));
     return { run: agent, runId: run.id, accountId: acct.id };
+  }
+
+  /**
+   * Start the implementor for a resume, picking the cheap path so a resume never silently reloads a
+   * whole prior session. The gate (shared by the pipeline's implementor→QA loop AND manual resume /
+   * cold inject, so EVERY resume route goes through it):
+   *   - no prior session  → start fresh from the full kickoff (folding in any director note);
+   *   - warm prompt cache (or RESUME_FULL_SESSION) → full session resume — a cache read is ~0.1× and
+   *     keeps full fidelity, so compressing then would only burn a Haiku call and lose detail;
+   *   - cold cache → a FRESH session seeded with a locally Haiku-compressed handoff of the prior
+   *     session instead of the pricey full-transcript reload (the expensive part of a cold resume).
+   * `resumeNudge` is the message sent on a warm full-resume; `directorNote` is any new instruction
+   * from this resume (woven into the cold seed, since that path doesn't continue the live session).
+   */
+  private async startResumedImplementor(
+    thread: Thread,
+    baseKickoff: string,
+    resumeSession: string | undefined,
+    opts: { effort?: Effort; resumeNudge: string; directorNote?: string; qaFollows: boolean; account?: Acct },
+  ): Promise<LiveImplementor | null> {
+    if (this.cancelled(thread.id)) return null; // cancelled before we got here
+    if (!resumeSession) {
+      const text = opts.directorNote ? `${baseKickoff}\n\n[New information from the director]\n${opts.directorNote}` : baseKickoff;
+      return this.startImplementor(thread, text, { effort: opts.effort, account: opts.account });
+    }
+    const ageMs = sessionAgeMs(resumeSession);
+    const warm = ageMs != null && ageMs < config.resumeWarmMinutes * 60_000;
+    if (config.resumeFullSession || warm) {
+      const why = config.resumeFullSession ? "forced" : `cache likely warm (${Math.round((ageMs ?? 0) / 60000)}m < ${config.resumeWarmMinutes}m)`;
+      this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: full session resume — ${why}.`);
+      // Only append the director note when it adds something beyond the nudge — on a manual resume
+      // the nudge already IS the user's message, so passing it again would duplicate it.
+      const nudge =
+        opts.directorNote && opts.directorNote !== opts.resumeNudge
+          ? `${opts.resumeNudge}\n\n[New information from the director]\n${opts.directorNote}`
+          : opts.resumeNudge;
+      return this.startImplementor(thread, nudge, { effort: opts.effort, resume: resumeSession, account: opts.account });
+    }
+    // Cold cache: composeResumeKickoff compresses the prior session (Haiku + git) and logs how. This
+    // is the only awaited step, so re-check cancellation after it before spending an Opus start.
+    const seed = await this.composeResumeKickoff(thread, baseKickoff, resumeSession, {
+      directorNote: opts.directorNote,
+      qaFollows: opts.qaFollows,
+    });
+    if (this.cancelled(thread.id)) return null; // user cancelled while we were compressing
+    return this.startImplementor(thread, seed, { effort: opts.effort, account: opts.account });
   }
 
   /**
@@ -517,7 +605,12 @@ export class ThreadManager implements OrchestratorApi {
    *  what's left — instead of reloading the whole transcript, which is what makes a cold resume
    *  expensive); and the workspace's current git progress. Falls back to plan + git when the
    *  transcript can't be compressed. */
-  private async composeResumeKickoff(thread: Thread, kickoff: string, sessionId?: string): Promise<string> {
+  private async composeResumeKickoff(
+    thread: Thread,
+    kickoff: string,
+    sessionId?: string,
+    opts?: { directorNote?: string; qaFollows?: boolean },
+  ): Promise<string> {
     const git = (args: string[]): Promise<string> =>
       new Promise((res) =>
         execFile("git", ["-C", thread.workspace, "--no-pager", ...args], { maxBuffer: 8 * 1024 * 1024 }, (err, out, errOut) =>
@@ -556,8 +649,11 @@ export class ThreadManager implements OrchestratorApi {
       kickoff,
       "",
       "---",
-      "## ⏪ Resuming — you already started this task before an interruption (a crash or server restart)",
+      "## ⏪ Resuming — you already worked on this task in an earlier session",
     ];
+    if (opts?.directorNote) {
+      parts.push(`**New information from the director for this resume:** ${opts.directorNote}`, "");
+    }
     if (handoff) {
       parts.push(
         `Your earlier session was compressed locally (${handoff.haiku ? "Haiku summary of the older turns + the most recent turns verbatim" : "static strip of the transcript"}) instead of reloaded in full — reloading the whole transcript is the costly part of a resume. Absorb this handoff to recover your prior context, then continue; do NOT summarize it back.`,
@@ -571,40 +667,27 @@ export class ThreadManager implements OrchestratorApi {
         "",
       );
     }
+    const tail =
+      opts?.qaFollows === false
+        ? "When the work is complete, commit and push per the doctrine (Kevin will then review it)."
+        : "A QA agent will review your work when you're done.";
     parts.push(
       "## Current workspace progress (git)",
       progress,
       "",
-      "Continue from here against the plan above: re-read any current file you need (contents may have changed since the handoff), finish the remaining work, and don't redo what's already done. A QA agent will review your work when you're done.",
+      `Continue from here against the plan above: re-read any current file you need (contents may have changed since the handoff), finish the remaining work, and don't redo what's already done. ${tail}`,
     );
     return parts.join("\n");
   }
 
   private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string): Promise<void> {
-    let start: { run: AgentRun; runId: string; accountId: string };
-    if (resumeSession) {
-      // Full resume only when it's actually cheap: forced via env, OR the session was active recently
-      // enough that its prompt cache is still warm (a cache read is ~0.1× and keeps full fidelity, so
-      // compressing then would just burn a Haiku call and lose detail). Otherwise compress.
-      const ageMs = sessionAgeMs(resumeSession);
-      const warm = ageMs != null && ageMs < config.resumeWarmMinutes * 60_000;
-      if (config.resumeFullSession || warm) {
-        const why = config.resumeFullSession ? "forced" : `cache likely warm (${Math.round((ageMs ?? 0) / 60000)}m < ${config.resumeWarmMinutes}m)`;
-        this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: full session resume — ${why}.`);
-        start = this.startImplementor(
-          thread,
-          "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done.",
-          { effort, resume: resumeSession },
-        );
-      } else {
-        // Cold/old (or no transcript to age-check): a FRESH session seeded with the plan, a locally
-        // Haiku-compressed handoff of the prior session, and the git progress — continuing without
-        // the pricey cold reload of the whole transcript.
-        start = this.startImplementor(thread, await this.composeResumeKickoff(thread, kickoff, resumeSession), { effort });
-      }
-    } else {
-      start = this.startImplementor(thread, kickoff, { effort });
-    }
+    const start = await this.startResumedImplementor(thread, kickoff, resumeSession, {
+      effort,
+      resumeNudge:
+        "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done.",
+      qaFollows: true,
+    });
+    if (!start) return; // cancelled while compressing the prior session for the resume
     let res = await this.awaitImplementorResult(
       thread,
       effort,
@@ -621,7 +704,7 @@ export class ThreadManager implements OrchestratorApi {
         return;
       }
       this.setState(thread.id, "qa");
-      const qa = await this.runQA(thread).catch((e) => {
+      const qa = await this.runQA(thread, { round }).catch((e) => {
         this.hub.log("warn", `QA failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
         return undefined;
       });
@@ -694,6 +777,18 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.log("info", `Injected (${mode}) into ${threadId.slice(0, 8)}`);
       return { ok: true, state: "implementing" };
     }
+    // A resume is mid-materialization (live not yet set) — buffer this inject so it isn't lost, then
+    // resumeImplementorOnly delivers it the moment the implementor comes live.
+    if (this.resuming.has(threadId)) {
+      const q = this.pendingResumeMsgs.get(threadId) ?? [];
+      q.push(message);
+      this.pendingResumeMsgs.set(threadId, q);
+      const m = this.db.addMessage({ threadId, role: "director", kind: "system", content: `↪ injected: ${message}` });
+      this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.touchThread(threadId);
+      this.hub.log("info", `Buffered inject into ${threadId.slice(0, 8)} (resume materializing)`);
+      return { ok: true, state: "implementing" };
+    }
     // Not live → resume. Stash any images so the resumed implementor's kickoff carries them.
     if (images?.length) this.threadImages.set(threadId, images.map(toImageBlock));
     return this.resumeThread(threadId, message);
@@ -729,18 +824,62 @@ export class ThreadManager implements OrchestratorApi {
       void this.runPipeline(threadId);
       return { ok: true, state: "planning" };
     }
-    const resume = this.lastImplementorSession.get(threadId) ?? this.latestImplementorSession(threadId);
-    const msg = message ?? "Continue where you left off.";
-    const start = this.startImplementor(thread, msg, resume ? { resume } : undefined);
-    // Manual resume isn't part of the QA loop — settle to review when it finishes (failover-aware),
-    // then stop the live run so it stops counting as live (a later inject re-resumes the session).
-    void this.awaitImplementorResult(thread, undefined, start.run, start.accountId, false, msg)
-      .then(() => {
-        if (this.db.getThread(threadId)?.state === "implementing") this.setState(threadId, "review");
-      })
-      .catch((e) => this.hub.log("warn", `Resume on ${threadId.slice(0, 8)} ended in error: ${String(e)}`))
-      .finally(() => void this.stopLive(threadId));
+    // A resume is already materializing (compressing the prior session on the cold path) — treat a
+    // second click as a no-op rather than double-starting a second implementor on the same workspace.
+    if (this.resuming.has(threadId)) return { ok: true, state: "implementing" };
+    // Reserve the thread synchronously BEFORE backgrounding, flip the board immediately, then resume
+    // in the background — the cold path may compress the prior session first and this WS command must
+    // not block on a Haiku call.
+    this.resuming.add(threadId);
+    this.setState(threadId, "implementing");
+    void this.resumeImplementorOnly(thread, message);
     return { ok: true, state: "implementing" };
+  }
+
+  /** Manual resume (the Resume control, or an inject into a cold/non-live task) that talks ONLY to
+   *  the implementor — no QA loop; it settles to 'review' when the implementor finishes so Kevin
+   *  gets the result. Crucially it reuses the prior session through the SAME warm/cold gate as the
+   *  pipeline, so a manual resume on a cold cache compresses the prior session instead of paying the
+   *  full-transcript reload it used to. Runs in the background so the triggering command returns at
+   *  once; failover-aware via awaitImplementorResult. The caller must have added threadId to
+   *  `resuming`; this clears it once the implementor is live (or the start was abandoned). */
+  private async resumeImplementorOnly(thread: Thread, message?: string): Promise<void> {
+    const resume = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
+    const baseKickoff = this.db.getThreadStageOutputs(thread.id).kickoff ?? thread.brief;
+    const resumeNudge = message ?? "Continue where you left off.";
+    let start: LiveImplementor | null;
+    try {
+      start = await this.startResumedImplementor(thread, baseKickoff, resume, { resumeNudge, directorNote: message, qaFollows: false });
+    } catch (e) {
+      this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} failed to start: ${String(e)}`);
+      start = null;
+    } finally {
+      // Materialization is done (live now set, or abandoned) — stop coalescing concurrent triggers.
+      this.resuming.delete(thread.id);
+    }
+    if (!start) {
+      // Either cancelled while compressing (leave it cancelled) or the start genuinely failed.
+      this.pendingResumeMsgs.delete(thread.id);
+      if (!this.cancelled(thread.id) && this.db.getThread(thread.id)?.state === "implementing") {
+        this.setState(thread.id, "review", "Resume failed to start — needs your review.");
+      }
+      return;
+    }
+    // The kickoff has consumed any stashed images; drop them so a later resume doesn't re-send the
+    // base64 (wasted vision tokens) — the live/resumed session already holds them.
+    this.threadImages.delete(thread.id);
+    // Deliver anything the director injected while the resume was still materializing.
+    const buffered = this.pendingResumeMsgs.get(thread.id);
+    if (buffered?.length) {
+      this.pendingResumeMsgs.delete(thread.id);
+      for (const m of buffered) start.run.send(`[New information from the director]\n${m}`, { priority: "next" });
+    }
+    await this.awaitImplementorResult(thread, undefined, start.run, start.accountId, false, resumeNudge)
+      .then(() => {
+        if (this.db.getThread(thread.id)?.state === "implementing") this.setState(thread.id, "review");
+      })
+      .catch((e) => this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} ended in error: ${String(e)}`))
+      .finally(() => void this.stopLive(thread.id));
   }
 
   async cancelThread(threadId: string): Promise<ThreadActionResult> {
@@ -758,6 +897,11 @@ export class ThreadManager implements OrchestratorApi {
     }
     this.live.delete(threadId);
     this.threadImages.delete(threadId);
+    // A resume may be mid-materialization (compressing) with no live run yet — drop its bookkeeping
+    // so it can't resurrect the cancelled task. startResumedImplementor re-checks cancelled() after
+    // compressing and won't start once this setState lands.
+    this.resuming.delete(threadId);
+    this.pendingResumeMsgs.delete(threadId);
     const pendingApproval = this.pendingApprovals.get(threadId);
     if (pendingApproval) {
       this.pendingApprovals.delete(threadId);
@@ -936,9 +1080,10 @@ function composeKickoff(thread: Thread, plan: PlanOutput | undefined, research: 
     parts.push(formatResearch(research));
     parts.push("");
   }
-  parts.push(
-    "Implement this now, completely. Post findings as you go; ask_user immediately if you hit a blocker only Kevin can fix. A QA agent will then test and review your work and send back issues to fix. When QA is satisfied, commit and push per the doctrine.",
-  );
+  // Task-specific marching orders only. The standing doctrine (commit/push/vota, QA fix-rounds, no
+  // half-measures) lives in the implementor's cache-stable system prompt — restating it here would
+  // just re-bill those tokens in every per-task message.
+  parts.push("Implement this now, completely. Post findings as you go; ask_user immediately on a blocker only Kevin can fix.");
   return parts.join("\n");
 }
 
@@ -964,15 +1109,38 @@ function researcherKickoff(thread: Thread, plan: PlanOutput | undefined): string
   return parts.join("\n");
 }
 
-function qaKickoff(thread: Thread): string {
-  return [
+function qaKickoff(thread: Thread, plan?: PlanOutput): string {
+  const parts: string[] = [
     `# QA review for task: ${thread.title}`,
     "",
     "The implementor just finished an attempt at this brief:",
     "",
     thread.brief,
+  ];
+  // Scope hint: point QA at the real change surface so it doesn't spend Opus turns rediscovering it.
+  // It still independently runs git diff + the checks — this just narrows where it looks first.
+  if (plan) {
+    const files = [...new Set((plan.steps ?? []).flatMap((s) => s.files ?? []))];
+    const hint: string[] = [];
+    if (plan.summary) hint.push(`Planner's intent: ${plan.summary}`);
+    if (files.length) hint.push(`Files the plan expected to touch: ${files.join(", ")}`);
+    if (hint.length) parts.push("", "## Scope hint (verify against the ACTUAL git diff, not just this)", ...hint);
+  }
+  parts.push(
     "",
     "Verify the work in this repo: inspect the changes (git diff), run the project's build/typecheck/tests, and check correctness and completeness against the brief. Then return your structured verdict (pass + issues). Pass only if you'd actually ship it.",
+  );
+  return parts.join("\n");
+}
+
+/** The kickoff for a RESUMED QA session (fix-rounds 2..N): the session already holds the brief, the
+ *  prior diff, and the test output, so this is just a short re-check nudge — no re-statement. */
+function qaRecheckKickoff(): string {
+  return [
+    "The implementor reports it has addressed the issues you raised. Re-verify:",
+    "- Re-run `git diff` to see the NEW state and re-run the project's build/typecheck/tests.",
+    "- Confirm each issue you raised is actually resolved, and watch for any regression the fix introduced.",
+    "Then return your updated structured verdict (pass + remaining issues). Pass only if you'd ship it.",
   ].join("\n");
 }
 

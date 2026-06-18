@@ -169,6 +169,7 @@ export interface ResearchOutput {
  */
 export interface StageOutputs {
   plan?: PlanOutput | null; // the planner's structured plan (null = planner ran but produced nothing)
+  planDone?: boolean; // the planner stage ran (true even if it produced nothing) — don't re-run on resume
   research?: ResearchOutput | null; // the researcher's brief, when the planner routed to it
   researchDone?: boolean; // the researcher stage ran (true even if it produced nothing) — don't re-run on resume
   approved?: boolean; // the plan cleared the approval gate — don't re-prompt on resume
