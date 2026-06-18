@@ -63,6 +63,13 @@ button { font-family: inherit; cursor: pointer; }
   padding: 0 18px; border-bottom: 1px solid var(--line);
   background: linear-gradient(to bottom, var(--bg-1), var(--bg));
 }
+.brand { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.build-tag {
+  font-family: var(--font-mono); font-size: 9px; line-height: 1; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-faint); cursor: default;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.build-tag .sha { color: var(--accent); opacity: 0.85; }
 .wordmark { font-family: var(--font-serif); font-size: 23px; letter-spacing: 0; display: flex; align-items: baseline; gap: 8px; }
 .wordmark em { font-style: italic; color: var(--accent); }
 .wordmark .sub { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); }
