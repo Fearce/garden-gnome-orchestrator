@@ -12,10 +12,11 @@ The contract every module builds against. Read this before touching code.
                                         │ dispatch(threadId, brief)
                                         ▼
         ┌───────────────── THREAD (one task, one lane) ─────────────────┐
+        │   agent-routed: each stage decides the next                   │
         │                                                               │
-        │   PLANNER (read-only)  ─┐                                     │
-        │                         ├─▶  IMPLEMENTOR (Opus 4.8, in repo)  │
-        │   RESEARCHER (read-only)┘     full tools · streaming input    │
+        │   PLANNER ─▶ [RESEARCHER] ─▶ IMPLEMENTOR (Opus 4.8) ⇄ QA      │
+        │   reads repo   external       does the work in    reviews;    │
+        │   + routes     info only      the repo            sole "done" │
         │                                     ▲                         │
         └─────────────────────────────────────┼─────────────────────────┘
                                               │ inject / interrupt+resume
@@ -23,10 +24,12 @@ The contract every module builds against. Read this before touching code.
 ```
 
 The **director** owns the conversation with the user. Each dispatched task
-becomes a **thread** that runs the planner→researcher→implementor pipeline. The
-**message bus** lets any agent surface a finding; the **thread manager** decides
-whether that finding should be injected into a running implementor (live) or
-held for the director.
+becomes a **thread** that runs an **agent-routed** pipeline: the planner runs
+first and routes to a researcher or straight to the implementor; the implementor
+always hands off to QA; QA alone can declare the task done (§5). The **message
+bus** lets any agent surface a finding; the **thread manager** decides whether
+that finding should be injected into a running implementor (live) or held for
+the director.
 
 ## 2. Processes & ports
 
@@ -56,9 +59,10 @@ Model + tool policy per role:
 | Role        | Model            | permissionMode | Tools |
 |-------------|------------------|----------------|-------|
 | Director    | claude-sonnet-4-6| bypassPermissions | memory (search_memory/read_memory) + orchestration MCP only — **no Read/Grep/Glob/Bash** |
-| Planner     | claude-opus-4-8  | plan           | Read/Grep/Glob, bus(post_finding) |
-| Researcher  | claude-sonnet-4-6| plan           | Read/Grep/Glob, WebSearch/WebFetch, memory, bus |
+| Planner     | claude-opus-4-8  | plan           | Read/Grep/Glob, bus(post_finding) — **owns codebase reading**; routes to researcher or implementor |
+| Researcher  | claude-sonnet-4-6| plan           | WebSearch/WebFetch, memory, bus — **no Read/Grep/Glob** (external info only; the planner reads the repo) |
 | Implementor | claude-opus-4-8  | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
+| QA          | claude-opus-4-8  | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); sole role that can mark a task done |
 
 The **director only directs** — it has no filesystem or shell tools, so it cannot
 investigate a repo itself; any "figure out / debug / why is X" request is forced into
@@ -98,17 +102,30 @@ identity into a tool), so each agent's bus instance is scoped to its thread.
 (the state machine):
 
 ```
-intake → enriching → awaiting_user? → researching → planning → implementing → review → done
-                                                                     ↑ paused (inject/resume)
+intake → enriching → [awaiting_user] → planning → [researching] → [awaiting_approval]
+                                                       → implementing ⇄ qa → done | review
+                                                  ↕ paused / failed   (Resume re-enters, skipping finished stages)
 ```
 
-- **Researcher → planner → implementor, sequential** (both read-only roles first).
-  The researcher gathers context first; its structured findings are fed into the
-  planner's brief so the plan is grounded in research — not made blind, in parallel,
-  while both independently grep the repo. The planner builds on the findings instead
-  of redoing that exploration (so the added latency is partly recovered).
-- Both structured outputs (`outputFormat: json_schema`) compose the implementor's
-  kickoff message (`formatResearch` is shared by the planner + implementor kickoffs).
+- **Agent-routed, planner-first.** `runPipeline` has no fixed sequence — each stage
+  decides the next. The planner runs first (reads the repo, plans) and its structured
+  output declares `nextAgent` (a `PLAN_SCHEMA` required field): `"researcher"` when the
+  task needs external info, else `"implementor"`. The researcher (when invoked) gathers
+  **external-only** context and always hands to the implementor. The implementor always
+  hands off to QA. QA returns `pass` → `done`, or issues → back to the implementor,
+  looping up to `config.maxQaRounds`; **QA is the only role that can declare a task done**
+  (else it settles to `review`). The optional approval gate (§12) fires after the plan +
+  any research exist, before the implementor.
+- The plan + any research compose the implementor's kickoff; `formatResearch` folds the
+  researcher's brief into that kickoff (the planner runs first and no longer reads it).
+- **Resumability.** Each completed stage's output is persisted to `threads.stage_outputs`
+  (JSON; additive read-merge-write so a later stage never clobbers an earlier one). A
+  `failed` thread re-enters `runPipeline`, which skips the stages already saved and
+  continues from the failure point; the implementor resumes its **prior SDK session**,
+  recovered from the latest `agent_runs.session_id` (which survives a server restart,
+  unlike the in-memory map). The `Resume` control on a failed/paused/review thread
+  triggers this. `markInterrupted` flips in-flight threads to `failed` on boot but leaves
+  `stage_outputs` intact, so a restart mid-task is recoverable rather than lost.
 - **Finding routing:** when a finding lands on a thread whose implementor is
   live, the manager either (a) `inject`s it as a follow-up user message, or
   (b) `interrupt → resume(sessionId)` with augmented context — chosen by
@@ -119,20 +136,27 @@ intake → enriching → awaiting_user? → researching → planning → impleme
 `better-sqlite3` at `server/data/orchestrator.sqlite`. We store **orchestration
 metadata**; the Agent SDK already persists Claude session transcripts as JSONL
 on disk (resumable by `session_id`). Tables: `threads`, `agent_runs`,
-`messages`, `findings`, `questions`, `director_messages`, `kv`. Schema inlined in
-`db/schema.ts` (no copy step on build).
+`messages`, `findings`, `questions`, `director_messages`, `attachments`, `kv`.
+`threads.stage_outputs` (JSON, nullable) holds the per-stage outputs that make a
+task resumable (§5) — kept off the WS wire (it can be multi-KB) and read only by
+the resume path, not folded into the `Thread` DTO. Schema inlined in
+`db/schema.ts` (no copy step on build); additive columns added via idempotent
+`ALTER TABLE … ADD COLUMN` in `migrate()`.
 
 ## 7. Realtime protocol (`server/src/ws/protocol.ts`)
 
 One WebSocket per browser. Server→client events and client→server commands are
 a single discriminated union (`zod`-validated). Highlights:
 
-- S→C: `hello`, `thread.upsert`, `thread.history`, `run.upsert`, `agent.delta` /
-  `agent.text` / `agent.tool` / `agent.tool_result`, `finding`, `question.ask` /
-  `question.resolved`, `director.delta` / `director.message` / `director.tool` /
+- S→C: `hello`, `thread.upsert`, `thread.message` (a server-originated thread feed
+  row, e.g. a director inject echoed live), `thread.history`, `run.upsert`,
+  `agent.delta` / `agent.text` / `agent.tool` / `agent.tool_result`, `finding`,
+  `question.ask` / `question.resolved`, `plan.ready` / `approval.mode`,
+  `thread.changes`, `director.delta` / `director.message` / `director.tool` /
   `director.busy`, `log`.
 - C→S: `prompt.new`, `question.answer`, `thread.inject`, `thread.interrupt`,
-  `thread.resume`, `thread.cancel`, `thread.history`, `snapshot.request`.
+  `thread.resume`, `thread.cancel`, `thread.history`, `thread.approve` /
+  `approval.set`, `thread.changes`, `snapshot.request`.
 
 ## 8. Memory (`server/src/memory/memory.ts`)
 
@@ -140,8 +164,9 @@ a single discriminated union (`zod`-validated). Highlights:
 `~/.claude/memory/`: it reads the markdown memory files, parses their frontmatter
 `name`/`description`, and ranks by query-token overlap (cached 60s). No Python /
 pgvector / Ollama call, so it degrades gracefully if those are down. The director
-and researcher then `Read` a returned path for the full memory; `MEMORY.md` is
-exposed as the index.
+then calls `read_memory` on a returned path for the full text (the researcher has
+`search_memory` only, for external-context lookups — no codebase or file reading);
+`MEMORY.md` is exposed as the index.
 
 ## 9. Frontend (`web/`)
 
@@ -245,10 +270,11 @@ Three controls that make the console a hands-off, anywhere replacement for the C
   The login screen shows whichever methods are enabled (Google button + password field). Safety: the
   server **refuses to bind a non-localhost `HOST` without auth configured**, falling back to 127.0.0.1.
 - **Plan-approval gate** (global toggle, persisted in `kv:require_plan_approval`).
-  When on, `runPipeline` pauses after planning into `awaiting_approval`, emits
-  `plan.ready` (the composed kickoff), and `await`s a pending promise resolved by
-  `thread.approve` (approve → implement; reject+feedback → `review`). Off by
-  default — tasks build autonomously.
+  When on, `runPipeline` pauses after the plan (and any research) into
+  `awaiting_approval`, emits `plan.ready` (the composed kickoff), and `await`s a
+  pending promise resolved by `thread.approve` (approve → implement; reject+feedback
+  → `review`). On resume it's skipped if already approved. Off by default — tasks
+  build autonomously.
 - **Diff review.** `thread.changes` runs `git -C <workspace> diff` + `log` and
   returns it; the ThreadDetail "Diff" button shows it in a modal — review changes
   without leaving the console.

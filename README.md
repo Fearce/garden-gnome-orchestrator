@@ -2,11 +2,12 @@
 
 A single director's console for running Claude Code agents the way the user already
 works by hand: a Sonnet **director** enriches a raw prompt, pulls in relevant
-memories, asks the clarifying questions you'd otherwise forget to answer, runs a
-**planner** and **researcher** to gather context, then dispatches an **Opus 4.8
-implementor** into the right repo — with the ability to fire many prompts at
-once, watch them as concurrent lanes, and feed a running agent new information
-the moment another agent discovers it.
+memories, and asks the clarifying questions you'd otherwise forget to answer,
+then dispatches the task to a self-assembling agent pipeline — a **planner**
+reads the repo and plans, an optional **researcher** gathers external context, an
+**Opus 4.8 implementor** does the work in the right repo, and a **QA** agent
+reviews it. Fire many tasks at once, watch them as concurrent lanes, feed a
+running agent new information mid-flight, and resume a task that died partway.
 
 > Not to be confused with the agent "agent orchestrator". This is the
 > *Claude* orchestrator — a local cockpit for directing coding agents.
@@ -24,6 +25,29 @@ The manual workflow this automates:
 
 Doing that by hand for one task is fine. Doing it for five concurrent tasks is
 where a director's console earns its keep.
+
+## How a task runs
+
+A dispatched task is a **thread** that runs a self-assembling, **agent-routed**
+pipeline — there's no fixed sequence; each agent decides what happens next:
+
+- **Planner first, always.** It reads the codebase, produces the plan, and
+  declares what comes next: a researcher (when the task needs information that
+  *isn't* in the repo) or straight to the implementor.
+- **Researcher — optional, external-only.** Web search, library/API docs, GitHub
+  issues, changelogs, plus the user's memory. It does **not** read the codebase
+  (that's the planner's job) — it enriches the build, then hands to the implementor.
+- **Implementor (Opus 4.8).** Does the work in the repo, fully autonomous. It
+  always hands off to QA — it can't declare itself done.
+- **QA.** Reviews and tests against the brief; it's the **only** agent that can
+  mark a task **done**, or bounce it back to the implementor with concrete fixes
+  (looping until it passes or runs out of rounds).
+
+The director's `dispatch` just hands over the brief — the chain assembles itself.
+Each completed stage is **persisted**, so a task that dies mid-pipeline (crash,
+restart, timeout) can be **resumed** from where it failed: finished stages are
+reused and the implementor picks up its prior session. You can also inject new
+context into a live task, or interrupt + resume it, at any point.
 
 ## Runtime model — zero metered API credits
 
