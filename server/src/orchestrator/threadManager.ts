@@ -6,6 +6,7 @@ import { AgentRun, type AgentRunConfig } from "../agents/runner.js";
 import { implementorConfig, plannerConfig, qaConfig, researcherConfig } from "../agents/roles.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
+import { compressSession } from "./resumeCompress.js";
 import { config } from "../config.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -510,38 +511,73 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
-  /** A cheap resume seed: the original kickoff (brief + plan + research — all small, from the
-   *  persisted stage outputs) plus the *concrete* progress read straight from the workspace's git
-   *  state. Lets a fresh implementor continue without reloading the prior session's whole transcript
-   *  (which is what makes a cold resume expensive). The plan says the goal; the diff says what's done. */
-  private async composeResumeKickoff(thread: Thread, kickoff: string): Promise<string> {
+  /** A cheap resume seed that still preserves the prior session's reasoning. Three small parts:
+   *  the original kickoff (brief + plan + research, from the persisted stage outputs); a locally
+   *  Haiku-compressed **handoff** of the prior implementor session (its decisions, what it tried,
+   *  what's left — instead of reloading the whole transcript, which is what makes a cold resume
+   *  expensive); and the workspace's current git progress. Falls back to plan + git when the
+   *  transcript can't be compressed. */
+  private async composeResumeKickoff(thread: Thread, kickoff: string, sessionId?: string): Promise<string> {
     const git = (args: string[]): Promise<string> =>
       new Promise((res) =>
         execFile("git", ["-C", thread.workspace, "--no-pager", ...args], { maxBuffer: 8 * 1024 * 1024 }, (err, out, errOut) =>
           res((out || errOut || (err ? err.message : "")).trim()),
         ),
       );
-    const [log, stat, diff] = await Promise.all([git(["log", "--oneline", "-8"]), git(["diff", "--stat"]), git(["diff"])]);
-    const cappedDiff = diff.length > 6000 ? diff.slice(0, 6000) + "\n… (diff truncated — read the files for the rest)" : diff;
-    const progress = [
-      "Recent commits:",
-      log || "(none yet)",
-      "",
-      "Uncommitted changes (git diff --stat):",
-      stat || "(none)",
-      cappedDiff ? `\nUncommitted diff:\n${cappedDiff}` : "",
-    ].join("\n");
-    return [
+    const gitProgress = async (): Promise<string> => {
+      const [log, stat, diff] = await Promise.all([git(["log", "--oneline", "-8"]), git(["diff", "--stat"]), git(["diff"])]);
+      const cappedDiff = diff.length > 6000 ? diff.slice(0, 6000) + "\n… (diff truncated — read the files for the rest)" : diff;
+      return [
+        "Recent commits:",
+        log || "(none yet)",
+        "",
+        "Uncommitted changes (git diff --stat):",
+        stat || "(none)",
+        cappedDiff ? `\nUncommitted diff:\n${cappedDiff}` : "",
+      ].join("\n");
+    };
+
+    // Compress the prior session locally (free static strip + cheap Haiku summary) rather than
+    // reloading it. Runs alongside the git read; tolerates failure (→ plan + git only).
+    const [progress, handoff] = await Promise.all([
+      gitProgress(),
+      sessionId
+        ? compressSession(sessionId, this.dispatchAccount().token).catch((e) => {
+            this.hub.log("warn", `Resume compression failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
+            return null;
+          })
+        : Promise.resolve(null),
+    ]);
+    if (handoff) {
+      this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: compressed prior session via ${handoff.haiku ? "Haiku" : "static strip"} — no full transcript reload.`);
+    }
+
+    const parts: string[] = [
       kickoff,
       "",
       "---",
       "## ⏪ Resuming — you already started this task before an interruption (a crash or server restart)",
-      "To keep this resume cheap, your earlier session's full transcript is NOT reloaded. Instead, here is the concrete progress you'd already made, read straight from the workspace:",
-      "",
+    ];
+    if (handoff) {
+      parts.push(
+        `Your earlier session was compressed locally (${handoff.haiku ? "Haiku summary of the older turns + the most recent turns verbatim" : "static strip of the transcript"}) instead of reloaded in full — reloading the whole transcript is the costly part of a resume. Absorb this handoff to recover your prior context, then continue; do NOT summarize it back.`,
+        "",
+        handoff.markdown,
+        "",
+      );
+    } else {
+      parts.push(
+        "Your earlier session's transcript wasn't available to compress, so continue from the plan above and the workspace state below.",
+        "",
+      );
+    }
+    parts.push(
+      "## Current workspace progress (git)",
       progress,
       "",
-      "Continue from here: re-read whatever you need, finish the remaining work against the plan above, and don't redo what's already in the commits/diff. A QA agent will review your work when you're done.",
-    ].join("\n");
+      "Continue from here against the plan above: re-read any current file you need (contents may have changed since the handoff), finish the remaining work, and don't redo what's already done. A QA agent will review your work when you're done.",
+    );
+    return parts.join("\n");
   }
 
   private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string): Promise<void> {
@@ -555,9 +591,10 @@ export class ThreadManager implements OrchestratorApi {
         { effort, resume: resumeSession },
       );
     } else if (resumeSession) {
-      // Default compressed resume: a FRESH session seeded with the plan + the workspace's concrete
-      // progress (git diff/commits), so it continues without reloading the whole transcript.
-      start = this.startImplementor(thread, await this.composeResumeKickoff(thread, kickoff), { effort });
+      // Default compressed resume: a FRESH session seeded with the plan, a locally Haiku-compressed
+      // handoff of the prior session, and the workspace's git progress — so it continues without
+      // reloading the whole transcript (the expensive part of a resume).
+      start = this.startImplementor(thread, await this.composeResumeKickoff(thread, kickoff, resumeSession), { effort });
     } else {
       start = this.startImplementor(thread, kickoff, { effort });
     }

@@ -126,13 +126,19 @@ intake → enriching → [awaiting_user] → planning → [researching] → [awa
   `stage_outputs` intact, so a restart mid-task is recoverable rather than lost.
 - **Compressed resume (default).** Reloading the implementor's entire prior SDK session is the
   *expensive* part of a resume — after a restart it's a cold-cache reload of every tool call and
-  file it had read. So by default the implementor resume does **not** reload that transcript:
-  `composeResumeKickoff` starts a **fresh** session seeded with the plan (from `stage_outputs`,
-  small) plus the workspace's concrete progress (`git diff` + recent commits) — the plan states
-  the goal, the diff states what's already done, enough to continue at a fraction of the tokens.
-  `RESUME_FULL_SESSION=1` forces a full-fidelity resume of the prior session (recovered from the
-  latest `agent_runs.session_id`, which survives a restart unlike the in-memory map) for tasks that
-  genuinely need their exact prior reasoning.
+  file it had read (a long session is hundreds of K of tokens). So by default the resume does
+  **not** reload that transcript. `composeResumeKickoff` starts a **fresh** session seeded with
+  three small parts: the plan (from `stage_outputs`); a **locally-compressed handoff** of the prior
+  session that *preserves its reasoning*; and the workspace's current git progress (`git diff` +
+  commits). The handoff (`resumeCompress.ts`, vendored from `C:\claude-resume-lite`) finds the
+  on-disk transcript (`~/.claude/projects/<slug>/<sessionId>.jsonl`), does a free static strip of
+  re-derivable junk (old tool output, thinking, big inputs, images — keeping the conversation + a
+  files-touched list), then a cheap **Haiku** summary of the older turns (recent turns kept
+  verbatim) via `/v1/messages` on an account token. Real sessions compress **~30–50×** (a 185K-token
+  session → ~4K). It degrades gracefully: Haiku failure → free static strip; no transcript → plan +
+  git only. `RESUME_FULL_SESSION=1` forces a full-fidelity reload of the prior session (from the
+  latest `agent_runs.session_id`, which survives a restart unlike the in-memory map) when a task
+  genuinely needs its exact prior context.
 - **Finding routing:** when a finding lands on a thread whose implementor is
   live, the manager either (a) `inject`s it as a follow-up user message, or
   (b) `interrupt → resume(sessionId)` with augmented context — chosen by
