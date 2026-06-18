@@ -1,7 +1,8 @@
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import { isAbsolute, join, dirname } from "node:path";
 import { config } from "./config.js";
 import { Db } from "./db/db.js";
 import { EventHub } from "./events.js";
@@ -9,6 +10,7 @@ import { FileMemoryService } from "./memory/memory.js";
 import { AccountManager } from "./accounts/accountManager.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
+import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { registerWs } from "./ws/hub.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -131,6 +133,35 @@ async function main(): Promise<void> {
       .header("x-content-type-options", "nosniff")
       .header("cache-control", "private, max-age=31536000, immutable")
       .send(Buffer.from(a.data, "base64"));
+  });
+
+  // Folder picker for the dispatch form: list child directories of an absolute path so
+  // the user can browse to a repo instead of typing it. Auth-gated and dirs-only (never
+  // exposes file contents), reusing the same system/build SKIP set as find_workspace.
+  app.get<{ Querystring: { path?: string } }>("/api/fs/ls", async (req, reply) => {
+    if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+    const path = (req.query.path || config.defaultWorkspace).trim() || config.defaultWorkspace;
+    if (!isAbsolute(path)) return reply.code(400).send({ error: "path must be absolute" });
+    if (!existsSync(path)) return reply.code(404).send({ error: "not found" });
+
+    let dirs: { name: string; path: string }[];
+    try {
+      dirs = readdirSync(path, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .filter((e) => {
+          const lname = e.name.toLowerCase();
+          return !lname.startsWith("$") && !lname.startsWith(".") && !FS_SKIP.has(lname);
+        })
+        .map((e) => ({ name: e.name, path: join(path, e.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      // Permission-denied / locked system dirs (EACCES): treat as an empty, navigable folder.
+      dirs = [];
+    }
+
+    // dirname() is idempotent at a drive root (dirname("C:\\") === "C:\\"); null means "no Up".
+    const up = dirname(path);
+    return { path, parent: up === path ? null : up, dirs };
   });
 
   // Serve the built frontend in production (single origin). In dev, Vite serves it.

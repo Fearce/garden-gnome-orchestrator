@@ -418,6 +418,30 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .modal textarea:focus { outline: none; border-color: var(--accent); }
 .modal .m-foot { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
 
+/* ---- folder picker ---- */
+.modal.folder-picker { width: min(520px, 92vw); }
+.modal.folder-picker .m-body { padding-top: 12px; }
+.fp-crumb {
+  margin-top: 6px; font-size: 11.5px; color: var(--text-dim); word-break: break-all;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 7px 10px;
+}
+.fp-list {
+  display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); padding: 4px;
+}
+.fp-row {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 8px 10px; border: none; border-radius: var(--r-sm); background: transparent; color: var(--text);
+  font-size: 13px; transition: background 0.1s, color 0.1s;
+}
+.fp-row svg { flex: 0 0 auto; color: var(--text-faint); }
+.fp-row:hover { background: var(--bg-3); }
+.fp-row:hover svg { color: var(--accent); }
+.fp-row.up { color: var(--text-dim); }
+.fp-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-empty { padding: 14px 10px; font-size: 12.5px; }
+.fp-err { color: var(--danger); }
+
 .mono { font-family: var(--font-mono); }
 .dim { color: var(--text-dim); }
 .faint { color: var(--text-faint); }

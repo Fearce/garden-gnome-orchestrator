@@ -8,7 +8,7 @@ export interface WorkspaceMatch {
 }
 
 // Top-level / nested dirs that are never a workspace and would just slow the walk.
-const SKIP = new Set([
+export const SKIP = new Set([
   "node_modules", ".git", ".vs", ".vscode", ".idea", ".cache", "appdata",
   "windows", "program files", "program files (x86)", "programdata", "perflogs",
   "recovery", "msocache", "config.msi", "system volume information", "intel", "amd",
