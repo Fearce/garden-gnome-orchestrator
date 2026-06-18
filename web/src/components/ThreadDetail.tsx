@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
 import { clock, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
@@ -12,6 +12,11 @@ function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
 const roleVar = (role: Role): CSSProperties => ({ "--role": roleColor(role) } as CSSProperties);
 
 const ROLE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
+
+// Only the most recent N feed rows are rendered; older ones load in batches as you scroll up.
+// A long task can accumulate thousands of tool calls — rendering them all made every keystroke
+// in the inject bar reconcile the whole list, which is the lag this caps.
+const RENDER_WINDOW = 120;
 
 /** The actual agent path taken, in first-run order — planner, then whichever of researcher/
  *  implementor/QA actually ran. Reflects the agent-routed pipeline (the researcher may be absent;
@@ -30,6 +35,14 @@ function itemRoleOf(f: FeedItem, runRole: Record<string, Role>): Role | null {
   if (f.kind === "tool_result") return runRole[f.runId] ?? null;
   if (f.kind === "finding") return f.finding.fromRole ?? null;
   return null;
+}
+
+/** Stable, position-independent key for a feed row — required so the rendered window can grow
+ *  (older rows load on scroll-up) without React remounting everything and losing scroll position. */
+function feedKey(f: FeedItem): string {
+  if (f.kind === "finding") return "find:" + f.finding.id;
+  if (f.kind === "tool_result") return "tres:" + (f.messageId ?? f.id);
+  return f.kind + ":" + (f.id ?? f.at);
 }
 
 function summarize(input: unknown): string {
@@ -116,6 +129,27 @@ export function ThreadDetail() {
     [feed, roleFilter, showTools, runRole],
   );
 
+  // Render only the tail of the feed; grow the window when the user scrolls toward the top.
+  const [renderCount, setRenderCount] = useState(RENDER_WINDOW);
+  const growAnchorRef = useRef<{ height: number; top: number } | null>(null);
+  // The window always tracks the most recent rows, so live appends stay visible at the bottom.
+  const windowed = useMemo(
+    () => (visible.length <= renderCount ? visible : visible.slice(visible.length - renderCount)),
+    [visible, renderCount],
+  );
+  const hiddenAbove = visible.length - windowed.length;
+  // Reset the window when the viewed subset changes (task switch, filter, tools toggle).
+  useEffect(() => setRenderCount(RENDER_WINDOW), [id, roleFilter, showTools]);
+  // After older rows are prepended, keep the same content under the viewport (no jump).
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const a = growAnchorRef.current;
+    if (el && a) {
+      el.scrollTop = el.scrollHeight - a.height + a.top;
+      growAnchorRef.current = null;
+    }
+  }, [renderCount]);
+
   // Stick to the bottom only when already near it, so reading an earlier agent
   // isn't yanked down when a live agent appends below.
   useEffect(() => {
@@ -160,6 +194,12 @@ export function ThreadDetail() {
     const el = scrollRef.current;
     if (!el) return;
     stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    // Near the top with older rows still unrendered → load the next batch. The anchor (captured
+    // here, applied in the layout effect) keeps the current content from jumping under the cursor.
+    if (el.scrollTop < 240 && hiddenAbove > 0 && !growAnchorRef.current) {
+      growAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+      setRenderCount((c) => c + RENDER_WINDOW);
+    }
   };
 
   const startResize = (e: ReactMouseEvent) => {
@@ -335,8 +375,31 @@ export function ThreadDetail() {
                 : `No ${roleFilter} output${showTools ? "" : " (tool calls hidden)"} yet.`}
           </div>
         )}
-        {visible.map((f, i) => (
-          <FeedRow key={`${f.kind}:${f.at}:${i}`} item={f} />
+        {hiddenAbove > 0 && (
+          <button
+            onClick={() => {
+              const el = scrollRef.current;
+              if (el) growAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+              setRenderCount((c) => c + RENDER_WINDOW);
+            }}
+            style={{
+              alignSelf: "center",
+              margin: "2px 0 8px",
+              padding: "5px 12px",
+              background: "transparent",
+              border: "1px solid var(--line)",
+              borderRadius: 100,
+              color: "var(--text-dim)",
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+              cursor: "pointer",
+            }}
+          >
+            ↑ {hiddenAbove} earlier {hiddenAbove === 1 ? "entry" : "entries"} — scroll up or click to load
+          </button>
+        )}
+        {windowed.map((f) => (
+          <FeedRow key={feedKey(f)} item={f} />
         ))}
         {draft && (roleFilter === "all" || draft.role === roleFilter) && (
           <div className="fi draft" style={roleVar(draft.role)}>
@@ -409,7 +472,7 @@ export function ThreadDetail() {
   );
 }
 
-function FeedRow({ item }: { item: FeedItem }) {
+const FeedRow = memo(function FeedRow({ item }: { item: FeedItem }) {
   switch (item.kind) {
     case "text":
       return (
@@ -464,4 +527,4 @@ function FeedRow({ item }: { item: FeedItem }) {
     default:
       return null;
   }
-}
+});
