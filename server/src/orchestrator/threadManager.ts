@@ -292,7 +292,7 @@ export class ThreadManager implements OrchestratorApi {
    * the stages already done — feeding their saved outputs forward — instead of starting over. A
    * fresh dispatch simply finds no saved stages and runs them all.
    */
-  private async runPipeline(threadId: string): Promise<void> {
+  private async runPipeline(threadId: string, directorNote?: string): Promise<void> {
     const thread = this.db.getThread(threadId);
     if (!thread) return;
     if (!existsSync(thread.workspace)) {
@@ -352,7 +352,7 @@ export class ThreadManager implements OrchestratorApi {
 
       // 4. Implementor → QA. On resume, pick up the implementor's prior SDK session (recovered from
       //    its agent_run, which survives a restart) so its work-in-progress isn't thrown away.
-      await this.runImplementorQa(thread, kickoff, plan?.effort, this.latestImplementorSession(threadId));
+      await this.runImplementorQa(thread, kickoff, plan?.effort, this.latestImplementorSession(threadId), directorNote);
     } catch (err) {
       if (!this.cancelled(threadId)) this.setState(threadId, "failed", err instanceof Error ? err.message : String(err));
     } finally {
@@ -591,9 +591,9 @@ export class ThreadManager implements OrchestratorApi {
   /** Implementor → QA → fix, repeated until QA passes or we run out of rounds. The live
    *  implementor is stopped on every exit so a finished/parked task stops counting as live;
    *  later injects fall back to the resume path (lastImplementorSession). */
-  private async runImplementorQa(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string): Promise<void> {
+  private async runImplementorQa(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string, directorNote?: string): Promise<void> {
     try {
-      await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession);
+      await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession, directorNote);
     } finally {
       await this.stopLive(thread.id);
     }
@@ -635,7 +635,9 @@ export class ThreadManager implements OrchestratorApi {
     const [progress, handoff] = await Promise.all([
       gitProgress(),
       sessionId
-        ? compressSession(sessionId, this.dispatchAccount().token).catch((e) => {
+        ? // auxToken() is a read-only token grab — it must NOT run the dispatch selector (which would
+          // bump round-robin state and flicker the "active account" badge for a non-dispatch).
+          compressSession(sessionId, this.accounts.auxToken()).catch((e) => {
             this.hub.log("warn", `Resume compression failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
             return null;
           })
@@ -680,11 +682,14 @@ export class ThreadManager implements OrchestratorApi {
     return parts.join("\n");
   }
 
-  private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string): Promise<void> {
+  private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string, directorNote?: string): Promise<void> {
     const start = await this.startResumedImplementor(thread, kickoff, resumeSession, {
       effort,
       resumeNudge:
         "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done.",
+      // A steering note from the Resume/inject that re-entered the pipeline — delivered to the
+      // implementor (woven into the seed/kickoff or sent with the nudge) so it isn't silently lost.
+      directorNote,
       qaFollows: true,
     });
     if (!start) return; // cancelled while compressing the prior session for the resume
@@ -820,8 +825,11 @@ export class ThreadManager implements OrchestratorApi {
     // implementor session exists. runPipeline skips the stages already persisted and continues from
     // the failure point — and clears the error via the first stage's setState.
     if (thread.state === "failed") {
-      if (message?.trim()) this.db.addMessage({ threadId, role: "director", kind: "system", content: `resume: ${message}` });
-      void this.runPipeline(threadId);
+      const note = message?.trim() ? message : undefined;
+      if (note) this.db.addMessage({ threadId, role: "director", kind: "system", content: `resume: ${note}` });
+      // Thread the steering note INTO the pipeline so the implementor actually receives it — not just
+      // the UI feed. (Previously it was only echoed to the feed and silently dropped before the agent.)
+      void this.runPipeline(threadId, note);
       return { ok: true, state: "planning" };
     }
     // A resume is already materializing (compressing the prior session on the cold path) — treat a

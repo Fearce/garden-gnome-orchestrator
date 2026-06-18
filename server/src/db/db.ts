@@ -261,8 +261,13 @@ export class Db {
     ).map(rowToRun);
   }
 
-  listAllRuns(): AgentRun[] {
-    return (this.raw.prepare("SELECT * FROM agent_runs ORDER BY started_at ASC").all() as Row[]).map(rowToRun);
+  /** All runs (ASC), or — for the connect snapshot — the most recent `limit` (still returned ASC) so
+   *  the hello frame can't grow unbounded as months of history accumulate. */
+  listAllRuns(limit?: number): AgentRun[] {
+    const rows = limit
+      ? (this.raw.prepare("SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT ?").all(limit) as Row[]).reverse()
+      : (this.raw.prepare("SELECT * FROM agent_runs ORDER BY started_at ASC").all() as Row[]);
+    return rows.map(rowToRun);
   }
 
   /** Runs the DB still believes are live (no terminal state, no end time) — orphans after a
@@ -310,9 +315,13 @@ export class Db {
     this.raw.prepare("UPDATE findings SET routed = 1 WHERE id = ?").run(id);
   }
 
-  listFindings(threadId?: string): Finding[] {
-    const rows = threadId
-      ? (this.raw.prepare("SELECT * FROM findings WHERE thread_id = ? ORDER BY created_at ASC").all(threadId) as Row[])
+  listFindings(threadId?: string, limit?: number): Finding[] {
+    if (threadId) {
+      return (this.raw.prepare("SELECT * FROM findings WHERE thread_id = ? ORDER BY created_at ASC").all(threadId) as Row[]).map(rowToFinding);
+    }
+    // Cross-thread read (the connect snapshot): bound to the most recent `limit`, returned ASC.
+    const rows = limit
+      ? (this.raw.prepare("SELECT * FROM findings ORDER BY created_at DESC LIMIT ?").all(limit) as Row[]).reverse()
       : (this.raw.prepare("SELECT * FROM findings ORDER BY created_at ASC").all() as Row[]);
     return rows.map(rowToFinding);
   }
@@ -420,8 +429,13 @@ export class Db {
     return m;
   }
 
-  listDirectorMessages(): DirectorMessage[] {
-    return (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at ASC").all() as Row[]).map((r) => {
+  /** The director conversation (ASC), or — for the connect snapshot — the most recent `limit`
+   *  (returned ASC) so a months-long chat doesn't bloat every hello/reconnect frame. */
+  listDirectorMessages(limit?: number): DirectorMessage[] {
+    const rows = limit
+      ? (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at DESC LIMIT ?").all(limit) as Row[]).reverse()
+      : (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at ASC").all() as Row[]);
+    return rows.map((r) => {
       const refs = parseAttachments(r.attachments);
       return {
         id: r.id as string,

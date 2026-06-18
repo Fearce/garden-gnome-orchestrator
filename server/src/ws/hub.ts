@@ -26,14 +26,22 @@ function send(socket: WebSocket, event: ServerEvent): void {
   socket.send(JSON.stringify(event));
 }
 
+// Bound the connect/snapshot frame so it can't grow without limit as months of history pile up.
+// Generous caps (newest-first): invisible for any realistic current state, but a hard ceiling on the
+// per-reconnect cost. Per-thread history is fetched lazily via thread.history, so this only trims the
+// long tail of cross-thread runs/findings and old director chat.
+const SNAPSHOT_RUNS = 2000;
+const SNAPSHOT_FINDINGS = 1000;
+const SNAPSHOT_DIRECTOR_MSGS = 600;
+
 function buildHello(ctx: WsContext): ServerEvent {
   return {
     type: "hello",
     threads: ctx.db.listThreads(),
-    runs: ctx.db.listAllRuns(),
-    findings: ctx.db.listFindings(),
+    runs: ctx.db.listAllRuns(SNAPSHOT_RUNS),
+    findings: ctx.db.listFindings(undefined, SNAPSHOT_FINDINGS),
     questions: ctx.db.listOpenQuestions(),
-    director: ctx.db.listDirectorMessages(),
+    director: ctx.db.listDirectorMessages(SNAPSHOT_DIRECTOR_MSGS),
     accounts: ctx.accounts.dto(),
     approvalMode: ctx.manager.approvalMode(),
   };
