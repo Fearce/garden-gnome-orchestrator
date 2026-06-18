@@ -5,7 +5,7 @@
   "description": "A director's console for running Claude Code agents — enrich, plan, research, dispatch Opus implementors, inject mid-work.",
   "scripts": {
     "install:all": "npm install --prefix server && npm install --prefix web",
-    "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev": "concurrently --raw \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "npm run dev --prefix server",
     "dev:web": "npm run dev --prefix web",
     "build": "npm run build --prefix web && npm run build --prefix server",
