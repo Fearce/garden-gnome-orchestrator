@@ -121,11 +121,18 @@ intake → enriching → [awaiting_user] → planning → [researching] → [awa
 - **Resumability.** Each completed stage's output is persisted to `threads.stage_outputs`
   (JSON; additive read-merge-write so a later stage never clobbers an earlier one). A
   `failed` thread re-enters `runPipeline`, which skips the stages already saved and
-  continues from the failure point; the implementor resumes its **prior SDK session**,
-  recovered from the latest `agent_runs.session_id` (which survives a server restart,
-  unlike the in-memory map). The `Resume` control on a failed/paused/review thread
-  triggers this. `markInterrupted` flips in-flight threads to `failed` on boot but leaves
+  continues from the failure point. The `Resume` control on a failed/paused/review thread
+  triggers this; `markInterrupted` flips in-flight threads to `failed` on boot but leaves
   `stage_outputs` intact, so a restart mid-task is recoverable rather than lost.
+- **Compressed resume (default).** Reloading the implementor's entire prior SDK session is the
+  *expensive* part of a resume — after a restart it's a cold-cache reload of every tool call and
+  file it had read. So by default the implementor resume does **not** reload that transcript:
+  `composeResumeKickoff` starts a **fresh** session seeded with the plan (from `stage_outputs`,
+  small) plus the workspace's concrete progress (`git diff` + recent commits) — the plan states
+  the goal, the diff states what's already done, enough to continue at a fraction of the tokens.
+  `RESUME_FULL_SESSION=1` forces a full-fidelity resume of the prior session (recovered from the
+  latest `agent_runs.session_id`, which survives a restart unlike the in-memory map) for tasks that
+  genuinely need their exact prior reasoning.
 - **Finding routing:** when a finding lands on a thread whose implementor is
   live, the manager either (a) `inject`s it as a follow-up user message, or
   (b) `interrupt → resume(sessionId)` with augmented context — chosen by
