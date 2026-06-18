@@ -229,7 +229,8 @@ defaults (see root CLAUDE.md doctrine).
 ## 10. Multi-subscription load balancing (`server/src/accounts/`)
 
 Run agents across **two (or more) Claude subscriptions**, routing each dispatch
-to whichever sub has the most headroom so neither is wasted.
+to **burn the "perishable" weekly allowance first** — the sub whose weekly window
+resets soonest — and keeping the long-runway one in reserve for when it caps.
 
 - **Tokens, per-run.** Each account is `{ id, label, token }` from
   `ACCOUNT_<n>_TOKEN` (long-lived `claude setup-token` tokens). The runner sets
@@ -250,11 +251,17 @@ to whichever sub has the most headroom so neither is wasted.
   schedules a one-shot ping **right at each window's reset** (from the reset
   epochs) so the strip flips to ~0% and the new window's timer starts the instant
   it resets. `select()` round-robins (least-recently-selected) until burn is
-  known, then favors the account with the most **weekly** headroom, skipping any
-  that 429-rejected until its reset passes. A run's `rate_limit_event` still flags
-  `rateLimited` fast mid-burst (the ping owns the %). State streams to the GUI as
-  `accounts` events → the topbar burn strip; a failed ping marks the value
-  "stale" (dimmed) after 20 min.
+  known, then **prefers the account whose weekly window resets soonest**
+  (`bySelectionPriority`) — so the about-to-reset weekly allowance is spent rather
+  than wasted, while the sub with days of runway is held back. A capped/near-limit
+  account (429-rejected, or ≥ `HARD_LIMIT` on its tightest window) is dropped from
+  the pool, so we ride the soonest-reset sub until it hits its 5h (or weekly) cap,
+  fail over to the reserve, then snap back the moment the first sub's window resets
+  (its reset-ping clears the cap; whichever sub is now closest to its weekly reset
+  takes over). Weekly headroom → 5h headroom → round-robin are the tiebreaks. A
+  run's `rate_limit_event` still flags `rateLimited` fast mid-burst (the ping owns
+  the %). State streams to the GUI as `accounts` events → the topbar burn strip; a
+  failed ping marks the value "stale" (dimmed) after 20 min.
 - **Mid-task failover** (`threadManager.ts`). The account is picked per run, but if it
   hits a 5h/weekly cap *mid-run* (`rate_limit_event` `status:"rejected"` →
   `AgentRun.rateLimited`), the task doesn't stall: `selectFailover` picks another account

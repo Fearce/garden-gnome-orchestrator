@@ -29,10 +29,29 @@ const tightest = (s: AccountState): number => Math.max(s.fiveHour ?? 0, s.sevenD
 const weeklyHeadroom = (s: AccountState): number => 100 - (s.sevenDay ?? 0);
 const fiveHeadroom = (s: AccountState): number => 100 - (s.fiveHour ?? 0);
 const hasBurnData = (s: AccountState): boolean => s.fiveHour != null || s.sevenDay != null;
+// When a weekly reset is unknown (pre-ping) it sorts last, so a known soon reset wins and accounts
+// with no data yet fall through to the round-robin tiebreak.
+const weeklyResetAt = (s: AccountState): number => s.sevenDayReset ?? Number.POSITIVE_INFINITY;
 
 /**
- * Tracks each subscription's 5h/weekly burn and routes dispatches to drain both
- * evenly.
+ * Selection order — burn the "perishable" weekly allowance first: prefer the account whose WEEKLY
+ * window resets **soonest**, and keep the one with days of runway in reserve for when the soonest is
+ * capped. A capped/near-limit account is filtered out of the pool before this runs, so we ride the
+ * soonest-reset sub until it hits its 5h (or weekly) cap, switch to the other, and — once the first
+ * account's window resets (its reset-ping clears the cap and pushes its weekly reset ~7d out) — the
+ * other becomes the soonest-resetting one and naturally takes over, or the first is preferred again.
+ * Ties / no reset data → more weekly headroom, then 5h headroom, then least-recently-selected.
+ */
+const bySelectionPriority = (x: AccountState, y: AccountState): number =>
+  weeklyResetAt(x) - weeklyResetAt(y) ||
+  weeklyHeadroom(y) - weeklyHeadroom(x) ||
+  fiveHeadroom(y) - fiveHeadroom(x) ||
+  x.lastPick - y.lastPick;
+
+/**
+ * Tracks each subscription's 5h/weekly burn and routes dispatches to spend the
+ * "perishable" weekly allowance first — the sub whose weekly window resets soonest
+ * — holding the long-runway one in reserve for when the first one caps.
  *
  * Usage comes from a "super tiny" Haiku ping per account (`usagePing.ts`): the
  * /v1/messages response headers carry exact live 5h + weekly utilization for the
@@ -40,8 +59,10 @@ const hasBurnData = (s: AccountState): boolean => s.fiveHour != null || s.sevenD
  * Pings run on an interval (fresh display) and are also scheduled right at each
  * window's reset, which both flips the strip to ~0% the moment a window resets
  * AND starts the new window's timer immediately. `select()` round-robins until
- * burn is known, then favors the account with the most weekly headroom and
- * avoids any that 429-rejected until its reset passes.
+ * burn is known, then **burns the account whose weekly window resets soonest** —
+ * spending the "perishable" weekly allowance first and keeping the one with days
+ * of runway in reserve — avoiding any that 429-rejected until its reset passes
+ * (see `bySelectionPriority`).
  */
 export class AccountManager {
   private readonly states = new Map<string, AccountState>();
@@ -153,10 +174,12 @@ export class AccountManager {
 
   /** Pick the best account for the next dispatch. */
   select(): { account: Account; reason: string } {
-    const first = this.accounts[0];
     if (this.accounts.length <= 1) {
-      this.preferredId = first?.id;
-      return { account: first ?? { id: "default", label: "logged-in", token: "" }, reason: "single account" };
+      // loadAccounts() always yields ≥1 account (a synthetic "logged-in" entry when no tokens are
+      // configured), so accounts[0] is always defined — no synthetic fallback needed here.
+      const only = this.accounts[0]!;
+      this.preferredId = only.id;
+      return { account: only, reason: "single account" };
     }
     const now = Date.now();
     const all = [...this.states.values()];
@@ -165,21 +188,16 @@ export class AccountManager {
       return !limited && tightest(s) < HARD_LIMIT;
     });
     const pool = usable.length ? usable : all;
-    // Prefer weekly headroom, then 5h headroom, then least-recently-selected.
-    pool.sort(
-      (x, y) =>
-        weeklyHeadroom(y) - weeklyHeadroom(x) ||
-        fiveHeadroom(y) - fiveHeadroom(x) ||
-        x.lastPick - y.lastPick,
-    );
+    // Burn the account whose weekly window resets soonest first (see bySelectionPriority).
+    pool.sort(bySelectionPriority);
     const chosen = pool[0]!;
     chosen.lastPick = ++this.selSeq;
     this.preferredId = chosen.account.id;
     this.publish();
     const reason = !usable.length
-      ? "all accounts near limit — using least-burned"
+      ? "all accounts near limit — using the one resetting soonest"
       : pool.some(hasBurnData)
-        ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} — most headroom`
+        ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} · resets ${untilReset(chosen.sevenDayReset, now)} — soonest weekly reset`
         : "round-robin (no burn data yet)";
     return { account: chosen.account, reason };
   }
@@ -198,14 +216,21 @@ export class AccountManager {
       return !limited && tightest(s) < HARD_LIMIT;
     });
     if (!candidates.length) return null;
-    candidates.sort(
-      (x, y) => weeklyHeadroom(y) - weeklyHeadroom(x) || fiveHeadroom(y) - fiveHeadroom(x) || x.lastPick - y.lastPick,
-    );
+    // Same perishable-first order: the reserve account we fail over to is the next-soonest-resetting one.
+    candidates.sort(bySelectionPriority);
     const chosen = candidates[0]!;
     chosen.lastPick = ++this.selSeq;
     this.preferredId = chosen.account.id;
     this.publish();
     return chosen.account;
+  }
+
+  /** A subscription token for an ANCILLARY call (e.g. resume-compression's Haiku summary) — purely
+   *  read-only: unlike select(), it does NOT bump round-robin state, change the preferred/"active"
+   *  account, or publish. Prefers the currently-preferred account, else the first. */
+  auxToken(): string | undefined {
+    const pick = (this.preferredId ? this.states.get(this.preferredId)?.account : undefined) ?? this.accounts[0];
+    return pick?.token || undefined;
   }
 
   /** Is this account currently cap-rejected and not yet past its reset? */
@@ -239,4 +264,13 @@ export class AccountManager {
 
 function fmt(n: number | null | undefined): string {
   return n == null ? "—" : `${Math.round(n)}%`;
+}
+
+/** Compact "in 7h" / "in 3d" until a reset epoch, for the selection log line. */
+function untilReset(resetAt: number | null, now: number): string {
+  if (resetAt == null) return "—";
+  const ms = resetAt - now;
+  if (ms <= 0) return "now";
+  const h = ms / 3_600_000;
+  return h < 48 ? `in ${Math.round(h)}h` : `in ${Math.round(h / 24)}d`;
 }
