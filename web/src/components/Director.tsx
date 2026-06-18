@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as Rea
 import { useStore } from "../store.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { FolderPicker } from "./FolderPicker.js";
+import { Gnome } from "./Gnome.js";
 import type { DirectorItem } from "../types.js";
 
 export function Director() {
@@ -58,7 +59,7 @@ export function Director() {
         <h2>Director</h2>
         <div className="who">
           <span className="pip active" style={{ "--role": "var(--role-director)" } as CSSProperties}>
-            <span className="led" />
+            <Gnome role="director" size={28} />
           </span>
           <span className="dim mono" style={{ fontSize: 11 }}>
             {busy ? "thinking…" : "sonnet 4.6 · ready"}

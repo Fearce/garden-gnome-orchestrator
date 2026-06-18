@@ -4,6 +4,7 @@ import type { AgentRun, FeedItem, Role } from "../types.js";
 import { clock, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, useAttachments } from "../lib/attachments.js";
+import { Gnome } from "./Gnome.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -174,6 +175,12 @@ export function ThreadDetail() {
   const impl = threadRuns.filter((r) => r.role === "implementor").sort((a, b) => b.startedAt - a.startedAt)[0];
   const totalCost = threadRuns.reduce((a, r) => a + (r.costUsd ?? 0), 0);
   const path = pipelinePath(threadRuns);
+  // A role is "live" only while its latest run is still going; finished roles grey out so the
+  // currently-working gnome is the one that stands out (matches the board cards).
+  const roleIsLive = (role: Role): boolean => {
+    const lr = latestRunOf(threadRuns, role);
+    return lr ? runActive(lr.state) : false;
+  };
 
   const isLive = thread.state === "implementing";
   // Resume covers a failed task too: the pipeline is resume-aware and re-runs from the stage that
@@ -261,12 +268,16 @@ export function ThreadDetail() {
         </div>
         {path.length > 0 && (
           <div className="meta" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }} title="The actual agent path this task took">
-            {path.map((role, i) => (
-              <span key={role} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                {i > 0 ? <span style={{ opacity: 0.4 }}>→</span> : null}
-                <span style={{ color: roleColor(role), textTransform: "capitalize", fontWeight: 600 }}>{role}</span>
-              </span>
-            ))}
+            {path.map((role, i) => {
+              const live = roleIsLive(role);
+              return (
+                <span key={role} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  {i > 0 ? <span style={{ opacity: 0.4 }}>→</span> : null}
+                  <Gnome role={role} size={28} active={live} />
+                  <span style={{ color: live ? roleColor(role) : "var(--text-faint)", textTransform: "capitalize", fontWeight: 600 }}>{role}</span>
+                </span>
+              );
+            })}
           </div>
         )}
         <div className="detail-controls">
@@ -350,6 +361,7 @@ export function ThreadDetail() {
                 style={{ "--role": roleColor(role) } as CSSProperties}
                 onClick={() => setRoleFilter(role)}
               >
+                <Gnome role={role} size={15} />
                 {role} <span className="n">{counts[role] ?? 0}</span>
                 {r ? <Elapsed className="fchip-time" startMs={r.startedAt} endMs={r.endedAt} running={runActive(r.state)} /> : null}
               </button>
@@ -404,6 +416,7 @@ export function ThreadDetail() {
         {draft && (roleFilter === "all" || draft.role === roleFilter) && (
           <div className="fi draft" style={roleVar(draft.role)}>
             <div className="head">
+              <Gnome role={draft.role} size={30} />
               <span className="role-tag" style={{ color: roleColor(draft.role) }}>
                 {draft.role}
               </span>
@@ -478,6 +491,7 @@ const FeedRow = memo(function FeedRow({ item }: { item: FeedItem }) {
       return (
         <div className="fi text" style={roleVar(item.role)}>
           <div className="head">
+            <Gnome role={item.role} size={30} />
             <span className="role-tag" style={{ color: roleColor(item.role) }}>
               {item.role}
             </span>
