@@ -89,12 +89,20 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
       important: z.boolean().default(false).describe("If true, interrupt that task's implementor to deliver this immediately."),
     },
     async (args) => {
+      if (args.targetThreadId === ctx.threadId) {
+        return {
+          content: [{ type: "text", text: "notify_thread is for a DIFFERENT task — use post_finding for your own task's blackboard." }],
+          isError: true,
+        };
+      }
       const target = api.getThread(args.targetThreadId);
       if (!target) {
         return { content: [{ type: "text", text: `No task with id ${args.targetThreadId}.` }], isError: true };
       }
+      // Stamp the originating run so the target thread's route() applies its self-finding guard uniformly.
       api.postFinding({
         threadId: args.targetThreadId,
+        fromRunId: ctx.getRunId() ?? null,
         fromRole: ctx.role,
         summary: `From task ${ctx.threadId.slice(0, 8)}: ${args.message}`,
         severity: args.important ? "critical" : "warning",
