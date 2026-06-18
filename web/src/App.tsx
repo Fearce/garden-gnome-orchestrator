@@ -30,9 +30,12 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="wordmark">
-          Claude&nbsp;<em>Orchestrator</em>
-          <span className="sub">director&nbsp;console</span>
+        <div className="brand">
+          <BuildTag />
+          <div className="wordmark">
+            Claude&nbsp;<em>Orchestrator</em>
+            <span className="sub">director&nbsp;console</span>
+          </div>
         </div>
         <RailToggle />
         <div className="spacer" />
@@ -58,6 +61,16 @@ export function App() {
       <MobileNav pane={mobilePane} setPane={setMobilePane} />
       <QuestionModal />
     </div>
+  );
+}
+
+function BuildTag() {
+  const built = new Date(__BUILD_TIME__);
+  const title = `v${__APP_VERSION__} · ${__BUILD_SHA__}\nbuilt ${built.toLocaleString()}`;
+  return (
+    <span className="build-tag" title={title}>
+      v{__APP_VERSION__}<span className="sha">{__BUILD_SHA__}</span>
+    </span>
   );
 }
 
