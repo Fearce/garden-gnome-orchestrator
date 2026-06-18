@@ -79,6 +79,11 @@ export const config = {
     qa: "claude-opus-4-8",
   },
   maxQaRounds: Number(process.env.MAX_QA_ROUNDS ?? 4),
+  // Resume cheaply by default: a resumed implementor starts a fresh session seeded with the plan +
+  // the workspace's git progress, instead of reloading the entire prior transcript (a cold-cache
+  // reload after a restart is the pricey part). Set RESUME_FULL_SESSION=1 to force full-fidelity
+  // session resume when a task genuinely needs its exact prior reasoning.
+  resumeFullSession: process.env.RESUME_FULL_SESSION === "1",
 };
 
 export type RoleModelKey = keyof typeof config.models;

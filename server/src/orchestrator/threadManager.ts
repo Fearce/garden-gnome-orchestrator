@@ -510,13 +510,57 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
+  /** A cheap resume seed: the original kickoff (brief + plan + research — all small, from the
+   *  persisted stage outputs) plus the *concrete* progress read straight from the workspace's git
+   *  state. Lets a fresh implementor continue without reloading the prior session's whole transcript
+   *  (which is what makes a cold resume expensive). The plan says the goal; the diff says what's done. */
+  private async composeResumeKickoff(thread: Thread, kickoff: string): Promise<string> {
+    const git = (args: string[]): Promise<string> =>
+      new Promise((res) =>
+        execFile("git", ["-C", thread.workspace, "--no-pager", ...args], { maxBuffer: 8 * 1024 * 1024 }, (err, out, errOut) =>
+          res((out || errOut || (err ? err.message : "")).trim()),
+        ),
+      );
+    const [log, stat, diff] = await Promise.all([git(["log", "--oneline", "-8"]), git(["diff", "--stat"]), git(["diff"])]);
+    const cappedDiff = diff.length > 6000 ? diff.slice(0, 6000) + "\n… (diff truncated — read the files for the rest)" : diff;
+    const progress = [
+      "Recent commits:",
+      log || "(none yet)",
+      "",
+      "Uncommitted changes (git diff --stat):",
+      stat || "(none)",
+      cappedDiff ? `\nUncommitted diff:\n${cappedDiff}` : "",
+    ].join("\n");
+    return [
+      kickoff,
+      "",
+      "---",
+      "## ⏪ Resuming — you already started this task before an interruption (a crash or server restart)",
+      "To keep this resume cheap, your earlier session's full transcript is NOT reloaded. Instead, here is the concrete progress you'd already made, read straight from the workspace:",
+      "",
+      progress,
+      "",
+      "Continue from here: re-read whatever you need, finish the remaining work against the plan above, and don't redo what's already in the commits/diff. A QA agent will review your work when you're done.",
+    ].join("\n");
+  }
+
   private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string): Promise<void> {
-    // On resume, hand the implementor its prior session + a short continue prompt rather than the
-    // full kickoff (the session already holds the whole brief and the work it did before it died).
-    const firstMsg = resumeSession
-      ? "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done."
-      : kickoff;
-    const start = this.startImplementor(thread, firstMsg, { effort, resume: resumeSession });
+    let start: { run: AgentRun; runId: string; accountId: string };
+    if (resumeSession && config.resumeFullSession) {
+      // Opt-in full-fidelity resume: reload the entire prior session (pricey — cold-cache reload of
+      // every tool call + file it read) and just nudge it to continue.
+      start = this.startImplementor(
+        thread,
+        "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done.",
+        { effort, resume: resumeSession },
+      );
+    } else if (resumeSession) {
+      // Default compressed resume: a FRESH session seeded with the plan + the workspace's concrete
+      // progress (git diff/commits), so it continues without reloading the whole transcript.
+      start = this.startImplementor(thread, await this.composeResumeKickoff(thread, kickoff), { effort });
+    } else {
+      start = this.startImplementor(thread, kickoff, { effort });
+    }
     let res = await this.awaitImplementorResult(
       thread,
       effort,
