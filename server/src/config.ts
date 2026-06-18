@@ -79,10 +79,12 @@ export const config = {
     qa: "claude-opus-4-8",
   },
   maxQaRounds: Number(process.env.MAX_QA_ROUNDS ?? 4),
-  // Resume cheaply by default: a resumed implementor starts a fresh session seeded with the plan +
-  // the workspace's git progress, instead of reloading the entire prior transcript (a cold-cache
-  // reload after a restart is the pricey part). Set RESUME_FULL_SESSION=1 to force full-fidelity
-  // session resume when a task genuinely needs its exact prior reasoning.
+  // Resume strategy. A *recent* resume hits a still-warm prompt cache (≈1h TTL on a subscription),
+  // so a normal full resume is cheap AND keeps full fidelity — we only compress once the cache has
+  // likely gone cold. resumeWarmMinutes is that boundary (default 40, safely under the 1h TTL):
+  // resume within it → full session resume; older → compressed resume (Haiku handoff + git, §5).
+  // RESUME_FULL_SESSION=1 forces full resume regardless of age.
+  resumeWarmMinutes: Number(process.env.RESUME_WARM_MINUTES ?? 40),
   resumeFullSession: process.env.RESUME_FULL_SESSION === "1",
 };
 

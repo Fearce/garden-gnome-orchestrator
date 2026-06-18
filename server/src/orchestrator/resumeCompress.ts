@@ -44,6 +44,19 @@ export function findTranscript(sessionId: string): string | null {
   return null;
 }
 
+/** How long since the session was last active, from its transcript's mtime (the .jsonl is appended
+ *  as the session runs). null if no transcript is found. Used to decide whether the prompt cache is
+ *  still warm — a recent resume is cheap + full-fidelity via a normal resume, so we don't compress. */
+export function sessionAgeMs(sessionId: string): number | null {
+  const p = findTranscript(sessionId);
+  if (!p) return null;
+  try {
+    return Date.now() - statSync(p).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 interface Compressed {
   oldBody: string;
   recentBody: string;

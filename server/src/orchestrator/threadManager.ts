@@ -6,7 +6,7 @@ import { AgentRun, type AgentRunConfig } from "../agents/runner.js";
 import { implementorConfig, plannerConfig, qaConfig, researcherConfig } from "../agents/roles.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
-import { compressSession } from "./resumeCompress.js";
+import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { config } from "../config.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -582,19 +582,26 @@ export class ThreadManager implements OrchestratorApi {
 
   private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string): Promise<void> {
     let start: { run: AgentRun; runId: string; accountId: string };
-    if (resumeSession && config.resumeFullSession) {
-      // Opt-in full-fidelity resume: reload the entire prior session (pricey — cold-cache reload of
-      // every tool call + file it read) and just nudge it to continue.
-      start = this.startImplementor(
-        thread,
-        "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done.",
-        { effort, resume: resumeSession },
-      );
-    } else if (resumeSession) {
-      // Default compressed resume: a FRESH session seeded with the plan, a locally Haiku-compressed
-      // handoff of the prior session, and the workspace's git progress — so it continues without
-      // reloading the whole transcript (the expensive part of a resume).
-      start = this.startImplementor(thread, await this.composeResumeKickoff(thread, kickoff, resumeSession), { effort });
+    if (resumeSession) {
+      // Full resume only when it's actually cheap: forced via env, OR the session was active recently
+      // enough that its prompt cache is still warm (a cache read is ~0.1× and keeps full fidelity, so
+      // compressing then would just burn a Haiku call and lose detail). Otherwise compress.
+      const ageMs = sessionAgeMs(resumeSession);
+      const warm = ageMs != null && ageMs < config.resumeWarmMinutes * 60_000;
+      if (config.resumeFullSession || warm) {
+        const why = config.resumeFullSession ? "forced" : `cache likely warm (${Math.round((ageMs ?? 0) / 60000)}m < ${config.resumeWarmMinutes}m)`;
+        this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: full session resume — ${why}.`);
+        start = this.startImplementor(
+          thread,
+          "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done.",
+          { effort, resume: resumeSession },
+        );
+      } else {
+        // Cold/old (or no transcript to age-check): a FRESH session seeded with the plan, a locally
+        // Haiku-compressed handoff of the prior session, and the git progress — continuing without
+        // the pricey cold reload of the whole transcript.
+        start = this.startImplementor(thread, await this.composeResumeKickoff(thread, kickoff, resumeSession), { effort });
+      }
     } else {
       start = this.startImplementor(thread, kickoff, { effort });
     }
