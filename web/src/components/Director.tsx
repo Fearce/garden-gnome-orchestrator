@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useStore } from "../store.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
+import { FolderPicker } from "./FolderPicker.js";
 import type { DirectorItem } from "../types.js";
 
 export function Director() {
@@ -10,6 +11,7 @@ export function Director() {
   const sendPrompt = useStore((s) => s.sendPrompt);
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
   const setDirectorWidth = useStore((s) => s.setDirectorWidth);
   const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -49,6 +51,7 @@ export function Director() {
   };
 
   return (
+    <>
     <aside className="rail">
       <div className="resize-handle rail-resize" onMouseDown={startResize} title="Drag to resize the director panel" />
       <div className="rail-head">
@@ -107,12 +110,27 @@ export function Director() {
             title="If set, this exact path is the dispatch workspace — the director uses it verbatim instead of resolving a path itself. Leave blank to let the director find the repo from your description."
             onChange={(e) => setWs(e.target.value)}
           />
+          <button
+            className="btn ghost sm attach-btn"
+            type="button"
+            title="Browse for a folder"
+            aria-label="Browse for a folder"
+            onClick={() => setPickerOpen(true)}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            </svg>
+          </button>
           <button className="btn primary" onClick={submit} disabled={!text.trim()}>
             Send
           </button>
         </div>
       </div>
     </aside>
+    {pickerOpen && (
+      <FolderPicker initialPath={ws} onSelect={setWs} onClose={() => setPickerOpen(false)} />
+    )}
+    </>
   );
 }
 
