@@ -1,8 +1,17 @@
 // Cheap resume: compress an implementor's prior Claude Code session transcript LOCALLY into a small
 // handoff, instead of reloading the whole ~hundreds-of-K-token context on a cold cache miss (the
-// expensive part of a resume). Two stages: (1) a free static strip that drops re-derivable junk
-// (old tool output, the model's thinking, big tool inputs, images) and keeps the conversation +
-// a files-touched list; (2) a cheap Haiku summary of the OLD turns (recent turns stay verbatim).
+// expensive part of a resume). Stages:
+//   1. A FREE static strip that drops re-derivable junk (old tool output, the model's thinking, big
+//      tool inputs, images) and keeps the conversation text + recent (clipped) tool results + a
+//      files-touched list. This alone shrinks a transcript enormously.
+//   2. The OLD turns (everything before the last RECENT_VERBATIM messages) are then either:
+//        - kept VERBATIM when already small (≤ INLINE_OLD_MAX_CHARS) — NO Haiku call at all, which
+//          is the common case; or
+//        - summarized by a SINGLE Haiku call over only the most-recent HAIKU_INPUT_CAP_CHARS of
+//          them (older context dropped with a note). So the Haiku INPUT is bounded and cheap rather
+//          than re-reading an entire (possibly 200k+ token) session — and the fallback when Haiku
+//          can't run is the SAME capped slice, never the full transcript.
+//   The recent turns always stay verbatim.
 //
 // Mirrors the standalone tool at C:\claude-resume-lite (compress.mjs + summarize.mjs); vendored
 // here so the orchestrator service stays self-contained and doesn't depend on that path existing.
@@ -14,12 +23,15 @@ import { join } from "node:path";
 const RECENT_VERBATIM = 24; // keep this many trailing messages verbatim
 const RECENT_TOOL_RESULT_CHARS = 1500; // truncate kept tool results to this
 const SUMMARY_MODEL = process.env.RESUME_SUMMARY_MODEL || "claude-haiku-4-5-20251001";
-const CHUNK_CHARS = 600_000; // ~150k tokens, under Haiku's 200k context
-const MAX_SUMMARY_OUTPUT = 16_000;
-// Bound the cost of summarizing a pathologically long session: at most this many Haiku calls,
-// keeping the most RECENT chunks (the oldest old-turns are least relevant to continuing). After
-// the static strip, oldBody is usually one chunk, so this only bites on enormous sessions.
-const MAX_SUMMARY_CHUNKS = 4;
+const MAX_SUMMARY_OUTPUT = Number(process.env.RESUME_SUMMARY_OUTPUT || 8_000); // a dense brief, not a re-rendering
+// Old turns this small after the static strip aren't worth a Haiku round-trip — drop them into the
+// handoff verbatim (full fidelity, zero summary tokens). Most sessions land here → no Haiku call.
+const INLINE_OLD_MAX_CHARS = Number(process.env.RESUME_INLINE_OLD_MAX || 24_000); // ~6k tokens
+// When the old turns ARE large, cap what we feed Haiku to the most-recent slice (one call, no
+// multi-chunk fan-out). Older context is the least load-bearing for "continue the work" and the
+// full transcript stays on disk (RESUME_FULL_SESSION=1 reloads it). ~90k tokens of chars —
+// comfortably under Haiku's 200k window and far below the old 4×150k worst case.
+const HAIKU_INPUT_CAP_CHARS = Number(process.env.RESUME_HAIKU_INPUT_CAP || 360_000);
 
 type Block = { type?: string; text?: string; name?: string; input?: unknown; content?: unknown };
 
@@ -123,94 +135,98 @@ function compressTranscript(jsonl: string): Compressed {
 
 const SUMMARY_PROMPT = `You are compressing the EARLIER part of a long Claude Code coding session into a dense handoff so another agent can seamlessly continue the work. Preserve everything load-bearing; drop only redundancy and chit-chat.
 
-Capture: the goals and explicit instructions/preferences; every decision made and WHY; the current state (what's done / in progress / verified); files changed and what changed; the specific values, names, paths, commands, and IDs that matter; gotchas, constraints, and dead-ends discovered; and open questions / next steps.
+The task brief and the plan are provided to that agent SEPARATELY and authoritatively, so do NOT restate the goal, the requirements, or the plan — capture only what actually HAPPENED in this session that those can't tell it: every decision made and WHY; the current state (what's done / in progress / verified vs not); files changed and what specifically changed; the concrete values, names, paths, commands, and IDs that matter; gotchas, constraints, and dead-ends discovered; and the remaining work / open questions.
 
-Write a STRUCTURED BRIEF with these sections: "## Goal & constraints", "## Key decisions", "## Work done", "## Files & state", "## Gotchas / dead-ends", "## Open / next". Do NOT retell chronologically. Be thorough — prefer keeping a detail over losing it. Output ONLY the brief, no preamble.`;
+Write a STRUCTURED BRIEF with these sections: "## Key decisions", "## Work done", "## Files & state", "## Gotchas / dead-ends", "## Open / next". Do NOT retell chronologically and do NOT add a goal/plan recap. Be thorough on the above — prefer keeping a detail over losing it. Output ONLY the brief, no preamble.`;
 
 async function summarizeChunk(chunk: string, token: string, partNote: string): Promise<string | null> {
-  let res: Response;
-  try {
-    res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "anthropic-beta": "oauth-2025-04-20",
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-        "user-agent": "claude-cli/2.0.0",
-      },
-      body: JSON.stringify({
-        model: SUMMARY_MODEL,
-        max_tokens: MAX_SUMMARY_OUTPUT,
-        messages: [{ role: "user", content: `${SUMMARY_PROMPT}${partNote}\n\n---SESSION TRANSCRIPT (earlier turns)---\n${chunk}` }],
-      }),
-      signal: AbortSignal.timeout(180_000),
-    });
-  } catch {
-    return null;
-  }
-  if (res.status !== 200) {
+  const body = JSON.stringify({
+    model: SUMMARY_MODEL,
+    max_tokens: MAX_SUMMARY_OUTPUT,
+    messages: [{ role: "user", content: `${SUMMARY_PROMPT}${partNote}\n\n---SESSION TRANSCRIPT (earlier turns)---\n${chunk}` }],
+  });
+  // One retry: a transient 429/5xx/network blip shouldn't silently dump us onto the (capped) static
+  // strip. Non-retryable statuses (4xx) and a second failure fall through to null → static fallback.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "anthropic-beta": "oauth-2025-04-20",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "user-agent": "claude-cli/2.0.0",
+        },
+        body,
+        signal: AbortSignal.timeout(180_000),
+      });
+    } catch {
+      continue; // network error / timeout — retry once, then give up
+    }
+    if (res.status === 200) {
+      let j: { content?: Block[] };
+      try {
+        j = (await res.json()) as { content?: Block[] };
+      } catch {
+        return null;
+      }
+      const text = Array.isArray(j.content)
+        ? j.content
+            .filter((b) => b?.type === "text")
+            .map((b) => b.text ?? "")
+            .join("\n")
+            .trim()
+        : "";
+      return text || null;
+    }
     await res.text().catch(() => ""); // drain the body to free the socket; content unused
-    return null;
+    if (res.status !== 429 && res.status < 500) {
+      console.warn(`[resume] Haiku summary HTTP ${res.status} — falling back to the static strip.`);
+      return null; // 4xx (e.g. auth) — retrying won't help
+    }
+    // 429 / 5xx → loop and retry once
   }
-  let j: { content?: Block[] };
-  try {
-    j = (await res.json()) as { content?: Block[] };
-  } catch {
-    return null;
-  }
-  const text = Array.isArray(j.content)
-    ? j.content
-        .filter((b) => b?.type === "text")
-        .map((b) => b.text ?? "")
-        .join("\n")
-        .trim()
-    : "";
-  return text || null;
+  console.warn("[resume] Haiku summary failed after a retry — falling back to the static strip.");
+  return null;
 }
 
-/** Split on message boundaries (each part starts with "### ") so a chunk never cuts a turn or
- *  code block in half; hard-splits any single oversized message as a last resort. */
-function chunkOnBoundaries(text: string, max: number): string[] {
-  if (text.length <= max) return [text];
-  const chunks: string[] = [];
-  let cur = "";
-  for (const seg of text.split(/(?=\n\n### )/)) {
-    if (cur && cur.length + seg.length > max) {
-      chunks.push(cur);
-      cur = "";
-    }
-    cur += seg;
-    while (cur.length > max) {
-      chunks.push(cur.slice(0, max));
-      cur = cur.slice(max);
-    }
-  }
-  if (cur) chunks.push(cur);
-  return chunks;
+/** Keep only the most-recent `max` chars, aligned to a message boundary ("### ") so we never start
+ *  mid-turn. Returns the kept tail and how many chars were dropped. The recent old-turns matter most
+ *  for continuing; the oldest are least load-bearing and remain on disk. */
+function capRecentText(text: string, max: number): { kept: string; dropped: number } {
+  if (text.length <= max) return { kept: text, dropped: 0 };
+  const tail = text.slice(text.length - max);
+  const cut = tail.indexOf("\n### ");
+  const kept = cut >= 0 ? tail.slice(cut + 1) : tail;
+  return { kept, dropped: text.length - kept.length };
 }
 
-/** Haiku summary of the old transcript. Chunked on message boundaries for very long sessions and
- *  capped to the most recent MAX_SUMMARY_CHUNKS to bound cost. Returns null on any Haiku failure
- *  so the caller falls back to the free static strip. */
+/** Haiku summary of the old turns — a SINGLE call over the most-recent HAIKU_INPUT_CAP_CHARS (older
+ *  context dropped with a note). One call: no multi-chunk fan-out, no cross-chunk context loss, no
+ *  4×-output blow-up. Returns null on Haiku failure so the caller falls back to the (capped) static
+ *  strip. Only reached when the old turns are too big to inline verbatim. */
 async function summarizeOldTurns(oldText: string, token: string): Promise<string | null> {
-  if (!oldText.trim()) return "";
-  const all = chunkOnBoundaries(oldText, CHUNK_CHARS);
-  const dropped = Math.max(0, all.length - MAX_SUMMARY_CHUNKS);
-  const chunks = dropped > 0 ? all.slice(all.length - MAX_SUMMARY_CHUNKS) : all;
-  const out: string[] = [];
-  if (dropped > 0) {
-    out.push(
-      `### Earlier — ${dropped} oldest segment(s) omitted to bound resume cost (the full transcript is on disk if an exact early detail is ever needed).`,
-    );
-  }
-  for (let i = 0; i < chunks.length; i++) {
-    const note = chunks.length > 1 ? ` (This is part ${i + 1} of ${chunks.length} of the earlier transcript.)` : "";
-    const s = await summarizeChunk(chunks[i]!, token, note);
-    if (s == null) return null;
-    out.push(chunks.length > 1 ? `### Earlier — part ${i + 1}/${chunks.length}\n\n${s}` : s);
-  }
-  return out.join("\n\n");
+  const trimmed = oldText.trim();
+  if (!trimmed) return "";
+  const { kept, dropped } = capRecentText(trimmed, HAIKU_INPUT_CAP_CHARS);
+  const note = dropped
+    ? ` (Only the most recent ~${Math.round(kept.length / 1000)}k chars of the earlier transcript are included; ~${Math.round(dropped / 1000)}k older chars were omitted to bound resume cost — the full transcript is on disk if an exact early detail is needed.)`
+    : "";
+  const s = await summarizeChunk(kept, token, note);
+  if (s == null) return null;
+  return dropped ? `### (Oldest part of the earlier transcript omitted to bound cost.)\n\n${s}` : s;
+}
+
+/** The static-strip fallback when Haiku can't run (no token / failure): the SAME capped most-recent
+ *  slice rather than the whole old body, so a failed summary can never balloon into a near-full
+ *  transcript reload — the cost the cold path exists to avoid. */
+function cappedStatic(oldBody: string): string {
+  const { kept, dropped } = capRecentText(oldBody, HAIKU_INPUT_CAP_CHARS);
+  return dropped
+    ? `*(Oldest ~${Math.round(dropped / 1000)}k chars elided to bound resume cost; full transcript on disk.)*\n\n${kept}`
+    : kept;
 }
 
 function buildHandoff(oldRendered: string, recentBody: string, fileList: string): string {
@@ -242,11 +258,18 @@ export async function compressSession(sessionId: string, token: string | undefin
   const { oldBody, recentBody, fileList } = compressTranscript(jsonl);
   let oldRendered = oldBody;
   let haiku = false;
-  if (token && oldBody.trim()) {
-    const s = await summarizeOldTurns(oldBody, token);
-    if (s != null) {
-      oldRendered = s;
-      haiku = true;
+  if (oldBody.trim()) {
+    if (oldBody.length <= INLINE_OLD_MAX_CHARS) {
+      // Already small after the static strip — keep verbatim (full fidelity, no Haiku tokens spent).
+      oldRendered = oldBody;
+    } else if (token) {
+      const s = await summarizeOldTurns(oldBody, token);
+      // Haiku failed → the capped static strip (still far smaller than a full transcript reload).
+      oldRendered = s ?? cappedStatic(oldBody);
+      haiku = s != null;
+    } else {
+      // No account token for the Haiku call → capped static strip.
+      oldRendered = cappedStatic(oldBody);
     }
   }
   return { markdown: buildHandoff(oldRendered, recentBody, fileList), haiku };

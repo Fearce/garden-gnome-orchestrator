@@ -116,20 +116,43 @@ intake → enriching → [awaiting_user] → planning → [researching] → [awa
   looping up to `config.maxQaRounds`; **QA is the only role that can declare a task done**
   (else it settles to `review`). The optional approval gate (§12) fires after the plan +
   any research exist, before the implementor.
+- **QA fix-rounds resume the QA session.** Round 1 is a fresh QA session seeded with a *scope hint*
+  (the plan summary + the files it expected to touch) so QA doesn't burn Opus turns rediscovering the
+  change surface. Rounds 2..N **resume that same QA session** (same warm/cold gate as the implementor;
+  back-to-back rounds are warm → a ~0.1× cache read) with only a short "re-verify your issues against
+  the new diff" nudge, instead of a fresh Opus session re-reading the whole diff/tests from scratch.
+  QA still independently runs `git diff` + the build/tests every round — it just doesn't re-pay to
+  reconstruct context it already holds.
 - The plan + any research compose the implementor's kickoff; `formatResearch` folds the
   researcher's brief into that kickoff (the planner runs first and no longer reads it).
 - **Resumability.** Each completed stage's output is persisted to `threads.stage_outputs`
   (JSON; additive read-merge-write so a later stage never clobbers an earlier one). A
   `failed` thread re-enters `runPipeline`, which skips the stages already saved and
-  continues from the failure point. The `Resume` control on a failed/paused/review thread
-  triggers this; `markInterrupted` flips in-flight threads to `failed` on boot but leaves
-  `stage_outputs` intact, so a restart mid-task is recoverable rather than lost.
+  continues from the failure point (then runs QA). Each stage has a sticky "done" marker
+  (`planDone`/`researchDone`/`approved`) so a stage that legitimately produced *nothing* (e.g. the
+  planner returned no structured plan) isn't re-run on resume — a re-run would be a wasted Opus pass.
+  A `review`/`done`/`paused` thread instead takes
+  the lighter `resumeImplementorOnly` path — it talks **only** to the implementor (no QA loop) and
+  settles back to `review` when it finishes. Both reuse the prior implementor session through the
+  same warm/cold gate (below). `markInterrupted` flips in-flight threads to `failed` on boot but
+  leaves `stage_outputs` intact, so a restart mid-task is recoverable rather than lost. A manual
+  resume that lands while a prior cold resume is still *materializing* (compressing) is coalesced via
+  a `resuming` guard so it can't double-start a second implementor on the same workspace; an inject in
+  that window is buffered and delivered once the implementor is live; a cancel in that window wins
+  (the resume re-checks `cancelled()` after compressing and won't start).
 - **Resume only compresses when it pays off (warm/cold gate).** A *recent* resume hits a still-warm
   prompt cache (≈1h TTL on a subscription), so a normal full resume is cheap (cache read ≈0.1×) and
   keeps full fidelity — compressing then would just burn a Haiku call and lose detail. So the resume
   branch checks the session's age from its transcript mtime (`sessionAgeMs`): within
   `config.resumeWarmMinutes` (default 40, under the 1h TTL) → **full session resume**; older (cache
   likely cold) → **compressed resume**. `RESUME_FULL_SESSION=1` forces full resume regardless of age.
+  **This gate is the single choke-point for *every* implementor resume** — `startResumedImplementor`,
+  shared by the pipeline's implementor→QA loop (a `failed` thread re-entering) **and** a manual
+  `Resume` / an `inject` into a cold (non-live) task. The manual path matters most for cost: after a
+  server restart the in-memory `live` map is empty, so resuming *any* `review`/`done`/`paused` thread
+  is a cold resume — without this it silently reloaded the whole prior implementor transcript at full
+  Opus rate. A still-live thread (incl. a `paused` one whose run wasn't torn down) skips the gate
+  entirely and just `send()`s into the open session — the cheapest resume of all.
 - **Compressed resume (cold path).** Reloading the entire prior SDK session cold is the *expensive*
   part of a resume — every tool call and file it had read re-charged (a long session is hundreds of
   K of tokens). So the cold path does **not** reload that transcript. `composeResumeKickoff` starts a
@@ -137,14 +160,22 @@ intake → enriching → [awaiting_user] → planning → [researching] → [awa
   three small parts: the plan (from `stage_outputs`); a **locally-compressed handoff** of the prior
   session that *preserves its reasoning*; and the workspace's current git progress (`git diff` +
   commits). The handoff (`resumeCompress.ts`, vendored from `C:\claude-resume-lite`) finds the
-  on-disk transcript (`~/.claude/projects/<slug>/<sessionId>.jsonl`), does a free static strip of
+  on-disk transcript (`~/.claude/projects/<slug>/<sessionId>.jsonl`) and does a free static strip of
   re-derivable junk (old tool output, thinking, big inputs, images — keeping the conversation + a
-  files-touched list), then a cheap **Haiku** summary of the older turns (recent turns kept
-  verbatim) via `/v1/messages` on an account token. Real sessions compress **~30–50×** (a 185K-token
-  session → ~4K). It degrades gracefully: Haiku failure → free static strip; no transcript → plan +
-  git only. `RESUME_FULL_SESSION=1` forces a full-fidelity reload of the prior session (from the
-  latest `agent_runs.session_id`, which survives a restart unlike the in-memory map) when a task
-  genuinely needs its exact prior context.
+  files-touched list). The stripped **old** turns are then compressed cheaply:
+  - **already small** (≤ `RESUME_INLINE_OLD_MAX`, ~6K tokens) → kept **verbatim, no Haiku call** —
+    the common case, so most resumes spend **zero** summary tokens;
+  - **large** → a **single Haiku call** over only the most-recent `RESUME_HAIKU_INPUT_CAP` chars
+    (~90K tokens; older context dropped with a note), capped output (`RESUME_SUMMARY_OUTPUT`, 8K) —
+    so Haiku input is bounded to one call rather than re-reading the whole 200K+ session.
+  The **recent** turns stay verbatim. Real sessions still compress **~30–50×** (a 185K-token session
+  → ~4K). It degrades gracefully and **bounded**: Haiku failure (after one retry) or no token → the
+  *same capped* static slice (never the full transcript); no transcript → plan + git only.
+  `RESUME_FULL_SESSION=1` forces a full-fidelity reload of the prior session (from the latest
+  `agent_runs.session_id`, which survives a restart unlike the in-memory map) when a task genuinely
+  needs its exact prior context. The Haiku handoff is told **not** to restate the goal/plan (the
+  kickoff already carries them authoritatively) — it captures only the session delta (decisions, work
+  done, gotchas, what's left).
 - **Finding routing:** when a finding lands on a thread whose implementor is
   live, the manager either (a) `inject`s it as a follow-up user message, or
   (b) `interrupt → resume(sessionId)` with augmented context — chosen by
