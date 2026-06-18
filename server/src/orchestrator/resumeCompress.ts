@@ -13,8 +13,10 @@
 //          can't run is the SAME capped slice, never the full transcript.
 //   The recent turns always stay verbatim.
 //
-// Mirrors the standalone tool at C:\claude-resume-lite (compress.mjs + summarize.mjs); vendored
-// here so the orchestrator service stays self-contained and doesn't depend on that path existing.
+// Mirrors the standalone `claude-resume-lite` tool (compress.mjs + summarize.mjs), vendored here so
+// the orchestrator service stays self-contained and doesn't depend on that tool being installed.
+// NOTE: this is a hand-maintained TS port — if you change the compression/summary logic here,
+// update the upstream tool too (and vice-versa), or the two will drift.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";

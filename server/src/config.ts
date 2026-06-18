@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { Account } from "./accounts/account.js";
 
@@ -62,11 +63,11 @@ export const config = {
   webDist: resolve(serverRoot, "..", "web", "dist"),
   defaultWorkspace: process.env.DEFAULT_WORKSPACE ?? "C:\\",
   // Roots the director's find_workspace tool scans to resolve a project name → real path.
-  workspaceSearchRoots: (process.env.WORKSPACE_SEARCH_ROOTS || "C:\\;D:\\;C:\\Users\\user\\.runtime\\workspace")
+  workspaceSearchRoots: (process.env.WORKSPACE_SEARCH_ROOTS || "C:\\;D:\\")
     .split(";")
     .map((s) => s.trim())
     .filter(Boolean),
-  memoryDir: process.env.MEMORY_DIR ?? "C:\\Users\\user\\.claude\\memory",
+  memoryDir: process.env.MEMORY_DIR ?? resolve(homedir(), ".claude", "memory"),
   oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN || undefined,
   accounts: loadAccounts(),
   accountPingMs: Number(process.env.ACCOUNT_PING_MS ?? 600_000),

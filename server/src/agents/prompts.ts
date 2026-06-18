@@ -1,5 +1,14 @@
 // System prompts for each agent role. Kept dense and behavioral — these encode
 // how the user works by hand so the agents reproduce it.
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+// Absolute path to the globally-installed Playwright (see BROWSER_TEST below). Defaults to the
+// standard Windows global-npm location; override with PLAYWRIGHT_MODULES_DIR for a custom npm
+// prefix or non-Windows. Forward slashes so it drops cleanly into a require() string.
+const PLAYWRIGHT_PATH = (
+  process.env.PLAYWRIGHT_MODULES_DIR || join(homedir(), "AppData", "Roaming", "npm", "node_modules", "playwright")
+).replace(/\\/g, "/");
 
 // Embedded into the implementor + QA prompts so they actually browser-test UIs.
 // There is no Chrome/Preview MCP in the SDK-agent environment, so agents kept
@@ -8,7 +17,7 @@
 // required by absolute path.
 const BROWSER_TEST = `Browser-testing a web UI: there is NO Chrome/Preview MCP here, but **Playwright is globally installed**, so you CAN and MUST drive a real (headless) browser to verify a UI — never say "I can't browser-test." Recipe — write a \`.cjs\` file and run it with \`node <file>.cjs\`:
 \`\`\`js
-const { chromium } = require("C:/Users/user/AppData/Roaming/npm/node_modules/playwright");
+const { chromium } = require("${PLAYWRIGHT_PATH}");
 (async () => {
   const b = await chromium.launch();                 // headless
   const page = await b.newPage();
