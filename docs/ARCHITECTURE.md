@@ -124,10 +124,16 @@ intake → enriching → [awaiting_user] → planning → [researching] → [awa
   continues from the failure point. The `Resume` control on a failed/paused/review thread
   triggers this; `markInterrupted` flips in-flight threads to `failed` on boot but leaves
   `stage_outputs` intact, so a restart mid-task is recoverable rather than lost.
-- **Compressed resume (default).** Reloading the implementor's entire prior SDK session is the
-  *expensive* part of a resume — after a restart it's a cold-cache reload of every tool call and
-  file it had read (a long session is hundreds of K of tokens). So by default the resume does
-  **not** reload that transcript. `composeResumeKickoff` starts a **fresh** session seeded with
+- **Resume only compresses when it pays off (warm/cold gate).** A *recent* resume hits a still-warm
+  prompt cache (≈1h TTL on a subscription), so a normal full resume is cheap (cache read ≈0.1×) and
+  keeps full fidelity — compressing then would just burn a Haiku call and lose detail. So the resume
+  branch checks the session's age from its transcript mtime (`sessionAgeMs`): within
+  `config.resumeWarmMinutes` (default 40, under the 1h TTL) → **full session resume**; older (cache
+  likely cold) → **compressed resume**. `RESUME_FULL_SESSION=1` forces full resume regardless of age.
+- **Compressed resume (cold path).** Reloading the entire prior SDK session cold is the *expensive*
+  part of a resume — every tool call and file it had read re-charged (a long session is hundreds of
+  K of tokens). So the cold path does **not** reload that transcript. `composeResumeKickoff` starts a
+  **fresh** session seeded with
   three small parts: the plan (from `stage_outputs`); a **locally-compressed handoff** of the prior
   session that *preserves its reasoning*; and the workspace's current git progress (`git diff` +
   commits). The handoff (`resumeCompress.ts`, vendored from `C:\claude-resume-lite`) finds the
