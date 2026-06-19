@@ -32,7 +32,9 @@ export const PLAN_SCHEMA: Record<string, unknown> = {
     },
     risks: { type: "array", items: { type: "string" } },
     openQuestions: { type: "array", items: { type: "string" } },
-    effort: { type: "string", enum: ["low", "medium", "high", "xhigh", "max"] },
+    // `xhigh` is offered to the planner only when ENABLE_XHIGH is set (a Max-5-only tier); otherwise
+    // the json_schema enum omits it entirely, so the planner's structured output literally cannot emit it.
+    effort: { type: "string", enum: config.enableXhigh ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "max"] },
     parallelism: { type: "string" },
     // The planner routes the pipeline: 'researcher' to gather external info first, else straight
     // to the implementor. Absent ⇒ implementor (don't burn a researcher unless asked for).
@@ -90,6 +92,15 @@ export const QA_SCHEMA: Record<string, unknown> = {
     },
   },
 };
+
+/** Gate the `xhigh` effort tier behind the ENABLE_XHIGH opt-in. This is the single chokepoint that
+ *  guarantees actual prevention: a stale DB row, a resumed run, or any legacy plan that still carries
+ *  `xhigh` is coerced down to `high` here, so it can never reach the real SDK `options.effort`. */
+export function resolveEffort(effort?: Effort): Effort {
+  const requested = effort ?? "high";
+  if (requested === "xhigh" && !config.enableXhigh) return "high";
+  return requested;
+}
 
 export function directorConfig(servers: { director: McpServerConfig; memory: McpServerConfig }): AgentRunConfig {
   return {
@@ -159,7 +170,7 @@ export function implementorConfig(
     disallowedTools: ["AskUserQuestion"],
     mcpServers: { [BUS_SERVER]: servers.bus },
     settingSources: ["user", "project", "local"],
-    effort: opts?.effort ?? "high",
+    effort: resolveEffort(opts?.effort),
     includePartialMessages: true,
   };
   if (opts?.resume) cfg.resume = opts.resume;

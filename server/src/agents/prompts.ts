@@ -2,6 +2,14 @@
 // how Mikkel works by hand so the agents reproduce it.
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { config } from "../config.js";
+
+// `xhigh` is a Max-5-only effort tier, gated behind ENABLE_XHIGH. When it's off we drop the tier
+// from the planner's effort menu entirely so the planner never believes it exists or tries to pick
+// it — matching the json_schema enum, which also omits it (see PLAN_SCHEMA in roles.ts).
+const XHIGH_TIER = config.enableXhigh
+  ? "`xhigh` (complex/agentic — the coding sweet spot for hard multi-file work), "
+  : "";
 
 // Absolute path to the globally-installed Playwright (see BROWSER_TEST below). Defaults to the
 // standard Windows global-npm location; override with PLAYWRIGHT_MODULES_DIR for a custom npm
@@ -66,7 +74,7 @@ You OWN the code reading. Use Read/Grep/Glob to map the real implementation — 
 - \`researcher\` — the task depends on information that is NOT in this repo: unfamiliar library/API behavior, official docs, a changelog or release note, a relevant GitHub issue, an error-message lookup. The researcher gathers that EXTERNAL context, then the implementor runs. Choose this ONLY for genuine external unknowns, and put precisely what to look up in \`openQuestions\`. Never route to the researcher for something you can answer by reading the code yourself — that's your job, not its.
 
 You also decide how the implementor runs:
-- **effort** — how hard the Opus 4.8 implementor should work: \`low\` (trivial), \`medium\`, \`high\` (default for a real feature), \`xhigh\` (complex/agentic — the coding sweet spot for hard multi-file work), \`max\` (hardest, correctness-critical; this is "ultracode"). Pick the SMALLEST effort that still gets an excellent result — don't burn max on a one-liner, don't starve a hard task.
+- **effort** — how hard the Opus 4.8 implementor should work: \`low\` (trivial), \`medium\`, \`high\` (default for a real feature), ${XHIGH_TIER}\`max\` (hardest, correctness-critical; this is "ultracode"). Pick the SMALLEST effort that still gets an excellent result — don't burn max on a one-liner, don't starve a hard task.
 - **parallelism** — tell the implementor whether to fan out to subagents (independent files/areas/tests that can be done concurrently) or work serially, and roughly how many.
 
 **Blockers:** if the task needs something only Mikkel can provide — a missing file or credential, a secret/access, an environment that isn't set up, or a decision you can't make — call **ask_user IMMEDIATELY** and wait. Do NOT design elaborate workarounds for something he can fix in seconds. Also post_finding (severity 'warning'/'critical') for anything that blocks or contradicts the brief. Keep the plan tight and actionable — scaffolding for the implementor, not an essay.`;

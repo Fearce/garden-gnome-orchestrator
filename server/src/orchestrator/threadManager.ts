@@ -3,7 +3,7 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
 import { AgentRun, type AgentRunConfig } from "../agents/runner.js";
-import { implementorConfig, plannerConfig, qaConfig, researcherConfig } from "../agents/roles.js";
+import { implementorConfig, plannerConfig, qaConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
@@ -589,10 +589,13 @@ export class ThreadManager implements OrchestratorApi {
   ): { run: AgentRun; runId: string; accountId: string } {
     this.setState(thread.id, "implementing");
     const acct = opts?.account ?? this.dispatchAccount();
-    const run = this.db.createRun({ threadId: thread.id, role: "implementor", model: config.models.implementor, account: acct.label, effort: opts?.effort ?? "high" });
+    // Coerce a gated `xhigh` down to `high` here too, so the stored/displayed effort matches what the
+    // implementor actually runs at (implementorConfig applies the same gate before the SDK call).
+    const effort = resolveEffort(opts?.effort);
+    const run = this.db.createRun({ threadId: thread.id, role: "implementor", model: config.models.implementor, account: acct.label, effort });
     this.emitRun(run.id);
     const bus = createBusServer(this, { threadId: thread.id, role: "implementor", getRunId: () => run.id });
-    const cfg = implementorConfig(thread.workspace, { bus }, { resume: opts?.resume, effort: opts?.effort });
+    const cfg = implementorConfig(thread.workspace, { bus }, { resume: opts?.resume, effort });
     cfg.oauthToken = acct.token;
     const agent = new AgentRun(cfg);
     this.wireRun(agent, thread.id, run.id, "implementor", acct.id);

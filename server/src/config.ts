@@ -92,6 +92,11 @@ export const config = {
     qa: "claude-opus-4-8",
   },
   maxQaRounds: Number(process.env.MAX_QA_ROUNDS ?? 4),
+  // The `xhigh` implementor effort tier maps to a Max-5-only Anthropic API effort. It's OFF by
+  // default so the shared repo never selects or sends it for accounts without that subscription
+  // (the planner can't emit it, and any stale/legacy xhigh is coerced down to `high` at dispatch).
+  // Opt back in per-machine by setting ENABLE_XHIGH=true in a local, gitignored server/.env.
+  enableXhigh: process.env.ENABLE_XHIGH === "true",
   // Resume strategy. A *recent* resume hits a still-warm prompt cache (≈1h TTL on a subscription),
   // so a normal full resume is cheap AND keeps full fidelity — we only compress once the cache has
   // likely gone cold. resumeWarmMinutes is that boundary (default 40, safely under the 1h TTL):
