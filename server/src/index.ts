@@ -282,6 +282,16 @@ async function main(): Promise<void> {
     const apiKeyWarning = process.env.ANTHROPIC_API_KEY
       ? "  ⚠ ANTHROPIC_API_KEY is set in this shell; agents drop it and use your subscription."
       : "";
+    // tsx watch (the `dev` scripts) watches this server's imported module graph. Since the
+    // orchestrator is routinely pointed at its OWN repo, an implementor agent editing server/src
+    // makes tsx SIGTERM-restart the process mid-run, killing every in-flight agent (they reboot as
+    // "interrupted by a server restart"). npm exposes the launching script as npm_lifecycle_event,
+    // inherited by this child through tsx — so we can warn precisely when running under watch and
+    // point at `npm run serve` (no watch), the safe mode for live task pipelines.
+    const underWatch = /(^|:)dev(:|$)/.test(process.env.npm_lifecycle_event ?? "");
+    const watchWarning = underWatch
+      ? "  ⚠ running under tsx watch — editing server/src restarts the server and KILLS in-flight tasks; use `npm run serve` for live pipelines"
+      : "";
     // eslint-disable-next-line no-console
     console.log(
       [
@@ -292,6 +302,7 @@ async function main(): Promise<void> {
         `  auth: ${config.oauthToken ? "CLAUDE_CODE_OAUTH_TOKEN" : "inherited Claude Code login"} (subscription, no API credits)`,
         `  accounts: ${config.accounts.length} (${config.accounts.map((a) => a.label).join(", ")})${config.accounts.length > 1 ? " — load-balancing by burn ratio" : ""}`,
         `  data: ${config.dbPath}`,
+        watchWarning,
         authRequired()
           ? `  access: ${[googleEnabled() ? "Google sign-in" : null, passwordEnabled() ? "password" : null].filter(Boolean).join(" or ")} — allowlisted to ${config.allowedEmail}`
           : ``,
