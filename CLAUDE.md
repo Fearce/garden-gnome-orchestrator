@@ -41,6 +41,18 @@ exited → respawns → re-arms keepAlive itself, so the restart completes even 
   check `Get-NetTCPConnection -LocalPort 4317` and kill the old PID, then restart (see global
   memory `claude_orchestrator_stale_elevated_process_shadows_server_changes`).
 
+## Debugging a failed task
+State + run history live in `server/data/orchestrator.sqlite` (open read-only with the bundled
+`better-sqlite3`; columns are snake_case — `agent_runs.thread_id/started_at/ended_at/session_id`).
+Read the run trail to tell causes apart:
+- run `state='interrupted'` → a **server restart** killed it (`markInterrupted`), not the agent. A
+  thread whose `error` starts with "interrupted by a server restart" died to a bounce; actively-running
+  phases now **auto-resume on boot** (crash-loop guarded — repeated <60s deaths stop it).
+- run `state='error'` → a real failure or a **usage cap**. A 5h/weekly cap auto-switches account and
+  resumes the SDK session; `runner.ts` flags the cap from a `rate_limit_event`, an assistant
+  `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
+  another sub with headroom. If only one sub has headroom and it's also capped, the task settles to review.
+
 ## Conventions
 - Conventional Commits (`feat:`/`fix:`/`refactor:`/`chore:`…), matching `git log`.
 - One concern per commit — don't sweep unrelated working-tree changes into a fix.
