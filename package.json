@@ -8,6 +8,8 @@
     "dev": "concurrently --raw \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "npm run dev --prefix server",
     "dev:web": "npm run dev --prefix web",
+    "serve": "concurrently --raw \"npm:serve:server\" \"npm:dev:web\"",
+    "serve:server": "npm run serve --prefix server",
     "build": "npm run build --prefix web && npm run build --prefix server",
     "start": "npm run start --prefix server",
     "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix web"
