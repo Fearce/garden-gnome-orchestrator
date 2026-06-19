@@ -163,7 +163,7 @@ export class ThreadManager implements OrchestratorApi {
         this.db.answerQuestion(q.id, "(no answer — timed out)");
         this.hub.publish({ type: "question.resolved", questionId: q.id, answer: "(timed out)" });
         this.restoreAfterQuestion(q.id);
-        resolve("(the user did not answer this in time — proceed using your best judgment, and ask again only if essential.)");
+        resolve("(Mikkel did not answer this in time — proceed using your best judgment, and ask again only if essential.)");
       }, QUESTION_TIMEOUT_MS);
       this.pendingQuestions.set(q.id, (answer) => {
         clearTimeout(timer);
@@ -671,7 +671,7 @@ export class ThreadManager implements OrchestratorApi {
     }
     const tail =
       opts?.qaFollows === false
-        ? "When the work is complete, commit and push per the doctrine (the user will then review it)."
+        ? "When the work is complete, commit and push per the doctrine (Mikkel will then review it)."
         : "A QA agent will review your work when you're done.";
     parts.push(
       "## Current workspace progress (git)",
@@ -845,7 +845,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Manual resume (the Resume control, or an inject into a cold/non-live task) that talks ONLY to
-   *  the implementor — no QA loop; it settles to 'review' when the implementor finishes so the user
+   *  the implementor — no QA loop; it settles to 'review' when the implementor finishes so Mikkel
    *  gets the result. Crucially it reuses the prior session through the SAME warm/cold gate as the
    *  pipeline, so a manual resume on a cold cache compresses the prior session instead of paying the
    *  full-transcript reload it used to. Runs in the background so the triggering command returns at
@@ -1091,7 +1091,7 @@ function composeKickoff(thread: Thread, plan: PlanOutput | undefined, research: 
   // Task-specific marching orders only. The standing doctrine (commit/push/myaccount, QA fix-rounds, no
   // half-measures) lives in the implementor's cache-stable system prompt — restating it here would
   // just re-bill those tokens in every per-task message.
-  parts.push("Implement this now, completely. Post findings as you go; ask_user immediately on a blocker only the user can fix.");
+  parts.push("Implement this now, completely. Post findings as you go; ask_user immediately on a blocker only Mikkel can fix.");
   return parts.join("\n");
 }
 
@@ -1112,7 +1112,7 @@ function researcherKickoff(thread: Thread, plan: PlanOutput | undefined): string
     parts.push("");
   }
   parts.push(
-    "Gather ONLY external context: web search, official docs, library/API references, GitHub issues, Stack Overflow, changelogs/release notes, error-message lookups, plus relevant entries from the user's memory (search_memory). Do NOT read the codebase — the planner already did. Return your structured brief with sourced facts so the implementor inherits them.",
+    "Gather ONLY external context: web search, official docs, library/API references, GitHub issues, Stack Overflow, changelogs/release notes, error-message lookups, plus relevant entries from Mikkel's memory (search_memory). Do NOT read the codebase — the planner already did. Return your structured brief with sourced facts so the implementor inherits them.",
   );
   return parts.join("\n");
 }
