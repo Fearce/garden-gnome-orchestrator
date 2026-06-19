@@ -3,6 +3,7 @@ import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
 import type { Account } from "./account.js";
 import { pingUsage } from "./usagePing.js";
+import { logCrash } from "../crashLog.js";
 
 interface AccountState {
   account: Account;
@@ -96,8 +97,8 @@ export class AccountManager {
 
   start(): void {
     if (!this.accounts.length) return;
-    void this.pingAll(); // immediate, so the strip fills within a few seconds
-    this.periodic = setInterval(() => void this.pingAll(), this.pingIntervalMs);
+    void this.pingAll().catch((e) => logCrash("accountPing.initial", e)); // immediate, so the strip fills within a few seconds
+    this.periodic = setInterval(() => void this.pingAll().catch((e) => logCrash("accountPing.periodic", e)), this.pingIntervalMs);
     this.periodic.unref?.();
   }
 
@@ -150,7 +151,10 @@ export class AccountManager {
     if (prev) clearTimeout(prev);
     if (!upcoming.length) return;
     const delay = Math.max(Math.min(...upcoming) - now + RESET_BUFFER_MS, MIN_RESET_DELAY_MS);
-    const t = setTimeout(() => void this.pingOne(a).then(() => this.publish()), delay);
+    const t = setTimeout(
+      () => void this.pingOne(a).then(() => this.publish()).catch((e) => logCrash("accountPing.reset", e)),
+      delay,
+    );
     t.unref?.();
     this.resetTimers.set(a.id, t);
   }
