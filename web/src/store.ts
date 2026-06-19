@@ -54,6 +54,7 @@ interface State {
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   cancel: (threadId: string) => void;
+  dismiss: (threadId: string) => void;
   setApproval: (on: boolean) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
   loadChanges: (threadId: string) => void;
@@ -137,6 +138,7 @@ export const useStore = create<State>((set) => ({
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
+  dismiss: (threadId) => sendCommand({ type: "thread.dismiss", threadId }),
   setApproval: (on) => sendCommand({ type: "approval.set", on }),
   approve: (threadId, approved, feedback) => sendCommand({ type: "thread.approve", threadId, approved, feedback }),
   loadChanges: (threadId) => sendCommand({ type: "thread.changes", threadId }),
@@ -243,6 +245,32 @@ function applyEvent(ev: ServerEvent): void {
         const prev = s.threads[ev.thread.id];
         if (prev && prev.state !== ev.thread.state) notifyThreadState(ev.thread);
         return { threads: { ...s.threads, [ev.thread.id]: ev.thread } };
+      });
+      break;
+    case "thread.removed":
+      // A task was permanently dismissed server-side. Prune EVERY id-keyed slice so no dangling
+      // state references the deleted thread, and clear selection if it was the open one.
+      useStore.setState((s) => {
+        const drop = <V,>(rec: Record<string, V>): Record<string, V> => {
+          if (!(ev.threadId in rec)) return rec;
+          const { [ev.threadId]: _omit, ...rest } = rec;
+          return rest;
+        };
+        const runs: Record<string, AgentRun> = {};
+        for (const [id, run] of Object.entries(s.runs)) {
+          if (run.threadId !== ev.threadId) runs[id] = run;
+        }
+        return {
+          threads: drop(s.threads),
+          threadFeeds: drop(s.threadFeeds),
+          threadDrafts: drop(s.threadDrafts),
+          pendingPlans: drop(s.pendingPlans),
+          threadChanges: drop(s.threadChanges),
+          runs,
+          findings: s.findings.filter((f) => f.threadId !== ev.threadId),
+          questions: s.questions.filter((q) => q.threadId !== ev.threadId),
+          selectedThreadId: s.selectedThreadId === ev.threadId ? null : s.selectedThreadId,
+        };
       });
       break;
     case "thread.history":

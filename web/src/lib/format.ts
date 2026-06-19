@@ -52,6 +52,13 @@ export function threadRunning(state: ThreadState): boolean {
   }
 }
 
+/** A task in a terminal state: finished and not resumable into the live pipeline. These are the
+ *  only states a card may be dismissed from — running tasks never expose dismiss so active work
+ *  is never silently discarded. Mirrors the `terminal` predicate in ThreadDetail. */
+export function isTerminal(state: ThreadState): boolean {
+  return state === "done" || state === "cancelled" || state === "failed";
+}
+
 /** Compact running-or-final duration: "9s", "2m 34s", "1h 12m". */
 export function elapsed(startMs: number, endMs?: number | null): string {
   const s = Math.max(0, Math.floor(((endMs ?? Date.now()) - startMs) / 1000));

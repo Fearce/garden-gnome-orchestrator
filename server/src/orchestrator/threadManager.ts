@@ -1098,6 +1098,41 @@ export class ThreadManager implements OrchestratorApi {
     return { ok: true, state: "cancelled" };
   }
 
+  /** Permanently discard a terminal task: delete it (FK cascade drops its runs/findings/messages/
+   *  questions) and broadcast thread.removed so clients prune it. Server-authoritative and guarded —
+   *  a missing or non-terminal task is refused so an in-flight task is never silently killed (use
+   *  cancelThread to stop active work first). */
+  dismissThread(threadId: string): void {
+    const thread = this.db.getThread(threadId);
+    if (!thread) {
+      this.hub.publish({ type: "log", level: "warn", message: `dismiss ignored: thread ${threadId} not found` });
+      return;
+    }
+    if (thread.state !== "done" && thread.state !== "cancelled" && thread.state !== "failed") {
+      this.hub.publish({
+        type: "log",
+        level: "warn",
+        message: `dismiss refused: thread ${threadId} is ${thread.state}, not terminal`,
+      });
+      return;
+    }
+    // Clear any in-memory bookkeeping keyed by this thread (mirrors cancelThread) so nothing can
+    // resurrect or reference the deleted task.
+    this.live.delete(threadId);
+    this.threadImages.delete(threadId);
+    this.resuming.delete(threadId);
+    this.pendingResumeMsgs.delete(threadId);
+    this.liveRole.delete(threadId);
+    this.directorNotes.delete(threadId);
+    const pendingApproval = this.pendingApprovals.get(threadId);
+    if (pendingApproval) {
+      this.pendingApprovals.delete(threadId);
+      pendingApproval({ approved: false });
+    }
+    this.db.deleteThread(threadId);
+    this.hub.publish({ type: "thread.removed", threadId });
+  }
+
   // ---- findings + routing ----
 
   postFinding(input: PostFindingInput): Finding {

@@ -108,6 +108,9 @@ export class Db {
     mkdirSync(dirname(path), { recursive: true });
     this.raw = new Database(path);
     this.raw.pragma("journal_mode = WAL");
+    // Enforce ON DELETE CASCADE for thread children. The pragma is connection-scoped and
+    // off by default in SQLite, so assert it here (not just in SCHEMA) — deleteThread relies on it.
+    this.raw.pragma("foreign_keys = ON");
     this.raw.exec(SCHEMA);
     this.migrate();
   }
@@ -169,6 +172,17 @@ export class Db {
 
   listThreads(): Thread[] {
     return (this.raw.prepare("SELECT * FROM threads ORDER BY created_at DESC").all() as Row[]).map(rowToThread);
+  }
+
+  /** Permanently delete a thread and all its children. agent_runs/findings/messages drop via FK
+   *  ON DELETE CASCADE (the foreign_keys pragma is asserted in the constructor). questions.thread_id
+   *  is nullable with NO FK — a question can be threadless — so its rows are deleted explicitly.
+   *  Wrapped in a transaction so the thread and its questions go together or not at all. */
+  deleteThread(id: string): void {
+    this.raw.transaction((tid: string) => {
+      this.raw.prepare("DELETE FROM questions WHERE thread_id = ?").run(tid);
+      this.raw.prepare("DELETE FROM threads WHERE id = ?").run(tid);
+    })(id);
   }
 
   updateThread(id: string, patch: Partial<Pick<Thread, "title" | "state" | "brief" | "workspace" | "error">>): Thread | null {

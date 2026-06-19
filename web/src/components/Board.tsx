@@ -2,7 +2,7 @@ import { memo, useEffect, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
 import type { AgentRun, Role, Thread } from "../types.js";
-import { roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { isTerminal, roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 
@@ -114,11 +114,16 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
   });
   const selected = useStore((s) => s.selectedThreadId === thread.id);
   const select = useStore((s) => s.select);
+  const dismiss = useStore((s) => s.dismiss);
 
   const impl = latestRun(threadRuns, "implementor");
   const activity = draftText || lastText || thread.brief.split("\n")[0] || "—";
 
   const live = threadRunning(thread.state);
+  // Dismiss only on terminal tasks — a running task shows no ✕, so active work is never silently
+  // killed (use the detail panel's Cancel to stop it first). stopPropagation keeps the click from
+  // also opening the detail panel of a card that's being removed.
+  const terminal = isTerminal(thread.state);
 
   return (
     <div
@@ -126,6 +131,19 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
       style={{ "--state-color": stateColor(thread.state) } as CSSProperties}
       onClick={() => select(thread.id)}
     >
+      {terminal ? (
+        <button
+          className="card-dismiss"
+          title="Dismiss — permanently delete this task"
+          aria-label="Dismiss task"
+          onClick={(e) => {
+            e.stopPropagation();
+            dismiss(thread.id);
+          }}
+        >
+          ✕
+        </button>
+      ) : null}
       {live ? <span className="live-dot" title="Active — an agent is working on this task right now" /> : null}
       <div className="title">{thread.title}</div>
       <WorkspacePath path={thread.workspace} />
