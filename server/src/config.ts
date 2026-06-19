@@ -42,6 +42,18 @@ const exposeBlocked = !localOnly && !authConfigured;
 export const config = {
   serverRoot,
   port: Number(process.env.PORT ?? 4317),
+  // Second, TLS listener so the orchestrator can be embedded as a same-protocol
+  // iframe inside the HTTPS Dashboard Deck (https://localhost:3940) — Chromium
+  // silently blocks an http://:4317 frame under an https page as mixed content.
+  // 4318 is taken by the Vite dev server, so default to 4319. We reuse the deck's
+  // own self-signed pfx (already trusted in the browser for localhost) so no new
+  // cert has to be accepted. Missing/unreadable cert → HTTPS is skipped, never
+  // breaking the plain HTTP listener.
+  httpsPort: Number(process.env.HTTPS_PORT ?? 4319),
+  httpsPfxPath:
+    process.env.HTTPS_PFX_PATH ??
+    resolve(homedir(), ".openclaw", "workspace", "script-hub", "web", "certs", "certhub.pfx"),
+  httpsPfxPassphrase: process.env.HTTPS_PFX_PASSPHRASE ?? "openclaw",
   host: exposeBlocked ? "127.0.0.1" : requestedHost,
   authPassword,
   // Wrong-password lockout per client IP (anti-brute-force). A short PIN is safe behind this.
