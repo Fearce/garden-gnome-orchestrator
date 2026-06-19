@@ -4,6 +4,7 @@ import { useStore } from "../store.js";
 import type { AgentRun, Role, Thread } from "../types.js";
 import { roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
+import { Gnome } from "./Gnome.js";
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -135,7 +136,9 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
           const cls = active ? "active" : r ? "done" : "idle";
           return (
             <span key={role} className={"pip " + cls} style={{ "--role": roleColor(role) } as CSSProperties}>
-              <span className="pip-dot" aria-hidden="true" />
+              {/* The currently-working role shows its gnome (it breathes via `.pip.active .gnome`); idle
+                  and done roles stay a quiet status dot, so the active agent is what your eye lands on. */}
+              {active ? <Gnome role={role} size={15} /> : <span className="pip-dot" aria-hidden="true" />}
               <span className="pip-text">
                 <span className="pip-role">{role[0]!.toUpperCase() + role.slice(1, 4)}</span>
                 {r ? <Elapsed className="pip-time" startMs={r.startedAt} endMs={r.endedAt} running={!!active} /> : null}
