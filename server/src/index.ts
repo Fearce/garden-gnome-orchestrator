@@ -33,6 +33,21 @@ import {
 } from "./auth.js";
 
 async function main(): Promise<void> {
+  // Crash guards: this server drives hour-long task pipelines and spawns Claude Code children via
+  // the agent SDK. A single stray rejection from an unawaited background promise (e.g. the
+  // `void this.injectThread(...)` / `void this.resumeImplementorOnly(...)` fire-and-forgets in
+  // threadManager) must NOT tear the process down — that would SIGTERM every live agent and stamp
+  // each in-flight thread "interrupted by a server restart". So we log and stay alive. Per-agent
+  // SDK errors are already isolated inside runner.ts; these are the last-resort backstops.
+  process.on("unhandledRejection", (reason) => {
+    // eslint-disable-next-line no-console
+    console.error("[unhandledRejection] kept alive:", reason);
+  });
+  process.on("uncaughtException", (err) => {
+    // eslint-disable-next-line no-console
+    console.error("[uncaughtException] kept alive:", err);
+  });
+
   const db = new Db(config.dbPath);
   const hub = new EventHub();
   const memory = new FileMemoryService();
@@ -204,6 +219,30 @@ async function main(): Promise<void> {
 
   const httpApp = await buildApp({ logger: false });
   const httpsApp = httpsOpts ? await buildApp(httpsOpts) : undefined;
+
+  // Graceful, intentional stop: drain both Fastify listeners (closes connections/WS) before
+  // exiting so a real restart is clean rather than a hard kill. Guard against double-invoke if
+  // both signals fire.
+  let shuttingDown = false;
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.on(signal, () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      // eslint-disable-next-line no-console
+      console.log(`\n  ${signal} received — draining and shutting down…`);
+      void (async () => {
+        try {
+          await httpApp.close();
+          if (httpsApp) await httpsApp.close();
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error("Error during shutdown:", err);
+        } finally {
+          process.exit(0);
+        }
+      })();
+    });
+  }
 
   try {
     await httpApp.listen({ port: config.port, host: config.host });
