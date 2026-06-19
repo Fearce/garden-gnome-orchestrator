@@ -5,6 +5,7 @@ import fastifyStatic from "@fastify/static";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, dirname } from "node:path";
 import { config } from "./config.js";
+import { installCrashGuards } from "./crashLog.js";
 import { Db } from "./db/db.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
@@ -247,4 +248,5 @@ async function main(): Promise<void> {
   }
 }
 
+installCrashGuards();
 void main();
