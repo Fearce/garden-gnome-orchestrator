@@ -105,6 +105,11 @@ export class ThreadManager implements OrchestratorApi {
   // pipeline folds it into the implementor's kickoff.
   private readonly liveRole = new Map<string, AgentRun>();
   private readonly directorNotes = new Map<string, string[]>();
+  // During QA the implementor stays in `this.live` but sits idle (parked for the next fix-round),
+  // and the QA agent is the only thing actually running in the slot. An inject must reach THAT QA
+  // agent, not the idle implementor — waking the implementor here is what put two agents in one slot.
+  // liveQa holds the steerable QA run so injectThread's qa-stage gate can forward steering to it.
+  private readonly liveQa = new Map<string, AgentRun>();
 
   constructor(
     readonly db: Db,
@@ -483,14 +488,18 @@ export class ThreadManager implements OrchestratorApi {
       const agent = new AgentRun(makeCfg({ token: acct.token, resume, runId: run.id }));
       this.wireRun(agent, thread.id, run.id, role, acct.id);
       this.track(thread.id, agent);
-      // Only the planner is steerable mid-flight: an inject during planning must reshape the plan, not
-      // start an implementor. (Researcher/QA injects are handled elsewhere — research-phase notes flow
-      // forward to the implementor; QA-phase notes reach the still-live implementor handle.)
+      // The planner and QA are each steerable mid-flight via their own handle, because each runs while
+      // NO implementor is active in the slot: a planning inject must reshape the plan (liveRole, drained
+      // into a re-plan); a QA inject must reach the running QA agent (liveQa) and NOT wake the implementor
+      // that's parked idle-but-live in `this.live` for the next fix-round. (Researcher-phase notes flow
+      // forward into the implementor's kickoff instead.)
       if (role === "planner") this.liveRole.set(thread.id, agent);
+      if (role === "qa") this.liveQa.set(thread.id, agent);
       agent.start(message);
       let res = await agent.result();
       if (role === "planner" && res && !res.isError) res = await this.drainDirectorNotes(thread, agent, res);
       if (role === "planner") this.liveRole.delete(thread.id);
+      if (role === "qa") this.liveQa.delete(thread.id);
       await agent.stop();
       this.untrack(thread.id, agent);
       this.finishRun(run.id, res, agent);
@@ -854,7 +863,13 @@ export class ThreadManager implements OrchestratorApi {
       }
       this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA round ${round}: ${qa.summary}`, severity: "note" });
       this.setState(thread.id, "implementing");
-      const fixMsg = `QA review found issues — fix ALL of these, then we'll re-check:\n${formatQaIssues(qa)}`;
+      // Deliver any director note buffered during the QA stage (the mid-QA failover window, where the
+      // inject was held rather than forwarded to a momentarily-unregistered QA handle) now that the
+      // implementor is the one running again — folded into the fix message so it isn't stranded.
+      const qaNotes = this.directorNotes.get(thread.id);
+      this.directorNotes.delete(thread.id);
+      const noteBlock = qaNotes?.length ? `\n\n[New information from the director]\n${qaNotes.join("\n\n")}` : "";
+      const fixMsg = `QA review found issues — fix ALL of these, then we'll re-check:\n${formatQaIssues(qa)}${noteBlock}`;
       live.run.send(fixMsg, { priority: "now" });
       res = await this.awaitImplementorResult(thread, effort, live.run, live.accountId, true, fixMsg);
     }
@@ -868,6 +883,48 @@ export class ThreadManager implements OrchestratorApi {
     mode: "append" | "interrupt",
     images?: ImageAttachment[],
   ): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    // QA stage gate (checked BEFORE `this.live`): between fix-rounds the implementor is parked
+    // idle-but-live in `this.live`, while the QA agent runs alone in the slot. Falling through to the
+    // `this.live` branch would `send` to that idle implementor and start it BESIDE the running QA — two
+    // agents in one pipeline slot, the exact race this guards. Forward the steering to the QA agent
+    // instead so the invariant (≤1 active agent per slot) holds; never touch `this.live` during QA.
+    if (thread?.state === "qa") {
+      this.hub.log("info", "[INJECT] QA in progress — forwarding context to QA agent, not re-spawning implementor");
+      const qa = this.liveQa.get(threadId);
+      if (qa) {
+        // Forward to the running QA agent but do NOT call qa.interrupt(): QA runs as a one-shot under
+        // runRole, which stop()s it the instant it emits its verdict result, and the SDK surfaces an
+        // interrupt as an (error) result — so interrupting would tear QA down into 'review' rather than
+        // steer it, and race the follow-up send against teardown. A priority "now" send is the
+        // best-effort way to reach QA's current turn; 'append' queues normally. If the note lands after
+        // QA already emitted its verdict it simply doesn't change THIS round — accepted, since the
+        // invariant (never a second agent), not this round's verdict, is what this gate must guarantee.
+        const blocks = images?.length ? images.map(toImageBlock) : [];
+        qa.send(
+          contentWithImages(`[New information from the director]\n${message}`, blocks),
+          mode === "interrupt" ? { priority: "now" } : undefined,
+        );
+      } else {
+        // No QA handle while state is "qa" — the brief window of a mid-QA account failover (runRole
+        // deleted the old handle and hasn't registered the relaunched one yet). Buffer the note; the
+        // implementor's next QA fix-round drains directorNotes into its fix message (runImplementorQaLoop),
+        // so it reaches the implementor when IT is the one running — never alongside QA, never lost.
+        this.bufferDirectorNote(threadId, message);
+        if (images?.length) {
+          this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
+        }
+      }
+      const m = this.db.addMessage({
+        threadId,
+        role: "director",
+        kind: "system",
+        content: `↪ injected (forwarded to QA): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+      });
+      this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.touchThread(threadId);
+      return { ok: true, state: "qa" };
+    }
     const live = this.live.get(threadId);
     if (live) {
       if (mode === "interrupt") {
@@ -898,7 +955,7 @@ export class ThreadManager implements OrchestratorApi {
     // a live planner re-plans with it (drainDirectorNotes); otherwise it's folded into the
     // implementor's kickoff once the pipeline reaches it. The implementor start stays gated on the
     // planner finishing and routing normally.
-    const phase = this.db.getThread(threadId);
+    const phase = thread;
     if (phase && (this.liveRole.has(threadId) || PRE_IMPLEMENTOR.has(phase.state))) {
       this.bufferDirectorNote(threadId, message);
       if (images?.length) {
@@ -1080,6 +1137,7 @@ export class ThreadManager implements OrchestratorApi {
     this.resuming.delete(threadId);
     this.pendingResumeMsgs.delete(threadId);
     this.liveRole.delete(threadId);
+    this.liveQa.delete(threadId);
     this.directorNotes.delete(threadId);
     const pendingApproval = this.pendingApprovals.get(threadId);
     if (pendingApproval) {
