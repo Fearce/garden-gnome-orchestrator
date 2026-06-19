@@ -78,5 +78,5 @@ claude setup-token   # paste the token into server\.env as CLAUDE_CODE_OAUTH_TOK
 
 cd C:\claude-orchestrator
 npm run install:all
-npm run dev          # starts server (:4317) + web (:4318)
+npm run dev          # starts server (:4317 HTTP, :4319 HTTPS) + web (:4318)
 ```

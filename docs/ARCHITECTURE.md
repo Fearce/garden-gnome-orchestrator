@@ -33,7 +33,12 @@ the director.
 
 ## 2. Processes & ports
 
-- `server` — Node 22 / TypeScript / ESM. Fastify on **:4317** (HTTP + `/ws`).
+- `server` — Node 22 / TypeScript / ESM. Fastify on **:4317** (HTTP + `/ws`), and
+  a second TLS listener on **:4319** serving the identical route surface. Both come
+  from one `buildApp()` sharing the same db/hub/manager/director/accounts; the HTTPS
+  one reuses the Dashboard Deck's self-signed pfx so the deck (https://localhost:3940)
+  can embed the orchestrator as a same-protocol iframe without Chromium's silent
+  mixed-content block. A missing/unreadable cert disables HTTPS only — HTTP keeps working.
 - `web` — Vite dev server on **:4318** (proxies `/api` + `/ws` to :4317). In
   production the server serves `web/dist` statically, single origin :4317.
 
