@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch --ignore \"**/data/**\" --ignore \"**/*.sqlite*\" src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "serve": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -78,5 +78,25 @@ claude setup-token   # paste the token into server\.env as CLAUDE_CODE_OAUTH_TOK
 
 cd C:\claude-orchestrator
 npm run install:all
-npm run dev          # starts server (:4317 HTTP, :4319 HTTPS) + web (:4318)
+npm run serve        # task pipelines: server (no watch) + web — start here
 ```
+
+### Run modes — `serve` vs `dev`
+
+The server runs under `tsx`. `npm run dev` adds `tsx watch`, which hot-restarts the
+process whenever an **imported `server/src` module** changes. The orchestrator is
+routinely pointed at **its own repo**, so an implementor agent editing `server/src`
+restarts the watched server mid-run — that SIGTERMs every in-flight Claude Code child,
+and on reboot each running thread is stamped *"interrupted by a server restart"*. (Only
+imported modules trigger it; `server/data/*.sqlite*` and other non-imported files do
+not.)
+
+- **`npm run serve`** — server in **no-watch** mode + web. Use this for **real task
+  pipelines**: editing `server/src` no longer restarts the running console. This is the
+  default for actually running agents.
+- **`npm run dev`** — server under `tsx watch` + web. Use this **only while actively
+  developing the server itself**; it auto-reloads on `server/src` edits and will end any
+  in-flight tasks. The startup banner prints a ⚠ reminder when you're in this mode.
+
+To pick up a server-code change while in `serve`, stop and re-run `npm run serve` (or
+`npm run build && npm start` for the built `dist`).
