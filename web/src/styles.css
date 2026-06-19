@@ -285,7 +285,19 @@ button { font-family: inherit; cursor: pointer; }
   50% { opacity: 0.5; box-shadow: 0 0 11px 2px var(--ok); }
 }
 @media (prefers-reduced-motion: reduce) { .card .live-dot { animation: none; box-shadow: 0 0 7px 1px var(--ok); } }
-.card .title { font-size: 15px; font-weight: 600; line-height: 1.3; padding-right: 6px; }
+/* Dismiss (✕) on terminal cards: a quiet top-right glyph that surfaces on card hover/focus, then
+   turns danger-red on its own hover. Reuses existing tokens — no new design vars. Only terminal
+   cards render it, and they're never live, so it never clashes with .live-dot. */
+.card .card-dismiss {
+  position: absolute; top: 8px; right: 8px; z-index: 3;
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--text-faint); font-size: 12px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.card:hover .card-dismiss, .card .card-dismiss:focus-visible { opacity: 1; }
+.card .card-dismiss:hover { color: var(--danger); background: oklch(0.68 0.2 25 / 0.12); }
+.card .title { font-size: 15px; font-weight: 600; line-height: 1.3; padding-right: 22px; }
 /* The target repo is a primary scan target (which task to open/resume), so it's a distinct chip:
    the repo folder (leaf) is bright + bold and never truncates; the parent path dims and gives way. */
 .card .ws-path {
@@ -370,6 +382,13 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .detail-head .top { display: flex; align-items: start; gap: 10px; justify-content: space-between; }
 .detail-head h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.25; }
 .detail-head .meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+/* Plain window-style close: borderless X in the top-right of the detail panel. */
+.close-x {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; border: none; background: transparent;
+  color: var(--text-faint); border-radius: var(--r-sm); font-size: 17px; line-height: 1;
+}
+.close-x:hover { background: var(--bg-3); color: var(--text); }
 .detail-controls { display: flex; flex-wrap: wrap; gap: 7px; }
 
 .feed-filter { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
