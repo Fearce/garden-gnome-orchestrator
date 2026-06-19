@@ -45,6 +45,19 @@ const MAX_RESULT_PREVIEW = 600;
 const QUESTION_TIMEOUT_MS = 20 * 60 * 1000;
 // On a mid-run 5h/weekly cap, relaunch on another account (resuming the session) up to N times.
 const MAX_ACCOUNT_FAILOVERS = 3;
+// After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
+// doesn't need a manual Resume click. Human-gated phases (a pending question/approval, paused, or
+// pre-planner intake) were waiting on a person, so they're left failed for a manual Resume instead.
+const AUTO_RESUME_STATES: ReadonlySet<Thread["state"]> = new Set(["planning", "researching", "implementing", "qa"]);
+// Crash-loop guard: if a task's resumes keep dying within CRASH_FAST_MS of starting, that's a crash
+// loop (not progress) — stop auto-resuming after MAX_FAST_INTERRUPTS such deaths in the window.
+const RESTART_LOOP_WINDOW_MS = 15 * 60_000;
+const CRASH_FAST_MS = 60_000;
+const MAX_FAST_INTERRUPTS = 3;
+// Defer the resume so the HTTP/WS listeners are up (and the UI is connected) before agents respawn.
+const AUTO_RESUME_DELAY_MS = 4_000;
+const RESTART_FAILED_MSG =
+  "interrupted by a server restart — click Resume to continue from where it left off (finished stages are reused)";
 const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
   "intake",
   "enriching",
@@ -55,6 +68,18 @@ const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
   "implementing",
   "qa",
   "paused",
+]);
+// Pipeline phases where a pre-implementor stage owns the task (planner/researcher running, or the
+// approval gate) and NO implementor is live. An inject that lands here is HELD for that stage — it
+// must never start an implementor alongside the still-running planner. ('awaiting_user' is omitted:
+// a question can also pause a live implementor, where the inject belongs to that implementor; the
+// pre-implementor case is caught instead by a live planner handle in `liveRole`.)
+const PRE_IMPLEMENTOR: ReadonlySet<Thread["state"]> = new Set([
+  "intake",
+  "enriching",
+  "planning",
+  "researching",
+  "awaiting_approval",
 ]);
 
 export class ThreadManager implements OrchestratorApi {
@@ -72,6 +97,14 @@ export class ThreadManager implements OrchestratorApi {
   private readonly pendingResumeMsgs = new Map<string, string[]>();
   private readonly threadImages = new Map<string, ImageBlock[]>();
   private readonly pendingApprovals = new Map<string, (d: { approved: boolean; feedback?: string }) => void>();
+  // The planner is the only role running during the pre-implementor phase, and it has NO `live`
+  // implementor handle — so an inject that arrives then has nothing in `live`/`resuming` to catch it
+  // and used to fall through to a resume that double-started an implementor beside the running
+  // planner. liveRole holds the steerable planner run so inject can interrupt/re-plan it instead;
+  // directorNotes buffers the injected steering until the planner drains it (a re-plan) or the
+  // pipeline folds it into the implementor's kickoff.
+  private readonly liveRole = new Map<string, AgentRun>();
+  private readonly directorNotes = new Map<string, string[]>();
 
   constructor(
     readonly db: Db,
@@ -82,18 +115,53 @@ export class ThreadManager implements OrchestratorApi {
     this.markInterrupted();
   }
 
-  /** Any task left mid-flight by a server restart is dead in memory — fail it, and stamp its
-   *  orphaned runs terminal. The DB still has them as starting/running/idle but their in-memory
-   *  AgentRun is gone, so without this they'd inflate the live counter forever. */
+  /** Any task left mid-flight by a server restart is dead in memory — its in-memory AgentRun is gone
+   *  even though the DB still has runs as starting/running/idle. Stamp those runs terminal, then
+   *  AUTO-RESUME the tasks that were actively running (so a restart doesn't silently end live work and
+   *  wait for a manual Resume click — the "auto-resume" half of the failover story). Human-gated and
+   *  crash-looping tasks are left failed for a person instead. */
   private markInterrupted(): void {
-    for (const t of this.db.listThreads()) {
-      if (IN_FLIGHT.has(t.state)) {
-        this.db.updateThread(t.id, { state: "failed", error: "interrupted by a server restart — click Resume to continue from where it left off (finished stages are reused)" });
-      }
-    }
+    // Stamp orphaned runs terminal FIRST, so the crash-loop guard below counts THIS boot's just-killed
+    // run when it looks for resumes that keep dying within seconds.
     const at = Date.now();
     for (const r of this.db.listActiveRuns()) {
       this.db.updateRun(r.id, { state: "interrupted", endedAt: r.endedAt ?? at });
+    }
+    for (const t of this.db.listThreads()) {
+      if (!IN_FLIGHT.has(t.state)) continue;
+      if (!AUTO_RESUME_STATES.has(t.state)) {
+        // Was waiting on a person (question/approval/paused/intake) — leave it for a manual Resume.
+        this.db.updateThread(t.id, { state: "failed", error: RESTART_FAILED_MSG });
+        continue;
+      }
+      // Crash-loop guard: count this task's implementor runs that were interrupted within seconds of
+      // starting (resume-then-die), recently. Long-lived interrupted runs made progress and don't count.
+      const fastInterrupts = this.db
+        .listRuns(t.id)
+        .filter(
+          (r) =>
+            r.role === "implementor" &&
+            r.state === "interrupted" &&
+            r.endedAt != null &&
+            at - r.endedAt < RESTART_LOOP_WINDOW_MS &&
+            r.endedAt - r.startedAt < CRASH_FAST_MS,
+        ).length;
+      if (fastInterrupts >= MAX_FAST_INTERRUPTS) {
+        this.db.updateThread(t.id, {
+          state: "failed",
+          error: `Auto-resume stopped — this task kept getting interrupted within seconds of resuming ${fastInterrupts}× (likely a crash loop, not progress). Click Resume to retry once the cause is fixed.`,
+        });
+        continue;
+      }
+      // Route through the SAME resume-aware path as a manual Resume: 'failed' is that path's entry
+      // state, and runPipeline skips already-finished stages and resumes the implementor session.
+      this.db.updateThread(t.id, { state: "failed", error: "interrupted by a server restart — auto-resuming…" });
+      const id = t.id;
+      const title = t.title;
+      setTimeout(() => {
+        this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
+        void this.resumeThread(id).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
+      }, AUTO_RESUME_DELAY_MS);
     }
   }
 
@@ -352,7 +420,13 @@ export class ThreadManager implements OrchestratorApi {
 
       // 4. Implementor → QA. On resume, pick up the implementor's prior SDK session (recovered from
       //    its agent_run, which survives a restart) so its work-in-progress isn't thrown away.
-      await this.runImplementorQa(thread, kickoff, plan?.effort, this.latestImplementorSession(threadId), directorNote);
+      //    Any director notes injected after the planner finished (during research or at the approval
+      //    gate, where there was no planner to re-plan) are folded in here so they still reach the
+      //    implementor instead of being dropped.
+      const buffered = this.directorNotes.get(threadId);
+      this.directorNotes.delete(threadId);
+      const note = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n") || undefined;
+      await this.runImplementorQa(thread, kickoff, plan?.effort, this.latestImplementorSession(threadId), note);
     } catch (err) {
       if (!this.cancelled(threadId)) this.setState(threadId, "failed", err instanceof Error ? err.message : String(err));
     } finally {
@@ -360,6 +434,9 @@ export class ThreadManager implements OrchestratorApi {
       // implementor still remembers them, and a later resume reloads them from its
       // session, so dropping them here doesn't blind anything.
       this.threadImages.delete(threadId);
+      // Safety net: drop any held notes that an early return (e.g. a rejected plan) left behind, so
+      // they can't leak into an unrelated later run of this thread.
+      this.directorNotes.delete(threadId);
     }
   }
 
@@ -406,8 +483,14 @@ export class ThreadManager implements OrchestratorApi {
       const agent = new AgentRun(makeCfg({ token: acct.token, resume, runId: run.id }));
       this.wireRun(agent, thread.id, run.id, role, acct.id);
       this.track(thread.id, agent);
+      // Only the planner is steerable mid-flight: an inject during planning must reshape the plan, not
+      // start an implementor. (Researcher/QA injects are handled elsewhere — research-phase notes flow
+      // forward to the implementor; QA-phase notes reach the still-live implementor handle.)
+      if (role === "planner") this.liveRole.set(thread.id, agent);
       agent.start(message);
-      const res = await agent.result();
+      let res = await agent.result();
+      if (role === "planner" && res && !res.isError) res = await this.drainDirectorNotes(thread, agent, res);
+      if (role === "planner") this.liveRole.delete(thread.id);
       await agent.stop();
       this.untrack(thread.id, agent);
       this.finishRun(run.id, res, agent);
@@ -420,6 +503,28 @@ export class ThreadManager implements OrchestratorApi {
       message = "Your session was switched to another account after a usage limit. Continue exactly where you left off and finish.";
     }
     return undefined;
+  }
+
+  /** Before the planner hands off, fold in any steering the director injected while it was running:
+   *  re-run the planner with the note(s) so the plan — and everything downstream — reflects them,
+   *  instead of letting the pipeline march an implementor off a now-stale plan. Loops until the buffer
+   *  is empty (a note can arrive during the re-plan too). Returns the latest structured result. */
+  private async drainDirectorNotes(thread: Thread, agent: AgentRun, res: ResultEvent | undefined): Promise<ResultEvent | undefined> {
+    while (!this.cancelled(thread.id) && !agent.rateLimited) {
+      const notes = this.directorNotes.get(thread.id);
+      if (!notes?.length) break;
+      this.directorNotes.delete(thread.id);
+      this.hub.log("info", `Re-planning ${thread.id.slice(0, 8)} with ${notes.length} injected note(s) before the implementor starts.`);
+      agent.send(
+        `[New information from the director — revise your plan to account for this, then re-emit your structured plan]\n${notes.join("\n\n")}`,
+        { priority: "now" },
+      );
+      const next = await agent.nextResult();
+      if (!next) break;
+      res = next;
+      if (res.isError) break;
+    }
+    return res;
   }
 
   private async runPlanner(thread: Thread): Promise<PlanOutput | undefined> {
@@ -693,6 +798,11 @@ export class ThreadManager implements OrchestratorApi {
       qaFollows: true,
     });
     if (!start) return; // cancelled while compressing the prior session for the resume
+    // A cold resume compresses the prior session first (an await), and runPipeline already folded the
+    // notes that existed before that into the kickoff. Any note injected DURING that window was buffered
+    // (state was still pre-implementor) after the fold — deliver it now that the implementor is live, so
+    // it isn't stranded in the buffer. Notes arriving after this point hit the live-inject path directly.
+    this.flushDirectorNotes(thread.id, start.run);
     let res = await this.awaitImplementorResult(
       thread,
       effort,
@@ -782,6 +892,49 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.log("info", `Injected (${mode}) into ${threadId.slice(0, 8)}`);
       return { ok: true, state: "implementing" };
     }
+    // No live implementor — but the task may still be in its PRE-IMPLEMENTOR phase: the planner is
+    // running, or we're parked at the approval gate. Steering here must NEVER start an implementor
+    // beside the still-running planner (the race this guards). Hold the note for that stage instead:
+    // a live planner re-plans with it (drainDirectorNotes); otherwise it's folded into the
+    // implementor's kickoff once the pipeline reaches it. The implementor start stays gated on the
+    // planner finishing and routing normally.
+    const phase = this.db.getThread(threadId);
+    if (phase && (this.liveRole.has(threadId) || PRE_IMPLEMENTOR.has(phase.state))) {
+      this.bufferDirectorNote(threadId, message);
+      if (images?.length) {
+        this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
+      }
+      const planner = this.liveRole.get(threadId);
+      // 'interrupt' aborts the planner's now-stale turn so the re-plan starts immediately; 'append'
+      // lets the current turn finish first. Either way runRole's drain loop picks up the buffered note
+      // and re-plans before handing off. With no live planner (research / approval gate) the note just
+      // waits in the buffer for the implementor kickoff.
+      if (planner && mode === "interrupt") {
+        // A planner parked in awaiting_user is blocked inside ask_user, not running a turn — interrupting
+        // it would strand the open question (and never reach the drain). Resolve the question instead so
+        // the planner unblocks and the buffered note lands as a re-plan; only a genuinely-running planner
+        // gets interrupted.
+        const openQ = this.db.listOpenQuestions().find((q) => q.threadId === threadId);
+        if (openQ) {
+          this.resolveQuestion(openQ.id, "(superseded — the director sent new instructions mid-question; see the note that follows and proceed accordingly)");
+        } else {
+          await planner.interrupt();
+        }
+      }
+      const m = this.db.addMessage({
+        threadId,
+        role: "director",
+        kind: "system",
+        content: `↪ injected (held for the ${phase.state} stage): ${message}`,
+      });
+      this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.touchThread(threadId);
+      this.hub.log(
+        "info",
+        `Inject (${mode}) on ${threadId.slice(0, 8)} HELD for the ${phase.state} stage — implementor start gated on planner completion${planner ? " (steered the live planner)" : ""}.`,
+      );
+      return { ok: true, state: phase.state };
+    }
     // A resume is mid-materialization (live not yet set) — buffer this inject so it isn't lost, then
     // resumeImplementorOnly delivers it the moment the implementor comes live.
     if (this.resuming.has(threadId)) {
@@ -797,6 +950,22 @@ export class ThreadManager implements OrchestratorApi {
     // Not live → resume. Stash any images so the resumed implementor's kickoff carries them.
     if (images?.length) this.threadImages.set(threadId, images.map(toImageBlock));
     return this.resumeThread(threadId, message);
+  }
+
+  private bufferDirectorNote(threadId: string, note: string): void {
+    const q = this.directorNotes.get(threadId) ?? [];
+    q.push(note);
+    this.directorNotes.set(threadId, q);
+  }
+
+  /** Deliver to a now-live implementor any director notes buffered while it was still materializing
+   *  (the cold-resume compression window), then clear the buffer. A no-op when nothing was buffered. */
+  private flushDirectorNotes(threadId: string, run: AgentRun): void {
+    const notes = this.directorNotes.get(threadId);
+    if (!notes?.length) return;
+    this.directorNotes.delete(threadId);
+    this.hub.log("info", `Delivering ${notes.length} buffered director note(s) to the now-live implementor on ${threadId.slice(0, 8)}.`);
+    run.send(`[New information from the director]\n${notes.join("\n\n")}`, { priority: "now" });
   }
 
   async interruptThread(threadId: string): Promise<ThreadActionResult> {
@@ -910,6 +1079,8 @@ export class ThreadManager implements OrchestratorApi {
     // compressing and won't start once this setState lands.
     this.resuming.delete(threadId);
     this.pendingResumeMsgs.delete(threadId);
+    this.liveRole.delete(threadId);
+    this.directorNotes.delete(threadId);
     const pendingApproval = this.pendingApprovals.get(threadId);
     if (pendingApproval) {
       this.pendingApprovals.delete(threadId);

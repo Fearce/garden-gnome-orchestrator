@@ -2,8 +2,8 @@ import Fastify from "fastify";
 import type { FastifyInstance, FastifyServerOptions } from "fastify";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { isAbsolute, join, dirname } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { isAbsolute, join, dirname, basename } from "node:path";
 import { config } from "./config.js";
 import { installCrashGuards } from "./crashLog.js";
 import { Db } from "./db/db.js";
@@ -31,6 +31,15 @@ import {
   exchangeCodeForEmail,
   makeSession,
 } from "./auth.js";
+
+/** statSync().isDirectory() that swallows races/permission errors (returns false instead of throwing). */
+function isDirSafe(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 async function main(): Promise<void> {
   const db = new Db(config.dbPath);
@@ -174,6 +183,58 @@ async function main(): Promise<void> {
       // dirname() is idempotent at a drive root (dirname("C:\\") === "C:\\"); null means "no Up".
       const up = dirname(path);
       return { path, parent: up === path ? null : up, dirs };
+    });
+
+    // Shell-style path completion for the dispatch path field. Unlike /api/fs/ls (which browses the
+    // children of a confirmed directory), this takes a PARTIAL path, resolves it to the nearest
+    // existing directory ancestor, and returns the child directories whose names start with the
+    // unmatched fragment — e.g. "C:\claude-o" → "C:\claude-orchestrator", "D:\Wow" → "D:\MyProject".
+    // Dirs only (workspace paths are always directories); symlinks are excluded (Dirent.isDirectory()
+    // is false for a symlink, which is also how we avoid following them).
+    const COMPLETE_LIMIT = 8;
+    app.get<{ Querystring: { path?: string } }>("/api/fs/complete", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      const raw = (req.query.path ?? "").trim();
+      if (!raw || !isAbsolute(raw)) return { entries: [] };
+
+      // Resolve (dir, fragment): a trailing separator or an exact existing dir means "list children"
+      // (empty fragment); otherwise split into ancestor dir + the partial name to filter by.
+      const endsWithSep = raw.endsWith("\\") || raw.endsWith("/");
+      let dir: string;
+      let fragment: string;
+      if (!endsWithSep && existsSync(raw) && isDirSafe(raw)) {
+        dir = raw;
+        fragment = "";
+      } else {
+        dir = endsWithSep ? raw : dirname(raw);
+        fragment = endsWithSep ? "" : basename(raw);
+      }
+      if (!existsSync(dir)) {
+        console.log(`[INFO] fs/complete: "${raw}" → no existing ancestor (dir="${dir}")`);
+        return { entries: [] };
+      }
+
+      const frag = fragment.toLowerCase();
+      let entries: { name: string; path: string; isDir: boolean }[] = [];
+      try {
+        entries = readdirSync(dir, { withFileTypes: true })
+          .filter((e) => e.isDirectory()) // dirs only; a symlink reports isSymbolicLink(), so it's excluded (and never followed)
+          .filter((e) => {
+            const lname = e.name.toLowerCase();
+            if (lname.startsWith("$") || FS_SKIP.has(lname)) return false;
+            // Hidden (dot) dirs only surface when the user is explicitly typing a dot-prefix.
+            if (lname.startsWith(".") && !frag.startsWith(".")) return false;
+            return lname.startsWith(frag);
+          })
+          .map((e) => ({ name: e.name, path: join(dir, e.name), isDir: true }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .slice(0, COMPLETE_LIMIT);
+      } catch {
+        // Permission-denied / locked dirs (EACCES): nothing to suggest.
+        entries = [];
+      }
+      console.log(`[INFO] fs/complete: "${raw}" → dir="${dir}" frag="${fragment}" ${entries.length} match(es)`);
+      return { entries };
     });
 
     // Serve the built frontend in production (single origin). In dev, Vite serves it.
