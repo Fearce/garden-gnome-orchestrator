@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as Rea
 import { useStore } from "../store.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { FolderPicker } from "./FolderPicker.js";
+import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
 import type { DirectorItem } from "../types.js";
 
@@ -104,12 +105,12 @@ export function Director() {
         <ComposerThumbs images={att.images} onRemove={att.remove} />
         <div className="row">
           <AttachButton onPick={att.addFiles} />
-          <input
+          <PathInput
             className="ws"
             value={ws}
+            onChange={setWs}
             placeholder="exact repo path (optional — used as-is)  e.g. C:\example"
             title="If set, this exact path is the dispatch workspace — the director uses it verbatim instead of resolving a path itself. Leave blank to let the director find the repo from your description."
-            onChange={(e) => setWs(e.target.value)}
           />
           <button
             className="btn ghost sm attach-btn"
