@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
-import { clock, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { clock, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
@@ -186,7 +186,7 @@ export function ThreadDetail() {
   // Resume covers a failed task too: the pipeline is resume-aware and re-runs from the stage that
   // died (reusing saved plan/research and the implementor's prior session) instead of from scratch.
   const isResumable = thread.state === "paused" || thread.state === "review" || thread.state === "failed";
-  const terminal = thread.state === "done" || thread.state === "cancelled" || thread.state === "failed";
+  const terminal = isTerminal(thread.state);
 
   const doInject = (mode: "append" | "interrupt") => {
     const t = msg.trim();

@@ -100,6 +100,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     case "thread.cancel":
       await ctx.manager.cancelThread(cmd.threadId);
       break;
+    case "thread.dismiss":
+      ctx.manager.dismissThread(cmd.threadId);
+      break;
     case "thread.history": {
       const thread = ctx.db.getThread(cmd.threadId);
       send(socket, {

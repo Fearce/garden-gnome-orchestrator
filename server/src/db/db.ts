@@ -108,6 +108,9 @@ export class Db {
     mkdirSync(dirname(path), { recursive: true });
     this.raw = new Database(path);
     this.raw.pragma("journal_mode = WAL");
+    // foreign_keys is a per-connection setting (not persisted by the schema's PRAGMA), so assert it
+    // here too — deleteThread relies on ON DELETE CASCADE to clean up child rows (runs/findings/etc.).
+    this.raw.pragma("foreign_keys = ON");
     this.raw.exec(SCHEMA);
     this.migrate();
   }
@@ -160,6 +163,13 @@ export class Db {
       )
       .run(t);
     return t;
+  }
+
+  /** Permanently delete a thread and (via ON DELETE CASCADE) its agent_runs, findings, and messages.
+   *  Questions aren't FK-constrained to threads, so prune them explicitly to avoid orphans. */
+  deleteThread(id: string): void {
+    this.raw.prepare("DELETE FROM questions WHERE thread_id = ?").run(id);
+    this.raw.prepare("DELETE FROM threads WHERE id = ?").run(id);
   }
 
   getThread(id: string): Thread | null {

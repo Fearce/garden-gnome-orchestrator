@@ -42,6 +42,7 @@ export type ServerEvent =
   | { type: "approval.mode"; on: boolean }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.upsert"; thread: Thread }
+  | { type: "thread.removed"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
@@ -81,6 +82,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("thread.interrupt"), threadId: z.string() }),
   z.object({ type: z.literal("thread.resume"), threadId: z.string(), message: z.string().optional() }),
   z.object({ type: z.literal("thread.cancel"), threadId: z.string() }),
+  z.object({ type: z.literal("thread.dismiss"), threadId: z.string() }),
   z.object({ type: z.literal("thread.history"), threadId: z.string() }),
   z.object({ type: z.literal("thread.approve"), threadId: z.string(), approved: z.boolean(), feedback: z.string().optional() }),
   z.object({ type: z.literal("approval.set"), on: z.boolean() }),

@@ -142,6 +142,7 @@ export type ServerEvent =
   | { type: "approval.mode"; on: boolean }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.upsert"; thread: Thread }
+  | { type: "thread.removed"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
@@ -166,6 +167,7 @@ export type ClientCommand =
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.cancel"; threadId: string }
+  | { type: "thread.dismiss"; threadId: string }
   | { type: "thread.history"; threadId: string }
   | { type: "thread.approve"; threadId: string; approved: boolean; feedback?: string }
   | { type: "approval.set"; on: boolean }

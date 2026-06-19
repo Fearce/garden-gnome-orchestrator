@@ -52,6 +52,12 @@ export function threadRunning(state: ThreadState): boolean {
   }
 }
 
+/** A task that has reached a terminal state — finished, abandoned, or errored out. Nothing is
+ *  working it and it won't change on its own, so it's safe to dismiss/discard from the board. */
+export function isTerminal(state: ThreadState): boolean {
+  return state === "done" || state === "cancelled" || state === "failed";
+}
+
 /** Compact running-or-final duration: "9s", "2m 34s", "1h 12m". */
 export function elapsed(startMs: number, endMs?: number | null): string {
   const s = Math.max(0, Math.floor(((endMs ?? Date.now()) - startMs) / 1000));

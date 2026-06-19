@@ -54,6 +54,7 @@ interface State {
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   cancel: (threadId: string) => void;
+  dismiss: (threadId: string) => void;
   setApproval: (on: boolean) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
   loadChanges: (threadId: string) => void;
@@ -137,6 +138,7 @@ export const useStore = create<State>((set) => ({
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
+  dismiss: (threadId) => sendCommand({ type: "thread.dismiss", threadId }),
   setApproval: (on) => sendCommand({ type: "approval.set", on }),
   approve: (threadId, approved, feedback) => sendCommand({ type: "thread.approve", threadId, approved, feedback }),
   loadChanges: (threadId) => sendCommand({ type: "thread.changes", threadId }),
@@ -275,6 +277,28 @@ function applyEvent(ev: ServerEvent): void {
 
         const merged = capFeed([...dbItems, ...liveOnly].sort((a, b) => a.at - b.at));
         return { threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged } };
+      });
+      break;
+    case "thread.removed":
+      // The server permanently deleted this task. Prune every id-keyed slice so no view holds a
+      // dangling reference, and clear the selection if the open task is the one that vanished.
+      useStore.setState((s) => {
+        const dropKey = <T,>(rec: Record<string, T>): Record<string, T> => {
+          if (!(ev.threadId in rec)) return rec;
+          const { [ev.threadId]: _gone, ...rest } = rec;
+          return rest;
+        };
+        return {
+          threads: dropKey(s.threads),
+          threadFeeds: dropKey(s.threadFeeds),
+          threadDrafts: dropKey(s.threadDrafts),
+          pendingPlans: dropKey(s.pendingPlans),
+          threadChanges: dropKey(s.threadChanges),
+          runs: Object.fromEntries(Object.entries(s.runs).filter(([, r]) => r.threadId !== ev.threadId)),
+          findings: s.findings.filter((f) => f.threadId !== ev.threadId),
+          questions: s.questions.filter((q) => q.threadId !== ev.threadId),
+          selectedThreadId: s.selectedThreadId === ev.threadId ? null : s.selectedThreadId,
+        };
       });
       break;
     case "thread.message": {

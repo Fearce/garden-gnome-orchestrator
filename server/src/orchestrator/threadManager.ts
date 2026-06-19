@@ -1095,6 +1095,37 @@ export class ThreadManager implements OrchestratorApi {
     return { ok: true, state: "cancelled" };
   }
 
+  /** Permanently discard a *terminal* task (done/cancelled/failed): delete its row + child rows and
+   *  tell every client to drop it. Server-authoritative — a running task is never silently killed
+   *  here (use cancelThread for that). Idempotent: a missing or non-terminal thread is a logged no-op. */
+  dismissThread(threadId: string): void {
+    const thread = this.db.getThread(threadId);
+    if (!thread) {
+      this.hub.log("warn", `Ignored thread.dismiss for unknown task ${threadId.slice(0, 8)}`);
+      return;
+    }
+    if (thread.state !== "done" && thread.state !== "cancelled" && thread.state !== "failed") {
+      this.hub.log("warn", `Refusing to dismiss active task ${threadId.slice(0, 8)} (state: ${thread.state})`);
+      return;
+    }
+    // A terminal task has no live run, but clear any threadId-keyed bookkeeping defensively so a
+    // delete can never leave a dangling reference behind (mirrors cancelThread's cleanup).
+    this.live.delete(threadId);
+    this.activeRuns.delete(threadId);
+    this.threadImages.delete(threadId);
+    this.resuming.delete(threadId);
+    this.pendingResumeMsgs.delete(threadId);
+    this.lastImplementorSession.delete(threadId);
+    this.awaitingPrev.delete(threadId);
+    const pendingApproval = this.pendingApprovals.get(threadId);
+    if (pendingApproval) {
+      this.pendingApprovals.delete(threadId);
+      pendingApproval({ approved: false });
+    }
+    this.db.deleteThread(threadId);
+    this.hub.publish({ type: "thread.removed", threadId });
+  }
+
   // ---- findings + routing ----
 
   postFinding(input: PostFindingInput): Finding {
