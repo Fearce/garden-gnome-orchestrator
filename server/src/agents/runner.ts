@@ -235,6 +235,17 @@ export class AgentRun {
     this.emitter.emit("event", e);
   }
 
+  /** Flag a usage cap that arrived as something OTHER than a rate_limit_event (an assistant-message
+   *  `error: "rate_limit"`, or an error result). Sets the failover signal AND emits a rate_limit
+   *  event so the AccountManager marks this account capped (selection/failover then avoid it).
+   *  Idempotent — only the first cap per run flags, so repeated signals don't re-emit. */
+  private flagCapFromSignal(info: RateLimitInfo): void {
+    if (this.rateLimited) return;
+    this.rateLimited = true;
+    this.rateLimitInfo = info;
+    this.emit({ type: "rate_limit", info });
+  }
+
   private async consume(): Promise<void> {
     try {
       for await (const message of this.q as Query) {
@@ -263,6 +274,11 @@ export class AgentRun {
           if (b?.type === "text" && b.text) this.emit({ type: "text", text: b.text });
           else if (b?.type === "tool_use") this.emit({ type: "tool_use", id: b.id, name: b.name, input: b.input });
         }
+        // A 5h/weekly usage cap usually ends the turn as an assistant-message error
+        // (SDKAssistantMessageError "rate_limit"), NOT a rate_limit_event — catch it here so the
+        // failover path still fires. (Not "overloaded": that's transient server load the SDK retries,
+        // and switching accounts wouldn't help.)
+        if (m.error === "rate_limit") this.flagCapFromSignal({ status: "rejected" });
         break;
       }
       case "stream_event": {
@@ -306,6 +322,11 @@ export class AgentRun {
           numTurns: m.num_turns,
         };
         this.lastResult = evt;
+        // Belt-and-suspenders: a cap can also end the run as an error RESULT (subtype
+        // error_during_execution carrying a rate-limit message, or is_error + api_error_status 429)
+        // rather than a rate_limit_event / assistant error. Flag BEFORE emitting so the awaiting
+        // failover path (which reads agent.rateLimited the moment result() resolves) sees it.
+        if (evt.isError && resultLooksRateLimited(m)) this.flagCapFromSignal({ status: "rejected" });
         this.emit(evt);
         break;
       }
@@ -318,4 +339,21 @@ export class AgentRun {
 function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+const RATE_LIMIT_RESULT_RE =
+  /(rate.?limit|usage limit|session limit|hour limit|limit reached|too many requests|quota (?:exceeded|reached))/i;
+
+/**
+ * Whether an ERROR result looks like a usage-cap rejection (vs. error_max_turns / error_max_budget_usd
+ * / a real crash). The caller gates this on is_error, so matching the result/errors text here can't
+ * false-positive on a successful run that merely mentions rate limits. Checks the structured signals
+ * first (429 status, stop_reason) then the human-readable error/result text.
+ */
+function resultLooksRateLimited(m: Record<string, any>): boolean {
+  if (m.api_error_status === 429) return true;
+  if (typeof m.stop_reason === "string" && /rate.?limit/i.test(m.stop_reason)) return true;
+  const errs = Array.isArray(m.errors) ? m.errors.join(" ") : "";
+  const text = typeof m.result === "string" ? m.result : "";
+  return RATE_LIMIT_RESULT_RE.test(errs) || RATE_LIMIT_RESULT_RE.test(text);
 }
