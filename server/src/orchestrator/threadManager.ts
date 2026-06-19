@@ -45,6 +45,19 @@ const MAX_RESULT_PREVIEW = 600;
 const QUESTION_TIMEOUT_MS = 20 * 60 * 1000;
 // On a mid-run 5h/weekly cap, relaunch on another account (resuming the session) up to N times.
 const MAX_ACCOUNT_FAILOVERS = 3;
+// After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
+// doesn't need a manual Resume click. Human-gated phases (a pending question/approval, paused, or
+// pre-planner intake) were waiting on a person, so they're left failed for a manual Resume instead.
+const AUTO_RESUME_STATES: ReadonlySet<Thread["state"]> = new Set(["planning", "researching", "implementing", "qa"]);
+// Crash-loop guard: if a task's resumes keep dying within CRASH_FAST_MS of starting, that's a crash
+// loop (not progress) — stop auto-resuming after MAX_FAST_INTERRUPTS such deaths in the window.
+const RESTART_LOOP_WINDOW_MS = 15 * 60_000;
+const CRASH_FAST_MS = 60_000;
+const MAX_FAST_INTERRUPTS = 3;
+// Defer the resume so the HTTP/WS listeners are up (and the UI is connected) before agents respawn.
+const AUTO_RESUME_DELAY_MS = 4_000;
+const RESTART_FAILED_MSG =
+  "interrupted by a server restart — click Resume to continue from where it left off (finished stages are reused)";
 const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
   "intake",
   "enriching",
@@ -102,18 +115,53 @@ export class ThreadManager implements OrchestratorApi {
     this.markInterrupted();
   }
 
-  /** Any task left mid-flight by a server restart is dead in memory — fail it, and stamp its
-   *  orphaned runs terminal. The DB still has them as starting/running/idle but their in-memory
-   *  AgentRun is gone, so without this they'd inflate the live counter forever. */
+  /** Any task left mid-flight by a server restart is dead in memory — its in-memory AgentRun is gone
+   *  even though the DB still has runs as starting/running/idle. Stamp those runs terminal, then
+   *  AUTO-RESUME the tasks that were actively running (so a restart doesn't silently end live work and
+   *  wait for a manual Resume click — the "auto-resume" half of the failover story). Human-gated and
+   *  crash-looping tasks are left failed for a person instead. */
   private markInterrupted(): void {
-    for (const t of this.db.listThreads()) {
-      if (IN_FLIGHT.has(t.state)) {
-        this.db.updateThread(t.id, { state: "failed", error: "interrupted by a server restart — click Resume to continue from where it left off (finished stages are reused)" });
-      }
-    }
+    // Stamp orphaned runs terminal FIRST, so the crash-loop guard below counts THIS boot's just-killed
+    // run when it looks for resumes that keep dying within seconds.
     const at = Date.now();
     for (const r of this.db.listActiveRuns()) {
       this.db.updateRun(r.id, { state: "interrupted", endedAt: r.endedAt ?? at });
+    }
+    for (const t of this.db.listThreads()) {
+      if (!IN_FLIGHT.has(t.state)) continue;
+      if (!AUTO_RESUME_STATES.has(t.state)) {
+        // Was waiting on a person (question/approval/paused/intake) — leave it for a manual Resume.
+        this.db.updateThread(t.id, { state: "failed", error: RESTART_FAILED_MSG });
+        continue;
+      }
+      // Crash-loop guard: count this task's implementor runs that were interrupted within seconds of
+      // starting (resume-then-die), recently. Long-lived interrupted runs made progress and don't count.
+      const fastInterrupts = this.db
+        .listRuns(t.id)
+        .filter(
+          (r) =>
+            r.role === "implementor" &&
+            r.state === "interrupted" &&
+            r.endedAt != null &&
+            at - r.endedAt < RESTART_LOOP_WINDOW_MS &&
+            r.endedAt - r.startedAt < CRASH_FAST_MS,
+        ).length;
+      if (fastInterrupts >= MAX_FAST_INTERRUPTS) {
+        this.db.updateThread(t.id, {
+          state: "failed",
+          error: `Auto-resume stopped — this task kept getting interrupted within seconds of resuming ${fastInterrupts}× (likely a crash loop, not progress). Click Resume to retry once the cause is fixed.`,
+        });
+        continue;
+      }
+      // Route through the SAME resume-aware path as a manual Resume: 'failed' is that path's entry
+      // state, and runPipeline skips already-finished stages and resumes the implementor session.
+      this.db.updateThread(t.id, { state: "failed", error: "interrupted by a server restart — auto-resuming…" });
+      const id = t.id;
+      const title = t.title;
+      setTimeout(() => {
+        this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
+        void this.resumeThread(id).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
+      }, AUTO_RESUME_DELAY_MS);
     }
   }
 
