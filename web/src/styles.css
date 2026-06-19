@@ -153,9 +153,10 @@ button { font-family: inherit; cursor: pointer; }
 .composer textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
 .composer .row { display: flex; align-items: center; gap: 8px; }
 .composer input.ws {
-  flex: 1; background: var(--bg); color: var(--text-dim); border: 1px solid var(--line); border-radius: var(--r-sm);
+  flex: 1; min-width: 0; background: var(--bg); color: var(--text-dim); border: 1px solid var(--line); border-radius: var(--r-sm);
   padding: 6px 9px; font-family: var(--font-mono); font-size: 11px;
 }
+.composer .row .btn, .composer .row .attach-btn { flex: 0 0 auto; white-space: nowrap; }
 .composer input.ws:focus { outline: none; border-color: var(--line-strong); color: var(--text); }
 
 /* ---- workspace path autocomplete ---- */
