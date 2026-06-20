@@ -54,9 +54,13 @@ function useNow(active: boolean): number {
 
 function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: number }) {
   const stale = !!a.stale && (a.fiveHour != null || a.sevenDay != null);
-  const cls = "acct" + (multi && a.active ? " active" : "") + (a.rateLimited ? " limited" : "") + (stale ? " stale" : "");
+  // An error with no usable read ever (blank meters) is the "broken" state we want
+  // loud and visible — not buried in a hover tooltip the way it used to be.
+  const errored = !!a.error && a.fiveHour == null && a.sevenDay == null;
+  const cls =
+    "acct" + (multi && a.active ? " active" : "") + (a.rateLimited ? " limited" : "") + (stale ? " stale" : "") + (errored ? " errored" : "");
   const title = a.error
-    ? `error: ${a.error}`
+    ? `usage unavailable: ${a.error}`
     : stale
       ? `${a.label} — last-known usage (no live read for this sub right now)`
       : a.label;
@@ -65,12 +69,22 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
       <div className="acct-head">
         {multi ? <span className={"acct-dot" + (a.active ? " on" : "")} /> : null}
         <span className="acct-label">{a.label}</span>
-        {a.rateLimited ? <span className="acct-tag">limited</span> : stale ? <span className="acct-tag dim">stale</span> : null}
+        {a.rateLimited ? (
+          <span className="acct-tag">limited</span>
+        ) : errored ? (
+          <span className="acct-tag">no usage</span>
+        ) : stale ? (
+          <span className="acct-tag dim">stale</span>
+        ) : null}
       </div>
-      <div className="acct-meters">
-        <Meter k="5h" pct={a.fiveHour} kind="five" stale={stale} reset={a.fiveHourReset} now={now} />
-        <Meter k="7d" pct={a.sevenDay} kind="week" stale={stale} reset={a.sevenDayReset} now={now} />
-      </div>
+      {errored ? (
+        <div className="acct-err">{a.error}</div>
+      ) : (
+        <div className="acct-meters">
+          <Meter k="5h" pct={a.fiveHour} kind="five" stale={stale} reset={a.fiveHourReset} now={now} />
+          <Meter k="7d" pct={a.sevenDay} kind="week" stale={stale} reset={a.sevenDayReset} now={now} />
+        </div>
+      )}
     </div>
   );
 }

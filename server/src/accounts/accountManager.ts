@@ -2,7 +2,7 @@ import type { EventHub } from "../events.js";
 import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
 import type { Account } from "./account.js";
-import { pingUsage } from "./usagePing.js";
+import { pingUsage, type PingFailReason } from "./usagePing.js";
 import { logCrash } from "../crashLog.js";
 
 interface AccountState {
@@ -13,6 +13,7 @@ interface AccountState {
   sevenDayReset: number | null; // epoch ms
   usageAt: number; // when usage was last read
   usageStale: boolean; // last ping failed and the value is getting old
+  error: string | null; // short, actionable reason the last ping had no usable read (null = OK)
   rateLimited: boolean;
   rateLimitWindow: string | null;
   rateLimitResetAt: number | null;
@@ -86,6 +87,7 @@ export class AccountManager {
         sevenDayReset: null,
         usageAt: 0,
         usageStale: false,
+        error: null,
         rateLimited: false,
         rateLimitWindow: null,
         rateLimitResetAt: null,
@@ -115,23 +117,32 @@ export class AccountManager {
 
   /** Tiny Haiku ping → live usage from rate-limit headers; also (re)schedules the reset ping. */
   private async pingOne(a: Account): Promise<void> {
-    const u = await pingUsage(a.token);
+    const r = await pingUsage(a.token);
     const st = this.states.get(a.id);
     if (!st) return;
     const now = Date.now();
-    if (!u) {
+    if (!r.ok) {
+      // Surface the failure immediately (don't wait 20 min for usageStale): a
+      // never-read account would otherwise just show "—" with no clue why.
+      const msg = pingErrorMessage(r.reason);
+      if (st.error !== msg) {
+        st.error = msg;
+        st.updatedAt = now;
+      }
       if (st.usageAt && now - st.usageAt > STALE_MS && !st.usageStale) {
         st.usageStale = true;
         st.updatedAt = now;
       }
       return;
     }
+    const u = r.usage;
     st.fiveHour = u.fiveHour;
     st.sevenDay = u.sevenDay;
     st.fiveHourReset = u.fiveHourReset;
     st.sevenDayReset = u.sevenDayReset;
     st.usageAt = now;
     st.usageStale = false;
+    st.error = null;
     st.rateLimited = u.fiveHourRejected || u.sevenDayRejected;
     st.rateLimitWindow = u.fiveHourRejected ? "five_hour" : u.sevenDayRejected ? "seven_day" : null;
     st.rateLimitResetAt = u.fiveHourRejected ? u.fiveHourReset : u.sevenDayRejected ? u.sevenDayReset : null;
@@ -257,7 +268,7 @@ export class AccountManager {
       resetsAt: s.rateLimitResetAt,
       active: s.account.id === this.preferredId,
       updatedAt: s.updatedAt,
-      error: null,
+      error: s.error,
     }));
   }
 
@@ -268,6 +279,18 @@ export class AccountManager {
 
 function fmt(n: number | null | undefined): string {
   return n == null ? "—" : `${Math.round(n)}%`;
+}
+
+/** Short, actionable label for why a usage ping had no usable read — shown on the chip. */
+function pingErrorMessage(reason: PingFailReason): string {
+  switch (reason) {
+    case "no-token":
+      return "no token — run 'claude setup-token'";
+    case "auth":
+      return "token rejected — re-run 'claude setup-token'";
+    case "network":
+      return "usage read failed (network)";
+  }
 }
 
 /** Compact "in 7h" / "in 3d" until a reset epoch, for the selection log line. */
