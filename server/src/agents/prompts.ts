@@ -2,6 +2,7 @@
 // how Mikkel works by hand so the agents reproduce it.
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
 import { config } from "../config.js";
 
 // `xhigh` is a Max-5-only effort tier, gated behind ENABLE_XHIGH. When it's off we drop the tier
@@ -11,12 +12,38 @@ const XHIGH_TIER = config.enableXhigh
   ? "`xhigh` (complex/agentic — the coding sweet spot for hard multi-file work), "
   : "";
 
-// Absolute path to the globally-installed Playwright (see BROWSER_TEST below). Defaults to the
-// standard Windows global-npm location; override with PLAYWRIGHT_MODULES_DIR for a custom npm
-// prefix or non-Windows. Forward slashes so it drops cleanly into a require() string.
-const PLAYWRIGHT_PATH = (
-  process.env.PLAYWRIGHT_MODULES_DIR || join(homedir(), "AppData", "Roaming", "npm", "node_modules", "playwright")
-).replace(/\\/g, "/");
+// Absolute path to a Playwright module the agents can `require()` for browser tests
+// (see BROWSER_TEST below). The require only needs `chromium`, which both the full
+// `playwright` package and `playwright-core` export — so we accept either.
+//
+// Resolution order (first that exists wins):
+//   1. PLAYWRIGHT_MODULES_DIR — explicit override (custom npm prefix / non-Windows).
+//   2. A real global `npm i -g playwright` under ~/AppData/Roaming/npm.
+//   3. `playwright-core` shipped with the runtime runtime — the dir name is
+//      version-stamped (`runtime-<ver>`) and changes on updates, so we glob for the
+//      newest match rather than hard-coding a version that rots.
+// Falls back to the Roaming path string (even if absent) so the prompt is never empty.
+function resolvePlaywrightPath(): string {
+  const override = process.env.PLAYWRIGHT_MODULES_DIR;
+  if (override) return override.replace(/\\/g, "/");
+
+  const roamingGlobal = join(homedir(), "AppData", "Roaming", "npm", "node_modules", "playwright");
+  if (existsSync(roamingGlobal)) return roamingGlobal.replace(/\\/g, "/");
+
+  const runtimeDeps = join(homedir(), ".runtime", "plugin-runtime-deps");
+  if (existsSync(runtimeDeps)) {
+    const core = readdirSync(runtimeDeps)
+      .filter((d) => d.startsWith("runtime-"))
+      .sort() // version-stamped names sort lexically; last is the newest
+      .reverse()
+      .map((d) => join(runtimeDeps, d, "node_modules", "playwright-core"))
+      .find(existsSync);
+    if (core) return core.replace(/\\/g, "/");
+  }
+
+  return roamingGlobal.replace(/\\/g, "/");
+}
+const PLAYWRIGHT_PATH = resolvePlaywrightPath();
 
 // Embedded into the implementor + QA prompts so they actually browser-test UIs.
 // There is no Chrome/Preview MCP in the SDK-agent environment, so agents kept
