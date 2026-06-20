@@ -1098,21 +1098,38 @@ export class ThreadManager implements OrchestratorApi {
     return { ok: true, state: "cancelled" };
   }
 
-  /** Permanently discard a terminal task: delete it (FK cascade drops its runs/findings/messages/
-   *  questions) and broadcast thread.removed so clients prune it. Server-authoritative and guarded —
-   *  a missing or non-terminal task is refused so an in-flight task is never silently killed (use
-   *  cancelThread to stop active work first). */
+  /** Whether a live agent run is actually executing this thread right now — an active SDK run, a
+   *  still-live implementor session, or a resume mid-materialization (compressing, no run yet). This
+   *  is the real "is something running" signal, distinct from the thread's *state label*: a `review`
+   *  (or `paused`/`awaiting_*`) thread carries no live run and so is safe to close. After a server
+   *  restart these in-memory maps are empty, so a thread that was `implementing` in the DB reports no
+   *  active run and becomes closeable — consistent with there being no process to kill. */
+  private hasActiveRun(threadId: string): boolean {
+    return (
+      (this.activeRuns.get(threadId)?.size ?? 0) > 0 ||
+      this.live.has(threadId) ||
+      this.resuming.has(threadId) ||
+      this.stopping.has(threadId)
+    );
+  }
+
+  /** Permanently discard a task with no live run: delete it (FK cascade drops its runs/findings/
+   *  messages/questions) and broadcast thread.removed so clients prune it. Server-authoritative and
+   *  guarded on the *actual* run state, not the status label — a missing task or one with a genuinely
+   *  live agent (implementing/qa/planning, or a review still resuming) is refused so in-flight work is
+   *  never silently killed (use cancelThread to stop active work first). A parked task (review/paused/
+   *  awaiting_*) has nothing running and is closeable. */
   dismissThread(threadId: string): void {
     const thread = this.db.getThread(threadId);
     if (!thread) {
       this.hub.publish({ type: "log", level: "warn", message: `dismiss ignored: thread ${threadId} not found` });
       return;
     }
-    if (thread.state !== "done" && thread.state !== "cancelled" && thread.state !== "failed") {
+    if (this.hasActiveRun(threadId)) {
       this.hub.publish({
         type: "log",
         level: "warn",
-        message: `dismiss refused: thread ${threadId} is ${thread.state}, not terminal`,
+        message: `dismiss refused: thread ${threadId} (${thread.state}) has a live agent run — cancel it first`,
       });
       return;
     }
@@ -1128,6 +1145,11 @@ export class ThreadManager implements OrchestratorApi {
     if (pendingApproval) {
       this.pendingApprovals.delete(threadId);
       pendingApproval({ approved: false });
+    }
+    // Unblock any agent/UI waiting on a question for this task (mirrors cancelThread) — a parked task
+    // being closed must not leave a dangling open question behind.
+    for (const q of this.db.listOpenQuestions()) {
+      if (q.threadId === threadId) this.resolveQuestion(q.id, "(task dismissed)");
     }
     this.db.deleteThread(threadId);
     this.hub.publish({ type: "thread.removed", threadId });

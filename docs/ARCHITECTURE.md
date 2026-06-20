@@ -112,6 +112,15 @@ intake → enriching → [awaiting_user] → planning → [researching] → [awa
                                                   ↕ paused / failed   (Resume re-enters, skipping finished stages)
 ```
 
+- **Closing a task is gated on the live run, not the status label.** `dismissThread` (the ✕ on a
+  card → `thread.dismiss`) permanently deletes a task, and is refused only while an agent run is
+  actually live — `hasActiveRun` checks the in-memory run maps (`activeRuns`/`live`/`resuming`/
+  `stopping`), not the state string. So a *parked* task (`review`, `paused`, `awaiting_*`) is
+  closeable whenever no agent is executing it, while genuinely live stages (`implementing`/`qa`/
+  `planning`/…) stay blocked (cancel them first). Closing resolves any open question for the task
+  (`(task dismissed)`) so nothing is left waiting. The card ✕ mirrors this via `isDismissable`
+  (= not `threadRunning`); the ThreadDetail **Cancel** button is separate and still gated on
+  `isTerminal`.
 - **Agent-routed, planner-first.** `runPipeline` has no fixed sequence — each stage
   decides the next. The planner runs first (reads the repo, plans) and its structured
   output declares `nextAgent` (a `PLAN_SCHEMA` required field): `"researcher"` when the
@@ -210,8 +219,8 @@ a single discriminated union (`zod`-validated). Highlights:
   `thread.changes`, `director.delta` / `director.message` / `director.tool` /
   `director.busy`, `log`.
 - C→S: `prompt.new`, `question.answer`, `thread.inject`, `thread.interrupt`,
-  `thread.resume`, `thread.cancel`, `thread.history`, `thread.approve` /
-  `approval.set`, `thread.changes`, `snapshot.request`.
+  `thread.resume`, `thread.cancel`, `thread.dismiss`, `thread.history`,
+  `thread.approve` / `approval.set`, `thread.changes`, `snapshot.request`.
 
 ## 8. Memory (`server/src/memory/memory.ts`)
 

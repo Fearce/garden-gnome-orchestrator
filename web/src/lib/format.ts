@@ -52,11 +52,19 @@ export function threadRunning(state: ThreadState): boolean {
   }
 }
 
-/** A task in a terminal state: finished and not resumable into the live pipeline. These are the
- *  only states a card may be dismissed from — running tasks never expose dismiss so active work
- *  is never silently discarded. Mirrors the `terminal` predicate in ThreadDetail. */
+/** A task in a terminal state: finished and not resumable into the live pipeline. Mirrors the
+ *  `terminal` predicate in ThreadDetail (which gates the Cancel button). */
 export function isTerminal(state: ThreadState): boolean {
   return state === "done" || state === "cancelled" || state === "failed";
+}
+
+/** Whether a card may be dismissed (closed): true whenever no role is actively working the task.
+ *  This is the close rule — closeable whenever no agent run is live, not only in terminal states. A
+ *  parked task (review / paused / awaiting_*) has nothing running, so it's closeable; only the live
+ *  pipeline states (implementing/qa/planning/…) keep the ✕ hidden so active work is never silently
+ *  discarded. The server enforces the same rule authoritatively via `hasActiveRun`. */
+export function isDismissable(state: ThreadState): boolean {
+  return !threadRunning(state);
 }
 
 /** Compact running-or-final duration: "9s", "2m 34s", "1h 12m". */
