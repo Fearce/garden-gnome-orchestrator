@@ -15,7 +15,8 @@ export type ThreadState =
   | "review" // done but QA wasn't satisfied — needs Mikkel
   | "done"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "closed"; // soft-closed: kept in the DB (restorable) but off the main board; auto-purged after 30d
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -37,6 +38,7 @@ export interface Thread {
   brief: string; // enriched brief that kicked off the pipeline
   rawPrompt: string; // the user's original ask
   error?: string | null;
+  closedAt?: number | null; // when soft-closed (state === "closed"); drives the 30-day auto-purge clock
   createdAt: number;
   updatedAt: number;
 }

@@ -54,6 +54,8 @@ interface State {
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   cancel: (threadId: string) => void;
+  close: (threadId: string) => void;
+  restore: (threadId: string) => void;
   dismiss: (threadId: string) => void;
   setApproval: (on: boolean) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
@@ -138,6 +140,8 @@ export const useStore = create<State>((set) => ({
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
+  close: (threadId) => sendCommand({ type: "thread.close", threadId }),
+  restore: (threadId) => sendCommand({ type: "thread.restore", threadId }),
   dismiss: (threadId) => sendCommand({ type: "thread.dismiss", threadId }),
   setApproval: (on) => sendCommand({ type: "approval.set", on }),
   approve: (threadId, approved, feedback) => sendCommand({ type: "thread.approve", threadId, approved, feedback }),

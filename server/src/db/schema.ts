@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS threads (
   raw_prompt    TEXT NOT NULL DEFAULT '',
   error         TEXT,
   stage_outputs TEXT,
+  closed_at         INTEGER,
+  closed_prev_state TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );

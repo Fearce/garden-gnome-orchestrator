@@ -112,15 +112,25 @@ intake → enriching → [awaiting_user] → planning → [researching] → [awa
                                                   ↕ paused / failed   (Resume re-enters, skipping finished stages)
 ```
 
-- **Closing a task is gated on the live run, not the status label.** `dismissThread` (the ✕ on a
-  card → `thread.dismiss`) permanently deletes a task, and is refused only while an agent run is
-  actually live — `hasActiveRun` checks the in-memory run maps (`activeRuns`/`live`/`resuming`/
-  `stopping`), not the state string. So a *parked* task (`review`, `paused`, `awaiting_*`) is
-  closeable whenever no agent is executing it, while genuinely live stages (`implementing`/`qa`/
-  `planning`/…) stay blocked (cancel them first). Closing resolves any open question for the task
-  (`(task dismissed)`) so nothing is left waiting. The card ✕ mirrors this via `isDismissable`
-  (= not `threadRunning`); the ThreadDetail **Cancel** button is separate and still gated on
-  `isTerminal`.
+- **Closing a task is a soft move, not a delete.** The ✕ on a card → `thread.close` →
+  `closeThread`, which moves a *parked* task to a `closed` state (kept in the DB with a `closed_at`
+  stamp, hidden from the main board, restorable) instead of deleting it. It's guarded ONLY on the
+  **closeable set** — `done`/`failed`/`cancelled`/`review`/`paused` — and *not* on a live-run check:
+  a `review`/`paused` task can keep a stale `live`/`activeRuns`/`stopping` entry after the QA loop
+  settles, so `closeThread` **force-stops** any lingering agent (mirroring `cancelThread`'s teardown,
+  minus the delete) rather than refusing on it — which is what fixed "a review task can't be closed".
+  `awaiting_user`/`awaiting_approval` are intentionally excluded (they hold an in-memory resolver the
+  close wouldn't settle). The card ✕ mirrors the set via `isClosable`; the ThreadDetail **Cancel**
+  button is separate and still gated on `isTerminal`.
+- **Closed tasks: restore, permanent delete, 30-day auto-purge.** Closed tasks live in a collapsed
+  "Closed · N" section at the bottom of the board, newest-first, each with **Restore**
+  (`thread.restore` → `restoreThread`, back to `closed_prev_state`) and **Delete permanently**
+  (`thread.dismiss` → `dismissThread`, the hard delete, behind a confirm). `dismissThread` still
+  refuses while a run is genuinely live (`hasActiveRun`). A closed task auto-purges 30 days after
+  `closed_at` (`CLOSED_TTL_MS`): `purgeExpiredClosed` sweeps on boot and daily, deleting expired rows
+  and broadcasting `thread.removed`. `closed_at`/`closed_prev_state` are written only by
+  `closeThread`/`restoreThread` (never the generic `updateThread` SQL), so a normal state change can't
+  clobber them; `closed_prev_state` stays off the `Thread` DTO.
 - **Agent-routed, planner-first.** `runPipeline` has no fixed sequence — each stage
   decides the next. The planner runs first (reads the repo, plans) and its structured
   output declares `nextAgent` (a `PLAN_SCHEMA` required field): `"researcher"` when the
@@ -219,8 +229,8 @@ a single discriminated union (`zod`-validated). Highlights:
   `thread.changes`, `director.delta` / `director.message` / `director.tool` /
   `director.busy`, `log`.
 - C→S: `prompt.new`, `question.answer`, `thread.inject`, `thread.interrupt`,
-  `thread.resume`, `thread.cancel`, `thread.dismiss`, `thread.history`,
-  `thread.approve` / `approval.set`, `thread.changes`, `snapshot.request`.
+  `thread.resume`, `thread.cancel`, `thread.close`, `thread.restore`, `thread.dismiss`,
+  `thread.history`, `thread.approve` / `approval.set`, `thread.changes`, `snapshot.request`.
 
 ## 8. Memory (`server/src/memory/memory.ts`)
 

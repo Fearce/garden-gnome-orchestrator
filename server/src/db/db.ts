@@ -37,6 +37,9 @@ function rowToThread(r: Row): Thread {
     brief: r.brief as string,
     rawPrompt: r.raw_prompt as string,
     error: (r.error as string | null) ?? null,
+    // closed_prev_state is deliberately NOT mapped onto the DTO — it's internal bookkeeping for
+    // restore, never shown to the UI. Only closedAt (the auto-purge clock) reaches the client.
+    closedAt: (r.closed_at as number | null) ?? null,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
   };
@@ -123,6 +126,8 @@ export class Db {
       "ALTER TABLE agent_runs ADD COLUMN effort TEXT",
       "ALTER TABLE director_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
+      "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
+      "ALTER TABLE threads ADD COLUMN closed_prev_state TEXT",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -195,6 +200,47 @@ export class Db {
       )
       .run(next);
     return next;
+  }
+
+  /** Soft-close a thread: stamp state='closed', remember the state it came from (closed_prev_state,
+   *  for restore), and start the 30-day auto-purge clock (closed_at). Managed only here and in
+   *  restoreThread — the generic updateThread SQL never writes these columns, so a normal state change
+   *  can't clobber them. */
+  closeThread(id: string): Thread | null {
+    const current = this.getThread(id);
+    if (!current) return null;
+    const at = now();
+    this.raw
+      .prepare(
+        `UPDATE threads SET state='closed', closed_at=@at, closed_prev_state=@prev, updated_at=@at WHERE id=@id`,
+      )
+      .run({ id, at, prev: current.state });
+    return { ...current, state: "closed", closedAt: at, updatedAt: at };
+  }
+
+  /** Restore a closed thread back to the state it was closed from (closed_prev_state; fallback
+   *  'review' if it's somehow missing), clearing the close bookkeeping so the purge clock stops. */
+  restoreThread(id: string): Thread | null {
+    const r = this.raw.prepare("SELECT closed_prev_state FROM threads WHERE id = ?").get(id) as Row | undefined;
+    if (!r) return null;
+    const prev = ((r.closed_prev_state as string | null) ?? "review") as ThreadState;
+    const at = now();
+    this.raw
+      .prepare(
+        `UPDATE threads SET state=@prev, closed_at=NULL, closed_prev_state=NULL, updated_at=@at WHERE id=@id`,
+      )
+      .run({ id, prev, at });
+    return this.getThread(id);
+  }
+
+  /** Closed threads whose 30-day window has elapsed (closed_at strictly before `cutoff`) — the boot
+   *  + daily auto-purge sweep deletes these permanently. */
+  listClosedBefore(cutoff: number): Thread[] {
+    return (
+      this.raw
+        .prepare("SELECT * FROM threads WHERE state='closed' AND closed_at IS NOT NULL AND closed_at < ?")
+        .all(cutoff) as Row[]
+    ).map(rowToThread);
   }
 
   /** Saved per-stage pipeline outputs for resume, or {} if none yet. Deliberately NOT folded into

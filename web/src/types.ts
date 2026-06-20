@@ -17,7 +17,8 @@ export type ThreadState =
   | "review"
   | "done"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "closed";
 
 export type AgentRunState = "starting" | "running" | "idle" | "interrupted" | "done" | "error";
 export type Severity = "info" | "note" | "warning" | "critical";
@@ -30,6 +31,7 @@ export interface Thread {
   brief: string;
   rawPrompt: string;
   error?: string | null;
+  closedAt?: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -167,6 +169,8 @@ export type ClientCommand =
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.cancel"; threadId: string }
+  | { type: "thread.close"; threadId: string }
+  | { type: "thread.restore"; threadId: string }
   | { type: "thread.dismiss"; threadId: string }
   | { type: "thread.history"; threadId: string }
   | { type: "thread.approve"; threadId: string; approved: boolean; feedback?: string }

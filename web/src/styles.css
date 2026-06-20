@@ -263,6 +263,29 @@ button { font-family: inherit; cursor: pointer; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 14px 0 4px; margin-top: 12px; border-top: 1px solid var(--line); }
 .pager-info { font-size: 11px; color: var(--text-faint); letter-spacing: 0.02em; }
 
+/* ---- closed tasks (a quiet safety-net section, not a place you browse) ---- */
+.closed-section { margin-top: 22px; padding-top: 12px; border-top: 1px solid var(--line); }
+.closed-toggle {
+  display: inline-flex; align-items: center; gap: 7px; padding: 4px 2px;
+  background: transparent; border: 0; cursor: pointer;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-faint); transition: color 0.12s;
+}
+.closed-toggle:hover { color: var(--text-dim); }
+.closed-caret { display: inline-block; transition: transform 0.14s; }
+.closed-caret.open { transform: rotate(90deg); }
+.closed-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.closed-card {
+  display: flex; flex-direction: column; gap: 8px;
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 9px 11px;
+}
+.closed-card-main { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.closed-card-title { font-size: 13px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.closed-badge { --state-color: var(--text-faint); flex: 0 0 auto; }
+.closed-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.closed-expiry { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); letter-spacing: 0.02em; }
+.closed-actions { display: inline-flex; gap: 7px; }
+
 .card {
   background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-lg);
   padding: 14px; cursor: pointer; transition: border-color 0.14s, transform 0.08s, background 0.14s;

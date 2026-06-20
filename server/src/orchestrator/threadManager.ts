@@ -81,6 +81,13 @@ const PRE_IMPLEMENTOR: ReadonlySet<Thread["state"]> = new Set([
   "researching",
   "awaiting_approval",
 ]);
+// Soft-close: a closed task stays in the DB (restorable) but off the main board, and is permanently
+// purged 30 days after it was closed. The CLOSEABLE set is the only states a task may be closed FROM —
+// it excludes the genuinely-running states (implementing/qa/planning/…) AND awaiting_user/
+// awaiting_approval (those hold an in-memory resolver promise that closing wouldn't settle).
+const CLOSED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const PURGE_SWEEP_MS = 24 * 60 * 60 * 1000;
+const CLOSEABLE: ReadonlySet<Thread["state"]> = new Set(["done", "failed", "cancelled", "review", "paused"]);
 
 export class ThreadManager implements OrchestratorApi {
   private readonly live = new Map<string, LiveImplementor>();
@@ -113,6 +120,9 @@ export class ThreadManager implements OrchestratorApi {
     readonly accounts: AccountManager,
   ) {
     this.markInterrupted();
+    // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
+    this.purgeExpiredClosed();
+    setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
   }
 
   /** Any task left mid-flight by a server restart is dead in memory — its in-memory AgentRun is gone
@@ -1096,6 +1106,70 @@ export class ThreadManager implements OrchestratorApi {
     this.setState(threadId, "cancelled");
     this.stopping.delete(threadId);
     return { ok: true, state: "cancelled" };
+  }
+
+  /** Soft-close a parked task: move it to the 'closed' holding area (kept in the DB, off the main
+   *  board, restorable) instead of deleting it. Guarded ONLY on CLOSEABLE membership — deliberately
+   *  NOT on hasActiveRun: a review/paused task can keep a STALE live/activeRuns/stopping entry after
+   *  the QA loop settles, and refusing on that is exactly the "can't close a review task" bug. So we
+   *  FORCE-STOP any lingering agent (mirrors cancelThread's teardown, minus the delete) and then
+   *  close, rather than refuse. Async because stopLive awaits the SDK session closing. */
+  async closeThread(threadId: string): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (thread.state === "closed") return { ok: true, state: "closed" };
+    if (!CLOSEABLE.has(thread.state)) {
+      return { ok: false, error: `A ${thread.state} task is still active — cancel it before closing.` };
+    }
+    // Force-stop any lingering run and clear the in-memory bookkeeping (like cancelThread, but we keep
+    // the row) so nothing can resurrect or keep counting the task as live after it's closed.
+    this.stopping.add(threadId);
+    const set = this.activeRuns.get(threadId);
+    if (set) {
+      for (const r of set) {
+        try {
+          await r.stop();
+        } catch {
+          /* already down */
+        }
+      }
+      set.clear();
+    }
+    await this.stopLive(threadId);
+    this.live.delete(threadId);
+    this.threadImages.delete(threadId);
+    this.resuming.delete(threadId);
+    this.pendingResumeMsgs.delete(threadId);
+    this.liveRole.delete(threadId);
+    this.directorNotes.delete(threadId);
+    this.stopping.delete(threadId);
+    const updated = this.db.closeThread(threadId);
+    if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
+    this.hub.log("info", `Closed task ${threadId.slice(0, 8)} (was ${thread.state}).`);
+    return { ok: true, state: "closed" };
+  }
+
+  /** Restore a closed task back to the state it was closed from, returning it to the main board. */
+  restoreThread(threadId: string): ThreadActionResult {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (thread.state !== "closed") return { ok: false, error: "That task isn't closed." };
+    const updated = this.db.restoreThread(threadId);
+    if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
+    this.hub.log("info", `Restored task ${threadId.slice(0, 8)} → ${updated?.state ?? "review"}.`);
+    return { ok: true, state: updated?.state ?? "review" };
+  }
+
+  /** Permanently delete closed tasks whose 30-day window has elapsed. Runs on boot (after
+   *  markInterrupted) and daily. Reuses deleteThread (FK cascade) + broadcasts thread.removed so
+   *  clients prune them. */
+  private purgeExpiredClosed(): void {
+    const cutoff = Date.now() - CLOSED_TTL_MS;
+    for (const t of this.db.listClosedBefore(cutoff)) {
+      this.db.deleteThread(t.id);
+      this.hub.publish({ type: "thread.removed", threadId: t.id });
+      this.hub.log("info", `Auto-purged closed task ${t.id.slice(0, 8)} "${t.title.slice(0, 48)}" (closed > 30 days ago).`);
+    }
   }
 
   /** Whether a live agent run is actually executing this thread right now — an active SDK run, a

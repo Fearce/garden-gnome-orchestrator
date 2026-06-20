@@ -22,6 +22,7 @@ export function stateColor(state: ThreadState): string {
     case "review":
       return "var(--warn)";
     case "cancelled":
+    case "closed":
       return "var(--text-faint)";
     default:
       return "var(--text-faint)";
@@ -58,13 +59,21 @@ export function isTerminal(state: ThreadState): boolean {
   return state === "done" || state === "cancelled" || state === "failed";
 }
 
-/** Whether a card may be dismissed (closed): true whenever no role is actively working the task.
- *  This is the close rule — closeable whenever no agent run is live, not only in terminal states. A
- *  parked task (review / paused / awaiting_*) has nothing running, so it's closeable; only the live
- *  pipeline states (implementing/qa/planning/…) keep the ✕ hidden so active work is never silently
- *  discarded. The server enforces the same rule authoritatively via `hasActiveRun`. */
-export function isDismissable(state: ThreadState): boolean {
-  return !threadRunning(state);
+/** Whether a card may be soft-closed (moved to the Closed holding area). The closeable set —
+ *  done/failed/cancelled/review/paused — is the parked, not-actively-running states EXCEPT
+ *  awaiting_user/awaiting_approval (those hold a pending resolver that closing wouldn't settle).
+ *  Live pipeline states keep the ✕ hidden so active work is never discarded. The server enforces the
+ *  same set authoritatively in `closeThread` (which also force-stops any stale lingering run). */
+export function isClosable(state: ThreadState): boolean {
+  return state === "done" || state === "failed" || state === "cancelled" || state === "review" || state === "paused";
+}
+
+/** A closed task auto-purges 30 days after it was closed; mirrors CLOSED_TTL_MS on the server. */
+export const CLOSED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Whole days remaining before a closed task auto-removes (0 = within the last day). */
+export function closesInDays(closedAt: number): number {
+  return Math.max(0, Math.ceil((closedAt + CLOSED_TTL_MS - Date.now()) / (24 * 60 * 60 * 1000)));
 }
 
 /** Compact running-or-final duration: "9s", "2m 34s", "1h 12m". */

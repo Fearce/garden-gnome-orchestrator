@@ -82,6 +82,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("thread.interrupt"), threadId: z.string() }),
   z.object({ type: z.literal("thread.resume"), threadId: z.string(), message: z.string().optional() }),
   z.object({ type: z.literal("thread.cancel"), threadId: z.string() }),
+  z.object({ type: z.literal("thread.close"), threadId: z.string() }),
+  z.object({ type: z.literal("thread.restore"), threadId: z.string() }),
   z.object({ type: z.literal("thread.dismiss"), threadId: z.string() }),
   z.object({ type: z.literal("thread.history"), threadId: z.string() }),
   z.object({ type: z.literal("thread.approve"), threadId: z.string(), approved: z.boolean(), feedback: z.string().optional() }),

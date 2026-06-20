@@ -2,7 +2,7 @@ import { memo, useEffect, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
 import type { AgentRun, Role, Thread } from "../types.js";
-import { isDismissable, roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { closesInDays, isClosable, roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 
@@ -13,9 +13,16 @@ const PER_PAGE = 15;
 
 export function Board() {
   const threads = useStore((s) => s.threads);
+  const all = Object.values(threads);
   // Most-recently-active first: a state change, an inject, or a resume bumps updatedAt, so a task
   // you just touched jumps to the front. Ties (and brand-new tasks) fall back to creation order.
-  const list = Object.values(threads).sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+  // Closed tasks are pulled out of the main board into the Closed holding area below.
+  const list = all
+    .filter((t) => t.state !== "closed")
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+  const closed = all
+    .filter((t) => t.state === "closed")
+    .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));
   const [page, setPage] = useState(0);
 
   const pageCount = Math.max(1, Math.ceil(list.length / PER_PAGE));
@@ -60,7 +67,86 @@ export function Board() {
           ) : null}
         </>
       )}
+      <ClosedSection threads={closed} />
     </main>
+  );
+}
+
+const CLOSED_OPEN_KEY = "orch-closed-open";
+
+/** The Closed holding area: a quiet, collapsed-by-default row at the bottom of the board. It's a
+ *  safety net, not something you browse — so it stays out of the way until you expand it. */
+function ClosedSection({ threads }: { threads: Thread[] }) {
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(CLOSED_OPEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  if (threads.length === 0) return null;
+  const toggle = () =>
+    setOpen((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem(CLOSED_OPEN_KEY, next ? "1" : "0");
+      } catch {
+        /* private mode */
+      }
+      return next;
+    });
+  return (
+    <section className="closed-section">
+      <button className="closed-toggle" onClick={toggle} aria-expanded={open}>
+        <span className={"closed-caret" + (open ? " open" : "")} aria-hidden="true">
+          ›
+        </span>
+        Closed · {threads.length}
+      </button>
+      {open ? (
+        <div className="closed-list">
+          {threads.map((t) => (
+            <ClosedCard key={t.id} thread={t} />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ClosedCard({ thread }: { thread: Thread }) {
+  const restore = useStore((s) => s.restore);
+  const dismiss = useStore((s) => s.dismiss);
+  const days = thread.closedAt != null ? closesInDays(thread.closedAt) : 30;
+  const expiry = days <= 0 ? "auto-removes soon" : `auto-removes in ${days} ${days === 1 ? "day" : "days"}`;
+  return (
+    <div className="closed-card">
+      <div className="closed-card-main">
+        <span className="badge closed-badge">closed</span>
+        <span className="closed-card-title" title={thread.title}>
+          {thread.title}
+        </span>
+      </div>
+      <div className="closed-card-foot">
+        <span className="closed-expiry" title="Closed tasks are permanently deleted 30 days after they're closed">
+          {expiry}
+        </span>
+        <span className="closed-actions">
+          <button className="btn ghost sm" onClick={() => restore(thread.id)} title="Move this task back to the board">
+            Restore
+          </button>
+          <button
+            className="btn danger sm"
+            title="Permanently delete this task"
+            onClick={() => {
+              if (window.confirm(`Permanently delete "${thread.title}"? This can't be undone.`)) dismiss(thread.id);
+            }}
+          >
+            Delete permanently
+          </button>
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -114,17 +200,17 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
   });
   const selected = useStore((s) => s.selectedThreadId === thread.id);
   const select = useStore((s) => s.select);
-  const dismiss = useStore((s) => s.dismiss);
+  const close = useStore((s) => s.close);
 
   const impl = latestRun(threadRuns, "implementor");
   const activity = draftText || lastText || thread.brief.split("\n")[0] || "—";
 
   const live = threadRunning(thread.state);
-  // Dismiss whenever no agent run is live — a running task shows no ✕, so active work is never
-  // silently killed (use the detail panel's Cancel to stop it first), but a parked task (review /
-  // paused / awaiting_*) is closeable since nothing is executing. stopPropagation keeps the click
-  // from also opening the detail panel of a card that's being removed.
-  const canDismiss = isDismissable(thread.state);
+  // The ✕ soft-closes a parked task (review / paused / done / failed / cancelled) — it moves to the
+  // Closed list below, restorable, rather than being deleted outright. A running task shows no ✕, so
+  // active work is never discarded (cancel it from the detail panel first). stopPropagation keeps the
+  // click from also opening the detail panel of a card that's leaving the board.
+  const canClose = isClosable(thread.state);
 
   return (
     <div
@@ -132,14 +218,14 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
       style={{ "--state-color": stateColor(thread.state) } as CSSProperties}
       onClick={() => select(thread.id)}
     >
-      {canDismiss ? (
+      {canClose ? (
         <button
           className="card-dismiss"
-          title="Dismiss — permanently delete this task"
-          aria-label="Dismiss task"
+          title="Close — move to the Closed list (restorable)"
+          aria-label="Close task"
           onClick={(e) => {
             e.stopPropagation();
-            dismiss(thread.id);
+            close(thread.id);
           }}
         >
           ✕
