@@ -41,6 +41,25 @@ function isDirSafe(p: string): boolean {
   }
 }
 
+// The built bundle's main JS asset carries Vite's content hash, so its filename changes on every
+// web build. Clients poll /api/version and reload when the hash they loaded no longer matches —
+// so a deploy reaches an already-open tab/kiosk without a manual hard-refresh. Cached by index.html
+// mtime so the common case is a cheap stat, not a re-read+re-parse on every poll.
+let bundleCache: { mtimeMs: number; version: string } | null = null;
+function webBundleVersion(): string | null {
+  const indexPath = join(config.webDist, "index.html");
+  try {
+    const mtimeMs = statSync(indexPath).mtimeMs;
+    if (bundleCache?.mtimeMs === mtimeMs) return bundleCache.version;
+    const html = readFileSync(indexPath, "utf8");
+    const version = html.match(/assets\/[A-Za-z0-9._-]+\.js/)?.[0].split("/").pop() ?? null;
+    if (version) bundleCache = { mtimeMs, version };
+    return version;
+  } catch {
+    return null;
+  }
+}
+
 async function main(): Promise<void> {
   const db = new Db(config.dbPath);
   const hub = new EventHub();
@@ -73,6 +92,12 @@ async function main(): Promise<void> {
       auth: config.oauthToken ? "oauth-token" : "inherited-cli-login",
       models: config.models,
     }));
+
+    // The current built-bundle hash, so an open client can detect a deploy and reload itself.
+    app.get("/api/version", async (_req, reply) => {
+      reply.header("cache-control", "no-store");
+      return { web: webBundleVersion() };
+    });
 
     // ---- access auth: Google sign-in AND/OR a password (both valid) → signed session cookie ----
     const cookie30d = (name: string, value: string) =>
@@ -239,12 +264,26 @@ async function main(): Promise<void> {
 
     // Serve the built frontend in production (single origin). In dev, Vite serves it.
     if (existsSync(config.webDist)) {
-      await app.register(fastifyStatic, { root: config.webDist, prefix: "/" });
+      await app.register(fastifyStatic, {
+        root: config.webDist,
+        prefix: "/",
+        // Content-hashed assets (Vite's /assets/<name>-<hash>.<ext>) never change under a fixed URL,
+        // so cache them hard. index.html and every other non-hashed file MUST revalidate — a cached
+        // shell keeps pointing at a previous build's asset hashes, so the client never sees a deploy
+        // (the recurring "I fixed it but my view is still the old one" bug).
+        setHeaders: (res, filePath) => {
+          const hashedAsset = /[\\/]assets[\\/]/.test(filePath) && !filePath.endsWith(".html");
+          res.setHeader("cache-control", hashedAsset ? "public, max-age=31536000, immutable" : "no-cache");
+        },
+      });
       app.setNotFoundHandler((req, reply) => {
         if (req.raw.url && req.raw.url.startsWith("/api")) {
           reply.code(404).send({ error: "not found" });
           return;
         }
+        // The SPA shell must always revalidate (the static plugin's setHeaders doesn't run on this
+        // fallback path), else a stale index.html pins the client to an old bundle.
+        reply.header("cache-control", "no-cache");
         reply.sendFile("index.html");
       });
     }
