@@ -542,25 +542,37 @@ export class ThreadManager implements OrchestratorApi {
     const settings = this.settings();
     const saved = this.db.getThreadStageOutputs(threadId);
     try {
-      // 1. Planner — runs first (unless disabled). It owns codebase reading and decides what comes next.
-      // planDone (mirrors researchDone) makes a deliberate "no structured plan" outcome sticky across
-      // resume — without it, a planner that ran but produced null re-runs a whole Opus pass every resume.
+      // A persisted kickoff means this task already cleared the whole pre-implementor phase (planner +
+      // any researcher + approval) in an earlier run and reached the implementor. A resume must NOT
+      // re-run the planner/researcher and clobber that work — not even if an older build never persisted
+      // planDone (the exact "planner re-ran after a restart" bug). So treat planning as settled whenever
+      // a kickoff exists, independent of the per-stage *Done flags.
+      const planningSettled = saved.kickoff != null;
+
+      // 1. Planner — runs first unless disabled, already done, or planning already completed. planDone
+      // (mirrors researchDone) makes a deliberate "no structured plan" outcome sticky across resume.
       // When the planner is disabled the implementor runs straight from the brief (composeKickoff notes it).
       let plan = saved.plan ?? undefined;
-      if (settings.plannerEnabled && !saved.planDone) {
-        this.setState(threadId, "planning");
-        plan = await this.runPlanner(thread).catch((e) => {
-          this.hub.log("warn", `Planner failed on ${threadId.slice(0, 8)}: ${String(e)}`);
-          return undefined;
-        });
-        if (this.cancelled(threadId)) return;
+      if (!planningSettled && !saved.planDone) {
+        if (settings.plannerEnabled) {
+          this.setState(threadId, "planning");
+          plan = await this.runPlanner(thread).catch((e) => {
+            this.hub.log("warn", `Planner failed on ${threadId.slice(0, 8)}: ${String(e)}`);
+            return undefined;
+          });
+          if (this.cancelled(threadId)) return;
+        } else {
+          this.hub.log("info", `Planner disabled — ${threadId.slice(0, 8)} skips planning, straight to the implementor.`);
+        }
+        // Persist planDone even when the planner was SKIPPED (disabled), so a later resume — including
+        // one after the toggle is flipped back on — never re-runs it.
         this.db.updateThreadStageOutputs(threadId, { plan: plan ?? null, planDone: true });
       }
 
       // 2. Researcher — only when the planner routed to it (external info needed). Always →
-      //    implementor afterward. researchDone guards against re-running it on resume.
+      //    implementor afterward. researchDone (and a settled-planning resume) guard against re-running it.
       let research = saved.research ?? undefined;
-      if (settings.researcherEnabled && plan?.nextAgent === "researcher" && !saved.researchDone) {
+      if (!planningSettled && settings.researcherEnabled && plan?.nextAgent === "researcher" && !saved.researchDone) {
         this.setState(threadId, "researching");
         research = await this.runResearcher(thread, plan).catch((e) => {
           this.hub.log("warn", `Researcher failed on ${threadId.slice(0, 8)}: ${String(e)}`);
@@ -571,8 +583,9 @@ export class ThreadManager implements OrchestratorApi {
       }
 
       // 3. Approval gate — after the full context (plan + any research) exists, so the human sees
-      //    everything before approving. Skipped on resume if already approved.
-      const kickoff = composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled: settings.qaEnabled });
+      //    everything before approving. Skipped on resume if already approved. Reuse the saved kickoff
+      //    when planning already happened so a re-derivation can't strip a real plan down to "no plan".
+      const kickoff = saved.kickoff ?? composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled: settings.qaEnabled });
       if (this.approvalMode() && !saved.approved) {
         this.setState(threadId, "awaiting_approval");
         this.hub.publish({ type: "plan.ready", threadId, brief: kickoff });
