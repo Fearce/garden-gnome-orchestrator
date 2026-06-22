@@ -67,8 +67,11 @@ const CRASH_FAST_MS = 60_000;
 const MAX_FAST_INTERRUPTS = 3;
 // Defer the resume so the HTTP/WS listeners are up (and the UI is connected) before agents respawn.
 const AUTO_RESUME_DELAY_MS = 4_000;
-const RESTART_FAILED_MSG =
-  "interrupted by a server restart — click Resume to continue from where it left off (finished stages are reused)";
+// Shared prefix for every "a server restart killed this thread" error, so resumeThread can recognise
+// a restart-triggered resume from persisted state alone (see restartResumes).
+const RESTART_ERROR_PREFIX = "interrupted by a server restart";
+const RESTART_FAILED_MSG = `${RESTART_ERROR_PREFIX} — click Resume to continue from where it left off (finished stages are reused)`;
+const RESTART_AUTO_RESUME_MSG = `${RESTART_ERROR_PREFIX} — auto-resuming…`;
 // Woven into the resume nudge/seed ONLY when this resume was triggered by a server restart, so the
 // worker realizes the restart already happened. Implementor workers are child processes of the
 // orchestrator server, so a worker that restarts the orchestrator kills its own session and is then
@@ -142,10 +145,11 @@ export class ThreadManager implements OrchestratorApi {
   // Reset when the loop (re)enters, cleared when it exits, and capped at config.maxAutoResumes so a
   // wedged implementor that keeps hitting the turn ceiling without progress can't spin forever.
   private readonly autoResumes = new Map<string, number>();
-  // Threads whose CURRENT resume was triggered by a server restart (markInterrupted auto-resume), so
-  // the resumed implementor's nudge can tell it the restart ALREADY happened and not to restart the
-  // orchestrator again — the worker is a child process of the server it just bounced, so a blind retry
-  // on auto-resume is the recurring restart loop. Consumed (and cleared) when the implementor relaunches.
+  // Threads whose CURRENT resume was triggered by a server restart, so the resumed implementor's nudge
+  // can tell it the restart ALREADY happened and not to restart the orchestrator again — the worker is
+  // a child process of the server it just bounced, so a blind retry on resume is the recurring restart
+  // loop. Set in resumeThread by re-deriving from the persisted RESTART_ERROR_PREFIX (robust to the
+  // in-memory flag being lost across a chaotic multi-restart); consumed when the implementor relaunches.
   private readonly restartResumes = new Set<string>();
   // During QA the implementor stays in `this.live` but sits idle (parked for the next fix-round),
   // and the QA agent is the only thing actually running in the slot. An inject must reach THAT QA
@@ -205,13 +209,12 @@ export class ThreadManager implements OrchestratorApi {
       }
       // Route through the SAME resume-aware path as a manual Resume: 'failed' is that path's entry
       // state, and runPipeline skips already-finished stages and resumes the implementor session.
-      this.db.updateThread(t.id, { state: "failed", error: "interrupted by a server restart — auto-resuming…" });
+      // The persisted RESTART_AUTO_RESUME_MSG error is what resumeThread reads to flag this as a
+      // restart-triggered resume (so the worker is told the restart already completed and must not
+      // restart the orchestrator — which it's a child of — again, the loop these warnings exist for).
+      this.db.updateThread(t.id, { state: "failed", error: RESTART_AUTO_RESUME_MSG });
       const id = t.id;
       const title = t.title;
-      // Flag this resume as restart-triggered so the implementor's nudge tells it the restart already
-      // completed — without this the worker (a child of the server it may have just bounced) reawakens
-      // unaware and can restart the orchestrator AGAIN, the loop the server-restart warnings exist for.
-      this.restartResumes.add(id);
       setTimeout(() => {
         this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
         void this.resumeThread(id).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
@@ -709,6 +712,7 @@ export class ThreadManager implements OrchestratorApi {
     // Consume the restart-resume flag once, here at the single resume chokepoint, so both the warm
     // nudge and the cold seed can tell the worker the restart already completed (don't restart again).
     const restartNote = this.restartResumes.delete(thread.id) ? RESTART_RESUME_NOTE : undefined;
+    if (restartNote) this.hub.log("info", `Resume on ${thread.id.slice(0, 8)} carries the restart-already-completed notice (won't restart again).`);
     if (!resumeSession) {
       const extras = [opts.directorNote && `[New information from the director]\n${opts.directorNote}`, restartNote].filter(Boolean);
       const text = extras.length ? `${baseKickoff}\n\n${extras.join("\n\n")}` : baseKickoff;
@@ -1249,6 +1253,12 @@ export class ThreadManager implements OrchestratorApi {
       this.setState(threadId, "failed", `Can't resume — workspace "${thread.workspace}" does not exist. Re-dispatch this task with a valid path.`);
       return { ok: false, error: `Workspace "${thread.workspace}" does not exist.` };
     }
+    // Re-derive the restart signal from persisted state: if a server restart killed this thread (its
+    // error still carries RESTART_ERROR_PREFIX here — runPipeline's first setState clears it only
+    // later), flag the resume so startResumedImplementor tells the worker the restart already happened.
+    // Persisted-state detection is robust where an in-memory flag isn't — it survives a chaotic burst
+    // of restarts and covers both the auto-resume and the human-gated "click Resume after a restart".
+    if (thread.error?.startsWith(RESTART_ERROR_PREFIX)) this.restartResumes.add(threadId);
     const live = this.live.get(threadId);
     if (live) {
       live.run.send(message ?? "Continue.", { priority: "now" });
