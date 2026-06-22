@@ -267,6 +267,9 @@ async function main(): Promise<void> {
       await app.register(fastifyStatic, {
         root: config.webDist,
         prefix: "/",
+        // Take full control of Cache-Control via setHeaders — with the plugin's own cacheControl on
+        // (its default), it stamps `public, max-age=0` on everything and wins over setHeaders.
+        cacheControl: false,
         // Content-hashed assets (Vite's /assets/<name>-<hash>.<ext>) never change under a fixed URL,
         // so cache them hard. index.html and every other non-hashed file MUST revalidate — a cached
         // shell keeps pointing at a previous build's asset hashes, so the client never sees a deploy
