@@ -151,10 +151,11 @@ export class ThreadManager implements OrchestratorApi {
   // loop. Set in resumeThread by re-deriving from the persisted RESTART_ERROR_PREFIX (robust to the
   // in-memory flag being lost across a chaotic multi-restart); consumed when the implementor relaunches.
   private readonly restartResumes = new Set<string>();
-  // During QA the implementor stays in `this.live` but sits idle (parked for the next fix-round),
-  // and the QA agent is the only thing actually running in the slot. An inject must reach THAT QA
-  // agent, not the idle implementor — waking the implementor here is what put two agents in one slot.
-  // liveQa holds the steerable QA run so injectThread's qa-stage gate can forward steering to it.
+  // During QA the implementor is fully stopped (the slot is exclusive — one agent at a time), so the
+  // QA agent is the only thing running. An inject must reach THAT QA agent and must never wake/spawn an
+  // implementor beside it — that's what put two agents in one slot. liveQa holds the steerable QA run
+  // so injectThread's / resumeThread's qa-stage gates can forward steering to it (the next fix-round's
+  // re-launched implementor drains anything buffered while QA had no steerable handle).
   private readonly liveQa = new Map<string, AgentRun>();
 
   constructor(
@@ -552,9 +553,9 @@ export class ThreadManager implements OrchestratorApi {
       this.track(thread.id, agent);
       // The planner and QA are each steerable mid-flight via their own handle, because each runs while
       // NO implementor is active in the slot: a planning inject must reshape the plan (liveRole, drained
-      // into a re-plan); a QA inject must reach the running QA agent (liveQa) and NOT wake the implementor
-      // that's parked idle-but-live in `this.live` for the next fix-round. (Researcher-phase notes flow
-      // forward into the implementor's kickoff instead.)
+      // into a re-plan); a QA inject must reach the running QA agent (liveQa) and NOT wake/spawn an
+      // implementor — during QA the implementor is fully stopped and re-launched only for a fix-round.
+      // (Researcher-phase notes flow forward into the implementor's kickoff instead.)
       if (role === "planner") this.liveRole.set(thread.id, agent);
       if (role === "qa") this.liveQa.set(thread.id, agent);
       agent.start(message);
@@ -987,6 +988,13 @@ export class ThreadManager implements OrchestratorApi {
         return;
       }
       this.setState(thread.id, "qa");
+      // Fully end the implementor BEFORE QA so only one agent is ever active in the pipeline slot.
+      // Flipping to "qa" first means any inject/resume landing during the stop routes to the QA gate
+      // (checked ahead of the this.live branch in injectThread/resumeThread) instead of waking the
+      // about-to-be-stopped implementor. stopLive closes its query → onEnd clears this.live and
+      // finalizes the run, so this.live stays empty for the whole QA stage; the session id survives in
+      // lastImplementorSession for the fix-round resume.
+      await this.stopLive(thread.id);
       const qa = await this.runQA(thread, { round }).catch((e) => {
         this.hub.log("warn", `QA failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
         return undefined;
@@ -1015,22 +1023,31 @@ export class ThreadManager implements OrchestratorApi {
         return;
       }
 
-      const live = this.live.get(thread.id);
-      if (!live) {
-        this.setState(thread.id, "review", "Implementor is no longer live for the QA fix round.");
-        return;
-      }
       this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA round ${round}: ${qa.summary}`, severity: "note" });
-      this.setState(thread.id, "implementing");
-      // Deliver any director note buffered during the QA stage (the mid-QA failover window, where the
-      // inject was held rather than forwarded to a momentarily-unregistered QA handle) now that the
-      // implementor is the one running again — folded into the fix message so it isn't stranded.
+      // Drain any director note buffered during the QA stage (a forwarded-to-QA inject that hit the
+      // mid-QA failover window, or a resume-during-QA inject) into the fix message so it reaches the
+      // implementor when IT is the one running again — never alongside QA, never stranded.
       const qaNotes = this.directorNotes.get(thread.id);
       this.directorNotes.delete(thread.id);
       const noteBlock = qaNotes?.length ? `\n\n[New information from the director]\n${qaNotes.join("\n\n")}` : "";
       const fixMsg = `QA review found issues — fix ALL of these, then we'll re-check:\n${formatQaIssues(qa)}${noteBlock}`;
-      live.run.send(fixMsg, { priority: "now" });
-      res = await this.awaitImplementorCompletion(thread, effort, kickoff, live.run, live.accountId, true, fixMsg);
+      // The implementor was fully stopped before QA, so RE-LAUNCH it through the same resume gate the
+      // rest of the pipeline uses (warm full-session resume when the cache is fresh — fix-rounds are
+      // minutes apart so it usually is — else a Haiku-compressed cold seed). This is what keeps the slot
+      // exclusive: at no point do an implementor and QA run together. fixMsg goes in as BOTH resumeNudge
+      // (warm path) and directorNote (cold path weaves only the note, ignoring the nudge); on warm the
+      // two are identical so startResumedImplementor de-dups them. State stays "qa" across the (possibly
+      // awaited) compression — startImplementor flips it to "implementing" only once the run is live — so
+      // an inject/resume during that window routes to the QA buffer rather than spawning a second agent.
+      const start = await this.startResumedImplementor(
+        thread,
+        kickoff,
+        this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
+        { effort, resumeNudge: fixMsg, directorNote: fixMsg, qaFollows: true },
+      );
+      if (!start) return; // cancelled while compressing the prior session for the resume
+      this.flushDirectorNotes(thread.id, start.run);
+      res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, fixMsg);
     }
   }
 
@@ -1063,11 +1080,11 @@ export class ThreadManager implements OrchestratorApi {
       }
       return savedRefs;
     };
-    // QA stage gate (checked BEFORE `this.live`): between fix-rounds the implementor is parked
-    // idle-but-live in `this.live`, while the QA agent runs alone in the slot. Falling through to the
-    // `this.live` branch would `send` to that idle implementor and start it BESIDE the running QA — two
-    // agents in one pipeline slot, the exact race this guards. Forward the steering to the QA agent
-    // instead so the invariant (≤1 active agent per slot) holds; never touch `this.live` during QA.
+    // QA stage gate (checked BEFORE `this.live`): during QA the implementor is fully stopped and the QA
+    // agent runs alone in the slot. Falling through would either `send` to a live implementor (there is
+    // none now, but this gate is the structural guarantee of that) or take the cold-resume path and SPAWN
+    // one beside the running QA — two agents in one pipeline slot, the exact race this guards. Forward the
+    // steering to the QA agent instead so the invariant (≤1 active agent per slot) holds.
     if (thread?.state === "qa") {
       this.hub.log("info", "[INJECT] QA in progress — forwarding context to QA agent, not re-spawning implementor");
       const qa = this.liveQa.get(threadId);
@@ -1085,10 +1102,11 @@ export class ThreadManager implements OrchestratorApi {
           mode === "interrupt" ? { priority: "now" } : undefined,
         );
       } else {
-        // No QA handle while state is "qa" — the brief window of a mid-QA account failover (runRole
-        // deleted the old handle and hasn't registered the relaunched one yet). Buffer the note; the
-        // implementor's next QA fix-round drains directorNotes into its fix message (runImplementorQaLoop),
-        // so it reaches the implementor when IT is the one running — never alongside QA, never lost.
+        // No QA handle while state is "qa" — either a mid-QA account failover (runRole deleted the old
+        // handle and hasn't registered the relaunched one yet) or the fix-round window after QA returned
+        // but before the re-launched implementor goes live (state is held at "qa" across that compression).
+        // Buffer the note; the next fix-round's implementor drains directorNotes into its fix message
+        // (runImplementorQaLoop), so it reaches the implementor when IT is running — never alongside QA, never lost.
         this.bufferDirectorNote(threadId, message);
         if (images?.length) {
           this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
@@ -1259,6 +1277,20 @@ export class ThreadManager implements OrchestratorApi {
     // Persisted-state detection is robust where an in-memory flag isn't — it survives a chaotic burst
     // of restarts and covers both the auto-resume and the human-gated "click Resume after a restart".
     if (thread.error?.startsWith(RESTART_ERROR_PREFIX)) this.restartResumes.add(threadId);
+    // QA-stage gate — mirror injectThread's: during the QA stage the implementor is fully stopped and
+    // the QA agent owns the slot, so a resume here must NEVER wake or spawn an implementor beside it.
+    // Forward any steering to the running QA agent if present, else buffer it for the next fix-round's
+    // implementor to drain (runImplementorQaLoop folds directorNotes into the fix message). A boot
+    // auto-resume of a mid-QA task doesn't hit this — markInterrupted flips the thread to "failed"
+    // first, so that path routes through the failed→runPipeline branch below, not here.
+    if (thread.state === "qa") {
+      if (message?.trim()) {
+        const qa = this.liveQa.get(threadId);
+        if (qa) qa.send(`[New information from the director]\n${message}`, { priority: "now" });
+        else this.bufferDirectorNote(threadId, message);
+      }
+      return { ok: true, state: "qa" };
+    }
     const live = this.live.get(threadId);
     if (live) {
       live.run.send(message ?? "Continue.", { priority: "now" });
