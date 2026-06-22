@@ -69,6 +69,17 @@ const MAX_FAST_INTERRUPTS = 3;
 const AUTO_RESUME_DELAY_MS = 4_000;
 const RESTART_FAILED_MSG =
   "interrupted by a server restart — click Resume to continue from where it left off (finished stages are reused)";
+// Woven into the resume nudge/seed ONLY when this resume was triggered by a server restart, so the
+// worker realizes the restart already happened. Implementor workers are child processes of the
+// orchestrator server, so a worker that restarts the orchestrator kills its own session and is then
+// auto-resumed by the rebooted server — without this it can wake unaware and restart it AGAIN (a loop).
+const RESTART_RESUME_NOTE =
+  "⚠️ IMPORTANT — this resume was triggered by a restart of the orchestrator server itself (the " +
+  "`claude-orchestrator` service), which you may have just restarted to deploy a change. You are a child " +
+  "process of that server, so restarting it killed your previous session and the now-rebooted server " +
+  "auto-resumed you on its freshly-built code. The restart has ALREADY completed successfully and the " +
+  "server is back up running the new build — do NOT restart it again to deploy. Verify your change is " +
+  "live (e.g. hit the API / check the built dist), finish any remaining work, then commit/push and hand off.";
 const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
   "intake",
   "enriching",
@@ -131,6 +142,11 @@ export class ThreadManager implements OrchestratorApi {
   // Reset when the loop (re)enters, cleared when it exits, and capped at config.maxAutoResumes so a
   // wedged implementor that keeps hitting the turn ceiling without progress can't spin forever.
   private readonly autoResumes = new Map<string, number>();
+  // Threads whose CURRENT resume was triggered by a server restart (markInterrupted auto-resume), so
+  // the resumed implementor's nudge can tell it the restart ALREADY happened and not to restart the
+  // orchestrator again — the worker is a child process of the server it just bounced, so a blind retry
+  // on auto-resume is the recurring restart loop. Consumed (and cleared) when the implementor relaunches.
+  private readonly restartResumes = new Set<string>();
   // During QA the implementor stays in `this.live` but sits idle (parked for the next fix-round),
   // and the QA agent is the only thing actually running in the slot. An inject must reach THAT QA
   // agent, not the idle implementor — waking the implementor here is what put two agents in one slot.
@@ -192,6 +208,10 @@ export class ThreadManager implements OrchestratorApi {
       this.db.updateThread(t.id, { state: "failed", error: "interrupted by a server restart — auto-resuming…" });
       const id = t.id;
       const title = t.title;
+      // Flag this resume as restart-triggered so the implementor's nudge tells it the restart already
+      // completed — without this the worker (a child of the server it may have just bounced) reawakens
+      // unaware and can restart the orchestrator AGAIN, the loop the server-restart warnings exist for.
+      this.restartResumes.add(id);
       setTimeout(() => {
         this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
         void this.resumeThread(id).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
@@ -686,8 +706,12 @@ export class ThreadManager implements OrchestratorApi {
     opts: { effort?: Effort; resumeNudge: string; directorNote?: string; qaFollows: boolean; account?: Acct },
   ): Promise<LiveImplementor | null> {
     if (this.cancelled(thread.id)) return null; // cancelled before we got here
+    // Consume the restart-resume flag once, here at the single resume chokepoint, so both the warm
+    // nudge and the cold seed can tell the worker the restart already completed (don't restart again).
+    const restartNote = this.restartResumes.delete(thread.id) ? RESTART_RESUME_NOTE : undefined;
     if (!resumeSession) {
-      const text = opts.directorNote ? `${baseKickoff}\n\n[New information from the director]\n${opts.directorNote}` : baseKickoff;
+      const extras = [opts.directorNote && `[New information from the director]\n${opts.directorNote}`, restartNote].filter(Boolean);
+      const text = extras.length ? `${baseKickoff}\n\n${extras.join("\n\n")}` : baseKickoff;
       return this.startImplementor(thread, text, { effort: opts.effort, account: opts.account });
     }
     const ageMs = sessionAgeMs(resumeSession);
@@ -697,17 +721,19 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: full session resume — ${why}.`);
       // Only append the director note when it adds something beyond the nudge — on a manual resume
       // the nudge already IS the user's message, so passing it again would duplicate it.
-      const nudge =
-        opts.directorNote && opts.directorNote !== opts.resumeNudge
-          ? `${opts.resumeNudge}\n\n[New information from the director]\n${opts.directorNote}`
-          : opts.resumeNudge;
-      return this.startImplementor(thread, nudge, { effort: opts.effort, resume: resumeSession, account: opts.account });
+      const parts = [
+        opts.resumeNudge,
+        opts.directorNote && opts.directorNote !== opts.resumeNudge && `[New information from the director]\n${opts.directorNote}`,
+        restartNote,
+      ].filter(Boolean);
+      return this.startImplementor(thread, parts.join("\n\n"), { effort: opts.effort, resume: resumeSession, account: opts.account });
     }
     // Cold cache: composeResumeKickoff compresses the prior session (Haiku + git) and logs how. This
     // is the only awaited step, so re-check cancellation after it before spending an Opus start.
     const seed = await this.composeResumeKickoff(thread, baseKickoff, resumeSession, {
       directorNote: opts.directorNote,
       qaFollows: opts.qaFollows,
+      restartNote,
     });
     if (this.cancelled(thread.id)) return null; // user cancelled while we were compressing
     return this.startImplementor(thread, seed, { effort: opts.effort, account: opts.account });
@@ -847,7 +873,7 @@ export class ThreadManager implements OrchestratorApi {
     thread: Thread,
     kickoff: string,
     sessionId?: string,
-    opts?: { directorNote?: string; qaFollows?: boolean },
+    opts?: { directorNote?: string; qaFollows?: boolean; restartNote?: string },
   ): Promise<string> {
     const git = (args: string[]): Promise<string> =>
       new Promise((res) =>
@@ -891,6 +917,9 @@ export class ThreadManager implements OrchestratorApi {
       "---",
       "## ⏪ Resuming — you already worked on this task in an earlier session",
     ];
+    if (opts?.restartNote) {
+      parts.push(opts.restartNote, "");
+    }
     if (opts?.directorNote) {
       parts.push(`**New information from the director for this resume:** ${opts.directorNote}`, "");
     }
