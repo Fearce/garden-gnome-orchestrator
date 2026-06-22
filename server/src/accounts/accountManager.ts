@@ -248,6 +248,21 @@ export class AccountManager {
     return pick?.token || undefined;
   }
 
+  /**
+   * Soonest upcoming reset across all subs, for the "every sub is capped" message — when the first
+   * one frees up. Per account that's its cap reset if set (rateLimitResetAt), else its 5h window.
+   * Null when nothing has a known future reset.
+   */
+  soonestResetAt(): number | null {
+    const now = Date.now();
+    const resets: number[] = [];
+    for (const s of this.states.values()) {
+      const reset = s.rateLimitResetAt ?? s.fiveHourReset;
+      if (reset != null && reset > now) resets.push(reset);
+    }
+    return resets.length ? Math.min(...resets) : null;
+  }
+
   /** Is this account currently cap-rejected and not yet past its reset? */
   isRateLimited(accountId: string): boolean {
     const st = this.states.get(accountId);
@@ -294,7 +309,7 @@ function pingErrorMessage(reason: PingFailReason): string {
 }
 
 /** Compact "in 7h" / "in 3d" until a reset epoch, for the selection log line. */
-function untilReset(resetAt: number | null, now: number): string {
+export function untilReset(resetAt: number | null, now: number): string {
   if (resetAt == null) return "—";
   const ms = resetAt - now;
   if (ms <= 0) return "now";

@@ -271,8 +271,19 @@ export class AgentRun {
       case "assistant": {
         const blocks: any[] = m.message?.content ?? [];
         for (const b of blocks) {
-          if (b?.type === "text" && b.text) this.emit({ type: "text", text: b.text });
-          else if (b?.type === "tool_use") this.emit({ type: "tool_use", id: b.id, name: b.name, input: b.input });
+          if (b?.type === "text" && b.text) {
+            // A 5h/weekly cap can also surface as a plain assistant TEXT block the CLI injects
+            // ("You've hit your session limit · resets 7pm") with no rate_limit_event and no
+            // message-level error. Flag the cap and SWALLOW the text so the failover path runs
+            // instead of the owner seeing a dead-end "limit" message in the chat.
+            if (SESSION_LIMIT_TEXT_RE.test(b.text)) {
+              this.flagCapFromSignal({ status: "rejected" });
+              continue;
+            }
+            this.emit({ type: "text", text: b.text });
+          } else if (b?.type === "tool_use") {
+            this.emit({ type: "tool_use", id: b.id, name: b.name, input: b.input });
+          }
         }
         // A 5h/weekly usage cap usually ends the turn as an assistant-message error
         // (SDKAssistantMessageError "rate_limit"), NOT a rate_limit_event — catch it here so the
@@ -343,6 +354,15 @@ function errMessage(err: unknown): string {
 
 const RATE_LIMIT_RESULT_RE =
   /(rate.?limit|usage limit|session limit|hour limit|limit reached|too many requests|quota (?:exceeded|reached))/i;
+
+/**
+ * Tight match for the CLI's own session-limit notice as it appears in an assistant TEXT block
+ * ("You've hit your session limit · resets 7pm", "You've hit your usage limit · resets …").
+ * Deliberately narrower than RATE_LIMIT_RESULT_RE so a legitimate message that merely mentions a
+ * rate/session limit (e.g. the director explaining a cap to the owner) isn't swallowed.
+ */
+const SESSION_LIMIT_TEXT_RE =
+  /you'?ve hit your (?:session|usage|\d+-hour|weekly) limit|(?:session|usage|weekly) limit\s*[·:—–-]\s*resets/i;
 
 /**
  * Whether an ERROR result looks like a usage-cap rejection (vs. error_max_turns / error_max_budget_usd

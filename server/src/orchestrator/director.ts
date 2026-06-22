@@ -8,6 +8,7 @@ import type { EventHub } from "../events.js";
 import type { AgentEvent, ImageAttachment } from "../types.js";
 import type { ThreadManager } from "./threadManager.js";
 import type { Account } from "../accounts/account.js";
+import { untilReset } from "../accounts/accountManager.js";
 import { config } from "../config.js";
 
 const MAX_DIRECTOR_FAILOVERS = 2;
@@ -112,13 +113,17 @@ export class Director {
           this.hub.publish({ type: "director.tool", name: e.name, input: e.input });
           break;
         case "result":
-          if (!run.rateLimited) {
+          if (run.rateLimited) {
+            // The long-lived streaming session doesn't END on a capped turn — it just finishes the
+            // turn with a result and waits for more input — so onEnd never fires to fail us over.
+            // Drive the switch from here: move to a sub with headroom, resume, re-send the turn.
+            this.reactiveFailover(run, acct);
+          } else {
             this.pending = undefined;
             this.failovers = 0;
             this.pendingImages = []; // turn done — don't hold base64 between turns
             this.setBusy(false);
           }
-          // a rate-limited result keeps `pending` set; onEnd fails over below
           break;
         case "rate_limit":
           this.api.accounts.updateFromRateLimit(acct.id, e.info);
@@ -132,33 +137,52 @@ export class Director {
     });
     run.onEnd(() => {
       off(); // detach this run's listener so its trailing events can't mutate shared state
-      if (this.run !== run) return; // a proactive switch already replaced us — don't clobber it
-      // Reactive failover: the turn died on a usage cap and never produced a real answer —
-      // move to another account (resume the session), re-send the message, try again.
-      if (run.rateLimited && this.pending !== undefined && this.failovers < MAX_DIRECTOR_FAILOVERS) {
-        const next = this.api.accounts.selectFailover(acct.id);
-        if (next && this.sessionId) {
-          this.failovers++;
-          this.hub.log("warn", `Director hit a usage limit on ${acct.label} — switching to ${next.label}, resuming.`);
-          this.start(this.pending, next);
-          return;
-        }
-      }
-      if (run.rateLimited && this.pending !== undefined) {
-        // Couldn't fail over — every subscription is capped. Say so instead of going silently idle.
-        const m = this.db.addDirectorMessage({
-          role: "director",
-          kind: "text",
-          content:
-            "Both Claude subscriptions are at their usage limit right now, so I couldn't get to this. They free up when the 5-hour window resets — resend then.",
-        });
-        this.hub.publish({ type: "director.message", message: m });
-        this.hub.log("warn", "Director: all accounts rate-limited — no failover available.");
-      }
-      this.run = undefined;
-      this.pending = undefined;
-      this.pendingImages = [];
-      this.setBusy(false);
+      if (this.run !== run) return; // a proactive switch (or a result-driven failover) replaced us
+      // onEnd only fires when the run truly ENDS — a thrown error / process death. The normal capped
+      // turn is handled in the `result` handler above; this catches a run the cap (or a crash) killed
+      // outright. reactiveFailover fails over on a cap, otherwise just settles the abandoned turn.
+      this.reactiveFailover(run, acct);
+      if (this.run === run) this.run = undefined; // not switched away — this run is dead, drop it
     });
+  }
+
+  /**
+   * The turn ran out of usable allowance on `acct` and produced no real answer. Move to a sub with
+   * headroom (resume the session so context survives) and re-send the same message; if no sub has
+   * headroom, tell the owner when the soonest one frees up instead of going silently idle. Safe to
+   * call from both the `result` handler (live streaming turn) and onEnd (run died) — the
+   * `this.run !== run` guards in wire() neutralize the superseded run's trailing events.
+   */
+  private reactiveFailover(run: AgentRun, acct: Account): void {
+    if (run.rateLimited && this.pending !== undefined && this.failovers < MAX_DIRECTOR_FAILOVERS) {
+      const next = this.api.accounts.selectFailover(acct.id);
+      if (next && this.sessionId) {
+        this.failovers++;
+        this.hub.log("warn", `Director hit a usage limit on ${acct.label} — switching to ${next.label}, resuming.`);
+        void run.stop(); // tear down the capped run; if it already ended this is a no-op
+        this.start(this.pending, next); // keeps busy + pending set; the switch carries the turn
+        return;
+      }
+    }
+    if (run.rateLimited && this.pending !== undefined) {
+      // Couldn't fail over — every subscription is capped. Say so instead of going silently idle.
+      const m = this.db.addDirectorMessage({ role: "director", kind: "text", content: this.allCappedMessage() });
+      this.hub.publish({ type: "director.message", message: m });
+      this.hub.log("warn", "Director: all accounts rate-limited — no failover available.");
+    }
+    // Failover wasn't possible (or the turn simply ended) — settle it.
+    this.pending = undefined;
+    this.failovers = 0;
+    this.pendingImages = [];
+    this.setBusy(false);
+  }
+
+  /** Message for when every sub is capped — names when the soonest one frees up if we know it. */
+  private allCappedMessage(): string {
+    const resetAt = this.api.accounts.soonestResetAt();
+    const when = resetAt != null ? untilReset(resetAt, Date.now()) : null;
+    return when
+      ? `Both Claude subscriptions are at their usage limit right now, so I couldn't get to this. The first one frees up ${when} — resend then.`
+      : "Both Claude subscriptions are at their usage limit right now, so I couldn't get to this. They free up when the 5-hour window resets — resend then.";
   }
 }
