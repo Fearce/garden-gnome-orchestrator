@@ -615,6 +615,25 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   .detail { position: fixed; inset: 0; z-index: 40; border-left: none; }
   .inject-bar { padding-bottom: calc(11px + env(safe-area-inset-bottom)); }
 
+  /* Sticky header so the close control stays reachable while the feed scrolls,
+     and clears the notch / browser chrome via the safe-area inset. */
+  .detail-head {
+    position: sticky; top: 0; z-index: 1; background: var(--bg-1);
+    padding-top: calc(13px + env(safe-area-inset-top));
+  }
+  /* Long titles wrap instead of shoving the close button off-screen. */
+  .detail-head .top > div:first-child { min-width: 0; }
+  .detail-head h2 { overflow-wrap: anywhere; }
+  /* 44px tap target with a visible press state — the old 28px was an unreliable
+     touch zone (this is the "can't exit on mobile" bug). */
+  .close-x { width: 44px; height: 44px; font-size: 20px; }
+  .close-x:active { background: var(--bg-3); color: var(--text); }
+
+  /* deck reads as a single legible column even below the 300px card floor;
+     titles wrap rather than clip. */
+  .lanes { grid-template-columns: 1fr; }
+  .card .title { overflow-wrap: anywhere; }
+
   /* feed filter scrolls sideways instead of stacking into 2–3 rows */
   .feed-filter { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .feed-filter .fchip { flex: 0 0 auto; min-height: 34px; padding: 7px 11px; font-size: 11px; }
