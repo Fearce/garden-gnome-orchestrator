@@ -170,6 +170,7 @@ export type ClientCommand =
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.cancel"; threadId: string }
+  | { type: "thread.markDone"; threadId: string }
   | { type: "thread.close"; threadId: string }
   | { type: "thread.restore"; threadId: string }
   | { type: "thread.dismiss"; threadId: string }

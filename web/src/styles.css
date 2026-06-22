@@ -250,6 +250,8 @@ button { font-family: inherit; cursor: pointer; }
 .btn.ghost:hover { color: var(--text); border-color: var(--line-strong); }
 .btn.danger { color: var(--danger); border-color: oklch(0.68 0.2 25 / 0.4); background: transparent; }
 .btn.danger:hover { background: oklch(0.68 0.2 25 / 0.12); }
+.btn.success { color: var(--ok); border-color: color-mix(in oklch, var(--ok) 45%, transparent); background: transparent; }
+.btn.success:hover { background: color-mix(in oklch, var(--ok) 12%, transparent); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.sm { padding: 4px 9px; font-size: 12px; }
 .btn.google {

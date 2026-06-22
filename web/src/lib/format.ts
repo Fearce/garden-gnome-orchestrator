@@ -59,6 +59,12 @@ export function isTerminal(state: ThreadState): boolean {
   return state === "done" || state === "cancelled" || state === "failed";
 }
 
+/** Whether the owner can manually accept a task as finished. Parked review/paused tasks only — the
+ *  states the pipeline can't auto-complete (QA owns 'done'), mirroring DONEABLE on the server. */
+export function isDoneable(state: ThreadState): boolean {
+  return state === "review" || state === "paused";
+}
+
 /** Whether a card may be soft-closed (moved to the Closed holding area). The closeable set —
  *  done/failed/cancelled/review/paused — is the parked, not-actively-running states EXCEPT
  *  awaiting_user/awaiting_approval (those hold a pending resolver that closing wouldn't settle).

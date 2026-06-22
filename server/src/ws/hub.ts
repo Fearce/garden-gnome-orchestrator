@@ -100,6 +100,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     case "thread.cancel":
       await ctx.manager.cancelThread(cmd.threadId);
       break;
+    case "thread.markDone":
+      await ctx.manager.markDone(cmd.threadId);
+      break;
     case "thread.close":
       await ctx.manager.closeThread(cmd.threadId);
       break;

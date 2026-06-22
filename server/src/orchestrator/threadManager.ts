@@ -98,6 +98,10 @@ const PRE_IMPLEMENTOR: ReadonlySet<Thread["state"]> = new Set([
 const CLOSED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PURGE_SWEEP_MS = 24 * 60 * 60 * 1000;
 const CLOSEABLE: ReadonlySet<Thread["state"]> = new Set(["done", "failed", "cancelled", "review", "paused"]);
+// Parked states a human can manually accept as finished. 'review' (QA bounced it, or an inject/manual
+// resume settled here with no QA loop) and 'paused' are work the owner can sign off on directly — the
+// pipeline's own only-QA-marks-done rule never applies to these, so without this they'd be stuck.
+const DONEABLE: ReadonlySet<Thread["state"]> = new Set(["review", "paused"]);
 
 export class ThreadManager implements OrchestratorApi {
   private readonly live = new Map<string, LiveImplementor>();
@@ -1331,6 +1335,54 @@ export class ThreadManager implements OrchestratorApi {
     if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
     this.hub.log("info", `Closed task ${threadId.slice(0, 8)} (was ${thread.state}).`);
     return { ok: true, state: "closed" };
+  }
+
+  /** Manually accept a parked task (review/paused) as finished — the only path by which the owner,
+   *  rather than QA, moves a task to 'done'. The pipeline reserves 'done' for QA, so injected/manual-
+   *  resume work (which runs with no QA loop and settles to 'review') and QA-bounced work would
+   *  otherwise have no way to reach 'done' but cancelling. Mirrors closeThread's force-stop teardown
+   *  (a settled review/paused task can keep a STALE live/activeRuns entry) but keeps the row on the
+   *  board and lands it in 'done'. */
+  async markDone(threadId: string): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (thread.state === "done") return { ok: true, state: "done" };
+    if (!DONEABLE.has(thread.state)) {
+      return { ok: false, error: `A ${thread.state} task can't be marked done — only a parked (review/paused) task can.` };
+    }
+    await this.forceStopThreadRuns(threadId);
+    this.setState(threadId, "done");
+    this.hub.log("info", `Marked task ${threadId.slice(0, 8)} done (was ${thread.state}).`);
+    return { ok: true, state: "done" };
+  }
+
+  /** Force-stop any lingering agent run for a thread and drop its in-memory bookkeeping, leaving the
+   *  persisted state untouched. A parked task can hold a stale activeRuns/live entry after its loop
+   *  settles; clearing it stops anything resurrecting the task or counting it as live. */
+  private async forceStopThreadRuns(threadId: string): Promise<void> {
+    this.stopping.add(threadId);
+    const set = this.activeRuns.get(threadId);
+    if (set) {
+      for (const r of set) {
+        try {
+          await r.stop();
+        } catch {
+          /* already down */
+        }
+      }
+      set.clear();
+    }
+    await this.stopLive(threadId);
+    this.live.delete(threadId);
+    this.threadImages.delete(threadId);
+    this.resuming.delete(threadId);
+    this.pendingResumeMsgs.delete(threadId);
+    this.liveRole.delete(threadId);
+    // A task settles to 'review' straight out of the QA loop, so a mid-QA account failover can leave a
+    // stale liveQa handle behind (the window the QA-inject gate also guards) — drop it so it can't leak.
+    this.liveQa.delete(threadId);
+    this.directorNotes.delete(threadId);
+    this.stopping.delete(threadId);
   }
 
   /** Restore a closed task back to the state it was closed from, returning it to the main board. */

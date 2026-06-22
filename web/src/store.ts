@@ -55,6 +55,7 @@ interface State {
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   cancel: (threadId: string) => void;
+  markDone: (threadId: string) => void;
   close: (threadId: string) => void;
   restore: (threadId: string) => void;
   dismiss: (threadId: string) => void;
@@ -162,6 +163,7 @@ export const useStore = create<State>((set) => ({
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
+  markDone: (threadId) => sendCommand({ type: "thread.markDone", threadId }),
   close: (threadId) => sendCommand({ type: "thread.close", threadId }),
   restore: (threadId) => sendCommand({ type: "thread.restore", threadId }),
   dismiss: (threadId) => sendCommand({ type: "thread.dismiss", threadId }),

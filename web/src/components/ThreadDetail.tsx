@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
-import { clock, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { clock, isDoneable, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
@@ -71,6 +71,7 @@ export function ThreadDetail() {
   const interrupt = useStore((s) => s.interrupt);
   const resume = useStore((s) => s.resume);
   const cancel = useStore((s) => s.cancel);
+  const markDone = useStore((s) => s.markDone);
   const select = useStore((s) => s.select);
   const approve = useStore((s) => s.approve);
   const loadChanges = useStore((s) => s.loadChanges);
@@ -295,6 +296,11 @@ export function ThreadDetail() {
           {isResumable && (
             <button className="btn primary sm" onClick={() => resume(id)}>
               ▶ Resume
+            </button>
+          )}
+          {isDoneable(thread.state) && (
+            <button className="btn success sm" onClick={() => markDone(id)} title="Accept this task as finished and mark it done">
+              ✓ Mark done
             </button>
           )}
           <button
