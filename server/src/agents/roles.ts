@@ -141,7 +141,7 @@ export function researcherConfig(cwd: string, servers: { bus: McpServerConfig; m
     cwd,
     systemPrompt: RESEARCHER_PROMPT,
     permissionMode: "plan",
-    // External-info-only: the researcher gathers web/docs/changelogs + the user's memory, never the
+    // External-info-only: the researcher gathers web/docs/changelogs + the owner's memory, never the
     // codebase. Read/Grep/Glob are disallowed (the planner owns code reading) so it can't duplicate
     // that work even if tempted — its system prompt forbids it too.
     allowedTools: ["WebSearch", "WebFetch", T.searchMemory, ...BUS_TOOLS],

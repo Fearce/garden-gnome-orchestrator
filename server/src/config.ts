@@ -41,6 +41,10 @@ const exposeBlocked = !localOnly && !authConfigured;
 
 export const config = {
   serverRoot,
+  // The repo owner's display name, woven into agent prompts and user-facing strings so the
+  // orchestrator reads as a shareable tool rather than one person's. Set OWNER_NAME in
+  // server/.env; left unset it falls back to the neutral "the user".
+  ownerName: process.env.OWNER_NAME?.trim() || "the user",
   port: Number(process.env.PORT ?? 4317),
   // Second, TLS listener so the orchestrator can be embedded as a same-protocol
   // iframe inside the HTTPS Dashboard Deck (https://localhost:3940) — Chromium
@@ -60,7 +64,7 @@ export const config = {
   loginCooldownMs: Number(process.env.LOGIN_COOLDOWN_MS ?? 30_000),
   googleClientId,
   googleClientSecret,
-  allowedEmail: (process.env.ALLOWED_EMAIL || "user@example.com").toLowerCase(),
+  allowedEmail: (process.env.ALLOWED_EMAIL || "you@example.com").toLowerCase(),
   // Public origin Google redirects back to (e.g. https://host.tailnet.ts.net). When set,
   // the OAuth redirect_uri is pinned to it instead of the request Host header, so the
   // registered URI can't diverge and a spoofed Host can't influence it. Localhost dev

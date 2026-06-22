@@ -37,7 +37,7 @@ interface MemoryDoc {
 }
 
 /**
- * Lexical search over the user's global memory dir. Dependency-free (no pgvector /
+ * Lexical search over the owner's global memory dir. Dependency-free (no pgvector /
  * Ollama call to guess), so it degrades gracefully if those are down: reads the
  * markdown memory files, parses frontmatter name/description, and ranks by token
  * overlap. The director can then Read specific files for full detail.

@@ -3,16 +3,17 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { MemoryService } from "../memory/memory.js";
 import { MEMORY_SERVER } from "../agents/toolNames.js";
+import { config } from "../config.js";
 
 /**
- * Exposes the user's global memory to the director and researcher: a lexical
+ * Exposes the owner's global memory to the director and researcher: a lexical
  * search over ~/.claude/memory returning the most relevant memory files. Agents
  * can then Read a file by path for the full content.
  */
 export function createMemoryServer(memory: MemoryService): McpServerConfig {
   const searchMemory = tool(
     "search_memory",
-    "Search the user's global memory (his stack, preferences, prior decisions, lessons learned, project state) for context relevant to a query. Returns the most relevant memory files with their one-line descriptions and paths. Read a returned path for full detail. ALWAYS check this before dispatching work — it surfaces context the user assumes you already know.",
+    `Search ${config.ownerName}'s global memory (their stack, preferences, prior decisions, lessons learned, project state) for context relevant to a query. Returns the most relevant memory files with their one-line descriptions and paths. Read a returned path for full detail. ALWAYS check this before dispatching work — it surfaces context ${config.ownerName} assumes you already know.`,
     {
       query: z.string().describe("What to look for, e.g. 'background service supervision rules' or 'design taste preferences'."),
       k: z.number().int().min(1).max(15).default(6).describe("How many results to return."),
@@ -31,7 +32,7 @@ export function createMemoryServer(memory: MemoryService): McpServerConfig {
 
   const readMemory = tool(
     "read_memory",
-    "Read the full content of ONE of the user's memory files, by the `name` (or path) returned from search_memory. Use this when a hit looks load-bearing and its one-line description isn't enough to fold the full lesson/decision into a brief. This reads ONLY the user's memory — it is not a way to read the codebase (you dispatch a thread for that).",
+    `Read the full content of ONE of ${config.ownerName}'s memory files, by the \`name\` (or path) returned from search_memory. Use this when a hit looks load-bearing and its one-line description isn't enough to fold the full lesson/decision into a brief. This reads ONLY ${config.ownerName}'s memory — it is not a way to read the codebase (you dispatch a thread for that).`,
     {
       name: z.string().describe("The memory's name or path exactly as returned by search_memory."),
     },

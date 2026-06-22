@@ -1,7 +1,7 @@
 # Claude Orchestrator
 
-A single director's console for running Claude Code agents the way the user already
-works by hand: a Sonnet **director** enriches a raw prompt, pulls in relevant
+A single director's console for running Claude Code agents the way you already
+work by hand: a Sonnet **director** enriches a raw prompt, pulls in relevant
 memories, and asks the clarifying questions you'd otherwise forget to answer,
 then dispatches the task to a self-assembling agent pipeline — a **planner**
 reads the repo and plans, an optional **researcher** gathers external context, an
@@ -35,7 +35,7 @@ pipeline — there's no fixed sequence; each agent decides what happens next:
   declares what comes next: a researcher (when the task needs information that
   *isn't* in the repo) or straight to the implementor.
 - **Researcher — optional, external-only.** Web search, library/API docs, GitHub
-  issues, changelogs, plus the user's memory. It does **not** read the codebase
+  issues, changelogs, plus your global memory. It does **not** read the codebase
   (that's the planner's job) — it enriches the build, then hands to the implementor.
 - **Implementor (Opus 4.8).** Does the work in the repo, fully autonomous. It
   always hands off to QA — it can't declare itself done.
