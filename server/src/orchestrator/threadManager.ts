@@ -19,6 +19,7 @@ import type {
   Effort,
   Finding,
   ImageAttachment,
+  OrchestratorSettings,
   PlanOutput,
   QaOutput,
   RateLimitInfo,
@@ -41,6 +42,12 @@ interface LiveImplementor {
   run: AgentRun;
   runId: string;
   accountId: string;
+}
+
+/** The slice of operator settings the implementor→QA stage needs, captured at pipeline start. */
+interface PipeOpts {
+  qaEnabled: boolean;
+  maxQaRounds: number;
 }
 
 const MAX_RESULT_PREVIEW = 600;
@@ -94,12 +101,15 @@ const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
   "qa",
   "paused",
 ]);
-// Pipeline phases where a pre-implementor stage owns the task (planner/researcher running, or the
-// approval gate) and NO implementor is live. An inject that lands here is HELD for that stage — it
-// must never start an implementor alongside the still-running planner. ('awaiting_user' is omitted:
-// a question can also pause a live implementor, where the inject belongs to that implementor; the
-// pre-implementor case is caught instead by a live planner handle in `liveRole`.)
+// Pipeline phases where a pre-implementor stage owns the task (queued for a slot, planner/researcher
+// running, or the approval gate) and NO implementor is live. An inject that lands here is HELD for that
+// stage — it must never start an implementor alongside the still-running planner, nor jump a queued task
+// past the concurrency cap. The buffered note is folded into the implementor's kickoff once the pipeline
+// reaches it. ('awaiting_user' is omitted: a question can also pause a live implementor, where the inject
+// belongs to that implementor; the pre-implementor case is caught instead by a live planner handle in
+// `liveRole`.)
 const PRE_IMPLEMENTOR: ReadonlySet<Thread["state"]> = new Set([
+  "queued",
   "intake",
   "enriching",
   "planning",
@@ -151,6 +161,12 @@ export class ThreadManager implements OrchestratorApi {
   // so injectThread's / resumeThread's qa-stage gates can forward steering to it (the next fix-round's
   // re-launched implementor drains anything buffered while QA had no steerable handle).
   private readonly liveQa = new Map<string, AgentRun>();
+  // Concurrency control. activePipelines holds the threads whose pipeline (dispatch OR resume) is
+  // currently executing; a fresh dispatch beyond maxConcurrent waits in dispatchQueue (FIFO) in the
+  // 'queued' state and starts when a slot frees. Resumes of in-flight work aren't gated — they
+  // continue existing work — but they still count toward the active total.
+  private readonly activePipelines = new Set<string>();
+  private readonly dispatchQueue: string[] = [];
 
   constructor(
     readonly db: Db,
@@ -214,6 +230,17 @@ export class ThreadManager implements OrchestratorApi {
       setTimeout(() => {
         this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
         void this.resumeThread(id).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
+      }, AUTO_RESUME_DELAY_MS);
+    }
+    // Re-arm any task left 'queued' by the restart: the in-memory dispatch queue starts empty, so
+    // without this they'd wait forever. Deferred like the auto-resumes so the listeners are up first;
+    // enqueueOrRun re-queues or starts each depending on the live concurrency cap.
+    const queued = this.db.listThreads().filter((t) => t.state === "queued");
+    if (queued.length) {
+      setTimeout(() => {
+        // Re-check state at fire time — a queued task could have been cancelled/dismissed during the
+        // delay, and enqueueOrRun would otherwise stamp it 'queued' again (resurrecting a dead row).
+        for (const t of queued) if (this.db.getThread(t.id)?.state === "queued") this.enqueueOrRun(t.id);
       }, AUTO_RESUME_DELAY_MS);
     }
   }
@@ -334,8 +361,84 @@ export class ThreadManager implements OrchestratorApi {
     if (input.images?.length) this.threadImages.set(thread.id, input.images.map(toImageBlock));
     this.hub.publish({ type: "thread.upsert", thread });
     this.hub.log("info", `Dispatched task ${thread.id.slice(0, 8)} "${thread.title}"`);
-    void this.runPipeline(thread.id);
+    this.enqueueOrRun(thread.id);
     return thread.id;
+  }
+
+  // ---- settings (operator-tunable, persisted in kv, broadcast like approvalMode) ----
+
+  /** The current pipeline settings, read live from kv (defaults when unset). Read at dispatch/pipeline
+   *  time so a change applies to the next task — the agent toggles especially are flipped per task. */
+  settings(): OrchestratorSettings {
+    return {
+      plannerEnabled: this.settingBool("setting_planner_enabled", true),
+      researcherEnabled: this.settingBool("setting_researcher_enabled", true),
+      qaEnabled: this.settingBool("setting_qa_enabled", true),
+      autoPush: this.settingBool("setting_auto_push", true),
+      maxQaRounds: this.settingNum("setting_max_qa_rounds", config.maxQaRounds, 1, 12),
+      maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
+    };
+  }
+
+  private settingBool(key: string, dflt: boolean): boolean {
+    const v = this.db.kvGet(key);
+    return v == null ? dflt : v === "1";
+  }
+  private settingNum(key: string, dflt: number, min: number, max: number): number {
+    const v = this.db.kvGet(key);
+    const n = v == null ? dflt : Number(v);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : dflt;
+  }
+
+  /** Persist a partial settings change, broadcast the full new set, and pump the queue (a raised
+   *  maxConcurrent may have freed slots). Returns the resulting settings. */
+  setSettings(patch: Partial<OrchestratorSettings>): OrchestratorSettings {
+    if (patch.plannerEnabled !== undefined) this.db.kvSet("setting_planner_enabled", patch.plannerEnabled ? "1" : "0");
+    if (patch.researcherEnabled !== undefined) this.db.kvSet("setting_researcher_enabled", patch.researcherEnabled ? "1" : "0");
+    if (patch.qaEnabled !== undefined) this.db.kvSet("setting_qa_enabled", patch.qaEnabled ? "1" : "0");
+    if (patch.autoPush !== undefined) this.db.kvSet("setting_auto_push", patch.autoPush ? "1" : "0");
+    if (patch.maxQaRounds !== undefined) this.db.kvSet("setting_max_qa_rounds", String(patch.maxQaRounds));
+    if (patch.maxConcurrent !== undefined) this.db.kvSet("setting_max_concurrent", String(patch.maxConcurrent));
+    const settings = this.settings();
+    this.hub.publish({ type: "settings", settings });
+    this.pumpQueue();
+    return settings;
+  }
+
+  // ---- concurrency queue ----
+
+  /** Start a freshly-dispatched task's pipeline now, or hold it in 'queued' if we're at the
+   *  concurrency cap. Queued tasks start (FIFO) the moment a running pipeline settles. */
+  private enqueueOrRun(threadId: string): void {
+    if (this.activePipelines.size >= this.settings().maxConcurrent) {
+      if (!this.dispatchQueue.includes(threadId)) this.dispatchQueue.push(threadId);
+      this.setState(threadId, "queued");
+      this.hub.log("info", `Task ${threadId.slice(0, 8)} queued — ${this.activePipelines.size} pipeline(s) at the concurrency cap.`);
+      return;
+    }
+    this.startPipeline(threadId);
+  }
+
+  /** Named seam for the two queue call sites. runPipeline itself reserves the concurrency slot (at its
+   *  top) and releases it + pumps the queue (in its finally), so this is just `void runPipeline`. */
+  private startPipeline(threadId: string): void {
+    void this.runPipeline(threadId);
+  }
+
+  /** Start queued tasks while slots are free (a pipeline settled, or maxConcurrent was raised). Skips
+   *  entries no longer in 'queued' — cancelled/dismissed while waiting. */
+  private pumpQueue(): void {
+    const cap = this.settings().maxConcurrent;
+    while (this.dispatchQueue.length && this.activePipelines.size < cap) {
+      const id = this.dispatchQueue.shift()!;
+      if (this.db.getThread(id)?.state !== "queued") continue;
+      this.startPipeline(id);
+    }
+  }
+
+  private dropFromQueue(threadId: string): void {
+    const i = this.dispatchQueue.indexOf(threadId);
+    if (i >= 0) this.dispatchQueue.splice(i, 1);
   }
 
   /** Wrap a role's kickoff text with the thread's pasted images so each isolated agent sees them. */
@@ -426,17 +529,25 @@ export class ThreadManager implements OrchestratorApi {
   private async runPipeline(threadId: string, directorNote?: string): Promise<void> {
     const thread = this.db.getThread(threadId);
     if (!thread) return;
+    this.activePipelines.add(threadId);
+    const releaseSlot = () => {
+      this.activePipelines.delete(threadId);
+      this.pumpQueue();
+    };
     if (!existsSync(thread.workspace)) {
       this.setState(threadId, "failed", `Workspace "${thread.workspace}" does not exist on disk — agents can't run there. Re-dispatch with a valid path.`);
+      releaseSlot();
       return;
     }
+    const settings = this.settings();
     const saved = this.db.getThreadStageOutputs(threadId);
     try {
-      // 1. Planner — always first. It owns codebase reading and decides what comes next.
+      // 1. Planner — runs first (unless disabled). It owns codebase reading and decides what comes next.
       // planDone (mirrors researchDone) makes a deliberate "no structured plan" outcome sticky across
       // resume — without it, a planner that ran but produced null re-runs a whole Opus pass every resume.
+      // When the planner is disabled the implementor runs straight from the brief (composeKickoff notes it).
       let plan = saved.plan ?? undefined;
-      if (!saved.planDone) {
+      if (settings.plannerEnabled && !saved.planDone) {
         this.setState(threadId, "planning");
         plan = await this.runPlanner(thread).catch((e) => {
           this.hub.log("warn", `Planner failed on ${threadId.slice(0, 8)}: ${String(e)}`);
@@ -449,7 +560,7 @@ export class ThreadManager implements OrchestratorApi {
       // 2. Researcher — only when the planner routed to it (external info needed). Always →
       //    implementor afterward. researchDone guards against re-running it on resume.
       let research = saved.research ?? undefined;
-      if (plan?.nextAgent === "researcher" && !saved.researchDone) {
+      if (settings.researcherEnabled && plan?.nextAgent === "researcher" && !saved.researchDone) {
         this.setState(threadId, "researching");
         research = await this.runResearcher(thread, plan).catch((e) => {
           this.hub.log("warn", `Researcher failed on ${threadId.slice(0, 8)}: ${String(e)}`);
@@ -461,7 +572,7 @@ export class ThreadManager implements OrchestratorApi {
 
       // 3. Approval gate — after the full context (plan + any research) exists, so the human sees
       //    everything before approving. Skipped on resume if already approved.
-      const kickoff = composeKickoff(thread, plan, research);
+      const kickoff = composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled: settings.qaEnabled });
       if (this.approvalMode() && !saved.approved) {
         this.setState(threadId, "awaiting_approval");
         this.hub.publish({ type: "plan.ready", threadId, brief: kickoff });
@@ -489,7 +600,10 @@ export class ThreadManager implements OrchestratorApi {
       const buffered = this.directorNotes.get(threadId);
       this.directorNotes.delete(threadId);
       const note = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n") || undefined;
-      await this.runImplementorQa(thread, kickoff, plan?.effort, this.latestImplementorSession(threadId), note);
+      await this.runImplementorQa(thread, kickoff, plan?.effort, this.latestImplementorSession(threadId), note, {
+        qaEnabled: settings.qaEnabled,
+        maxQaRounds: settings.maxQaRounds,
+      });
     } catch (err) {
       if (!this.cancelled(threadId)) this.setState(threadId, "failed", err instanceof Error ? err.message : String(err));
     } finally {
@@ -500,6 +614,7 @@ export class ThreadManager implements OrchestratorApi {
       // Safety net: drop any held notes that an early return (e.g. a rejected plan) left behind, so
       // they can't leak into an unrelated later run of this thread.
       this.directorNotes.delete(threadId);
+      releaseSlot();
     }
   }
 
@@ -860,9 +975,16 @@ export class ThreadManager implements OrchestratorApi {
   /** Implementor → QA → fix, repeated until QA passes or we run out of rounds. The live
    *  implementor is stopped on every exit so a finished/parked task stops counting as live;
    *  later injects fall back to the resume path (lastImplementorSession). */
-  private async runImplementorQa(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string, directorNote?: string): Promise<void> {
+  private async runImplementorQa(
+    thread: Thread,
+    kickoff: string,
+    effort?: Effort,
+    resumeSession?: string,
+    directorNote?: string,
+    pipe: PipeOpts = { qaEnabled: true, maxQaRounds: config.maxQaRounds },
+  ): Promise<void> {
     try {
-      await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession, directorNote);
+      await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession, directorNote, pipe);
     } finally {
       this.autoResumes.delete(thread.id);
       await this.stopLive(thread.id);
@@ -955,16 +1077,24 @@ export class ThreadManager implements OrchestratorApi {
     return parts.join("\n");
   }
 
-  private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string, directorNote?: string): Promise<void> {
+  private async runImplementorQaLoop(
+    thread: Thread,
+    kickoff: string,
+    effort?: Effort,
+    resumeSession?: string,
+    directorNote?: string,
+    pipe: PipeOpts = { qaEnabled: true, maxQaRounds: config.maxQaRounds },
+  ): Promise<void> {
     this.autoResumes.set(thread.id, 0);
     const start = await this.startResumedImplementor(thread, kickoff, resumeSession, {
       effort,
-      resumeNudge:
-        "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done.",
+      resumeNudge: pipe.qaEnabled
+        ? "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done."
+        : "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. QA review is disabled for this task — verify your own work, then commit per the doctrine.",
       // A steering note from the Resume/inject that re-entered the pipeline — delivered to the
       // implementor (woven into the seed/kickoff or sent with the nudge) so it isn't silently lost.
       directorNote,
-      qaFollows: true,
+      qaFollows: pipe.qaEnabled,
     });
     if (!start) return; // cancelled while compressing the prior session for the resume
     // A cold resume compresses the prior session first (an await), and runPipeline already folded the
@@ -982,7 +1112,20 @@ export class ThreadManager implements OrchestratorApi {
       "Continue exactly where you left off and finish the task completely.",
     );
 
-    for (let round = 1; round <= config.maxQaRounds; round++) {
+    // QA disabled — the implementor's output is final. A clean finish goes straight to 'done'
+    // (the only non-QA path to 'done' besides a manual markDone); an incomplete one parks for review.
+    if (!pipe.qaEnabled) {
+      if (this.cancelled(thread.id)) return;
+      if (res && !res.isError) {
+        this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Implementor finished — QA review is disabled, accepted as done.", severity: "info" });
+        this.setState(thread.id, "done");
+      } else {
+        this.setState(thread.id, "review", "Implementor ended without completing — needs your review (QA is disabled for this task).");
+      }
+      return;
+    }
+
+    for (let round = 1; round <= pipe.maxQaRounds; round++) {
       if (this.cancelled(thread.id)) return;
       if (!res) {
         this.setState(thread.id, "review", "Implementor ended without completing — needs your review.");
@@ -1012,11 +1155,11 @@ export class ThreadManager implements OrchestratorApi {
         this.setState(thread.id, "done");
         return;
       }
-      if (round >= config.maxQaRounds) {
+      if (round >= pipe.maxQaRounds) {
         this.postFinding({
           threadId: thread.id,
           fromRole: "qa",
-          summary: `QA still not satisfied after ${config.maxQaRounds} rounds — needs your review`,
+          summary: `QA still not satisfied after ${pipe.maxQaRounds} rounds — needs your review`,
           detail: qa.summary,
           severity: "warning",
         });
@@ -1272,6 +1415,13 @@ export class ThreadManager implements OrchestratorApi {
       this.setState(threadId, "failed", `Can't resume — workspace "${thread.workspace}" does not exist. Re-dispatch this task with a valid path.`);
       return { ok: false, error: `Workspace "${thread.workspace}" does not exist.` };
     }
+    // A queued task hasn't started yet — it has no implementor session and is waiting for a slot, so a
+    // resume must NOT start it past the concurrency cap (it'll start via pumpQueue when a slot frees) and
+    // must NOT take the planner-less manual-resume path. Just buffer any steering for its eventual kickoff.
+    if (thread.state === "queued") {
+      if (message?.trim()) this.bufferDirectorNote(threadId, message);
+      return { ok: true, state: "queued" };
+    }
     // QA-stage gate — mirror injectThread's: during the QA stage the implementor is fully stopped and
     // the QA agent owns the slot, so a resume here must NEVER wake or spawn an implementor beside it.
     // Forward any steering to the running QA agent if present, else buffer it for the next fix-round's
@@ -1324,6 +1474,13 @@ export class ThreadManager implements OrchestratorApi {
    *  once; failover-aware via awaitImplementorResult. The caller must have added threadId to
    *  `resuming`; this clears it once the implementor is live (or the start was abandoned). */
   private async resumeImplementorOnly(thread: Thread, message?: string): Promise<void> {
+    // A manual resume occupies a concurrency slot for the run's lifetime (like a pipeline), so it
+    // counts toward maxConcurrent and frees a queued task when it settles.
+    this.activePipelines.add(thread.id);
+    const releaseSlot = () => {
+      this.activePipelines.delete(thread.id);
+      this.pumpQueue();
+    };
     const resume = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
     const baseKickoff = this.db.getThreadStageOutputs(thread.id).kickoff ?? thread.brief;
     const resumeNudge = message ?? "Continue where you left off.";
@@ -1343,6 +1500,7 @@ export class ThreadManager implements OrchestratorApi {
       if (!this.cancelled(thread.id) && this.db.getThread(thread.id)?.state === "implementing") {
         this.setState(thread.id, "review", "Resume failed to start — needs your review.");
       }
+      releaseSlot();
       return;
     }
     // The kickoff has consumed any stashed images; drop them so a later resume doesn't re-send the
@@ -1359,11 +1517,15 @@ export class ThreadManager implements OrchestratorApi {
         if (this.db.getThread(thread.id)?.state === "implementing") this.setState(thread.id, "review");
       })
       .catch((e) => this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} ended in error: ${String(e)}`))
-      .finally(() => void this.stopLive(thread.id));
+      .finally(() => {
+        releaseSlot();
+        void this.stopLive(thread.id);
+      });
   }
 
   async cancelThread(threadId: string): Promise<ThreadActionResult> {
     this.stopping.add(threadId);
+    this.dropFromQueue(threadId); // if it was waiting for a slot, it never starts now
     const set = this.activeRuns.get(threadId);
     if (set) {
       for (const r of set) {
@@ -1548,6 +1710,7 @@ export class ThreadManager implements OrchestratorApi {
     }
     // Clear any in-memory bookkeeping keyed by this thread (mirrors cancelThread) so nothing can
     // resurrect or reference the deleted task.
+    this.dropFromQueue(threadId);
     this.live.delete(threadId);
     this.threadImages.delete(threadId);
     this.resuming.delete(threadId);
@@ -1703,7 +1866,12 @@ function formatResearch(research: ResearchOutput): string {
   return parts.join("\n");
 }
 
-function composeKickoff(thread: Thread, plan: PlanOutput | undefined, research: ResearchOutput | undefined): string {
+function composeKickoff(
+  thread: Thread,
+  plan: PlanOutput | undefined,
+  research: ResearchOutput | undefined,
+  opts: { autoPush: boolean; qaEnabled: boolean },
+): string {
   const parts: string[] = [`# Task: ${thread.title}`, "", "## Brief", thread.brief, ""];
 
   parts.push("## Plan (from the planner)");
@@ -1734,8 +1902,22 @@ function composeKickoff(thread: Thread, plan: PlanOutput | undefined, research: 
   }
   // Task-specific marching orders only. The standing doctrine (commit/push/myaccount, QA fix-rounds, no
   // half-measures) lives in the implementor's cache-stable system prompt — restating it here would
-  // just re-bill those tokens in every per-task message.
-  parts.push(`Implement this now, completely. Post findings as you go; ask_user immediately on a blocker only ${config.ownerName} can fix.`);
+  // just re-bill those tokens in every per-task message. The two notes below are exceptions: they
+  // OVERRIDE that standing doctrine for this task (QA off / push off), so they must be stated here.
+  const directives: string[] = [
+    `Implement this now, completely. Post findings as you go; ask_user immediately on a blocker only ${config.ownerName} can fix.`,
+  ];
+  if (!opts.qaEnabled) {
+    directives.push(
+      "NOTE — automated QA review is DISABLED for this task: your output is final and won't be checked by a QA agent. Verify your own work thoroughly (build, typecheck, tests, and a real browser pass for any UI) before you finish.",
+    );
+  }
+  if (!opts.autoPush) {
+    directives.push(
+      `NOTE — auto-push is OFF for this task: commit your work locally as usual, but do NOT push to the remote — ${config.ownerName} will push manually. This overrides the standing "commit AND push" doctrine for this task only.`,
+    );
+  }
+  parts.push(directives.join("\n\n"));
   return parts.join("\n");
 }
 

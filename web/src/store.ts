@@ -10,6 +10,7 @@ import type {
   Finding,
   ImageAttachment,
   Message,
+  OrchestratorSettings,
   Question,
   Role,
   ServerEvent,
@@ -42,6 +43,12 @@ interface State {
   threadDrafts: Record<string, ThreadDraft | undefined>;
   selectedThreadId: string | null;
   approvalMode: boolean;
+  // Server-authoritative pipeline settings (broadcast over WS); the panel edits these via setSettings.
+  settings: OrchestratorSettings;
+  // Client-only view settings, persisted in localStorage under `director_settings` — they only change
+  // what this browser shows, so they never round-trip to the server.
+  showCompleted: boolean;
+  verbosity: Verbosity;
   pendingPlans: Record<string, string>;
   threadChanges: Record<string, { diff: string; log: string }>;
   railHidden: boolean;
@@ -60,6 +67,9 @@ interface State {
   restore: (threadId: string) => void;
   dismiss: (threadId: string) => void;
   setApproval: (on: boolean) => void;
+  setSettings: (patch: Partial<OrchestratorSettings>) => void;
+  setShowCompleted: (v: boolean) => void;
+  setVerbosity: (v: Verbosity) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
   loadChanges: (threadId: string) => void;
   toggleRail: () => void;
@@ -91,6 +101,49 @@ const lsSet = (k: string, v: string): void => {
     /* private mode */
   }
 };
+
+export type Verbosity = "compact" | "full";
+
+// Client-only view settings live together under one stable localStorage key (per the brief), separate
+// from the server-authoritative pipeline settings. Defaults: keep finished tasks visible, full output.
+const VIEW_SETTINGS_KEY = "director_settings";
+interface ViewSettings {
+  showCompleted: boolean;
+  verbosity: Verbosity;
+}
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full" };
+const loadViewSettings = (): ViewSettings => {
+  try {
+    const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
+    if (!raw) return VIEW_DEFAULTS;
+    const v = JSON.parse(raw) as Partial<ViewSettings>;
+    return {
+      showCompleted: typeof v.showCompleted === "boolean" ? v.showCompleted : VIEW_DEFAULTS.showCompleted,
+      verbosity: v.verbosity === "compact" || v.verbosity === "full" ? v.verbosity : VIEW_DEFAULTS.verbosity,
+    };
+  } catch {
+    return VIEW_DEFAULTS;
+  }
+};
+const saveViewSettings = (v: ViewSettings): void => lsSet(VIEW_SETTINGS_KEY, JSON.stringify(v));
+
+// Until the first `hello` arrives the panel shows these neutral defaults (everything on); the server's
+// real values overwrite them the instant the socket connects.
+const DEFAULT_SETTINGS: OrchestratorSettings = {
+  plannerEnabled: true,
+  researcherEnabled: true,
+  qaEnabled: true,
+  autoPush: true,
+  maxQaRounds: 4,
+  maxConcurrent: 3,
+};
+
+// A server that predates the settings broadcast (or any partial payload) must never null out the
+// settings object — every key stays defined so the toggles/panel can read it without guarding.
+const mergeSettings = (incoming: Partial<OrchestratorSettings> | undefined): OrchestratorSettings => ({
+  ...DEFAULT_SETTINGS,
+  ...(incoming ?? {}),
+});
 
 // Cap each agent RUN's feed items INDEPENDENTLY (not one global cap) so a chatty
 // implementor/QA run can't evict the finished planner/researcher output you want to
@@ -145,6 +198,9 @@ export const useStore = create<State>((set) => ({
   threadDrafts: {},
   selectedThreadId: null,
   approvalMode: false,
+  settings: DEFAULT_SETTINGS,
+  showCompleted: loadViewSettings().showCompleted,
+  verbosity: loadViewSettings().verbosity,
   pendingPlans: {},
   threadChanges: {},
   railHidden: lsBool("orch-rail-hidden", false),
@@ -168,6 +224,22 @@ export const useStore = create<State>((set) => ({
   restore: (threadId) => sendCommand({ type: "thread.restore", threadId }),
   dismiss: (threadId) => sendCommand({ type: "thread.dismiss", threadId }),
   setApproval: (on) => sendCommand({ type: "approval.set", on }),
+  // Optimistic: reflect the change locally at once, then send it. The server's `settings` broadcast
+  // confirms (and reconciles any clamp, e.g. an out-of-range number) for every connected client.
+  setSettings: (patch) => {
+    set((s) => ({ settings: { ...s.settings, ...patch } }));
+    sendCommand({ type: "settings.set", settings: patch });
+  },
+  setShowCompleted: (v) =>
+    set((s) => {
+      saveViewSettings({ showCompleted: v, verbosity: s.verbosity });
+      return { showCompleted: v };
+    }),
+  setVerbosity: (v) =>
+    set((s) => {
+      saveViewSettings({ showCompleted: s.showCompleted, verbosity: v });
+      return { verbosity: v };
+    }),
   approve: (threadId, approved, feedback) => sendCommand({ type: "thread.approve", threadId, approved, feedback }),
   loadChanges: (threadId) => sendCommand({ type: "thread.changes", threadId }),
   toggleRail: () =>
@@ -247,7 +319,7 @@ function applyEvent(ev: ServerEvent): void {
         attachments: m.attachments,
         at: m.createdAt,
       }));
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode, settings: mergeSettings(ev.settings) });
       // hello also fires on WS reconnect (server restart / network blip). The feed kept its
       // pre-disconnect items but missed anything that streamed while we were gone — re-fetch
       // the open thread's history; the id-keyed merge fills the gap without dropping live items.
@@ -264,6 +336,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "approval.mode":
       useStore.setState({ approvalMode: ev.on });
+      break;
+    case "settings":
+      useStore.setState({ settings: mergeSettings(ev.settings) });
       break;
     case "thread.changes":
       useStore.setState((s) => ({ threadChanges: { ...s.threadChanges, [ev.threadId]: { diff: ev.diff, log: ev.log } } }));

@@ -7,6 +7,7 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ThreadState =
   | "intake"
   | "enriching"
+  | "queued"
   | "awaiting_user"
   | "planning"
   | "researching"
@@ -129,6 +130,17 @@ export interface AccountDTO {
   error?: string | null;
 }
 
+/** Operator-tunable pipeline settings — server-authoritative (persisted in the DB kv table, broadcast
+ *  to every client). Mirrors the server's OrchestratorSettings. */
+export interface OrchestratorSettings {
+  plannerEnabled: boolean;
+  researcherEnabled: boolean;
+  qaEnabled: boolean;
+  autoPush: boolean;
+  maxQaRounds: number;
+  maxConcurrent: number;
+}
+
 export type ServerEvent =
   | {
       type: "hello";
@@ -139,10 +151,12 @@ export type ServerEvent =
       director: DirectorMessage[];
       accounts: AccountDTO[];
       approvalMode: boolean;
+      settings: OrchestratorSettings;
     }
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
+  | { type: "settings"; settings: OrchestratorSettings }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
@@ -177,6 +191,7 @@ export type ClientCommand =
   | { type: "thread.history"; threadId: string }
   | { type: "thread.approve"; threadId: string; approved: boolean; feedback?: string }
   | { type: "approval.set"; on: boolean }
+  | { type: "settings.set"; settings: Partial<OrchestratorSettings> }
   | { type: "thread.changes"; threadId: string }
   | { type: "snapshot.request" };
 

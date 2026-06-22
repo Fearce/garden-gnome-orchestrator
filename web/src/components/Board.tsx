@@ -11,14 +11,21 @@ import { Gnome } from "./Gnome.js";
 const PIPELINE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
 const PER_PAGE = 15;
 
+// Finished states hidden by the "Show completed tasks" setting. Only the genuinely-done outcomes —
+// review/failed stay visible because they still want the owner's attention.
+const COMPLETED_STATES = new Set<Thread["state"]>(["done", "cancelled"]);
+
 export function Board() {
   const threads = useStore((s) => s.threads);
+  const showCompleted = useStore((s) => s.showCompleted);
   const all = Object.values(threads);
   // Most-recently-active first: a state change, an inject, or a resume bumps updatedAt, so a task
   // you just touched jumps to the front. Ties (and brand-new tasks) fall back to creation order.
-  // Closed tasks are pulled out of the main board into the Closed holding area below.
+  // Closed tasks are pulled out of the main board into the Closed holding area below; completed tasks
+  // are hidden too when the owner turned that off in settings.
+  const hiddenCompleted = !showCompleted ? all.filter((t) => COMPLETED_STATES.has(t.state)).length : 0;
   const list = all
-    .filter((t) => t.state !== "closed")
+    .filter((t) => t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)))
     .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
   const closed = all
     .filter((t) => t.state === "closed")
@@ -38,6 +45,7 @@ export function Board() {
         <h2>Tasks</h2>
         <span className="faint mono" style={{ fontSize: 11 }}>
           {list.length} total
+          {hiddenCompleted > 0 ? ` · ${hiddenCompleted} completed hidden` : ""}
         </span>
       </div>
       {list.length === 0 ? (
@@ -201,9 +209,11 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
   const selected = useStore((s) => s.selectedThreadId === thread.id);
   const select = useStore((s) => s.select);
   const close = useStore((s) => s.close);
+  const verbosity = useStore((s) => s.verbosity);
 
   const impl = latestRun(threadRuns, "implementor");
-  const activity = draftText || lastText || thread.brief.split("\n")[0] || "—";
+  // Full shows the agent's latest streaming line; compact drops it so the card is just title + pips + state.
+  const activity = verbosity === "full" ? draftText || lastText || thread.brief.split("\n")[0] || "—" : null;
 
   const live = threadRunning(thread.state);
   // The ✕ soft-closes a parked task (review / paused / done / failed / cancelled) — it moves to the
@@ -252,7 +262,7 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
           );
         })}
       </div>
-      <div className="activity">{activity}</div>
+      {activity !== null ? <div className="activity">{activity}</div> : null}
       <div className="foot">
         <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
           <span className="badge" style={{ "--state-color": stateColor(thread.state) } as CSSProperties}>

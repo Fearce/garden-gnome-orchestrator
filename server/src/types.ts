@@ -5,6 +5,7 @@ export type Role = "director" | "planner" | "researcher" | "implementor" | "qa";
 export type ThreadState =
   | "intake" // just created, brief not yet built
   | "enriching" // director is enriching / about to clarify
+  | "queued" // dispatched but waiting for a concurrency slot (maxConcurrent)
   | "awaiting_user" // blocked on a question for the owner
   | "planning" // planner + researcher running
   | "researching"
@@ -177,6 +178,20 @@ export interface StageOutputs {
   researchDone?: boolean; // the researcher stage ran (true even if it produced nothing) — don't re-run on resume
   approved?: boolean; // the plan cleared the approval gate — don't re-prompt on resume
   kickoff?: string | null; // the composed brief the implementor was handed (record of what it got)
+}
+
+/**
+ * Operator-tunable pipeline settings, persisted server-side in the `kv` table and broadcast to every
+ * client (mirrors `approvalMode`). Read live at dispatch/pipeline time, so a change applies to the
+ * next task without a restart — the agent toggles in particular are meant to be flipped per task.
+ */
+export interface OrchestratorSettings {
+  plannerEnabled: boolean; // off → skip the planner; the implementor runs straight from the brief
+  researcherEnabled: boolean; // off → never run the researcher even if the planner routes to it
+  qaEnabled: boolean; // off → skip the QA loop; the implementor's output is final
+  autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
+  maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
+  maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
 }
 
 export interface RateLimitInfo {

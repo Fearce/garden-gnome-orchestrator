@@ -4,6 +4,7 @@ import type {
   DirectorMessage,
   Finding,
   Message,
+  OrchestratorSettings,
   Question,
   Role,
   Thread,
@@ -36,10 +37,12 @@ export type ServerEvent =
       director: DirectorMessage[];
       accounts: AccountDTO[];
       approvalMode: boolean;
+      settings: OrchestratorSettings;
     }
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
+  | { type: "settings"; settings: OrchestratorSettings }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
@@ -89,6 +92,19 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("thread.history"), threadId: z.string() }),
   z.object({ type: z.literal("thread.approve"), threadId: z.string(), approved: z.boolean(), feedback: z.string().optional() }),
   z.object({ type: z.literal("approval.set"), on: z.boolean() }),
+  z.object({
+    type: z.literal("settings.set"),
+    settings: z
+      .object({
+        plannerEnabled: z.boolean(),
+        researcherEnabled: z.boolean(),
+        qaEnabled: z.boolean(),
+        autoPush: z.boolean(),
+        maxQaRounds: z.number().int().min(1).max(12),
+        maxConcurrent: z.number().int().min(1).max(20),
+      })
+      .partial(),
+  }),
   z.object({ type: z.literal("thread.changes"), threadId: z.string() }),
   z.object({ type: z.literal("snapshot.request") }),
 ]);

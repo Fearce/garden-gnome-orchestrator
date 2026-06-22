@@ -21,6 +21,7 @@ export function stateColor(state: ThreadState): string {
     case "awaiting_approval":
     case "review":
       return "var(--warn)";
+    case "queued":
     case "cancelled":
     case "closed":
       return "var(--text-faint)";

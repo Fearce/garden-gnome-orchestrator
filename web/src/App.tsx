@@ -6,8 +6,10 @@ import { Board } from "./components/Board.js";
 import { ThreadDetail } from "./components/ThreadDetail.js";
 import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
+import { SettingsPanel } from "./components/SettingsPanel.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
+import type { OrchestratorSettings, Role } from "./types.js";
 
 type MobilePane = "director" | "board";
 
@@ -25,6 +27,7 @@ export function App() {
   const detailWidth = useStore((s) => s.detailWidth);
   const directorWidth = useStore((s) => s.directorWidth);
   const [mobilePane, setMobilePane] = useState<MobilePane>("board");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   if (authRequired && !authed) return <Login />;
 
@@ -39,6 +42,8 @@ export function App() {
           </div>
         </div>
         <RailToggle />
+        <AgentToggles />
+        <SettingsButton open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} />
         <div className="spacer" />
         <Accounts />
         <span className="stat">
@@ -61,7 +66,79 @@ export function App() {
       </div>
       <MobileNav pane={mobilePane} setPane={setMobilePane} />
       <QuestionModal />
+      {settingsOpen ? <SettingsPanel onClose={() => setSettingsOpen(false)} /> : null}
     </div>
+  );
+}
+
+/** The per-task agent toggles, sitting next to the rail hide/show button. Each gates a pipeline
+ *  stage server-side (planner/researcher/QA) — flip them before dispatching to shape the next task. */
+function AgentToggles() {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const toggle = (key: keyof OrchestratorSettings, on: boolean) =>
+    setSettings({ [key]: !on } as Partial<OrchestratorSettings>);
+
+  const items: { key: keyof OrchestratorSettings; role: Role; label: string; onTitle: string; offTitle: string }[] = [
+    {
+      key: "plannerEnabled",
+      role: "planner",
+      label: "Plan",
+      onTitle: "Planner ON — click to skip planning and dispatch straight to the implementor",
+      offTitle: "Planner OFF — tasks skip planning and go straight to the implementor. Click to re-enable.",
+    },
+    {
+      key: "researcherEnabled",
+      role: "researcher",
+      label: "Research",
+      onTitle: "Researcher ON — click to never run the research step",
+      offTitle: "Researcher OFF — the research step is skipped even if the planner asks for it. Click to re-enable.",
+    },
+    {
+      key: "qaEnabled",
+      role: "qa",
+      label: "QA",
+      onTitle: "QA ON — click to skip the QA review loop (implementor output becomes final)",
+      offTitle: "QA OFF — the implementor's output is final, with no QA review loop. Click to re-enable.",
+    },
+  ];
+
+  return (
+    <div className="agent-toggles" role="group" aria-label="Pipeline agents">
+      {items.map((it) => {
+        const on = !!settings[it.key];
+        return (
+          <button
+            key={it.key}
+            className={"agent-toggle" + (on ? " on" : " off")}
+            style={{ "--role": `var(--role-${it.role})` } as CSSProperties}
+            aria-pressed={on}
+            title={on ? it.onTitle : it.offTitle}
+            onClick={() => toggle(it.key, on)}
+          >
+            <span className="agent-dot" aria-hidden="true" />
+            {it.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function SettingsButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      className={"settings-btn" + (open ? " on" : "")}
+      title="Settings"
+      aria-label="Open settings"
+      aria-expanded={open}
+      onClick={onToggle}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    </button>
   );
 }
 

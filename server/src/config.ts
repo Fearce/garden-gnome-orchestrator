@@ -7,6 +7,9 @@ import type { Account } from "./accounts/account.js";
 const here = dirname(fileURLToPath(import.meta.url));
 // src/config.ts (dev) or dist/config.js (prod) — parent is the server root either way.
 const serverRoot = resolve(here, "..");
+// Where the SQLite DB + crash log live. Defaults to server/data; DATA_DIR overrides it so an isolated
+// instance (a test run, a second copy) can keep its own state instead of sharing the live database.
+const dataDir = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : resolve(serverRoot, "data");
 
 /**
  * Accounts from ACCOUNT_<n>_TOKEN / ACCOUNT_<n>_LABEL / ACCOUNT_<n>_ID env vars
@@ -74,8 +77,8 @@ export const config = {
   hostWarning: exposeBlocked
     ? `HOST=${requestedHost} requested but no auth is set — refusing to expose bypassPermissions agents on the LAN unauthenticated; bound to 127.0.0.1. Set AUTH_PASSWORD (or GOOGLE_CLIENT_ID/SECRET) to enable LAN access.`
     : undefined,
-  dataDir: resolve(serverRoot, "data"),
-  dbPath: resolve(serverRoot, "data", "orchestrator.sqlite"),
+  dataDir,
+  dbPath: resolve(dataDir, "orchestrator.sqlite"),
   webDist: resolve(serverRoot, "..", "web", "dist"),
   defaultWorkspace: process.env.DEFAULT_WORKSPACE ?? "C:\\",
   // Roots the director's find_workspace tool scans to resolve a project name → real path.
@@ -96,6 +99,9 @@ export const config = {
     qa: "claude-opus-4-8",
   },
   maxQaRounds: Number(process.env.MAX_QA_ROUNDS ?? 4),
+  // Default ceiling on pipelines running at once; further dispatches wait in 'queued' until a slot
+  // frees. Surfaced as an operator setting (persisted in kv) — this is just the first-boot default.
+  maxConcurrent: Number(process.env.MAX_CONCURRENT ?? 3),
   // The implementor runs with a deterministic per-session turn ceiling. Hitting it ends the SDK run
   // with subtype "error_max_turns" — an involuntary cutoff, NOT a real finish — at a known point, so
   // the orchestrator can silently warm-resume the session and keep going (the implementor used to

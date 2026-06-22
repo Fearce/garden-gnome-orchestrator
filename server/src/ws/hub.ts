@@ -44,6 +44,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     director: ctx.db.listDirectorMessages(SNAPSHOT_DIRECTOR_MSGS),
     accounts: ctx.accounts.dto(),
     approvalMode: ctx.manager.approvalMode(),
+    settings: ctx.manager.settings(),
   };
 }
 
@@ -128,6 +129,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       break;
     case "approval.set":
       ctx.manager.setApprovalMode(cmd.on);
+      break;
+    case "settings.set":
+      ctx.manager.setSettings(cmd.settings);
       break;
     case "thread.changes": {
       const changes = await ctx.manager.getChanges(cmd.threadId);
