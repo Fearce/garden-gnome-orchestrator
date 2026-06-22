@@ -44,6 +44,15 @@ interface LiveImplementor {
 
 const MAX_RESULT_PREVIEW = 600;
 const QUESTION_TIMEOUT_MS = 20 * 60 * 1000;
+// SDK result subtypes that mean "involuntarily cut off, not finished" — the orchestrator silently
+// warm-resumes these instead of carrying half-done work into QA. A genuine finish is `success`; a usage
+// cap is detected separately (agent.rateLimited). Kept as a set so more cutoff subtypes can join here.
+const LIMIT_SUBTYPES: ReadonlySet<string> = new Set(["error_max_turns"]);
+// Explicit, terminal completion phrasing in the implementor's last words — deliberately narrow, since a
+// false "done" suppresses a needed auto-resume (the bug), while a missed "done" only costs one cheap warm
+// resume. Forward-looking phrasing ("doing that now", "starting that next") must NOT match.
+const IMPLEMENTOR_DONE_RE =
+  /\b(all done|task (?:is )?(?:now )?complete|everything is (?:complete|done)|nothing (?:more|else) (?:to do|left)|ready for (?:qa|review)|handing (?:off |this )?(?:to )?qa|the work is (?:complete|done|finished))\b/;
 // On a mid-run 5h/weekly cap, relaunch on another account (resuming the session) up to N times.
 const MAX_ACCOUNT_FAILOVERS = 3;
 // After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
@@ -113,6 +122,10 @@ export class ThreadManager implements OrchestratorApi {
   // pipeline folds it into the implementor's kickoff.
   private readonly liveRole = new Map<string, AgentRun>();
   private readonly directorNotes = new Map<string, string[]>();
+  // Per-thread count of consecutive turn-limit auto-resumes inside the current implementor→QA loop.
+  // Reset when the loop (re)enters, cleared when it exits, and capped at config.maxAutoResumes so a
+  // wedged implementor that keeps hitting the turn ceiling without progress can't spin forever.
+  private readonly autoResumes = new Map<string, number>();
   // During QA the implementor stays in `this.live` but sits idle (parked for the next fix-round),
   // and the QA agent is the only thing actually running in the slot. An inject must reach THAT QA
   // agent, not the idle implementor — waking the implementor here is what put two agents in one slot.
@@ -716,6 +729,87 @@ export class ThreadManager implements OrchestratorApi {
     return undefined;
   }
 
+  /**
+   * Await the implementor's result, but transparently CONTINUE it when the run ended only because it
+   * hit the per-session turn ceiling (subtype "error_max_turns") mid-task — the bug this fixes: the
+   * implementor said "doing that now", the SDK cut it off at the turn cap, and the task parked on a
+   * manual Resume button. A turn-limit stop is always involuntary (a genuine finish ends with success),
+   * so we relaunch the warm session and keep going until it really finishes, is cancelled, looks done,
+   * or the auto-resume cap is reached — at which point `res` flows into the unchanged QA/review logic.
+   *
+   * Relaunch = stop the maxed-out query, then warm-resume its session in a FRESH query. maxTurns is a
+   * per-query ceiling ("max turns before the query stops"), and num_turns does NOT reset within a still-
+   * open streaming-input query — so steering the same query in place would instantly re-hit the exceeded
+   * cap with zero forward progress. A fresh resume query starts num_turns at 0, giving a real budget to
+   * advance the work. This is exactly the path the rate-limit failover already uses (stop → resume).
+   */
+  private async awaitImplementorCompletion(
+    thread: Thread,
+    effort: Effort | undefined,
+    kickoff: string,
+    run: AgentRun,
+    accountId: string,
+    useNext: boolean,
+    continueMsg: string,
+  ): Promise<ResultEvent | undefined> {
+    let res = await this.awaitImplementorResult(thread, effort, run, accountId, useNext, continueMsg);
+    let current = run;
+    while (
+      this.isTurnLimitStop(res) &&
+      !this.cancelled(thread.id) &&
+      !this.implementorLooksDone(thread.id) &&
+      (this.autoResumes.get(thread.id) ?? 0) < config.maxAutoResumes
+    ) {
+      const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
+      if (!session) break; // no session to resume from — fall through to the QA/review handling
+      const n = (this.autoResumes.get(thread.id) ?? 0) + 1;
+      this.autoResumes.set(thread.id, n);
+      this.logAutoResume(thread.id, n);
+      const nudge =
+        "You haven't finished — you stopped at a turn limit, not because the work is done. Continue exactly " +
+        "where you left off and complete the task. A QA agent will review your work when you're genuinely done.";
+      // Close the turn-maxed query before resuming so we never run two implementors on one workspace;
+      // startImplementor's onEnd guard tolerates the relaunch replacing `this.live` first either way.
+      await current.stop();
+      if (this.cancelled(thread.id)) break;
+      const start = await this.startResumedImplementor(thread, kickoff, session, {
+        effort,
+        resumeNudge: nudge,
+        qaFollows: true,
+      });
+      if (!start) break; // cancelled while compressing the prior session
+      this.flushDirectorNotes(thread.id, start.run);
+      current = start.run;
+      res = await this.awaitImplementorResult(thread, effort, start.run, start.accountId, false, nudge);
+    }
+    return res;
+  }
+
+  /** A turn-ceiling cutoff (vs. a genuine finish, a usage cap, or a crash) — the only stop we silently
+   *  resume. Backed by a set so future involuntary-cutoff subtypes can be added in one place. */
+  private isTurnLimitStop(res: ResultEvent | undefined): boolean {
+    return !!res && res.isError && LIMIT_SUBTYPES.has(res.subtype);
+  }
+
+  /** Whether the implementor's most recent text message reads as a genuine completion rather than a
+   *  mid-thought cutoff. Used as a secondary guard so that even on a turn-limit stop we DON'T auto-resume
+   *  when the agent clearly signalled it was done — and (deliberately strict) we DO resume on anything
+   *  forward-looking ("doing that now"), because a missed resume costs a manual click while an extra warm
+   *  resume of an already-done task is cheap and harmless. */
+  private implementorLooksDone(threadId: string): boolean {
+    const last = this.db.lastMessageOf(threadId, "implementor", "text");
+    return !!last && IMPLEMENTOR_DONE_RE.test(last.content.slice(-600).toLowerCase());
+  }
+
+  /** Surface a turn-limit auto-resume both in the global activity log and as a system line in the task
+   *  feed, so the continuation is visible without the user ever touching the Resume button. */
+  private logAutoResume(threadId: string, n: number): void {
+    const text = `Auto-resuming implementor (turn limit hit, continuing… ${n}/${config.maxAutoResumes})`;
+    this.hub.log("info", text);
+    const m = this.db.addMessage({ threadId, role: "implementor", kind: "system", content: `↻ ${text}` });
+    this.hub.publish({ type: "thread.message", threadId, message: m });
+  }
+
   /** Implementor → QA → fix, repeated until QA passes or we run out of rounds. The live
    *  implementor is stopped on every exit so a finished/parked task stops counting as live;
    *  later injects fall back to the resume path (lastImplementorSession). */
@@ -723,6 +817,7 @@ export class ThreadManager implements OrchestratorApi {
     try {
       await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession, directorNote);
     } finally {
+      this.autoResumes.delete(thread.id);
       await this.stopLive(thread.id);
     }
   }
@@ -811,6 +906,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private async runImplementorQaLoop(thread: Thread, kickoff: string, effort?: Effort, resumeSession?: string, directorNote?: string): Promise<void> {
+    this.autoResumes.set(thread.id, 0);
     const start = await this.startResumedImplementor(thread, kickoff, resumeSession, {
       effort,
       resumeNudge:
@@ -826,9 +922,10 @@ export class ThreadManager implements OrchestratorApi {
     // (state was still pre-implementor) after the fold — deliver it now that the implementor is live, so
     // it isn't stranded in the buffer. Notes arriving after this point hit the live-inject path directly.
     this.flushDirectorNotes(thread.id, start.run);
-    let res = await this.awaitImplementorResult(
+    let res = await this.awaitImplementorCompletion(
       thread,
       effort,
+      kickoff,
       start.run,
       start.accountId,
       false,
@@ -885,7 +982,7 @@ export class ThreadManager implements OrchestratorApi {
       const noteBlock = qaNotes?.length ? `\n\n[New information from the director]\n${qaNotes.join("\n\n")}` : "";
       const fixMsg = `QA review found issues — fix ALL of these, then we'll re-check:\n${formatQaIssues(qa)}${noteBlock}`;
       live.run.send(fixMsg, { priority: "now" });
-      res = await this.awaitImplementorResult(thread, effort, live.run, live.accountId, true, fixMsg);
+      res = await this.awaitImplementorCompletion(thread, effort, kickoff, live.run, live.accountId, true, fixMsg);
     }
   }
 

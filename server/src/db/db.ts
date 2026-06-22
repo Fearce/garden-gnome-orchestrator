@@ -470,6 +470,15 @@ export class Db {
     ).map(rowToMessage);
   }
 
+  /** The most recent message of a given role+kind for a thread, or null — a single indexed lookup so
+   *  callers (e.g. the auto-resume "looks done?" check) don't materialize the whole message history. */
+  lastMessageOf(threadId: string, role: Message["role"], kind: Message["kind"]): Message | null {
+    const row = this.raw
+      .prepare("SELECT * FROM messages WHERE thread_id = ? AND role = ? AND kind = ? ORDER BY created_at DESC LIMIT 1")
+      .get(threadId, role, kind) as Row | undefined;
+    return row ? rowToMessage(row) : null;
+  }
+
   // ---- director conversation ----
   addDirectorMessage(input: {
     role: "user" | "director";

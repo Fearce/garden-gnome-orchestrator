@@ -172,6 +172,10 @@ export function implementorConfig(
     settingSources: ["user", "project", "local"],
     effort: resolveEffort(opts?.effort),
     includePartialMessages: true,
+    // Deterministic turn ceiling: a cutoff here ends with subtype "error_max_turns" at a known point,
+    // which the orchestrator detects and warm-resumes invisibly (cheap, since the just-ended session's
+    // prompt cache is still warm). Without it the SDK default fires unpredictably mid-task → manual Resume.
+    maxTurns: config.implementorMaxTurns,
   };
   if (opts?.resume) cfg.resume = opts.resume;
   return cfg;

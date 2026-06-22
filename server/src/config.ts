@@ -92,6 +92,14 @@ export const config = {
     qa: "claude-opus-4-8",
   },
   maxQaRounds: Number(process.env.MAX_QA_ROUNDS ?? 4),
+  // The implementor runs with a deterministic per-session turn ceiling. Hitting it ends the SDK run
+  // with subtype "error_max_turns" — an involuntary cutoff, NOT a real finish — at a known point, so
+  // the orchestrator can silently warm-resume the session and keep going (the implementor used to
+  // hit an unpredictable SDK default mid-task and park on a manual Resume button).
+  implementorMaxTurns: Number(process.env.IMPLEMENTOR_MAX_TURNS ?? 100),
+  // Cap on consecutive turn-limit auto-resumes per implementor→QA loop, so a wedged implementor that
+  // keeps hitting the ceiling without progressing can't spin forever — it settles to review instead.
+  maxAutoResumes: Number(process.env.MAX_AUTO_RESUMES ?? 8),
   // The `xhigh` implementor effort tier maps to a Max-5-only Anthropic API effort. It's OFF by
   // default so the shared repo never selects or sends it for accounts without that subscription
   // (the planner can't emit it, and any stale/legacy xhigh is coerced down to `high` at dispatch).
