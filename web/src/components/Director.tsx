@@ -15,7 +15,16 @@ export function Director() {
   const [ws, setWs] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const setDirectorWidth = useStore((s) => s.setDirectorWidth);
+  const selectedThreadId = useStore((s) => s.selectedThreadId);
   const att = useAttachments();
+
+  // Selecting a task pre-fills the repo path from that task's workspace. Keyed on the id
+  // alone so manual edits and same-task re-selects never re-fire — only a different task wins.
+  useEffect(() => {
+    if (!selectedThreadId) return;
+    const t = useStore.getState().threads[selectedThreadId];
+    if (t?.workspace) setWs(t.workspace);
+  }, [selectedThreadId]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastSentRef = useRef(""); // last sent prompt, recalled with ↑ when the field is empty
 
