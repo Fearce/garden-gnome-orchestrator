@@ -1149,6 +1149,19 @@ export class ThreadManager implements OrchestratorApi {
     }
     // Not live → resume. Stash any images so the resumed implementor's kickoff carries them.
     if (images?.length) this.threadImages.set(threadId, images.map(toImageBlock));
+    // Echo the inject into the feed BEFORE resuming. The cold-resume path used to swallow the note —
+    // it reached the resumed implementor via the kickoff's directorNote but never showed in the
+    // history. This branch now OWNS the feed echo for every cold inject (review/paused/done/failed);
+    // resumeThread no longer echoes, so there's exactly one message and no state-dependent double.
+    const m = this.db.addMessage({
+      threadId,
+      role: "director",
+      kind: "system",
+      content: `↪ injected: ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+      attachments: injectRefs(),
+    });
+    this.hub.publish({ type: "thread.message", threadId, message: m });
+    this.touchThread(threadId);
     return this.resumeThread(threadId, message);
   }
 
@@ -1195,9 +1208,9 @@ export class ThreadManager implements OrchestratorApi {
     // the failure point — and clears the error via the first stage's setState.
     if (thread.state === "failed") {
       const note = message?.trim() ? message : undefined;
-      if (note) this.db.addMessage({ threadId, role: "director", kind: "system", content: `resume: ${note}` });
       // Thread the steering note INTO the pipeline so the implementor actually receives it — not just
-      // the UI feed. (Previously it was only echoed to the feed and silently dropped before the agent.)
+      // the UI feed. The feed echo is owned by the caller (injectThread echoes before resuming); a
+      // direct resume carries no message, so nothing is dropped from the history.
       void this.runPipeline(threadId, note);
       return { ok: true, state: "planning" };
     }
