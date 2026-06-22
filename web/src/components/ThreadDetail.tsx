@@ -14,6 +14,11 @@ const roleVar = (role: Role): CSSProperties => ({ "--role": roleColor(role) } as
 
 const ROLE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
 
+// Filter-chip order. Director is first so the DIRECTOR chip renders right after ALL (before
+// PLANNER). It's deliberately absent from ROLE_ORDER, which drives the agent pipelinePath —
+// the director isn't an agent run, just the brief + injected steering.
+const FILTER_ORDER: Role[] = ["director", "planner", "researcher", "implementor", "qa"];
+
 // Only the most recent N feed rows are rendered; older ones load in batches as you scroll up.
 // A long task can accumulate thousands of tool calls — rendering them all made every keystroke
 // in the inject bar reconcile the whole list, which is the lag this caps.
@@ -35,6 +40,7 @@ function itemRoleOf(f: FeedItem, runRole: Record<string, Role>): Role | null {
   if (f.kind === "text" || f.kind === "tool") return f.role;
   if (f.kind === "tool_result") return runRole[f.runId] ?? null;
   if (f.kind === "finding") return f.finding.fromRole ?? null;
+  if (f.kind === "system") return f.role ?? null;
   return null;
 }
 
@@ -118,7 +124,7 @@ export function ThreadDetail() {
     return c;
   }, [feed, runRole]);
 
-  const activeRoles = useMemo(() => ROLE_ORDER.filter((r) => (counts[r] ?? 0) > 0), [counts]);
+  const activeRoles = useMemo(() => FILTER_ORDER.filter((r) => (counts[r] ?? 0) > 0), [counts]);
 
   const visible = useMemo(
     () =>

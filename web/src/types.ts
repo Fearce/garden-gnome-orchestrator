@@ -189,7 +189,7 @@ export type FeedItem =
   | { kind: "tool"; at: number; role: Role; runId: string; id?: string; name: string; input: unknown }
   | { kind: "tool_result"; at: number; runId: string; id: string; messageId?: string; isError: boolean; preview: string }
   | { kind: "finding"; at: number; finding: Finding }
-  | { kind: "system"; at: number; id?: string; text: string };
+  | { kind: "system"; at: number; id?: string; text: string; role?: Role };
 
 export interface DirectorItem {
   id: string;

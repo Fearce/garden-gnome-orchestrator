@@ -311,6 +311,17 @@ function applyEvent(ev: ServerEvent): void {
           if (fi) dbItems.push(fi);
         }
         for (const f of ev.findings) dbItems.push({ kind: "finding", at: f.createdAt, finding: f });
+        // The original brief the director wrote isn't a Message row — it rides on the history event.
+        // Synthesize a stable director-tagged row so it anchors the DIRECTOR filter at the top.
+        if (ev.brief.trim()) {
+          dbItems.push({
+            kind: "system",
+            at: s.threads[ev.threadId]?.createdAt ?? 0,
+            id: "brief:" + ev.threadId,
+            text: ev.brief,
+            role: "director",
+          });
+        }
 
         const dbMessageIds = new Set<string>();
         const dbFindingIds = new Set<string>();
@@ -431,7 +442,7 @@ function messageToFeed(m: Message): FeedItem | null {
       // the dedup key. isError isn't stored, so a reloaded result renders without the error tint.
       return { kind: "tool_result", at: m.createdAt, runId: m.runId ?? "", id: m.id, messageId: m.id, isError: false, preview: m.content };
     case "system":
-      return { kind: "system", at: m.createdAt, id: m.id, text: m.content };
+      return { kind: "system", at: m.createdAt, id: m.id, text: m.content, role: m.role === "director" ? "director" : undefined };
     default:
       return null;
   }
