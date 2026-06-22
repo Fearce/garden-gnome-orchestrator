@@ -1,6 +1,6 @@
 // Derive a fresh board title from a directive the director injected into a running task. the user runs
 // 4–5 tasks at once and loses track when a lane's scope drifts from its original title (a task created
-// as "Replace Mikkel → the user everywhere" but re-injected to do unrelated work still shows the stale
+// as "Fix the login redirect bug" but re-injected to do unrelated work still shows the stale
 // title). After every inject we regenerate the title to reflect what the task is being asked to do NOW.
 //
 // Short directives (< SHORT_WORD_LIMIT words) are used verbatim — no model latency for "re-run the
