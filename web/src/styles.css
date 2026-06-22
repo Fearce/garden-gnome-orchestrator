@@ -197,10 +197,43 @@ button { font-family: inherit; cursor: pointer; }
 .attach-btn { display: inline-flex; align-items: center; justify-content: center; padding: 5px 7px; color: var(--text-dim); }
 .attach-btn:hover { color: var(--accent); }
 .msg-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.msg-thumb { display: block; line-height: 0; }
+.msg-thumb {
+  display: block; line-height: 0; padding: 0; border: none; background: none;
+  cursor: zoom-in; transition: opacity 0.12s ease;
+}
+.msg-thumb:hover { opacity: 0.82; }
 .msg-thumb img {
   max-width: 200px; max-height: 160px; object-fit: cover;
   border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--bg-2);
+}
+
+/* Full-screen image viewer (MessageThumbs lightbox). */
+.lightbox {
+  position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center;
+  background: oklch(0 0 0 / 0.82); backdrop-filter: blur(4px); overflow: hidden; touch-action: none;
+}
+.lightbox-img {
+  max-width: 94vw; max-height: 92vh; object-fit: contain; user-select: none; -webkit-user-drag: none;
+  border-radius: var(--r-sm); box-shadow: var(--shadow-2); transition: transform 0.04s linear; will-change: transform;
+}
+.lightbox-close {
+  position: fixed; top: 16px; right: 18px; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;
+  padding: 0; border-radius: 100px; border: 1px solid var(--line-strong); background: var(--bg-1);
+  color: var(--text-dim); font-size: 17px; line-height: 1; cursor: pointer; z-index: 2;
+}
+.lightbox-close:hover { color: var(--text); border-color: var(--text-faint); }
+.lightbox-nav {
+  position: fixed; top: 50%; transform: translateY(-50%); width: 44px; height: 60px; display: flex; align-items: center; justify-content: center;
+  padding: 0; border-radius: var(--r-md); border: 1px solid var(--line); background: oklch(0 0 0 / 0.35);
+  color: var(--text-dim); font-size: 30px; line-height: 1; cursor: pointer; z-index: 2;
+}
+.lightbox-nav:hover { color: var(--text); background: var(--bg-1); }
+.lightbox-nav.prev { left: 16px; }
+.lightbox-nav.next { right: 16px; }
+.lightbox-count {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; color: var(--text-dim);
+  background: oklch(0 0 0 / 0.4); padding: 4px 11px; border-radius: 100px; border: 1px solid var(--line); z-index: 2;
 }
 
 /* ---- buttons ---- */

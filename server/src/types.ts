@@ -98,6 +98,7 @@ export interface Message {
   role: Role | "user";
   kind: MessageKind;
   content: string;
+  attachments?: AttachmentRef[];
   createdAt: number;
 }
 

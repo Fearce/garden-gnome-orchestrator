@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS messages (
   role        TEXT NOT NULL,
   kind        TEXT NOT NULL,
   content     TEXT NOT NULL,
+  attachments TEXT NOT NULL DEFAULT '[]',
   created_at  INTEGER NOT NULL
 );
 

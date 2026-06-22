@@ -93,6 +93,7 @@ function rowToQuestion(r: Row): Question {
 }
 
 function rowToMessage(r: Row): Message {
+  const refs = parseAttachments(r.attachments);
   return {
     id: r.id as string,
     threadId: r.thread_id as string,
@@ -100,6 +101,7 @@ function rowToMessage(r: Row): Message {
     role: r.role as Message["role"],
     kind: r.kind as Message["kind"],
     content: r.content as string,
+    attachments: refs.length ? refs : undefined,
     createdAt: r.created_at as number,
   };
 }
@@ -125,6 +127,7 @@ export class Db {
       "ALTER TABLE agent_runs ADD COLUMN account TEXT",
       "ALTER TABLE agent_runs ADD COLUMN effort TEXT",
       "ALTER TABLE director_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
       "ALTER TABLE threads ADD COLUMN closed_prev_state TEXT",
@@ -440,6 +443,7 @@ export class Db {
     role: Message["role"];
     kind: Message["kind"];
     content: string;
+    attachments?: AttachmentRef[];
   }): Message {
     const m: Message = {
       id: newId(),
@@ -448,14 +452,15 @@ export class Db {
       role: input.role,
       kind: input.kind,
       content: input.content,
+      attachments: input.attachments?.length ? input.attachments : undefined,
       createdAt: now(),
     };
     this.raw
       .prepare(
-        `INSERT INTO messages(id, thread_id, run_id, role, kind, content, created_at)
-         VALUES(@id, @threadId, @runId, @role, @kind, @content, @createdAt)`,
+        `INSERT INTO messages(id, thread_id, run_id, role, kind, content, attachments, created_at)
+         VALUES(@id, @threadId, @runId, @role, @kind, @content, @attachments, @createdAt)`,
       )
-      .run(m);
+      .run({ ...m, attachments: JSON.stringify(m.attachments ?? []) });
     return m;
   }
 

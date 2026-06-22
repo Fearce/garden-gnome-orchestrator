@@ -14,6 +14,7 @@ import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments
 import type {
   AgentEvent,
   AgentRunState,
+  AttachmentRef,
   Effort,
   Finding,
   ImageAttachment,
@@ -897,6 +898,21 @@ export class ThreadManager implements OrchestratorApi {
     images?: ImageAttachment[],
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
+    // Persist injected images as attachments so the feed can render them as thumbnails (the blocks
+    // sent to the model are transient). Lazy + memoized: only the branch that actually echoes a feed
+    // message calls it, so the cold-resume path (which adds no feed row) never orphans attachment
+    // rows; the memo means a branch reached more than once still saves the bytes only once.
+    let savedRefs: AttachmentRef[] | undefined;
+    let didSave = false;
+    const injectRefs = (): AttachmentRef[] | undefined => {
+      if (!didSave) {
+        didSave = true;
+        savedRefs = images?.length
+          ? images.map((img) => this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }))
+          : undefined;
+      }
+      return savedRefs;
+    };
     // QA stage gate (checked BEFORE `this.live`): between fix-rounds the implementor is parked
     // idle-but-live in `this.live`, while the QA agent runs alone in the slot. Falling through to the
     // `this.live` branch would `send` to that idle implementor and start it BESIDE the running QA — two
@@ -933,6 +949,7 @@ export class ThreadManager implements OrchestratorApi {
         role: "director",
         kind: "system",
         content: `↪ injected (forwarded to QA): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+        attachments: injectRefs(),
       });
       this.hub.publish({ type: "thread.message", threadId, message: m });
       this.touchThread(threadId);
@@ -954,6 +971,7 @@ export class ThreadManager implements OrchestratorApi {
         role: "director",
         kind: "system",
         content: `↪ injected: ${message}${blocks.length ? ` [+${blocks.length} image(s)]` : ""}`,
+        attachments: injectRefs(),
       });
       // Echo it into the task feed live (otherwise the injected note only appears on a later
       // history refetch) and bump recency so the task jumps to the front of the board.
@@ -995,7 +1013,8 @@ export class ThreadManager implements OrchestratorApi {
         threadId,
         role: "director",
         kind: "system",
-        content: `↪ injected (held for the ${phase.state} stage): ${message}`,
+        content: `↪ injected (held for the ${phase.state} stage): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+        attachments: injectRefs(),
       });
       this.hub.publish({ type: "thread.message", threadId, message: m });
       this.touchThread(threadId);
@@ -1011,7 +1030,7 @@ export class ThreadManager implements OrchestratorApi {
       const q = this.pendingResumeMsgs.get(threadId) ?? [];
       q.push(message);
       this.pendingResumeMsgs.set(threadId, q);
-      const m = this.db.addMessage({ threadId, role: "director", kind: "system", content: `↪ injected: ${message}` });
+      const m = this.db.addMessage({ threadId, role: "director", kind: "system", content: `↪ injected: ${message}`, attachments: injectRefs() });
       this.hub.publish({ type: "thread.message", threadId, message: m });
       this.touchThread(threadId);
       this.hub.log("info", `Buffered inject into ${threadId.slice(0, 8)} (resume materializing)`);

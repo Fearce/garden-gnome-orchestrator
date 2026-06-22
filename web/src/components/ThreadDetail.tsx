@@ -3,7 +3,7 @@ import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
 import { clock, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
-import { AttachButton, ComposerThumbs, useAttachments } from "../lib/attachments.js";
+import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
@@ -542,6 +542,7 @@ const FeedRow = memo(function FeedRow({ item }: { item: FeedItem }) {
       return (
         <div className="fi system">
           <div className="body">{item.text}</div>
+          <MessageThumbs refs={item.attachments} />
         </div>
       );
     default:

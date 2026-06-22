@@ -430,7 +430,7 @@ function notifyThreadState(t: Thread): void {
 }
 
 function messageToFeed(m: Message): FeedItem | null {
-  if (m.role === "user") return { kind: "system", at: m.createdAt, id: m.id, text: m.content };
+  if (m.role === "user") return { kind: "system", at: m.createdAt, id: m.id, text: m.content, attachments: m.attachments };
   const role = m.role as Role;
   switch (m.kind) {
     case "text":
@@ -442,7 +442,7 @@ function messageToFeed(m: Message): FeedItem | null {
       // the dedup key. isError isn't stored, so a reloaded result renders without the error tint.
       return { kind: "tool_result", at: m.createdAt, runId: m.runId ?? "", id: m.id, messageId: m.id, isError: false, preview: m.content };
     case "system":
-      return { kind: "system", at: m.createdAt, id: m.id, text: m.content, role: m.role === "director" ? "director" : undefined };
+      return { kind: "system", at: m.createdAt, id: m.id, text: m.content, role: m.role === "director" ? "director" : undefined, attachments: m.attachments };
     default:
       return null;
   }
