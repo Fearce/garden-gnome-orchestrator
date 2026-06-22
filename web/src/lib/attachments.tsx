@@ -1,12 +1,13 @@
 import { useCallback, useRef, useState } from "react";
 import type { AttachmentRef, ImageAttachment } from "../types.js";
+import { apiUrl } from "./base.js";
 
 export const MAX_IMAGES = 8;
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const OK_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 export function attachmentUrl(ref: AttachmentRef): string {
-  return `/api/attachment/${ref.id}`;
+  return apiUrl(`/api/attachment/${ref.id}`);
 }
 
 function previewUrl(a: ImageAttachment): string {

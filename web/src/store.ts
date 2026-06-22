@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { apiUrl, wsUrl } from "./lib/base.js";
 import type {
   AccountDTO,
   AgentRun,
@@ -429,7 +430,7 @@ function summarizeToolInput(input: unknown): string {
 /** Boot: check auth; connect the WS if allowed, else surface the login screen. */
 export async function init(): Promise<void> {
   try {
-    const r = await fetch("/api/me");
+    const r = await fetch(apiUrl("/api/me"));
     const j = (await r.json()) as { authed?: boolean; required?: boolean; google?: boolean; password?: boolean };
     if (j.required && !j.authed) {
       const err = new URLSearchParams(location.search).get("e");
@@ -446,7 +447,7 @@ export async function init(): Promise<void> {
 
 export async function login(password: string): Promise<{ ok: boolean; retryMs?: number }> {
   try {
-    const r = await fetch("/api/login", {
+    const r = await fetch(apiUrl("/api/login"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ password }),
@@ -463,9 +464,7 @@ export async function login(password: string): Promise<{ ok: boolean; retryMs?: 
 }
 
 export function connect(): void {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const url = `${proto}://${location.host}/ws`;
-  const ws = new WebSocket(url);
+  const ws = new WebSocket(wsUrl());
   socket = ws;
   ws.onopen = () => useStore.setState({ connected: true });
   ws.onclose = (e) => {

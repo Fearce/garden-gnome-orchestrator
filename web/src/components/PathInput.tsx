@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { apiUrl } from "../lib/base.js";
 
 interface Entry {
   name: string;
@@ -35,7 +36,7 @@ export function PathInput({
 
   const run = (path: string) => {
     const mine = ++seq.current;
-    fetch(`/api/fs/complete?path=${encodeURIComponent(path)}`)
+    fetch(apiUrl(`/api/fs/complete?path=${encodeURIComponent(path)}`))
       .then((r) => (r.ok ? (r.json() as Promise<{ entries: Entry[] }>) : { entries: [] }))
       .then((d) => {
         if (mine !== seq.current) return; // a newer keystroke already superseded this fetch

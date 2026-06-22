@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiUrl } from "../lib/base.js";
 
 interface LsResponse {
   path: string;
@@ -27,7 +28,7 @@ export function FolderPicker({
     let alive = true;
     setLoading(true);
     setError(null);
-    fetch(`/api/fs/ls?path=${encodeURIComponent(path)}`)
+    fetch(apiUrl(`/api/fs/ls?path=${encodeURIComponent(path)}`))
       .then(async (r) => {
         if (!r.ok) throw new Error((await r.json().catch(() => null))?.error || `error ${r.status}`);
         return (await r.json()) as LsResponse;
