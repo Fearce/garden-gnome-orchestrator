@@ -271,8 +271,18 @@ export class ThreadManager implements OrchestratorApi {
 
   resolveQuestion(questionId: string, answer: string): boolean {
     const resolver = this.pendingQuestions.get(questionId);
-    this.db.answerQuestion(questionId, answer);
+    const q = this.db.answerQuestion(questionId, answer);
     this.hub.publish({ type: "question.resolved", questionId, answer });
+    if (q?.threadId) {
+      const m = this.db.addMessage({
+        threadId: q.threadId,
+        role: "director",
+        kind: "system",
+        content: `↪ replied: ${answer}`,
+      });
+      this.hub.publish({ type: "thread.message", threadId: q.threadId, message: m });
+      this.touchThread(q.threadId);
+    }
     this.restoreAfterQuestion(questionId);
     if (resolver) {
       this.pendingQuestions.delete(questionId);
