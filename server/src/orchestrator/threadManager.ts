@@ -7,6 +7,7 @@ import { implementorConfig, plannerConfig, qaConfig, researcherConfig, resolveEf
 import { createBusServer } from "../bus/busServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
+import { titleFromInjection } from "./titleFromInjection.js";
 import { config } from "../config.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -1009,6 +1010,11 @@ export class ThreadManager implements OrchestratorApi {
     images?: ImageAttachment[],
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
+    // Auto-retitle the lane to reflect the LATEST directive — the user runs several tasks at once and
+    // loses track when a lane's scope drifts from its original title. Fire-and-forget (void): the
+    // model call must never block, slow, or throw into the inject path. Covers every inject branch
+    // below (live, QA-forward, pre-implementor buffer, resume, cold-resume) from this one spot.
+    if (thread) void this.retitleFromInjection(threadId, message);
     // Persist injected images as attachments so the feed can render them as thumbnails (the blocks
     // sent to the model are transient). Lazy + memoized: only the branch that actually echoes a feed
     // message calls it, so the cold-resume path (which adds no feed row) never orphans attachment
@@ -1163,6 +1169,24 @@ export class ThreadManager implements OrchestratorApi {
     this.hub.publish({ type: "thread.message", threadId, message: m });
     this.touchThread(threadId);
     return this.resumeThread(threadId, message);
+  }
+
+  /** Regenerate a task's board title from a freshly-injected directive (short → verbatim, longer →
+   *  a ≤8-word Haiku summary), then broadcast the rename so the lane updates live. Best-effort: any
+   *  failure is swallowed and the title simply stays as-is — this must never disturb the inject path. */
+  private async retitleFromInjection(threadId: string, message: string): Promise<void> {
+    try {
+      const title = await titleFromInjection(message, this.accounts.auxToken());
+      if (!title) return;
+      const current = this.db.getThread(threadId);
+      if (!current || current.title === title) return; // gone, or no change — skip the churn
+      const t = this.db.updateThread(threadId, { title });
+      if (!t) return;
+      this.hub.publish({ type: "thread.upsert", thread: t });
+      this.hub.log("info", `Retitled ${threadId.slice(0, 8)} from injection → "${title}"`);
+    } catch (e) {
+      this.hub.log("warn", `Auto-retitle failed for ${threadId.slice(0, 8)}: ${String(e)}`);
+    }
   }
 
   private bufferDirectorNote(threadId: string, note: string): void {
