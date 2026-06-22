@@ -157,7 +157,7 @@ async function main(): Promise<void> {
     });
 
     // Folder picker for the dispatch form: list child directories of an absolute path so
-    // Mikkel can browse to a repo instead of typing it. Auth-gated and dirs-only (never
+    // the user can browse to a repo instead of typing it. Auth-gated and dirs-only (never
     // exposes file contents), reusing the same system/build SKIP set as find_workspace.
     app.get<{ Querystring: { path?: string } }>("/api/fs/ls", async (req, reply) => {
       if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });

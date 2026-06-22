@@ -57,10 +57,10 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
 
   const askUser = tool(
     "ask_user",
-    "Ask Mikkel for help when you hit a blocker only HE can resolve — a missing file/credential, a needed secret or access, or a decision you can't make yourself. Pauses this task until he answers. Use it EARLY: the moment you identify a hard blocker, ask — do NOT spend turns hunting workarounds for something he can fix in seconds. Prefer multiple-choice options when you can.",
+    "Ask the user for help when you hit a blocker only HE can resolve — a missing file/credential, a needed secret or access, or a decision you can't make yourself. Pauses this task until he answers. Use it EARLY: the moment you identify a hard blocker, ask — do NOT spend turns hunting workarounds for something he can fix in seconds. Prefer multiple-choice options when you can.",
     {
       header: z.string().describe("A 1-3 word chip label, e.g. 'Missing creds'."),
-      question: z.string().describe("What you need from Mikkel, with enough context for him to act."),
+      question: z.string().describe("What you need from the user, with enough context for him to act."),
       options: z
         .array(z.object({ label: z.string(), description: z.string().optional() }))
         .optional()
@@ -76,7 +76,7 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
         options: args.options ?? [],
         multiSelect: args.multiSelect,
       });
-      return { content: [{ type: "text", text: `Mikkel answered: ${answer}` }] };
+      return { content: [{ type: "text", text: `the user answered: ${answer}` }] };
     },
   );
 

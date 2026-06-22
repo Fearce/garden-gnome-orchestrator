@@ -5,14 +5,14 @@ export type Role = "director" | "planner" | "researcher" | "implementor" | "qa";
 export type ThreadState =
   | "intake" // just created, brief not yet built
   | "enriching" // director is enriching / about to clarify
-  | "awaiting_user" // blocked on a question for Mikkel
+  | "awaiting_user" // blocked on a question for the user
   | "planning" // planner + researcher running
   | "researching"
   | "awaiting_approval" // plan ready, blocked on your approve/reject
   | "implementing" // implementor live
   | "qa" // QA reviewing/testing the implementor's work
   | "paused" // implementor interrupted, awaiting resume/inject
-  | "review" // done but QA wasn't satisfied — needs Mikkel
+  | "review" // done but QA wasn't satisfied — needs the user
   | "done"
   | "failed"
   | "cancelled"

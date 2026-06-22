@@ -16,7 +16,7 @@ import { findWorkspaces } from "../workspace/findWorkspace.js";
 export function createDirectorServer(api: OrchestratorApi, getImages: () => ImageAttachment[]): McpServerConfig {
   const askUser = tool(
     "ask_user",
-    "Ask Mikkel a clarifying question BEFORE dispatching work, when the request is ambiguous or you're filling a gap he likely forgot to mention. Prefer multiple-choice options when you can; leave options empty for a free-text answer. Blocks until he answers. Don't over-ask — bundle related questions, and only ask what actually changes what you'd dispatch.",
+    "Ask the user a clarifying question BEFORE dispatching work, when the request is ambiguous or you're filling a gap he likely forgot to mention. Prefer multiple-choice options when you can; leave options empty for a free-text answer. Blocks until he answers. Don't over-ask — bundle related questions, and only ask what actually changes what you'd dispatch.",
     {
       header: z.string().describe("A 1-3 word chip label for the question, e.g. 'Target repo'."),
       question: z.string().describe("The full question."),
@@ -34,25 +34,25 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
         options: args.options ?? [],
         multiSelect: args.multiSelect,
       });
-      return { content: [{ type: "text", text: `Mikkel answered: ${answer}` }] };
+      return { content: [{ type: "text", text: `the user answered: ${answer}` }] };
     },
   );
 
   const findWorkspace = tool(
     "find_workspace",
-    "Resolve a project/repo NAME to its real absolute path on disk. ALWAYS use this to get the workspace before dispatch instead of guessing a path — pass the project name or keywords from Mikkel's request (e.g. 'my web app', 'example'). Returns ranked EXISTING directories (git repos preferred). One clear match → use it as the workspace; several plausible → ask Mikkel which; none → ask Mikkel for the path.",
+    "Resolve a project/repo NAME to its real absolute path on disk. ALWAYS use this to get the workspace before dispatch instead of guessing a path — pass the project name or keywords from the user's request (e.g. 'my web app', 'example'). Returns ranked EXISTING directories (git repos preferred). One clear match → use it as the workspace; several plausible → ask the user which; none → ask the user for the path.",
     { query: z.string().describe("Project name / keywords to locate, e.g. 'example' or 'my web app'.") },
     async (args) => {
       const matches = findWorkspaces(args.query, config.workspaceSearchRoots);
       if (!matches.length) {
-        return { content: [{ type: "text", text: `No directory matched "${args.query}" under the search roots. Ask Mikkel for the exact absolute path.` }] };
+        return { content: [{ type: "text", text: `No directory matched "${args.query}" under the search roots. Ask the user for the exact absolute path.` }] };
       }
       const text = matches.map((m, i) => `${i + 1}. ${m.path}${m.isGitRepo ? "  (git repo)" : ""}`).join("\n");
       return {
         content: [
           {
             type: "text",
-            text: `Candidates for "${args.query}" (best first):\n${text}\n\nUse the top match as the dispatch workspace unless it's clearly wrong; if two are equally plausible, ask Mikkel which.`,
+            text: `Candidates for "${args.query}" (best first):\n${text}\n\nUse the top match as the dispatch workspace unless it's clearly wrong; if two are equally plausible, ask the user which.`,
           },
         ],
       };
@@ -61,7 +61,7 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
 
   const dispatch = tool(
     "dispatch",
-    "Dispatch a task: the planner runs first in the target repo (reading the code and deciding whether external research is needed), routes to a researcher or straight to an Opus 4.8 implementor, then QA reviews — all seeded with the enriched brief and self-assembling; you don't choose the agents. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). Any image(s) Mikkel attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.",
+    "Dispatch a task: the planner runs first in the target repo (reading the code and deciding whether external research is needed), routes to a researcher or straight to an Opus 4.8 implementor, then QA reviews — all seeded with the enriched brief and self-assembling; you don't choose the agents. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). Any image(s) the user attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.",
     {
       title: z.string().describe("Short task title for the board lane."),
       workspace: z
@@ -72,7 +72,7 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
       brief: z
         .string()
         .describe(
-          "The ENRICHED brief for the implementor: the goal, the context you gathered (memories, constraints, conventions), what done looks like, and anything Mikkel clarified. Write it as the full spec you'd give up front — Opus 4.8 does best with the whole task stated at once.",
+          "The ENRICHED brief for the implementor: the goal, the context you gathered (memories, constraints, conventions), what done looks like, and anything the user clarified. Write it as the full spec you'd give up front — Opus 4.8 does best with the whole task stated at once.",
         ),
     },
     async (args) => {
@@ -81,7 +81,7 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
           content: [
             {
               type: "text",
-              text: `Workspace "${args.workspace}" does not exist on disk. Do NOT dispatch — a task can only run in a directory that already exists. Confirm the exact absolute path with Mikkel (ask_user) and retry with the corrected path.`,
+              text: `Workspace "${args.workspace}" does not exist on disk. Do NOT dispatch — a task can only run in a directory that already exists. Confirm the exact absolute path with the user (ask_user) and retry with the corrected path.`,
             },
           ],
           isError: true,

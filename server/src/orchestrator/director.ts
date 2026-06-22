@@ -12,7 +12,7 @@ import type { Account } from "../accounts/account.js";
 const MAX_DIRECTOR_FAILOVERS = 2;
 
 /**
- * The single long-lived Sonnet session Mikkel chats with. Streaming-input mode
+ * The single long-lived Sonnet session the user chats with. Streaming-input mode
  * keeps the conversation alive across many messages; if the process ever ends
  * we restart and resume from the captured session id so context is preserved.
  */
@@ -42,10 +42,10 @@ export class Director {
     this.hub.publish({ type: "director.message", message: msg });
 
     this.pendingImages = images ?? [];
-    // A path Mikkel typed in the path field is AUTHORITATIVE — it's the exact dispatch workspace, not
+    // A path the user typed in the path field is AUTHORITATIVE — it's the exact dispatch workspace, not
     // a hint to re-resolve. Tell the director to use it verbatim and skip find_workspace entirely.
     const base = workspace
-      ? `${text}\n\n[TARGET WORKSPACE — Mikkel set this explicitly. Use this EXACT absolute path as the dispatch workspace; do NOT call find_workspace and do NOT substitute another path: ${workspace}]`
+      ? `${text}\n\n[TARGET WORKSPACE — the user set this explicitly. Use this EXACT absolute path as the dispatch workspace; do NOT call find_workspace and do NOT substitute another path: ${workspace}]`
       : text;
     const content = contentWithImages(base, this.pendingImages.map(toImageBlock));
     this.pending = content;
@@ -55,7 +55,7 @@ export class Director {
     const accountCapped = this.accountId ? this.api.accounts.isRateLimited(this.accountId) : false;
     if (live && accountCapped) {
       // The long-lived session is stuck on a now-capped account — move it to one with
-      // headroom (resume keeps the conversation) BEFORE sending, so Mikkel never sees the
+      // headroom (resume keeps the conversation) BEFORE sending, so the user never sees the
       // SDK's "session limit" message while the other subscription is wide open.
       const next = this.api.accounts.selectFailover(this.accountId!);
       this.hub.log("info", `Director's ${this.accountLabel ?? this.accountId} is at its limit — switching to ${next?.label ?? "the other account"}.`);
