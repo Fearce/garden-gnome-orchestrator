@@ -319,7 +319,10 @@ function applyEvent(ev: ServerEvent): void {
         attachments: m.attachments,
         at: m.createdAt,
       }));
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode, settings: mergeSettings(ev.settings) });
+      // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
+      // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
+      // on every heartbeat — keep the live values until a frame that truly has settings arrives.
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}) });
       // hello also fires on WS reconnect (server restart / network blip). The feed kept its
       // pre-disconnect items but missed anything that streamed while we were gone — re-fetch
       // the open thread's history; the id-keyed merge fills the gap without dropping live items.
