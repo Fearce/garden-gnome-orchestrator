@@ -9,7 +9,6 @@ import { Accounts } from "./components/Accounts.js";
 import { SettingsPanel } from "./components/SettingsPanel.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
-import type { OrchestratorSettings, Role } from "./types.js";
 
 type MobilePane = "director" | "board";
 
@@ -42,7 +41,6 @@ export function App() {
           </div>
         </div>
         <RailToggle />
-        <AgentToggles />
         <SettingsButton open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} />
         <div className="spacer" />
         <Accounts />
@@ -67,60 +65,6 @@ export function App() {
       <MobileNav pane={mobilePane} setPane={setMobilePane} />
       <QuestionModal />
       {settingsOpen ? <SettingsPanel onClose={() => setSettingsOpen(false)} /> : null}
-    </div>
-  );
-}
-
-/** The per-task agent toggles, sitting next to the rail hide/show button. Each gates a pipeline
- *  stage server-side (planner/researcher/QA) — flip them before dispatching to shape the next task. */
-function AgentToggles() {
-  const settings = useStore((s) => s.settings);
-  const setSettings = useStore((s) => s.setSettings);
-  const toggle = (key: keyof OrchestratorSettings, on: boolean) =>
-    setSettings({ [key]: !on } as Partial<OrchestratorSettings>);
-
-  const items: { key: keyof OrchestratorSettings; role: Role; label: string; onTitle: string; offTitle: string }[] = [
-    {
-      key: "plannerEnabled",
-      role: "planner",
-      label: "Plan",
-      onTitle: "Planner ON — click to skip planning and dispatch straight to the implementor",
-      offTitle: "Planner OFF — tasks skip planning and go straight to the implementor. Click to re-enable.",
-    },
-    {
-      key: "researcherEnabled",
-      role: "researcher",
-      label: "Research",
-      onTitle: "Researcher ON — click to never run the research step",
-      offTitle: "Researcher OFF — the research step is skipped even if the planner asks for it. Click to re-enable.",
-    },
-    {
-      key: "qaEnabled",
-      role: "qa",
-      label: "QA",
-      onTitle: "QA ON — click to skip the QA review loop (implementor output becomes final)",
-      offTitle: "QA OFF — the implementor's output is final, with no QA review loop. Click to re-enable.",
-    },
-  ];
-
-  return (
-    <div className="agent-toggles" role="group" aria-label="Pipeline agents">
-      {items.map((it) => {
-        const on = !!settings[it.key];
-        return (
-          <button
-            key={it.key}
-            className={"agent-toggle" + (on ? " on" : " off")}
-            style={{ "--role": `var(--role-${it.role})` } as CSSProperties}
-            aria-pressed={on}
-            title={on ? it.onTitle : it.offTitle}
-            onClick={() => toggle(it.key, on)}
-          >
-            <span className="agent-dot" aria-hidden="true" />
-            {it.label}
-          </button>
-        );
-      })}
     </div>
   );
 }

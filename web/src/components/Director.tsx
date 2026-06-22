@@ -4,7 +4,7 @@ import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../
 import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
-import type { DirectorItem } from "../types.js";
+import type { DirectorItem, OrchestratorSettings, Role } from "../types.js";
 
 export function Director() {
   const items = useStore((s) => s.director);
@@ -66,14 +66,19 @@ export function Director() {
     <aside className="rail">
       <div className="resize-handle rail-resize" onMouseDown={startResize} title="Drag to resize the director panel" />
       <div className="rail-head">
-        <h2>Director</h2>
-        <div className="who">
-          <span className="pip active" style={{ "--role": "var(--role-director)" } as CSSProperties}>
-            <Gnome role="director" size={28} />
-          </span>
-          <span className="dim mono" style={{ fontSize: 11 }}>
-            {busy ? "thinking…" : "sonnet 4.6 · ready"}
-          </span>
+        <div className="rail-head-row">
+          <div className="who">
+            <span className="pip active" style={{ "--role": "var(--role-director)" } as CSSProperties}>
+              <Gnome role="director" size={28} />
+            </span>
+            <div className="rail-head-title">
+              <h2>Director</h2>
+              <span className="dim mono" style={{ fontSize: 11 }}>
+                {busy ? "thinking…" : "sonnet 4.6 · ready"}
+              </span>
+            </div>
+          </div>
+          <AgentToggles />
         </div>
       </div>
 
@@ -142,6 +147,60 @@ export function Director() {
       <FolderPicker initialPath={ws} onSelect={setWs} onClose={() => setPickerOpen(false)} />
     )}
     </>
+  );
+}
+
+/** The per-task pipeline gates, in the Director header where tasks are composed/dispatched. Each
+ *  gates a stage server-side (planner/researcher/QA) — flip them before sending to shape the next task. */
+function AgentToggles() {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const toggle = (key: keyof OrchestratorSettings, on: boolean) =>
+    setSettings({ [key]: !on } as Partial<OrchestratorSettings>);
+
+  const items: { key: keyof OrchestratorSettings; role: Role; label: string; onTitle: string; offTitle: string }[] = [
+    {
+      key: "plannerEnabled",
+      role: "planner",
+      label: "Plan",
+      onTitle: "Planner ON — click to skip planning and dispatch straight to the implementor",
+      offTitle: "Planner OFF — tasks skip planning and go straight to the implementor. Click to re-enable.",
+    },
+    {
+      key: "researcherEnabled",
+      role: "researcher",
+      label: "Research",
+      onTitle: "Researcher ON — click to never run the research step",
+      offTitle: "Researcher OFF — the research step is skipped even if the planner asks for it. Click to re-enable.",
+    },
+    {
+      key: "qaEnabled",
+      role: "qa",
+      label: "QA",
+      onTitle: "QA ON — click to skip the QA review loop (implementor output becomes final)",
+      offTitle: "QA OFF — the implementor's output is final, with no QA review loop. Click to re-enable.",
+    },
+  ];
+
+  return (
+    <div className="agent-toggles" role="group" aria-label="Pipeline agents">
+      {items.map((it) => {
+        const on = !!settings[it.key];
+        return (
+          <button
+            key={it.key}
+            className={"agent-toggle" + (on ? " on" : " off")}
+            style={{ "--role": `var(--role-${it.role})` } as CSSProperties}
+            aria-pressed={on}
+            title={on ? it.onTitle : it.offTitle}
+            onClick={() => toggle(it.key, on)}
+          >
+            <span className="agent-dot" aria-hidden="true" />
+            {it.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
