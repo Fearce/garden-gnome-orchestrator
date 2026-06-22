@@ -100,6 +100,27 @@ const FEED_HARD_CAP = 5000;
 
 let socket: WebSocket | null = null;
 
+// Keep the proxied WS tunnel alive and self-heal missed events. A reverse proxy
+// (Nginx proxy_read_timeout 60s) silently half-closes an idle WS during the
+// cancel->inject pause; the browser never fires onclose, so the new implementor
+// run's run.upsert is lost and its timer stays frozen at 0. HEARTBEAT_MS keeps
+// bidirectional traffic flowing (snapshot.request -> hello, which re-syncs runs
+// with authoritative startedAt); the watchdog force-closes a dead-but-not-closed
+// socket once no server message has arrived for STALE_MS, triggering reconnect.
+const HEARTBEAT_MS = 20_000;
+const WATCHDOG_MS = 10_000;
+const STALE_MS = 35_000;
+let lastRecvAt = 0;
+let heartbeat: ReturnType<typeof setInterval> | null = null;
+let watchdog: ReturnType<typeof setInterval> | null = null;
+
+function clearTimers(): void {
+  if (heartbeat) clearInterval(heartbeat);
+  if (watchdog) clearInterval(watchdog);
+  heartbeat = null;
+  watchdog = null;
+}
+
 function sendCommand(cmd: ClientCommand): void {
   if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(cmd));
 }
@@ -464,10 +485,19 @@ export async function login(password: string): Promise<{ ok: boolean; retryMs?: 
 }
 
 export function connect(): void {
+  clearTimers(); // never let a prior socket's intervals outlive it and stack
   const ws = new WebSocket(wsUrl());
   socket = ws;
-  ws.onopen = () => useStore.setState({ connected: true });
+  ws.onopen = () => {
+    useStore.setState({ connected: true });
+    lastRecvAt = Date.now();
+    heartbeat = setInterval(() => sendCommand({ type: "snapshot.request" }), HEARTBEAT_MS);
+    watchdog = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN && Date.now() - lastRecvAt > STALE_MS) ws.close();
+    }, WATCHDOG_MS);
+  };
   ws.onclose = (e) => {
+    clearTimers();
     useStore.setState({ connected: false });
     if (e.code === 4401) {
       useStore.setState({ authRequired: true, authed: false });
@@ -476,10 +506,21 @@ export function connect(): void {
     setTimeout(connect, 1200);
   };
   ws.onmessage = (e) => {
+    lastRecvAt = Date.now();
     try {
       applyEvent(JSON.parse(e.data) as ServerEvent);
     } catch {
       /* ignore malformed */
     }
   };
+}
+
+// A refocused/rewoken tab may have missed events while backgrounded (proxy timed the
+// WS out, or the OS suspended timers). Fire one snapshot.request on re-show for an
+// instant authoritative resync; if the socket is already dead the watchdog/onclose
+// path reconnects shortly after.
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") sendCommand({ type: "snapshot.request" });
+  });
 }
