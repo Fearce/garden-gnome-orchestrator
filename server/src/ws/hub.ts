@@ -86,6 +86,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     case "prompt.new":
       ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images);
       break;
+    case "prompt.direct":
+      await ctx.director.dispatchDirect(cmd.text, cmd.workspace, cmd.images);
+      break;
     case "question.answer":
       ctx.manager.resolveQuestion(cmd.questionId, cmd.answer);
       break;

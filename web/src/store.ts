@@ -57,6 +57,7 @@ interface State {
 
   select: (id: string | null) => void;
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
+  sendDirect: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
   answer: (questionId: string, answer: string) => void;
   inject: (threadId: string, message: string, mode: "append" | "interrupt", images?: ImageAttachment[]) => void;
   interrupt: (threadId: string) => void;
@@ -213,6 +214,8 @@ export const useStore = create<State>((set) => ({
   },
   sendPrompt: (text, workspace, images) =>
     sendCommand({ type: "prompt.new", text, workspace: workspace || undefined, images: images?.length ? images : undefined }),
+  sendDirect: (text, workspace, images) =>
+    sendCommand({ type: "prompt.direct", text, workspace: workspace || undefined, images: images?.length ? images : undefined }),
   answer: (questionId, answer) => sendCommand({ type: "question.answer", questionId, answer }),
   inject: (threadId, message, mode, images) =>
     sendCommand({ type: "thread.inject", threadId, message, mode, images: images?.length ? images : undefined }),

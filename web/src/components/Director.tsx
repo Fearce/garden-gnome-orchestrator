@@ -11,8 +11,13 @@ export function Director() {
   const draft = useStore((s) => s.directorDraft);
   const busy = useStore((s) => s.directorBusy);
   const sendPrompt = useStore((s) => s.sendPrompt);
+  const sendDirect = useStore((s) => s.sendDirect);
+  const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
+  // Skip-director is a per-session mode (ephemeral, default OFF every reload): when on, a message
+  // bypasses the Sonnet director and dispatches straight to the pipeline's first active stage.
+  const [skip, setSkip] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const setDirectorWidth = useStore((s) => s.setDirectorWidth);
   const selectedThreadId = useStore((s) => s.selectedThreadId);
@@ -52,11 +57,17 @@ export function Director() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [items.length, draft]);
 
+  // In skip mode the message enters the pipeline at its first active stage — planner if it's on,
+  // otherwise the implementor (the researcher only ever runs after the planner, never first).
+  const firstStage = plannerEnabled ? "planner" : "implementor";
+  const directNeedsWs = skip && !ws.trim();
+
   const submit = () => {
     const t = text.trim();
-    if (!t) return;
+    if (!t || directNeedsWs) return;
     lastSentRef.current = t;
-    sendPrompt(t, ws.trim() || undefined, att.images);
+    if (skip) sendDirect(t, ws.trim() || undefined, att.images);
+    else sendPrompt(t, ws.trim() || undefined, att.images);
     setText("");
     att.clear();
   };
@@ -100,10 +111,36 @@ export function Director() {
         )}
       </div>
 
-      <div className={"composer" + (att.dragging ? " dragging" : "")} {...att.dropHandlers}>
+      <div className={"composer" + (att.dragging ? " dragging" : "") + (skip ? " direct" : "")} {...att.dropHandlers}>
+        <div className="composer-mode">
+          <button
+            type="button"
+            className={"mode-toggle" + (skip ? " on" : "")}
+            role="switch"
+            aria-checked={skip}
+            title={
+              skip
+                ? `Skip-director ON — your message bypasses the director and dispatches straight to the ${firstStage}. Click to send via the director.`
+                : "Skip-director OFF — your message goes to the director, which enriches and dispatches. Click to send straight to the pipeline."
+            }
+            onClick={() => setSkip((v) => !v)}
+          >
+            <span className="mode-dot" aria-hidden="true" />
+            Skip director
+          </button>
+          {skip && (
+            <span className="mode-hint mono" title={`The first active pipeline stage is the ${firstStage}.`}>
+              direct → {firstStage}
+            </span>
+          )}
+        </div>
         <textarea
           value={text}
-          placeholder="Describe a task…  (paste or drop images · ⌘/Ctrl+Enter to send)"
+          placeholder={
+            skip
+              ? `Direct to ${firstStage} — set the repo path below.  (⌘/Ctrl+Enter to send)`
+              : "Describe a task…  (paste or drop images · ⌘/Ctrl+Enter to send)"
+          }
           onChange={(e) => setText(e.target.value)}
           onPaste={att.onPaste}
           onKeyDown={(e) => {
@@ -137,7 +174,12 @@ export function Director() {
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
             </svg>
           </button>
-          <button className="btn primary" onClick={submit} disabled={!text.trim()}>
+          <button
+            className="btn primary"
+            onClick={submit}
+            disabled={!text.trim() || directNeedsWs}
+            title={directNeedsWs ? "Skip-director needs a repo path — there's no director to resolve one." : undefined}
+          >
             Send
           </button>
         </div>

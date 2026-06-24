@@ -163,6 +163,31 @@ button { font-family: inherit; cursor: pointer; }
 .composer .row .btn, .composer .row .attach-btn { flex: 0 0 auto; white-space: nowrap; }
 .composer input.ws:focus { outline: none; border-color: var(--line-strong); color: var(--text); }
 
+/* ---- skip-director composer mode ---- */
+.composer-mode { display: flex; align-items: center; gap: 9px; min-height: 24px; }
+.mode-toggle {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; cursor: pointer;
+  border-radius: var(--r-sm); font-family: var(--font-mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint);
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.mode-toggle .mode-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: none;
+  transition: background 0.12s, box-shadow 0.12s;
+}
+.mode-toggle:hover { border-color: var(--line-strong); color: var(--text-dim); }
+.mode-toggle.on {
+  color: var(--role-implementor); border-color: color-mix(in oklch, var(--role-implementor) 45%, var(--line));
+  background: color-mix(in oklch, var(--role-implementor) 10%, var(--bg-2));
+}
+.mode-toggle.on .mode-dot { background: var(--role-implementor); box-shadow: 0 0 7px color-mix(in oklch, var(--role-implementor) 70%, transparent); }
+.mode-hint { font-size: 10px; letter-spacing: 0.04em; color: var(--role-implementor); opacity: 0.85; }
+.composer.direct textarea { border-color: color-mix(in oklch, var(--role-implementor) 35%, var(--line)); }
+.composer.direct textarea:focus {
+  border-color: var(--role-implementor);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--role-implementor) 18%, transparent);
+}
+
 /* ---- workspace path autocomplete ---- */
 .ws-wrap { position: relative; flex: 1; display: flex; }
 .ws-wrap input.ws { flex: 1; width: 100%; }

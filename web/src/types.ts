@@ -179,6 +179,7 @@ export type ServerEvent =
 
 export type ClientCommand =
   | { type: "prompt.new"; text: string; workspace?: string; images?: ImageAttachment[] }
+  | { type: "prompt.direct"; text: string; workspace?: string; images?: ImageAttachment[] }
   | { type: "question.answer"; questionId: string; answer: string }
   | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt"; images?: ImageAttachment[] }
   | { type: "thread.interrupt"; threadId: string }

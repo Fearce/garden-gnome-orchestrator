@@ -10,6 +10,7 @@ import type { ThreadManager } from "./threadManager.js";
 import type { Account } from "../accounts/account.js";
 import { untilReset } from "../accounts/accountManager.js";
 import { config } from "../config.js";
+import { existsSync } from "node:fs";
 
 const MAX_DIRECTOR_FAILOVERS = 2;
 
@@ -69,6 +70,45 @@ export class Director {
       this.start(content); // a fresh run's select() already skips capped accounts
     }
     this.setBusy(true);
+  }
+
+  /**
+   * Skip-director mode: dispatch the owner's message straight into the pipeline without the Sonnet
+   * director enriching/clarifying. The message becomes the brief verbatim and enters the pipeline at
+   * its first active stage (planner if enabled, else the implementor — runPipeline routes by settings,
+   * so this is never hardcoded to one agent). A workspace is required: there's no director to resolve
+   * one. The user message + a confirmation are echoed into the director chat so the transcript shows
+   * what was sent; the long-lived Sonnet session is left completely untouched.
+   */
+  async dispatchDirect(text: string, workspace?: string, images?: ImageAttachment[]): Promise<void> {
+    const refs = (images ?? []).map((img) =>
+      this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
+    );
+    const userMsg = this.db.addDirectorMessage({ role: "user", kind: "text", content: text, attachments: refs });
+    this.hub.publish({ type: "director.message", message: userMsg });
+
+    const ws = workspace?.trim();
+    if (!ws) {
+      this.postDirectorNote(
+        `Skip-director is on, so I send your message straight to the pipeline — but I need the repo path for that (there's no director to find it). Set the workspace path in the composer, then send again.`,
+      );
+      return;
+    }
+    if (!existsSync(ws)) {
+      this.postDirectorNote(
+        `Can't dispatch directly: "${ws}" doesn't exist on disk. Fix the workspace path and send again.`,
+      );
+      return;
+    }
+
+    const title = directTitle(text);
+    const id = await this.api.dispatch({ title, workspace: ws, brief: text, images });
+    this.postDirectorNote(`Skipped the director — dispatched "${title}" straight to the pipeline (task ${id.slice(0, 8)}).`);
+  }
+
+  private postDirectorNote(content: string): void {
+    const m = this.db.addDirectorMessage({ role: "director", kind: "text", content });
+    this.hub.publish({ type: "director.message", message: m });
   }
 
   private start(firstContent: UserContent, account?: Account): void {
@@ -185,4 +225,10 @@ export class Director {
       ? `Both Claude subscriptions are at their usage limit right now, so I couldn't get to this. The first one frees up ${when} — resend then.`
       : "Both Claude subscriptions are at their usage limit right now, so I couldn't get to this. They free up when the 5-hour window resets — resend then.";
   }
+}
+
+/** A board-lane title from a raw skip-director message: first non-empty line, trimmed to a short label. */
+function directTitle(text: string): string {
+  const firstLine = text.split("\n").map((l) => l.trim()).find(Boolean) ?? text.trim();
+  return firstLine.length > 60 ? firstLine.slice(0, 57).trimEnd() + "…" : firstLine || "Direct task";
 }
