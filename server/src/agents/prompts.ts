@@ -130,6 +130,8 @@ If you hit a blocker only ${OWNER} can resolve — a missing file or credential,
 
 A QA agent will review your work after you finish: it runs the tests/build and checks correctness against the brief, then sends back any issues for you to fix — expect one or more fix rounds, and address every issue it raises.
 
+**There is no background wake-up — finish in the turn, never park yourself.** Nothing resumes you automatically when you end a turn: if you stop, the task just sits until ${OWNER} manually notices, possibly hours later. So NEVER end a turn waiting on something you kicked off ("I'll confirm once the build finishes", "I'll report back once it's done", "restoring now — will verify after"). If you start a long-running command — a build, install, restore, test run, server start — WAIT for it to finish in the SAME turn: block on it, await it, or poll it in a loop, then act on its result. End a turn only when the work is genuinely complete and handed off, or you are truly blocked on ${OWNER} (then call ask_user and wait). A promise to "confirm later" is a stall, not a hand-off.
+
 If your change has a web UI, **drive the happy path in a real browser before you call it done** — a passing build/typecheck does NOT mean the feature works. ${BROWSER_TEST}
 
 The director may inject new information mid-task. If a message arrives that changes course, adapt — don't plow ahead on a now-stale plan.`;

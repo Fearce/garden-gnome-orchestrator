@@ -61,6 +61,23 @@ const LIMIT_SUBTYPES: ReadonlySet<string> = new Set(["error_max_turns"]);
 // resume. Forward-looking phrasing ("doing that now", "starting that next") must NOT match.
 const IMPLEMENTOR_DONE_RE =
   /\b(all done|task (?:is )?(?:now )?complete|everything is (?:complete|done)|nothing (?:more|else) (?:to do|left)|ready for (?:qa|review)|handing (?:off |this )?(?:to )?qa|the work is (?:complete|done|finished))\b/;
+// Forward-looking "I'll come back and confirm later" phrasing in the implementor's FINAL words — it ended
+// its turn (a VOLUNTARY success, not a cutoff/cap) waiting to be woken when some process it kicked off
+// finishes. Nothing wakes a voluntary turn-end, so the task would park for hours; we treat this like a
+// turn-limit stop and auto-resume with a nudge to block in-turn instead. Narrow on purpose: it must promise
+// future confirmation/continuation gated on something finishing — a genuine finish (IMPLEMENTOR_DONE_RE) and
+// a real blocker (which goes through ask_user, never a bare turn-end) are both excluded.
+const IMPLEMENTOR_STALL_RE =
+  /\b(i'll|i will|i'm going to|i am going to|let me)\b[^.!?\n]*\b(confirm|report back|reporting back|let you know|update you|check back|circle back|follow up|come back|verify)\b[^.!?\n]*\b(once|when|after|as soon as)\b|\b(once|when|after)\b[^.!?\n]*\b(finish|finishes|finished|complete|completes|completed|done|ready)\b[^.!?\n]*\bi'll\b|\bwaiting (?:for|on)\b[^.!?\n]*\bto (?:finish|complete|build|restore|run|rebuild)\b/;
+// The nudge sent when we auto-resume a voluntary stall: tell the agent the hard truth (no callback) and
+// make it block in-turn on whatever it started, rather than ending the turn waiting to be woken.
+const STALL_NUDGE =
+  "You ended your turn saying you'd confirm or continue once something finishes — but NOTHING wakes you. " +
+  "There is no background callback and no one resumes you automatically; ending the turn just parks the task " +
+  "until a human notices, possibly hours later. If you kicked off a long-running command (a build, install, " +
+  "restore, test run, server start), WAIT for it to finish IN THIS TURN — block on it, await it, or poll it in " +
+  "a loop — then act on the result. Continue now and finish the task completely, or call ask_user if you're " +
+  `genuinely blocked on ${config.ownerName}.`;
 // On a mid-run 5h/weekly cap, relaunch on another account (resuming the session) up to N times.
 const MAX_ACCOUNT_FAILOVERS = 3;
 // After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
@@ -930,7 +947,7 @@ export class ThreadManager implements OrchestratorApi {
     let res = await this.awaitImplementorResult(thread, effort, run, accountId, useNext, continueMsg);
     let current = run;
     while (
-      this.isTurnLimitStop(res) &&
+      (this.isTurnLimitStop(res) || this.implementorStalled(thread.id, res)) &&
       !this.cancelled(thread.id) &&
       !this.implementorLooksDone(thread.id) &&
       (this.autoResumes.get(thread.id) ?? 0) < config.maxAutoResumes
@@ -939,10 +956,15 @@ export class ThreadManager implements OrchestratorApi {
       if (!session) break; // no session to resume from — fall through to the QA/review handling
       const n = (this.autoResumes.get(thread.id) ?? 0) + 1;
       this.autoResumes.set(thread.id, n);
-      this.logAutoResume(thread.id, n);
-      const nudge =
-        "You haven't finished — you stopped at a turn limit, not because the work is done. Continue exactly " +
-        "where you left off and complete the task. A QA agent will review your work when you're genuinely done.";
+      // Two involuntary-park cases share this resume: a turn-ceiling cutoff (error_max_turns) and a
+      // voluntary stall (the agent ended its turn promising to "confirm once it finishes"). Both leave
+      // the task waiting on a wake-up that never comes; the only difference is which nudge we send.
+      const turnLimit = this.isTurnLimitStop(res);
+      this.logAutoResume(thread.id, n, turnLimit ? "turn limit hit" : "ended its turn without finishing");
+      const nudge = turnLimit
+        ? "You haven't finished — you stopped at a turn limit, not because the work is done. Continue exactly " +
+          "where you left off and complete the task. A QA agent will review your work when you're genuinely done."
+        : STALL_NUDGE;
       // Close the turn-maxed query before resuming so we never run two implementors on one workspace;
       // startImplementor's onEnd guard tolerates the relaunch replacing `this.live` first either way.
       await current.stop();
@@ -976,10 +998,23 @@ export class ThreadManager implements OrchestratorApi {
     return !!last && IMPLEMENTOR_DONE_RE.test(last.content.slice(-600).toLowerCase());
   }
 
-  /** Surface a turn-limit auto-resume both in the global activity log and as a system line in the task
-   *  feed, so the continuation is visible without the user ever touching the Resume button. */
-  private logAutoResume(threadId: string, n: number): void {
-    const text = `Auto-resuming implementor (turn limit hit, continuing… ${n}/${config.maxAutoResumes})`;
+  /** Whether the implementor's run ended VOLUNTARILY (a success result — not a turn-ceiling cutoff or a
+   *  usage cap, both handled elsewhere) while its last words only promised to confirm/continue later: the
+   *  "I'll confirm once it finishes" stall that parks the task waiting for a wake-up that never comes. A
+   *  genuine completion is excluded, so we auto-resume only the stalls — nudging the agent to block in-turn. */
+  private implementorStalled(threadId: string, res: ResultEvent | undefined): boolean {
+    if (!res || res.isError) return false;
+    const last = this.db.lastMessageOf(threadId, "implementor", "text");
+    if (!last) return false;
+    const tail = last.content.slice(-700).toLowerCase().replace(/’/g, "'");
+    return IMPLEMENTOR_STALL_RE.test(tail) && !IMPLEMENTOR_DONE_RE.test(tail);
+  }
+
+  /** Surface an auto-resume both in the global activity log and as a system line in the task feed, so the
+   *  continuation is visible without the user ever touching the Resume button. `reason` distinguishes a
+   *  turn-limit cutoff from a voluntary "promised to confirm later" stall. */
+  private logAutoResume(threadId: string, n: number, reason: string): void {
+    const text = `Auto-resuming implementor (${reason}, continuing… ${n}/${config.maxAutoResumes})`;
     this.hub.log("info", text);
     const m = this.db.addMessage({ threadId, role: "implementor", kind: "system", content: `↻ ${text}` });
     this.hub.publish({ type: "thread.message", threadId, message: m });
