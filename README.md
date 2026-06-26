@@ -72,14 +72,18 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
 ## Quick start
 
-```powershell
+```bash
 # one-time: mint a subscription token for headless/service use (optional locally)
-claude setup-token   # paste the token into server\.env as CLAUDE_CODE_OAUTH_TOKEN
+claude setup-token   # paste the token into server/.env as CLAUDE_CODE_OAUTH_TOKEN
 
-cd C:\claude-orchestrator
+cd claude-orchestrator        # Windows: cd C:\claude-orchestrator
 npm run install:all
 npm run serve        # task pipelines: server (no watch) + web — start here
 ```
+
+Cross-platform: runs on macOS, Linux, and Windows. Paths shown Unix-style;
+`server/.env` (`DEFAULT_WORKSPACE`, `WORKSPACE_SEARCH_ROOTS`) defaults to your home dir
+when unset, so no config is needed to start.
 
 ### Run modes — `serve` vs `dev`
 

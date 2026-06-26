@@ -15,6 +15,16 @@ can inject into mid-work. Node/Fastify API (`server/`) + React/Vite console (`we
   LAN access is auth-gated via `server/.env` (`AUTH_PASSWORD` / Google). Local/LAN only.
 
 ## Restarting the orchestrator — READ THIS FIRST
+The app is cross-platform (macOS/Linux/Windows). How you restart depends on how it's running:
+
+**macOS / Linux (local dev — `npm run dev` or `npm run serve`):** no script-hub, no keepAlive.
+There's nothing to auto-resurrect it, so just stop the process and re-run:
+- Web-only change: don't restart — `npm run build --prefix web` then reload the browser.
+- Server change under `serve` (no watch): stop the process and re-run `npm run serve`.
+- Under `npm run dev` (`tsx watch`): editing `server/src` already hot-restarts it — but that
+  KILLS in-flight tasks, so use `serve` when real pipelines are running.
+
+**Windows (script-hub production deployment):** the rest of this section applies only there.
 It runs as script-hub id **`claude-orchestrator`** with keepAlive armed (the hub auto-restarts
 it if it dies). Implementor workers are **child processes of this server** — the Agent SDK
 spawns the `claude` CLI as a child (`server/src/agents/runner.ts`). So a worker **cannot**
