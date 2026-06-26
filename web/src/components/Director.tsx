@@ -6,6 +6,37 @@ import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
 import type { DirectorItem, OrchestratorSettings, Role } from "../types.js";
 
+// Recently used repo paths, client-only, persisted under one localStorage key (most-recent first).
+// Purely a composer convenience — clicking a chip prefills the dispatch workspace.
+const RECENT_REPOS_KEY = "orch-recent-repos";
+const RECENT_REPOS_MAX = 8;
+
+const loadRecentRepos = (): string[] => {
+  try {
+    const v = JSON.parse(localStorage.getItem(RECENT_REPOS_KEY) || "[]");
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+};
+const writeRecentRepos = (next: string[]): string[] => {
+  try {
+    localStorage.setItem(RECENT_REPOS_KEY, JSON.stringify(next));
+  } catch {
+    /* private mode */
+  }
+  return next;
+};
+// Promote `path` to the front, de-duped, capped — call when a task is actually dispatched.
+const pushRecentRepo = (path: string): string[] => {
+  const p = path.trim();
+  if (!p) return loadRecentRepos();
+  return writeRecentRepos([p, ...loadRecentRepos().filter((x) => x !== p)].slice(0, RECENT_REPOS_MAX));
+};
+const removeRecentRepo = (path: string): string[] => writeRecentRepos(loadRecentRepos().filter((x) => x !== path));
+// Trailing-separator-tolerant basename, cross-platform (handles / and \ paths).
+const repoLabel = (p: string): string => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
+
 export function Director() {
   const items = useStore((s) => s.director);
   const draft = useStore((s) => s.directorDraft);
@@ -19,6 +50,7 @@ export function Director() {
   // bypasses the Sonnet director and dispatches straight to the pipeline's first active stage.
   const [skip, setSkip] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [recentRepos, setRecentRepos] = useState<string[]>(loadRecentRepos);
   const setDirectorWidth = useStore((s) => s.setDirectorWidth);
   const selectedThreadId = useStore((s) => s.selectedThreadId);
   const att = useAttachments();
@@ -66,8 +98,10 @@ export function Director() {
     const t = text.trim();
     if (!t || directNeedsWs) return;
     lastSentRef.current = t;
-    if (skip) sendDirect(t, ws.trim() || undefined, att.images);
-    else sendPrompt(t, ws.trim() || undefined, att.images);
+    const w = ws.trim();
+    if (w) setRecentRepos(pushRecentRepo(w));
+    if (skip) sendDirect(t, w || undefined, att.images);
+    else sendPrompt(t, w || undefined, att.images);
     setText("");
     att.clear();
   };
@@ -112,6 +146,35 @@ export function Director() {
       </div>
 
       <div className={"composer" + (att.dragging ? " dragging" : "") + (skip ? " direct" : "")} {...att.dropHandlers}>
+        {recentRepos.length > 1 && (
+          <div className="recent-repos" role="group" aria-label="Recent repositories">
+            <span className="recent-repos-label mono">repos</span>
+            {recentRepos.map((p) => {
+              const active = p === ws.trim();
+              return (
+                <span key={p} className={"repo-chip" + (active ? " on" : "")} title={p}>
+                  <button
+                    type="button"
+                    className="repo-chip-pick"
+                    aria-pressed={active}
+                    onClick={() => setWs(p)}
+                  >
+                    {repoLabel(p)}
+                  </button>
+                  <button
+                    type="button"
+                    className="repo-chip-x"
+                    aria-label={`Remove ${p} from recent repos`}
+                    title="Remove from recents"
+                    onClick={() => setRecentRepos(removeRecentRepo(p))}
+                  >
+                    ×
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        )}
         <div className="composer-mode">
           <button
             type="button"
