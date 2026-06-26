@@ -1,7 +1,7 @@
 // System prompts for each agent role. Kept dense and behavioral — these encode
 // how the owner works by hand so the agents reproduce it.
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 import { config } from "../config.js";
 
@@ -21,18 +21,31 @@ const XHIGH_TIER = config.enableXhigh
 // `playwright` package and `playwright-core` export — so we accept either.
 //
 // Resolution order (first that exists wins):
-//   1. PLAYWRIGHT_MODULES_DIR — explicit override (custom npm prefix / non-Windows).
-//   2. A real global `npm i -g playwright` under ~/AppData/Roaming/npm.
+//   1. PLAYWRIGHT_MODULES_DIR — explicit override (custom npm prefix).
+//   2. A real global `npm i -g playwright`: under ~/AppData/Roaming/npm on Windows,
+//      or the global node_modules root (`npm root -g`) on macOS/Linux.
 //   3. `playwright-core` shipped with the runtime runtime — the dir name is
 //      version-stamped (`runtime-<ver>`) and changes on updates, so we glob for the
 //      newest match rather than hard-coding a version that rots.
-// Falls back to the Roaming path string (even if absent) so the prompt is never empty.
+// Falls back to the first candidate string (even if absent) so the prompt is never empty.
 function resolvePlaywrightPath(): string {
   const override = process.env.PLAYWRIGHT_MODULES_DIR;
   if (override) return override.replace(/\\/g, "/");
 
-  const roamingGlobal = join(homedir(), "AppData", "Roaming", "npm", "node_modules", "playwright");
-  if (existsSync(roamingGlobal)) return roamingGlobal.replace(/\\/g, "/");
+  // Global npm install locations, platform-aware.
+  const globalCandidates =
+    process.platform === "win32"
+      ? [join(homedir(), "AppData", "Roaming", "npm", "node_modules", "playwright")]
+      : [
+          // `npm root -g` derived: <prefix>/lib/node_modules (e.g. nvm, /usr/local, ~/.npm-global)
+          join(dirname(dirname(process.execPath)), "lib", "node_modules", "playwright"),
+          "/usr/local/lib/node_modules/playwright",
+          "/opt/homebrew/lib/node_modules/playwright",
+          join(homedir(), ".npm-global", "lib", "node_modules", "playwright"),
+        ];
+  for (const candidate of globalCandidates) {
+    if (existsSync(candidate)) return candidate.replace(/\\/g, "/");
+  }
 
   const runtimeDeps = join(homedir(), ".runtime", "plugin-runtime-deps");
   if (existsSync(runtimeDeps)) {
@@ -45,7 +58,7 @@ function resolvePlaywrightPath(): string {
     if (core) return core.replace(/\\/g, "/");
   }
 
-  return roamingGlobal.replace(/\\/g, "/");
+  return (globalCandidates[0] ?? "").replace(/\\/g, "/");
 }
 const PLAYWRIGHT_PATH = resolvePlaywrightPath();
 
@@ -63,7 +76,7 @@ const { chromium } = require("${PLAYWRIGHT_PATH}");
   await page.goto("http://localhost:<the app's port>/");   // start the app's server first if it isn't running
   // drive + assert, e.g.: await page.click("text=Save"); await page.fill("#name", "x");
   const ok = await page.evaluate(() => !!document.querySelector("<selector>"));
-  await page.screenshot({ path: "C:/Temp/qa.png" });
+  await page.screenshot({ path: require("os").tmpdir() + "/qa.png" });
   await b.close();
   console.log("checks:", { ok });
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -160,7 +160,7 @@ export function Director() {
             className="ws"
             value={ws}
             onChange={setWs}
-            placeholder="exact repo path (optional — used as-is)  e.g. C:\example"
+            placeholder="exact repo path (optional — used as-is)  e.g. /Users/you/project"
             title="If set, this exact path is the dispatch workspace — the director uses it verbatim instead of resolving a path itself. Leave blank to let the director find the repo from your description."
           />
           <button

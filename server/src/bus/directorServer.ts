@@ -67,7 +67,7 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
       workspace: z
         .string()
         .describe(
-          "Absolute path of an EXISTING repo/dir the implementor works in, e.g. C:\\example. It must already be on disk — agents can't run in a path that isn't there, so don't guess folder names.",
+          "Absolute path of an EXISTING repo/dir the implementor works in, e.g. /Users/you/example. It must already be on disk — agents can't run in a path that isn't there, so don't guess folder names.",
         ),
       brief: z
         .string()

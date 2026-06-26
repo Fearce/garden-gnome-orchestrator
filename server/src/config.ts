@@ -80,10 +80,11 @@ export const config = {
   dataDir,
   dbPath: resolve(dataDir, "orchestrator.sqlite"),
   webDist: resolve(serverRoot, "..", "web", "dist"),
-  defaultWorkspace: process.env.DEFAULT_WORKSPACE ?? "C:\\",
+  defaultWorkspace: process.env.DEFAULT_WORKSPACE ?? (process.platform === "win32" ? "C:\\" : homedir()),
   // Roots the director's find_workspace tool scans to resolve a project name → real path.
-  workspaceSearchRoots: (process.env.WORKSPACE_SEARCH_ROOTS || "C:\\;D:\\")
-    .split(";")
+  // Split on ; (and : on non-Windows, where : isn't part of a drive-letter path).
+  workspaceSearchRoots: (process.env.WORKSPACE_SEARCH_ROOTS || (process.platform === "win32" ? "C:\\;D:\\" : homedir()))
+    .split(process.platform === "win32" ? ";" : /[;:]/)
     .map((s) => s.trim())
     .filter(Boolean),
   memoryDir: process.env.MEMORY_DIR ?? resolve(homedir(), ".claude", "memory"),

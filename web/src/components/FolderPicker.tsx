@@ -19,7 +19,9 @@ export function FolderPicker({
   onSelect: (path: string) => void;
   onClose: () => void;
 }) {
-  const [path, setPath] = useState(initialPath.trim() || "C:\\");
+  // Empty → the server resolves its own default workspace (home dir on macOS/Linux,
+  // C:\ on Windows) and we normalize to the canonical spelling it returns.
+  const [path, setPath] = useState(initialPath.trim());
   const [data, setData] = useState<LsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);

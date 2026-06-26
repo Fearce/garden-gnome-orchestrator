@@ -32,7 +32,8 @@ export function PathInput({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seq = useRef(0); // guards against an earlier slow request overwriting a newer one
 
-  const sepFor = (p: string) => (p.includes("/") && !p.includes("\\") ? "/" : "\\");
+  // Match the separator the path already uses; default to "/" (Unix) unless it's clearly a Windows path.
+  const sepFor = (p: string) => (p.includes("\\") ? "\\" : "/");
 
   const run = (path: string) => {
     const mine = ++seq.current;
