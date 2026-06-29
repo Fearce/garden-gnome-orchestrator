@@ -64,8 +64,16 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
         scope: toScope(args.scope),
         body: args.message,
       });
-      const where = m.scope === "project" ? "your team" : "the office";
-      return { content: [{ type: "text", text: `Posted to ${where}.` }] };
+      if (m.scope === "general") {
+        return { content: [{ type: "text", text: "Posted to the office (general room)." }] };
+      }
+      // Tell the poster whether a teammate is actually around — a team post lands live in any
+      // implementor sharing this repo, so they'll see it without polling; if none are here it waits.
+      const peers = api.officeRoster(ctx.threadId).filter((r) => r.sameRepo).length;
+      const text = peers
+        ? `Posted to your team room — ${peers} agent(s) are in this repo right now and will see it (it's delivered into the live implementor's session).`
+        : "Posted to your team room — no other agent is in this repo right now, so it'll be waiting for whoever joins next (they read the room on arrival).";
+      return { content: [{ type: "text", text }] };
     },
   );
 

@@ -1998,7 +1998,34 @@ export class ThreadManager implements OrchestratorApi {
       body: input.body,
     });
     this.hub.publish({ type: "chat.message", message: m });
+    // A team post is pushed straight into the session of every other live implementor in the same
+    // repo — agents don't poll, so without this a teammate's message just sits unread (the bug this
+    // fixes). Delivered at the recipient's next turn boundary (priority "next"), like a heads-up finding.
+    if (project) this.deliverChatToPeers(m);
     return m;
+  }
+
+  /** Push a team-room message into peer implementors working the same repo, so they actually see it
+   *  instead of having to poll chat_read. Targets `this.live` (implementors) only — the same handle
+   *  finding routing uses — so a one-shot planner/QA's structured output is never disrupted; those
+   *  roles read the room themselves. Returns how many live peers were pinged. */
+  private deliverChatToPeers(m: ChatMessage): number {
+    if (m.scope !== "project" || !m.workspace) return 0;
+    const norm = normalizeWorkspace(m.workspace);
+    const fromTitle = m.threadId ? (this.db.getThread(m.threadId)?.title ?? "another task") : "the office";
+    const text =
+      `💬 [Office — ${m.role} on "${fromTitle}" posted to your team room]: ${m.body}\n` +
+      `(A teammate working in this same repo sent this. If it touches your work or asks something, reply with ` +
+      `chat_post(scope:"team") and adjust — don't keep editing blind.)`;
+    let pinged = 0;
+    for (const [tid, live] of this.live) {
+      if (tid === m.threadId) continue; // never echo back to the sender
+      const t = this.db.getThread(tid);
+      if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
+      live.run.send(text, { priority: "next" });
+      pinged++;
+    }
+    return pinged;
   }
 
   chatRead(input: ChatReadInput): ChatMessage[] {
