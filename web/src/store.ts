@@ -98,6 +98,8 @@ interface State {
   // Open the office panel on a room (defaults to the general room); fetches that room's full history.
   openOffice: (room?: string) => void;
   closeOffice: () => void;
+  // Post into a room as the director (the human) — reaches the live agents there so they self-coordinate.
+  postChat: (room: string, body: string) => void;
 }
 
 const lsBool = (k: string, d: boolean): boolean => {
@@ -311,6 +313,10 @@ export const useStore = create<State>((set) => ({
     sendCommand({ type: "chat.history", room: r }); // pull the room's full history for the expanded view
   },
   closeOffice: () => set({ officeRoom: null }),
+  postChat: (room, body) => {
+    const text = body.trim();
+    if (text) sendCommand({ type: "chat.post", room, body: text });
+  },
 }));
 
 /** Which agent RUN a feed item belongs to. Keyed by runId (stable on the item) so retention

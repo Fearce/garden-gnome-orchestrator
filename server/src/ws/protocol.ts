@@ -131,6 +131,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("thread.changes"), threadId: z.string() }),
   // Fetch the full message history for one office room (the expanded chatroom view / a task's button).
   z.object({ type: z.literal("chat.history"), room: z.string().min(1).max(300) }),
+  // Post into a room AS THE DIRECTOR (the human): lands in the chat and is pushed to the live agents
+  // in that room so they self-coordinate who acts on it. room "general" = the whole office.
+  z.object({ type: z.literal("chat.post"), room: z.string().min(1).max(300), body: z.string().min(1).max(2000) }),
   z.object({ type: z.literal("snapshot.request") }),
 ]);
 

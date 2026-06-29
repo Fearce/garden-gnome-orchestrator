@@ -207,6 +207,16 @@ button { font-family: inherit; cursor: pointer; }
 .office-msg-ts { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); flex: 0 0 auto; }
 .office-msg-body { font-size: 13px; line-height: 1.45; color: var(--text); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
 
+/* Director (human) composer — post into the open room; reaches the live agents there. */
+.office-composer { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--bg-1); }
+.office-composer textarea {
+  flex: 1; resize: none; min-height: 38px; max-height: 120px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px;
+  font-family: var(--font-sans); font-size: 13px; line-height: 1.4;
+}
+.office-composer textarea:focus { outline: none; border-color: var(--role-director); box-shadow: 0 0 0 3px color-mix(in oklch, var(--role-director) 16%, transparent); }
+.office-composer .btn { align-self: flex-end; }
+
 /* Per-task chatroom chip on a board card — only present when the task collaborated. */
 .card-chatroom {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;

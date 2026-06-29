@@ -161,6 +161,8 @@ function OfficePanel() {
   const roomHistory = useStore((s) => s.roomHistory);
   const threads = useStore((s) => s.threads);
   const nameOverrides = useStore((s) => s.nameOverrides);
+  const postChat = useStore((s) => s.postChat);
+  const [draft, setDraft] = useState("");
 
   // Full history if it's been fetched; otherwise fall back to the recent cross-room slice we hold.
   const messages = useMemo(() => {
@@ -177,6 +179,13 @@ function OfficePanel() {
 
   // Project rooms (≥2 participants) are the real collaborations worth a tab; the general room is always shown.
   const projectRooms = rooms.filter((r) => r.threadIds.length >= 2);
+
+  const send = () => {
+    const text = draft.trim();
+    if (!text) return;
+    postChat(officeRoom, text);
+    setDraft("");
+  };
 
   return (
     <>
@@ -220,6 +229,26 @@ function OfficePanel() {
               />
             ))
           )}
+        </div>
+        <div className="office-composer">
+          <textarea
+            value={draft}
+            placeholder={
+              officeRoom === GENERAL_ROOM
+                ? "Message the whole office as director… (Enter to send)"
+                : "Message this repo's agents as director — they'll coordinate who takes it… (Enter to send)"
+            }
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+          />
+          <button className="btn primary sm" onClick={send} disabled={!draft.trim()}>
+            Send
+          </button>
         </div>
       </div>
     </>

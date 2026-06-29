@@ -270,6 +270,7 @@ export type ClientCommand =
   | { type: "account.set"; id: string; enabled: boolean }
   | { type: "thread.changes"; threadId: string }
   | { type: "chat.history"; room: string }
+  | { type: "chat.post"; room: string; body: string }
   | { type: "snapshot.request" };
 
 // ---- client-only view models ----

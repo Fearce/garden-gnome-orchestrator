@@ -158,6 +158,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     case "chat.history":
       send(socket, { type: "chat.history", room: cmd.room, messages: ctx.db.listRoomMessages(cmd.room) });
       break;
+    case "chat.post":
+      ctx.manager.directorChatPost(cmd.room, cmd.body);
+      break;
     case "snapshot.request":
       send(socket, buildHello(ctx));
       break;

@@ -2199,6 +2199,55 @@ export class ThreadManager implements OrchestratorApi {
     return pinged;
   }
 
+  /** The display workspace for a project-room key (`repo:<normalized>`), recovered from any thread in
+   *  that repo; falls back to the normalized suffix if none is known. */
+  private workspaceForRoom(room: string): string {
+    const norm = room.replace(/^repo:/, "");
+    const t = this.db.listThreads().find((x) => normalizeWorkspace(x.workspace) === norm);
+    return t?.workspace ?? norm;
+  }
+
+  /** Let the human post into a room AS THE DIRECTOR: it lands in the office chat AND is pushed into the
+   *  live implementors who should act on it — a project-room post reaches the agents in that repo, an
+   *  office post reaches every active agent. So instead of injecting one specific task, the owner drops
+   *  the change into the room and the agents coordinate who picks it up. */
+  directorChatPost(room: string, body: string): ChatMessage {
+    const text = body.trim();
+    if (!text) throw new Error("empty director message");
+    const general = room === GENERAL_ROOM;
+    const workspace = general ? null : this.workspaceForRoom(room);
+    const m = this.db.addChatMessage({
+      room: general ? GENERAL_ROOM : room,
+      scope: general ? "general" : "project",
+      workspace,
+      threadId: null,
+      runId: null,
+      role: "director",
+      kind: "chat",
+      body: text,
+      senderName: "Director",
+    });
+    this.hub.publish({ type: "chat.message", message: m });
+    // Push it into the sessions of the live implementors who should act on it (priority "next", so it
+    // arrives at their next turn boundary — same mechanism as a teammate ping / heads-up finding).
+    const where = general ? "the office" : "this repo";
+    const push =
+      `📣 [Director → ${general ? "office" : "your team"}] ${text}\n` +
+      `(A directive from ${config.ownerName} to all agents in ${where}. Coordinate among yourselves who takes it — don't all grab it, and don't all assume someone else will — then reply with chat_post so the others know.)`;
+    const norm = general ? null : normalizeWorkspace(workspace ?? room.replace(/^repo:/, ""));
+    let pinged = 0;
+    for (const [tid, live] of this.live) {
+      if (!general) {
+        const t = this.db.getThread(tid);
+        if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
+      }
+      live.run.send(push, { priority: "next" });
+      pinged++;
+    }
+    this.hub.log("info", `Director posted to ${general ? "the office" : `team ${workspace}`} — pinged ${pinged} live agent(s).`);
+    return m;
+  }
+
   chatRead(input: ChatReadInput): ChatMessage[] {
     const t = this.db.getThread(input.threadId);
     const ws = t?.workspace ?? "";
