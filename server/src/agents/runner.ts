@@ -40,6 +40,37 @@ export interface AgentRunConfig {
   oauthToken?: string;
 }
 
+export type SendOpts = { shouldQuery?: boolean; priority?: "now" | "next" | "later" };
+
+export type ResultEvent = Extract<AgentEvent, { type: "result" }>;
+
+/**
+ * The public surface every agent backend exposes to the orchestrator — the seam that lets a Codex
+ * CLI run (CodexAgentRun) stand in for a Claude SDK run (AgentRun) at the implementor dispatch
+ * without the pipeline knowing which provider it's driving. Both classes implement this; the
+ * thread manager stores and steers runs through it, constructing the concrete class only at the
+ * single provider-factory call in startImplementor.
+ */
+export interface AgentRunLike {
+  readonly emitter: EventEmitter;
+  sessionId: string | undefined;
+  finished: boolean;
+  lastResult: ResultEvent | undefined;
+  rateLimited: boolean;
+  rateLimitInfo: RateLimitInfo | undefined;
+  start(firstMessage: UserContent): this;
+  onEvent(cb: (e: AgentEvent) => void): () => void;
+  onEnd(cb: () => void): void;
+  send(content: UserContent, opts?: SendOpts): void;
+  interrupt(): Promise<void>;
+  setModel(model?: string): Promise<void>;
+  setPermissionMode(mode: PermissionMode): Promise<void>;
+  endInput(): void;
+  stop(): Promise<void>;
+  result(): Promise<ResultEvent | undefined>;
+  nextResult(): Promise<ResultEvent | undefined>;
+}
+
 /**
  * Build the child-process env. The cardinal rule: never let ANTHROPIC_API_KEY
  * through, so agents authenticate via the Max subscription only. A long stream
@@ -111,14 +142,12 @@ function toUserMessage(
   return msg;
 }
 
-type ResultEvent = Extract<AgentEvent, { type: "result" }>;
-
 /**
  * One running agent. Always streaming-input mode so we can inject mid-flight,
  * change model/permission, and interrupt. Normalizes SDK messages into
  * AgentEvents on its emitter; captures session_id for later resume.
  */
-export class AgentRun {
+export class AgentRun implements AgentRunLike {
   readonly emitter = new EventEmitter();
   sessionId: string | undefined;
   finished = false;

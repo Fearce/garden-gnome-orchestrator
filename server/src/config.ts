@@ -99,6 +99,27 @@ export const config = {
     implementor: "claude-opus-4-8",
     qa: "claude-opus-4-8",
   },
+  // ---- OpenAI Codex (second, optional implementor backend) ----
+  // The implementor can run on the Codex CLI instead of Claude when the Codex subscription is enabled
+  // in Settings (with a valid OpenAI key). Planner/researcher/QA always stay Claude.
+  codex: {
+    // First-boot default + the flagship models the Subscriptions selector suggests. The field is
+    // free-text (any model id the OpenAI key can access is accepted) — these are just quick picks,
+    // most-capable first. Default to the flagship gpt-5.5 for development work; codex-mini-latest is
+    // kept as the cheap option. Override the default with CODEX_MODEL.
+    defaultModel: process.env.CODEX_MODEL?.trim() || "gpt-5.5",
+    models: ["gpt-5.5", "gpt-5.1-codex-max", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex-mini", "codex-mini-latest"] as const,
+    // The Codex CLI is a global npm install; we spawn its bin/codex.js with this node binary directly
+    // (PATH-independent, no .cmd shim). Override CODEX_BIN_JS to point at a different install.
+    binJs:
+      process.env.CODEX_BIN_JS ||
+      resolve(process.env.APPDATA ?? resolve(homedir(), "AppData", "Roaming"), "npm", "node_modules", "@openai", "codex", "bin", "codex.js"),
+    // A dedicated CODEX_HOME (no chatgpt auth.json) so the entered API key drives auth, isolated from
+    // any personal `codex login` in the operator's ~/.codex.
+    home: process.env.CODEX_HOME_DIR || resolve(dataDir, "codex-home"),
+    // Fallback key when none is stored in the kv table — lets a key live in server/.env instead of the UI.
+    envKey: process.env.OPENAI_API_KEY?.trim() || undefined,
+  },
   maxQaRounds: Number(process.env.MAX_QA_ROUNDS ?? 4),
   // Default ceiling on pipelines running at once; further dispatches wait in 'queued' until a slot
   // frees. Surfaced as an operator setting (persisted in kv) — this is just the first-boot default.

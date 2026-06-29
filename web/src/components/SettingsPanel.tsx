@@ -1,5 +1,6 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store.js";
+import { CODEX_MODELS } from "../types.js";
 
 /** The gear-icon panel: everything that isn't a per-task agent toggle (those live in the topbar).
  *  A light popover anchored under the topbar with a click-anywhere-outside backdrop to dismiss. */
@@ -54,6 +55,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           />
         </Group>
 
+        <Group label="Subscriptions">
+          <SubscriptionsSection />
+        </Group>
+
         <Group label="Board">
           <ToggleRow
             label="Show completed tasks"
@@ -80,6 +85,260 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     </div>
   );
 }
+
+/** The implementor backends. Each Claude account (Anthropic subscription) is an independently
+ *  toggleable card — disabling one holds it out of the dispatch/failover rotation; Claude always
+ *  powers the planner/researcher/QA. Codex (OpenAI), when enabled with a valid key, takes over
+ *  implementing tasks. The server enforces all of this as a hard gate — these aren't just UI state. */
+function SubscriptionsSection() {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const accounts = useStore((s) => s.accounts);
+  const setAccountEnabled = useStore((s) => s.setAccountEnabled);
+  const testCodex = useStore((s) => s.testCodex);
+  const codexTest = useStore((s) => s.codexTest);
+  const codexTesting = useStore((s) => s.codexTesting);
+
+  const [keyDraft, setKeyDraft] = useState("");
+  const [reveal, setReveal] = useState(false);
+
+  const codexActive = settings.codexEnabled && settings.hasOpenaiKey;
+  const enabledAccounts = accounts.filter((a) => a.enabled).length;
+  const draftValid = /^sk-\S{8,}$/.test(keyDraft.trim());
+  const draftBad = keyDraft.trim().length > 0 && !keyDraft.trim().startsWith("sk-");
+
+  const saveKey = () => {
+    if (!draftValid) return;
+    setSettings({ openaiApiKey: keyDraft.trim() });
+    setKeyDraft("");
+    setReveal(false);
+  };
+  const clearKey = () => {
+    setSettings({ openaiApiKey: "" });
+    setKeyDraft("");
+  };
+
+  return (
+    <div className="subs">
+      {accounts.map((acct) => (
+        <AccountCard
+          key={acct.id}
+          acct={acct}
+          implementing={!codexActive}
+          canDisable={enabledAccounts > 1}
+          onToggle={(v) => setAccountEnabled(acct.id, v)}
+        />
+      ))}
+
+      <SubCard
+        name="ChatGPT Codex"
+        vendor="OpenAI"
+        on={settings.codexEnabled}
+        active={codexActive}
+        activeLabel="implementing"
+        toggleDisabled={!settings.codexEnabled && !settings.hasOpenaiKey}
+        toggleTitle={!settings.hasOpenaiKey ? "Add a valid API key first" : undefined}
+        onToggle={(v) => setSettings({ codexEnabled: v })}
+        meta={
+          settings.codexEnabled
+            ? settings.hasOpenaiKey
+              ? `Implementing tasks via the Codex CLI · model ${settings.codexModel}`
+              : "Enabled but no valid key — tasks can't route here until you add one below."
+            : "Off — enable to implement tasks with the Codex CLI instead of Claude."
+        }
+      >
+        <div className="sub-field">
+          <label className="sub-label">OpenAI API key</label>
+          <div className={"key-input" + (draftBad ? " bad" : "")}>
+            <input
+              type={reveal ? "text" : "password"}
+              value={keyDraft}
+              spellCheck={false}
+              autoComplete="off"
+              placeholder={settings.hasOpenaiKey ? `sk-••••••••${settings.openaiKeyLast4 ?? ""}` : "sk-…"}
+              onChange={(e) => setKeyDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveKey();
+              }}
+            />
+            <button
+              type="button"
+              className="key-eye"
+              aria-label={reveal ? "Hide key" : "Reveal key"}
+              title={reveal ? "Hide" : "Reveal"}
+              onClick={() => setReveal((r) => !r)}
+            >
+              {reveal ? <EyeOff /> : <Eye />}
+            </button>
+          </div>
+          <div className="sub-actions">
+            <button className="sub-btn primary" disabled={!draftValid} onClick={saveKey}>
+              {settings.hasOpenaiKey ? "Replace key" : "Save key"}
+            </button>
+            <button className="sub-btn" disabled={codexTesting || (!keyDraft.trim() && !settings.hasOpenaiKey)} onClick={() => testCodex(keyDraft.trim() || undefined)}>
+              {codexTesting ? "Testing…" : "Test connection"}
+            </button>
+            {settings.hasOpenaiKey && (
+              <button className="sub-btn ghost" onClick={clearKey}>
+                Remove
+              </button>
+            )}
+          </div>
+          {draftBad && <div className="sub-msg bad">An OpenAI key starts with sk-.</div>}
+          {codexTest && !draftBad && <div className={"sub-msg" + (codexTest.ok ? " ok" : " bad")}>{codexTest.message}</div>}
+          {!codexTest && settings.hasOpenaiKey && !draftBad && <div className="sub-msg dim">Key stored (••••{settings.openaiKeyLast4 ?? ""}). Test it to confirm it works.</div>}
+        </div>
+
+        <ModelField value={settings.codexModel} onCommit={(m) => setSettings({ codexModel: m })} />
+      </SubCard>
+    </div>
+  );
+}
+
+/** One Claude account (Anthropic subscription) as a toggleable card with its live 5h/weekly burn. */
+function AccountCard({
+  acct,
+  implementing,
+  canDisable,
+  onToggle,
+}: {
+  acct: import("../types.js").AccountDTO;
+  implementing: boolean;
+  canDisable: boolean;
+  onToggle: (v: boolean) => void;
+}) {
+  const pct = (n: number | null) => (n == null ? "—" : `${Math.round(n)}%`);
+  const lockedOn = acct.enabled && !canDisable;
+  const meta = !acct.enabled
+    ? "Disabled — held out of the dispatch & failover rotation."
+    : acct.rateLimited
+      ? "Rate-limited right now — skipped until its window resets."
+      : `weekly ${pct(acct.sevenDay)} · 5h ${pct(acct.fiveHour)}${acct.stale ? " · usage stale" : ""}`;
+  return (
+    <div className={"sub-card" + (implementing && acct.active && acct.enabled ? " active" : "")}>
+      <div className="sub-card-head">
+        <div className="sub-id">
+          <span className="sub-name">{acct.label}</span>
+          <span className="sub-vendor">Anthropic · Claude</span>
+          {acct.active && acct.enabled && <span className="sub-badge">{implementing ? "implementing" : "active"}</span>}
+          {acct.rateLimited && <span className="sub-badge warn">rate-limited</span>}
+        </div>
+        <button
+          className={"switch" + (acct.enabled ? " on" : "")}
+          role="switch"
+          aria-checked={acct.enabled}
+          aria-label={`${acct.label} account`}
+          disabled={lockedOn}
+          title={lockedOn ? "Can't disable the last active Claude account" : undefined}
+          onClick={() => !lockedOn && onToggle(!acct.enabled)}
+        >
+          <span className="switch-knob" />
+        </button>
+      </div>
+      <div className="sub-card-meta">{meta}</div>
+    </div>
+  );
+}
+
+/** Free-text Codex model field with flagship suggestions — commits on blur / Enter / pick so a change
+ *  isn't sent on every keystroke. Any model id the OpenAI key can access is valid. */
+function ModelField({ value, onCommit }: { value: string; onCommit: (m: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    const v = draft.trim();
+    if (v && v !== value) onCommit(v);
+    else if (!v) setDraft(value);
+  };
+  return (
+    <div className="sub-field">
+      <label className="sub-label">Model</label>
+      <input
+        className="model-input"
+        list="codex-model-suggestions"
+        value={draft}
+        spellCheck={false}
+        autoComplete="off"
+        placeholder="gpt-5.5"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
+      />
+      <datalist id="codex-model-suggestions">
+        {CODEX_MODELS.map((m) => (
+          <option key={m} value={m} />
+        ))}
+      </datalist>
+      <div className="sub-msg dim">Flagship suggestions in the list — or type any model your key can access.</div>
+    </div>
+  );
+}
+
+function SubCard({
+  name,
+  vendor,
+  on,
+  active,
+  activeLabel,
+  meta,
+  onToggle,
+  toggleDisabled,
+  toggleTitle,
+  children,
+}: {
+  name: string;
+  vendor: string;
+  on: boolean;
+  active: boolean;
+  activeLabel: string;
+  meta: string;
+  onToggle: (v: boolean) => void;
+  toggleDisabled?: boolean;
+  toggleTitle?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className={"sub-card" + (active ? " active" : "")}>
+      <div className="sub-card-head">
+        <div className="sub-id">
+          <span className="sub-name">{name}</span>
+          <span className="sub-vendor">{vendor}</span>
+          {active && <span className="sub-badge">{activeLabel}</span>}
+        </div>
+        <button
+          className={"switch" + (on ? " on" : "")}
+          role="switch"
+          aria-checked={on}
+          aria-label={`${name} subscription`}
+          disabled={toggleDisabled}
+          title={toggleTitle}
+          onClick={() => !toggleDisabled && onToggle(!on)}
+        >
+          <span className="switch-knob" />
+        </button>
+      </div>
+      <div className="sub-card-meta">{meta}</div>
+      {children}
+    </div>
+  );
+}
+
+const Eye = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+const EyeOff = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c6.5 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68M6.6 6.6A13.3 13.3 0 0 0 2 12s3.5 7 10 7a9.1 9.1 0 0 0 4.4-1.1" />
+    <path d="m9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    <path d="M2 2l20 20" />
+  </svg>
+);
 
 function Group({ label, children }: { label: string; children: ReactNode }) {
   return (

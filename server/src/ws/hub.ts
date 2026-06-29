@@ -136,6 +136,14 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     case "settings.set":
       ctx.manager.setSettings(cmd.settings);
       break;
+    case "codex.test": {
+      const result = await ctx.manager.testCodexConnection(cmd.apiKey);
+      send(socket, { type: "codex.test.result", ok: result.ok, message: result.message });
+      break;
+    }
+    case "account.set":
+      ctx.manager.setAccountEnabled(cmd.id, cmd.enabled);
+      break;
     case "thread.changes": {
       const changes = await ctx.manager.getChanges(cmd.threadId);
       send(socket, { type: "thread.changes", threadId: cmd.threadId, diff: changes.diff, log: changes.log });

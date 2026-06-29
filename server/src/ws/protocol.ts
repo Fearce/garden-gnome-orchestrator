@@ -23,6 +23,7 @@ export interface AccountDTO {
   rateLimited: boolean;
   resetsAt?: number | null;
   active: boolean; // last/preferred account for dispatch
+  enabled: boolean; // operator toggle — a disabled account is held out of dispatch/failover
   updatedAt: number;
   error?: string | null;
 }
@@ -43,6 +44,7 @@ export type ServerEvent =
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }
+  | { type: "codex.test.result"; ok: boolean; message: string }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
@@ -106,9 +108,19 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         autoPush: z.boolean(),
         maxQaRounds: z.number().int().min(1).max(12),
         maxConcurrent: z.number().int().min(1).max(20),
+        claudeEnabled: z.boolean(),
+        codexEnabled: z.boolean(),
+        codexModel: z.string().min(1).max(64),
+        // Write-only: the raw OpenAI key is accepted here and stored server-side, never echoed back.
+        // An empty string clears it. The broadcast OrchestratorSettings carries only hasOpenaiKey/last4.
+        openaiApiKey: z.string().max(300),
       })
       .partial(),
   }),
+  // Validate the stored (or just-typed) OpenAI key against the API; replies with codex.test.result.
+  z.object({ type: z.literal("codex.test"), apiKey: z.string().max(300).optional() }),
+  // Toggle a Claude account in/out of the dispatch+failover rotation (per-account subscription switch).
+  z.object({ type: z.literal("account.set"), id: z.string(), enabled: z.boolean() }),
   z.object({ type: z.literal("thread.changes"), threadId: z.string() }),
   z.object({ type: z.literal("snapshot.request") }),
 ]);

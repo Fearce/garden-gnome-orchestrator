@@ -126,6 +126,7 @@ export interface AccountDTO {
   rateLimited: boolean;
   resetsAt?: number | null;
   active: boolean;
+  enabled: boolean; // operator toggle — disabled accounts are held out of dispatch/failover
   updatedAt: number;
   error?: string | null;
 }
@@ -139,7 +140,20 @@ export interface OrchestratorSettings {
   autoPush: boolean;
   maxQaRounds: number;
   maxConcurrent: number;
+  // Subscriptions: which provider backs the implementor (server-authoritative hard gate). Claude is the
+  // default backend; individual Claude accounts toggle via AccountDTO.enabled (account.set), not here.
+  codexEnabled: boolean;
+  codexModel: string;
+  hasOpenaiKey: boolean; // read-only: a key is stored (raw key never reaches the client)
+  openaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
 }
+
+/** A settings.set patch: writable fields plus the write-only raw OpenAI key (never read back). */
+export type SettingsPatch = Partial<Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4">> & { openaiApiKey?: string };
+
+/** Flagship Codex models suggested in the Subscriptions selector (most-capable first). The field is
+ *  free-text — any model id the OpenAI key can access works — so this is just quick picks. */
+export const CODEX_MODELS = ["gpt-5.5", "gpt-5.1-codex-max", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex-mini", "codex-mini-latest"] as const;
 
 export type ServerEvent =
   | {
@@ -157,6 +171,7 @@ export type ServerEvent =
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }
+  | { type: "codex.test.result"; ok: boolean; message: string }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
@@ -192,7 +207,9 @@ export type ClientCommand =
   | { type: "thread.history"; threadId: string }
   | { type: "thread.approve"; threadId: string; approved: boolean; feedback?: string }
   | { type: "approval.set"; on: boolean }
-  | { type: "settings.set"; settings: Partial<OrchestratorSettings> }
+  | { type: "settings.set"; settings: SettingsPatch }
+  | { type: "codex.test"; apiKey?: string }
+  | { type: "account.set"; id: string; enabled: boolean }
   | { type: "thread.changes"; threadId: string }
   | { type: "snapshot.request" };
 

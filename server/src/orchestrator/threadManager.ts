@@ -2,7 +2,8 @@ import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import { AgentRun, type AgentRunConfig } from "../agents/runner.js";
+import { AgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runner.js";
+import { CodexAgentRun, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { implementorConfig, plannerConfig, qaConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
@@ -19,6 +20,7 @@ import type {
   Effort,
   Finding,
   ImageAttachment,
+  ImplementorProvider,
   OrchestratorSettings,
   PlanOutput,
   QaOutput,
@@ -39,10 +41,14 @@ import type {
 } from "./api.js";
 
 interface LiveImplementor {
-  run: AgentRun;
+  run: AgentRunLike;
   runId: string;
   accountId: string;
 }
+
+/** A settings.set patch: the writable subset of OrchestratorSettings plus the write-only raw key. The
+ *  read-only masked indicators (hasOpenaiKey/openaiKeyLast4) are derived, never set by a client. */
+export type SettingsPatch = Partial<Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4">> & { openaiApiKey?: string };
 
 /** The slice of operator settings the implementor→QA stage needs, captured at pipeline start. */
 interface PipeOpts {
@@ -147,7 +153,11 @@ const DONEABLE: ReadonlySet<Thread["state"]> = new Set(["review", "paused"]);
 
 export class ThreadManager implements OrchestratorApi {
   private readonly live = new Map<string, LiveImplementor>();
-  private readonly activeRuns = new Map<string, Set<AgentRun>>();
+  private readonly activeRuns = new Map<string, Set<AgentRunLike>>();
+  // The implementor backend chosen for each thread at the start of its implementor stage (the hard
+  // routing gate). Read by startImplementor's provider factory; survives failover/auto-resume so a
+  // task never swaps provider mid-run (which would feed a Claude session id to a Codex resume).
+  private readonly implementorProvider = new Map<string, ImplementorProvider>();
   private readonly pendingQuestions = new Map<string, (answer: string) => void>();
   private readonly awaitingPrev = new Map<string, Thread["state"]>();
   private readonly lastImplementorSession = new Map<string, string>();
@@ -166,7 +176,7 @@ export class ThreadManager implements OrchestratorApi {
   // planner. liveRole holds the steerable planner run so inject can interrupt/re-plan it instead;
   // directorNotes buffers the injected steering until the planner drains it (a re-plan) or the
   // pipeline folds it into the implementor's kickoff.
-  private readonly liveRole = new Map<string, AgentRun>();
+  private readonly liveRole = new Map<string, AgentRunLike>();
   private readonly directorNotes = new Map<string, string[]>();
   // Per-thread count of consecutive turn-limit auto-resumes inside the current implementor→QA loop.
   // Reset when the loop (re)enters, cleared when it exits, and capped at config.maxAutoResumes so a
@@ -177,7 +187,7 @@ export class ThreadManager implements OrchestratorApi {
   // implementor beside it — that's what put two agents in one slot. liveQa holds the steerable QA run
   // so injectThread's / resumeThread's qa-stage gates can forward steering to it (the next fix-round's
   // re-launched implementor drains anything buffered while QA had no steerable handle).
-  private readonly liveQa = new Map<string, AgentRun>();
+  private readonly liveQa = new Map<string, AgentRunLike>();
   // Concurrency control. activePipelines holds the threads whose pipeline (dispatch OR resume) is
   // currently executing; a fresh dispatch beyond maxConcurrent waits in dispatchQueue (FIFO) in the
   // 'queued' state and starts when a slot frees. Resumes of in-flight work aren't gated — they
@@ -192,6 +202,7 @@ export class ThreadManager implements OrchestratorApi {
     readonly accounts: AccountManager,
   ) {
     this.markInterrupted();
+    this.applyAccountEnabled();
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
@@ -279,7 +290,7 @@ export class ThreadManager implements OrchestratorApi {
     this.notifyExternal(`↪ ${role} hit a ${win} limit mid-task — auto-switched to ${toLabel}, continuing "${thread.title}".`);
   }
 
-  private track(threadId: string, agent: AgentRun): void {
+  private track(threadId: string, agent: AgentRunLike): void {
     let set = this.activeRuns.get(threadId);
     if (!set) {
       set = new Set();
@@ -287,7 +298,7 @@ export class ThreadManager implements OrchestratorApi {
     }
     set.add(agent);
   }
-  private untrack(threadId: string, agent: AgentRun): void {
+  private untrack(threadId: string, agent: AgentRunLike): void {
     this.activeRuns.get(threadId)?.delete(agent);
   }
 
@@ -387,6 +398,7 @@ export class ThreadManager implements OrchestratorApi {
   /** The current pipeline settings, read live from kv (defaults when unset). Read at dispatch/pipeline
    *  time so a change applies to the next task — the agent toggles especially are flipped per task. */
   settings(): OrchestratorSettings {
+    const key = this.openaiApiKey();
     return {
       plannerEnabled: this.settingBool("setting_planner_enabled", true),
       researcherEnabled: this.settingBool("setting_researcher_enabled", true),
@@ -394,6 +406,10 @@ export class ThreadManager implements OrchestratorApi {
       autoPush: this.settingBool("setting_auto_push", true),
       maxQaRounds: this.settingNum("setting_max_qa_rounds", config.maxQaRounds, 1, 12),
       maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
+      codexEnabled: this.settingBool("setting_codex_enabled", false),
+      codexModel: this.codexModel(),
+      hasOpenaiKey: !!key,
+      openaiKeyLast4: key && key.length >= 4 ? key.slice(-4) : null,
     };
   }
 
@@ -407,19 +423,87 @@ export class ThreadManager implements OrchestratorApi {
     return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : dflt;
   }
 
+  /** The selected Codex model (free-text — any id the OpenAI key can access), or the default if unset. */
+  private codexModel(): string {
+    return this.db.kvGet("setting_codex_model")?.trim() || config.codex.defaultModel;
+  }
+
+  /** The raw OpenAI key: the kv-stored UI value if present, else the server/.env fallback. NEVER
+   *  broadcast — only its presence + last 4 chars leave the server (settings()). */
+  private openaiApiKey(): string | undefined {
+    return this.db.kvGet("openai_api_key")?.trim() || config.codex.envKey;
+  }
+
   /** Persist a partial settings change, broadcast the full new set, and pump the queue (a raised
    *  maxConcurrent may have freed slots). Returns the resulting settings. */
-  setSettings(patch: Partial<OrchestratorSettings>): OrchestratorSettings {
+  setSettings(patch: SettingsPatch): OrchestratorSettings {
     if (patch.plannerEnabled !== undefined) this.db.kvSet("setting_planner_enabled", patch.plannerEnabled ? "1" : "0");
     if (patch.researcherEnabled !== undefined) this.db.kvSet("setting_researcher_enabled", patch.researcherEnabled ? "1" : "0");
     if (patch.qaEnabled !== undefined) this.db.kvSet("setting_qa_enabled", patch.qaEnabled ? "1" : "0");
     if (patch.autoPush !== undefined) this.db.kvSet("setting_auto_push", patch.autoPush ? "1" : "0");
     if (patch.maxQaRounds !== undefined) this.db.kvSet("setting_max_qa_rounds", String(patch.maxQaRounds));
     if (patch.maxConcurrent !== undefined) this.db.kvSet("setting_max_concurrent", String(patch.maxConcurrent));
+    if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
+    if (patch.codexModel !== undefined && patch.codexModel.trim()) this.db.kvSet("setting_codex_model", patch.codexModel.trim());
+    // Write-only key: store the trimmed value, or clear it (empty string) so settings() falls back to
+    // the env key (if any). The raw key is never returned to clients — only hasOpenaiKey/last4 are.
+    if (patch.openaiApiKey !== undefined) this.db.kvSet("openai_api_key", patch.openaiApiKey.trim());
     const settings = this.settings();
     this.hub.publish({ type: "settings", settings });
     this.pumpQueue();
     return settings;
+  }
+
+  /** Validate the stored (or a just-typed) OpenAI key against the API for the Test-connection button. */
+  async testCodexConnection(apiKey?: string): Promise<CodexTestResult> {
+    return testOpenAiKey(apiKey?.trim() || this.openaiApiKey());
+  }
+
+  /** Restore each Claude account's persisted enabled flag into the live AccountManager on boot. */
+  private applyAccountEnabled(): void {
+    for (const a of config.accounts) {
+      const v = this.db.kvGet(`account_enabled_${a.id}`);
+      if (v != null) this.accounts.applyEnabled(a.id, v === "1");
+    }
+  }
+
+  /** Toggle a Claude account in/out of the dispatch+failover rotation, persisting the flag. Refused
+   *  (returns false) when it would disable the last enabled account; either way the accounts strip is
+   *  re-broadcast so a refused optimistic toggle snaps back on every client. */
+  setAccountEnabled(id: string, enabled: boolean): boolean {
+    const applied = this.accounts.setEnabled(id, enabled);
+    if (applied) this.db.kvSet(`account_enabled_${id}`, enabled ? "1" : "0");
+    this.hub.publish({ type: "accounts", accounts: this.accounts.dto() });
+    return applied;
+  }
+
+  /** Resolve which backend implements tasks right now from the subscription toggles, or an error
+   *  explaining why none can. Codex wins when enabled (it's the opt-in implementor, requires a valid
+   *  key); otherwise Claude, gated by its own toggle. Planner/researcher/QA always run on Claude. */
+  private resolveImplementorProvider(): { provider?: ImplementorProvider; error?: string } {
+    // Codex is the opt-in implementor: when enabled with a valid key it takes over building tasks.
+    // Otherwise the implementor is Claude (the default backend; planner/researcher/QA always are too).
+    if (this.settings().codexEnabled) {
+      const key = this.openaiApiKey();
+      if (!key || !/^sk-/.test(key)) {
+        return { error: "Codex is enabled but no valid OpenAI API key is set (it must start with sk-). Add a key under Settings → Subscriptions, or turn Codex off to use Claude." };
+      }
+      return { provider: "codex" };
+    }
+    return { provider: "claude" };
+  }
+
+  /** Hard routing gate, run once at the start of a thread's implementor stage: resolve + remember the
+   *  backend. A blocked routing parks the task (failed) with a clear reason + a finding, returns null. */
+  private gateImplementorProvider(thread: Thread): ImplementorProvider | null {
+    const { provider, error } = this.resolveImplementorProvider();
+    if (!provider) {
+      this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
+      this.setState(thread.id, "failed", error);
+      return null;
+    }
+    this.implementorProvider.set(thread.id, provider);
+    return provider;
   }
 
   // ---- concurrency queue ----
@@ -721,7 +805,7 @@ export class ThreadManager implements OrchestratorApi {
    *  re-run the planner with the note(s) so the plan — and everything downstream — reflects them,
    *  instead of letting the pipeline march an implementor off a now-stale plan. Loops until the buffer
    *  is empty (a note can arrive during the re-plan too). Returns the latest structured result. */
-  private async drainDirectorNotes(thread: Thread, agent: AgentRun, res: ResultEvent | undefined): Promise<ResultEvent | undefined> {
+  private async drainDirectorNotes(thread: Thread, agent: AgentRunLike, res: ResultEvent | undefined): Promise<ResultEvent | undefined> {
     while (!this.cancelled(thread.id) && !agent.rateLimited) {
       const notes = this.directorNotes.get(thread.id);
       if (!notes?.length) break;
@@ -798,20 +882,40 @@ export class ThreadManager implements OrchestratorApi {
     thread: Thread,
     kickoff: string,
     opts?: { resume?: string; effort?: Effort; account?: Acct },
-  ): { run: AgentRun; runId: string; accountId: string } {
+  ): { run: AgentRunLike; runId: string; accountId: string } {
     this.setState(thread.id, "implementing");
-    const acct = opts?.account ?? this.dispatchAccount();
     // Coerce a gated `xhigh` down to `high` here too, so the stored/displayed effort matches what the
     // implementor actually runs at (implementorConfig applies the same gate before the SDK call).
     const effort = resolveEffort(opts?.effort);
-    const run = this.db.createRun({ threadId: thread.id, role: "implementor", model: config.models.implementor, account: acct.label, effort });
-    this.emitRun(run.id);
-    const bus = createBusServer(this, { threadId: thread.id, role: "implementor", getRunId: () => run.id });
-    const cfg = implementorConfig(thread.workspace, { bus }, { resume: opts?.resume, effort });
-    cfg.oauthToken = acct.token;
-    const agent = new AgentRun(cfg);
-    this.wireRun(agent, thread.id, run.id, "implementor", acct.id);
-    this.live.set(thread.id, { run: agent, runId: run.id, accountId: acct.id });
+    // Provider factory: the routing gate (gateImplementorProvider) stored the backend for this thread.
+    // Codex runs the CLI (no Claude account/oauth); Claude runs the SDK on a selected subscription.
+    const provider = this.implementorProvider.get(thread.id) ?? "claude";
+    let agent: AgentRunLike;
+    let runId: string;
+    let accountId: string;
+    if (provider === "codex") {
+      const model = this.codexModel();
+      accountId = "openai-codex";
+      const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `codex:${model}`, effort });
+      runId = run.id;
+      this.emitRun(run.id);
+      // The Codex CLI is a separate process; the in-process bus MCP server can't attach to it, so a
+      // Codex implementor runs without post_finding/ask_user/read_findings — a documented degradation.
+      // The QA loop still reviews its output, and it commits via its own shell access.
+      agent = new CodexAgentRun({ model, cwd: thread.workspace, apiKey: this.openaiApiKey() ?? "", resume: opts?.resume });
+    } else {
+      const acct = opts?.account ?? this.dispatchAccount();
+      accountId = acct.id;
+      const run = this.db.createRun({ threadId: thread.id, role: "implementor", model: config.models.implementor, account: acct.label, effort });
+      runId = run.id;
+      this.emitRun(run.id);
+      const bus = createBusServer(this, { threadId: thread.id, role: "implementor", getRunId: () => run.id });
+      const cfg = implementorConfig(thread.workspace, { bus }, { resume: opts?.resume, effort });
+      cfg.oauthToken = acct.token;
+      agent = new AgentRun(cfg);
+    }
+    this.wireRun(agent, thread.id, runId, "implementor", accountId);
+    this.live.set(thread.id, { run: agent, runId, accountId });
     this.track(thread.id, agent);
     agent.onEvent((e) => {
       if (e.type === "init" && e.sessionId) this.lastImplementorSession.set(thread.id, e.sessionId);
@@ -822,13 +926,13 @@ export class ThreadManager implements OrchestratorApi {
       if (this.live.get(thread.id)?.run === agent) this.live.delete(thread.id);
       this.untrack(thread.id, agent);
       this.stopping.delete(thread.id);
-      this.finalizeRun(run.id, agent);
+      this.finalizeRun(runId, agent);
     });
     // Wrap pasted images into the kickoff only when STARTING a fresh session. On a resume the prior
     // session already holds them in context, so re-attaching the base64 would re-bill vision tokens
-    // for no gain (and a failover can relaunch several times).
+    // for no gain (and a failover can relaunch several times). (Codex flattens any image blocks to text.)
     agent.start(opts?.resume ? kickoff : this.kickoffContent(thread.id, kickoff));
-    return { run: agent, runId: run.id, accountId: acct.id };
+    return { run: agent, runId, accountId };
   }
 
   /**
@@ -861,6 +965,19 @@ export class ThreadManager implements OrchestratorApi {
       const extras = [restartNote, opts.directorNote && `[New information from the director]\n${opts.directorNote}`].filter(Boolean);
       const text = extras.length ? `${baseKickoff}\n\n${extras.join("\n\n")}` : baseKickoff;
       return this.startImplementor(thread, text, { effort: opts.effort, account: opts.account });
+    }
+    // Codex resumes by its own thread id via `codex exec resume <id>` — there is no local Claude
+    // transcript to age-check or Haiku-compress, so the warm/cold gate below (keyed on transcript mtime)
+    // would always fall to the cold path and start a FRESH Codex run, throwing away the prior session.
+    // Resume the Codex thread directly with the nudge/note as the new turn's prompt.
+    if ((this.implementorProvider.get(thread.id) ?? "claude") === "codex") {
+      this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: resuming the Codex session ${resumeSession.slice(0, 8)} via the CLI.`);
+      const parts = [
+        restartNote,
+        opts.resumeNudge,
+        opts.directorNote && opts.directorNote !== opts.resumeNudge && `[New information from the director]\n${opts.directorNote}`,
+      ].filter(Boolean);
+      return this.startImplementor(thread, parts.join("\n\n"), { effort: opts.effort, resume: resumeSession, account: opts.account });
     }
     const ageMs = sessionAgeMs(resumeSession);
     const warm = ageMs != null && ageMs < config.resumeWarmMinutes * 60_000;
@@ -898,7 +1015,7 @@ export class ThreadManager implements OrchestratorApi {
   private async awaitImplementorResult(
     thread: Thread,
     effort: Effort | undefined,
-    current: AgentRun,
+    current: AgentRunLike,
     currentAccountId: string,
     useNext: boolean,
     continueMsg: string,
@@ -939,7 +1056,7 @@ export class ThreadManager implements OrchestratorApi {
     thread: Thread,
     effort: Effort | undefined,
     kickoff: string,
-    run: AgentRun,
+    run: AgentRunLike,
     accountId: string,
     useNext: boolean,
     continueMsg: string,
@@ -1031,10 +1148,15 @@ export class ThreadManager implements OrchestratorApi {
     directorNote?: string,
     pipe: PipeOpts = { qaEnabled: true, maxQaRounds: config.maxQaRounds },
   ): Promise<void> {
+    // Hard routing gate — resolve + remember the implementor backend from the subscription toggles.
+    // A blocked routing (provider off / Codex without a valid key) parks the task here, before any
+    // agent spawns. Covers every fresh dispatch and pipeline resume (both reach here via runPipeline).
+    if (!this.gateImplementorProvider(thread)) return;
     try {
       await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession, directorNote, pipe);
     } finally {
       this.autoResumes.delete(thread.id);
+      this.implementorProvider.delete(thread.id);
       await this.stopLive(thread.id);
     }
   }
@@ -1440,7 +1562,7 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Deliver to a now-live implementor any director notes buffered while it was still materializing
    *  (the cold-resume compression window), then clear the buffer. A no-op when nothing was buffered. */
-  private flushDirectorNotes(threadId: string, run: AgentRun): void {
+  private flushDirectorNotes(threadId: string, run: AgentRunLike): void {
     const notes = this.directorNotes.get(threadId);
     if (!notes?.length) return;
     this.directorNotes.delete(threadId);
@@ -1527,8 +1649,17 @@ export class ThreadManager implements OrchestratorApi {
     this.activePipelines.add(thread.id);
     const releaseSlot = () => {
       this.activePipelines.delete(thread.id);
+      this.implementorProvider.delete(thread.id);
       this.pumpQueue();
     };
+    // Same hard routing gate as the pipeline: a manual resume / cold inject must also respect the
+    // subscription toggles. A blocked routing parks the task (failed, set by the gate) and stops here.
+    if (!this.gateImplementorProvider(thread)) {
+      this.resuming.delete(thread.id);
+      this.pendingResumeMsgs.delete(thread.id);
+      releaseSlot();
+      return;
+    }
     const resume = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
     const baseKickoff = this.db.getThreadStageOutputs(thread.id).kickoff ?? thread.brief;
     const resumeNudge = message ?? "Continue where you left off.";
@@ -1595,6 +1726,7 @@ export class ThreadManager implements OrchestratorApi {
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
     this.directorNotes.delete(threadId);
+    this.implementorProvider.delete(threadId);
     const pendingApproval = this.pendingApprovals.get(threadId);
     if (pendingApproval) {
       this.pendingApprovals.delete(threadId);
@@ -1695,6 +1827,7 @@ export class ThreadManager implements OrchestratorApi {
     // stale liveQa handle behind (the window the QA-inject gate also guards) — drop it so it can't leak.
     this.liveQa.delete(threadId);
     this.directorNotes.delete(threadId);
+    this.implementorProvider.delete(threadId);
     this.stopping.delete(threadId);
   }
 
@@ -1808,7 +1941,7 @@ export class ThreadManager implements OrchestratorApi {
     if (run) this.hub.publish({ type: "run.upsert", run });
   }
 
-  private finishRun(runId: string, res: Extract<AgentEvent, { type: "result" }> | undefined, agent: AgentRun): void {
+  private finishRun(runId: string, res: Extract<AgentEvent, { type: "result" }> | undefined, agent: AgentRunLike): void {
     this.db.updateRun(runId, {
       state: res?.isError ? "error" : "done",
       endedAt: Date.now(),
@@ -1822,7 +1955,7 @@ export class ThreadManager implements OrchestratorApi {
   /** Idempotently stamp a run terminal (state + endedAt). Implementor runs go through this on
    *  their `onEnd` because they aren't part of runRole's explicit finishRun. The endedAt guard
    *  makes repeated calls (stop → onEnd, boot sweep) no-ops, so the clock freezes once. */
-  private finalizeRun(runId: string, agent: AgentRun): void {
+  private finalizeRun(runId: string, agent: AgentRunLike): void {
     const run = this.db.getRun(runId);
     if (!run || run.endedAt != null) return;
     const res = agent.lastResult;
@@ -1849,7 +1982,7 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
-  private wireRun(agent: AgentRun, threadId: string, runId: string, role: Role, accountId: string): void {
+  private wireRun(agent: AgentRunLike, threadId: string, runId: string, role: Role, accountId: string): void {
     const off = agent.onEvent((e: AgentEvent) => {
       switch (e.type) {
         case "init":

@@ -439,6 +439,67 @@ button { font-family: inherit; cursor: pointer; }
 .segment button + button { border-left: 1px solid var(--line); }
 .segment button:hover { color: var(--text-dim); }
 .segment button.on { background: color-mix(in oklch, var(--accent) 16%, var(--bg-2)); color: var(--accent); }
+/* a wrapping segmented control for longer option sets (model picker) */
+.segment.wrap { flex-wrap: wrap; }
+.segment.wrap button { font-family: var(--font-mono); font-size: 10.5px; }
+
+/* ---- subscriptions (provider cards) ---- */
+.subs { display: flex; flex-direction: column; gap: 8px; padding: 4px 16px 6px; }
+.sub-card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-2); padding: 11px 12px; }
+.sub-card.active { border-color: color-mix(in oklch, var(--ok) 50%, var(--line)); background: color-mix(in oklch, var(--ok) 6%, var(--bg-2)); }
+.sub-card-head { display: flex; align-items: center; gap: 12px; }
+.sub-id { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.sub-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.sub-vendor { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
+.sub-badge {
+  font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--ok); border: 1px solid color-mix(in oklch, var(--ok) 45%, var(--line));
+  background: color-mix(in oklch, var(--ok) 12%, transparent); border-radius: 100px; padding: 2px 7px;
+}
+.sub-badge.warn { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 45%, var(--line)); background: color-mix(in oklch, var(--danger) 12%, transparent); }
+.sub-card-meta { font-size: 11px; color: var(--text-faint); line-height: 1.45; margin-top: 6px; }
+.switch:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.model-input {
+  width: 100%; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg);
+  color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 8px 10px; letter-spacing: 0.02em;
+}
+.model-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
+
+.sub-field { margin-top: 11px; }
+.sub-label { display: block; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 5px; }
+.key-input { display: flex; align-items: center; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); overflow: hidden; }
+.key-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
+.key-input.bad { border-color: var(--danger); }
+.key-input.bad:focus-within { box-shadow: 0 0 0 3px oklch(0.68 0.2 25 / 0.16); }
+.key-input input {
+  flex: 1; min-width: 0; border: none; background: none; color: var(--text);
+  font-family: var(--font-mono); font-size: 12px; padding: 8px 10px; letter-spacing: 0.02em;
+}
+.key-input input:focus { outline: none; }
+.key-input input::placeholder { color: var(--text-faint); }
+.key-eye {
+  flex: none; border: none; background: none; color: var(--text-faint);
+  width: 32px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
+}
+.key-eye:hover { color: var(--text-dim); }
+
+.sub-actions { display: flex; gap: 7px; margin-top: 8px; flex-wrap: wrap; }
+.sub-btn {
+  border: 1px solid var(--line); background: var(--bg-3); color: var(--text-dim);
+  font-size: 11.5px; padding: 5px 11px; border-radius: var(--r-sm); transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.sub-btn:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); }
+.sub-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.sub-btn.primary { background: color-mix(in oklch, var(--accent) 18%, var(--bg-2)); color: var(--accent); border-color: color-mix(in oklch, var(--accent) 40%, var(--line)); }
+.sub-btn.primary:hover:not(:disabled) { background: color-mix(in oklch, var(--accent) 26%, var(--bg-2)); color: var(--accent); }
+.sub-btn.ghost { background: none; }
+.sub-btn.ghost:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+
+.sub-msg { font-size: 11px; line-height: 1.4; margin-top: 7px; }
+.sub-msg.ok { color: var(--ok); }
+.sub-msg.bad { color: var(--danger); }
+.sub-msg.dim { color: var(--text-faint); }
 
 /* ---- board ---- */
 .board { overflow-y: auto; padding: 18px; min-height: 0; }

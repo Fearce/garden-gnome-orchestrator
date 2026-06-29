@@ -192,7 +192,17 @@ export interface OrchestratorSettings {
   autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
+  // ---- Subscriptions: which provider backs the implementor (hard routing gate at dispatch) ----
+  // Claude is the default implementor and always powers planner/researcher/QA; individual Claude
+  // accounts are toggled via the AccountDTO.enabled flag (account.set), not a setting here.
+  codexEnabled: boolean; // OpenAI Codex: when on (with a valid key), it becomes the implementor backend
+  codexModel: string; // which Codex model the implementor runs (free-text; flagship suggestions in config.codex.models)
+  hasOpenaiKey: boolean; // read-only indicator — an OpenAI key is stored (the raw key is never broadcast)
+  openaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
 }
+
+/** The implementor backend chosen at dispatch by the subscription toggles. */
+export type ImplementorProvider = "claude" | "codex";
 
 export interface RateLimitInfo {
   status: "allowed" | "allowed_warning" | "rejected";

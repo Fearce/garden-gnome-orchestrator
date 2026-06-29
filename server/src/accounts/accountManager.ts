@@ -17,6 +17,7 @@ interface AccountState {
   rateLimited: boolean;
   rateLimitWindow: string | null;
   rateLimitResetAt: number | null;
+  enabled: boolean; // operator toggle — a disabled account is held out of dispatch/failover rotation
   lastPick: number; // monotonic selection sequence — round-robin tiebreak
   updatedAt: number;
 }
@@ -91,6 +92,7 @@ export class AccountManager {
         rateLimited: false,
         rateLimitWindow: null,
         rateLimitResetAt: null,
+        enabled: true,
         lastPick: 0,
         updatedAt: 0,
       });
@@ -170,6 +172,32 @@ export class AccountManager {
     this.resetTimers.set(a.id, t);
   }
 
+  /** Toggle an account in/out of the dispatch+failover rotation (operator control). Refuses to disable
+   *  the LAST enabled account — planner/researcher/QA always need a Claude account — and returns whether
+   *  the change applied. Persistence lives in the caller (ThreadManager kv); this is the live state. */
+  setEnabled(accountId: string, enabled: boolean): boolean {
+    const st = this.states.get(accountId);
+    if (!st || st.enabled === enabled) return false;
+    if (!enabled && this.enabledCount() <= 1) return false; // never strand the pipeline
+    st.enabled = enabled;
+    st.updatedAt = Date.now();
+    this.publish();
+    return true;
+  }
+
+  /** Apply a persisted enabled flag on boot WITHOUT the last-account guard or a publish (the initial
+   *  dto() broadcast carries the state). A flag for an unknown account id is ignored. */
+  applyEnabled(accountId: string, enabled: boolean): void {
+    const st = this.states.get(accountId);
+    if (st) st.enabled = enabled;
+  }
+
+  private enabledCount(): number {
+    let n = 0;
+    for (const s of this.states.values()) if (s.enabled) n++;
+    return n;
+  }
+
   /** Cap signal from a real run's rate_limit_event — flags rateLimited fast mid-burst; pings own the %. */
   updateFromRateLimit(accountId: string, info: RateLimitInfo): void {
     const st = this.states.get(accountId);
@@ -198,11 +226,15 @@ export class AccountManager {
     }
     const now = Date.now();
     const all = [...this.states.values()];
-    const usable = all.filter((s) => {
+    // Operator-disabled accounts are held out of the rotation. Safety net: if every account is
+    // disabled, ignore the toggles rather than strand the pipeline (planner/researcher/QA need Claude).
+    const enabledStates = all.filter((s) => s.enabled);
+    const base = enabledStates.length ? enabledStates : all;
+    const usable = base.filter((s) => {
       const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
       return !limited && tightest(s) < HARD_LIMIT;
     });
-    const pool = usable.length ? usable : all;
+    const pool = usable.length ? usable : base;
     // Burn the account whose weekly window resets soonest first (see bySelectionPriority).
     pool.sort(bySelectionPriority);
     const chosen = pool[0]!;
@@ -226,7 +258,7 @@ export class AccountManager {
     if (this.accounts.length <= 1) return null;
     const now = Date.now();
     const candidates = [...this.states.values()].filter((s) => {
-      if (s.account.id === excludeId) return false;
+      if (s.account.id === excludeId || !s.enabled) return false;
       const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
       return !limited && tightest(s) < HARD_LIMIT;
     });
@@ -282,6 +314,7 @@ export class AccountManager {
       rateLimited: s.rateLimited,
       resetsAt: s.rateLimitResetAt,
       active: s.account.id === this.preferredId,
+      enabled: s.enabled,
       updatedAt: s.updatedAt,
       error: s.error,
     }));

@@ -14,6 +14,7 @@ import type {
   Question,
   Role,
   ServerEvent,
+  SettingsPatch,
   Thread,
 } from "./types.js";
 import { notify } from "./lib/notify.js";
@@ -45,6 +46,9 @@ interface State {
   approvalMode: boolean;
   // Server-authoritative pipeline settings (broadcast over WS); the panel edits these via setSettings.
   settings: OrchestratorSettings;
+  // Latest Codex "Test connection" verdict (null until a test runs). Cleared while a test is in flight.
+  codexTest: { ok: boolean; message: string } | null;
+  codexTesting: boolean;
   // Client-only view settings, persisted in localStorage under `director_settings` — they only change
   // what this browser shows, so they never round-trip to the server.
   showCompleted: boolean;
@@ -68,7 +72,9 @@ interface State {
   restore: (threadId: string) => void;
   dismiss: (threadId: string) => void;
   setApproval: (on: boolean) => void;
-  setSettings: (patch: Partial<OrchestratorSettings>) => void;
+  setSettings: (patch: SettingsPatch) => void;
+  testCodex: (apiKey?: string) => void;
+  setAccountEnabled: (id: string, enabled: boolean) => void;
   setShowCompleted: (v: boolean) => void;
   setVerbosity: (v: Verbosity) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
@@ -137,6 +143,10 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   autoPush: true,
   maxQaRounds: 4,
   maxConcurrent: 3,
+  codexEnabled: false,
+  codexModel: "gpt-5.5",
+  hasOpenaiKey: false,
+  openaiKeyLast4: null,
 };
 
 // A server that predates the settings broadcast (or any partial payload) must never null out the
@@ -200,6 +210,8 @@ export const useStore = create<State>((set) => ({
   selectedThreadId: null,
   approvalMode: false,
   settings: DEFAULT_SETTINGS,
+  codexTest: null,
+  codexTesting: false,
   showCompleted: loadViewSettings().showCompleted,
   verbosity: loadViewSettings().verbosity,
   pendingPlans: {},
@@ -230,8 +242,21 @@ export const useStore = create<State>((set) => ({
   // Optimistic: reflect the change locally at once, then send it. The server's `settings` broadcast
   // confirms (and reconciles any clamp, e.g. an out-of-range number) for every connected client.
   setSettings: (patch) => {
-    set((s) => ({ settings: { ...s.settings, ...patch } }));
+    // Reflect the writable view fields locally at once; the raw key is write-only and never held in
+    // client state (the server confirms it via hasOpenaiKey/openaiKeyLast4 on its settings broadcast).
+    const { openaiApiKey: _key, ...local } = patch;
+    set((s) => ({ settings: { ...s.settings, ...local } }));
     sendCommand({ type: "settings.set", settings: patch });
+  },
+  testCodex: (apiKey) => {
+    set({ codexTesting: true, codexTest: null });
+    sendCommand({ type: "codex.test", apiKey: apiKey?.trim() || undefined });
+  },
+  setAccountEnabled: (id, enabled) => {
+    // Optimistic: flip the strip locally; the server's `accounts` broadcast confirms (and snaps back
+    // a refused toggle — e.g. trying to disable the last enabled account).
+    set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, enabled } : a)) }));
+    sendCommand({ type: "account.set", id, enabled });
   },
   setShowCompleted: (v) =>
     set((s) => {
@@ -345,6 +370,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "settings":
       useStore.setState({ settings: mergeSettings(ev.settings) });
+      break;
+    case "codex.test.result":
+      useStore.setState({ codexTest: { ok: ev.ok, message: ev.message }, codexTesting: false });
       break;
     case "thread.changes":
       useStore.setState((s) => ({ threadChanges: { ...s.threadChanges, [ev.threadId]: { diff: ev.diff, log: ev.log } } }));
