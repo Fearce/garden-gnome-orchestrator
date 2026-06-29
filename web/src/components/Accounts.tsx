@@ -23,9 +23,21 @@ function countdown(reset: number | null | undefined, now: number): string {
 
 export function Accounts() {
   const accounts = useStore((s) => s.accounts);
+  const settings = useStore((s) => s.settings);
+  // A Codex implementor is live when some implementor run on the OpenAI backend is still going. The
+  // account label is the discriminator the server stamps ("codex:<model>"); state idle = result emitted
+  // but the run not yet finalized, so treat starting/running/idle as "implementing now".
+  const codexLive = useStore((s) =>
+    Object.values(s.runs).some(
+      (r) => r.role === "implementor" && (r.account ?? "").startsWith("codex:") && (r.state === "starting" || r.state === "running" || r.state === "idle"),
+    ),
+  );
   const now = useNow(accounts.length > 0);
-  if (!accounts.length) return null;
   const multi = accounts.length > 1;
+  // Show the Codex chip once Codex is configured at all (enabled, or a key is stored) so the top bar
+  // reflects it as a subscription alongside the Claude accounts.
+  const showCodex = settings.codexEnabled || settings.hasOpenaiKey;
+  if (!accounts.length && !showCodex) return null;
   return (
     <div
       className="accounts"
@@ -38,6 +50,38 @@ export function Accounts() {
       {accounts.map((a) => (
         <AccountChip key={a.id} a={a} multi={multi} now={now} />
       ))}
+      {showCodex ? <CodexChip enabled={settings.codexEnabled} hasKey={settings.hasOpenaiKey} model={settings.codexModel} live={codexLive} /> : null}
+    </div>
+  );
+}
+
+/**
+ * Top-bar chip for the OpenAI Codex backend. OpenAI exposes no rolling 5h/weekly headroom like the
+ * Claude subscription ping, so this is an honest STATUS chip (not a fabricated usage meter): it shows
+ * the model and the current state — implementing now / ready / needs a key / off.
+ */
+function CodexChip({ enabled, hasKey, model, live }: { enabled: boolean; hasKey: boolean; model: string; live: boolean }) {
+  const state = !enabled ? "off" : !hasKey ? "nokey" : live ? "implementing" : "ready";
+  const tag = state === "implementing" ? "implementing" : state === "ready" ? "ready" : state === "nokey" ? "no key" : "off";
+  const tagCls = state === "nokey" ? "acct-tag" : state === "off" ? "acct-tag dim" : "acct-tag ok";
+  const title =
+    state === "implementing"
+      ? `Codex is implementing a task now · model ${model}`
+      : state === "ready"
+        ? `Codex (OpenAI) enabled · model ${model} · implements dispatched tasks`
+        : state === "nokey"
+          ? "Codex is enabled but has no valid API key — add one in Settings → Subscriptions"
+          : `Codex (OpenAI) configured but off · model ${model}`;
+  return (
+    <div className={"acct codex" + (state === "implementing" ? " active" : "") + (state === "off" ? " is-off" : "")} title={title}>
+      <div className="acct-head">
+        <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
+        <span className="acct-label">Codex</span>
+        <span className={tagCls}>{tag}</span>
+      </div>
+      <div className="codex-model" title={model}>
+        {model}
+      </div>
     </div>
   );
 }
