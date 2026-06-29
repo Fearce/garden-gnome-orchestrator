@@ -10,6 +10,7 @@ import { Db } from "./db/db.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
 import { AccountManager } from "./accounts/accountManager.js";
+import { readCodexUsage } from "./agents/codexUsage.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
@@ -68,6 +69,20 @@ async function main(): Promise<void> {
   const manager = new ThreadManager(db, hub, memory, accounts);
   const director = new Director(manager, db, hub);
   accounts.start();
+
+  // Codex usage: the codex CLI persists its plan-wide rate-limit snapshot to the session rollout after
+  // every turn, so we harvest live 5h/weekly meters for the top-bar Codex chip from real runs — no extra
+  // API call. Cheap file read; poll modestly and only broadcast on change so the WS isn't spammed.
+  let lastCodexUsage = "";
+  const pushCodexUsage = (): void => {
+    const usage = readCodexUsage();
+    const sig = JSON.stringify(usage);
+    if (sig === lastCodexUsage) return;
+    lastCodexUsage = sig;
+    hub.publish({ type: "codex.usage", usage });
+  };
+  pushCodexUsage();
+  setInterval(pushCodexUsage, 30_000).unref();
 
   // Shared across both listeners so the per-IP wrong-password cooldown can't be
   // sidestepped by alternating between the HTTP and HTTPS ports.

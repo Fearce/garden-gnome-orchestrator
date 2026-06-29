@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CodexUsageDTO } from "../agents/codexUsage.js";
 import type {
   AgentRun,
   ChatMessage,
@@ -30,6 +31,8 @@ export interface AccountDTO {
   error?: string | null;
 }
 
+export type { CodexUsageDTO } from "../agents/codexUsage.js";
+
 export type ServerEvent =
   | {
       type: "hello";
@@ -39,6 +42,7 @@ export type ServerEvent =
       questions: Question[];
       director: DirectorMessage[];
       accounts: AccountDTO[];
+      codexUsage: CodexUsageDTO | null;
       approvalMode: boolean;
       settings: OrchestratorSettings;
       chat: ChatMessage[];
@@ -46,6 +50,7 @@ export type ServerEvent =
       nameOverrides: Record<string, string>;
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
   | { type: "chat.history"; room: string; messages: ChatMessage[] }
   | { type: "chat.name"; threadId: string; name: string }

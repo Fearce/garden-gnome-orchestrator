@@ -58,6 +58,7 @@ export function Office() {
   const chat = useStore((s) => s.chat);
   const officeRoom = useStore((s) => s.officeRoom);
   const openOffice = useStore((s) => s.openOffice);
+  const directorBusy = useStore((s) => s.directorBusy);
   const nameOverrides = useStore((s) => s.nameOverrides);
   const nameOf = (threadId: string) => nameOverrides[threadId] ?? gnomeName(threadId);
 
@@ -104,13 +105,24 @@ export function Office() {
   const bubbleFor = (m: ChatMessage | undefined): string | null =>
     m && now - m.createdAt < BUBBLE_MS ? trim(m.body, 64) : null;
 
-  if (liveCount === 0 && officeRoom == null) return null;
-
+  // The director is always "in the office": it gets a persistent walker at the head of the strip even
+  // when no task agents are live, so the strip never collapses (which used to let the usage chips slide
+  // to the left) and the director is always one click from its chat.
   return (
     <div className="office">
-      {liveCount > 0 ? (
-        <div className="office-strip" title="The office — agents working right now. Click to open the chat.">
-          {groups.map((g) =>
+      <div className="office-strip" title="The office — the director and any agents working right now. Click to open the chat.">
+        <button
+          className={"office-walker office-director" + (directorBusy ? " working" : "")}
+          style={{ "--pace-dur": "5s", "--pace-delay": "0s" } as CSSProperties}
+          onClick={() => openOffice(GENERAL_ROOM)}
+          title={directorBusy ? "The director is working — click to open the office chat" : "The director — click to open the office chat"}
+        >
+          <span className="office-pacer">
+            <Gnome role="director" size={20} />
+          </span>
+        </button>
+        {liveCount > 0
+          ? groups.map((g) =>
             g.room ? (
               <button
                 key={g.key}
@@ -142,11 +154,9 @@ export function Office() {
                 </button>
               ))
             ),
-          )}
-        </div>
-      ) : (
-        <div className="office-strip" />
-      )}
+          )
+          : null}
+      </div>
       {officeRoom != null ? <OfficePanel /> : null}
     </div>
   );

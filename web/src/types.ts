@@ -183,6 +183,18 @@ export interface AccountDTO {
   error?: string | null;
 }
 
+/** Codex (ChatGPT-plan) usage windows — mirrors the server's CodexUsageDTO. `fiveHour` is the rolling
+ *  5-hour window, `sevenDay` the weekly one, both 0-100 used-percent with epoch-ms resets. Harvested
+ *  from the codex session rollouts, so it reflects the last turn Codex actually ran (last-known). */
+export interface CodexUsageDTO {
+  fiveHour: number | null;
+  sevenDay: number | null;
+  fiveHourReset: number | null;
+  sevenDayReset: number | null;
+  planType: string | null;
+  updatedAt: number;
+}
+
 /** Operator-tunable pipeline settings — server-authoritative (persisted in the DB kv table, broadcast
  *  to every client). Mirrors the server's OrchestratorSettings. */
 export interface OrchestratorSettings {
@@ -217,6 +229,7 @@ export type ServerEvent =
       questions: Question[];
       director: DirectorMessage[];
       accounts: AccountDTO[];
+      codexUsage: CodexUsageDTO | null;
       approvalMode: boolean;
       settings: OrchestratorSettings;
       chat: ChatMessage[];
@@ -224,6 +237,7 @@ export type ServerEvent =
       nameOverrides: Record<string, string>;
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
   | { type: "chat.history"; room: string; messages: ChatMessage[] }
   | { type: "chat.name"; threadId: string; name: string }

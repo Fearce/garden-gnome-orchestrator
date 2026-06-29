@@ -5,6 +5,7 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { Director } from "../orchestrator/director.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
+import { readCodexUsage } from "../agents/codexUsage.js";
 import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./protocol.js";
 import { isAuthed } from "../auth.js";
 
@@ -44,6 +45,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     questions: ctx.db.listOpenQuestions(),
     director: ctx.db.listDirectorMessages(SNAPSHOT_DIRECTOR_MSGS),
     accounts: ctx.accounts.dto(),
+    codexUsage: readCodexUsage(),
     approvalMode: ctx.manager.approvalMode(),
     settings: ctx.manager.settings(),
     // The office: a recent slice of chat for the live feed, plus the project-room roll-up (full

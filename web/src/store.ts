@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { apiUrl, wsUrl } from "./lib/base.js";
 import type {
   AccountDTO,
+  CodexUsageDTO,
   AgentRun,
   ChatMessage,
   ChatRoomSummary,
@@ -36,6 +37,7 @@ interface State {
   authPassword: boolean;
   authError: string | null;
   accounts: AccountDTO[];
+  codexUsage: CodexUsageDTO | null;
   threads: Record<string, Thread>;
   runs: Record<string, AgentRun>;
   findings: Finding[];
@@ -217,6 +219,7 @@ export const useStore = create<State>((set) => ({
   authPassword: false,
   authError: null,
   accounts: [],
+  codexUsage: null,
   threads: {},
   runs: {},
   findings: [],
@@ -404,7 +407,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}) });
       // If the office panel is open, re-pull the open room so it reflects anything that streamed
       // while the socket was gone (mirrors the thread.history re-fetch above).
       const openRoom = useStore.getState().officeRoom;
@@ -416,6 +419,9 @@ function applyEvent(ev: ServerEvent): void {
       if (selected) sendCommand({ type: "thread.history", threadId: selected });
       break;
     }
+    case "codex.usage":
+      useStore.setState({ codexUsage: ev.usage });
+      break;
     case "accounts":
       useStore.setState({ accounts: ev.accounts });
       break;
