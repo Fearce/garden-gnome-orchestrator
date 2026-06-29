@@ -14,39 +14,39 @@ can inject into mid-work. Node/Fastify API (`server/`) + React/Vite console (`we
   exists so the HTTPS Dashboard Deck can iframe it without mixed-content blocking).
   LAN access is auth-gated via `server/.env` (`AUTH_PASSWORD` / Google). Local/LAN only.
 
-## Restarting the orchestrator — READ THIS FIRST
-The app is cross-platform (macOS/Linux/Windows). How you restart depends on how it's running:
+## Deploying a change — DO IT YOURSELF, don't defer
+**If you changed server code, you deploy it before handing off — by restarting the orchestrator
+yourself, in the same turn. Do NOT end a turn with "needs a restart to go live" or ask the owner
+to restart. Bouncing is FINE: keepAlive + auto-resume bring every in-flight task (including you, if
+you're a worker) back on the freshly-built code.** A worker restarting its own parent is the designed,
+supported flow — the rebooted server auto-resumes you with a note saying the restart already
+completed (so you won't loop). Un-deployed hand-offs are the recurring complaint; don't be the cause.
+
+How to restart depends on how it's running:
 
 **macOS / Linux (local dev — `npm run dev` or `npm run serve`):** no script-hub, no keepAlive.
-There's nothing to auto-resurrect it, so just stop the process and re-run:
 - Web-only change: don't restart — `npm run build --prefix web` then reload the browser.
 - Server change under `serve` (no watch): stop the process and re-run `npm run serve`.
 - Under `npm run dev` (`tsx watch`): editing `server/src` already hot-restarts it — but that
   KILLS in-flight tasks, so use `serve` when real pipelines are running.
 
-**Windows (script-hub production deployment):** the rest of this section applies only there.
-It runs as script-hub id **`claude-orchestrator`** with keepAlive armed (the hub auto-restarts
-it if it dies). Implementor workers are **child processes of this server** — the Agent SDK
-spawns the `claude` CLI as a child (`server/src/agents/runner.ts`). So a worker **cannot**
-restart its own parent with stop-then-start:
-
-- `script-hub stop claude-orchestrator` (and the launcher's `stop`) **disarms keepAlive AND
-  kills the whole process tree — including the worker that issued the command** — so the
-  follow-up `start` never runs and nothing resurrects it. This is the recurring "orchestrator
-  went down right after a worker restarted it" loop. Never use stop+start to restart it.
-
-**Correct restart** — atomic, server-side in the hub process (PID outside this server's tree),
-survives the caller being killed mid-restart, and re-arms keepAlive:
-```
-POST http://127.0.0.1:3939/api/restart   body {"id":"claude-orchestrator"}
-```
-Shorthand: `.\launchers\script-hub.ps1 restart claude-orchestrator` (from the script-hub root,
-`C:\Users\user\.runtime\workspace\script-hub`). The hub kills → confirms the PID actually
-exited → respawns → re-arms keepAlive itself, so the restart completes even after the worker dies.
-
-- **Web-only change?** Don't restart the server — `web/dist` is static; `npm run build --prefix web`
-  then reload the browser.
-- **Server change?** `npm run build` then the atomic restart above.
+**Windows (script-hub production deployment):** runs as script-hub id **`claude-orchestrator`** with
+keepAlive armed. Implementor workers are **child processes of this server** (the Agent SDK spawns the
+`claude` CLI — `server/src/agents/runner.ts`), so:
+- **Server change?** `npm run build`, then issue the **atomic** hub restart yourself — it runs
+  server-side in the hub process (PID outside this server's tree), survives the caller being killed
+  mid-restart, and re-arms keepAlive:
+  ```
+  POST http://127.0.0.1:3939/api/restart   body {"id":"claude-orchestrator"}
+  ```
+  Shorthand: `.\launchers\script-hub.ps1 restart claude-orchestrator` (from the script-hub root,
+  `C:\Users\user\.runtime\workspace\script-hub`). This is NOT blocked by the MyProject deploy guard
+  (it only matches worldserver commands, not `/api/restart`) — issue it directly, no string-splitting.
+- **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
+  tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
+  runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.
+- **Web-only change?** Skip the restart — `web/dist` is static; `npm run build --prefix web` then
+  reload the browser.
 - If a restart doesn't pick up server changes, a stale/orphaned process may still hold :4317 —
   check `Get-NetTCPConnection -LocalPort 4317` and kill the old PID, then restart (see global
   memory `claude_orchestrator_stale_elevated_process_shadows_server_changes`).
