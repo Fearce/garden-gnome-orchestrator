@@ -165,6 +165,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   codexModel: "gpt-5.5",
   hasOpenaiKey: false,
   openaiKeyLast4: null,
+  codexChatgptLogin: false,
 };
 
 // A server that predates the settings broadcast (or any partial payload) must never null out the

@@ -264,6 +264,7 @@ export interface OrchestratorSettings {
   codexModel: string; // which Codex model the implementor runs (free-text; flagship suggestions in config.codex.models)
   hasOpenaiKey: boolean; // read-only indicator — an OpenAI key is stored (the raw key is never broadcast)
   openaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
+  codexChatgptLogin: boolean; // read-only — a ChatGPT-plan `codex login` is available; preferred over the key
 }
 
 /** The implementor backend chosen at dispatch by the subscription toggles. */

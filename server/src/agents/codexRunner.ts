@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, RateLimitInfo } from "../types.js";
@@ -62,6 +62,54 @@ const RATE_LIMIT_RE = /(rate.?limit|429|too many requests|quota (?:exceeded|reac
 export interface CodexTestResult {
   ok: boolean;
   message: string;
+}
+
+interface CodexAuthFile {
+  auth_mode?: string;
+  tokens?: unknown;
+  OPENAI_API_KEY?: string;
+}
+
+function readAuthJson(file: string): CodexAuthFile | undefined {
+  if (!existsSync(file)) return undefined;
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as CodexAuthFile;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The operator's personal `codex login` auth.json IF it's a usable ChatGPT-subscription login
+ *  (auth_mode "chatgpt" with tokens) — the preferred Codex auth, which bills against the ChatGPT plan
+ *  and needs no usage-based API key. Returns the file path to seed the isolated CODEX_HOME from, or
+ *  undefined when there's no ChatGPT login to use (an API-key login or no login at all). */
+export function chatgptLoginSource(): string | undefined {
+  const src = join(config.codex.sourceAuthHome, "auth.json");
+  const a = readAuthJson(src);
+  return a?.auth_mode === "chatgpt" && a?.tokens ? src : undefined;
+}
+
+/** A usable login already inside the isolated CODEX_HOME — either one the orchestrator seeded earlier
+ *  (and the CLI has since been refreshing in place) or one the operator wrote by running `codex login`
+ *  directly against CODEX_HOME. Keeps Codex working even if the operator's ~/.codex source later vanishes. */
+function isolatedAuthMode(): "chatgpt" | "apikey" | undefined {
+  const a = readAuthJson(join(config.codex.home, "auth.json"));
+  if (!a) return undefined;
+  if (a.auth_mode === "chatgpt" && a.tokens) return "chatgpt";
+  if (a.OPENAI_API_KEY) return "apikey";
+  return undefined;
+}
+
+/** Whether Codex is authenticated via a ChatGPT plan (operator source OR an already-seeded isolated
+ *  home). Surfaced to the UI so the operator sees "no API key needed". */
+export function chatgptLoginAvailable(): boolean {
+  return !!chatgptLoginSource() || isolatedAuthMode() === "chatgpt";
+}
+
+/** Whether the Codex backend has ANY usable auth right now — a ChatGPT login (source or seeded isolated)
+ *  or a configured API key. The dispatch gate uses this to decide whether Codex can implement. */
+export function codexAuthAvailable(hasApiKey: boolean): boolean {
+  return chatgptLoginAvailable() || !!isolatedAuthMode() || hasApiKey;
 }
 
 /**
@@ -217,15 +265,29 @@ export class CodexAgentRun implements AgentRunLike {
     }
   }
 
-  /** Write the apikey-mode `auth.json` the Codex CLI authenticates from. Mirrors what
-   *  `codex login --with-api-key` produces — the minimal, stable apikey shape — so the orchestrator's
-   *  key drives auth without shelling out to a `login` subcommand on every turn. No-op without a key
-   *  (the routing gate already blocks a Codex dispatch when no valid key is set). */
-  private async writeAuth(): Promise<void> {
+  /** Seed the `auth.json` the Codex CLI authenticates from into the isolated CODEX_HOME and return the
+   *  resolved auth mode — the single source of truth runTurn drives the env off, so the file and the env
+   *  can never disagree. PREFERS the operator's ChatGPT-plan login (no API billing needed): copy
+   *  ~/.codex/auth.json in, but only when it's newer (or the dest is missing) — so a fresh re-login
+   *  propagates while a token codex refreshed in-place isn't clobbered by a staler source. Falls back to
+   *  writing an apikey auth.json from the configured key, else keeps whatever login the home already holds. */
+  private async writeAuth(): Promise<"chatgpt" | "apikey" | "none"> {
+    const dest = join(config.codex.home, "auth.json");
+    const chatgpt = chatgptLoginSource();
+    if (chatgpt) {
+      if (!existsSync(dest) || statSync(chatgpt).mtimeMs > statSync(dest).mtimeMs) await copyFile(chatgpt, dest);
+      return "chatgpt";
+    }
+    // No operator source. A configured API key always (re)writes the apikey auth.json — so a key
+    // rotated in the UI takes effect immediately, overriding any stale key already in the home.
     const key = this.cfg.apiKey?.trim();
-    if (!key) return;
-    const body = JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: key });
-    await writeFile(join(config.codex.home, "auth.json"), body, "utf8");
+    if (key) {
+      await writeFile(dest, JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: key }), "utf8");
+      return "apikey";
+    }
+    // No source and no key: keep whatever usable login the home already holds (a direct `codex login`
+    // against CODEX_HOME, or a previously-seeded ChatGPT token the CLI keeps refreshing).
+    return isolatedAuthMode() ?? "none";
   }
 
   /** Spawn one `codex exec` (or `codex exec resume <id>`) turn and stream its JSONL events. */
@@ -236,14 +298,13 @@ export class CodexAgentRun implements AgentRunLike {
       return;
     }
     // Auth: the modern Codex CLI (>=0.14x) does NOT read OPENAI_API_KEY from the env for its
-    // /v1/responses transport — it authenticates only from `<CODEX_HOME>/auth.json` (what
-    // `codex login --with-api-key` writes). Without it every turn 401s instantly ("Missing bearer …")
-    // and the implementor looks skipped. So write that file ourselves (apikey mode) into the dedicated
-    // CODEX_HOME — isolated from any personal ChatGPT `codex login` in the operator's ~/.codex — every
-    // turn, so a key rotated in the UI takes effect immediately. We still pass OPENAI_API_KEY in the env
-    // (harmless; some subcommands honor it). CODEX_HOME must exist before spawn or codex errors + exits 1.
+    // /v1/responses transport — it authenticates only from `<CODEX_HOME>/auth.json`. Without it every
+    // turn 401s instantly ("Missing bearer …") and the implementor looks skipped. So writeAuth seeds
+    // that file into the dedicated CODEX_HOME (isolated from the operator's personal ~/.codex), PREFERRING
+    // a ChatGPT-plan login and falling back to the API key, and returns the resolved mode. CODEX_HOME
+    // must exist before spawn or codex errors + exits 1.
     await mkdir(config.codex.home, { recursive: true }).catch(() => {});
-    await this.writeAuth().catch(() => {});
+    const authMode = await this.writeAuth().catch(() => "none" as const);
     const args = ["exec"];
     if (resumeId) args.push("resume", resumeId);
     args.push(
@@ -262,7 +323,14 @@ export class CodexAgentRun implements AgentRunLike {
     this.lastErrorMsg = undefined;
     this.stdoutBuf = "";
     this.turnActive = true;
-    const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: config.codex.home, OPENAI_API_KEY: this.cfg.apiKey };
+    // CODEX_HOME points the CLI at the isolated home whose auth.json writeAuth just seeded. Carry
+    // OPENAI_API_KEY ONLY in apikey mode — under a ChatGPT login an inherited key could nudge the CLI
+    // toward the API path it documents as incompatible with a ChatGPT account, so strip it. Driving this
+    // off writeAuth's returned mode (not a re-read) keeps the env and the auth.json from ever diverging.
+    const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: config.codex.home };
+    const key = this.cfg.apiKey?.trim();
+    if (authMode === "apikey" && key) env.OPENAI_API_KEY = key;
+    else delete env.OPENAI_API_KEY;
     let child: ChildProcess;
     try {
       child = spawn(process.execPath, [config.codex.binJs, ...args], { cwd: this.cfg.cwd, env, stdio: ["ignore", "pipe", "pipe"] });

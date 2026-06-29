@@ -121,10 +121,18 @@ export const config = {
     binJs:
       process.env.CODEX_BIN_JS ||
       resolve(process.env.APPDATA ?? resolve(homedir(), "AppData", "Roaming"), "npm", "node_modules", "@openai", "codex", "bin", "codex.js"),
-    // A dedicated CODEX_HOME (no chatgpt auth.json) so the entered API key drives auth, isolated from
-    // any personal `codex login` in the operator's ~/.codex.
+    // A dedicated CODEX_HOME isolated from the operator's personal ~/.codex, so the orchestrator's
+    // config/sessions don't inherit personal plugins/notify hooks (which would misfire under headless
+    // `codex exec`). Auth is SEEDED into it — see sourceAuthHome — rather than relying on env vars
+    // (the modern CLI authenticates only from <CODEX_HOME>/auth.json, not OPENAI_API_KEY).
     home: process.env.CODEX_HOME_DIR || resolve(dataDir, "codex-home"),
+    // The operator's personal codex home, where `codex login` writes auth.json. A ChatGPT-plan login
+    // there (auth_mode "chatgpt") is the PREFERRED Codex auth — it bills against the Plus/Pro/etc. plan,
+    // so no usage-based API billing is needed — and is copied into the isolated home. Override with
+    // CODEX_SOURCE_HOME (e.g. if the operator's codex login lives elsewhere).
+    sourceAuthHome: process.env.CODEX_SOURCE_HOME || resolve(homedir(), ".codex"),
     // Fallback key when none is stored in the kv table — lets a key live in server/.env instead of the UI.
+    // Used only when there's no ChatGPT login to prefer.
     envKey: process.env.OPENAI_API_KEY?.trim() || undefined,
   },
   // When every Claude account is rate-limited mid-task, the task parks in 'review' with a cap marker

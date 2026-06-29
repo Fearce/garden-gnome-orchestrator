@@ -102,7 +102,9 @@ function SubscriptionsSection() {
   const [keyDraft, setKeyDraft] = useState("");
   const [reveal, setReveal] = useState(false);
 
-  const codexActive = settings.codexEnabled && settings.hasOpenaiKey;
+  // Codex auth is usable via EITHER a ChatGPT-plan `codex login` (preferred — no API billing) or a key.
+  const codexHasAuth = settings.codexChatgptLogin || settings.hasOpenaiKey;
+  const codexActive = settings.codexEnabled && codexHasAuth;
   const enabledAccounts = accounts.filter((a) => a.enabled).length;
   const draftValid = /^sk-\S{8,}$/.test(keyDraft.trim());
   const draftBad = keyDraft.trim().length > 0 && !keyDraft.trim().startsWith("sk-");
@@ -136,19 +138,25 @@ function SubscriptionsSection() {
         on={settings.codexEnabled}
         active={codexActive}
         activeLabel="implementing"
-        toggleDisabled={!settings.codexEnabled && !settings.hasOpenaiKey}
-        toggleTitle={!settings.hasOpenaiKey ? "Add a valid API key first" : undefined}
+        toggleDisabled={!settings.codexEnabled && !codexHasAuth}
+        toggleTitle={!codexHasAuth ? "Sign in with `codex login` (ChatGPT plan) or add an API key first" : undefined}
         onToggle={(v) => setSettings({ codexEnabled: v })}
         meta={
           settings.codexEnabled
-            ? settings.hasOpenaiKey
-              ? `Implementing tasks via the Codex CLI · model ${settings.codexModel}`
-              : "Enabled but no valid key — tasks can't route here until you add one below."
+            ? codexHasAuth
+              ? `Implementing tasks via the Codex CLI${settings.codexChatgptLogin ? " · ChatGPT plan login" : ""} · model ${settings.codexModel}`
+              : "Enabled but no usable auth — sign in with `codex login` or add a key below before tasks can route here."
             : "Off — enable to implement tasks with the Codex CLI instead of Claude."
         }
       >
+        {settings.codexChatgptLogin && (
+          <div className="sub-msg ok">
+            Authenticated via your ChatGPT plan (<code>codex login</code>) — no API key needed. The key below is only used as a fallback if that login is removed.
+          </div>
+        )}
+
         <div className="sub-field">
-          <label className="sub-label">OpenAI API key</label>
+          <label className="sub-label">OpenAI API key{settings.codexChatgptLogin ? " (optional fallback)" : ""}</label>
           <div className={"key-input" + (draftBad ? " bad" : "")}>
             <input
               type={reveal ? "text" : "password"}

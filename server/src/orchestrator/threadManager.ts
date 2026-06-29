@@ -4,7 +4,7 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
 import { AgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runner.js";
-import { CodexAgentRun, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
+import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { implementorConfig, plannerConfig, qaConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
@@ -56,7 +56,7 @@ interface LiveImplementor {
 
 /** A settings.set patch: the writable subset of OrchestratorSettings plus the write-only raw key. The
  *  read-only masked indicators (hasOpenaiKey/openaiKeyLast4) are derived, never set by a client. */
-export type SettingsPatch = Partial<Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4">> & { openaiApiKey?: string };
+export type SettingsPatch = Partial<Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin">> & { openaiApiKey?: string };
 
 /** The slice of operator settings the implementor→QA stage needs, captured at pipeline start. */
 interface PipeOpts {
@@ -488,6 +488,7 @@ export class ThreadManager implements OrchestratorApi {
       codexModel: this.codexModel(),
       hasOpenaiKey: !!key,
       openaiKeyLast4: key && key.length >= 4 ? key.slice(-4) : null,
+      codexChatgptLogin: chatgptLoginAvailable(),
     };
   }
 
@@ -559,12 +560,14 @@ export class ThreadManager implements OrchestratorApi {
    *  explaining why none can. Codex wins when enabled (it's the opt-in implementor, requires a valid
    *  key); otherwise Claude, gated by its own toggle. Planner/researcher/QA always run on Claude. */
   private resolveImplementorProvider(): { provider?: ImplementorProvider; error?: string } {
-    // Codex is the opt-in implementor: when enabled with a valid key it takes over building tasks.
-    // Otherwise the implementor is Claude (the default backend; planner/researcher/QA always are too).
+    // Codex is the opt-in implementor: when enabled with usable auth it takes over building tasks.
+    // Usable auth is EITHER a ChatGPT-plan `codex login` (preferred — no API billing) OR a valid
+    // OpenAI API key. Otherwise the implementor is Claude (the default; planner/researcher/QA always are).
     if (this.settings().codexEnabled) {
       const key = this.openaiApiKey();
-      if (!key || !/^sk-/.test(key)) {
-        return { error: "Codex is enabled but no valid OpenAI API key is set (it must start with sk-). Add a key under Settings → Subscriptions, or turn Codex off to use Claude." };
+      const hasKey = !!key && /^sk-/.test(key);
+      if (!codexAuthAvailable(hasKey)) {
+        return { error: "Codex is enabled but has no usable auth: no ChatGPT `codex login` was found and no valid OpenAI API key (sk-…) is set. Sign in with `codex login --device-auth` (uses your ChatGPT plan), or add an API key under Settings → Subscriptions, or turn Codex off to use Claude." };
       }
       return { provider: "codex" };
     }

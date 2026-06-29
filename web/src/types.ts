@@ -198,10 +198,11 @@ export interface OrchestratorSettings {
   codexModel: string;
   hasOpenaiKey: boolean; // read-only: a key is stored (raw key never reaches the client)
   openaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
+  codexChatgptLogin: boolean; // read-only: a ChatGPT-plan `codex login` is available (preferred over a key)
 }
 
 /** A settings.set patch: writable fields plus the write-only raw OpenAI key (never read back). */
-export type SettingsPatch = Partial<Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4">> & { openaiApiKey?: string };
+export type SettingsPatch = Partial<Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin">> & { openaiApiKey?: string };
 
 /** Flagship Codex models suggested in the Subscriptions selector (most-capable first). The field is
  *  free-text — any model id the OpenAI key can access works — so this is just quick picks. */
