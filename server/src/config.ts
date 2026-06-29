@@ -4,6 +4,13 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { Account } from "./accounts/account.js";
 
+// Parse a numeric env var, falling back when unset OR non-numeric — so a typo'd value can't become a
+// NaN that a `<= 0` guard lets through (e.g. a polling interval; setInterval(fn, NaN) fires every tick).
+function numEnv(v: string | undefined, fallback: number): number {
+  const n = Number(v);
+  return v != null && Number.isFinite(n) ? n : fallback;
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 // src/config.ts (dev) or dist/config.js (prod) — parent is the server root either way.
 const serverRoot = resolve(here, "..");
@@ -120,6 +127,11 @@ export const config = {
     // Fallback key when none is stored in the kv table — lets a key live in server/.env instead of the UI.
     envKey: process.env.OPENAI_API_KEY?.trim() || undefined,
   },
+  // When every Claude account is rate-limited mid-task, the task parks in 'review' with a cap marker
+  // instead of stranding the owner to hand-resume it. A supervisor re-checks this often and resumes
+  // each parked task the moment any account regains headroom (a window reset / a freed sub). Set
+  // CAP_RETRY_MS=0 to disable the supervisor.
+  capRetryMs: numEnv(process.env.CAP_RETRY_MS, 120_000),
   maxQaRounds: Number(process.env.MAX_QA_ROUNDS ?? 4),
   // Default ceiling on pipelines running at once; further dispatches wait in 'queued' until a slot
   // frees. Surfaced as an operator setting (persisted in kv) — this is just the first-boot default.

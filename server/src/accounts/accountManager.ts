@@ -295,6 +295,21 @@ export class AccountManager {
     return resets.length ? Math.min(...resets) : null;
   }
 
+  /** Is any enabled account currently usable for a dispatch — not cap-rejected (or past its reset) and
+   *  under the hard limit? Drives the cap-park supervisor: a task parked because every account was
+   *  capped is only auto-resumed once this turns true (a window reset, or a sub freed up). Mirrors the
+   *  `usable` predicate in select() so "has headroom" and "what select would dispatch to" never diverge. */
+  hasHeadroom(): boolean {
+    const now = Date.now();
+    const all = [...this.states.values()];
+    const enabledStates = all.filter((s) => s.enabled);
+    const base = enabledStates.length ? enabledStates : all;
+    return base.some((s) => {
+      const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
+      return !limited && tightest(s) < HARD_LIMIT;
+    });
+  }
+
   /** Is this account currently cap-rejected and not yet past its reset? */
   isRateLimited(accountId: string): boolean {
     const st = this.states.get(accountId);

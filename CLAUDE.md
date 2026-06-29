@@ -61,7 +61,11 @@ Read the run trail to tell causes apart:
 - run `state='error'` → a real failure or a **usage cap**. A 5h/weekly cap auto-switches account and
   resumes the SDK session; `runner.ts` flags the cap from a `rate_limit_event`, an assistant
   `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
-  another sub with headroom. If only one sub has headroom and it's also capped, the task settles to review.
+  another sub with headroom. If EVERY sub is capped (no failover headroom), the task parks in `review`
+  with the marker `⏳ Auto-resume pending` in its `error` — a supervisor (`resumeCapParked`, every
+  `CAP_RETRY_MS`/120s) then auto-resumes it the moment `AccountManager.hasHeadroom()` turns true (a
+  window reset or a freed sub), so a cap wave doesn't strand the owner hand-resuming each task. A plain
+  "needs your review" park carries no marker and is left for a human.
 
 ## The office (cross-agent chat)
 Concurrent tasks on the same repo would otherwise edit the same files blind. Every running agent is

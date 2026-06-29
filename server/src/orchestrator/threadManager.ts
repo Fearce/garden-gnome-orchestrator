@@ -1,4 +1,5 @@
 import type { AccountManager } from "../accounts/accountManager.js";
+import { untilReset } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
@@ -104,6 +105,14 @@ const CRASH_FAST_MS = 60_000;
 const MAX_FAST_INTERRUPTS = 3;
 // Defer the resume so the HTTP/WS listeners are up (and the UI is connected) before agents respawn.
 const AUTO_RESUME_DELAY_MS = 4_000;
+// Marker prefix on a 'review' task's error when it parked ONLY because every Claude account was
+// rate-limited mid-task (no headroom to fail over to). The cap supervisor scans for this prefix and
+// auto-resumes those tasks once an account frees up — so a cap wave doesn't leave the owner to
+// hand-resume every task. A normal "needs your review" park carries no such prefix and is left alone.
+const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
+// Don't re-ping the external webhook about auto-resuming the SAME task more often than this — a task
+// that keeps re-capping every interval would otherwise flood the channel. The in-app log isn't throttled.
+const CAP_RESUME_NOTIFY_COOLDOWN_MS = 30 * 60_000;
 // Shared prefix for every "a server restart killed this thread" error, so startResumedImplementor can
 // recognise a restart-triggered resume from the thread's persisted error alone.
 const RESTART_ERROR_PREFIX = "interrupted by a server restart";
@@ -205,6 +214,15 @@ export class ThreadManager implements OrchestratorApi {
   // first time it goes live. Keyed so a failover relaunch / warm resume of the same role doesn't spam,
   // and reset on restart (a resumed agent re-announcing once after a bounce is fine — even welcome).
   private readonly checkedIn = new Set<string>();
+  // Threads whose current run gave up to 'review' because every account was capped (no failover
+  // headroom). Set the instant the give-up happens, read+cleared when the task settles so the review
+  // message carries the CAP_PARK marker the supervisor keys off. In-memory only — the durable signal
+  // is the persisted error prefix, so a restart still finds (and resumes) cap-parked tasks.
+  private readonly capParked = new Set<string>();
+  // Last time we externally announced auto-resuming a given thread — throttles the webhook ping so a
+  // task stuck in a re-cap loop doesn't spam the channel each interval (see CAP_RESUME_NOTIFY_COOLDOWN_MS).
+  private readonly capResumeNotifiedAt = new Map<string, number>();
+  private capSupervisor: NodeJS.Timeout | undefined;
 
   constructor(
     readonly db: Db,
@@ -217,6 +235,55 @@ export class ThreadManager implements OrchestratorApi {
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
+    this.startCapSupervisor();
+  }
+
+  /** Poll for rate-limit-parked tasks and resume them the moment an account regains headroom, so a
+   *  cap wave (every sub at its 5h/weekly limit) doesn't leave the owner to hand-resume each task.
+   *  CAP_RETRY_MS=0 disables it (the timer is unref'd, so it never holds the process open). */
+  private startCapSupervisor(): void {
+    if (config.capRetryMs <= 0) return;
+    // A 'review' task isn't auto-resumed on boot (markInterrupted only revives IN_FLIGHT states), so a
+    // restart would otherwise strand tasks that were cap-parked before the bounce until the first
+    // interval tick. Sweep once shortly after start — after the account pings have had a moment to land
+    // (hasHeadroom gates it, so a too-early sweep before the first ping simply no-ops and the interval
+    // catches it) — mirroring the boot auto-resume's deferral.
+    setTimeout(() => this.resumeCapParked(), AUTO_RESUME_DELAY_MS).unref?.();
+    this.capSupervisor = setInterval(() => this.resumeCapParked(), config.capRetryMs);
+    this.capSupervisor.unref?.();
+  }
+
+  /** Resume tasks parked because all accounts were capped — but only once an account actually has
+   *  headroom again, and only enough to fill the FREE concurrency slots (oldest-parked first). Resuming
+   *  every parked task at once would bypass the cap and let one freed window get swarmed by N concurrent
+   *  implementors that instantly re-cap it; instead we fill the open slots and leave the rest marked, to
+   *  be picked up on a later tick as running pipelines settle. A task that re-caps simply re-parks with
+   *  the marker; one that fails for any other reason settles WITHOUT the marker and is left alone. Routes
+   *  through the same failed→runPipeline path the boot auto-resume uses (full resume-aware pipeline, QA
+   *  included), clearing the marker so a later non-cap park isn't misread. */
+  private resumeCapParked(): void {
+    if (!this.accounts.hasHeadroom()) return;
+    let slots = this.settings().maxConcurrent - this.activePipelines.size;
+    if (slots <= 0) return;
+    const parked = this.db
+      .listThreads()
+      .filter((t) => t.state === "review" && (t.error ?? "").startsWith(CAP_PARK_PREFIX))
+      .sort((a, b) => a.updatedAt - b.updatedAt); // oldest-parked first — fairest, and bounded by free slots
+    for (const t of parked) {
+      if (slots <= 0) break;
+      slots--;
+      this.hub.log("info", `An account freed up — auto-resuming rate-limit-parked "${t.title.slice(0, 48)}".`);
+      const now = Date.now();
+      if (now - (this.capResumeNotifiedAt.get(t.id) ?? 0) > CAP_RESUME_NOTIFY_COOLDOWN_MS) {
+        this.capResumeNotifiedAt.set(t.id, now);
+        this.notifyExternal(`↪ account freed up — auto-resuming "${t.title}".`);
+      }
+      // Mirror the boot auto-resume: flip to 'failed' with a null error (no restart note) so resumeThread
+      // enters runPipeline and continues from the failure point instead of the QA-less manual-resume path.
+      this.db.updateThread(t.id, { state: "failed", error: null });
+      const id = t.id;
+      void this.resumeThread(id).catch((e) => this.hub.log("error", `Cap auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
+    }
   }
 
   /** Any task left mid-flight by a server restart is dead in memory — its in-memory AgentRun is gone
@@ -607,8 +674,27 @@ export class ThreadManager implements OrchestratorApi {
     if (!t) return;
     this.hub.publish({ type: "thread.upsert", thread: t });
     if (state === "done") this.notifyExternal(`✓ done: "${t.title}"`);
-    else if (state === "review") this.notifyExternal(`⚠ needs your review: "${t.title}"`);
+    // A cap-park lands in 'review' too, but it's auto-handled by the supervisor — don't ping "needs your
+    // review" (misleading, and it would re-fire every time a re-capping task re-parks).
+    else if (state === "review" && !(t.error ?? "").startsWith(CAP_PARK_PREFIX)) this.notifyExternal(`⚠ needs your review: "${t.title}"`);
     else if (state === "failed") this.notifyExternal(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`);
+  }
+
+  /** Settle a task to 'review' after an incomplete run. If the run gave up ONLY because every account
+   *  was capped (the `capParked` flag), tag it with the CAP_PARK marker so the supervisor auto-resumes
+   *  it when an account frees up; otherwise use the human-facing reason (a genuine needs-your-eyes park).
+   *  The flag is consumed here so it never leaks into an unrelated later settle of the same thread. */
+  private settleReview(threadId: string, humanReason: string): void {
+    if (this.capParked.delete(threadId)) this.setState(threadId, "review", this.capParkMessage());
+    else this.setState(threadId, "review", humanReason);
+  }
+
+  /** Review message for a cap-park — doubles as the supervisor's marker (CAP_PARK_PREFIX) and tells the
+   *  owner it'll resume itself, naming when the soonest account frees up if we know it. */
+  private capParkMessage(): string {
+    const reset = this.accounts.soonestResetAt();
+    const when = reset ? ` Soonest account resets ${untilReset(reset, Date.now())}.` : "";
+    return `${CAP_PARK_PREFIX} — every account was rate-limited mid-task.${when} It will resume automatically when one frees up (no manual Resume needed).`;
   }
 
   /** One-line ping to an external webhook (Discord etc.) when configured — for when you're away from the tab. */
@@ -817,12 +903,20 @@ export class ThreadManager implements OrchestratorApi {
       this.finishRun(run.id, res, agent);
       if ((res && !res.isError) || this.cancelled(thread.id) || !agent.rateLimited) return res;
       const next = this.failoverAccount(acct.id);
-      if (!next) return res;
+      // QA is the only runRole role whose cap settles the task to 'review' (a planner/researcher cap
+      // degrades to no-plan/no-research and proceeds). Flag it so that settle tags it for the supervisor.
+      if (!next) {
+        if (role === "qa") this.capParked.add(thread.id);
+        return res;
+      }
       this.logFailover(thread, role, next.label, agent.rateLimitInfo);
       acct = next;
       resume = agent.sessionId;
       message = "Your session was switched to another account after a usage limit. Continue exactly where you left off and finish.";
     }
+    // Loop exhausted MAX_ACCOUNT_FAILOVERS via repeated cap-failovers (the only fall-through path). For
+    // QA — the one runRole role whose cap parks the task — flag it so the settle tags it for the supervisor.
+    if (role === "qa") this.capParked.add(thread.id);
     return undefined;
   }
 
@@ -1080,6 +1174,9 @@ export class ThreadManager implements OrchestratorApi {
       // caller doesn't run QA on / mark done a half-finished implementation).
       const next = this.failoverAccount(currentAccountId);
       const sessionId = this.lastImplementorSession.get(thread.id);
+      // No account with headroom (vs. a missing session) means a cap parked this — flag it so the
+      // settle tags it for the supervisor, which resumes the task once an account frees up.
+      if (!next && current.rateLimited) this.capParked.add(thread.id);
       if (!next || !sessionId) return undefined;
       this.logFailover(thread, "implementor", next.label, current.rateLimitInfo);
       await current.stop();
@@ -1088,6 +1185,11 @@ export class ThreadManager implements OrchestratorApi {
       currentAccountId = relaunch.accountId;
       useNext = false;
     }
+    // Reaching here means the loop exhausted MAX_ACCOUNT_FAILOVERS via repeated cap-failovers (the only
+    // path that falls through — every other outcome returns inside the loop). Each fresh account also
+    // capped, so this is still a cap-park: flag it so the settle tags it for the supervisor rather than
+    // mis-parking it as a needs-human review that never auto-resumes.
+    if (current.rateLimited) this.capParked.add(thread.id);
     return undefined;
   }
 
@@ -1309,6 +1411,7 @@ export class ThreadManager implements OrchestratorApi {
     pipe: PipeOpts = { qaEnabled: true, maxQaRounds: config.maxQaRounds },
   ): Promise<void> {
     this.autoResumes.set(thread.id, 0);
+    this.capParked.delete(thread.id); // fresh run — drop any stale cap flag from a prior attempt
     const start = await this.startResumedImplementor(thread, kickoff, resumeSession, {
       effort,
       resumeNudge: pipe.qaEnabled
@@ -1343,7 +1446,7 @@ export class ThreadManager implements OrchestratorApi {
         this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Implementor finished — QA review is disabled, accepted as done.", severity: "info" });
         this.setState(thread.id, "done");
       } else {
-        this.setState(thread.id, "review", "Implementor ended without completing — needs your review (QA is disabled for this task).");
+        this.settleReview(thread.id, "Implementor ended without completing — needs your review (QA is disabled for this task).");
       }
       return;
     }
@@ -1351,7 +1454,7 @@ export class ThreadManager implements OrchestratorApi {
     for (let round = 1; round <= pipe.maxQaRounds; round++) {
       if (this.cancelled(thread.id)) return;
       if (!res) {
-        this.setState(thread.id, "review", "Implementor ended without completing — needs your review.");
+        this.settleReview(thread.id, "Implementor ended without completing — needs your review.");
         return;
       }
       this.setState(thread.id, "qa");
@@ -1370,7 +1473,7 @@ export class ThreadManager implements OrchestratorApi {
 
       if (!qa) {
         this.postFinding({ threadId: thread.id, fromRole: "qa", summary: "QA could not complete — needs your review", severity: "warning" });
-        this.setState(thread.id, "review");
+        this.settleReview(thread.id, "QA could not complete — needs your review.");
         return;
       }
       if (qa.pass) {
@@ -1386,7 +1489,9 @@ export class ThreadManager implements OrchestratorApi {
           detail: qa.summary,
           severity: "warning",
         });
-        this.setState(thread.id, "review");
+        // A genuine "QA isn't satisfied" park — route through settleReview so the one review-settle that
+        // would otherwise bypass it can't leak a stale cap flag into a false-positive auto-resume.
+        this.settleReview(thread.id, `QA still not satisfied after ${pipe.maxQaRounds} rounds — needs your review.`);
         return;
       }
 
@@ -1700,6 +1805,7 @@ export class ThreadManager implements OrchestratorApi {
     // A manual resume occupies a concurrency slot for the run's lifetime (like a pipeline), so it
     // counts toward maxConcurrent and frees a queued task when it settles.
     this.activePipelines.add(thread.id);
+    this.capParked.delete(thread.id); // fresh resume — drop any stale cap flag before this run sets its own
     const releaseSlot = () => {
       this.activePipelines.delete(thread.id);
       this.implementorProvider.delete(thread.id);
@@ -1746,7 +1852,8 @@ export class ThreadManager implements OrchestratorApi {
     }
     await this.awaitImplementorResult(thread, undefined, start.run, start.accountId, false, resumeNudge)
       .then(() => {
-        if (this.db.getThread(thread.id)?.state === "implementing") this.setState(thread.id, "review");
+        // A re-cap during the manual resume tags it for the supervisor; a clean finish parks for review.
+        if (this.db.getThread(thread.id)?.state === "implementing") this.settleReview(thread.id, "Resume finished — needs your review.");
       })
       .catch((e) => this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} ended in error: ${String(e)}`))
       .finally(() => {
@@ -1780,6 +1887,8 @@ export class ThreadManager implements OrchestratorApi {
     this.liveQa.delete(threadId);
     this.directorNotes.delete(threadId);
     this.implementorProvider.delete(threadId);
+    this.capParked.delete(threadId); // a cancelled task must never be cap-auto-resumed
+
     const pendingApproval = this.pendingApprovals.get(threadId);
     if (pendingApproval) {
       this.pendingApprovals.delete(threadId);
