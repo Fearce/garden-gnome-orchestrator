@@ -3,6 +3,8 @@ import { apiUrl, wsUrl } from "./lib/base.js";
 import type {
   AccountDTO,
   AgentRun,
+  ChatMessage,
+  ChatRoomSummary,
   ClientCommand,
   DirectorItem,
   DirectorMessage,
@@ -17,6 +19,7 @@ import type {
   SettingsPatch,
   Thread,
 } from "./types.js";
+import { GENERAL_ROOM } from "./types.js";
 import { notify } from "./lib/notify.js";
 
 interface ThreadDraft {
@@ -58,6 +61,14 @@ interface State {
   railHidden: boolean;
   detailWidth: number;
   directorWidth: number;
+  // The office: recent chat across all rooms (live feed), the project-room roll-up (drives the
+  // per-task Chatroom button), and full per-room history fetched on demand for the expanded view.
+  chat: ChatMessage[];
+  chatRooms: ChatRoomSummary[];
+  roomHistory: Record<string, ChatMessage[]>;
+  // Office panel UI: which room is open (room key) — null = closed. The strip, the task buttons, and
+  // the card chips all drive this so one panel serves every entry point.
+  officeRoom: string | null;
 
   select: (id: string | null) => void;
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
@@ -82,6 +93,9 @@ interface State {
   toggleRail: () => void;
   setDetailWidth: (px: number) => void;
   setDirectorWidth: (px: number) => void;
+  // Open the office panel on a room (defaults to the general room); fetches that room's full history.
+  openOffice: (room?: string) => void;
+  closeOffice: () => void;
 }
 
 const lsBool = (k: string, d: boolean): boolean => {
@@ -219,6 +233,10 @@ export const useStore = create<State>((set) => ({
   railHidden: lsBool("orch-rail-hidden", false),
   detailWidth: lsNum("orch-detail-w", 480),
   directorWidth: lsNum("orch-rail-w", 384),
+  chat: [],
+  chatRooms: [],
+  roomHistory: {},
+  officeRoom: null,
 
   select: (id) => {
     set({ selectedThreadId: id });
@@ -284,6 +302,12 @@ export const useStore = create<State>((set) => ({
     lsSet("orch-rail-w", String(Math.round(px)));
     set({ directorWidth: px });
   },
+  openOffice: (room) => {
+    const r = room ?? GENERAL_ROOM;
+    set({ officeRoom: r });
+    sendCommand({ type: "chat.history", room: r }); // pull the room's full history for the expanded view
+  },
+  closeOffice: () => set({ officeRoom: null }),
 }));
 
 /** Which agent RUN a feed item belongs to. Keyed by runId (stable on the item) so retention
@@ -333,6 +357,26 @@ function pushFeed(threadId: string, item: FeedItem): void {
   });
 }
 
+const CHAT_CAP = 1500;
+const ROOM_CAP = 800;
+
+/** Fold a live project-room message into the room roll-up: bump count/lastAt and register a new
+ *  participant task. (General-room messages aren't per-task collaborations, so they don't roll up.) */
+function upsertRoom(rooms: ChatRoomSummary[], m: ChatMessage): ChatRoomSummary[] {
+  if (m.scope !== "project") return rooms;
+  const i = rooms.findIndex((r) => r.room === m.room);
+  if (i < 0) {
+    return [
+      { room: m.room, workspace: m.workspace ?? "", threadIds: m.threadId ? [m.threadId] : [], messageCount: 1, lastAt: m.createdAt },
+      ...rooms,
+    ];
+  }
+  const cur = rooms[i]!;
+  const threadIds = m.threadId && !cur.threadIds.includes(m.threadId) ? [...cur.threadIds, m.threadId] : cur.threadIds;
+  const next = { ...cur, threadIds, messageCount: cur.messageCount + 1, lastAt: Math.max(cur.lastAt, m.createdAt) };
+  return [next, ...rooms.slice(0, i), ...rooms.slice(i + 1)];
+}
+
 function applyEvent(ev: ServerEvent): void {
   switch (ev.type) {
     case "hello": {
@@ -350,7 +394,11 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}) });
+      // If the office panel is open, re-pull the open room so it reflects anything that streamed
+      // while the socket was gone (mirrors the thread.history re-fetch above).
+      const openRoom = useStore.getState().officeRoom;
+      if (openRoom) sendCommand({ type: "chat.history", room: openRoom });
       // hello also fires on WS reconnect (server restart / network blip). The feed kept its
       // pre-disconnect items but missed anything that streamed while we were gone — re-fetch
       // the open thread's history; the id-keyed merge fills the gap without dropping live items.
@@ -360,6 +408,30 @@ function applyEvent(ev: ServerEvent): void {
     }
     case "accounts":
       useStore.setState({ accounts: ev.accounts });
+      break;
+    case "chat.message":
+      useStore.setState((s) => {
+        const chat = [...s.chat, ev.message];
+        const capped = chat.length > CHAT_CAP ? chat.slice(chat.length - CHAT_CAP) : chat;
+        // Append to the open room's loaded history too, so a live message shows without a re-fetch.
+        // Capped per-room so a long-open, chatty room can't grow this slice without bound.
+        const hist = s.roomHistory[ev.message.room];
+        const grown = hist ? [...hist, ev.message] : undefined;
+        const roomHistory = grown
+          ? { ...s.roomHistory, [ev.message.room]: grown.length > ROOM_CAP ? grown.slice(grown.length - ROOM_CAP) : grown }
+          : s.roomHistory;
+        return { chat: capped, chatRooms: upsertRoom(s.chatRooms, ev.message), roomHistory };
+      });
+      break;
+    case "chat.history":
+      // Merge by id rather than replace: a live chat.message for this room can land between the
+      // chat.history request and its reply, and a blind replace would drop it until the next message.
+      useStore.setState((s) => {
+        const ids = new Set(ev.messages.map((m) => m.id));
+        const extra = (s.roomHistory[ev.room] ?? []).filter((m) => !ids.has(m.id));
+        const merged = [...ev.messages, ...extra].sort((a, b) => a.createdAt - b.createdAt);
+        return { roomHistory: { ...s.roomHistory, [ev.room]: merged } };
+      });
       break;
     case "plan.ready":
       useStore.setState((s) => ({ pendingPlans: { ...s.pendingPlans, [ev.threadId]: ev.brief } }));

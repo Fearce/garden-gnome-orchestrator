@@ -6,6 +6,7 @@ import { Board } from "./components/Board.js";
 import { ThreadDetail } from "./components/ThreadDetail.js";
 import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
+import { Office } from "./components/Office.js";
 import { SettingsPanel } from "./components/SettingsPanel.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
@@ -42,7 +43,7 @@ export function App() {
         </div>
         <RailToggle />
         <SettingsButton open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} />
-        <div className="spacer" />
+        <Office />
         <Accounts />
         <span className="stat">
           <b>{taskCount}</b> {taskCount === 1 ? "task" : "tasks"} · <b>{liveAgents}</b> {liveAgents === 1 ? "agent" : "agents"} live

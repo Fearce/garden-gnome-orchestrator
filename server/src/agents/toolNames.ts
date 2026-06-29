@@ -5,6 +5,7 @@
 export const MEMORY_SERVER = "memory";
 export const BUS_SERVER = "bus";
 export const DIRECTOR_SERVER = "director";
+export const OFFICE_SERVER = "office";
 
 export const T = {
   searchMemory: `mcp__${MEMORY_SERVER}__search_memory`,
@@ -13,6 +14,9 @@ export const T = {
   readFindings: `mcp__${BUS_SERVER}__read_findings`,
   notifyThread: `mcp__${BUS_SERVER}__notify_thread`,
   busAskUser: `mcp__${BUS_SERVER}__ask_user`,
+  officeLook: `mcp__${OFFICE_SERVER}__office_look`,
+  chatPost: `mcp__${OFFICE_SERVER}__chat_post`,
+  chatRead: `mcp__${OFFICE_SERVER}__chat_read`,
   askUser: `mcp__${DIRECTOR_SERVER}__ask_user`,
   findWorkspace: `mcp__${DIRECTOR_SERVER}__find_workspace`,
   dispatch: `mcp__${DIRECTOR_SERVER}__dispatch`,
@@ -24,6 +28,7 @@ export const T = {
 } as const;
 
 export const BUS_TOOLS = [T.postFinding, T.readFindings, T.notifyThread, T.busAskUser];
+export const OFFICE_TOOLS = [T.officeLook, T.chatPost, T.chatRead];
 export const DIRECTOR_TOOLS = [
   T.searchMemory,
   T.readMemory,

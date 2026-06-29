@@ -33,6 +33,7 @@ function send(socket: WebSocket, event: ServerEvent): void {
 const SNAPSHOT_RUNS = 2000;
 const SNAPSHOT_FINDINGS = 1000;
 const SNAPSHOT_DIRECTOR_MSGS = 600;
+const SNAPSHOT_CHAT = 500;
 
 function buildHello(ctx: WsContext): ServerEvent {
   return {
@@ -45,6 +46,10 @@ function buildHello(ctx: WsContext): ServerEvent {
     accounts: ctx.accounts.dto(),
     approvalMode: ctx.manager.approvalMode(),
     settings: ctx.manager.settings(),
+    // The office: a recent slice of chat for the live feed, plus the project-room roll-up (full
+    // history is cheap and bounded) that drives which tasks show a "Chatroom" button.
+    chat: ctx.db.listRecentChat(SNAPSHOT_CHAT),
+    chatRooms: ctx.db.listProjectRooms(),
   };
 }
 
@@ -149,6 +154,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       send(socket, { type: "thread.changes", threadId: cmd.threadId, diff: changes.diff, log: changes.log });
       break;
     }
+    case "chat.history":
+      send(socket, { type: "chat.history", room: cmd.room, messages: ctx.db.listRoomMessages(cmd.room) });
+      break;
     case "snapshot.request":
       send(socket, buildHello(ctx));
       break;

@@ -92,6 +92,52 @@ export interface Finding {
 
 export type MessageKind = "text" | "tool" | "result" | "system";
 
+// ---- The office: cross-agent chat rooms ----
+
+/** Which room a chat message belongs to. 'general' is the office everyone shares; 'project' is the
+ *  per-repository room agents form when 2+ of them work the same workspace concurrently. */
+export type ChatScope = "general" | "project";
+
+/** One message in the office. Sent by an agent run (role/threadId/runId set) or by the orchestrator
+ *  itself (kind 'system' — e.g. the notice posted when a project group forms). `room` is the durable
+ *  key: "general", or "repo:<normalized-workspace>" for a project room. */
+export interface ChatMessage {
+  id: string;
+  room: string;
+  scope: ChatScope;
+  workspace?: string | null; // display path of the repo, for a project room
+  threadId?: string | null;
+  runId?: string | null;
+  role: Role | "system";
+  kind: "chat" | "system";
+  body: string;
+  createdAt: number;
+}
+
+/** A rolled-up view of a project (per-repo) room — enough for the client to decide which tasks show
+ *  a "Chatroom" button (those whose id is in `threadIds`) without holding the full message history. */
+export interface ChatRoomSummary {
+  room: string;
+  workspace: string;
+  threadIds: string[]; // distinct tasks that have participated (sent or were announced into the room)
+  messageCount: number;
+  lastAt: number;
+}
+
+/** Normalize a workspace path to a stable room/grouping key — lowercased, forward slashes, no trailing
+ *  separator — so "C:\\Repo\\" and "c:/repo" land in the same project room. Mirrored byte-for-byte in
+ *  web/src/types.ts so server grouping and the office UI agree exactly. */
+export function normalizeWorkspace(p: string): string {
+  return p.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+}
+
+export const GENERAL_ROOM = "general";
+
+/** The project-room key for a workspace ("repo:<normalized>"). */
+export function repoRoom(workspace: string): string {
+  return "repo:" + normalizeWorkspace(workspace);
+}
+
 export interface Message {
   id: string;
   threadId: string;

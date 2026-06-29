@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type {
   AgentRun,
+  ChatMessage,
+  ChatRoomSummary,
   DirectorMessage,
   Finding,
   Message,
@@ -39,8 +41,12 @@ export type ServerEvent =
       accounts: AccountDTO[];
       approvalMode: boolean;
       settings: OrchestratorSettings;
+      chat: ChatMessage[];
+      chatRooms: ChatRoomSummary[];
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  | { type: "chat.message"; message: ChatMessage }
+  | { type: "chat.history"; room: string; messages: ChatMessage[] }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }
@@ -121,6 +127,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // Toggle a Claude account in/out of the dispatch+failover rotation (per-account subscription switch).
   z.object({ type: z.literal("account.set"), id: z.string(), enabled: z.boolean() }),
   z.object({ type: z.literal("thread.changes"), threadId: z.string() }),
+  // Fetch the full message history for one office room (the expanded chatroom view / a task's button).
+  z.object({ type: z.literal("chat.history"), room: z.string().min(1).max(300) }),
   z.object({ type: z.literal("snapshot.request") }),
 ]);
 

@@ -75,6 +75,13 @@ export function ThreadDetail() {
   const select = useStore((s) => s.select);
   const approve = useStore((s) => s.approve);
   const loadChanges = useStore((s) => s.loadChanges);
+  const openOffice = useStore((s) => s.openOffice);
+  // The project chatroom this task took part in, if any — only set when another task worked the same
+  // repo (the only way a project room forms), so the Chatroom button is invisible otherwise.
+  const chatRoom = useStore((s) => {
+    const tid = s.selectedThreadId;
+    return tid ? s.chatRooms.find((r) => r.threadIds.includes(tid)) : undefined;
+  });
   const setDetailWidth = useStore((s) => s.setDetailWidth);
   const pendingPlan = useStore((s) => (s.selectedThreadId ? s.pendingPlans[s.selectedThreadId] : undefined));
   const changes = useStore((s) => (s.selectedThreadId ? s.threadChanges[s.selectedThreadId] : undefined));
@@ -312,6 +319,18 @@ export function ThreadDetail() {
           >
             Diff
           </button>
+          {chatRoom && (
+            <button
+              className="btn ghost sm"
+              onClick={() => openOffice(chatRoom.room)}
+              title={`This task collaborated with ${chatRoom.threadIds.length - 1} other task(s) in this repo — open their chatroom`}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 5, verticalAlign: "-2px" }}>
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              Chatroom
+            </button>
+          )}
           {!terminal && (
             <button className="btn danger sm" onClick={() => cancel(id)}>
               Cancel

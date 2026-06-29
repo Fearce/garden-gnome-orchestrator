@@ -2,7 +2,7 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.js";
 import type { Effort } from "../types.js";
 import type { AgentRunConfig } from "./runner.js";
-import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, MEMORY_SERVER, T } from "./toolNames.js";
+import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, MEMORY_SERVER, OFFICE_SERVER, OFFICE_TOOLS, T } from "./toolNames.js";
 import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
 
 // Only `summary` is required. `nextAgent` is intentionally OPTIONAL: the code already defaults a
@@ -119,15 +119,15 @@ export function directorConfig(servers: { director: McpServerConfig; memory: Mcp
   };
 }
 
-export function plannerConfig(cwd: string, servers: { bus: McpServerConfig }): AgentRunConfig {
+export function plannerConfig(cwd: string, servers: { bus: McpServerConfig; office: McpServerConfig }): AgentRunConfig {
   return {
     model: config.models.planner,
     cwd,
     systemPrompt: PLANNER_PROMPT,
     permissionMode: "plan",
-    allowedTools: ["Read", "Grep", "Glob", ...BUS_TOOLS],
+    allowedTools: ["Read", "Grep", "Glob", ...BUS_TOOLS, ...OFFICE_TOOLS],
     disallowedTools: ["AskUserQuestion"],
-    mcpServers: { [BUS_SERVER]: servers.bus },
+    mcpServers: { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },
     settingSources: ["project"],
     outputFormat: { type: "json_schema", schema: PLAN_SCHEMA },
     includePartialMessages: true,
@@ -135,7 +135,7 @@ export function plannerConfig(cwd: string, servers: { bus: McpServerConfig }): A
   };
 }
 
-export function researcherConfig(cwd: string, servers: { bus: McpServerConfig; memory: McpServerConfig }): AgentRunConfig {
+export function researcherConfig(cwd: string, servers: { bus: McpServerConfig; memory: McpServerConfig; office: McpServerConfig }): AgentRunConfig {
   return {
     model: config.models.researcher,
     cwd,
@@ -144,9 +144,9 @@ export function researcherConfig(cwd: string, servers: { bus: McpServerConfig; m
     // External-info-only: the researcher gathers web/docs/changelogs + the owner's memory, never the
     // codebase. Read/Grep/Glob are disallowed (the planner owns code reading) so it can't duplicate
     // that work even if tempted — its system prompt forbids it too.
-    allowedTools: ["WebSearch", "WebFetch", T.searchMemory, ...BUS_TOOLS],
+    allowedTools: ["WebSearch", "WebFetch", T.searchMemory, ...BUS_TOOLS, ...OFFICE_TOOLS],
     disallowedTools: ["Read", "Grep", "Glob", "AskUserQuestion"],
-    mcpServers: { [BUS_SERVER]: servers.bus, [MEMORY_SERVER]: servers.memory },
+    mcpServers: { [BUS_SERVER]: servers.bus, [MEMORY_SERVER]: servers.memory, [OFFICE_SERVER]: servers.office },
     settingSources: ["project"],
     outputFormat: { type: "json_schema", schema: RESEARCH_SCHEMA },
     includePartialMessages: true,
@@ -156,7 +156,7 @@ export function researcherConfig(cwd: string, servers: { bus: McpServerConfig; m
 
 export function implementorConfig(
   cwd: string,
-  servers: { bus: McpServerConfig },
+  servers: { bus: McpServerConfig; office: McpServerConfig },
   opts?: { resume?: string; effort?: Effort },
 ): AgentRunConfig {
   const cfg: AgentRunConfig = {
@@ -168,7 +168,7 @@ export function implementorConfig(
     // built-in question tool is disallowed so it uses the bus ask_user instead.
     permissionMode: "bypassPermissions",
     disallowedTools: ["AskUserQuestion"],
-    mcpServers: { [BUS_SERVER]: servers.bus },
+    mcpServers: { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },
     settingSources: ["user", "project", "local"],
     effort: resolveEffort(opts?.effort),
     includePartialMessages: true,
@@ -181,7 +181,7 @@ export function implementorConfig(
   return cfg;
 }
 
-export function qaConfig(cwd: string, servers: { bus: McpServerConfig }): AgentRunConfig {
+export function qaConfig(cwd: string, servers: { bus: McpServerConfig; office: McpServerConfig }): AgentRunConfig {
   return {
     model: config.models.qa,
     cwd,
@@ -189,7 +189,7 @@ export function qaConfig(cwd: string, servers: { bus: McpServerConfig }): AgentR
     // Needs Bash to run tests/build; cannot edit (it reviews, it doesn't implement).
     permissionMode: "bypassPermissions",
     disallowedTools: ["Write", "Edit", "NotebookEdit", "AskUserQuestion"],
-    mcpServers: { [BUS_SERVER]: servers.bus },
+    mcpServers: { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },
     settingSources: ["project"],
     outputFormat: { type: "json_schema", schema: QA_SCHEMA },
     effort: "high",

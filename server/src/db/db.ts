@@ -7,6 +7,9 @@ import type {
   AgentRun,
   AgentRunState,
   AttachmentRef,
+  ChatMessage,
+  ChatRoomSummary,
+  ChatScope,
   DirectorMessage,
   Effort,
   Finding,
@@ -88,6 +91,21 @@ function rowToQuestion(r: Row): Question {
     multiSelect: Boolean(r.multi_select),
     answer: (r.answer as string | null) ?? null,
     answeredAt: (r.answered_at as number | null) ?? null,
+    createdAt: r.created_at as number,
+  };
+}
+
+function rowToChat(r: Row): ChatMessage {
+  return {
+    id: r.id as string,
+    room: r.room as string,
+    scope: r.scope as ChatScope,
+    workspace: (r.workspace as string | null) ?? null,
+    threadId: (r.thread_id as string | null) ?? null,
+    runId: (r.run_id as string | null) ?? null,
+    role: r.role as ChatMessage["role"],
+    kind: r.kind as ChatMessage["kind"],
+    body: r.body as string,
     createdAt: r.created_at as number,
   };
 }
@@ -520,6 +538,91 @@ export class Db {
         createdAt: r.created_at as number,
       };
     });
+  }
+
+  // ---- office chat ----
+  addChatMessage(input: {
+    room: string;
+    scope: ChatScope;
+    workspace?: string | null;
+    threadId?: string | null;
+    runId?: string | null;
+    role: ChatMessage["role"];
+    kind?: ChatMessage["kind"];
+    body: string;
+  }): ChatMessage {
+    const m: ChatMessage = {
+      id: newId(),
+      room: input.room,
+      scope: input.scope,
+      workspace: input.workspace ?? null,
+      threadId: input.threadId ?? null,
+      runId: input.runId ?? null,
+      role: input.role,
+      kind: input.kind ?? "chat",
+      body: input.body,
+      createdAt: now(),
+    };
+    this.raw
+      .prepare(
+        `INSERT INTO chat_messages(id, room, scope, workspace, thread_id, run_id, role, kind, body, created_at)
+         VALUES(@id, @room, @scope, @workspace, @threadId, @runId, @role, @kind, @body, @createdAt)`,
+      )
+      .run(m);
+    return m;
+  }
+
+  /** Messages in one room (ASC), optionally only the most recent `limit` (still returned ASC). */
+  listRoomMessages(room: string, limit?: number): ChatMessage[] {
+    const rows = limit
+      ? (this.raw.prepare("SELECT * FROM chat_messages WHERE room = ? ORDER BY created_at DESC LIMIT ?").all(room, limit) as Row[]).reverse()
+      : (this.raw.prepare("SELECT * FROM chat_messages WHERE room = ? ORDER BY created_at ASC").all(room) as Row[]);
+    return rows.map(rowToChat);
+  }
+
+  /** The most recent `limit` chat messages across ALL rooms (returned ASC) — the connect-snapshot
+   *  slice, bounded so a months-long office history doesn't bloat every hello frame. */
+  listRecentChat(limit: number): ChatMessage[] {
+    return (this.raw.prepare("SELECT * FROM chat_messages ORDER BY created_at DESC LIMIT ?").all(limit) as Row[])
+      .reverse()
+      .map(rowToChat);
+  }
+
+  /** Whether a task already has any message in a room — used to announce each participant exactly
+   *  once when a project group forms (durable across restarts, unlike an in-memory guard). */
+  chatThreadInRoom(room: string, threadId: string): boolean {
+    const r = this.raw
+      .prepare("SELECT 1 FROM chat_messages WHERE room = ? AND thread_id = ? LIMIT 1")
+      .get(room, threadId) as Row | undefined;
+    return !!r;
+  }
+
+  /** Rolled-up project (per-repo) rooms with their distinct participant task ids — drives which tasks
+   *  show a "Chatroom" button. General-room rows are excluded (every active agent is in general; it's
+   *  not a per-task collaboration). Newest-active room first. */
+  listProjectRooms(): ChatRoomSummary[] {
+    const rows = this.raw
+      .prepare(
+        `SELECT room,
+                MAX(workspace)      AS workspace,
+                COUNT(*)            AS message_count,
+                MAX(created_at)     AS last_at,
+                GROUP_CONCAT(DISTINCT thread_id) AS thread_ids
+         FROM chat_messages
+         WHERE scope = 'project'
+         GROUP BY room
+         ORDER BY last_at DESC`,
+      )
+      .all() as Row[];
+    return rows.map((r) => ({
+      room: r.room as string,
+      workspace: (r.workspace as string | null) ?? "",
+      threadIds: String(r.thread_ids ?? "")
+        .split(",")
+        .filter(Boolean),
+      messageCount: r.message_count as number,
+      lastAt: r.last_at as number,
+    }));
   }
 
   // ---- attachments (image bytes; served on demand over HTTP, refs over WS) ----

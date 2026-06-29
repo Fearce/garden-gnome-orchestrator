@@ -93,8 +93,25 @@ CREATE TABLE IF NOT EXISTS kv (
   value TEXT NOT NULL
 );
 
+-- The office: cross-agent chat. A row is one message in a room ('general' or 'repo:<normalized>').
+-- thread_id is nullable (room-level system notices), with NO FK so a row survives its task's purge —
+-- the conversation is the durable record of a collaboration, kept even after the tasks close.
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id          TEXT PRIMARY KEY,
+  room        TEXT NOT NULL,
+  scope       TEXT NOT NULL,
+  workspace   TEXT,
+  thread_id   TEXT,
+  run_id      TEXT,
+  role        TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'chat',
+  body        TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_thread     ON agent_runs(thread_id);
 CREATE INDEX IF NOT EXISTS idx_findings_thread ON findings(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_questions_thread ON questions(thread_id);
+CREATE INDEX IF NOT EXISTS idx_chat_room       ON chat_messages(room, created_at);
 `;

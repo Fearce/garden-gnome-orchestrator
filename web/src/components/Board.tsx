@@ -210,6 +210,10 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
   const select = useStore((s) => s.select);
   const close = useStore((s) => s.close);
   const verbosity = useStore((s) => s.verbosity);
+  // The project chatroom this task joined (only set when another task shared its repo) — drives the
+  // card's Chatroom chip, hidden on tasks that never collaborated.
+  const chatRoom = useStore((s) => s.chatRooms.find((r) => r.threadIds.includes(thread.id)));
+  const openOffice = useStore((s) => s.openOffice);
 
   const impl = latestRun(threadRuns, "implementor");
   // Full shows the agent's latest streaming line; compact drops it so the card is just title + pips + state.
@@ -275,6 +279,20 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
           ) : null}
         </span>
         <span className="foot-right">
+          {chatRoom ? (
+            <button
+              className="card-chatroom"
+              title={`Collaborated with ${chatRoom.threadIds.length - 1} other task(s) in this repo — open the chatroom`}
+              onClick={(e) => {
+                e.stopPropagation();
+                openOffice(chatRoom.room);
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+            </button>
+          ) : null}
           <Elapsed
             className="task-elapsed"
             startMs={thread.createdAt}

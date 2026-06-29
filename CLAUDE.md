@@ -63,6 +63,15 @@ Read the run trail to tell causes apart:
   `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
   another sub with headroom. If only one sub has headroom and it's also capped, the task settles to review.
 
+## The office (cross-agent chat)
+Concurrent tasks on the same repo would otherwise edit the same files blind. Every running agent is
+"in the office": each role gets an `office` MCP server (`bus/officeServer.ts` — `office_look`/`chat_post`/
+`chat_read`) and chats in a general room plus, when 2+ tasks share a workspace, a per-repo project room
+(`ensureGroup` announces members). Messages persist in `chat_messages` (room `general` | `repo:<normalized-ws>`);
+`listProjectRooms` rolls up participants so only collaborating tasks show the top-bar **Office** gnomes
+(walk solo, huddle when grouped) and the per-task **Chatroom** button. Codex implementors have no MCP, so
+they get a toolless peer heads-up only. Grouping key = `normalizeWorkspace` (mirrored in server + web types).
+
 ## Conventions
 - Conventional Commits (`feat:`/`fix:`/`refactor:`/`chore:`…), matching `git log`.
 - One concern per commit — don't sweep unrelated working-tree changes into a fix.

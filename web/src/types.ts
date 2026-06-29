@@ -115,6 +115,43 @@ export interface Message {
   createdAt: number;
 }
 
+// ---- the office: cross-agent chat ----
+
+export type ChatScope = "general" | "project";
+
+export interface ChatMessage {
+  id: string;
+  room: string;
+  scope: ChatScope;
+  workspace?: string | null;
+  threadId?: string | null;
+  runId?: string | null;
+  role: Role | "system";
+  kind: "chat" | "system";
+  body: string;
+  createdAt: number;
+}
+
+export interface ChatRoomSummary {
+  room: string;
+  workspace: string;
+  threadIds: string[];
+  messageCount: number;
+  lastAt: number;
+}
+
+export const GENERAL_ROOM = "general";
+
+/** Normalize a workspace path to a stable room/grouping key — mirrors the server's normalizeWorkspace
+ *  so the office UI groups exactly the same gnomes the server forms project rooms for. */
+export function normalizeWorkspace(p: string): string {
+  return p.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+}
+
+export function repoRoom(workspace: string): string {
+  return "repo:" + normalizeWorkspace(workspace);
+}
+
 export interface AccountDTO {
   id: string;
   label: string;
@@ -166,8 +203,12 @@ export type ServerEvent =
       accounts: AccountDTO[];
       approvalMode: boolean;
       settings: OrchestratorSettings;
+      chat: ChatMessage[];
+      chatRooms: ChatRoomSummary[];
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  | { type: "chat.message"; message: ChatMessage }
+  | { type: "chat.history"; room: string; messages: ChatMessage[] }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }
@@ -211,6 +252,7 @@ export type ClientCommand =
   | { type: "codex.test"; apiKey?: string }
   | { type: "account.set"; id: string; enabled: boolean }
   | { type: "thread.changes"; threadId: string }
+  | { type: "chat.history"; room: string }
   | { type: "snapshot.request" };
 
 // ---- client-only view models ----

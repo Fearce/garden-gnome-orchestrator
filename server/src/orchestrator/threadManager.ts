@@ -7,6 +7,7 @@ import { CodexAgentRun, testOpenAiKey, type CodexTestResult } from "../agents/co
 import { implementorConfig, plannerConfig, qaConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
+import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { titleFromInjection } from "./titleFromInjection.js";
@@ -18,6 +19,7 @@ import type {
   AgentEvent,
   AgentRunState,
   AttachmentRef,
+  ChatMessage,
   Effort,
   Finding,
   ImageAttachment,
@@ -30,14 +32,18 @@ import type {
   Role,
   Thread,
 } from "../types.js";
+import { GENERAL_ROOM, normalizeWorkspace, repoRoom } from "../types.js";
 
 type ResultEvent = Extract<AgentEvent, { type: "result" }>;
 type Acct = { id: string; label: string; token: string | undefined };
 import type {
   AskUserInput,
+  ChatPostInput,
+  ChatReadInput,
   DispatchInput,
   OrchestratorApi,
   PostFindingInput,
+  RosterEntry,
   ThreadActionResult,
 } from "./api.js";
 
@@ -788,6 +794,7 @@ export class ThreadManager implements OrchestratorApi {
       const agent = new AgentRun(makeCfg({ token: acct.token, resume, runId: run.id }));
       this.wireRun(agent, thread.id, run.id, role, acct.id);
       this.track(thread.id, agent);
+      this.ensureGroup(thread.id);
       // The planner and QA are each steerable mid-flight via their own handle, because each runs while
       // NO implementor is active in the slot: a planning inject must reshape the plan (liveRole, drained
       // into a re-plan); a QA inject must reach the running QA agent (liveQa) and NOT wake/spawn an
@@ -839,7 +846,8 @@ export class ThreadManager implements OrchestratorApi {
   private async runPlanner(thread: Thread): Promise<PlanOutput | undefined> {
     const res = await this.runRole(thread, "planner", config.models.planner, this.kickoffContent(thread.id, thread.brief), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "planner", getRunId: () => runId });
-      const cfg = plannerConfig(thread.workspace, { bus });
+      const office = createOfficeServer(this, { threadId: thread.id, role: "planner", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
+      const cfg = plannerConfig(thread.workspace, { bus, office });
       cfg.oauthToken = token;
       if (resume) cfg.resume = resume;
       return cfg;
@@ -851,7 +859,8 @@ export class ThreadManager implements OrchestratorApi {
     const res = await this.runRole(thread, "researcher", config.models.researcher, this.kickoffContent(thread.id, researcherKickoff(thread, plan)), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "researcher", getRunId: () => runId });
       const memory = createMemoryServer(this.memory);
-      const cfg = researcherConfig(thread.workspace, { bus, memory });
+      const office = createOfficeServer(this, { threadId: thread.id, role: "researcher", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
+      const cfg = researcherConfig(thread.workspace, { bus, memory, office });
       cfg.oauthToken = token;
       if (resume) cfg.resume = resume;
       return cfg;
@@ -879,7 +888,8 @@ export class ThreadManager implements OrchestratorApi {
       resume ? kickoff : this.kickoffContent(thread.id, kickoff),
       ({ token, resume: r, runId }) => {
         const bus = createBusServer(this, { threadId: thread.id, role: "qa", getRunId: () => runId });
-        const cfg = qaConfig(thread.workspace, { bus });
+        const office = createOfficeServer(this, { threadId: thread.id, role: "qa", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
+        const cfg = qaConfig(thread.workspace, { bus, office });
         cfg.oauthToken = token;
         if (r) cfg.resume = r;
         return cfg;
@@ -918,9 +928,10 @@ export class ThreadManager implements OrchestratorApi {
       runId = run.id;
       this.emitRun(run.id);
       // The Codex CLI is a separate process; the in-process bus MCP server can't attach to it, so a
-      // Codex implementor runs without post_finding/ask_user/read_findings — a documented degradation.
-      // The QA loop still reviews its output, and the doctrine above makes it commit (and push) itself.
-      if (!opts?.resume) startKickoff = `${CODEX_IMPLEMENTOR_DOCTRINE}\n\n${kickoff}`;
+      // Codex implementor runs without post_finding/ask_user/read_findings (and no office chat) — a
+      // documented degradation. The QA loop still reviews its output, and the doctrine makes it commit.
+      // A fresh start still gets the doctrine + (toolless) peer heads-up so it knows to avoid collisions.
+      if (!opts?.resume) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, kickoff, this.peerNote(thread, false)].filter(Boolean).join("\n\n");
       agent = new CodexAgentRun({ model, cwd: thread.workspace, apiKey: this.openaiApiKey() ?? "", resume: opts?.resume });
     } else {
       const acct = opts?.account ?? this.dispatchAccount();
@@ -929,13 +940,21 @@ export class ThreadManager implements OrchestratorApi {
       runId = run.id;
       this.emitRun(run.id);
       const bus = createBusServer(this, { threadId: thread.id, role: "implementor", getRunId: () => run.id });
-      const cfg = implementorConfig(thread.workspace, { bus }, { resume: opts?.resume, effort });
+      const office = createOfficeServer(this, { threadId: thread.id, role: "implementor", workspace: thread.workspace, title: thread.title, getRunId: () => run.id });
+      const cfg = implementorConfig(thread.workspace, { bus, office }, { resume: opts?.resume, effort });
       cfg.oauthToken = acct.token;
+      // On a fresh start, fold in a heads-up naming any teammates already live in this repo so the
+      // implementor coordinates from turn one (a resumed session already saw the office context).
+      if (!opts?.resume) {
+        const note = this.peerNote(thread, true);
+        if (note) startKickoff = `${kickoff}\n\n${note}`;
+      }
       agent = new AgentRun(cfg);
     }
     this.wireRun(agent, thread.id, runId, "implementor", accountId);
     this.live.set(thread.id, { run: agent, runId, accountId });
     this.track(thread.id, agent);
+    this.ensureGroup(thread.id);
     agent.onEvent((e) => {
       if (e.type === "init" && e.sessionId) this.lastImplementorSession.set(thread.id, e.sessionId);
     });
@@ -1960,6 +1979,124 @@ export class ThreadManager implements OrchestratorApi {
       live.run.send(`[Heads-up finding] ${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`, { priority: "next" });
       this.db.markFindingRouted(finding.id);
     }
+  }
+
+  // ---- the office: cross-agent chat + grouping ----
+
+  chatPost(input: ChatPostInput): ChatMessage {
+    const t = this.db.getThread(input.threadId);
+    const workspace = t?.workspace ?? "";
+    const project = input.scope === "project";
+    const m = this.db.addChatMessage({
+      room: project ? repoRoom(workspace) : GENERAL_ROOM,
+      scope: input.scope,
+      workspace: project ? workspace : null,
+      threadId: input.threadId,
+      runId: input.runId ?? null,
+      role: input.role,
+      kind: "chat",
+      body: input.body,
+    });
+    this.hub.publish({ type: "chat.message", message: m });
+    return m;
+  }
+
+  chatRead(input: ChatReadInput): ChatMessage[] {
+    const t = this.db.getThread(input.threadId);
+    const ws = t?.workspace ?? "";
+    const limit = input.limit ?? 40;
+    const scope = input.scope ?? "all";
+    if (scope === "general") return this.db.listRoomMessages(GENERAL_ROOM, limit);
+    if (scope === "project") return this.db.listRoomMessages(repoRoom(ws), limit);
+    // "all": newest `limit` across the two rooms the caller belongs to, merged chronologically.
+    return [...this.db.listRoomMessages(GENERAL_ROOM, limit), ...this.db.listRoomMessages(repoRoom(ws), limit)]
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(-limit);
+  }
+
+  officeRoster(threadId: string): RosterEntry[] {
+    const me = this.db.getThread(threadId);
+    const myNorm = normalizeWorkspace(me?.workspace ?? "");
+    return this.liveAgentThreads().map((l) => ({
+      threadId: l.threadId,
+      title: l.title,
+      workspace: l.workspace,
+      role: l.role,
+      self: l.threadId === threadId,
+      sameRepo: l.threadId !== threadId && normalizeWorkspace(l.workspace) === myNorm,
+    }));
+  }
+
+  /** The threads with a live in-memory agent right now (activeRuns is the in-process truth, kept in
+   *  sync with track/untrack), each tagged with the role of its most recent still-running run — the
+   *  single source both the office roster and the grouping logic read from. */
+  private liveAgentThreads(): { threadId: string; role: Role; workspace: string; title: string }[] {
+    const out: { threadId: string; role: Role; workspace: string; title: string }[] = [];
+    for (const [tid, set] of this.activeRuns) {
+      if (!set.size) continue;
+      const t = this.db.getThread(tid);
+      if (!t) continue;
+      const runs = this.db.listRuns(tid);
+      const active = runs
+        .filter((r) => r.state === "starting" || r.state === "running" || r.state === "idle")
+        .sort((a, b) => b.startedAt - a.startedAt)[0];
+      const role = (active ?? runs.sort((a, b) => b.startedAt - a.startedAt)[0])?.role ?? "implementor";
+      out.push({ threadId: tid, role, workspace: t.workspace, title: t.title });
+    }
+    return out;
+  }
+
+  /** Other live agents sharing a thread's workspace — the teammates it can collide with. */
+  private repoPeers(thread: Thread): { threadId: string; role: Role; title: string }[] {
+    const myNorm = normalizeWorkspace(thread.workspace);
+    return this.liveAgentThreads()
+      .filter((l) => l.threadId !== thread.id && normalizeWorkspace(l.workspace) === myNorm)
+      .map((l) => ({ threadId: l.threadId, role: l.role, title: l.title }));
+  }
+
+  /** Called when an agent starts: if 2+ distinct tasks are now live in the same repo, they form a
+   *  project room. Announce each not-yet-announced participant once (durably, via chatThreadInRoom)
+   *  so every current member is recorded in the room — that's what surfaces the "Chatroom" button on
+   *  their tasks and the standing huddle in the office strip. */
+  private ensureGroup(threadId: string): void {
+    const t = this.db.getThread(threadId);
+    if (!t) return;
+    const myNorm = normalizeWorkspace(t.workspace);
+    const distinct = new Set(
+      this.liveAgentThreads()
+        .filter((l) => normalizeWorkspace(l.workspace) === myNorm)
+        .map((l) => l.threadId),
+    );
+    if (distinct.size < 2) return;
+    const room = repoRoom(t.workspace);
+    for (const tid of distinct) {
+      if (this.db.chatThreadInRoom(room, tid)) continue;
+      const peer = this.db.getThread(tid);
+      if (!peer) continue;
+      const m = this.db.addChatMessage({
+        room,
+        scope: "project",
+        workspace: t.workspace,
+        threadId: tid,
+        role: "system",
+        kind: "system",
+        body: `🤝 "${peer.title}" joined — ${distinct.size} agents are now working in ${t.workspace}. Coordinate here so you don't edit the same files.`,
+      });
+      this.hub.publish({ type: "chat.message", message: m });
+    }
+  }
+
+  /** A concrete heads-up folded into a fresh implementor kickoff when teammates already share its repo
+   *  — names them and tells it to coordinate. `withTools` is false for the Codex backend (no office
+   *  MCP), where the note still warns about collisions but can't point at chat tools it doesn't have. */
+  private peerNote(thread: Thread, withTools: boolean): string | undefined {
+    const peers = this.repoPeers(thread);
+    if (!peers.length) return undefined;
+    const list = peers.map((p) => `• ${p.role} on "${p.title}"`).join("\n");
+    const how = withTools
+      ? "Use the office chat to coordinate: call `office_look`, then `chat_post(scope:\"team\")` to claim the files/areas you'll touch and `chat_read` what they've claimed before editing."
+      : "Be careful not to edit the same files they are; prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks.";
+    return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\nYou share this workspace, so you can step on each other's changes. ${how} Commit only your own hunks.`;
   }
 
   // ---- run event wiring ----
