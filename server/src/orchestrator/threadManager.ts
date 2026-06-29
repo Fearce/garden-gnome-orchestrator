@@ -184,6 +184,10 @@ export class ThreadManager implements OrchestratorApi {
   // once the implementor is live.
   private readonly resuming = new Set<string>();
   private readonly pendingResumeMsgs = new Map<string, string[]>();
+  // Images attached to the original dispatch prompt. Every isolated fresh role session must see these
+  // in its first SDKUserMessage; keep them separate from later injected images so a resume/inject path
+  // cannot replace the dispatch screenshots before the implementor starts.
+  private readonly dispatchImages = new Map<string, ImageBlock[]>();
   private readonly threadImages = new Map<string, ImageBlock[]>();
   private readonly pendingApprovals = new Map<string, (d: { approved: boolean; feedback?: string }) => void>();
   // The planner is the only role running during the pre-implementor phase, and it has NO `live`
@@ -464,7 +468,7 @@ export class ThreadManager implements OrchestratorApi {
 
   async dispatch(input: DispatchInput): Promise<string> {
     const thread = this.db.createThread({ title: input.title, workspace: input.workspace, rawPrompt: "", brief: input.brief });
-    if (input.images?.length) this.threadImages.set(thread.id, input.images.map(toImageBlock));
+    if (input.images?.length) this.dispatchImages.set(thread.id, input.images.map(toImageBlock));
     this.hub.publish({ type: "thread.upsert", thread });
     this.hub.log("info", `Dispatched task ${thread.id.slice(0, 8)} "${thread.title}"`);
     this.enqueueOrRun(thread.id);
@@ -625,7 +629,8 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Wrap a role's kickoff text with the thread's pasted images so each isolated agent sees them. */
   private kickoffContent(threadId: string, text: string): string | unknown[] {
-    return contentWithImages(text, this.threadImages.get(threadId) ?? []);
+    const blocks = [...(this.dispatchImages.get(threadId) ?? []), ...(this.threadImages.get(threadId) ?? [])];
+    return contentWithImages(text, blocks);
   }
 
   approvalMode(): boolean {
@@ -824,6 +829,7 @@ export class ThreadManager implements OrchestratorApi {
       // Every role's kickoff has been built by now; free the base64 blocks. A live
       // implementor still remembers them, and a later resume reloads them from its
       // session, so dropping them here doesn't blind anything.
+      this.dispatchImages.delete(threadId);
       this.threadImages.delete(threadId);
       // Safety net: drop any held notes that an early return (e.g. a rejected plan) left behind, so
       // they can't leak into an unrelated later run of this thread.
@@ -1846,6 +1852,7 @@ export class ThreadManager implements OrchestratorApi {
     }
     // The kickoff has consumed any stashed images; drop them so a later resume doesn't re-send the
     // base64 (wasted vision tokens) — the live/resumed session already holds them.
+    this.dispatchImages.delete(thread.id);
     this.threadImages.delete(thread.id);
     // Deliver anything the director injected while the resume was still materializing.
     const buffered = this.pendingResumeMsgs.get(thread.id);
@@ -1880,6 +1887,7 @@ export class ThreadManager implements OrchestratorApi {
       set.clear();
     }
     this.live.delete(threadId);
+    this.dispatchImages.delete(threadId);
     this.threadImages.delete(threadId);
     // A resume may be mid-materialization (compressing) with no live run yet — drop its bookkeeping
     // so it can't resurrect the cancelled task. startResumedImplementor re-checks cancelled() after
@@ -1935,6 +1943,7 @@ export class ThreadManager implements OrchestratorApi {
     }
     await this.stopLive(threadId);
     this.live.delete(threadId);
+    this.dispatchImages.delete(threadId);
     this.threadImages.delete(threadId);
     this.resuming.delete(threadId);
     this.pendingResumeMsgs.delete(threadId);
@@ -1984,6 +1993,7 @@ export class ThreadManager implements OrchestratorApi {
     }
     await this.stopLive(threadId);
     this.live.delete(threadId);
+    this.dispatchImages.delete(threadId);
     this.threadImages.delete(threadId);
     this.resuming.delete(threadId);
     this.pendingResumeMsgs.delete(threadId);
@@ -2058,6 +2068,7 @@ export class ThreadManager implements OrchestratorApi {
     // resurrect or reference the deleted task.
     this.dropFromQueue(threadId);
     this.live.delete(threadId);
+    this.dispatchImages.delete(threadId);
     this.threadImages.delete(threadId);
     this.resuming.delete(threadId);
     this.pendingResumeMsgs.delete(threadId);
