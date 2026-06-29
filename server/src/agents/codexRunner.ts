@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, RateLimitInfo } from "../types.js";
 import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "./runner.js";
@@ -216,6 +217,17 @@ export class CodexAgentRun implements AgentRunLike {
     }
   }
 
+  /** Write the apikey-mode `auth.json` the Codex CLI authenticates from. Mirrors what
+   *  `codex login --with-api-key` produces — the minimal, stable apikey shape — so the orchestrator's
+   *  key drives auth without shelling out to a `login` subcommand on every turn. No-op without a key
+   *  (the routing gate already blocks a Codex dispatch when no valid key is set). */
+  private async writeAuth(): Promise<void> {
+    const key = this.cfg.apiKey?.trim();
+    if (!key) return;
+    const body = JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: key });
+    await writeFile(join(config.codex.home, "auth.json"), body, "utf8");
+  }
+
   /** Spawn one `codex exec` (or `codex exec resume <id>`) turn and stream its JSONL events. */
   private async runTurn(prompt: string, resumeId?: string): Promise<void> {
     if (this.stopped) return;
@@ -223,9 +235,15 @@ export class CodexAgentRun implements AgentRunLike {
       this.finishTurn({ subtype: "error", isError: true, result: `Codex CLI not found at ${config.codex.binJs}. Install it with \`npm i -g @openai/codex\` or set CODEX_BIN_JS.` });
       return;
     }
-    // A dedicated CODEX_HOME with no ChatGPT auth.json forces the API key (OPENAI_API_KEY) to drive
-    // auth, so the orchestrator's key — not the operator's personal `codex login` — is what's used.
+    // Auth: the modern Codex CLI (>=0.14x) does NOT read OPENAI_API_KEY from the env for its
+    // /v1/responses transport — it authenticates only from `<CODEX_HOME>/auth.json` (what
+    // `codex login --with-api-key` writes). Without it every turn 401s instantly ("Missing bearer …")
+    // and the implementor looks skipped. So write that file ourselves (apikey mode) into the dedicated
+    // CODEX_HOME — isolated from any personal ChatGPT `codex login` in the operator's ~/.codex — every
+    // turn, so a key rotated in the UI takes effect immediately. We still pass OPENAI_API_KEY in the env
+    // (harmless; some subcommands honor it). CODEX_HOME must exist before spawn or codex errors + exits 1.
     await mkdir(config.codex.home, { recursive: true }).catch(() => {});
+    await this.writeAuth().catch(() => {});
     const args = ["exec"];
     if (resumeId) args.push("resume", resumeId);
     args.push(
