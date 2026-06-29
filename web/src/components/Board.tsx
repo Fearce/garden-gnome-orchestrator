@@ -2,6 +2,7 @@ import { memo, useEffect, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
 import type { AgentRun, Role, Thread } from "../types.js";
+import { repoRoom } from "../types.js";
 import { closesInDays, isClosable, roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
@@ -210,9 +211,10 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
   const select = useStore((s) => s.select);
   const close = useStore((s) => s.close);
   const verbosity = useStore((s) => s.verbosity);
-  // The project chatroom this task joined (only set when another task shared its repo) — drives the
-  // card's Chatroom chip, hidden on tasks that never collaborated.
-  const chatRoom = useStore((s) => s.chatRooms.find((r) => r.threadIds.includes(thread.id)));
+  // The project chatroom for this task's repo (≥2 tasks ever collaborated here, possibly in the past
+  // since rooms persist) — drives the card's Chatroom chip. Repo-keyed, so a fresh task on a repo with
+  // prior history shows it too; hidden on repos that never had a collaboration.
+  const chatRoom = useStore((s) => s.chatRooms.find((r) => r.room === repoRoom(thread.workspace) && r.threadIds.length >= 2));
   const openOffice = useStore((s) => s.openOffice);
 
   const impl = latestRun(threadRuns, "implementor");
@@ -282,7 +284,7 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
           {chatRoom ? (
             <button
               className="card-chatroom"
-              title={`Collaborated with ${chatRoom.threadIds.length - 1} other task(s) in this repo — open the chatroom`}
+              title={`This repo's chatroom — ${chatRoom.threadIds.length} task(s) have collaborated here`}
               onClick={(e) => {
                 e.stopPropagation();
                 openOffice(chatRoom.room);

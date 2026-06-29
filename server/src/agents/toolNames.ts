@@ -15,6 +15,7 @@ export const T = {
   notifyThread: `mcp__${BUS_SERVER}__notify_thread`,
   busAskUser: `mcp__${BUS_SERVER}__ask_user`,
   officeLook: `mcp__${OFFICE_SERVER}__office_look`,
+  officeSetName: `mcp__${OFFICE_SERVER}__office_set_name`,
   chatPost: `mcp__${OFFICE_SERVER}__chat_post`,
   chatRead: `mcp__${OFFICE_SERVER}__chat_read`,
   askUser: `mcp__${DIRECTOR_SERVER}__ask_user`,
@@ -28,7 +29,7 @@ export const T = {
 } as const;
 
 export const BUS_TOOLS = [T.postFinding, T.readFindings, T.notifyThread, T.busAskUser];
-export const OFFICE_TOOLS = [T.officeLook, T.chatPost, T.chatRead];
+export const OFFICE_TOOLS = [T.officeLook, T.officeSetName, T.chatPost, T.chatRead];
 export const DIRECTOR_TOOLS = [
   T.searchMemory,
   T.readMemory,

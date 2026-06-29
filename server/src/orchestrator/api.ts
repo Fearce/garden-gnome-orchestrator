@@ -51,6 +51,7 @@ export interface ChatReadInput {
 /** One coworker (or self) in the office, from the caller's point of view. */
 export interface RosterEntry {
   threadId: string;
+  name: string; // the gnome name this task goes by in the office
   title: string;
   workspace: string;
   role: Role;
@@ -88,6 +89,12 @@ export interface OrchestratorApi {
 
   /** Who else is in the office right now (active agents), from a task's point of view. */
   officeRoster(threadId: string): RosterEntry[];
+
+  /** The office name a task currently goes by (its picked name, or the deterministic default). */
+  officeName(threadId: string): string;
+
+  /** Let an agent pick/rename its office gnome; returns the stored name (trimmed/clamped). */
+  setOfficeName(threadId: string, name: string): string;
 
   injectThread(
     threadId: string,

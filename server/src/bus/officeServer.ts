@@ -30,31 +30,43 @@ function toScope(word: "office" | "team"): ChatScope {
 export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): McpServerConfig {
   const officeLook = tool(
     "office_look",
-    "Look around the office: list every other agent working right now — their role, their task, and which repo they're in — plus whether they share YOUR repo (your teammates). Call this when you start, and whenever you want to know who else is active, so you can coordinate instead of duplicating or colliding on work.",
+    "Look around the office: see YOUR own office name, and list every other agent working right now — their name, role, task, and which repo they're in — plus whether they share YOUR repo (your teammates). Call this when you start, and whenever you want to know who else is active, so you can coordinate (and address people by name) instead of colliding on work.",
     {},
     async () => {
       const roster = api.officeRoster(ctx.threadId);
+      const me = api.officeName(ctx.threadId);
       const others = roster.filter((r) => !r.self);
+      const youAre = `You're "${me}" in the office (rename with office_set_name if you like).`;
       if (!others.length) {
-        return { content: [{ type: "text", text: "You're the only agent working right now — the office is quiet. No one else to coordinate with." }] };
+        return { content: [{ type: "text", text: `${youAre}\nYou're the only agent working right now — the office is quiet. No one else to coordinate with.` }] };
       }
       const team = others.filter((r) => r.sameRepo);
       const lines = others.map(
-        (r) => `- ${r.role} on "${r.title}" — ${r.workspace}${r.sameRepo ? "  ⟵ SAME REPO as you (teammate)" : ""}`,
+        (r) => `- ${r.name} (${r.role}) on "${r.title}" — ${r.workspace}${r.sameRepo ? "  ⟵ SAME REPO as you (teammate)" : ""}`,
       );
       const header = team.length
-        ? `⚠️ ${team.length} other agent(s) are in YOUR repo right now — coordinate with them via chat_post(scope:"team") before editing shared files.`
+        ? `⚠️ ${team.length} other agent(s) are in YOUR repo right now — coordinate with them by name via chat_post(scope:"team") before editing shared files.`
         : "No one else is in your repo, but here's who's around:";
-      return { content: [{ type: "text", text: `${header}\n${lines.join("\n")}` }] };
+      return { content: [{ type: "text", text: `${youAre}\n${header}\n${lines.join("\n")}` }] };
+    },
+  );
+
+  const setName = tool(
+    "office_set_name",
+    "Pick the name you go by in the office (how coworkers will address you, and what shows on your gnome). Optional — you get a default name otherwise. Choose something short and human.",
+    { name: z.string().min(1).max(24).describe("Your chosen office name, e.g. 'Nova'.") },
+    async (args) => {
+      const saved = api.setOfficeName(ctx.threadId, args.name);
+      return { content: [{ type: "text", text: `You're now "${saved}" in the office.` }] };
     },
   );
 
   const chatPost = tool(
     "chat_post",
-    'Say something to your coworkers. scope "office" posts to the whole office (every active agent); scope "team" posts to your project room — the agents working in THIS SAME repo. Use "team" to divide up files/areas, announce what you\'re about to change, and share findings so two tasks don\'t edit the same code. Read first (chat_read / office_look) and address anything relevant in your message.',
+    'Say something to your coworkers — keep it SHORT, one or two sentences like a real chat message (the office is for quick coordination, NOT long writeups; put detail in your task work, not here). scope "office" posts to the whole office (every active agent); scope "team" posts to your project room — the agents in THIS SAME repo. Use "team" to divide up files/areas, flag what you\'re about to change, and answer teammates. Read first (chat_read / office_look) and address people by name.',
     {
       scope: z.enum(["office", "team"]).default("team").describe('"office" = everyone; "team" = agents in your repo.'),
-      message: z.string().min(1).describe("What to tell your coworkers."),
+      message: z.string().min(1).max(500).describe("A short line for your coworkers — one or two sentences, not a report."),
     },
     async (args) => {
       const m = api.chatPost({
@@ -90,7 +102,7 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
       if (!msgs.length) return { content: [{ type: "text", text: "No messages yet." }] };
       const text = msgs
         .map((m) => {
-          const who = m.kind === "system" ? "office" : m.role;
+          const who = m.kind === "system" ? "office" : `${m.senderName || m.role} (${m.role})`;
           const tag = m.scope === "project" ? "team" : "office";
           return `[${tag}] ${who}: ${m.body}`;
         })
@@ -102,6 +114,6 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
   return createSdkMcpServer({
     name: OFFICE_SERVER,
     version: "0.1.0",
-    tools: [officeLook, chatPost, chatRead],
+    tools: [officeLook, setName, chatPost, chatRead],
   });
 }

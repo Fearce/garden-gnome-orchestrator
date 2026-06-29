@@ -66,6 +66,8 @@ interface State {
   chat: ChatMessage[];
   chatRooms: ChatRoomSummary[];
   roomHistory: Record<string, ChatMessage[]>;
+  // Picked office names (threadId → name); the default for an unlisted task is gnomeName(threadId).
+  nameOverrides: Record<string, string>;
   // Office panel UI: which room is open (room key) — null = closed. The strip, the task buttons, and
   // the card chips all drive this so one panel serves every entry point.
   officeRoom: string | null;
@@ -236,6 +238,7 @@ export const useStore = create<State>((set) => ({
   chat: [],
   chatRooms: [],
   roomHistory: {},
+  nameOverrides: {},
   officeRoom: null,
 
   select: (id) => {
@@ -394,7 +397,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}) });
       // If the office panel is open, re-pull the open room so it reflects anything that streamed
       // while the socket was gone (mirrors the thread.history re-fetch above).
       const openRoom = useStore.getState().officeRoom;
@@ -422,6 +425,9 @@ function applyEvent(ev: ServerEvent): void {
           : s.roomHistory;
         return { chat: capped, chatRooms: upsertRoom(s.chatRooms, ev.message), roomHistory };
       });
+      break;
+    case "chat.name":
+      useStore.setState((s) => ({ nameOverrides: { ...s.nameOverrides, [ev.threadId]: ev.name } }));
       break;
     case "chat.history":
       // Merge by id rather than replace: a live chat.message for this room can land between the

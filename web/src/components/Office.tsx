@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
 import type { ChatMessage, Role } from "../types.js";
-import { GENERAL_ROOM, normalizeWorkspace, repoRoom } from "../types.js";
+import { GENERAL_ROOM, gnomeName, normalizeWorkspace, repoRoom } from "../types.js";
 import { clock, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 
@@ -58,6 +58,8 @@ export function Office() {
   const chat = useStore((s) => s.chat);
   const officeRoom = useStore((s) => s.officeRoom);
   const openOffice = useStore((s) => s.openOffice);
+  const nameOverrides = useStore((s) => s.nameOverrides);
+  const nameOf = (threadId: string) => nameOverrides[threadId] ?? gnomeName(threadId);
 
   // One worker per active task (latest active run wins), then grouped by normalized repo.
   const groups = useMemo<Group[]>(() => {
@@ -114,7 +116,7 @@ export function Office() {
                 key={g.key}
                 className="office-huddle"
                 onClick={() => openOffice(g.room!)}
-                title={`${g.workers.length} agents collaborating in ${leaf(g.workspace)} — click to open their chatroom`}
+                title={`${g.workers.map((w) => nameOf(w.threadId)).join(", ")} collaborating in ${leaf(g.workspace)} — click to open their chatroom`}
               >
                 <span className="office-huddle-gnomes">
                   {g.workers.slice(0, 4).map((w) => (
@@ -131,7 +133,7 @@ export function Office() {
                   className="office-walker"
                   style={{ "--pace-dur": `${3 + ((i * 7) % 5) * 0.5}s`, "--pace-delay": `${(i % 4) * 0.6}s` } as CSSProperties}
                   onClick={() => openOffice(GENERAL_ROOM)}
-                  title={`${w.role} on "${w.title}" — click to open the office chat`}
+                  title={`${nameOf(w.threadId)} (${w.role}) on "${w.title}" — click to open the office chat`}
                 >
                   <span className="office-pacer">
                     <Gnome role={w.role} size={20} />
@@ -158,6 +160,7 @@ function OfficePanel() {
   const chat = useStore((s) => s.chat);
   const roomHistory = useStore((s) => s.roomHistory);
   const threads = useStore((s) => s.threads);
+  const nameOverrides = useStore((s) => s.nameOverrides);
 
   // Full history if it's been fetched; otherwise fall back to the recent cross-room slice we hold.
   const messages = useMemo(() => {
@@ -208,7 +211,14 @@ function OfficePanel() {
           {messages.length === 0 ? (
             <div className="office-empty">No messages yet{officeRoom === GENERAL_ROOM ? "" : " — they just grouped up"}.</div>
           ) : (
-            messages.map((m) => <OfficeMsg key={m.id} m={m} title={m.threadId ? threads[m.threadId]?.title : undefined} />)
+            messages.map((m) => (
+              <OfficeMsg
+                key={m.id}
+                m={m}
+                title={m.threadId ? threads[m.threadId]?.title : undefined}
+                name={m.senderName || (m.threadId ? nameOverrides[m.threadId] ?? gnomeName(m.threadId) : undefined)}
+              />
+            ))
           )}
         </div>
       </div>
@@ -216,7 +226,7 @@ function OfficePanel() {
   );
 }
 
-function OfficeMsg({ m, title }: { m: ChatMessage; title?: string }) {
+function OfficeMsg({ m, title, name }: { m: ChatMessage; title?: string; name?: string }) {
   if (m.kind === "system") {
     return <div className="office-sys">{m.body}</div>;
   }
@@ -227,9 +237,10 @@ function OfficeMsg({ m, title }: { m: ChatMessage; title?: string }) {
       <div className="office-msg-main">
         <div className="office-msg-head">
           <span className="office-msg-role" style={{ color: roleColor(role) }}>
-            {role}
+            {name ?? role}
           </span>
-          {title ? <span className="office-msg-task">on “{trim(title, 36)}”</span> : null}
+          <span className="office-msg-kind">{role}</span>
+          {title ? <span className="office-msg-task">on “{trim(title, 32)}”</span> : null}
           <span className="office-msg-ts">{clock(m.createdAt)}</span>
         </div>
         <div className="office-msg-body">{m.body}</div>

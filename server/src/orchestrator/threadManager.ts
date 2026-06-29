@@ -32,7 +32,7 @@ import type {
   Role,
   Thread,
 } from "../types.js";
-import { GENERAL_ROOM, normalizeWorkspace, repoRoom } from "../types.js";
+import { GENERAL_ROOM, GNOME_NAMES, gnomeName, normalizeWorkspace, repoRoom } from "../types.js";
 
 type ResultEvent = Extract<AgentEvent, { type: "result" }>;
 type Acct = { id: string; label: string; token: string | undefined };
@@ -201,6 +201,10 @@ export class ThreadManager implements OrchestratorApi {
   // continue existing work — but they still count toward the active total.
   private readonly activePipelines = new Set<string>();
   private readonly dispatchQueue: string[] = [];
+  // "No invisible workers": each (thread, role) auto-announces itself in the general office room the
+  // first time it goes live. Keyed so a failover relaunch / warm resume of the same role doesn't spam,
+  // and reset on restart (a resumed agent re-announcing once after a bounce is fine — even welcome).
+  private readonly checkedIn = new Set<string>();
 
   constructor(
     readonly db: Db,
@@ -794,6 +798,7 @@ export class ThreadManager implements OrchestratorApi {
       const agent = new AgentRun(makeCfg({ token: acct.token, resume, runId: run.id }));
       this.wireRun(agent, thread.id, run.id, role, acct.id);
       this.track(thread.id, agent);
+      this.officeCheckIn(thread.id, role);
       this.ensureGroup(thread.id);
       // The planner and QA are each steerable mid-flight via their own handle, because each runs while
       // NO implementor is active in the slot: a planning inject must reshape the plan (liveRole, drained
@@ -954,6 +959,7 @@ export class ThreadManager implements OrchestratorApi {
     this.wireRun(agent, thread.id, runId, "implementor", accountId);
     this.live.set(thread.id, { run: agent, runId, accountId });
     this.track(thread.id, agent);
+    this.officeCheckIn(thread.id, "implementor");
     this.ensureGroup(thread.id);
     agent.onEvent((e) => {
       if (e.type === "init" && e.sessionId) this.lastImplementorSession.set(thread.id, e.sessionId);
@@ -1983,6 +1989,61 @@ export class ThreadManager implements OrchestratorApi {
 
   // ---- the office: cross-agent chat + grouping ----
 
+  /** Picked names live in one kv JSON map; the default is derived from the thread id. */
+  private officeNameMap(): Record<string, string> {
+    try {
+      const v = this.db.kvGet("office_names");
+      return v ? (JSON.parse(v) as Record<string, string>) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  officeName(threadId: string): string {
+    return this.officeNameMap()[threadId] || gnomeName(threadId);
+  }
+
+  /** Assign a stable office name the first time a task needs one, picking the deterministic default
+   *  but walking to the next free name if a currently-live coworker already holds it — so two gnomes
+   *  on screen at once never share a name. Persisted + broadcast so the UI and the agent agree. */
+  private ensureNamed(threadId: string): string {
+    const map = this.officeNameMap();
+    if (map[threadId]) return map[threadId];
+    const used = new Set(
+      this.liveAgentThreads()
+        .filter((l) => l.threadId !== threadId)
+        .map((l) => this.officeName(l.threadId)),
+    );
+    const names = GNOME_NAMES as readonly string[];
+    const start = Math.max(0, names.indexOf(gnomeName(threadId)));
+    let chosen = gnomeName(threadId);
+    for (let i = 0; i < names.length; i++) {
+      const cand = names[(start + i) % names.length]!;
+      if (!used.has(cand)) {
+        chosen = cand;
+        break;
+      }
+    }
+    map[threadId] = chosen;
+    this.db.kvSet("office_names", JSON.stringify(map));
+    this.hub.publish({ type: "chat.name", threadId, name: chosen });
+    return chosen;
+  }
+
+  setOfficeName(threadId: string, name: string): string {
+    const clean = name.trim().replace(/\s+/g, " ").slice(0, 24) || gnomeName(threadId);
+    const map = this.officeNameMap();
+    map[threadId] = clean;
+    this.db.kvSet("office_names", JSON.stringify(map));
+    this.hub.publish({ type: "chat.name", threadId, name: clean });
+    return clean;
+  }
+
+  /** The current name overrides (picked names only) — sent in the hello snapshot for the office UI. */
+  officeNameOverrides(): Record<string, string> {
+    return this.officeNameMap();
+  }
+
   chatPost(input: ChatPostInput): ChatMessage {
     const t = this.db.getThread(input.threadId);
     const workspace = t?.workspace ?? "";
@@ -1996,6 +2057,7 @@ export class ThreadManager implements OrchestratorApi {
       role: input.role,
       kind: "chat",
       body: input.body,
+      senderName: this.officeName(input.threadId),
     });
     this.hub.publish({ type: "chat.message", message: m });
     // A team post is pushed straight into the session of every other live implementor in the same
@@ -2012,11 +2074,11 @@ export class ThreadManager implements OrchestratorApi {
   private deliverChatToPeers(m: ChatMessage): number {
     if (m.scope !== "project" || !m.workspace) return 0;
     const norm = normalizeWorkspace(m.workspace);
-    const fromTitle = m.threadId ? (this.db.getThread(m.threadId)?.title ?? "another task") : "the office";
+    const who = m.senderName || (m.threadId ? this.officeName(m.threadId) : "a teammate");
     const text =
-      `💬 [Office — ${m.role} on "${fromTitle}" posted to your team room]: ${m.body}\n` +
+      `💬 [Office — ${who} (${m.role}) posted to your team room]: ${m.body}\n` +
       `(A teammate working in this same repo sent this. If it touches your work or asks something, reply with ` +
-      `chat_post(scope:"team") and adjust — don't keep editing blind.)`;
+      `chat_post(scope:"team") — address them as ${who} — and adjust; don't keep editing blind.)`;
     let pinged = 0;
     for (const [tid, live] of this.live) {
       if (tid === m.threadId) continue; // never echo back to the sender
@@ -2046,6 +2108,7 @@ export class ThreadManager implements OrchestratorApi {
     const myNorm = normalizeWorkspace(me?.workspace ?? "");
     return this.liveAgentThreads().map((l) => ({
       threadId: l.threadId,
+      name: this.officeName(l.threadId),
       title: l.title,
       workspace: l.workspace,
       role: l.role,
@@ -2111,6 +2174,32 @@ export class ThreadManager implements OrchestratorApi {
       });
       this.hub.publish({ type: "chat.message", message: m });
     }
+  }
+
+  /** Enforce "no invisible workers": the first time a role goes live for a task, post a short check-in
+   *  to the general office so every active agent is visible in the chat, not just the gnome strip. The
+   *  orchestrator posts it (not the LLM) so it's guaranteed — agents can't forget to show up. Deduped
+   *  per (thread, role) so resume/failover relaunches don't repeat it. */
+  private officeCheckIn(threadId: string, role: Role): void {
+    const key = `${threadId}:${role}`;
+    if (this.checkedIn.has(key)) return;
+    this.checkedIn.add(key);
+    const t = this.db.getThread(threadId);
+    if (!t) return;
+    const name = this.ensureNamed(threadId);
+    const leaf = t.workspace.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || t.workspace;
+    const m = this.db.addChatMessage({
+      room: GENERAL_ROOM,
+      scope: "general",
+      workspace: null,
+      threadId,
+      runId: null,
+      role,
+      kind: "chat",
+      body: `👋 ${name} (${role}) here — starting on "${t.title}" in ${leaf}.`,
+      senderName: name,
+    });
+    this.hub.publish({ type: "chat.message", message: m });
   }
 
   /** A concrete heads-up folded into a fresh implementor kickoff when teammates already share its repo

@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
+import { repoRoom } from "../types.js";
 import { clock, isDoneable, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
@@ -76,11 +77,12 @@ export function ThreadDetail() {
   const approve = useStore((s) => s.approve);
   const loadChanges = useStore((s) => s.loadChanges);
   const openOffice = useStore((s) => s.openOffice);
-  // The project chatroom this task took part in, if any — only set when another task worked the same
-  // repo (the only way a project room forms), so the Chatroom button is invisible otherwise.
+  // The project chatroom for THIS task's repo, if one exists (≥2 tasks ever collaborated here —
+  // possibly in a PAST task, since the room persists). Repo-keyed so a fresh task on a repo with
+  // prior history also gets the button to read the old chatter; invisible on repos that never collaborated.
   const chatRoom = useStore((s) => {
-    const tid = s.selectedThreadId;
-    return tid ? s.chatRooms.find((r) => r.threadIds.includes(tid)) : undefined;
+    const t = s.selectedThreadId ? s.threads[s.selectedThreadId] : undefined;
+    return t ? s.chatRooms.find((r) => r.room === repoRoom(t.workspace) && r.threadIds.length >= 2) : undefined;
   });
   const setDetailWidth = useStore((s) => s.setDetailWidth);
   const pendingPlan = useStore((s) => (s.selectedThreadId ? s.pendingPlans[s.selectedThreadId] : undefined));
@@ -323,7 +325,7 @@ export function ThreadDetail() {
             <button
               className="btn ghost sm"
               onClick={() => openOffice(chatRoom.room)}
-              title={`This task collaborated with ${chatRoom.threadIds.length - 1} other task(s) in this repo — open their chatroom`}
+              title={`Open this repo's chatroom — ${chatRoom.threadIds.length} task(s) have collaborated here`}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 5, verticalAlign: "-2px" }}>
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

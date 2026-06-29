@@ -62,6 +62,8 @@ button { font-family: inherit; cursor: pointer; }
   display: flex; align-items: center; gap: 16px;
   padding: 0 18px; border-bottom: 1px solid var(--line);
   background: linear-gradient(to bottom, var(--bg-1), var(--bg));
+  /* Above the board so office chat bubbles rising over the gnomes paint over it, not under it. */
+  position: relative; z-index: 10;
 }
 .brand { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
 .build-tag {
@@ -120,7 +122,7 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ---- the office (top-bar gnomes + chatroom) ---- */
 .office { position: relative; flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: center; }
-.office-strip { display: flex; align-items: center; gap: 4px; height: 100%; min-width: 0; overflow: hidden; padding: 0 4px; }
+.office-strip { display: flex; align-items: center; gap: 4px; height: 100%; min-width: 0; padding: 0 4px; }
 
 /* A lone agent paces its own little lane while it churns. */
 .office-walker { position: relative; flex: 0 0 auto; width: 46px; height: 38px; background: none; border: 0; padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: flex-start; }
@@ -155,22 +157,24 @@ button { font-family: inherit; cursor: pointer; }
   max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* A freshly-posted line floats just under the speaker for a few seconds — below, not above, since
-   the office lives at the very top of the viewport (there's no room over the gnomes' heads). */
+/* A freshly-posted line rises over the speaker's head for a few seconds, with a tail pointing down
+   at the gnome. The office is pinned to the very top of the window, so the bubble overlaps the gnome
+   (bottom sits partway down its hat) to stay fully on-screen — there are no pixels above the bar to
+   grow into. Kept to a single compact line so it never needs vertical room it doesn't have. */
 .office-bubble {
-  position: absolute; left: 50%; top: calc(100% - 2px); transform: translateX(-50%);
-  max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-family: var(--font-sans); font-size: 10.5px; line-height: 1.2; color: var(--text);
+  position: absolute; left: 50%; bottom: calc(100% - 17px); transform: translateX(-50%);
+  max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--font-sans); font-size: 10px; line-height: 1.15; color: var(--text);
   background: var(--bg-3); border: 1px solid var(--line-strong); border-radius: var(--r-md);
-  padding: 4px 8px; pointer-events: none; z-index: 30; box-shadow: var(--shadow-2);
+  padding: 3px 7px; pointer-events: none; z-index: 30; box-shadow: var(--shadow-2);
   animation: office-bubble-in 0.18s ease-out;
 }
 .office-bubble::after {
-  content: ""; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
-  border: 5px solid transparent; border-bottom-color: var(--line-strong);
+  content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  border: 5px solid transparent; border-top-color: var(--line-strong);
 }
 .office-bubble.team { border-color: color-mix(in oklch, var(--accent) 55%, var(--line)); }
-@keyframes office-bubble-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes office-bubble-in { from { opacity: 0; transform: translate(-50%, 4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
 /* The expandable chatroom panel — anchored under the top bar, centered so it never overflows. */
 .office-scrim { position: fixed; inset: 0; z-index: 80; background: transparent; }
@@ -197,7 +201,8 @@ button { font-family: inherit; cursor: pointer; }
 .office-msg { display: flex; gap: 9px; align-items: flex-start; }
 .office-msg-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; border-left: 2px solid var(--role, var(--line)); padding-left: 9px; }
 .office-msg-head { display: flex; align-items: baseline; gap: 7px; }
-.office-msg-role { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; }
+.office-msg-role { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; font-weight: 600; }
+.office-msg-kind { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); }
 .office-msg-task { font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .office-msg-ts { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); flex: 0 0 auto; }
 .office-msg-body { font-size: 13px; line-height: 1.45; color: var(--text); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }

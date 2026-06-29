@@ -111,7 +111,26 @@ export interface ChatMessage {
   role: Role | "system";
   kind: "chat" | "system";
   body: string;
+  senderName?: string | null; // the gnome name the sender went by (stamped at post time)
   createdAt: number;
+}
+
+// Friendly office names for the gnomes — one per task, so agents address each other by name instead
+// of "the other implementor". A deterministic default is derived from the thread id (gnomeName,
+// mirrored in web/src/types.ts); an agent can pick its own via the office_set_name tool. Nordic/tomte
+// flavored to match the mascot.
+export const GNOME_NAMES = [
+  "Pip", "Nim", "Bram", "Tova", "Fen", "Sol", "Rune", "Liv", "Ask", "Eir",
+  "Odd", "Sten", "Tor", "Una", "Yara", "Knut", "Hilda", "Mads", "Sif", "Juni",
+  "Lumi", "Pax", "Wren", "Zia", "Ole", "Greta", "Finn", "Bo", "Vik", "Saga",
+] as const;
+
+/** Deterministic default office name for a task, from its id — stable across the task's life and
+ *  mirrored byte-for-byte in web/src/types.ts so the agent's name and the UI's agree. */
+export function gnomeName(threadId: string): string {
+  let h = 0;
+  for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) >>> 0;
+  return GNOME_NAMES[h % GNOME_NAMES.length]!;
 }
 
 /** A rolled-up view of a project (per-repo) room — enough for the client to decide which tasks show

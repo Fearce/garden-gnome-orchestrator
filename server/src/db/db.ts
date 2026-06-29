@@ -106,6 +106,7 @@ function rowToChat(r: Row): ChatMessage {
     role: r.role as ChatMessage["role"],
     kind: r.kind as ChatMessage["kind"],
     body: r.body as string,
+    senderName: (r.sender_name as string | null) ?? null,
     createdAt: r.created_at as number,
   };
 }
@@ -149,6 +150,7 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
       "ALTER TABLE threads ADD COLUMN closed_prev_state TEXT",
+      "ALTER TABLE chat_messages ADD COLUMN sender_name TEXT",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -550,6 +552,7 @@ export class Db {
     role: ChatMessage["role"];
     kind?: ChatMessage["kind"];
     body: string;
+    senderName?: string | null;
   }): ChatMessage {
     const m: ChatMessage = {
       id: newId(),
@@ -561,12 +564,13 @@ export class Db {
       role: input.role,
       kind: input.kind ?? "chat",
       body: input.body,
+      senderName: input.senderName ?? null,
       createdAt: now(),
     };
     this.raw
       .prepare(
-        `INSERT INTO chat_messages(id, room, scope, workspace, thread_id, run_id, role, kind, body, created_at)
-         VALUES(@id, @room, @scope, @workspace, @threadId, @runId, @role, @kind, @body, @createdAt)`,
+        `INSERT INTO chat_messages(id, room, scope, workspace, thread_id, run_id, role, kind, body, sender_name, created_at)
+         VALUES(@id, @room, @scope, @workspace, @threadId, @runId, @role, @kind, @body, @senderName, @createdAt)`,
       )
       .run(m);
     return m;

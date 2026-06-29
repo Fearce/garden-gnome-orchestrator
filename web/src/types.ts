@@ -129,7 +129,22 @@ export interface ChatMessage {
   role: Role | "system";
   kind: "chat" | "system";
   body: string;
+  senderName?: string | null;
   createdAt: number;
+}
+
+// Mirror of the server's GNOME_NAMES + gnomeName (server/src/types.ts) so the office UI shows the same
+// default name the agent itself was told — picked-name overrides arrive via `nameOverrides`/chat.name.
+export const GNOME_NAMES = [
+  "Pip", "Nim", "Bram", "Tova", "Fen", "Sol", "Rune", "Liv", "Ask", "Eir",
+  "Odd", "Sten", "Tor", "Una", "Yara", "Knut", "Hilda", "Mads", "Sif", "Juni",
+  "Lumi", "Pax", "Wren", "Zia", "Ole", "Greta", "Finn", "Bo", "Vik", "Saga",
+] as const;
+
+export function gnomeName(threadId: string): string {
+  let h = 0;
+  for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) >>> 0;
+  return GNOME_NAMES[h % GNOME_NAMES.length]!;
 }
 
 export interface ChatRoomSummary {
@@ -205,10 +220,12 @@ export type ServerEvent =
       settings: OrchestratorSettings;
       chat: ChatMessage[];
       chatRooms: ChatRoomSummary[];
+      nameOverrides: Record<string, string>;
     }
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "chat.message"; message: ChatMessage }
   | { type: "chat.history"; room: string; messages: ChatMessage[] }
+  | { type: "chat.name"; threadId: string; name: string }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }

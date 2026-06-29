@@ -50,6 +50,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     // history is cheap and bounded) that drives which tasks show a "Chatroom" button.
     chat: ctx.db.listRecentChat(SNAPSHOT_CHAT),
     chatRooms: ctx.db.listProjectRooms(),
+    nameOverrides: ctx.manager.officeNameOverrides(),
   };
 }
 
