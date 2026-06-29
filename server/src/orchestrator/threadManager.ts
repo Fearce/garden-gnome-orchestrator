@@ -2386,6 +2386,8 @@ export class ThreadManager implements OrchestratorApi {
   private finishRun(runId: string, res: Extract<AgentEvent, { type: "result" }> | undefined, agent: AgentRunLike): void {
     this.db.updateRun(runId, {
       state: res?.isError ? "error" : "done",
+      // Persist the failure reason so a dead run is diagnosable instead of a silent error row.
+      error: res?.isError ? (res.result ?? "Run failed.").slice(0, 2000) : null,
       endedAt: Date.now(),
       costUsd: res?.costUsd ?? null,
       numTurns: res?.numTurns ?? null,
@@ -2404,6 +2406,7 @@ export class ThreadManager implements OrchestratorApi {
     const state: AgentRunState = res ? (res.isError ? "error" : "done") : "interrupted";
     this.db.updateRun(runId, {
       state,
+      error: res?.isError ? (res.result ?? "Run failed.").slice(0, 2000) : run.error ?? null,
       endedAt: Date.now(),
       costUsd: res?.costUsd ?? run.costUsd ?? null,
       numTurns: res?.numTurns ?? run.numTurns ?? null,

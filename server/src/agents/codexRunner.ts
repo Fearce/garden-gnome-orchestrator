@@ -317,7 +317,11 @@ export class CodexAgentRun implements AgentRunLike {
       this.cfg.cwd,
       "-m",
       this.cfg.model,
-      prompt,
+      // The prompt goes via STDIN ("-"), not argv: a real implementor kickoff (doctrine + plan +
+      // research) is tens of KB and passing it as a command-line arg overflows the OS limit (Windows
+      // ~32KB), which made the spawn die in ~150ms with "Argument list too long" — the turn looked
+      // instantly skipped. codex reads instructions from stdin when the prompt arg is `-`.
+      "-",
     );
     this.sawTerminal = false;
     this.lastErrorMsg = undefined;
@@ -333,11 +337,19 @@ export class CodexAgentRun implements AgentRunLike {
     else delete env.OPENAI_API_KEY;
     let child: ChildProcess;
     try {
-      child = spawn(process.execPath, [config.codex.binJs, ...args], { cwd: this.cfg.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(process.execPath, [config.codex.binJs, ...args], { cwd: this.cfg.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     } catch (err) {
       this.turnActive = false;
       this.finishTurn({ subtype: "error", isError: true, result: `Failed to spawn Codex CLI: ${err instanceof Error ? err.message : String(err)}` });
       return;
+    }
+    // Feed the prompt over stdin (the `-` arg above) and close it so codex starts the turn. Guard the
+    // write — if the child died instantly, writing to a closed pipe would throw an unhandled EPIPE.
+    child.stdin?.on("error", () => {});
+    try {
+      child.stdin?.end(prompt);
+    } catch {
+      /* child already gone; onTurnClose will synthesize the failure */
     }
     this.child = child;
     child.stdout?.setEncoding("utf8");
