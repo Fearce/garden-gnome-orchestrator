@@ -5,6 +5,7 @@ import type { MemoryService } from "../memory/memory.js";
 import { AgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runner.js";
 import { CodexAgentRun, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { implementorConfig, plannerConfig, qaConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
+import { CODEX_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
@@ -745,6 +746,18 @@ export class ThreadManager implements OrchestratorApi {
     );
   }
 
+  /** Which backend produced the most recent implementor session for a thread — derived from the run's
+   *  account label ("codex:…" ⇒ Codex). A session id is provider-specific (a Claude SDK session vs a
+   *  Codex thread id), so a resume must only reuse one whose backend matches the now-resolved provider. */
+  private priorImplementorProvider(threadId: string): ImplementorProvider | undefined {
+    const run = this.db
+      .listRuns(threadId)
+      .filter((r) => r.role === "implementor" && r.sessionId)
+      .sort((a, b) => b.startedAt - a.startedAt)[0];
+    if (!run) return undefined;
+    return run.account?.startsWith("codex:") ? "codex" : "claude";
+  }
+
   /** The most recent QA run's SDK session id, so fix-rounds 2..N can resume it. DB-sourced (like
    *  latestImplementorSession) so it survives a restart and reflects whichever account QA ended on. */
   private latestQaSession(threadId: string): string | undefined {
@@ -893,6 +906,11 @@ export class ThreadManager implements OrchestratorApi {
     let agent: AgentRunLike;
     let runId: string;
     let accountId: string;
+    // The standing implementor doctrine (commit/push/myaccount, no half-measures) reaches the Claude backend
+    // via its SDK system prompt; the Codex CLI gets no system prompt from us, so prepend it to a FRESH
+    // Codex kickoff (resume turns retain it through the resumed Codex thread). Without this a Codex run
+    // patches the working tree and stops, never committing — breaking the implementor→commit contract.
+    let startKickoff = kickoff;
     if (provider === "codex") {
       const model = this.codexModel();
       accountId = "openai-codex";
@@ -901,7 +919,8 @@ export class ThreadManager implements OrchestratorApi {
       this.emitRun(run.id);
       // The Codex CLI is a separate process; the in-process bus MCP server can't attach to it, so a
       // Codex implementor runs without post_finding/ask_user/read_findings — a documented degradation.
-      // The QA loop still reviews its output, and it commits via its own shell access.
+      // The QA loop still reviews its output, and the doctrine above makes it commit (and push) itself.
+      if (!opts?.resume) startKickoff = `${CODEX_IMPLEMENTOR_DOCTRINE}\n\n${kickoff}`;
       agent = new CodexAgentRun({ model, cwd: thread.workspace, apiKey: this.openaiApiKey() ?? "", resume: opts?.resume });
     } else {
       const acct = opts?.account ?? this.dispatchAccount();
@@ -931,7 +950,7 @@ export class ThreadManager implements OrchestratorApi {
     // Wrap pasted images into the kickoff only when STARTING a fresh session. On a resume the prior
     // session already holds them in context, so re-attaching the base64 would re-bill vision tokens
     // for no gain (and a failover can relaunch several times). (Codex flattens any image blocks to text.)
-    agent.start(opts?.resume ? kickoff : this.kickoffContent(thread.id, kickoff));
+    agent.start(opts?.resume ? kickoff : this.kickoffContent(thread.id, startKickoff));
     return { run: agent, runId, accountId };
   }
 
@@ -961,6 +980,15 @@ export class ThreadManager implements OrchestratorApi {
     // here with it still set. Reading fresh means no in-memory flag to leak or mis-fire on a later resume.
     const restartNote = this.db.getThread(thread.id)?.error?.startsWith(RESTART_ERROR_PREFIX) ? RESTART_RESUME_NOTE : undefined;
     if (restartNote) this.hub.log("info", `Resume on ${thread.id.slice(0, 8)} carries the restart-already-completed notice (won't restart again).`);
+    // The resolved backend can differ from the one that produced this session id if the provider was
+    // toggled across a restart (implementorProvider is in-memory, re-derived from CURRENT settings here).
+    // A session id is provider-specific, so feeding a Codex thread id to a Claude resume (or vice versa)
+    // would be invalid — discard the incompatible session and start fresh on the resolved backend instead.
+    const resolvedProvider = this.implementorProvider.get(thread.id) ?? "claude";
+    if (resumeSession && this.priorImplementorProvider(thread.id) !== resolvedProvider) {
+      this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)}: implementor backend changed to ${resolvedProvider} since the prior session — its session id is incompatible, starting fresh.`);
+      resumeSession = undefined;
+    }
     if (!resumeSession) {
       const extras = [restartNote, opts.directorNote && `[New information from the director]\n${opts.directorNote}`].filter(Boolean);
       const text = extras.length ? `${baseKickoff}\n\n${extras.join("\n\n")}` : baseKickoff;
@@ -970,7 +998,7 @@ export class ThreadManager implements OrchestratorApi {
     // transcript to age-check or Haiku-compress, so the warm/cold gate below (keyed on transcript mtime)
     // would always fall to the cold path and start a FRESH Codex run, throwing away the prior session.
     // Resume the Codex thread directly with the nudge/note as the new turn's prompt.
-    if ((this.implementorProvider.get(thread.id) ?? "claude") === "codex") {
+    if (resolvedProvider === "codex") {
       this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: resuming the Codex session ${resumeSession.slice(0, 8)} via the CLI.`);
       const parts = [
         restartNote,

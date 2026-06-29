@@ -108,7 +108,6 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         autoPush: z.boolean(),
         maxQaRounds: z.number().int().min(1).max(12),
         maxConcurrent: z.number().int().min(1).max(20),
-        claudeEnabled: z.boolean(),
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
         // Write-only: the raw OpenAI key is accepted here and stored server-side, never echoed back.
