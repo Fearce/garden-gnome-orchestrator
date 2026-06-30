@@ -73,6 +73,9 @@ export class AccountManager {
   private readonly resetTimers = new Map<string, NodeJS.Timeout>();
   private preferredId: string | undefined;
   private selSeq = 0;
+  // Fired right after every usage publish (periodic ping + reset ping), so a consumer can react to a
+  // fresh utilization read — drives the token-safety auto-stop in ThreadManager. Set once at construction.
+  private onUsage?: () => void;
 
   constructor(
     private readonly accounts: Account[],
@@ -115,6 +118,7 @@ export class AccountManager {
   private async pingAll(): Promise<void> {
     await Promise.all(this.accounts.map((a) => this.pingOne(a)));
     this.publish();
+    this.onUsage?.();
   }
 
   /** Tiny Haiku ping → live usage from rate-limit headers; also (re)schedules the reset ping. */
@@ -165,7 +169,13 @@ export class AccountManager {
     if (!upcoming.length) return;
     const delay = Math.max(Math.min(...upcoming) - now + RESET_BUFFER_MS, MIN_RESET_DELAY_MS);
     const t = setTimeout(
-      () => void this.pingOne(a).then(() => this.publish()).catch((e) => logCrash("accountPing.reset", e)),
+      () =>
+        void this.pingOne(a)
+          .then(() => {
+            this.publish();
+            this.onUsage?.();
+          })
+          .catch((e) => logCrash("accountPing.reset", e)),
       delay,
     );
     t.unref?.();
@@ -308,6 +318,30 @@ export class AccountManager {
       const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
       return !limited && tightest(s) < HARD_LIMIT;
     });
+  }
+
+  /** Register the callback fired after each usage refresh (periodic + reset pings). One consumer
+   *  (ThreadManager's token-safety auto-stop); set once at construction, before start() fires the
+   *  first ping, so no early read is missed. */
+  onUsageRefresh(cb: () => void): void {
+    this.onUsage = cb;
+  }
+
+  /**
+   * The live token utilization to gate the safety limit against, as a single 0–100 number — the
+   * MIN of each enabled-with-data account's tightest (5h/weekly) window. Min, not max, so the limit
+   * trips only when EVERY usable account has also reached the threshold (failover would otherwise
+   * keep work running on a still-fresh account). Mirrors select()/hasHeadroom()'s enabled-fallback:
+   * when all accounts are disabled, consider them all rather than report nothing. Null when no
+   * account has any usage data yet (pre-ping) — the caller treats null as "don't trip".
+   */
+  effectiveUtilization(): number | null {
+    const all = [...this.states.values()];
+    const enabledStates = all.filter((s) => s.enabled);
+    const base = enabledStates.length ? enabledStates : all;
+    const withData = base.filter(hasBurnData);
+    if (!withData.length) return null;
+    return Math.min(...withData.map(tightest));
   }
 
   /** Is this account currently cap-rejected and not yet past its reset? */

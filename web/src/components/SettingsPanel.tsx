@@ -55,6 +55,20 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             max={20}
             onChange={(v) => setSettings({ maxConcurrent: v })}
           />
+          <ToggleRow
+            label="Token safety limit"
+            hint="On: when live token usage reaches the threshold below, every running task is stopped automatically to protect your remaining allowance. Off by default."
+            on={settings.tokenLimitEnabled}
+            onChange={(v) => setSettings({ tokenLimitEnabled: v })}
+          />
+          <NumberRow
+            label="Stop at usage %"
+            hint="The token-usage threshold that trips the safety stop. Tracks the same live burn as the account meters; refreshes on the ~10-min usage ping, so it can lag a fast burn by minutes."
+            value={settings.tokenLimitPercent}
+            min={50}
+            max={99}
+            onChange={(v) => setSettings({ tokenLimitPercent: v })}
+          />
         </Group>
 
         <Group label="Subscriptions">

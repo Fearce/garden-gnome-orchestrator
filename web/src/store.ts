@@ -81,6 +81,9 @@ interface State {
   // Office panel UI: which room is open (room key) — null = closed. The strip, the task buttons, and
   // the card chips all drive this so one panel serves every entry point.
   officeRoom: string | null;
+  // The latest server-pushed user notice (currently the token-safety auto-stop), shown as a dismissible
+  // banner. Null when none/dismissed; only the most recent is held (a new one replaces an open banner).
+  notice: { title: string; message: string } | null;
 
   select: (id: string | null) => void;
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
@@ -113,6 +116,8 @@ interface State {
   closeOffice: () => void;
   // Post into a room as the director (the human) — reaches the live agents there so they self-coordinate.
   postChat: (room: string, body: string) => void;
+  // Dismiss the current notice banner.
+  clearNotice: () => void;
 }
 
 const lsBool = (k: string, d: boolean): boolean => {
@@ -202,6 +207,8 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   autoPush: true,
   maxQaRounds: 4,
   maxConcurrent: 3,
+  tokenLimitEnabled: false,
+  tokenLimitPercent: 80,
   codexEnabled: false,
   codexModel: "gpt-5.5",
   hasOpenaiKey: false,
@@ -288,6 +295,7 @@ export const useStore = create<State>((set) => ({
   roomHistory: {},
   nameOverrides: {},
   officeRoom: null,
+  notice: null,
 
   select: (id) => {
     set({ selectedThreadId: id });
@@ -377,6 +385,7 @@ export const useStore = create<State>((set) => ({
     const text = body.trim();
     if (text) sendCommand({ type: "chat.post", room, body: text });
   },
+  clearNotice: () => set({ notice: null }),
 }));
 
 /** Which agent RUN a feed item belongs to. Keyed by runId (stable on the item) so retention
@@ -673,6 +682,12 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "director.busy":
       useStore.setState({ directorBusy: ev.busy });
+      break;
+    case "notice":
+      // A user-facing notification (the token-safety auto-stop). Show the always-visible banner AND fire
+      // the opt-in desktop notify, so it's seen whether or not notifications are enabled.
+      useStore.setState({ notice: { title: ev.title, message: ev.message } });
+      notify(ev.title, ev.message);
       break;
     // `log` events are intentionally ignored client-side — there is no log surface in the UI, and
     // buffering them was dead state. Re-add a slice here if a log panel is ever built.

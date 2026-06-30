@@ -257,6 +257,9 @@ export interface OrchestratorSettings {
   autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
+  // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----
+  tokenLimitEnabled: boolean; // off (default) → never auto-stop; on → stop running agents at the threshold
+  tokenLimitPercent: number; // % of the token (rate-limit) window that trips the stop — clamped 50–99, default 80
   // ---- Subscriptions: which provider backs the implementor (hard routing gate at dispatch) ----
   // Claude is the default implementor and always powers planner/researcher/QA; individual Claude
   // accounts are toggled via the AccountDTO.enabled flag (account.set), not a setting here.

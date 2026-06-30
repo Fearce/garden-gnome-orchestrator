@@ -8,6 +8,7 @@ import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
 import { Office } from "./components/Office.js";
 import { SettingsPanel } from "./components/SettingsPanel.js";
+import { NoticeBanner } from "./components/NoticeBanner.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
 
@@ -65,6 +66,7 @@ export function App() {
       </div>
       <MobileNav pane={mobilePane} setPane={setMobilePane} />
       <QuestionModal />
+      <NoticeBanner />
       {settingsOpen ? <SettingsPanel onClose={() => setSettingsOpen(false)} /> : null}
     </div>
   );

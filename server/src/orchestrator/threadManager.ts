@@ -233,6 +233,10 @@ export class ThreadManager implements OrchestratorApi {
   // task stuck in a re-cap loop doesn't spam the channel each interval (see CAP_RESUME_NOTIFY_COOLDOWN_MS).
   private readonly capResumeNotifiedAt = new Map<string, number>();
   private capSupervisor: NodeJS.Timeout | undefined;
+  // One-shot latch for the token-safety auto-stop: set when a crossing fires the stop, cleared once
+  // utilization drops back below the threshold — so the stop fires once per crossing, not on every ping
+  // while the window stays hot (which would re-stop tasks the owner just re-dispatched).
+  private tokenLimitTripped = false;
 
   constructor(
     readonly db: Db,
@@ -246,6 +250,9 @@ export class ThreadManager implements OrchestratorApi {
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
     this.startCapSupervisor();
+    // React to every live usage refresh — the token-safety limit stops running agents when burn crosses
+    // the operator threshold. Registered here (before accounts.start() fires the first ping in index.ts).
+    this.accounts.onUsageRefresh(() => this.enforceTokenSafetyLimit());
   }
 
   /** Poll for rate-limit-parked tasks and resume them the moment an account regains headroom, so a
@@ -294,6 +301,47 @@ export class ThreadManager implements OrchestratorApi {
       const id = t.id;
       void this.resumeThread(id).catch((e) => this.hub.log("error", `Cap auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
     }
+  }
+
+  /**
+   * Token-usage safety limit (opt-in). When live utilization reaches the operator-set threshold, stop
+   * every running pipeline and surface a notice. Driven by the AccountManager usage-refresh hook (~10-min
+   * ping + window-reset pings) and by setSettings, so it lags a fast burn by minutes — a proactive net
+   * layered UNDER the immediate HARD_LIMIT=98 failover, not a hard realtime cutoff. Latched so it fires
+   * once per crossing and re-arms only after utilization falls back below the threshold (so the owner can
+   * re-dispatch the cancelled tasks without them being instantly stopped again on the next ping).
+   */
+  private enforceTokenSafetyLimit(): void {
+    const { tokenLimitEnabled, tokenLimitPercent } = this.settings();
+    const util = this.accounts.effectiveUtilization();
+    if (!tokenLimitEnabled || util == null || util < tokenLimitPercent) {
+      this.tokenLimitTripped = false; // disabled / no data / back under the line — disarm for the next crossing
+      return;
+    }
+    if (this.tokenLimitTripped) return; // already fired for this crossing
+    this.tokenLimitTripped = true;
+    void this.stopAllForTokenLimit(util, tokenLimitPercent);
+  }
+
+  /** Stop everything that would keep burning the budget through the EXISTING cancel flow (each lands in
+   *  'cancelled', re-dispatchable): the running pipelines AND any tasks still queued for a slot — a queued
+   *  task left alone would auto-start the instant a stopped pipeline frees its slot (pumpQueue), defeating
+   *  the stop. Then warn the console and emit the user-facing notice explaining why. */
+  private async stopAllForTokenLimit(util: number, threshold: number): Promise<void> {
+    // De-dupe across both sources; cancelThread mutates activePipelines/dispatchQueue as it stops each.
+    const targets = [...new Set([...this.activePipelines, ...this.dispatchQueue])];
+    const pct = Math.round(util);
+    this.hub.log("warn", `Token safety limit reached (${pct}% ≥ ${threshold}%) — stopping ${targets.length} task(s).`);
+    for (const id of targets) {
+      await this.cancelThread(id).catch((e) => this.hub.log("error", `Token-limit stop of ${id.slice(0, 8)} failed: ${String(e)}`));
+    }
+    const title = "Token safety limit reached";
+    const message =
+      targets.length > 0
+        ? `Token usage reached ${pct}% (your safety limit is ${threshold}%). ${targets.length} task${targets.length === 1 ? " was" : "s were"} stopped to protect your remaining allowance — they're in Cancelled and can be re-dispatched once a window frees up.`
+        : `Token usage reached ${pct}% (your safety limit is ${threshold}%). No tasks were running, so none were stopped.`;
+    this.hub.publish({ type: "notice", level: "warn", title, message });
+    this.notifyExternal(`🛑 ${title} — ${message}`);
   }
 
   /** Any task left mid-flight by a server restart is dead in memory — its in-memory AgentRun is gone
@@ -494,6 +542,8 @@ export class ThreadManager implements OrchestratorApi {
       autoPush: this.settingBool("setting_auto_push", true),
       maxQaRounds: this.settingNum("setting_max_qa_rounds", config.maxQaRounds, 1, 12),
       maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
+      tokenLimitEnabled: this.settingBool("setting_token_limit_enabled", false),
+      tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
       codexEnabled: this.settingBool("setting_codex_enabled", false),
       codexModel: this.codexModel(),
       hasOpenaiKey: !!key,
@@ -532,6 +582,8 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.autoPush !== undefined) this.db.kvSet("setting_auto_push", patch.autoPush ? "1" : "0");
     if (patch.maxQaRounds !== undefined) this.db.kvSet("setting_max_qa_rounds", String(patch.maxQaRounds));
     if (patch.maxConcurrent !== undefined) this.db.kvSet("setting_max_concurrent", String(patch.maxConcurrent));
+    if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
+    if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
     if (patch.codexModel !== undefined && patch.codexModel.trim()) this.db.kvSet("setting_codex_model", patch.codexModel.trim());
     // Write-only key: store the trimmed value, or clear it (empty string) so settings() falls back to
@@ -540,6 +592,9 @@ export class ThreadManager implements OrchestratorApi {
     const settings = this.settings();
     this.hub.publish({ type: "settings", settings });
     this.pumpQueue();
+    // Re-evaluate the token-safety limit now, so enabling it (or lowering the threshold) while already
+    // over the line stops running tasks immediately instead of waiting for the next ~10-min usage ping.
+    this.enforceTokenSafetyLimit();
     return settings;
   }
 

@@ -204,6 +204,10 @@ export interface OrchestratorSettings {
   autoPush: boolean;
   maxQaRounds: number;
   maxConcurrent: number;
+  // Token-usage safety limit: opt-in auto-stop when live utilization reaches the threshold. Disabled by
+  // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.
+  tokenLimitEnabled: boolean;
+  tokenLimitPercent: number;
   // Subscriptions: which provider backs the implementor (server-authoritative hard gate). Claude is the
   // default backend; individual Claude accounts toggle via AccountDTO.enabled (account.set), not here.
   codexEnabled: boolean;
@@ -263,6 +267,8 @@ export type ServerEvent =
   | { type: "director.message"; message: DirectorMessage }
   | { type: "director.tool"; name: string; input: unknown }
   | { type: "director.busy"; busy: boolean }
+  // A user-facing notification (the token-safety auto-stop). Shown as a dismissible banner + desktop notify.
+  | { type: "notice"; level: "warn"; title: string; message: string }
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
 export type ClientCommand =

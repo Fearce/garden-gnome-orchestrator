@@ -76,6 +76,9 @@ export type ServerEvent =
   | { type: "director.message"; message: DirectorMessage }
   | { type: "director.tool"; name: string; input: unknown }
   | { type: "director.busy"; busy: boolean }
+  // A dedicated user-facing notification channel (unlike `log`, which the client drops). Currently the
+  // token-safety auto-stop notice; the client shows it as a dismissible banner and fires a desktop notify.
+  | { type: "notice"; level: "warn"; title: string; message: string }
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
 // ---- Client -> Server commands (inbound; zod-validated) ----
@@ -121,6 +124,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         autoPush: z.boolean(),
         maxQaRounds: z.number().int().min(1).max(12),
         maxConcurrent: z.number().int().min(1).max(20),
+        tokenLimitEnabled: z.boolean(),
+        tokenLimitPercent: z.number().int().min(50).max(99),
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
         // Write-only: the raw OpenAI key is accepted here and stored server-side, never echoed back.
