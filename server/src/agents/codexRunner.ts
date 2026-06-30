@@ -185,7 +185,10 @@ export class CodexAgentRun implements AgentRunLike {
   private turnWatchdog: NodeJS.Timeout | undefined;
   private sawFirstEvent = false;
   private isResumeTurn = false;
-  private resumeHealed = false;
+  // True once a wedged `exec resume` self-healed to a fresh start. Read by the thread manager after the
+  // run ends so it can stop attempting resume for this thread (resume keeps wedging → skip the 60s
+  // watchdog + self-heal spam every turn and go straight to fresh).
+  resumeHealed = false;
 
   constructor(private readonly cfg: CodexRunConfig) {
     this.emitter.setMaxListeners(50);

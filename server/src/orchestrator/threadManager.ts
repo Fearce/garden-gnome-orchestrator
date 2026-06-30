@@ -174,6 +174,12 @@ export class ThreadManager implements OrchestratorApi {
   // routing gate). Read by startImplementor's provider factory; survives failover/auto-resume so a
   // task never swaps provider mid-run (which would feed a Claude session id to a Codex resume).
   private readonly implementorProvider = new Map<string, ImplementorProvider>();
+  // Threads whose Codex `exec resume` has wedged (0% CPU, no output) at least once. Once a thread is
+  // here, every later turn skips the resume attempt and starts a fresh Codex session directly — resume
+  // keeps wedging on the same interrupted session, so retrying it just burns the 60s startup watchdog
+  // and spams the self-heal notice every turn (and historically dropped the QA fix-feedback). Cleared
+  // when the thread settles (done/cancel) — a fresh dispatch's first session may resume fine.
+  private readonly codexResumeWedged = new Set<string>();
   private readonly pendingQuestions = new Map<string, (answer: string) => void>();
   private readonly awaitingPrev = new Map<string, Thread["state"]>();
   private readonly lastImplementorSession = new Map<string, string>();
@@ -1042,7 +1048,11 @@ export class ThreadManager implements OrchestratorApi {
       if (!opts?.resume) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, kickoff, this.peerNote(thread, false)].filter(Boolean).join("\n\n");
       // freshFallback lets the runner self-heal a wedged `exec resume` (hangs at 0% CPU on an interrupted
       // gpt-5 session) by restarting fresh — so it must carry the SAME doctrine + task a fresh start gets.
-      agent = new CodexAgentRun({ model, cwd: thread.workspace, apiKey: this.openaiApiKey() ?? "", resume: opts?.resume, freshFallback: opts?.freshFallback });
+      const codexAgent = new CodexAgentRun({ model, cwd: thread.workspace, apiKey: this.openaiApiKey() ?? "", resume: opts?.resume, freshFallback: opts?.freshFallback });
+      // If this run had to self-heal a wedged resume, remember it so every later turn skips the resume
+      // attempt (and its 60s watchdog) and goes straight to fresh — resume keeps wedging on this thread.
+      codexAgent.onEnd(() => { if (codexAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
+      agent = codexAgent;
     } else {
       const acct = opts?.account ?? this.dispatchAccount();
       accountId = acct.id;
@@ -1129,17 +1139,28 @@ export class ThreadManager implements OrchestratorApi {
     // would always fall to the cold path and start a FRESH Codex run, throwing away the prior session.
     // Resume the Codex thread directly with the nudge/note as the new turn's prompt.
     if (resolvedProvider === "codex") {
-      this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: resuming the Codex session ${resumeSession.slice(0, 8)} via the CLI.`);
       const parts = [
         restartNote,
         opts.resumeNudge,
         opts.directorNote && opts.directorNote !== opts.resumeNudge && `[New information from the director]\n${opts.directorNote}`,
       ].filter(Boolean);
-      // If `codex exec resume <id>` wedges with no output (a known hang replaying an interrupted gpt-5
-      // session), the runner falls back to a FRESH `exec` seeded with this kickoff — the same doctrine +
-      // task a fresh start gets (line ~1042), so the recovered session still commits per the doctrine.
-      const freshFallback = [CODEX_IMPLEMENTOR_DOCTRINE, baseKickoff, this.peerNote(thread, false)].filter(Boolean).join("\n\n");
-      return this.startImplementor(thread, parts.join("\n\n"), { effort: opts.effort, resume: resumeSession, account: opts.account, freshFallback });
+      const continuation = parts.join("\n\n");
+      // The fresh-start kickoff used both when resume wedges (runner self-heal) AND when we skip resume
+      // outright (below). It MUST carry this turn's continuation (the QA fix-feedback / nudge), not just
+      // the original task — otherwise the fresh session re-runs the original task WITHOUT the requested
+      // fixes, QA keeps bouncing it, and the task eventually fails. The prior edits live in the working
+      // tree, so the fresh session re-reads them and applies the feedback on top.
+      const freshKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, baseKickoff, this.peerNote(thread, false), continuation].filter(Boolean).join("\n\n");
+      // Codex resume already wedged for this thread → don't pay the 60s watchdog + self-heal spam again;
+      // start fresh directly. (startImplementor with no `resume` re-prepends doctrine + peerNote, so pass
+      // just task + continuation here to avoid duplicating them.)
+      if (this.codexResumeWedged.has(thread.id)) {
+        this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: Codex resume previously wedged — starting a fresh session directly.`);
+        const freshText = [baseKickoff, continuation].filter(Boolean).join("\n\n");
+        return this.startImplementor(thread, freshText, { effort: opts.effort, account: opts.account });
+      }
+      this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: resuming the Codex session ${resumeSession.slice(0, 8)} via the CLI.`);
+      return this.startImplementor(thread, continuation, { effort: opts.effort, resume: resumeSession, account: opts.account, freshFallback: freshKickoff });
     }
     const ageMs = sessionAgeMs(resumeSession);
     const warm = ageMs != null && ageMs < config.resumeWarmMinutes * 60_000;
@@ -1327,6 +1348,7 @@ export class ThreadManager implements OrchestratorApi {
     } finally {
       this.autoResumes.delete(thread.id);
       this.implementorProvider.delete(thread.id);
+      this.codexResumeWedged.delete(thread.id);
       await this.stopLive(thread.id);
     }
   }
@@ -1824,6 +1846,7 @@ export class ThreadManager implements OrchestratorApi {
     const releaseSlot = () => {
       this.activePipelines.delete(thread.id);
       this.implementorProvider.delete(thread.id);
+      this.codexResumeWedged.delete(thread.id); // a fresh dispatch's first session may resume fine
       this.pumpQueue();
     };
     // Same hard routing gate as the pipeline: a manual resume / cold inject must also respect the
@@ -1904,6 +1927,7 @@ export class ThreadManager implements OrchestratorApi {
     this.liveQa.delete(threadId);
     this.directorNotes.delete(threadId);
     this.implementorProvider.delete(threadId);
+    this.codexResumeWedged.delete(threadId);
     this.capParked.delete(threadId); // a cancelled task must never be cap-auto-resumed
 
     const pendingApproval = this.pendingApprovals.get(threadId);
@@ -2009,6 +2033,7 @@ export class ThreadManager implements OrchestratorApi {
     this.liveQa.delete(threadId);
     this.directorNotes.delete(threadId);
     this.implementorProvider.delete(threadId);
+    this.codexResumeWedged.delete(threadId);
     this.stopping.delete(threadId);
   }
 
