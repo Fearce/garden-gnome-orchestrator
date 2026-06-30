@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type CSSProperties, type HTMLAttributes } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   DndContext,
@@ -135,7 +135,7 @@ export function Board() {
               <SortableContext items={pageItems.map((t) => t.id)} strategy={rectSortingStrategy}>
                 {lanes}
               </SortableContext>
-              <DragOverlay>{activeThread ? <div className="card-drag-overlay"><Card thread={activeThread} /></div> : null}</DragOverlay>
+              <DragOverlay>{activeThread ? <div className="card-drag-overlay"><Card thread={activeThread} draggableCard /></div> : null}</DragOverlay>
             </DndContext>
           ) : (
             lanes
@@ -276,20 +276,23 @@ function WorkspacePath({ path }: { path: string }) {
 
 // Memoized + each subscription is narrowed to THIS thread, so a card re-renders only when its own
 // runs/findings/feed/draft/selection change — not on every WS event for any task on the board.
-// The drag props (innerRef/style/dragging/handle) are absent on a non-draggable board, so the OFF
-// path renders byte-for-byte as before and memo still short-circuits on an unchanged thread.
+// The drag props (innerRef/style/dragging/draggableCard/dragProps) are absent on a non-draggable
+// board, so the OFF path renders byte-for-byte as before and memo still short-circuits on an
+// unchanged thread.
 const Card = memo(function Card({
   thread,
   innerRef,
   style,
   dragging,
-  handle,
+  draggableCard,
+  dragProps,
 }: {
   thread: Thread;
   innerRef?: (el: HTMLElement | null) => void;
   style?: CSSProperties;
   dragging?: boolean;
-  handle?: ReactNode;
+  draggableCard?: boolean;
+  dragProps?: HTMLAttributes<HTMLDivElement>;
 }) {
   // useShallow keeps the array reference stable when this thread's run set is unchanged.
   const threadRuns = useStore(useShallow((s) => Object.values(s.runs).filter((r) => r.threadId === thread.id)));
@@ -324,16 +327,23 @@ const Card = memo(function Card({
   return (
     <div
       ref={innerRef}
-      className={"card" + (selected ? " sel" : "") + (live ? " live" : "") + (dragging ? " dragging" : "") + (handle ? " has-grip" : "")}
+      className={"card" + (selected ? " sel" : "") + (live ? " live" : "") + (dragging ? " dragging" : "") + (draggableCard ? " draggable" : "")}
       style={{ "--state-color": stateColor(thread.state), ...style } as CSSProperties}
       onClick={() => select(thread.id)}
+      {...dragProps}
     >
-      {handle ?? null}
+      {draggableCard ? (
+        <span className="card-grip" aria-hidden="true" title="Drag anywhere on the card to reorder">
+          <GripIcon />
+        </span>
+      ) : null}
       {canClose ? (
         <button
           className="card-dismiss"
           title="Close — move to the Closed list (restorable)"
           aria-label="Close task"
+          // Swallow the pointerdown so pressing ✕ on a draggable card never arms a drag — it stays a click.
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             close(thread.id);
@@ -380,6 +390,7 @@ const Card = memo(function Card({
             <button
               className="card-chatroom"
               title={`This repo's chatroom — ${chatRoom.threadIds.length} task(s) have collaborated here`}
+              onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
                 openOffice(chatRoom.room);
@@ -405,25 +416,23 @@ const Card = memo(function Card({
 });
 
 /** A board Card made sortable. dnd-kit's transform/transition drive the live shuffle; the active slot
- *  dims to a placeholder (the lifted clone lives in the board's DragOverlay). Drag listeners are scoped
- *  to the grip handle only — the rest of the card still selects on click and closes via its ✕. */
+ *  dims to a placeholder (the lifted clone lives in the board's DragOverlay). The WHOLE card is the
+ *  drag activator (the grip is just a discoverability affordance) — the PointerSensor's 6px activation
+ *  distance keeps a plain click selecting/opening the card, and only a deliberate drag reorders. Inner
+ *  controls (the ✕) stopPropagation, so they never get caught as a drag-vs-click. */
 function SortableCard({ thread }: { thread: Thread }) {
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: thread.id });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: thread.id });
   const style: CSSProperties = { transform: CSS.Transform.toString(transform), transition };
-  const handle = (
-    <button
-      ref={setActivatorNodeRef}
-      className="card-grip"
-      title="Drag to reorder"
-      aria-label={`Reorder ${thread.title}`}
-      onClick={(e) => e.stopPropagation()}
-      {...attributes}
-      {...listeners}
-    >
-      <GripIcon />
-    </button>
+  return (
+    <Card
+      thread={thread}
+      innerRef={setNodeRef}
+      style={style}
+      dragging={isDragging}
+      draggableCard
+      dragProps={{ ...attributes, ...listeners }}
+    />
   );
-  return <Card thread={thread} innerRef={setNodeRef} style={style} dragging={isDragging} handle={handle} />;
 }
 
 /** A quiet 6-dot gripper — the universal "drag me" affordance, drawn in currentColor so the card's

@@ -681,21 +681,22 @@ button { font-family: inherit; cursor: pointer; }
 }
 .card:hover .card-dismiss, .card .card-dismiss:focus-visible { opacity: 1; }
 .card .card-dismiss:hover { color: var(--danger); background: oklch(0.68 0.2 25 / 0.12); }
-/* Drag-to-reorder grip (only on a drag-enabled board): a quiet 6-dot handle in the card's top-left,
-   mirroring the ✕'s reveal-on-hover restraint. Only the handle carries the drag listeners, so the
-   card body still selects on click. The title gains a little left padding so the grip never overlaps it. */
+/* Drag-to-reorder: the WHOLE card is the drag activator (the PointerSensor's 6px activation distance
+   keeps a plain click selecting), so a drag-enabled card carries the grab cursor end-to-end. */
+.card.draggable { cursor: grab; }
+.card.draggable:active { cursor: grabbing; }
+/* The grip is a quiet 6-dot affordance in the card's top-left — purely a discoverability hint now that
+   the whole pane drags. It mirrors the ✕'s reveal-on-hover restraint; pointer-events stay off so it
+   never intercepts the drag/click. The title gains a little left padding so the grip never overlaps it. */
 .card .card-grip {
   position: absolute; top: 12px; left: 7px; z-index: 3;
   display: flex; align-items: center; justify-content: center;
-  width: 16px; height: 18px; padding: 0; border: 0; border-radius: var(--r-sm);
-  background: transparent; color: var(--text-faint); cursor: grab;
+  width: 16px; height: 18px;
+  color: var(--text-faint); pointer-events: none;
   opacity: 0; transition: opacity 0.12s, color 0.12s;
-  touch-action: none; /* the pointer sensor owns the gesture — don't let touch scroll steal it */
 }
-.card:hover .card-grip, .card .card-grip:focus-visible { opacity: 1; }
-.card .card-grip:hover { color: var(--text-dim); }
-.card .card-grip:active { cursor: grabbing; }
-.card.has-grip .title { padding-left: 18px; }
+.card.draggable:hover .card-grip { opacity: 1; }
+.card.draggable .title { padding-left: 18px; }
 /* The slot a card leaves behind mid-drag dims to a dashed placeholder; the lifted clone the pointer
    carries lives in .card-drag-overlay (rendered via dnd-kit's DragOverlay). */
 .card.dragging { opacity: 0.4; }
