@@ -16,6 +16,7 @@ type MobilePane = "director" | "board";
 
 export function App() {
   const connected = useStore((s) => s.connected);
+  const updateReady = useStore((s) => s.updateReady);
   const authRequired = useStore((s) => s.authRequired);
   const authed = useStore((s) => s.authed);
   const selected = useStore((s) => s.selectedThreadId);
@@ -51,6 +52,7 @@ export function App() {
         </span>
         <ApprovalToggle />
         <NotifyBell />
+        <UpdateBadge show={updateReady} />
         <div className="conn">
           <span className={"dot " + (connected ? "on" : "off")} />
           {connected ? "live" : "reconnecting…"}
@@ -252,6 +254,26 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
         Tasks
       </button>
     </nav>
+  );
+}
+
+function UpdateBadge({ show }: { show: boolean }) {
+  if (!show) return null;
+  return (
+    <button
+      className="update-badge"
+      title="New build available — click to refresh"
+      aria-label="New build available — click to refresh"
+      onClick={() => location.reload()}
+    >
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+        <path d="M21 3v5h-5" />
+        <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+        <path d="M3 21v-5h5" />
+      </svg>
+      <span className="update-dot" aria-hidden="true" />
+    </button>
   );
 }
 

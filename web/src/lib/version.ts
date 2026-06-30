@@ -1,4 +1,5 @@
 import { apiUrl } from "./base.js";
+import { useStore } from "../store.js";
 
 // Self-update: a deploy rebuilds the bundle (new content-hashed JS filename) and restarts the
 // server, but an already-open tab or the always-on Dashboard-Deck kiosk keeps running the old code
@@ -31,7 +32,13 @@ export function startVersionWatch(): void {
       const res = await fetch(apiUrl("/api/version"), { cache: "no-store" });
       if (!res.ok) return;
       const { web } = (await res.json()) as { web?: string | null };
-      if (!web || web === loaded || isUserTyping()) return;
+      if (!web || web === loaded) return;
+      // A newer build is live. Surface the quiet top-bar badge regardless of focus so an active
+      // operator can refresh on their own terms…
+      useStore.getState().setUpdateReady(true);
+      // …but don't yank a half-written inject/brief out from under someone mid-typing: an idle tab
+      // (incl. the always-on kiosk) still self-heals by reloading; a typing one keeps the badge up.
+      if (isUserTyping()) return;
       reloading = true;
       location.reload();
     } catch {

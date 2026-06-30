@@ -31,6 +31,10 @@ interface ThreadDraft {
 
 interface State {
   connected: boolean;
+  // A newer web bundle is live on the server (version.ts spotted a hash change). Drives the quiet
+  // top-bar "refresh for the new build" badge; an idle tab still auto-reloads, so this mainly persists
+  // for an operator who's mid-typing and shouldn't be yanked out from under.
+  updateReady: boolean;
   authed: boolean;
   authRequired: boolean;
   authGoogle: boolean;
@@ -118,6 +122,8 @@ interface State {
   postChat: (room: string, body: string) => void;
   // Dismiss the current notice banner.
   clearNotice: () => void;
+  // Flag that a fresh web build is available (set by version.ts when the served bundle hash changes).
+  setUpdateReady: (v: boolean) => void;
 }
 
 const lsBool = (k: string, d: boolean): boolean => {
@@ -259,6 +265,7 @@ function sendCommand(cmd: ClientCommand): void {
 
 export const useStore = create<State>((set) => ({
   connected: false,
+  updateReady: false,
   authed: false,
   authRequired: false,
   authGoogle: false,
@@ -386,6 +393,7 @@ export const useStore = create<State>((set) => ({
     if (text) sendCommand({ type: "chat.post", room, body: text });
   },
   clearNotice: () => set({ notice: null }),
+  setUpdateReady: (v) => set({ updateReady: v }),
 }));
 
 /** Which agent RUN a feed item belongs to. Keyed by runId (stable on the item) so retention

@@ -451,6 +451,29 @@ button { font-family: inherit; cursor: pointer; }
 }
 .gate:hover { color: var(--text-dim); border-color: var(--line-strong); }
 .gate.on { color: var(--ok); border-color: color-mix(in oklch, var(--ok) 50%, var(--line)); background: color-mix(in oklch, var(--ok) 8%, var(--bg-2)); }
+
+/* "New build available" badge — a quiet amber chip that only mounts when version.ts spots a fresh
+   bundle. Shares the .bell square shape; an accent corner dot gives the subtle nudge without a banner. */
+.update-badge {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--r-sm); cursor: pointer;
+  border: 1px solid color-mix(in oklch, var(--accent) 45%, var(--line));
+  background: color-mix(in oklch, var(--accent) 8%, var(--bg-2)); color: var(--accent);
+  transition: border-color 0.12s, background 0.12s;
+}
+.update-badge:hover { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 16%, var(--bg-2)); }
+.update-dot {
+  position: absolute; top: -2px; right: -2px;
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  border: 1.5px solid var(--bg-1);
+  animation: update-pulse 2.2s ease-in-out infinite;
+}
+@keyframes update-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 55%, transparent); }
+  50%      { box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .update-dot { animation: none; } }
 .rail-toggle {
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; border-radius: var(--r-sm); cursor: pointer;
@@ -1102,6 +1125,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   /* tappable topbar controls */
   .gate { height: 44px; padding: 0 13px; }
   .bell { width: 44px; height: 44px; }
+  .update-badge { width: 44px; height: 44px; }
   .rail-toggle, .resize-handle { display: none; } /* rail-hide + resize are desktop-only */
   .agent-toggle { height: 40px; }
   .settings-btn { width: 40px; height: 40px; }
