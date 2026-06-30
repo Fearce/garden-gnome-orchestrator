@@ -725,6 +725,17 @@ button { font-family: inherit; cursor: pointer; }
   content: ""; position: absolute; inset: 0; border-radius: var(--r-lg);
   border: 1px dashed var(--line-strong); pointer-events: none;
 }
+/* Token freeze: the task gave up because every account hit its rate limit and is parked in review,
+   auto-resuming when one frees up. A calm, muted amber wash (not the 0.4 dim of a mid-drag slot, nor a
+   "broken" red) marks it as paused-and-waiting — distinct from a live card (green pulsing dot) and a
+   terminal one. The left rail is already --warn (review state); this just settles the whole card. */
+.card.frozen {
+  background: color-mix(in oklch, var(--warn) 6%, var(--bg-1));
+  border-color: color-mix(in oklch, var(--warn) 22%, var(--line));
+}
+.card.frozen:hover { background: color-mix(in oklch, var(--warn) 9%, var(--bg-2)); }
+/* A selected frozen card keeps the accent focus ring (selection wins) but holds its warm tint. */
+.card.frozen.sel { background: color-mix(in oklch, var(--warn) 7%, var(--bg-1)); }
 .card-drag-overlay { cursor: grabbing; }
 .card-drag-overlay .card {
   border-color: var(--line-strong); box-shadow: var(--shadow-2);
@@ -753,6 +764,15 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--state-color, var(--text-dim)); background: color-mix(in oklch, var(--state-color, var(--text-faint)) 16%, transparent);
   border: 1px solid color-mix(in oklch, var(--state-color, var(--text-faint)) 35%, transparent);
 }
+/* The token-freeze pill: an amber badge that sits beside the review state badge. Lower-case (it's a
+   status note, not a state keyword) and gently breathing so it reads as "waiting", not "stuck". */
+.badge.frozen {
+  --state-color: var(--warn);
+  text-transform: none; letter-spacing: 0.02em;
+  animation: frozen-breathe 2.4s ease-in-out infinite;
+}
+@keyframes frozen-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.62; } }
+@media (prefers-reduced-motion: reduce) { .badge.frozen { animation: none; } }
 
 /* Implementor effort, scaled muted (low) → hot (max). --eff drives color/border/bg. */
 .effort-badge {

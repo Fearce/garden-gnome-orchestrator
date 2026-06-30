@@ -16,7 +16,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
 import type { AgentRun, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
-import { closesInDays, isClosable, roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { clockHM, closesInDays, isCapParked, isClosable, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 
@@ -437,6 +437,15 @@ const Card = memo(function Card({
   const activity = verbosity === "full" ? draftText || lastText || thread.brief.split("\n")[0] || "—" : null;
 
   const live = threadRunning(thread.state);
+  // Token freeze: this task gave up only because every account was rate-limited and is now parked in
+  // review waiting on the supervisor to auto-resume it. Detection mirrors the server's own scan (the
+  // CAP_PARK marker on the error), so a plain human-review park never trips it. Only when frozen do we
+  // read the accounts' soonest reset — and we select that derived primitive (not the accounts array)
+  // so a non-frozen card never re-renders on an accounts broadcast, and a frozen one re-renders only
+  // when the reset time itself changes.
+  const capParked = isCapParked(thread);
+  const frozenReset = useStore((s) => (capParked ? soonestReset(s.accounts) : null));
+
   // The ✕ soft-closes a parked task (review / paused / done / failed / cancelled) — it moves to the
   // Closed list below, restorable, rather than being deleted outright. A running task shows no ✕, so
   // active work is never discarded (cancel it from the detail panel first). stopPropagation keeps the
@@ -446,7 +455,7 @@ const Card = memo(function Card({
   return (
     <div
       ref={innerRef}
-      className={"card" + (selected ? " sel" : "") + (live ? " live" : "") + (dragging ? " dragging" : "") + (draggableCard ? " draggable" : "")}
+      className={"card" + (selected ? " sel" : "") + (live ? " live" : "") + (capParked ? " frozen" : "") + (dragging ? " dragging" : "") + (draggableCard ? " draggable" : "")}
       style={{ "--state-color": stateColor(thread.state), ...style } as CSSProperties}
       onClick={() => select(thread.id)}
       {...dragProps}
@@ -498,6 +507,17 @@ const Card = memo(function Card({
           <span className="badge" style={{ "--state-color": stateColor(thread.state) } as CSSProperties}>
             {stateLabel(thread.state)}
           </span>
+          {/* Token-freeze pill: shown only while the task is cap-parked, so it reads as an informational
+              "rate-limited, resuming itself" note next to the review badge — not an alarm. The reset clock
+              is appended when known; otherwise just the ⏳ rate-limited label (never an empty/Invalid time). */}
+          {capParked ? (
+            <span
+              className="badge frozen"
+              title={thread.error ?? "Every account was rate-limited — this task auto-resumes when one frees up."}
+            >
+              ⏳ rate-limited{frozenReset ? ` · resumes ${clockHM(frozenReset)}` : ""}
+            </span>
+          ) : null}
           {impl?.effort ? (
             <span className={"effort-badge eff-" + impl.effort} title="Implementor effort (planner-chosen)">
               {impl.effort}

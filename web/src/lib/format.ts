@@ -1,4 +1,4 @@
-import type { AgentRunState, Role, ThreadState } from "../types.js";
+import type { AccountDTO, AgentRunState, Role, Thread, ThreadState } from "../types.js";
 
 export function roleColor(role: Role): string {
   return `var(--role-${role})`;
@@ -119,4 +119,37 @@ export function ago(ts: number): string {
 export function clock(ts: number): string {
   const d = new Date(ts);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+/** Wall-clock HH:MM (no seconds) in the viewer's locale — for the "resumes 7:10 PM" reset label. */
+export function clockHM(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** The server's cap-park marker — a task settles into `review` with this prefix on its `error` ONLY
+ *  when EVERY account was rate-limited mid-task, in which case the supervisor (resumeCapParked) will
+ *  auto-resume it the moment one frees up. A plain "needs your review" park carries no marker. KEEP IN
+ *  SYNC with CAP_PARK_PREFIX in server/src/orchestrator/threadManager.ts — if the server text changes,
+ *  the frozen badge silently stops appearing. */
+export const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
+
+/** Whether a task is frozen waiting on a token freeze — parked in `review` with the cap-park marker.
+ *  Mirrors the server's own resumeCapParked scan, so it's true exactly when the task is genuinely
+ *  blocked on rate limits (never on a human-review park — no false positives). */
+export function isCapParked(thread: Thread): boolean {
+  return thread.state === "review" && (thread.error ?? "").startsWith(CAP_PARK_PREFIX);
+}
+
+/** The soonest moment any account frees up: the min future reset across accounts. Mirrors the server's
+ *  AccountManager.soonestResetAt (rateLimitResetAt ?? fiveHourReset), with the weekly window as a last
+ *  resort so a known reset still surfaces. Null when no future reset is known — caller shows the badge
+ *  without a time clause rather than an Invalid Date. */
+export function soonestReset(accounts: AccountDTO[]): number | null {
+  const now = Date.now();
+  let soonest: number | null = null;
+  for (const a of accounts) {
+    const reset = a.resetsAt ?? a.fiveHourReset ?? a.sevenDayReset;
+    if (reset != null && reset > now && (soonest == null || reset < soonest)) soonest = reset;
+  }
+  return soonest;
 }
