@@ -427,17 +427,58 @@ function NumberRow({
   onChange: (v: number) => void;
 }) {
   const clamp = (n: number) => Math.min(max, Math.max(min, n));
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    if (!draft.trim()) {
+      setDraft(String(value));
+      return;
+    }
+    const n = Number(draft);
+    if (!Number.isFinite(n)) {
+      setDraft(String(value));
+      return;
+    }
+    const next = clamp(Math.round(n));
+    setDraft(String(next));
+    if (next !== value) onChange(next);
+  };
+
+  const step = (delta: number) => {
+    const next = clamp(value + delta);
+    setDraft(String(next));
+    if (next !== value) onChange(next);
+  };
   return (
     <Row
       label={label}
       hint={hint}
       control={
         <div className="stepper">
-          <button aria-label={`Decrease ${label}`} disabled={value <= min} onClick={() => onChange(clamp(value - 1))}>
+          <button aria-label={`Decrease ${label}`} disabled={value <= min} onClick={() => step(-1)}>
             −
           </button>
-          <span className="stepper-val mono">{value}</span>
-          <button aria-label={`Increase ${label}`} disabled={value >= max} onClick={() => onChange(clamp(value + 1))}>
+          <input
+            className="stepper-val mono"
+            aria-label={label}
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value.replace(/\D/g, ""))}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setDraft(String(value));
+              }
+            }}
+          />
+          <button aria-label={`Increase ${label}`} disabled={value >= max} onClick={() => step(1)}>
             +
           </button>
         </div>

@@ -541,7 +541,11 @@ button { font-family: inherit; cursor: pointer; }
 }
 .stepper button:hover:not(:disabled) { background: var(--bg-3); color: var(--text); }
 .stepper button:disabled { color: var(--text-faint); opacity: 0.4; cursor: not-allowed; }
-.stepper-val { min-width: 30px; text-align: center; font-size: 13px; color: var(--text); border-left: 1px solid var(--line); border-right: 1px solid var(--line); padding: 5px 0; }
+.stepper-val {
+  width: 42px; height: 28px; text-align: center; font-size: 13px; color: var(--text); background: transparent;
+  border: none; border-left: 1px solid var(--line); border-right: 1px solid var(--line); padding: 0 6px; outline: none;
+}
+.stepper-val:focus { background: var(--bg); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 62%, transparent); }
 
 /* segmented control */
 .segment { flex: none; display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); overflow: hidden; }
