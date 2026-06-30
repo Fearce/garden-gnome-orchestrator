@@ -1012,7 +1012,7 @@ export class ThreadManager implements OrchestratorApi {
   private startImplementor(
     thread: Thread,
     kickoff: string,
-    opts?: { resume?: string; effort?: Effort; account?: Acct },
+    opts?: { resume?: string; effort?: Effort; account?: Acct; freshFallback?: string },
   ): { run: AgentRunLike; runId: string; accountId: string } {
     this.setState(thread.id, "implementing");
     // Coerce a gated `xhigh` down to `high` here too, so the stored/displayed effort matches what the
@@ -1040,7 +1040,9 @@ export class ThreadManager implements OrchestratorApi {
       // documented degradation. The QA loop still reviews its output, and the doctrine makes it commit.
       // A fresh start still gets the doctrine + (toolless) peer heads-up so it knows to avoid collisions.
       if (!opts?.resume) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, kickoff, this.peerNote(thread, false)].filter(Boolean).join("\n\n");
-      agent = new CodexAgentRun({ model, cwd: thread.workspace, apiKey: this.openaiApiKey() ?? "", resume: opts?.resume });
+      // freshFallback lets the runner self-heal a wedged `exec resume` (hangs at 0% CPU on an interrupted
+      // gpt-5 session) by restarting fresh — so it must carry the SAME doctrine + task a fresh start gets.
+      agent = new CodexAgentRun({ model, cwd: thread.workspace, apiKey: this.openaiApiKey() ?? "", resume: opts?.resume, freshFallback: opts?.freshFallback });
     } else {
       const acct = opts?.account ?? this.dispatchAccount();
       accountId = acct.id;
@@ -1133,7 +1135,11 @@ export class ThreadManager implements OrchestratorApi {
         opts.resumeNudge,
         opts.directorNote && opts.directorNote !== opts.resumeNudge && `[New information from the director]\n${opts.directorNote}`,
       ].filter(Boolean);
-      return this.startImplementor(thread, parts.join("\n\n"), { effort: opts.effort, resume: resumeSession, account: opts.account });
+      // If `codex exec resume <id>` wedges with no output (a known hang replaying an interrupted gpt-5
+      // session), the runner falls back to a FRESH `exec` seeded with this kickoff — the same doctrine +
+      // task a fresh start gets (line ~1042), so the recovered session still commits per the doctrine.
+      const freshFallback = [CODEX_IMPLEMENTOR_DOCTRINE, baseKickoff, this.peerNote(thread, false)].filter(Boolean).join("\n\n");
+      return this.startImplementor(thread, parts.join("\n\n"), { effort: opts.effort, resume: resumeSession, account: opts.account, freshFallback });
     }
     const ageMs = sessionAgeMs(resumeSession);
     const warm = ageMs != null && ageMs < config.resumeWarmMinutes * 60_000;

@@ -134,6 +134,22 @@ export const config = {
     // Fallback key when none is stored in the kv table — lets a key live in server/.env instead of the UI.
     // Used only when there's no ChatGPT login to prefer.
     envKey: process.env.OPENAI_API_KEY?.trim() || undefined,
+    // A wedged `codex exec [resume]` can hang at 0% CPU emitting no JSONL — notably resuming a gpt-5
+    // session that was interrupted mid-turn — which strands the task with no result FOREVER (the runner
+    // only resolves on process exit). A no-output watchdog in codexRunner — one timer with two bounds —
+    // kills such a turn so the run surfaces an error (and self-heals a wedged resume by retrying fresh):
+    // firstEventMs bounds
+    // spawn→first event (the wedge emits nothing, so a tight bound is safe — a healthy turn emits
+    // thread.started within seconds); inactivityMs bounds the gap between events once streaming has begun.
+    // The two bounds are asymmetric on purpose: the startup bound only ever fires on a genuine wedge (a
+    // healthy turn always emits an early event), but the inactivity bound can FALSE-POSITIVE because Codex
+    // emits a shell command as just item.started→item.completed with no output in between — a single long
+    // silent command (a big `npm install`, full test suite, docker build) emits nothing for its whole run.
+    // So the inactivity bound must exceed the longest single silent command a Codex implementor will run;
+    // err generous (a too-tight bound kills GOOD work, whereas a too-loose one only delays surfacing a rare
+    // mid-stream hang). Override via CODEX_FIRST_EVENT_MS / CODEX_INACTIVITY_MS; set either to 0 to disable.
+    firstEventMs: numEnv(process.env.CODEX_FIRST_EVENT_MS, 60_000),
+    inactivityMs: numEnv(process.env.CODEX_INACTIVITY_MS, 1_800_000),
   },
   // When every Claude account is rate-limited mid-task, the task parks in 'review' with a cap marker
   // instead of stranding the owner to hand-resume it. A supervisor re-checks this often and resumes

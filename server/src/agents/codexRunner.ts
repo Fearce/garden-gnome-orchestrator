@@ -16,6 +16,11 @@ export interface CodexRunConfig {
   apiKey: string;
   /** A prior Codex thread id to `codex exec resume` instead of starting fresh. */
   resume?: string;
+  /** Full fresh-start kickoff (doctrine + task) used to self-heal a wedged `exec resume`: if a resume
+   *  turn produces ZERO events (the CLI can hang at 0% CPU replaying an interrupted gpt-5 session), the
+   *  runner retries ONCE as a fresh `exec` with this prompt — the prior apply_patch edits already live
+   *  in the working tree, so the fresh session re-reads them and continues. Omit to disable self-heal. */
+  freshFallback?: string;
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). The Codex CLI takes a
@@ -172,6 +177,15 @@ export class CodexAgentRun implements AgentRunLike {
   private lastErrorMsg: string | undefined;
   private sawTerminal = false; // turn.completed / turn.failed seen for the current turn
   private readonly pendingSends: string[] = [];
+  // No-output watchdog: a wedged `codex exec [resume]` hangs at 0% CPU emitting nothing and never
+  // exits, so onTurnClose never fires and the task hangs forever. armWatchdog() (re)arms a deadline
+  // on spawn and on every parsed event; firing it kills the child so onTurnClose synthesizes a failure
+  // (or self-heals a wedged resume). sawFirstEvent switches the deadline from the tight startup bound
+  // to the generous mid-stream bound; isResumeTurn + resumeHealed gate the one-shot fresh-start retry.
+  private turnWatchdog: NodeJS.Timeout | undefined;
+  private sawFirstEvent = false;
+  private isResumeTurn = false;
+  private resumeHealed = false;
 
   constructor(private readonly cfg: CodexRunConfig) {
     this.emitter.setMaxListeners(50);
@@ -307,14 +321,14 @@ export class CodexAgentRun implements AgentRunLike {
     const authMode = await this.writeAuth().catch(() => "none" as const);
     const args = ["exec"];
     if (resumeId) args.push("resume", resumeId);
+    args.push("--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox");
+    // `--color` and `-C/--cd` are global flags on the fresh `codex exec` subcommand but are NOT
+    // accepted by `codex exec resume` (the CLI rejects them with "unexpected argument '--color'",
+    // killing every resume turn in ~2s and stranding the task on its first fresh turn). The spawn()
+    // below already sets the child's cwd, so omitting `-C` on resume is harmless; `--json` keeps the
+    // output as clean JSONL regardless of the color flag.
+    if (!resumeId) args.push("--color", "never", "-C", this.cfg.cwd);
     args.push(
-      "--json",
-      "--skip-git-repo-check",
-      "--dangerously-bypass-approvals-and-sandbox",
-      "--color",
-      "never",
-      "-C",
-      this.cfg.cwd,
       "-m",
       this.cfg.model,
       // The prompt goes via STDIN ("-"), not argv: a real implementor kickoff (doctrine + plan +
@@ -324,6 +338,8 @@ export class CodexAgentRun implements AgentRunLike {
       "-",
     );
     this.sawTerminal = false;
+    this.sawFirstEvent = false;
+    this.isResumeTurn = !!resumeId;
     this.lastErrorMsg = undefined;
     this.stdoutBuf = "";
     this.turnActive = true;
@@ -365,6 +381,37 @@ export class CodexAgentRun implements AgentRunLike {
       this.lastErrorMsg = err.message;
     });
     child.on("close", (code) => this.onTurnClose(code));
+    this.armWatchdog();
+  }
+
+  /** (Re)arm the no-output watchdog for the live turn. Called on spawn and after every parsed event —
+   *  each event pushes the deadline out, so it only fires during genuine silence. The deadline is the
+   *  tight startup bound until the first event lands, then the generous mid-stream bound. */
+  private armWatchdog(): void {
+    this.clearWatchdog();
+    if (!this.turnActive) return;
+    const ms = this.sawFirstEvent ? config.codex.inactivityMs : config.codex.firstEventMs;
+    if (!ms || ms <= 0) return; // watchdog disabled via config/env
+    this.turnWatchdog = setTimeout(() => this.onWatchdogTimeout(ms), ms);
+    this.turnWatchdog.unref?.();
+  }
+
+  private clearWatchdog(): void {
+    if (this.turnWatchdog) {
+      clearTimeout(this.turnWatchdog);
+      this.turnWatchdog = undefined;
+    }
+  }
+
+  /** The live turn produced no output within its deadline — it's wedged. Record a reason and kill the
+   *  child; onTurnClose then synthesizes the failure (or self-heals a wedged resume via freshFallback). */
+  private onWatchdogTimeout(ms: number): void {
+    if (!this.turnActive) return;
+    const secs = Math.round(ms / 1000);
+    this.lastErrorMsg = this.sawFirstEvent
+      ? `Codex emitted no output for ${secs}s — the turn appears wedged; killed by the inactivity watchdog.`
+      : `Codex produced no events within ${secs}s of starting — a wedged \`exec resume\` (the CLI hangs at 0% CPU replaying an interrupted session); killed by the startup watchdog.`;
+    this.killChild();
   }
 
   private onStdout(chunk: string): void {
@@ -380,6 +427,8 @@ export class CodexAgentRun implements AgentRunLike {
       } catch {
         continue; // not a JSON event line (stray log) — ignore
       }
+      this.sawFirstEvent = true;
+      this.armWatchdog(); // each event pushes the no-output deadline out
       this.handleEvent(ev);
     }
   }
@@ -455,6 +504,7 @@ export class CodexAgentRun implements AgentRunLike {
 
   /** Emit the per-turn result event (mirrors AgentRun's `result` SDK message) and cache it. */
   private finishTurn(partial: { subtype: string; isError: boolean; result?: string; numTurns?: number }): void {
+    this.clearWatchdog();
     const evt: ResultEvent = { type: "result", subtype: partial.subtype, isError: partial.isError, result: partial.result, numTurns: partial.numTurns };
     this.lastResult = evt;
     this.emit(evt);
@@ -463,6 +513,7 @@ export class CodexAgentRun implements AgentRunLike {
   private onTurnClose(code: number | null): void {
     this.turnActive = false;
     this.child = undefined;
+    this.clearWatchdog();
     const wasInterrupt = this.interrupting;
     this.interrupting = false;
     if (this.stopped) {
@@ -484,6 +535,19 @@ export class CodexAgentRun implements AgentRunLike {
     // A bare interrupt (the Pause control) with no follow-up: stay alive like a paused Claude run —
     // don't synthesize a failure or end. A later send() resumes the session; stop() tears it down.
     if (wasInterrupt) return;
+    // Self-heal a wedged `exec resume`: the CLI can hang at 0% CPU (then get watchdog-killed) or exit
+    // instantly replaying an interrupted gpt-5 session, producing ZERO events. If a resume turn died
+    // before its first event and a freshFallback kickoff is available, retry ONCE as a fresh `exec`
+    // (no resume) carrying the full doctrine + task. Prior apply_patch edits already live in the working
+    // tree, so the fresh session re-reads them and continues — far better than stranding the task.
+    if (this.isResumeTurn && !this.sawFirstEvent && !this.resumeHealed && this.cfg.freshFallback && !this.stopped) {
+      this.resumeHealed = true;
+      this.lastResult = undefined;
+      this.lastErrorMsg = undefined;
+      this.emit({ type: "text", text: "⚠️ Codex `exec resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved." });
+      void this.runTurn(this.cfg.freshFallback, undefined);
+      return;
+    }
     // The process exited without a terminal turn event AND it wasn't an intentional interrupt —
     // synthesize a failure so a waiting result()/nextResult() resolves instead of hanging.
     if (!this.sawTerminal) {
