@@ -89,6 +89,7 @@ export function Board() {
   const taskSort = useStore((s) => s.taskSort);
   const taskOrder = useStore((s) => s.taskOrder);
   const setTaskOrder = useStore((s) => s.setTaskOrder);
+  const setTaskSort = useStore((s) => s.setTaskSort);
   const all = Object.values(threads);
   // Closed tasks are pulled out of the main board into the Closed holding area below; completed tasks
   // are hidden too when the owner turned that off in settings.
@@ -100,6 +101,16 @@ export function Board() {
     () => (dndEnabled ? orderByManual(active, taskOrder) : [...active].sort(sortComparator(taskSort))),
     [dndEnabled, active, taskOrder, taskSort],
   );
+
+  // Picking a sort always persists the choice. With DnD off the `list` memo re-sorts on it directly.
+  // With DnD on the manual order is authoritative, so a pick wouldn't otherwise move anything — re-seed
+  // the manual order from the chosen comparator so the board visibly reflows, leaving drag to fine-tune
+  // from there. Seeding the FULL active set means the canonicalization effect finds it already canonical
+  // (every id placed, none fresh) and converges in the same pass — no reorder loop.
+  const applySort = (sort: TaskSort) => {
+    setTaskSort(sort);
+    if (dndEnabled) setTaskOrder([...active].sort(sortComparator(sort)).map((t) => t.id));
+  };
   const closed = all
     .filter((t) => t.state === "closed")
     .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));
@@ -166,8 +177,8 @@ export function Board() {
             {list.length} total
             {hiddenCompleted > 0 ? ` · ${hiddenCompleted} completed hidden` : ""}
           </span>
-          {/* The manual drag order is authoritative when DnD is on, so the sort control only appears off. */}
-          {dndEnabled ? null : <SortMenu />}
+          {/* Always available — under DnD a pick re-seeds the manual order (applySort) instead of being hidden. */}
+          <SortMenu onPick={applySort} />
         </div>
       </div>
       {list.length === 0 ? (
@@ -209,10 +220,10 @@ export function Board() {
 
 /** The board sort control: a quiet trigger in the header that opens a listbox of sort options, reusing
  *  the .ws-menu/.ws-opt pattern (downward variant). Self-contained — owns its open state and closes on
- *  an outside click or Escape. Picking an option persists it via setTaskSort (survives reloads). */
-function SortMenu() {
+ *  an outside click or Escape. Picking an option hands it to `onPick`, which persists the choice and,
+ *  under drag-and-drop, re-seeds the manual order so the board reflows (see Board.applySort). */
+function SortMenu({ onPick }: { onPick: (sort: TaskSort) => void }) {
   const taskSort = useStore((s) => s.taskSort);
-  const setTaskSort = useStore((s) => s.setTaskSort);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -256,7 +267,7 @@ function SortMenu() {
               aria-selected={o.value === taskSort}
               className={"ws-opt" + (o.value === taskSort ? " hi" : "")}
               onClick={() => {
-                setTaskSort(o.value);
+                onPick(o.value);
                 setOpen(false);
               }}
             >
