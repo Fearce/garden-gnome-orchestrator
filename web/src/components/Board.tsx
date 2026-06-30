@@ -79,8 +79,13 @@ export function Board() {
   // remembered before it's ever dragged. Converges in one pass — the next render finds them equal.
   const orderSig = list.map((t) => t.id).join("\n");
   useEffect(() => {
-    if (!dndEnabled) return;
-    const canonical = orderSig ? orderSig.split("\n") : [];
+    // Bail until the WS `hello` has populated threads: on first mount `list` is empty, so persisting
+    // its canonical form would wipe the saved order to [] — and once threads arrive every id would
+    // then look 'fresh' and clobber the manual order with recency. An empty active set also genuinely
+    // means "nothing to order" (all tasks closed/hidden), so skipping it never drops a real reorder;
+    // stale ids in the saved order are pruned harmlessly at render by orderByManual.
+    if (!dndEnabled || !orderSig) return;
+    const canonical = orderSig.split("\n");
     const same = canonical.length === taskOrder.length && canonical.every((id, i) => id === taskOrder[i]);
     if (!same) setTaskOrder(canonical);
   }, [dndEnabled, orderSig, taskOrder, setTaskOrder]);
