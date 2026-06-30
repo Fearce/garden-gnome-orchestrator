@@ -13,6 +13,7 @@ import type {
   DirectorMessage,
   Effort,
   Finding,
+  FindingKind,
   Message,
   Question,
   QuestionOption,
@@ -72,8 +73,11 @@ function rowToFinding(r: Row): Finding {
     threadId: r.thread_id as string,
     fromRunId: (r.from_run_id as string | null) ?? null,
     fromRole: (r.from_role as Role | null) ?? null,
+    kind: ((r.kind as string | null) ?? "finding") as FindingKind,
     summary: r.summary as string,
     detail: (r.detail as string | null) ?? null,
+    path: (r.path as string | null) ?? null,
+    label: (r.label as string | null) ?? null,
     severity: r.severity as Severity,
     routed: Boolean(r.routed),
     createdAt: r.created_at as number,
@@ -151,6 +155,9 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
       "ALTER TABLE threads ADD COLUMN closed_prev_state TEXT",
       "ALTER TABLE chat_messages ADD COLUMN sender_name TEXT",
+      "ALTER TABLE findings ADD COLUMN kind TEXT NOT NULL DEFAULT 'finding'",
+      "ALTER TABLE findings ADD COLUMN path TEXT",
+      "ALTER TABLE findings ADD COLUMN label TEXT",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -370,8 +377,11 @@ export class Db {
     threadId: string;
     fromRunId?: string | null;
     fromRole?: Role | null;
+    kind?: FindingKind;
     summary: string;
     detail?: string | null;
+    path?: string | null;
+    label?: string | null;
     severity?: Severity;
   }): Finding {
     const f: Finding = {
@@ -379,19 +389,27 @@ export class Db {
       threadId: input.threadId,
       fromRunId: input.fromRunId ?? null,
       fromRole: input.fromRole ?? null,
+      kind: input.kind ?? "finding",
       summary: input.summary,
       detail: input.detail ?? null,
+      path: input.path ?? null,
+      label: input.label ?? null,
       severity: input.severity ?? "note",
       routed: false,
       createdAt: now(),
     };
     this.raw
       .prepare(
-        `INSERT INTO findings(id, thread_id, from_run_id, from_role, summary, detail, severity, routed, created_at)
-         VALUES(@id, @threadId, @fromRunId, @fromRole, @summary, @detail, @severity, 0, @createdAt)`,
+        `INSERT INTO findings(id, thread_id, from_run_id, from_role, kind, summary, detail, path, label, severity, routed, created_at)
+         VALUES(@id, @threadId, @fromRunId, @fromRole, @kind, @summary, @detail, @path, @label, @severity, 0, @createdAt)`,
       )
       .run(f);
     return f;
+  }
+
+  getFinding(id: string): Finding | null {
+    const r = this.raw.prepare("SELECT * FROM findings WHERE id = ?").get(id) as Row | undefined;
+    return r ? rowToFinding(r) : null;
   }
 
   markFindingRouted(id: string): void {

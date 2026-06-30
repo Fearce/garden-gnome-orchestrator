@@ -1,7 +1,7 @@
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import type { ChatMessage, ChatScope, Finding, ImageAttachment, QuestionOption, Role, Severity, Thread } from "../types.js";
+import type { ChatMessage, ChatScope, Finding, FindingKind, ImageAttachment, QuestionOption, Role, Severity, Thread } from "../types.js";
 
 export interface DispatchInput {
   title: string;
@@ -23,8 +23,11 @@ export interface PostFindingInput {
   threadId: string;
   fromRole: Role;
   fromRunId?: string | null;
+  kind?: FindingKind; // 'deliverable' surfaces a produced file in the right-panel Deliverables section
   summary: string;
   detail?: string | null;
+  path?: string | null; // deliverable only — file path (absolute or relative to the task workspace)
+  label?: string | null; // deliverable only — human-readable label
   severity?: Severity;
 }
 

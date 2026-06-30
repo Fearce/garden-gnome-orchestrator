@@ -24,6 +24,10 @@ export type ThreadState =
 export type AgentRunState = "starting" | "running" | "idle" | "interrupted" | "done" | "error";
 export type Severity = "info" | "note" | "warning" | "critical";
 
+/** A normal blackboard finding, or a `deliverable` — a file the agent produced, surfaced in the
+ *  right panel's Deliverables section for inline preview / download (mirrors the server's FindingKind). */
+export type FindingKind = "finding" | "deliverable";
+
 export interface Thread {
   id: string;
   title: string;
@@ -76,8 +80,11 @@ export interface Finding {
   threadId: string;
   fromRunId?: string | null;
   fromRole?: Role | null;
+  kind: FindingKind; // 'finding' (default) or 'deliverable' (a produced file surfaced for view/download)
   summary: string;
   detail?: string | null;
+  path?: string | null; // deliverable only — file path (absolute or relative to the task workspace)
+  label?: string | null; // deliverable only — human-readable label
   severity: Severity;
   routed: boolean;
   createdAt: number;

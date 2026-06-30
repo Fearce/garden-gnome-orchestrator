@@ -2,8 +2,8 @@ import Fastify from "fastify";
 import type { FastifyInstance, FastifyServerOptions } from "fastify";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join, dirname, basename } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, dirname, basename, extname, relative } from "node:path";
 import { config } from "./config.js";
 import { installCrashGuards } from "./crashLog.js";
 import { Db } from "./db/db.js";
@@ -196,6 +196,76 @@ async function main(): Promise<void> {
         .header("x-content-type-options", "nosniff")
         .header("cache-control", "private, max-age=31536000, immutable")
         .send(Buffer.from(a.data, "base64"));
+    });
+
+    // Serve a deliverable file (a finding of kind 'deliverable') for inline preview or download.
+    // Security-critical: the path is agent-provided, so the resolved real path is confined to the
+    // owning task's workspace — symlinks are resolved (realpathSync) and any escape via '..' / an
+    // absolute path / a different drive is rejected. Auth-gated, files-only, size-capped.
+    const MAX_DELIVERABLE_BYTES = 25 * 1024 * 1024;
+    const DELIVERABLE_TYPES: Record<string, string> = {
+      ".md": "text/markdown; charset=utf-8",
+      ".markdown": "text/markdown; charset=utf-8",
+      ".txt": "text/plain; charset=utf-8",
+      ".log": "text/plain; charset=utf-8",
+      ".csv": "text/csv; charset=utf-8",
+      ".tsv": "text/tab-separated-values; charset=utf-8",
+      ".json": "application/json; charset=utf-8",
+      ".yml": "text/plain; charset=utf-8",
+      ".yaml": "text/plain; charset=utf-8",
+      ".xml": "text/plain; charset=utf-8",
+      ".html": "text/plain; charset=utf-8", // served as text (never as a live document) — preview/download only
+      ".svg": "image/svg+xml",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".pdf": "application/pdf",
+    };
+    app.get<{ Params: { id: string }; Querystring: { download?: string } }>("/api/deliverable/:id", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      const finding = db.getFinding(req.params.id);
+      if (!finding || finding.kind !== "deliverable" || !finding.path) return reply.code(404).send({ error: "not found" });
+      const thread = db.getThread(finding.threadId);
+      if (!thread) return reply.code(404).send({ error: "not found" });
+
+      const candidate = isAbsolute(finding.path) ? finding.path : join(thread.workspace, finding.path);
+      // Resolve symlinks on BOTH sides so the containment check can't be fooled by a link inside the
+      // workspace pointing out of it, and so the comparison uses canonical, same-cased paths.
+      let realWs: string;
+      let realFile: string;
+      try {
+        realWs = realpathSync(thread.workspace);
+        realFile = realpathSync(candidate);
+      } catch {
+        return reply.code(404).send({ error: "file not found" });
+      }
+      const rel = relative(realWs, realFile);
+      if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+        return reply.code(403).send({ error: "path escapes the task workspace" });
+      }
+
+      let st;
+      try {
+        st = statSync(realFile);
+      } catch {
+        return reply.code(404).send({ error: "file not found" });
+      }
+      if (!st.isFile()) return reply.code(404).send({ error: "not a file" });
+      if (st.size > MAX_DELIVERABLE_BYTES) return reply.code(413).send({ error: "file too large to serve" });
+
+      const type = DELIVERABLE_TYPES[extname(realFile).toLowerCase()] ?? "application/octet-stream";
+      reply
+        .header("content-type", type)
+        .header("x-content-type-options", "nosniff")
+        .header("cache-control", "private, no-store");
+      if (req.query.download !== undefined) {
+        // Strip quotes/control chars from the filename so the header can't be broken out of.
+        const safeName = basename(realFile).replace(/["\r\n]/g, "");
+        reply.header("content-disposition", `attachment; filename="${safeName}"`);
+      }
+      return reply.send(readFileSync(realFile));
     });
 
     // Folder picker for the dispatch form: list child directories of an absolute path so

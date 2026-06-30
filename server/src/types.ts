@@ -31,6 +31,11 @@ export type AgentRunState =
 
 export type Severity = "info" | "note" | "warning" | "critical";
 
+/** A normal blackboard finding, or a `deliverable` — a file the agent produced that the owner can
+ *  view/download from the right panel. A deliverable carries a `path` (absolute or workspace-relative)
+ *  and a human `label`; everything else (summary/detail/severity) behaves like an ordinary finding. */
+export type FindingKind = "finding" | "deliverable";
+
 export interface Thread {
   id: string;
   title: string;
@@ -83,8 +88,11 @@ export interface Finding {
   threadId: string;
   fromRunId?: string | null;
   fromRole?: Role | null;
+  kind: FindingKind; // 'finding' (default) or 'deliverable' (a produced file surfaced for view/download)
   summary: string;
   detail?: string | null;
+  path?: string | null; // deliverable only — file path (absolute or relative to the task workspace)
+  label?: string | null; // deliverable only — human-readable label, e.g. "Design comparison report"
   severity: Severity;
   routed: boolean; // delivered/injected somewhere already
   createdAt: number;

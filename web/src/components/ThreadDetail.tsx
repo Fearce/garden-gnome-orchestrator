@@ -6,6 +6,7 @@ import { clock, isDoneable, isTerminal, roleColor, runActive, sevColor, stateCol
 import { Elapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
+import { Deliverables } from "./Deliverables.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -99,6 +100,17 @@ export function ThreadDetail() {
   const feed = id ? feeds[id] ?? [] : [];
   const draft = id ? drafts[id] : undefined;
 
+  // Deliverables (findings tagged kind 'deliverable') render in their own section, not the feed —
+  // so split them out here: `deliverables` feeds the section, `feedItems` is the feed minus them.
+  const deliverables = useMemo(
+    () =>
+      feed
+        .filter((f): f is Extract<FeedItem, { kind: "finding" }> => f.kind === "finding" && f.finding.kind === "deliverable")
+        .map((f) => f.finding),
+    [feed],
+  );
+  const feedItems = useMemo(() => feed.filter((f) => !(f.kind === "finding" && f.finding.kind === "deliverable")), [feed]);
+
   const [roleFilter, setRoleFilter] = useState<Role | "all">("all");
   // Persisted globally: the detail panel remounts per task (key={selected}), so without this the
   // tools toggle would reset to "shown" every time you switch tasks.
@@ -127,23 +139,23 @@ export function ThreadDetail() {
 
   const counts = useMemo(() => {
     const c: Partial<Record<Role, number>> = {};
-    for (const f of feed) {
+    for (const f of feedItems) {
       const r = itemRoleOf(f, runRole);
       if (r) c[r] = (c[r] ?? 0) + 1;
     }
     return c;
-  }, [feed, runRole]);
+  }, [feedItems, runRole]);
 
   const activeRoles = useMemo(() => FILTER_ORDER.filter((r) => (counts[r] ?? 0) > 0), [counts]);
 
   const visible = useMemo(
     () =>
-      feed.filter((f) => {
+      feedItems.filter((f) => {
         if (!showTools && (f.kind === "tool" || f.kind === "tool_result")) return false;
         if (roleFilter === "all") return true;
         return itemRoleOf(f, runRole) === roleFilter;
       }),
-    [feed, roleFilter, showTools, runRole],
+    [feedItems, roleFilter, showTools, runRole],
   );
 
   // Render only the tail of the feed; grow the window when the user scrolls toward the top.
@@ -380,10 +392,10 @@ export function ThreadDetail() {
         </div>
       )}
 
-      {feed.length > 0 && (
+      {feedItems.length > 0 && (
         <div className="feed-filter">
           <button className={"fchip" + (roleFilter === "all" ? " on" : "")} onClick={() => setRoleFilter("all")}>
-            all <span className="n">{feed.length}</span>
+            all <span className="n">{feedItems.length}</span>
           </button>
           {activeRoles.map((role) => {
             const r = latestRunOf(threadRuns, role);
@@ -410,10 +422,12 @@ export function ThreadDetail() {
         </div>
       )}
 
+      <Deliverables items={deliverables} />
+
       <div className="feed" ref={scrollRef} onScroll={onFeedScroll}>
         {visible.length === 0 && !draft && (
           <div className="faint" style={{ fontSize: 13 }}>
-            {feed.length === 0
+            {feedItems.length === 0
               ? "Planner and researcher are warming up. Their findings and the implementor's work will stream here."
               : roleFilter === "all"
                 ? "Nothing to show."

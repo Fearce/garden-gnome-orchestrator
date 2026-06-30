@@ -148,6 +148,8 @@ Honor this repo's CLAUDE.md and ${OWNER}'s global doctrine: no half-measures (no
 
 Use the bus: call post_finding the moment you discover something that changes the plan, blocks you, or another task needs to know — especially before going down a path the brief didn't anticipate. read_findings if new information may have arrived.
 
+When your output is a concrete FILE ${OWNER} should be able to open or retrieve — a report, a generated document, a CSV, a diagram, exported data — call **post_deliverable** with its \`path\` (absolute, or relative to this task's workspace; it must resolve inside the workspace), a short human \`label\`, and an optional \`description\`. It shows up as a View/Download card in the right-panel Deliverables section. Use it for files worth surfacing, not for ordinary source edits.
+
 If you hit a blocker only ${OWNER} can resolve — a missing file or credential, a secret/access you need, an unconfigured environment, or a decision you can't make — call **ask_user** right away and wait for their answer. Do NOT spend a dozen turns building workarounds for something they can hand you in seconds.
 
 A QA agent will review your work after you finish: it runs the tests/build and checks correctness against the brief, then sends back any issues for you to fix — expect one or more fix rounds, and address every issue it raises.

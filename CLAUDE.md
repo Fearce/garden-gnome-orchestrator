@@ -76,6 +76,18 @@ Concurrent tasks on the same repo would otherwise edit the same files blind. Eve
 (walk solo, huddle when grouped) and the per-task **Chatroom** button. Codex implementors have no MCP, so
 they get a toolless peer heads-up only. Grouping key = `normalizeWorkspace` (mirrored in server + web types).
 
+## Deliverables (agent-produced files)
+A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the
+right panel. It's a `findings` row with `kind='deliverable'`, a `path` (absolute or workspace-relative)
+and a human `label` (the `summary` mirrors the label; `detail` holds the optional description). Agents
+emit one via the `post_deliverable` bus tool (`bus/busServer.ts`); the implementor prompt documents the
+format. The console reads these from the thread's findings and renders file cards (`web/src/components/
+Deliverables.tsx` + `FileIcon.tsx`) with View (typed inline preview — markdown/JSON/CSV/code/image/PDF),
+Download, and Copy-path. Bytes are served by `GET /api/deliverable/:id` (`?download=1` for an attachment),
+which is auth-gated and **confines the resolved real path inside the owning task's workspace** (symlinks
+resolved, `..`/absolute/cross-drive escapes rejected, files-only, 25 MB cap) — keep that guard intact:
+the path is agent-supplied and the server is LAN-reachable.
+
 ## Conventions
 - Conventional Commits (`feat:`/`fix:`/`refactor:`/`chore:`…), matching `git log`.
 - One concern per commit — don't sweep unrelated working-tree changes into a fix.

@@ -11,6 +11,7 @@ export const T = {
   searchMemory: `mcp__${MEMORY_SERVER}__search_memory`,
   readMemory: `mcp__${MEMORY_SERVER}__read_memory`,
   postFinding: `mcp__${BUS_SERVER}__post_finding`,
+  postDeliverable: `mcp__${BUS_SERVER}__post_deliverable`,
   readFindings: `mcp__${BUS_SERVER}__read_findings`,
   notifyThread: `mcp__${BUS_SERVER}__notify_thread`,
   busAskUser: `mcp__${BUS_SERVER}__ask_user`,
@@ -28,7 +29,7 @@ export const T = {
   readFindingsAll: `mcp__${DIRECTOR_SERVER}__read_findings`,
 } as const;
 
-export const BUS_TOOLS = [T.postFinding, T.readFindings, T.notifyThread, T.busAskUser];
+export const BUS_TOOLS = [T.postFinding, T.postDeliverable, T.readFindings, T.notifyThread, T.busAskUser];
 export const OFFICE_TOOLS = [T.officeLook, T.officeSetName, T.chatPost, T.chatRead];
 export const DIRECTOR_TOOLS = [
   T.searchMemory,
