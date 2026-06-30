@@ -58,6 +58,8 @@ interface State {
   // what this browser shows, so they never round-trip to the server.
   showCompleted: boolean;
   verbosity: Verbosity;
+  // The board's sort order while drag-and-drop is off (the dropdown in the board header drives this).
+  taskSort: TaskSort;
   // When on, the board stops auto-sorting by recency and honors the manual drag order in `taskOrder`.
   taskDragAndDrop: boolean;
   // The manual board order (active thread ids, front-to-back). Only consulted while taskDragAndDrop is
@@ -98,6 +100,7 @@ interface State {
   setAccountEnabled: (id: string, enabled: boolean) => void;
   setShowCompleted: (v: boolean) => void;
   setVerbosity: (v: Verbosity) => void;
+  setTaskSort: (v: TaskSort) => void;
   setTaskDragAndDrop: (v: boolean) => void;
   setTaskOrder: (ids: string[]) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
@@ -139,6 +142,12 @@ const lsSet = (k: string, v: string): void => {
 
 export type Verbosity = "compact" | "full";
 
+// How the board orders tasks when drag-and-drop is off. "created_desc" (newest first) is the default;
+// the rest mirror the sort dropdown's options. Persisted in ViewSettings so the choice survives reloads.
+export type TaskSort = "created_desc" | "created_asc" | "updated" | "status" | "workspace" | "title";
+const TASK_SORTS: readonly TaskSort[] = ["created_desc", "created_asc", "updated", "status", "workspace", "title"];
+const isTaskSort = (v: unknown): v is TaskSort => typeof v === "string" && (TASK_SORTS as readonly string[]).includes(v);
+
 // Client-only view settings live together under one stable localStorage key (per the brief), separate
 // from the server-authoritative pipeline settings. Defaults: keep finished tasks visible, full output.
 const VIEW_SETTINGS_KEY = "director_settings";
@@ -147,8 +156,10 @@ interface ViewSettings {
   verbosity: Verbosity;
   // Off by default: the board keeps its automatic most-recent-first ordering until the owner opts in.
   taskDragAndDrop: boolean;
+  // Which comparator the board sorts by while drag-and-drop is off; ignored when the manual order rules.
+  taskSort: TaskSort;
 }
-const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false };
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc" };
 const loadViewSettings = (): ViewSettings => {
   try {
     const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
@@ -158,6 +169,7 @@ const loadViewSettings = (): ViewSettings => {
       showCompleted: typeof v.showCompleted === "boolean" ? v.showCompleted : VIEW_DEFAULTS.showCompleted,
       verbosity: v.verbosity === "compact" || v.verbosity === "full" ? v.verbosity : VIEW_DEFAULTS.verbosity,
       taskDragAndDrop: typeof v.taskDragAndDrop === "boolean" ? v.taskDragAndDrop : VIEW_DEFAULTS.taskDragAndDrop,
+      taskSort: isTaskSort(v.taskSort) ? v.taskSort : VIEW_DEFAULTS.taskSort,
     };
   } catch {
     return VIEW_DEFAULTS;
@@ -263,6 +275,7 @@ export const useStore = create<State>((set) => ({
   codexTesting: false,
   showCompleted: loadViewSettings().showCompleted,
   verbosity: loadViewSettings().verbosity,
+  taskSort: loadViewSettings().taskSort,
   taskDragAndDrop: loadViewSettings().taskDragAndDrop,
   taskOrder: loadTaskOrder(),
   pendingPlans: {},
@@ -316,17 +329,22 @@ export const useStore = create<State>((set) => ({
   },
   setShowCompleted: (v) =>
     set((s) => {
-      saveViewSettings({ showCompleted: v, verbosity: s.verbosity, taskDragAndDrop: s.taskDragAndDrop });
+      saveViewSettings({ showCompleted: v, verbosity: s.verbosity, taskSort: s.taskSort, taskDragAndDrop: s.taskDragAndDrop });
       return { showCompleted: v };
     }),
   setVerbosity: (v) =>
     set((s) => {
-      saveViewSettings({ showCompleted: s.showCompleted, verbosity: v, taskDragAndDrop: s.taskDragAndDrop });
+      saveViewSettings({ showCompleted: s.showCompleted, verbosity: v, taskSort: s.taskSort, taskDragAndDrop: s.taskDragAndDrop });
       return { verbosity: v };
+    }),
+  setTaskSort: (v) =>
+    set((s) => {
+      saveViewSettings({ showCompleted: s.showCompleted, verbosity: s.verbosity, taskSort: v, taskDragAndDrop: s.taskDragAndDrop });
+      return { taskSort: v };
     }),
   setTaskDragAndDrop: (v) =>
     set((s) => {
-      saveViewSettings({ showCompleted: s.showCompleted, verbosity: s.verbosity, taskDragAndDrop: v });
+      saveViewSettings({ showCompleted: s.showCompleted, verbosity: s.verbosity, taskSort: s.taskSort, taskDragAndDrop: v });
       return { taskDragAndDrop: v };
     }),
   setTaskOrder: (ids) => {

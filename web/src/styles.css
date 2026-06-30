@@ -616,8 +616,20 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ---- board ---- */
 .board { overflow-y: auto; padding: 18px; min-height: 0; }
-.board-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.board-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
 .board-head h2 { margin: 0; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); font-weight: 600; }
+.board-head-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
+
+/* ---- board sort dropdown ---- */
+/* The trigger is a quiet ghost button; the menu reuses the .ws-menu/.ws-opt listbox but drops DOWN
+   from the header (the autocomplete variant opens upward) and right-aligns under the trigger. */
+.sort-menu { position: relative; flex: 0 0 auto; }
+.sort-trigger { display: inline-flex; align-items: center; gap: 6px; }
+.sort-trigger svg { color: var(--text-faint); flex: 0 0 auto; }
+.sort-trigger .sort-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em; }
+.sort-trigger .sort-caret { font-size: 9px; color: var(--text-faint); line-height: 1; }
+.sort-list { left: auto; right: 0; bottom: auto; top: calc(100% + 4px); min-width: 168px; }
+.sort-list .ws-opt { justify-content: flex-start; }
 .lanes { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 13px; align-content: start; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 14px 0 4px; margin-top: 12px; border-top: 1px solid var(--line); }
 .pager-info { font-size: 11px; color: var(--text-faint); letter-spacing: 0.02em; }

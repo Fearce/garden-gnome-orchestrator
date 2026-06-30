@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type CSSProperties, type HTMLAttributes } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   DndContext,
@@ -13,8 +13,8 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useStore } from "../store.js";
-import type { AgentRun, Role, Thread } from "../types.js";
+import { useStore, type TaskSort } from "../store.js";
+import type { AgentRun, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
 import { closesInDays, isClosable, roleColor, runActive, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
@@ -33,6 +33,43 @@ const COMPLETED_STATES = new Set<Thread["state"]>(["done", "cancelled"]);
 // just touched jumps to the front. Ties (and brand-new tasks) fall back to creation order.
 const byRecency = (a: Thread, b: Thread) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt;
 
+// Lifecycle rank for the "Status" sort: live work first (an agent is on it), then tasks waiting on a
+// human, then review, then the terminal outcomes. Exhaustive over ThreadState so adding a new state is
+// a typecheck error here, not a silently-unsorted card. Ties fall back to recency.
+const STATUS_RANK: Record<ThreadState, number> = {
+  intake: 0,
+  enriching: 0,
+  queued: 1,
+  planning: 2,
+  researching: 2,
+  implementing: 2,
+  qa: 2,
+  awaiting_user: 3,
+  awaiting_approval: 3,
+  paused: 4,
+  review: 5,
+  done: 6,
+  failed: 7,
+  cancelled: 8,
+  closed: 9,
+};
+
+// The repo folder (last path segment), lower-cased and sans separator — the key the user scans by when
+// sorting "by project". splitWorkspace keeps the leading slash for display, so strip it here.
+const repoKey = (t: Thread) => splitWorkspace(t.workspace).leaf.replace(/^[\\/]+/, "").toLowerCase();
+
+// The board sort options, in dropdown order. Each carries its comparator; byRecency is the shared
+// tiebreaker so equal-rank tasks still read newest-touched-first.
+const SORT_OPTIONS: { value: TaskSort; label: string; cmp: (a: Thread, b: Thread) => number }[] = [
+  { value: "created_desc", label: "Newest first", cmp: (a, b) => b.createdAt - a.createdAt },
+  { value: "created_asc", label: "Oldest first", cmp: (a, b) => a.createdAt - b.createdAt },
+  { value: "updated", label: "Last updated", cmp: byRecency },
+  { value: "status", label: "Status", cmp: (a, b) => STATUS_RANK[a.state] - STATUS_RANK[b.state] || byRecency(a, b) },
+  { value: "workspace", label: "Project", cmp: (a, b) => repoKey(a).localeCompare(repoKey(b)) || byRecency(a, b) },
+  { value: "title", label: "Alphabetical", cmp: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }) || byRecency(a, b) },
+];
+const sortComparator = (sort: TaskSort) => (SORT_OPTIONS.find((o) => o.value === sort) ?? SORT_OPTIONS[0]!).cmp;
+
 /** Lay the active board out by the owner's manual drag order. Tasks already in `order` keep their
  *  manual slot (so a live updatedAt bump never reshuffles them); tasks not yet placed — brand-new
  *  ones — lead by recency, matching the default board's feel until they're dragged. Stale ids in
@@ -49,6 +86,7 @@ export function Board() {
   const threads = useStore((s) => s.threads);
   const showCompleted = useStore((s) => s.showCompleted);
   const dndEnabled = useStore((s) => s.taskDragAndDrop);
+  const taskSort = useStore((s) => s.taskSort);
   const taskOrder = useStore((s) => s.taskOrder);
   const setTaskOrder = useStore((s) => s.setTaskOrder);
   const all = Object.values(threads);
@@ -59,8 +97,8 @@ export function Board() {
   // With drag-and-drop on, the manual order is authoritative (no recency re-sort, or cards would jump
   // out from under a drag on the next WS event); off, the board behaves exactly as it always has.
   const list = useMemo(
-    () => (dndEnabled ? orderByManual(active, taskOrder) : [...active].sort(byRecency)),
-    [dndEnabled, active, taskOrder],
+    () => (dndEnabled ? orderByManual(active, taskOrder) : [...active].sort(sortComparator(taskSort))),
+    [dndEnabled, active, taskOrder, taskSort],
   );
   const closed = all
     .filter((t) => t.state === "closed")
@@ -123,10 +161,14 @@ export function Board() {
     <main className="board">
       <div className="board-head">
         <h2>Tasks</h2>
-        <span className="faint mono" style={{ fontSize: 11 }}>
-          {list.length} total
-          {hiddenCompleted > 0 ? ` · ${hiddenCompleted} completed hidden` : ""}
-        </span>
+        <div className="board-head-right">
+          <span className="faint mono" style={{ fontSize: 11 }}>
+            {list.length} total
+            {hiddenCompleted > 0 ? ` · ${hiddenCompleted} completed hidden` : ""}
+          </span>
+          {/* The manual drag order is authoritative when DnD is on, so the sort control only appears off. */}
+          {dndEnabled ? null : <SortMenu />}
+        </div>
       </div>
       {list.length === 0 ? (
         <div className="empty">
@@ -162,6 +204,77 @@ export function Board() {
       )}
       <ClosedSection threads={closed} />
     </main>
+  );
+}
+
+/** The board sort control: a quiet trigger in the header that opens a listbox of sort options, reusing
+ *  the .ws-menu/.ws-opt pattern (downward variant). Self-contained — owns its open state and closes on
+ *  an outside click or Escape. Picking an option persists it via setTaskSort (survives reloads). */
+function SortMenu() {
+  const taskSort = useStore((s) => s.taskSort);
+  const setTaskSort = useStore((s) => s.setTaskSort);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const current = SORT_OPTIONS.find((o) => o.value === taskSort) ?? SORT_OPTIONS[0]!;
+  return (
+    <div className="sort-menu" ref={ref}>
+      <button
+        className="btn ghost sm sort-trigger"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Sort tasks"
+      >
+        <SortIcon />
+        <span className="sort-label">{current.label}</span>
+        <span className="sort-caret" aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      {open ? (
+        <ul className="ws-menu sort-list" role="listbox" aria-label="Sort tasks by">
+          {SORT_OPTIONS.map((o) => (
+            <li
+              key={o.value}
+              role="option"
+              aria-selected={o.value === taskSort}
+              className={"ws-opt" + (o.value === taskSort ? " hi" : "")}
+              onClick={() => {
+                setTaskSort(o.value);
+                setOpen(false);
+              }}
+            >
+              <span className="nm">{o.label}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/** A compact descending-bars glyph — the conventional "sort" affordance, drawn in currentColor. */
+function SortIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 4v16M6 4l-3 3M6 4l3 3" />
+      <path d="M13 5h7M13 10h5M13 15h3" />
+    </svg>
   );
 }
 
