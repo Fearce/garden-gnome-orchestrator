@@ -234,13 +234,14 @@ function SortMenu() {
   return (
     <div className="sort-menu" ref={ref}>
       <button
-        className="btn ghost sm sort-trigger"
+        className={"btn sm sort-trigger" + (open ? " open" : "")}
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
         title="Sort tasks"
       >
         <SortIcon />
+        <span className="sort-prefix">Sort:</span>
         <span className="sort-label">{current.label}</span>
         <span className="sort-caret" aria-hidden="true">
           ▾

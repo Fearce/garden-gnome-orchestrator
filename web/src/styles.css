@@ -625,13 +625,18 @@ button { font-family: inherit; cursor: pointer; }
 .board-head-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
 
 /* ---- board sort dropdown ---- */
-/* The trigger is a quiet ghost button; the menu reuses the .ws-menu/.ws-opt listbox but drops DOWN
-   from the header (the autocomplete variant opens upward) and right-aligns under the trigger. */
+/* A solid, self-evidently-clickable select: it reads as a control (filled .btn surface, "Sort:" prefix,
+   caret) so it's spotted at a glance in the header, not mistaken for a label. The menu reuses the
+   .ws-menu/.ws-opt listbox but drops DOWN from the header (the autocomplete variant opens upward) and
+   right-aligns under the trigger. */
 .sort-menu { position: relative; flex: 0 0 auto; }
 .sort-trigger { display: inline-flex; align-items: center; gap: 6px; }
-.sort-trigger svg { color: var(--text-faint); flex: 0 0 auto; }
-.sort-trigger .sort-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em; }
-.sort-trigger .sort-caret { font-size: 9px; color: var(--text-faint); line-height: 1; }
+.sort-trigger svg { color: var(--accent); flex: 0 0 auto; }
+.sort-trigger .sort-prefix { color: var(--text-faint); font-size: 12px; }
+.sort-trigger .sort-label { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--text); }
+.sort-trigger .sort-caret { font-size: 9px; color: var(--text-dim); line-height: 1; transition: transform 0.12s; }
+.sort-trigger.open { border-color: var(--accent); }
+.sort-trigger.open .sort-caret { transform: rotate(180deg); }
 .sort-list { left: auto; right: 0; bottom: auto; top: calc(100% + 4px); min-width: 168px; }
 .sort-list .ws-opt { justify-content: flex-start; }
 .lanes { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 13px; align-content: start; }
