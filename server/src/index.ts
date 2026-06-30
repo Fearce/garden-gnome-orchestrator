@@ -14,6 +14,7 @@ import { readCodexUsage } from "./agents/codexUsage.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
+import { startWebAutoBuild } from "./webAutoBuild.js";
 import { registerWs } from "./ws/hub.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -69,6 +70,7 @@ async function main(): Promise<void> {
   const manager = new ThreadManager(db, hub, memory, accounts);
   const director = new Director(manager, db, hub);
   accounts.start();
+  startWebAutoBuild();
 
   // Codex usage: the codex CLI persists its plan-wide rate-limit snapshot to the session rollout after
   // every turn, so we harvest live 5h/weekly meters for the top-bar Codex chip from real runs — no extra
