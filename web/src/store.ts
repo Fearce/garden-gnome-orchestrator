@@ -35,6 +35,14 @@ interface State {
   // top-bar "refresh for the new build" badge; an idle tab still auto-reloads, so this mainly persists
   // for an operator who's mid-typing and shouldn't be yanked out from under.
   updateReady: boolean;
+  // New upstream commits are available on the tracked git branch (update.ts poll). When `available`,
+  // the same top-bar badge offers to pull+rebuild+reload — always on a click, never automatically.
+  gitUpdate: GitUpdate | null;
+  // A badge-triggered git update is running (pull + rebuild, possibly a server restart). The badge
+  // shows a spinner and is disabled while true.
+  updateApplying: boolean;
+  // Last git-update failure message (pull rejected, build failed), surfaced on the badge; null when none.
+  updateError: string | null;
   authed: boolean;
   authRequired: boolean;
   authGoogle: boolean;
@@ -124,6 +132,19 @@ interface State {
   clearNotice: () => void;
   // Flag that a fresh web build is available (set by version.ts when the served bundle hash changes).
   setUpdateReady: (v: boolean) => void;
+  // Record the latest git-update poll result (set by update.ts).
+  setGitUpdate: (v: GitUpdate) => void;
+  // Pull + rebuild the checkout and reload onto the new build. Triggered by a badge click only.
+  applyGitUpdate: () => Promise<void>;
+}
+
+// What the git-update poll reports to the badge: whether the checkout is behind its upstream and by
+// how much, plus a little context for the tooltip.
+export interface GitUpdate {
+  available: boolean;
+  behind: number;
+  branch: string | null;
+  remoteSubject: string | null;
 }
 
 const lsBool = (k: string, d: boolean): boolean => {
@@ -266,6 +287,9 @@ function sendCommand(cmd: ClientCommand): void {
 export const useStore = create<State>((set) => ({
   connected: false,
   updateReady: false,
+  gitUpdate: null,
+  updateApplying: false,
+  updateError: null,
   authed: false,
   authRequired: false,
   authGoogle: false,
@@ -394,7 +418,50 @@ export const useStore = create<State>((set) => ({
   },
   clearNotice: () => set({ notice: null }),
   setUpdateReady: (v) => set({ updateReady: v }),
+  setGitUpdate: (v) => set({ gitUpdate: v }),
+  applyGitUpdate: async () => {
+    if (useStore.getState().updateApplying) return; // guard against a double-click
+    set({ updateApplying: true, updateError: null });
+    try {
+      const res = await fetch(apiUrl("/api/update/apply"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      });
+      const j = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; needsManualRestart?: boolean };
+      if (!res.ok || !j.ok) {
+        set({ updateApplying: false, updateError: j.error || "Update failed — check the server log." });
+        return;
+      }
+      // Success: the server rebuilt (and may be restarting). Wait for it to answer again, then reload
+      // onto the new build. A backend-only change with no reachable hub can't auto-restart — surface
+      // that the server still needs a manual restart, but reload so the rebuilt web is at least current.
+      await waitForServer();
+      if (j.needsManualRestart) {
+        useStore.setState({
+          notice: { title: "Updated — restart needed", message: "Pulled and rebuilt, but backend code changed and no script-hub was reachable to restart it. Restart the orchestrator to fully apply." },
+        });
+      }
+      location.reload();
+    } catch {
+      set({ updateApplying: false, updateError: "Update failed — check the server log." });
+    }
+  },
 }));
+
+/** Poll /api/health until the server answers (it may be mid-restart) or we give up, so a reload lands
+ *  on a live server rather than a connection error. */
+async function waitForServer(timeoutMs = 90_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const r = await fetch(apiUrl("/api/health"), { cache: "no-store" });
+      if (r.ok) return;
+    } catch {
+      /* still down — keep waiting */
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
 
 /** Which agent RUN a feed item belongs to. Keyed by runId (stable on the item) so retention
  *  never depends on run-arrival timing; a tool_result is grouped with its own run's items. */

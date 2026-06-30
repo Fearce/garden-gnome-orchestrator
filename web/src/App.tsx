@@ -16,7 +16,6 @@ type MobilePane = "director" | "board";
 
 export function App() {
   const connected = useStore((s) => s.connected);
-  const updateReady = useStore((s) => s.updateReady);
   const authRequired = useStore((s) => s.authRequired);
   const authed = useStore((s) => s.authed);
   const selected = useStore((s) => s.selectedThreadId);
@@ -52,7 +51,7 @@ export function App() {
         </span>
         <ApprovalToggle />
         <NotifyBell />
-        <UpdateBadge show={updateReady} />
+        <UpdateBadge />
         <div className="conn">
           <span className={"dot " + (connected ? "on" : "off")} />
           {connected ? "live" : "reconnecting…"}
@@ -257,22 +256,55 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
   );
 }
 
-function UpdateBadge({ show }: { show: boolean }) {
-  if (!show) return null;
+// One quiet top-bar affordance for "this app has an update". Two signals feed it: new upstream commits
+// on the tracked git branch (update.ts poll → pull+rebuild+reload on click) and a freshly-built bundle
+// already live on the server (version.ts → just reload). The git signal takes precedence — it's the
+// real upgrade; the bundle one is the post-deploy self-heal. Never auto-acts: applying is always a click.
+function UpdateBadge() {
+  const gitUpdate = useStore((s) => s.gitUpdate);
+  const updateReady = useStore((s) => s.updateReady);
+  const applying = useStore((s) => s.updateApplying);
+  const error = useStore((s) => s.updateError);
+  const applyGitUpdate = useStore((s) => s.applyGitUpdate);
+
+  const gitAvailable = !!gitUpdate?.available;
+  if (!gitAvailable && !updateReady && !applying) return null;
+
+  const behind = gitUpdate?.behind ?? 0;
+  const branch = gitUpdate?.branch ?? "master";
+  const title = applying
+    ? "Updating — pulling latest and rebuilding…"
+    : error
+      ? `${error} (click to retry)`
+      : gitAvailable
+        ? `Update available — ${behind} new commit${behind === 1 ? "" : "s"} on ${branch}. Click to pull, rebuild & reload.`
+        : "New build available — click to refresh.";
+
+  const onClick = (): void => {
+    if (applying) return;
+    if (gitAvailable || error) void applyGitUpdate();
+    else location.reload();
+  };
+
   return (
     <button
-      className="update-badge"
-      title="New build available — click to refresh"
-      aria-label="New build available — click to refresh"
-      onClick={() => location.reload()}
+      className={"update-badge" + (applying ? " applying" : "") + (error ? " error" : "")}
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      disabled={applying}
     >
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
-        <path d="M21 3v5h-5" />
-        <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
-        <path d="M3 21v-5h5" />
-      </svg>
-      <span className="update-dot" aria-hidden="true" />
+      {applying ? (
+        <span className="update-spinner" aria-hidden="true" />
+      ) : (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+          <path d="M21 3v5h-5" />
+          <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+          <path d="M3 21v-5h5" />
+        </svg>
+      )}
+      {!applying ? <span className="update-dot" aria-hidden="true" /> : null}
     </button>
   );
 }

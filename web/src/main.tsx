@@ -4,9 +4,11 @@ import "./styles.css";
 import { App } from "./App.js";
 import { init } from "./store.js";
 import { startVersionWatch } from "./lib/version.js";
+import { startUpdateWatch } from "./lib/update.js";
 
 void init();
 startVersionWatch();
+startUpdateWatch();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

@@ -15,6 +15,7 @@ import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
+import { refreshStatus, getStatus, applyUpdate, startUpdatePoll } from "./update.js";
 import { registerWs } from "./ws/hub.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -71,6 +72,8 @@ async function main(): Promise<void> {
   const director = new Director(manager, db, hub);
   accounts.start();
   startWebAutoBuild();
+  // Poll git for new upstream commits so the console can surface a quiet "update available" badge.
+  startUpdatePoll();
 
   // Codex usage: the codex CLI persists its plan-wide rate-limit snapshot to the session rollout after
   // every turn, so we harvest live 5h/weekly meters for the top-bar Codex chip from real runs — no extra
@@ -114,6 +117,25 @@ async function main(): Promise<void> {
     app.get("/api/version", async (_req, reply) => {
       reply.header("cache-control", "no-store");
       return { web: webBundleVersion() };
+    });
+
+    // How far the checkout is behind its git upstream — drives the quiet top-bar "update available"
+    // badge. `?refresh=1` forces a network fetch; otherwise it's served from the throttled cache (a
+    // background poll keeps it warm). Read-only and auth-gated.
+    app.get<{ Querystring: { refresh?: string } }>("/api/update/status", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      reply.header("cache-control", "no-store");
+      return req.query.refresh !== undefined ? await refreshStatus(true) : getStatus();
+    });
+
+    // Apply the update: `git pull --ff-only` + rebuild, and restart the process when server code
+    // changed. ALWAYS user-initiated (a badge click) — never automatic. Auth-gated; the action runs
+    // shell commands against this server's own checkout, so it must never be reachable unauthenticated.
+    app.post("/api/update/apply", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      const result = await applyUpdate();
+      if (!result.ok) return reply.code(409).send(result);
+      return result;
     });
 
     // ---- access auth: Google sign-in AND/OR a password (both valid) → signed session cookie ----

@@ -474,6 +474,22 @@ button { font-family: inherit; cursor: pointer; }
   50%      { box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) { .update-dot { animation: none; } }
+/* Applying a git update: the chip spins in place and is disabled; an errored attempt tints red so the
+   retry affordance reads as "something went wrong" rather than a fresh nudge. */
+.update-badge.applying { cursor: default; }
+.update-badge.error {
+  color: var(--danger); border-color: color-mix(in oklch, var(--danger) 45%, var(--line));
+  background: color-mix(in oklch, var(--danger) 8%, var(--bg-2));
+}
+.update-badge.error:hover { border-color: var(--danger); background: color-mix(in oklch, var(--danger) 16%, var(--bg-2)); }
+.update-spinner {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid color-mix(in oklch, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: update-spin 0.7s linear infinite;
+}
+@keyframes update-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .update-spinner { animation-duration: 2s; } }
 .rail-toggle {
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; border-radius: var(--r-sm); cursor: pointer;
