@@ -681,6 +681,35 @@ button { font-family: inherit; cursor: pointer; }
 }
 .card:hover .card-dismiss, .card .card-dismiss:focus-visible { opacity: 1; }
 .card .card-dismiss:hover { color: var(--danger); background: oklch(0.68 0.2 25 / 0.12); }
+/* Drag-to-reorder grip (only on a drag-enabled board): a quiet 6-dot handle in the card's top-left,
+   mirroring the ✕'s reveal-on-hover restraint. Only the handle carries the drag listeners, so the
+   card body still selects on click. The title gains a little left padding so the grip never overlaps it. */
+.card .card-grip {
+  position: absolute; top: 12px; left: 7px; z-index: 3;
+  display: flex; align-items: center; justify-content: center;
+  width: 16px; height: 18px; padding: 0; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--text-faint); cursor: grab;
+  opacity: 0; transition: opacity 0.12s, color 0.12s;
+  touch-action: none; /* the pointer sensor owns the gesture — don't let touch scroll steal it */
+}
+.card:hover .card-grip, .card .card-grip:focus-visible { opacity: 1; }
+.card .card-grip:hover { color: var(--text-dim); }
+.card .card-grip:active { cursor: grabbing; }
+.card.has-grip .title { padding-left: 18px; }
+/* The slot a card leaves behind mid-drag dims to a dashed placeholder; the lifted clone the pointer
+   carries lives in .card-drag-overlay (rendered via dnd-kit's DragOverlay). */
+.card.dragging { opacity: 0.4; }
+.card.dragging::after {
+  content: ""; position: absolute; inset: 0; border-radius: var(--r-lg);
+  border: 1px dashed var(--line-strong); pointer-events: none;
+}
+.card-drag-overlay { cursor: grabbing; }
+.card-drag-overlay .card {
+  border-color: var(--line-strong); box-shadow: var(--shadow-2);
+  transform: scale(1.02); transition: transform 0.12s ease;
+}
+.card-drag-overlay .card-grip { opacity: 1; color: var(--text-dim); cursor: grabbing; }
+@media (prefers-reduced-motion: reduce) { .card-drag-overlay .card { transform: none; } }
 .card .title { font-size: 15px; font-weight: 600; line-height: 1.3; padding-right: 22px; }
 /* The target repo is a primary scan target (which task to open/resume), so it's a distinct chip:
    the repo folder (leaf) is bright + bold and never truncates; the parent path dims and gives way. */

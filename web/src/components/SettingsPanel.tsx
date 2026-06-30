@@ -11,6 +11,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setShowCompleted = useStore((s) => s.setShowCompleted);
   const verbosity = useStore((s) => s.verbosity);
   const setVerbosity = useStore((s) => s.setVerbosity);
+  const taskDragAndDrop = useStore((s) => s.taskDragAndDrop);
+  const setTaskDragAndDrop = useStore((s) => s.setTaskDragAndDrop);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -75,6 +77,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               { value: "full", label: "Full" },
             ]}
             onChange={setVerbosity}
+          />
+          <ToggleRow
+            label="Drag to reorder"
+            hint="On: a grip appears on each card — drag to arrange the board by hand. Suspends the automatic most-recent-first ordering and remembers your order."
+            on={taskDragAndDrop}
+            onChange={setTaskDragAndDrop}
           />
         </Group>
 

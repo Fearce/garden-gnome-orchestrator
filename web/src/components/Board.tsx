@@ -1,5 +1,18 @@
-import { memo, useEffect, useState, type CSSProperties } from "react";
+import { memo, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useStore } from "../store.js";
 import type { AgentRun, Role, Thread } from "../types.js";
 import { repoRoom } from "../types.js";
@@ -16,18 +29,39 @@ const PER_PAGE = 15;
 // review/failed stay visible because they still want the owner's attention.
 const COMPLETED_STATES = new Set<Thread["state"]>(["done", "cancelled"]);
 
+// Most-recently-active first: a state change, an inject, or a resume bumps updatedAt, so a task you
+// just touched jumps to the front. Ties (and brand-new tasks) fall back to creation order.
+const byRecency = (a: Thread, b: Thread) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt;
+
+/** Lay the active board out by the owner's manual drag order. Tasks already in `order` keep their
+ *  manual slot (so a live updatedAt bump never reshuffles them); tasks not yet placed — brand-new
+ *  ones — lead by recency, matching the default board's feel until they're dragged. Stale ids in
+ *  `order` (closed/dismissed since) simply fall away because they're no longer in the active set. */
+function orderByManual(active: Thread[], order: string[]): Thread[] {
+  const byId = new Map(active.map((t) => [t.id, t]));
+  const placed = new Set(order);
+  const fresh = active.filter((t) => !placed.has(t.id)).sort(byRecency);
+  const kept = order.map((id) => byId.get(id)).filter((t): t is Thread => !!t);
+  return [...fresh, ...kept];
+}
+
 export function Board() {
   const threads = useStore((s) => s.threads);
   const showCompleted = useStore((s) => s.showCompleted);
+  const dndEnabled = useStore((s) => s.taskDragAndDrop);
+  const taskOrder = useStore((s) => s.taskOrder);
+  const setTaskOrder = useStore((s) => s.setTaskOrder);
   const all = Object.values(threads);
-  // Most-recently-active first: a state change, an inject, or a resume bumps updatedAt, so a task
-  // you just touched jumps to the front. Ties (and brand-new tasks) fall back to creation order.
   // Closed tasks are pulled out of the main board into the Closed holding area below; completed tasks
   // are hidden too when the owner turned that off in settings.
   const hiddenCompleted = !showCompleted ? all.filter((t) => COMPLETED_STATES.has(t.state)).length : 0;
-  const list = all
-    .filter((t) => t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)))
-    .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+  const active = all.filter((t) => t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)));
+  // With drag-and-drop on, the manual order is authoritative (no recency re-sort, or cards would jump
+  // out from under a drag on the next WS event); off, the board behaves exactly as it always has.
+  const list = useMemo(
+    () => (dndEnabled ? orderByManual(active, taskOrder) : [...active].sort(byRecency)),
+    [dndEnabled, active, taskOrder],
+  );
   const closed = all
     .filter((t) => t.state === "closed")
     .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));
@@ -39,6 +73,46 @@ export function Board() {
   }, [pageCount, page]);
   const cur = Math.min(page, pageCount - 1);
   const pageItems = list.slice(cur * PER_PAGE, cur * PER_PAGE + PER_PAGE);
+
+  // Keep the persisted order canonical while DnD is on: fold brand-new tasks in (at their fresh-lead
+  // slot) and drop stale ids, so localStorage doesn't accumulate cruft and a new task's position is
+  // remembered before it's ever dragged. Converges in one pass — the next render finds them equal.
+  const orderSig = list.map((t) => t.id).join("\n");
+  useEffect(() => {
+    if (!dndEnabled) return;
+    const canonical = orderSig ? orderSig.split("\n") : [];
+    const same = canonical.length === taskOrder.length && canonical.every((id, i) => id === taskOrder[i]);
+    if (!same) setTaskOrder(canonical);
+  }, [dndEnabled, orderSig, taskOrder, setTaskOrder]);
+
+  const sensors = useSensors(
+    // A small activation distance so a click on the grip still selects nearby UI / opens the card,
+    // and only a deliberate drag starts a reorder.
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const activeThread = activeId ? threads[activeId] : undefined;
+
+  const onDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
+  const onDragEnd = (e: DragEndEvent) => {
+    setActiveId(null);
+    const { active: a, over } = e;
+    if (!over || a.id === over.id) return;
+    // Map the dragged/target ids to their positions in the FULL ordered list (not the visible page)
+    // so reordering on page 2 lands correctly; arrayMove then yields the new full order to persist.
+    const ids = list.map((t) => t.id);
+    const from = ids.indexOf(String(a.id));
+    const to = ids.indexOf(String(over.id));
+    if (from < 0 || to < 0) return;
+    setTaskOrder(arrayMove(ids, from, to));
+  };
+
+  const lanes = (
+    <div className="lanes">
+      {pageItems.map((t) => (dndEnabled ? <SortableCard key={t.id} thread={t} /> : <Card key={t.id} thread={t} />))}
+    </div>
+  );
 
   return (
     <main className="board">
@@ -56,11 +130,16 @@ export function Board() {
         </div>
       ) : (
         <>
-          <div className="lanes">
-            {pageItems.map((t) => (
-              <Card key={t.id} thread={t} />
-            ))}
-          </div>
+          {dndEnabled ? (
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setActiveId(null)}>
+              <SortableContext items={pageItems.map((t) => t.id)} strategy={rectSortingStrategy}>
+                {lanes}
+              </SortableContext>
+              <DragOverlay>{activeThread ? <div className="card-drag-overlay"><Card thread={activeThread} /></div> : null}</DragOverlay>
+            </DndContext>
+          ) : (
+            lanes
+          )}
           {pageCount > 1 ? (
             <div className="pager">
               <button className="btn ghost sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={cur === 0}>
@@ -197,7 +276,21 @@ function WorkspacePath({ path }: { path: string }) {
 
 // Memoized + each subscription is narrowed to THIS thread, so a card re-renders only when its own
 // runs/findings/feed/draft/selection change — not on every WS event for any task on the board.
-const Card = memo(function Card({ thread }: { thread: Thread }) {
+// The drag props (innerRef/style/dragging/handle) are absent on a non-draggable board, so the OFF
+// path renders byte-for-byte as before and memo still short-circuits on an unchanged thread.
+const Card = memo(function Card({
+  thread,
+  innerRef,
+  style,
+  dragging,
+  handle,
+}: {
+  thread: Thread;
+  innerRef?: (el: HTMLElement | null) => void;
+  style?: CSSProperties;
+  dragging?: boolean;
+  handle?: ReactNode;
+}) {
   // useShallow keeps the array reference stable when this thread's run set is unchanged.
   const threadRuns = useStore(useShallow((s) => Object.values(s.runs).filter((r) => r.threadId === thread.id)));
   const findCount = useStore((s) => s.findings.reduce((n, f) => (f.threadId === thread.id ? n + 1 : n), 0));
@@ -230,10 +323,12 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
 
   return (
     <div
-      className={"card" + (selected ? " sel" : "") + (live ? " live" : "")}
-      style={{ "--state-color": stateColor(thread.state) } as CSSProperties}
+      ref={innerRef}
+      className={"card" + (selected ? " sel" : "") + (live ? " live" : "") + (dragging ? " dragging" : "") + (handle ? " has-grip" : "")}
+      style={{ "--state-color": stateColor(thread.state), ...style } as CSSProperties}
       onClick={() => select(thread.id)}
     >
+      {handle ?? null}
       {canClose ? (
         <button
           className="card-dismiss"
@@ -308,3 +403,40 @@ const Card = memo(function Card({ thread }: { thread: Thread }) {
     </div>
   );
 });
+
+/** A board Card made sortable. dnd-kit's transform/transition drive the live shuffle; the active slot
+ *  dims to a placeholder (the lifted clone lives in the board's DragOverlay). Drag listeners are scoped
+ *  to the grip handle only — the rest of the card still selects on click and closes via its ✕. */
+function SortableCard({ thread }: { thread: Thread }) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: thread.id });
+  const style: CSSProperties = { transform: CSS.Transform.toString(transform), transition };
+  const handle = (
+    <button
+      ref={setActivatorNodeRef}
+      className="card-grip"
+      title="Drag to reorder"
+      aria-label={`Reorder ${thread.title}`}
+      onClick={(e) => e.stopPropagation()}
+      {...attributes}
+      {...listeners}
+    >
+      <GripIcon />
+    </button>
+  );
+  return <Card thread={thread} innerRef={setNodeRef} style={style} dragging={isDragging} handle={handle} />;
+}
+
+/** A quiet 6-dot gripper — the universal "drag me" affordance, drawn in currentColor so the card's
+ *  hover/active grip colors flow straight through. */
+function GripIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+      <circle cx="4" cy="2.5" r="1.1" />
+      <circle cx="8" cy="2.5" r="1.1" />
+      <circle cx="4" cy="6" r="1.1" />
+      <circle cx="8" cy="6" r="1.1" />
+      <circle cx="4" cy="9.5" r="1.1" />
+      <circle cx="8" cy="9.5" r="1.1" />
+    </svg>
+  );
+}

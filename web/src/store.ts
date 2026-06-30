@@ -58,6 +58,12 @@ interface State {
   // what this browser shows, so they never round-trip to the server.
   showCompleted: boolean;
   verbosity: Verbosity;
+  // When on, the board stops auto-sorting by recency and honors the manual drag order in `taskOrder`.
+  taskDragAndDrop: boolean;
+  // The manual board order (active thread ids, front-to-back). Only consulted while taskDragAndDrop is
+  // on; persisted under `orch-task-order` so a reorder survives reloads. Stale/new ids are reconciled
+  // against the live thread set at render time, so this list is allowed to drift out of sync.
+  taskOrder: string[];
   pendingPlans: Record<string, string>;
   threadChanges: Record<string, { diff: string; log: string }>;
   railHidden: boolean;
@@ -92,6 +98,8 @@ interface State {
   setAccountEnabled: (id: string, enabled: boolean) => void;
   setShowCompleted: (v: boolean) => void;
   setVerbosity: (v: Verbosity) => void;
+  setTaskDragAndDrop: (v: boolean) => void;
+  setTaskOrder: (ids: string[]) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
   loadChanges: (threadId: string) => void;
   toggleRail: () => void;
@@ -137,8 +145,10 @@ const VIEW_SETTINGS_KEY = "director_settings";
 interface ViewSettings {
   showCompleted: boolean;
   verbosity: Verbosity;
+  // Off by default: the board keeps its automatic most-recent-first ordering until the owner opts in.
+  taskDragAndDrop: boolean;
 }
-const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full" };
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false };
 const loadViewSettings = (): ViewSettings => {
   try {
     const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
@@ -147,12 +157,29 @@ const loadViewSettings = (): ViewSettings => {
     return {
       showCompleted: typeof v.showCompleted === "boolean" ? v.showCompleted : VIEW_DEFAULTS.showCompleted,
       verbosity: v.verbosity === "compact" || v.verbosity === "full" ? v.verbosity : VIEW_DEFAULTS.verbosity,
+      taskDragAndDrop: typeof v.taskDragAndDrop === "boolean" ? v.taskDragAndDrop : VIEW_DEFAULTS.taskDragAndDrop,
     };
   } catch {
     return VIEW_DEFAULTS;
   }
 };
 const saveViewSettings = (v: ViewSettings): void => lsSet(VIEW_SETTINGS_KEY, JSON.stringify(v));
+
+// The manual board order persists on its own key (it's a list, not a flag, and churns far more often
+// than the view toggles). A bad/old payload degrades to "no manual order" — the board then renders by
+// recency until the next drag rewrites it.
+const TASK_ORDER_KEY = "orch-task-order";
+const loadTaskOrder = (): string[] => {
+  try {
+    const raw = localStorage.getItem(TASK_ORDER_KEY);
+    if (!raw) return [];
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+};
+const saveTaskOrder = (ids: string[]): void => lsSet(TASK_ORDER_KEY, JSON.stringify(ids));
 
 // Until the first `hello` arrives the panel shows these neutral defaults (everything on); the server's
 // real values overwrite them the instant the socket connects.
@@ -236,6 +263,8 @@ export const useStore = create<State>((set) => ({
   codexTesting: false,
   showCompleted: loadViewSettings().showCompleted,
   verbosity: loadViewSettings().verbosity,
+  taskDragAndDrop: loadViewSettings().taskDragAndDrop,
+  taskOrder: loadTaskOrder(),
   pendingPlans: {},
   threadChanges: {},
   railHidden: lsBool("orch-rail-hidden", false),
@@ -287,14 +316,23 @@ export const useStore = create<State>((set) => ({
   },
   setShowCompleted: (v) =>
     set((s) => {
-      saveViewSettings({ showCompleted: v, verbosity: s.verbosity });
+      saveViewSettings({ showCompleted: v, verbosity: s.verbosity, taskDragAndDrop: s.taskDragAndDrop });
       return { showCompleted: v };
     }),
   setVerbosity: (v) =>
     set((s) => {
-      saveViewSettings({ showCompleted: s.showCompleted, verbosity: v });
+      saveViewSettings({ showCompleted: s.showCompleted, verbosity: v, taskDragAndDrop: s.taskDragAndDrop });
       return { verbosity: v };
     }),
+  setTaskDragAndDrop: (v) =>
+    set((s) => {
+      saveViewSettings({ showCompleted: s.showCompleted, verbosity: s.verbosity, taskDragAndDrop: v });
+      return { taskDragAndDrop: v };
+    }),
+  setTaskOrder: (ids) => {
+    saveTaskOrder(ids);
+    set({ taskOrder: ids });
+  },
   approve: (threadId, approved, feedback) => sendCommand({ type: "thread.approve", threadId, approved, feedback }),
   loadChanges: (threadId) => sendCommand({ type: "thread.changes", threadId }),
   toggleRail: () =>
