@@ -2157,6 +2157,10 @@ export class ThreadManager implements OrchestratorApi {
     this.db.resetThreadForRetry(threadId);
     this.hub.publish({ type: "thread.reset", threadId });
 
+    // Leave the 'cancelled' state BEFORE dispatch — the pipeline's cancelled() guards (and the "planner
+    // disabled → no early setState('planning')" branch) would otherwise abort the retry as a silent no-op,
+    // leaving the task stuck in 'cancelled' with an ok:true response and no agent ever running.
+    this.setState(threadId, "queued");
     this.hub.log("info", `Retrying task ${threadId.slice(0, 8)} from the top.`);
     this.enqueueOrRun(threadId);
     // enqueueOrRun either started the pipeline synchronously (slot free → now on activePipelines) or
