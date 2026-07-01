@@ -149,9 +149,27 @@ export class AccountManager {
     st.usageAt = now;
     st.usageStale = false;
     st.error = null;
-    st.rateLimited = u.fiveHourRejected || u.sevenDayRejected;
-    st.rateLimitWindow = u.fiveHourRejected ? "five_hour" : u.sevenDayRejected ? "seven_day" : null;
-    st.rateLimitResetAt = u.fiveHourRejected ? u.fiveHourReset : u.sevenDayRejected ? u.sevenDayReset : null;
+    // Preserve a run-flagged cap whose reset is still in the future. A per-session ("You've hit your
+    // session limit") cap is invisible to these 5h/weekly headers, so a routine ping would otherwise
+    // read the windows as clear and wipe the cap — un-freezing the account, which then gets a parked
+    // task auto-resumed straight back into the same limit. A header-visible 5h/weekly cap isn't affected:
+    // once its window resets, its stored reset is in the past, so this hold lapses and the header truth wins.
+    const capHold = st.rateLimited && st.rateLimitResetAt != null && st.rateLimitResetAt > now;
+    if (u.fiveHourRejected) {
+      st.rateLimited = true;
+      st.rateLimitWindow = "five_hour";
+      st.rateLimitResetAt = u.fiveHourReset;
+    } else if (u.sevenDayRejected) {
+      st.rateLimited = true;
+      st.rateLimitWindow = "seven_day";
+      st.rateLimitResetAt = u.sevenDayReset;
+    } else if (capHold) {
+      st.rateLimited = true; // keep the existing window/reset — the cap is real but not header-visible yet
+    } else {
+      st.rateLimited = false;
+      st.rateLimitWindow = null;
+      st.rateLimitResetAt = null;
+    }
     st.updatedAt = now;
     this.scheduleResetPing(a, u);
   }
@@ -288,6 +306,13 @@ export class AccountManager {
   auxToken(): string | undefined {
     const pick = (this.preferredId ? this.states.get(this.preferredId)?.account : undefined) ?? this.accounts[0];
     return pick?.token || undefined;
+  }
+
+  /** How many Claude subscriptions are configured (one account per setup-token; a single synthetic
+   *  "logged-in" account when none are). Lets callers phrase an all-capped message for the real count
+   *  instead of assuming two. */
+  count(): number {
+    return this.accounts.length;
   }
 
   /**
