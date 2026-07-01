@@ -1144,7 +1144,8 @@ export class ThreadManager implements OrchestratorApi {
     });
     // Wrap pasted images into the kickoff only when STARTING a fresh session. On a resume the prior
     // session already holds them in context, so re-attaching the base64 would re-bill vision tokens
-    // for no gain (and a failover can relaunch several times). (Codex flattens any image blocks to text.)
+    // for no gain (and a failover can relaunch several times). Both backends honor the image blocks —
+    // Claude natively, Codex by materializing them to temp files and attaching via `codex --image`.
     agent.start(opts?.resume ? kickoff : this.kickoffContent(thread.id, startKickoff));
     return { run: agent, runId, accountId };
   }

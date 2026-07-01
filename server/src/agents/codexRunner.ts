@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, RateLimitInfo } from "../types.js";
@@ -23,9 +23,8 @@ export interface CodexRunConfig {
   freshFallback?: string;
 }
 
-/** Pull the plain text out of a UserContent (string or content-block array). The Codex CLI takes a
- *  single text prompt on argv, so pasted-image blocks (Claude-only) are dropped — Codex implementors
- *  run text-only, a documented degradation vs. the Claude backend. */
+/** Pull the plain text out of a UserContent (string or content-block array). Image blocks are handled
+ *  separately by toImages — pasted screenshots reach a Codex turn as `--image <file>` args, not text. */
 function toText(content: UserContent): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -35,6 +34,37 @@ function toText(content: UserContent): string {
       .join("\n");
   }
   return String(content ?? "");
+}
+
+/** A pasted image pulled out of a UserContent, in the Anthropic base64 shape the SDK/bus produce. */
+interface CodexImage {
+  mediaType: string;
+  dataBase64: string;
+}
+
+/** Extract the base64 image blocks from a UserContent. The Codex CLI can't take inline image data, but
+ *  `codex exec [resume]` accepts `-i/--image <FILE>`, so these are written to temp files at spawn time
+ *  and attached — the same screenshots the Claude backend sees, no longer a Codex-only blind spot. */
+function toImages(content: UserContent): CodexImage[] {
+  if (!Array.isArray(content)) return [];
+  const out: CodexImage[] = [];
+  for (const b of content) {
+    if (!b || typeof b !== "object" || (b as { type?: string }).type !== "image") continue;
+    const src = (b as { source?: { type?: string; media_type?: string; data?: unknown } }).source;
+    if (src?.type === "base64" && typeof src.data === "string") {
+      out.push({ mediaType: String(src.media_type ?? "image/png"), dataBase64: src.data });
+    }
+  }
+  return out;
+}
+
+/** File extension for an image temp file, driven off the media type the paste carried. */
+function imageExt(mediaType: string): string {
+  const sub = mediaType.split("/")[1]?.toLowerCase();
+  if (sub === "jpeg" || sub === "jpg") return "jpg";
+  if (sub === "gif") return "gif";
+  if (sub === "webp") return "webp";
+  return "png";
 }
 
 interface CodexItem {
@@ -176,7 +206,13 @@ export class CodexAgentRun implements AgentRunLike {
   private stdoutBuf = "";
   private lastErrorMsg: string | undefined;
   private sawTerminal = false; // turn.completed / turn.failed seen for the current turn
-  private readonly pendingSends: string[] = [];
+  private readonly pendingSends: { text: string; images: CodexImage[] }[] = [];
+  // Images pasted with the initial kickoff, kept so a self-healed wedged-resume fresh restart re-attaches
+  // them (the freshFallback string carries only doctrine + task). Temp files written per turn live in
+  // turnImagePaths and are unlinked once that turn closes; imgCounter keeps their names unique.
+  private firstImages: CodexImage[] = [];
+  private turnImagePaths: string[] = [];
+  private imgCounter = 0;
   // No-output watchdog: a wedged `codex exec [resume]` hangs at 0% CPU emitting nothing and never
   // exits, so onTurnClose never fires and the task hangs forever. armWatchdog() (re)arms a deadline
   // on spawn and on every parsed event; firing it kills the child so onTurnClose synthesizes a failure
@@ -195,7 +231,8 @@ export class CodexAgentRun implements AgentRunLike {
   }
 
   start(firstMessage: UserContent): this {
-    void this.runTurn(toText(firstMessage), this.cfg.resume);
+    this.firstImages = toImages(firstMessage);
+    void this.runTurn(toText(firstMessage), this.cfg.resume, this.firstImages);
     return this;
   }
 
@@ -214,12 +251,13 @@ export class CodexAgentRun implements AgentRunLike {
   send(content: UserContent, _opts?: SendOpts): void {
     if (this.stopped) return;
     const text = toText(content);
-    if (!text.trim()) return;
+    const images = toImages(content);
+    if (!text.trim() && !images.length) return;
     if (this.turnActive) {
-      this.pendingSends.push(text);
+      this.pendingSends.push({ text, images });
       return;
     }
-    void this.runTurn(text, this.sessionId);
+    void this.runTurn(text, this.sessionId, images);
   }
 
   async interrupt(): Promise<void> {
@@ -307,8 +345,41 @@ export class CodexAgentRun implements AgentRunLike {
     return isolatedAuthMode() ?? "none";
   }
 
-  /** Spawn one `codex exec` (or `codex exec resume <id>`) turn and stream its JSONL events. */
-  private async runTurn(prompt: string, resumeId?: string): Promise<void> {
+  /** Write this turn's pasted images to temp files under CODEX_HOME and return their paths. Best-effort:
+   *  an image that fails to write is skipped rather than sinking the turn. The paths are remembered in
+   *  turnImagePaths and unlinked once the turn closes (they exist only long enough for codex to read). */
+  private async writeImages(images: CodexImage[]): Promise<string[]> {
+    void this.cleanupImages(); // clear any leftovers from the prior turn before it's reassigned
+    if (!images.length) {
+      this.turnImagePaths = [];
+      return [];
+    }
+    const dir = join(config.codex.home, "prompt-images");
+    await mkdir(dir, { recursive: true }).catch(() => {});
+    const paths: string[] = [];
+    for (const img of images) {
+      const p = join(dir, `p${process.pid}-${++this.imgCounter}.${imageExt(img.mediaType)}`);
+      try {
+        await writeFile(p, Buffer.from(img.dataBase64, "base64"));
+        paths.push(p);
+      } catch {
+        /* skip an unwritable image rather than fail the whole turn */
+      }
+    }
+    this.turnImagePaths = paths;
+    return paths;
+  }
+
+  /** Delete the temp image files from the last turn (fire-and-forget; missing files are fine). */
+  private cleanupImages(): void {
+    const paths = this.turnImagePaths;
+    this.turnImagePaths = [];
+    for (const p of paths) void unlink(p).catch(() => {});
+  }
+
+  /** Spawn one `codex exec` (or `codex exec resume <id>`) turn and stream its JSONL events. Any pasted
+   *  images are written to temp files and attached via `--image` (both subcommands accept it). */
+  private async runTurn(prompt: string, resumeId?: string, images: CodexImage[] = []): Promise<void> {
     if (this.stopped) return;
     if (!existsSync(config.codex.binJs)) {
       this.finishTurn({ subtype: "error", isError: true, result: `Codex CLI not found at ${config.codex.binJs}. Install it with \`npm i -g @openai/codex\` or set CODEX_BIN_JS.` });
@@ -322,9 +393,12 @@ export class CodexAgentRun implements AgentRunLike {
     // must exist before spawn or codex errors + exits 1.
     await mkdir(config.codex.home, { recursive: true }).catch(() => {});
     const authMode = await this.writeAuth().catch(() => "none" as const);
+    // Materialize pasted screenshots to temp files up front — codex attaches them by path via --image.
+    const imagePaths = await this.writeImages(images);
     const args = ["exec"];
     if (resumeId) args.push("resume", resumeId);
     args.push("--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox");
+    for (const p of imagePaths) args.push("--image", p);
     // `--color` and `-C/--cd` are global flags on the fresh `codex exec` subcommand but are NOT
     // accepted by `codex exec resume` (the CLI rejects them with "unexpected argument '--color'",
     // killing every resume turn in ~2s and stranding the task on its first fresh turn). The spawn()
@@ -517,6 +591,8 @@ export class CodexAgentRun implements AgentRunLike {
     this.turnActive = false;
     this.child = undefined;
     this.clearWatchdog();
+    // codex has already read this turn's attached images by now — drop the temp files.
+    this.cleanupImages();
     const wasInterrupt = this.interrupting;
     this.interrupting = false;
     if (this.stopped) {
@@ -530,9 +606,11 @@ export class CodexAgentRun implements AgentRunLike {
     // fresh resume turn rather than ending, so the steering isn't dropped. If the turn died before a
     // session id was captured, start fresh (no resume) so the steering still lands.
     if (this.pendingSends.length) {
-      const next = this.pendingSends.splice(0, this.pendingSends.length).join("\n\n");
+      const batch = this.pendingSends.splice(0, this.pendingSends.length);
+      const next = batch.map((s) => s.text).filter(Boolean).join("\n\n");
+      const imgs = batch.flatMap((s) => s.images);
       this.lastResult = undefined; // the chained turn produces the next result()
-      void this.runTurn(next, this.sessionId);
+      void this.runTurn(next, this.sessionId, imgs);
       return;
     }
     // A bare interrupt (the Pause control) with no follow-up: stay alive like a paused Claude run —
@@ -548,7 +626,7 @@ export class CodexAgentRun implements AgentRunLike {
       this.lastResult = undefined;
       this.lastErrorMsg = undefined;
       this.emit({ type: "text", text: "⚠️ Codex `exec resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved." });
-      void this.runTurn(this.cfg.freshFallback, undefined);
+      void this.runTurn(this.cfg.freshFallback, undefined, this.firstImages);
       return;
     }
     // The process exited without a terminal turn event AND it wasn't an intentional interrupt —
