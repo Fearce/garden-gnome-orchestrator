@@ -545,6 +545,21 @@ export class ThreadManager implements OrchestratorApi {
     const thread = this.db.createThread({ title: input.title, workspace: input.workspace, rawPrompt: "", brief: input.brief });
     if (input.images?.length) this.dispatchImages.set(thread.id, input.images.map(toImageBlock));
     this.hub.publish({ type: "thread.upsert", thread });
+    // Screenshots attached to the dispatching message reach the implementor model via dispatchImages
+    // (transient blocks), but the feed only renders images it can find as attachment rows. Persist
+    // them and echo a feed row — exactly what injectThread does — so a screenshot the owner sent with
+    // the brief shows as a thumbnail under the brief instead of vanishing.
+    if (input.images?.length) {
+      const refs = input.images.map((img) => this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }));
+      const m = this.db.addMessage({
+        threadId: thread.id,
+        role: "director",
+        kind: "system",
+        content: input.images.length === 1 ? "Image attached to the brief." : `${input.images.length} images attached to the brief.`,
+        attachments: refs,
+      });
+      this.hub.publish({ type: "thread.message", threadId: thread.id, message: m });
+    }
     this.hub.log("info", `Dispatched task ${thread.id.slice(0, 8)} "${thread.title}"`);
     this.enqueueOrRun(thread.id);
     return thread.id;
