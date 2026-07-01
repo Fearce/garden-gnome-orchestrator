@@ -629,6 +629,13 @@ button { font-family: inherit; cursor: pointer; }
 }
 .stepper-val:focus { background: var(--bg); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 62%, transparent); }
 
+/* free-text setting control (e.g. the director name) — a fixed-width field in the row's control slot */
+.settings-row .text-input {
+  flex: none; width: 160px; height: 28px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--text); font-size: 13px; padding: 0 10px; outline: none;
+}
+.settings-row .text-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
+
 /* segmented control */
 .segment { flex: none; display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); overflow: hidden; }
 .segment button {

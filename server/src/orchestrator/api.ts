@@ -97,6 +97,9 @@ export interface OrchestratorApi {
    *  deterministic per-(thread, role) default. Each role in a task is a distinct agent with its own name. */
   officeName(threadId: string, role: Role): string;
 
+  /** The director persona's operator-chosen display name (from Settings; default "ChangeNameInSettings"). */
+  directorName(): string;
+
   /** Let an agent pick/rename its own office gnome (per role); returns the stored name (trimmed/clamped). */
   setOfficeName(threadId: string, role: Role, name: string): string;
 

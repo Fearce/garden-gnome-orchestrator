@@ -21,6 +21,7 @@ export function Director() {
   const sendPrompt = useStore((s) => s.sendPrompt);
   const sendDirect = useStore((s) => s.sendDirect);
   const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
+  const directorName = useStore((s) => s.settings.directorName);
   const setSettings = useStore((s) => s.setSettings);
   // Skip-director mode + the recent-repo list live in the server-persisted settings so they survive a
   // reload on ANY surface (see the repoLabel note above). setSettings is optimistic, so toggling/adding
@@ -106,9 +107,9 @@ export function Director() {
               <Gnome role="director" size={28} />
             </span>
             <div className="rail-head-title">
-              <h2>Director</h2>
+              <h2>{directorName}</h2>
               <span className="dim mono" style={{ fontSize: 11 }}>
-                {busy ? "thinking…" : "sonnet 4.6 · ready"}
+                {busy ? "director · thinking…" : "director · sonnet 4.6"}
               </span>
             </div>
           </div>
@@ -128,7 +129,7 @@ export function Director() {
         ))}
         {draft && (
           <div className="msg director draft">
-            <div className="by">director</div>
+            <div className="by">{directorName}</div>
             <div className="bubble">{draft}</div>
           </div>
         )}
@@ -299,6 +300,7 @@ function AgentToggles() {
 }
 
 function DirectorBubble({ item }: { item: DirectorItem }) {
+  const directorName = useStore((s) => s.settings.directorName);
   if (item.kind === "tool") {
     return (
       <div className="tool-chip" title={item.toolName + (item.text ? ` · ${item.text}` : "")}>
@@ -309,7 +311,7 @@ function DirectorBubble({ item }: { item: DirectorItem }) {
   }
   return (
     <div className={"msg " + item.kind}>
-      <div className="by">{item.kind === "user" ? "you" : "director"}</div>
+      <div className="by">{item.kind === "user" ? "you" : directorName}</div>
       <div className="bubble">
         {item.kind === "user" ? item.text : <Markdown text={item.text} />}
         <MessageThumbs refs={item.attachments} />

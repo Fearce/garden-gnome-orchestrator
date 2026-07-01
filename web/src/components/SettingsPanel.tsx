@@ -73,6 +73,17 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           )}
         </Group>
 
+        <Group label="Director">
+          <TextRow
+            label="Director name"
+            hint="What your Sonnet director is called across the console and the office chat. Pick a name so it reads as yours."
+            value={settings.directorName}
+            placeholder="ChangeNameInSettings"
+            maxLength={40}
+            onChange={(v) => setSettings({ directorName: v })}
+          />
+        </Group>
+
         <Group label="Subscriptions">
           <SubscriptionsSection />
         </Group>
@@ -495,6 +506,57 @@ function NumberRow({
             +
           </button>
         </div>
+      }
+    />
+  );
+}
+
+/** A free-text setting that commits on blur / Enter (not per keystroke), so a name change is sent once.
+ *  An empty value is allowed through — the server falls back to its default placeholder for it. */
+function TextRow({
+  label,
+  hint,
+  value,
+  placeholder,
+  maxLength,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: string;
+  placeholder?: string;
+  maxLength?: number;
+  onChange: (v: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    const v = draft.trim();
+    if (v !== value) onChange(v);
+    else setDraft(value);
+  };
+  return (
+    <Row
+      label={label}
+      hint={hint}
+      control={
+        <input
+          className="text-input"
+          value={draft}
+          spellCheck={false}
+          autoComplete="off"
+          placeholder={placeholder}
+          maxLength={maxLength}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setDraft(value);
+            }
+          }}
+        />
       }
     />
   );

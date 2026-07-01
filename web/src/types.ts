@@ -227,6 +227,7 @@ export interface OrchestratorSettings {
   researcherEnabled: boolean;
   qaEnabled: boolean;
   autoPush: boolean;
+  directorName: string; // the director persona's display name, operator-set (default "ChangeNameInSettings")
   maxQaRounds: number;
   maxConcurrent: number;
   // Token-usage safety limit: opt-in auto-stop when live utilization reaches the threshold. Disabled by

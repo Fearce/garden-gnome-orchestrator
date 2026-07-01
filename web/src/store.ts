@@ -234,6 +234,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   researcherEnabled: true,
   qaEnabled: true,
   autoPush: true,
+  directorName: "ChangeNameInSettings",
   maxQaRounds: 4,
   maxConcurrent: 3,
   tokenLimitEnabled: false,

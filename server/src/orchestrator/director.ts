@@ -114,7 +114,7 @@ export class Director {
   private start(firstContent: UserContent, account?: Account): void {
     const director = createDirectorServer(this.api, () => this.pendingImages);
     const memory = createMemoryServer(this.api.memory);
-    const cfg = directorConfig({ director, memory });
+    const cfg = directorConfig({ director, memory }, this.api.directorName());
     const acct = account ?? this.api.accounts.select().account;
     this.accountId = acct.id;
     this.accountLabel = acct.label;

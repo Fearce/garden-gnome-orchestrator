@@ -102,11 +102,14 @@ export function resolveEffort(effort?: Effort): Effort {
   return requested;
 }
 
-export function directorConfig(servers: { director: McpServerConfig; memory: McpServerConfig }): AgentRunConfig {
+export function directorConfig(
+  servers: { director: McpServerConfig; memory: McpServerConfig },
+  directorName: string,
+): AgentRunConfig {
   return {
     model: config.models.director,
     cwd: config.defaultWorkspace,
-    systemPrompt: DIRECTOR_PROMPT,
+    systemPrompt: `${DIRECTOR_PROMPT}\n\nYour name is ${directorName} — that's how ${config.ownerName} and the team refer to you; introduce yourself by it.`,
     permissionMode: "bypassPermissions",
     // The director ONLY directs: it has no filesystem/shell tools, so it cannot investigate
     // the codebase itself — any "figure out / debug / explain" is forced into a dispatch.

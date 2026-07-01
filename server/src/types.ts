@@ -148,7 +148,8 @@ const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2
  *  its id) stepped forward by the role's pipeline rank. Because the five roles occupy consecutive slots
  *  in a 30-name ring, a single task's agents can never share a default name — no hash-collision edge.
  *  Stable across the agent's life and mirrored byte-for-byte in web/src/types.ts so the agent's name and
- *  the UI's agree. Cross-task collisions (two live gnomes) are still resolved by ensureNamed's walk. */
+ *  the UI's agree. Cross-task collisions (two live gnomes) are resolved by ThreadManager's
+ *  ensureLiveNamesUnique pass, which re-derives uniqueness across the whole live set on every go-live. */
 export function gnomeName(threadId: string, role: Role): string {
   let h = 0;
   for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) >>> 0;
@@ -277,6 +278,7 @@ export interface OrchestratorSettings {
   researcherEnabled: boolean; // off → never run the researcher even if the planner routes to it
   qaEnabled: boolean; // off → skip the QA loop; the implementor's output is final
   autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
+  directorName: string; // the director persona's display name, set by the operator (default "ChangeNameInSettings")
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
   // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----
