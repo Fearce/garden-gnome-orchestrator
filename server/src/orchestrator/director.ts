@@ -217,13 +217,23 @@ export class Director {
     this.setBusy(false);
   }
 
-  /** Message for when every sub is capped — names when the soonest one frees up if we know it. */
+  /** Message for when every sub is capped — phrased for the ACTUAL number of configured subscriptions
+   *  (1, 2, or more; never a hardcoded "Both"), naming when the soonest one frees up if we know it. */
   private allCappedMessage(): string {
     const resetAt = this.api.accounts.soonestResetAt();
     const when = resetAt != null ? untilReset(resetAt, Date.now()) : null;
+    const n = this.api.accounts.count();
+    const single = n <= 1;
+    const subject = single
+      ? "Your Claude subscription is at its usage limit"
+      : n === 2
+        ? "Both Claude subscriptions are at their usage limit"
+        : `All ${n} Claude subscriptions are at their usage limit`;
+    const freesWhen = single ? "It frees up" : "The first one frees up";
+    const freesGeneric = single ? "It frees up when the 5-hour window resets" : "They free up when the 5-hour window resets";
     return when
-      ? `Both Claude subscriptions are at their usage limit right now, so I couldn't get to this. The first one frees up ${when} — resend then.`
-      : "Both Claude subscriptions are at their usage limit right now, so I couldn't get to this. They free up when the 5-hour window resets — resend then.";
+      ? `${subject} right now, so I couldn't get to this. ${freesWhen} ${when} — resend then.`
+      : `${subject} right now, so I couldn't get to this. ${freesGeneric} — resend then.`;
   }
 }
 

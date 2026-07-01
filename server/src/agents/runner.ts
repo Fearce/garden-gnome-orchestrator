@@ -301,12 +301,21 @@ export class AgentRun implements AgentRunLike {
         const blocks: any[] = m.message?.content ?? [];
         for (const b of blocks) {
           if (b?.type === "text" && b.text) {
-            // A 5h/weekly cap can also surface as a plain assistant TEXT block the CLI injects
+            // A cap can also surface as a plain assistant TEXT block the CLI injects
             // ("You've hit your session limit · resets 7pm") with no rate_limit_event and no
             // message-level error. Flag the cap and SWALLOW the text so the failover path runs
             // instead of the owner seeing a dead-end "limit" message in the chat.
             if (SESSION_LIMIT_TEXT_RE.test(b.text)) {
-              this.flagCapFromSignal({ status: "rejected" });
+              // This per-session cap is invisible to the usage-ping headers (which track only the
+              // 5h/weekly windows), so unless we tell AccountManager, the account keeps looking free:
+              // a cap-parked task is auto-resumed, instantly re-caps, and loops — re-showing this very
+              // message. Emit a synthetic rate_limit so the account is held out of rotation until the
+              // window resets. Parse the "resets 7pm" clock for the real reset; fall back to the ~5h
+              // session cadence when it's absent, so the hold always self-expires (never a stuck cap).
+              const resetsAt = parseResetClock(b.text, Date.now()) ?? Date.now() + SESSION_LIMIT_FALLBACK_MS;
+              const info: RateLimitInfo = { status: "rejected", resetsAt };
+              this.flagCapFromSignal(info);
+              this.emit({ type: "rate_limit", info });
               continue;
             }
             this.emit({ type: "text", text: b.text });
@@ -392,6 +401,32 @@ const RATE_LIMIT_RESULT_RE =
  */
 const SESSION_LIMIT_TEXT_RE =
   /you'?ve hit your (?:session|usage|\d+-hour|weekly) limit|(?:session|usage|weekly) limit\s*[·:—–-]\s*resets/i;
+
+// A session-limit notice with no parseable reset clock is held for the ~5h session cadence, so the cap
+// self-expires and the account rejoins rotation rather than staying stuck limited forever.
+const SESSION_LIMIT_FALLBACK_MS = 5 * 60 * 60 * 1000;
+
+/**
+ * Best-effort epoch for a "resets 7pm" / "resets 12:50pm" clock from the CLI's session-limit text,
+ * in server-local time (the reset is a wall-clock time; any "(Europe/Copenhagen)" TZ label is ignored —
+ * a real rate_limit_event's header reset is used in preference when one is available). Rolls to the next
+ * day when the time has already passed today. Returns undefined when no clock is present.
+ */
+function parseResetClock(text: string, now: number): number | undefined {
+  const m = /resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(text);
+  if (!m) return undefined;
+  let hour = parseInt(m[1]!, 10);
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  const ap = m[3]?.toLowerCase();
+  if (hour > 23 || min > 59) return undefined;
+  if (ap === "pm" && hour < 12) hour += 12;
+  else if (ap === "am" && hour === 12) hour = 0;
+  const d = new Date(now);
+  d.setHours(hour, min, 0, 0);
+  let t = d.getTime();
+  if (t <= now) t += 24 * 60 * 60 * 1000; // already passed today → next occurrence
+  return t;
+}
 
 /**
  * Whether an ERROR result looks like a usage-cap rejection (vs. error_max_turns / error_max_budget_usd
