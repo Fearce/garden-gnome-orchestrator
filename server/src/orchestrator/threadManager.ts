@@ -1103,7 +1103,16 @@ export class ThreadManager implements OrchestratorApi {
       if (!opts?.resume) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, kickoff, this.peerNote(thread, false)].filter(Boolean).join("\n\n");
       // freshFallback lets the runner self-heal a wedged `exec resume` (hangs at 0% CPU on an interrupted
       // gpt-5 session) by restarting fresh — so it must carry the SAME doctrine + task a fresh start gets.
-      const codexAgent = new CodexAgentRun({ model, cwd: thread.workspace, apiKey: this.openaiApiKey() ?? "", resume: opts?.resume, freshFallback: opts?.freshFallback });
+      const codexAgent = new CodexAgentRun({
+        model,
+        cwd: thread.workspace,
+        apiKey: this.openaiApiKey() ?? "",
+        resume: opts?.resume,
+        freshFallback: opts?.freshFallback,
+        onOfficeChat: (scope, body) => {
+          this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
+        },
+      });
       // If this run had to self-heal a wedged resume, remember it so every later turn skips the resume
       // attempt (and its 60s watchdog) and goes straight to fresh — resume keeps wedging on this thread.
       codexAgent.onEnd(() => { if (codexAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
@@ -2294,10 +2303,18 @@ export class ThreadManager implements OrchestratorApi {
       if (tid === m.threadId) continue; // never echo back to the sender
       const t = this.db.getThread(tid);
       if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
-      live.run.send(text, { priority: "next" });
+      live.run.send(live.accountId === "openai-codex" ? this.codexTeamChatPush(m, who) : text, { priority: "next" });
       pinged++;
     }
     return pinged;
+  }
+
+  private codexTeamChatPush(m: ChatMessage, who: string): string {
+    return (
+      `[Office - ${who} (${m.role}) posted to your team room]: ${m.body}\n` +
+      `(A teammate working in this same repo sent this. If it touches your work or asks something, reply with a standalone ` +
+      `OFFICE[team]: ... line addressed to ${who}, then adjust; don't keep editing blind.)`
+    );
   }
 
   /** The display workspace for a project-room key (`repo:<normalized>`), recovered from any thread in
@@ -2342,11 +2359,21 @@ export class ThreadManager implements OrchestratorApi {
         const t = this.db.getThread(tid);
         if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
       }
-      live.run.send(push, { priority: "next" });
+      live.run.send(live.accountId === "openai-codex" ? this.codexDirectorChatPush(text, general) : push, { priority: "next" });
       pinged++;
     }
     this.hub.log("info", `Director posted to ${general ? "the office" : `team ${workspace}`} — pinged ${pinged} live agent(s).`);
     return m;
+  }
+
+  private codexDirectorChatPush(text: string, general: boolean): string {
+    const marker = general ? "OFFICE[office]" : "OFFICE[team]";
+    const where = general ? "the office" : "your team room";
+    return (
+      `[Director -> ${general ? "office" : "your team"}] ${text}\n` +
+      `(A directive from ${config.ownerName} to all agents in ${where}. Coordinate who takes it, then reply with a standalone ` +
+      `${marker}: ... line so the others know.)`
+    );
   }
 
   chatRead(input: ChatReadInput): ChatMessage[] {
@@ -2463,14 +2490,14 @@ export class ThreadManager implements OrchestratorApi {
 
   /** A concrete heads-up folded into a fresh implementor kickoff when teammates already share its repo
    *  — names them and tells it to coordinate. `withTools` is false for the Codex backend (no office
-   *  MCP), where the note still warns about collisions but can't point at chat tools it doesn't have. */
+   *  MCP), where the runner exposes a text marker bridge instead. */
   private peerNote(thread: Thread, withTools: boolean): string | undefined {
     const peers = this.repoPeers(thread);
     if (!peers.length) return undefined;
     const list = peers.map((p) => `• ${p.role} on "${p.title}"`).join("\n");
     const how = withTools
       ? "Use the office chat to coordinate: call `office_look`, then `chat_post(scope:\"team\")` to claim the files/areas you'll touch and `chat_read` what they've claimed before editing."
-      : "Be careful not to edit the same files they are; prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks.";
+      : "Coordinate through the Codex office bridge: include a standalone `OFFICE[team]: <short message>` line in your assistant response to claim the files/areas you'll touch, answer teammate messages the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks.";
     return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\nYou share this workspace, so you can step on each other's changes. ${how} Commit only your own hunks.`;
   }
 

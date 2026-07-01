@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../config.js";
-import type { AgentEvent, RateLimitInfo } from "../types.js";
+import type { AgentEvent, ChatScope, RateLimitInfo } from "../types.js";
 import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "./runner.js";
 
 export interface CodexRunConfig {
@@ -21,6 +21,9 @@ export interface CodexRunConfig {
    *  runner retries ONCE as a fresh `exec` with this prompt — the prior apply_patch edits already live
    *  in the working tree, so the fresh session re-reads them and continues. Omit to disable self-heal. */
   freshFallback?: string;
+  /** Codex has no office MCP tools. A standalone `OFFICE[team|office]: ...` line in its assistant
+   *  message is intercepted here and posted through the orchestrator's real office chat backend. */
+  onOfficeChat?: (scope: ChatScope, body: string) => void;
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Image blocks are handled
@@ -93,6 +96,7 @@ interface CodexEvent {
 }
 
 const RATE_LIMIT_RE = /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient_quota)/i;
+const OFFICE_CHAT_LINE_RE = /^\s*OFFICE\[(team|office)\]\s*:\s*(.+?)\s*$/i;
 
 export interface CodexTestResult {
   ok: boolean;
@@ -112,6 +116,22 @@ function readAuthJson(file: string): CodexAuthFile | undefined {
   } catch {
     return undefined;
   }
+}
+
+function extractOfficeChat(text: string): { visible: string; posts: Array<{ scope: ChatScope; body: string }> } {
+  const posts: Array<{ scope: ChatScope; body: string }> = [];
+  const visible: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = OFFICE_CHAT_LINE_RE.exec(line);
+    if (!m) {
+      visible.push(line);
+      continue;
+    }
+    const body = m[2]?.trim();
+    if (!body) continue;
+    posts.push({ scope: m[1]?.toLowerCase() === "office" ? "general" : "project", body: body.slice(0, 500) });
+  }
+  return { visible: visible.join("\n").trim(), posts };
 }
 
 /** The operator's personal `codex login` auth.json IF it's a usable ChatGPT-subscription login
@@ -550,7 +570,17 @@ export class CodexAgentRun implements AgentRunLike {
     const id = item.id ?? "item";
     switch (item.type) {
       case "agent_message":
-        if (phase === "completed" && item.text) this.emit({ type: "text", text: item.text });
+        if (phase === "completed" && item.text) {
+          const { visible, posts } = extractOfficeChat(item.text);
+          for (const post of posts) {
+            try {
+              this.cfg.onOfficeChat?.(post.scope, post.body);
+            } catch {
+              /* best-effort side channel; never fail the Codex turn because office chat failed */
+            }
+          }
+          if (visible) this.emit({ type: "text", text: visible });
+        }
         break;
       case "reasoning":
         if (phase === "completed" && item.text) this.emit({ type: "thinking_delta", text: item.text });
