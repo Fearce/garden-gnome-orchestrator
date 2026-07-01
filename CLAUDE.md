@@ -88,6 +88,13 @@ which is auth-gated and **confines the resolved real path inside the owning task
 resolved, `..`/absolute/cross-drive escapes rejected, files-only, 25 MB cap) — keep that guard intact:
 the path is agent-supplied and the server is LAN-reachable.
 
+**Emitting one — avoid the "file not available" 404:** a *relative* `path` resolves as `join(thread.workspace,
+path)`, and the task workspace is often the **parent** of this git repo (e.g. workspace
+`…\claude-orchastrator` vs. repo `…\claude-orchastrator\claude-orchestrator`). A file you save into the repo
+is then NOT found by a repo-relative path. **Pass an ABSOLUTE path** (the containment guard still confines it
+to the workspace) — or save the file at the workspace root. Verify before handing off: the file must sit at
+`join(workspace, path)` (or be absolute and inside the workspace).
+
 ## Conventions
 - Conventional Commits (`feat:`/`fix:`/`refactor:`/`chore:`…), matching `git log`.
 - One concern per commit — don't sweep unrelated working-tree changes into a fix.
