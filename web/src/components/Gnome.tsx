@@ -1,6 +1,13 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import type { Role } from "../types.js";
-import { roleColor } from "../lib/format.js";
+import { gnomeRoleColor } from "../lib/format.js";
+
+// Per-gnome vibrance jitter. Each gnome is minted once (on mount) with a chroma multiplier drawn
+// from [MIN, MIN+SPAN], so every instance of a role keeps that role's exact hue + lightness but
+// carries a slightly different saturation — enough to tell two same-role gnomes apart, never enough
+// to drift the identity colour (planner-blue / implementor-amber stay unmistakable).
+const VIBRANCE_MIN = 0.78;
+const VIBRANCE_SPAN = 0.4;
 
 // Non-role colors. Hat + body take the role hue via currentColor; the rest is a fixed,
 // theme-independent palette tuned to read on the dark UI and to echo the reference tomte.
@@ -88,8 +95,11 @@ function roleProp(role: Role) {
  *  `active` (default true) keeps the full role color; pass `active={false}` to grey the whole
  *  gnome out — used where several roles sit side-by-side and only one is currently working. */
 export function Gnome({ role, size = 30, active = true, className }: { role: Role; size?: number; active?: boolean; className?: string }) {
+  // Minted once per mount — random on creation but stable across re-renders, so the gnome's vibrance
+  // never flickers mid-session. Only the active (coloured) branch uses it; greyed-out gnomes are neutral.
+  const [chromaFactor] = useState(() => VIBRANCE_MIN + Math.random() * VIBRANCE_SPAN);
   const style: CSSProperties = active
-    ? { color: roleColor(role), flex: "0 0 auto", lineHeight: 0 }
+    ? { color: gnomeRoleColor(role, chromaFactor), flex: "0 0 auto", lineHeight: 0 }
     : { color: "var(--text-faint)", flex: "0 0 auto", lineHeight: 0, filter: "grayscale(1)", opacity: 0.5 };
   return (
     <span className={"gnome" + (className ? " " + className : "")} style={style} aria-hidden="true">
