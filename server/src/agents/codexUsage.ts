@@ -24,6 +24,26 @@ interface RateLimits {
   plan_type?: string | null;
 }
 
+// How many recent rollout files readCodexUsage scans (newest-first) looking for the last real usage
+// snapshot. Sized to ride out a burst of instant-death capped dispatches without losing the last reading.
+const USAGE_SCAN_FILES = 40;
+// used_percent at/above which a window counts as capped. Codex reports 100 when the plan limit is hit.
+const CODEX_CAP_PCT = 100;
+
+/** Whether the latest usage snapshot shows Codex's 5h or weekly window fully consumed (and not yet
+ *  reset). A best-effort read layered under the live-run cap latch — it catches the case where the
+ *  operator's own `codex` already exhausted the shared plan before the orchestrator ran a single turn. */
+export function codexUsageCapped(now: number): boolean {
+  const u = readCodexUsage();
+  if (!u) return false;
+  // Require a REAL future reset — a 100% snapshot with an unknown reset must NOT count as capped here, or
+  // it would pin Codex off forever (this snapshot check is the fallback after the in-memory latch expires,
+  // and unlike noteCodexCap it has no cooldown bound). The bounded live-run latch owns the reset-unknown case.
+  const hit = (pct: number | null, reset: number | null): boolean =>
+    pct != null && pct >= CODEX_CAP_PCT && reset != null && reset > now;
+  return hit(u.fiveHour, u.fiveHourReset) || hit(u.sevenDay, u.sevenDayReset);
+}
+
 /** The codex CLI does not expose rolling rate limits over `codex exec --json`, but it PERSISTS them to
  *  the session rollout after every turn — a `token_count` event whose `rate_limits` holds the plan-wide
  *  primary/secondary windows. Reading the freshest rollout therefore gives real usage at ZERO extra API
@@ -54,12 +74,17 @@ function latestRollupUsage(home: string): CodexUsageDTO | null {
     return null;
   }
   if (!files.length) return null;
-  // Only parse the few most-recently-modified rollouts — the freshest snapshot is in one of them, and a
-  // long-lived home can hold thousands of old session files we never need to read.
+  // Parse recent rollouts newest-first and return the first that carries a rate_limits snapshot. The
+  // window is deliberately generous: once the plan hits its 5h/weekly cap, every subsequent turn dies
+  // instantly (429) and writes a fresh rollout that has NO token_count/rate_limits line, so a burst of
+  // capped dispatches can bury the last-good snapshot behind many empty files. Scanning only the top few
+  // then made readCodexUsage return null — the top-bar chip's meters + reset countdown vanished exactly
+  // when the cap made them most useful. A wider scan keeps surfacing the last real reading (empty rollouts
+  // are tiny, so the extra reads are cheap and only happen while recent files lack a snapshot).
   const recent = files
     .map((f) => ({ f, m: safeMtime(f) }))
     .sort((a, b) => b.m - a.m)
-    .slice(0, 3);
+    .slice(0, USAGE_SCAN_FILES);
   for (const { f } of recent) {
     const snap = parseRollout(f);
     if (snap) return snap;

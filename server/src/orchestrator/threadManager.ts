@@ -5,6 +5,7 @@ import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
 import { AgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
+import { codexUsageCapped, readCodexUsage } from "../agents/codexUsage.js";
 import { implementorConfig, plannerConfig, qaConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
@@ -94,6 +95,11 @@ const STALL_NUDGE =
   `genuinely blocked on ${config.ownerName}.`;
 // On a mid-run 5h/weekly cap, relaunch on another account (resuming the session) up to N times.
 const MAX_ACCOUNT_FAILOVERS = 3;
+// When Codex hits its usage cap we route implementors to the Claude backend until its window resets. The
+// real reset epoch (from the usage snapshot) is preferred; this cooldown is the fallback when it's unknown,
+// after which Codex is tried again (a failing turn simply re-arms the latch). kv key persists it across boots.
+const CODEX_CAP_COOLDOWN_MS = 60 * 60_000;
+const CODEX_CAP_KV_KEY = "codex_cap_until";
 // After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
 // doesn't need a manual Resume click. Human-gated phases (a pending question/approval, paused, or
 // pre-planner intake) were waiting on a person, so they're left failed for a manual Resume instead.
@@ -237,6 +243,11 @@ export class ThreadManager implements OrchestratorApi {
   // utilization drops back below the threshold — so the stop fires once per crossing, not on every ping
   // while the window stays hot (which would re-stop tasks the owner just re-dispatched).
   private tokenLimitTripped = false;
+  // Epoch ms until which Codex is treated as usage-capped, so implementors route to the Claude backend
+  // instead of dispatching straight into an instant 429. Set when a live Codex run caps (real reset epoch
+  // preferred, else a cooldown); auto-clears when the window passes. Persisted in kv so a restart's
+  // auto-resume wave doesn't slam Codex again on stale-good routing. Undefined = Codex not latched-capped.
+  private codexCapUntil: number | undefined;
 
   constructor(
     readonly db: Db,
@@ -246,6 +257,7 @@ export class ThreadManager implements OrchestratorApi {
   ) {
     this.markInterrupted();
     this.applyAccountEnabled();
+    this.loadCodexCap();
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
@@ -603,6 +615,41 @@ export class ThreadManager implements OrchestratorApi {
     return testOpenAiKey(apiKey?.trim() || this.openaiApiKey());
   }
 
+  /** Restore the persisted Codex usage-cap latch on boot, so a restart's auto-resume wave keeps routing
+   *  implementors to Claude until the window resets instead of re-slamming a still-capped Codex. */
+  private loadCodexCap(): void {
+    const v = this.db.kvGet(CODEX_CAP_KV_KEY);
+    const until = v ? Number(v) : NaN;
+    if (Number.isFinite(until) && until > Date.now()) this.codexCapUntil = until;
+    else if (v) this.db.kvSet(CODEX_CAP_KV_KEY, ""); // stale/expired — clear it
+  }
+
+  /** Latch Codex as usage-capped until its window resets, so implementors route to the Claude backend.
+   *  Prefers the real reset epoch from the usage snapshot; falls back to a fixed cooldown when unknown. */
+  private noteCodexCap(): void {
+    const now = Date.now();
+    const u = readCodexUsage();
+    const snapReset = [u?.fiveHourReset, u?.sevenDayReset].filter((r): r is number => !!r && r > now);
+    const until = snapReset.length ? Math.min(...snapReset) : now + CODEX_CAP_COOLDOWN_MS;
+    if (this.codexCapUntil && this.codexCapUntil >= until) return; // already latched at least this long
+    this.codexCapUntil = until;
+    this.db.kvSet(CODEX_CAP_KV_KEY, String(until));
+    this.hub.log("warn", `Codex hit its usage cap — routing implementors to Claude until ${new Date(until).toLocaleString()}.`);
+  }
+
+  /** Whether Codex should be treated as usage-capped right now (route implementors to Claude). True while
+   *  the live-run latch is active OR the latest usage snapshot shows a window fully consumed. Clears an
+   *  expired latch as a side effect so Codex is retried the moment its window resets. */
+  private codexCapActive(): boolean {
+    const now = Date.now();
+    if (this.codexCapUntil != null) {
+      if (now < this.codexCapUntil) return true;
+      this.codexCapUntil = undefined;
+      this.db.kvSet(CODEX_CAP_KV_KEY, "");
+    }
+    return codexUsageCapped(now);
+  }
+
   /** Restore each Claude account's persisted enabled flag into the live AccountManager on boot. */
   private applyAccountEnabled(): void {
     for (const a of config.accounts) {
@@ -633,6 +680,13 @@ export class ThreadManager implements OrchestratorApi {
       const hasKey = !!key && /^sk-/.test(key);
       if (!codexAuthAvailable(hasKey)) {
         return { error: "Codex is enabled but has no usable auth: no ChatGPT `codex login` was found and no valid OpenAI API key (sk-…) is set. Sign in with `codex login --device-auth` (uses your ChatGPT plan), or add an API key under Settings → Subscriptions, or turn Codex off to use Claude." };
+      }
+      // Codex is enabled + authed, but if it's usage-capped right now, route to the Claude backend rather
+      // than dispatching into an instant 429. The latch auto-clears when Codex's window resets, so Codex
+      // resumes taking tasks on its own with no operator action. Planner/researcher/QA are always Claude.
+      if (this.codexCapActive()) {
+        this.hub.log("info", "Codex is usage-capped — routing this implementor to Claude until its window resets.");
+        return { provider: "claude" };
       }
       return { provider: "codex" };
     }
@@ -1351,6 +1405,43 @@ export class ThreadManager implements OrchestratorApi {
       this.flushDirectorNotes(thread.id, start.run);
       current = start.run;
       res = await this.awaitImplementorResult(thread, effort, start.run, start.accountId, false, nudge);
+    }
+    // Codex hit its usage cap mid-run → fail OVER to the Claude backend rather than parking (Codex has no
+    // account-headroom of its own to fail over to). The Codex thread id is incompatible with a Claude
+    // resume, so relaunch FRESH from a git-progress seed: the working-tree edits persist, so the Claude
+    // implementor picks up on top of them. Guarded by the provider flip → switches at most once; the
+    // recursive await then handles Claude's own turn-limit/stall/account-failover from there.
+    if (
+      res?.isError &&
+      !this.cancelled(thread.id) &&
+      this.implementorProvider.get(thread.id) === "codex" &&
+      current instanceof CodexAgentRun &&
+      current.capped
+    ) {
+      this.noteCodexCap();
+      this.implementorProvider.set(thread.id, "claude");
+      // Fully end the capped Codex run BEFORE anything else — postFinding routes a warning to this.live's
+      // run, so stopping first guarantees it can never resume a fresh doomed turn on the just-capped session
+      // (matches the "end the implementor before the next stage" ordering used across this file).
+      await current.stop();
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "implementor",
+        summary: "Codex hit its usage cap — switched this task to the Claude implementor",
+        detail: "Codex's usage window is exhausted; the task continues on a Claude subscription from the current working-tree state.",
+        severity: "warning",
+      });
+      if (!this.cancelled(thread.id)) {
+        const seed = await this.composeResumeKickoff(thread, kickoff, undefined, {
+          directorNote:
+            "The Codex implementor hit its usage cap partway through this task, so you're taking over on the Claude backend. Its changes are already in the working tree — review the git progress below, then continue and finish the task completely.",
+          qaFollows: true,
+        });
+        if (!this.cancelled(thread.id)) {
+          const relaunch = this.startImplementor(thread, seed, { effort });
+          res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg);
+        }
+      }
     }
     return res;
   }
