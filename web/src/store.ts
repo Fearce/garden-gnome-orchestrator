@@ -425,7 +425,6 @@ export const useStore = create<State>((set) => ({
     try {
       const res = await fetch(apiUrl("/api/update/apply"), {
         method: "POST",
-        headers: { "content-type": "application/json" },
       });
       const j = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; needsManualRestart?: boolean };
       if (!res.ok || !j.ok) {

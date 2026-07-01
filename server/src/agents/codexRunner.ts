@@ -95,7 +95,10 @@ interface CodexEvent {
   message?: string;
 }
 
-const RATE_LIMIT_RE = /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient_quota)/i;
+// Matches both API-key 429/quota errors AND the ChatGPT-plan usage-cap wording the CLI prints when the
+// 5h/weekly limit is hit ("usage limit reached", "reached your usage limit", "usage_limit_reached").
+const RATE_LIMIT_RE =
+  /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient_quota|usage[ _]limit|reached your (?:usage|plan)|limit reached)/i;
 const OFFICE_CHAT_LINE_RE = /^\s*OFFICE\[(team|office)\]\s*:\s*(.+?)\s*$/i;
 
 export interface CodexTestResult {
@@ -212,10 +215,13 @@ export class CodexAgentRun implements AgentRunLike {
   sessionId: string | undefined;
   finished = false;
   lastResult: ResultEvent | undefined;
-  // Codex auth is a single API key with no multi-account headroom signal, so we never flag a cap:
-  // a 429 settles the task to review instead of mis-firing the Claude-account failover path.
+  // Codex auth is a single API key with no multi-account headroom signal, so we never flag a cap on
+  // `rateLimited` — that drives the Claude-account failover path, which would pointlessly resume the SAME
+  // Codex session on a Claude token. Instead `capped` flags that the PROVIDER itself is out of headroom
+  // (5h/weekly limit hit), which the pipeline uses to fail the task OVER to the Claude backend.
   rateLimited = false;
   rateLimitInfo: RateLimitInfo | undefined;
+  capped = false;
 
   private child: ChildProcess | undefined;
   private turnActive = false;
@@ -545,7 +551,7 @@ export class CodexAgentRun implements AgentRunLike {
       case "turn.failed": {
         this.sawTerminal = true;
         const msg = ev.error?.message ?? this.lastErrorMsg ?? "Codex turn failed.";
-        if (RATE_LIMIT_RE.test(msg)) this.rateLimitInfo = { status: "rejected" };
+        if (RATE_LIMIT_RE.test(msg)) this.markCapped();
         this.finishTurn({ subtype: "error", isError: true, result: msg });
         break;
       }
@@ -609,6 +615,13 @@ export class CodexAgentRun implements AgentRunLike {
     }
   }
 
+  /** Flag that this turn died to a usage cap (429 / quota). Drives the pipeline's provider failover to
+   *  the Claude backend — NOT the Claude-account failover (see the `capped`/`rateLimited` field comment). */
+  private markCapped(): void {
+    this.capped = true;
+    this.rateLimitInfo = { status: "rejected" };
+  }
+
   /** Emit the per-turn result event (mirrors AgentRun's `result` SDK message) and cache it. */
   private finishTurn(partial: { subtype: string; isError: boolean; result?: string; numTurns?: number }): void {
     this.clearWatchdog();
@@ -663,6 +676,9 @@ export class CodexAgentRun implements AgentRunLike {
     // synthesize a failure so a waiting result()/nextResult() resolves instead of hanging.
     if (!this.sawTerminal) {
       const msg = this.lastErrorMsg ?? `Codex CLI exited with code ${code ?? "unknown"} before finishing the turn.`;
+      // The 5h/weekly cap often kills the turn instantly (429 on stderr, no turn.failed event) — the
+      // "dies in ~2s" symptom. Flag it here too so the provider failover fires instead of parking.
+      if (RATE_LIMIT_RE.test(msg)) this.markCapped();
       this.finishTurn({ subtype: "error", isError: true, result: msg });
     }
     if (!this.finished) {
