@@ -4,6 +4,16 @@ export function roleColor(role: Role): string {
   return `var(--role-${role})`;
 }
 
+/** A per-instance vibrance variant of a role's established colour: same lightness and hue as
+ *  `var(--role-*)`, but the chroma scaled by `chromaFactor` (via OKLCH relative-color syntax). Used
+ *  to give each freshly-created gnome a subtle saturation jitter so instances of one role read as
+ *  that role's identity colour yet look individually distinct — never shifting the hue or lightness,
+ *  so planner stays blue and implementor stays amber. styles.css:17-21 remains the single source of
+ *  the base OKLCH triples; this only rescales their chroma. */
+export function gnomeRoleColor(role: Role, chromaFactor: number): string {
+  return `oklch(from var(--role-${role}) l calc(c * ${chromaFactor}) h)`;
+}
+
 export function stateColor(state: ThreadState): string {
   switch (state) {
     case "implementing":
