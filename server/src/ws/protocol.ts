@@ -61,6 +61,9 @@ export type ServerEvent =
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
+  // A cancelled task was restarted from scratch: its prior runs/findings/feed were deleted server-side,
+  // so the client prunes that stale slice (keeping the thread row) before the fresh pipeline streams in.
+  | { type: "thread.reset"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
@@ -107,6 +110,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("thread.interrupt"), threadId: z.string() }),
   z.object({ type: z.literal("thread.resume"), threadId: z.string(), message: z.string().optional() }),
   z.object({ type: z.literal("thread.cancel"), threadId: z.string() }),
+  // Restart a cancelled task from the very beginning — wipes the prior attempt and re-runs the whole
+  // pipeline from the brief the director first dispatched (see ThreadManager.retryThread).
+  z.object({ type: z.literal("thread.retry"), threadId: z.string() }),
   z.object({ type: z.literal("thread.markDone"), threadId: z.string() }),
   z.object({ type: z.literal("thread.close"), threadId: z.string() }),
   z.object({ type: z.literal("thread.restore"), threadId: z.string() }),

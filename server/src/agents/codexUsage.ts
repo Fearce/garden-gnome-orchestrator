@@ -100,7 +100,11 @@ function safeMtime(f: string): number {
   }
 }
 
-/** Scan a rollout for the LAST `token_count` event carrying `rate_limits`. */
+/** Scan a rollout for the LAST `token_count` event carrying REAL rate-limit windows. A token_count can
+ *  carry a `rate_limits` object whose primary/secondary windows are null/absent (e.g. a failed or capped
+ *  turn); those carry no meter info, so they're skipped — otherwise a recent empty snapshot would shadow
+ *  the last real reading (leaving the chip's meters + reset countdown blank exactly when the cap made
+ *  them useful). Returns the newest snapshot in this file that actually has a 5h or weekly percentage. */
 function parseRollout(file: string): CodexUsageDTO | null {
   let text: string;
   try {
@@ -119,10 +123,13 @@ function parseRollout(file: string): CodexUsageDTO | null {
     }
     const rl = obj.payload?.rate_limits;
     if (obj.payload?.type !== "token_count" || !rl) continue;
+    const fiveHour = pct(rl.primary);
+    const sevenDay = pct(rl.secondary);
+    if (fiveHour == null && sevenDay == null) continue; // empty windows — no meter info to surface
     const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
     found = {
-      fiveHour: pct(rl.primary),
-      sevenDay: pct(rl.secondary),
+      fiveHour,
+      sevenDay,
       fiveHourReset: resetMs(rl.primary),
       sevenDayReset: resetMs(rl.secondary),
       planType: rl.plan_type ?? null,

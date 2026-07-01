@@ -260,6 +260,9 @@ export type ServerEvent =
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
+  // A cancelled task was restarted from scratch: prune its now-deleted runs/findings/feed (keeping the
+  // thread row) before the fresh pipeline streams in.
+  | { type: "thread.reset"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
@@ -287,6 +290,7 @@ export type ClientCommand =
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.cancel"; threadId: string }
+  | { type: "thread.retry"; threadId: string }
   | { type: "thread.markDone"; threadId: string }
   | { type: "thread.close"; threadId: string }
   | { type: "thread.restore"; threadId: string }

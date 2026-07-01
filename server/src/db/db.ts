@@ -291,6 +291,22 @@ export class Db {
     this.raw.prepare("UPDATE threads SET stage_outputs = ? WHERE id = ?").run(JSON.stringify(next), id);
   }
 
+  /** Wipe a thread's prior attempt for a from-scratch retry: delete its agent_runs (incl. the
+   *  implementor session a resume would otherwise reuse), findings, feed messages and questions,
+   *  and clear every saved stage output + the error — keeping the thread row itself (title/brief/
+   *  workspace) so the pipeline can re-run from the original brief. The office chat_messages are
+   *  intentionally left (a durable cross-task record, no thread FK). Transactional so the wipe is
+   *  all-or-nothing. */
+  resetThreadForRetry(id: string): void {
+    this.raw.transaction((tid: string) => {
+      this.raw.prepare("DELETE FROM agent_runs WHERE thread_id = ?").run(tid);
+      this.raw.prepare("DELETE FROM findings WHERE thread_id = ?").run(tid);
+      this.raw.prepare("DELETE FROM messages WHERE thread_id = ?").run(tid);
+      this.raw.prepare("DELETE FROM questions WHERE thread_id = ?").run(tid);
+      this.raw.prepare("UPDATE threads SET stage_outputs = NULL, error = NULL WHERE id = ?").run(tid);
+    })(id);
+  }
+
   // ---- agent runs ----
   createRun(input: { threadId: string; role: Role; model: string; account?: string | null; effort?: Effort | null }): AgentRun {
     const r: AgentRun = {
