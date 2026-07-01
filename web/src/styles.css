@@ -756,10 +756,14 @@ button { font-family: inherit; cursor: pointer; }
   display: flex; flex-direction: column; gap: 11px; position: relative; overflow: hidden;
 }
 .card:hover { border-color: var(--line-strong); background: var(--bg-2); }
+/* The selection ring follows the card's own --state-color (the same source as the ::before accent
+   bar and the state badge), so the highlight always matches the state it's on: a selected done card
+   rings GREEN to match its green bar/badge backdrop, an in-progress one stays amber. Falls back to
+   the amber accent if --state-color is ever unset. (Frozen cards get their own tuned ring below.) */
 .card.sel {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent), 0 6px 22px -4px color-mix(in oklch, var(--accent) 50%, transparent);
-  background: color-mix(in oklch, var(--accent) 7%, var(--bg-1));
+  border-color: var(--state-color, var(--accent));
+  box-shadow: 0 0 0 2px var(--state-color, var(--accent)), 0 6px 22px -4px color-mix(in oklch, var(--state-color, var(--accent)) 50%, transparent);
+  background: color-mix(in oklch, var(--state-color, var(--accent)) 7%, var(--bg-1));
 }
 .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--state-color, var(--text-faint)); }
 /* Live indicator: a small green glow that pulses while an agent is actively working the task —
