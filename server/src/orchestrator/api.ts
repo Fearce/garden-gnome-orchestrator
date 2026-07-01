@@ -93,11 +93,12 @@ export interface OrchestratorApi {
   /** Who else is in the office right now (active agents), from a task's point of view. */
   officeRoster(threadId: string): RosterEntry[];
 
-  /** The office name a task currently goes by (its picked name, or the deterministic default). */
-  officeName(threadId: string): string;
+  /** The office name one of a task's agents (a role) currently goes by — its picked name, or the
+   *  deterministic per-(thread, role) default. Each role in a task is a distinct agent with its own name. */
+  officeName(threadId: string, role: Role): string;
 
-  /** Let an agent pick/rename its office gnome; returns the stored name (trimmed/clamped). */
-  setOfficeName(threadId: string, name: string): string;
+  /** Let an agent pick/rename its own office gnome (per role); returns the stored name (trimmed/clamped). */
+  setOfficeName(threadId: string, role: Role, name: string): string;
 
   injectThread(
     threadId: string,

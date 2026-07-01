@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
 import type { ChatMessage, Role } from "../types.js";
-import { GENERAL_ROOM, gnomeName, normalizeWorkspace, repoRoom } from "../types.js";
+import { agentName, GENERAL_ROOM, normalizeWorkspace, repoRoom } from "../types.js";
 import { clock, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
@@ -104,7 +104,9 @@ export function Office() {
   const openOffice = useStore((s) => s.openOffice);
   const directorBusy = useStore((s) => s.directorBusy);
   const nameOverrides = useStore((s) => s.nameOverrides);
-  const nameOf = (threadId: string) => nameOverrides[threadId] ?? gnomeName(threadId);
+  // A worker's name is per (thread, role) — the running role IS the agent, so the gnome carries that
+  // agent's name, and it advances as the pipeline hands off (planner → implementor → …).
+  const nameOf = (threadId: string, role: Role) => agentName(nameOverrides, threadId, role);
 
   // One worker per active task (latest active run wins), then grouped by normalized repo.
   const groups = useMemo<Group[]>(() => {
@@ -171,7 +173,7 @@ export function Office() {
                 key={g.key}
                 className="office-huddle"
                 onClick={() => openOffice(g.room!)}
-                title={`${g.workers.map((w) => nameOf(w.threadId)).join(", ")} collaborating in ${leaf(g.workspace)} — click to open their chatroom`}
+                title={`${g.workers.map((w) => nameOf(w.threadId, w.role)).join(", ")} collaborating in ${leaf(g.workspace)} — click to open their chatroom`}
               >
                 <span className="office-huddle-gnomes">
                   {g.workers.slice(0, 4).map((w) => (
@@ -188,7 +190,7 @@ export function Office() {
                   className="office-walker"
                   style={{ "--pace-dur": `${pacePeriodForModel(w.model)}s`, "--pace-delay": `${(i % 4) * 0.6}s` } as CSSProperties}
                   onClick={() => openOffice(GENERAL_ROOM)}
-                  title={`${nameOf(w.threadId)} (${w.role}) on "${w.title}" — click to open the office chat`}
+                  title={`${nameOf(w.threadId, w.role)} (${w.role}) on "${w.title}" — click to open the office chat`}
                 >
                   <Pacer role={w.role} active={true} />
                   {bubbleFor(byRun.get(w.runId)) ? <span className="office-bubble">{bubbleFor(byRun.get(w.runId))}</span> : null}
@@ -276,7 +278,7 @@ function OfficePanel() {
                 key={m.id}
                 m={m}
                 title={m.threadId ? threads[m.threadId]?.title : undefined}
-                name={m.senderName || (m.threadId ? nameOverrides[m.threadId] ?? gnomeName(m.threadId) : undefined)}
+                name={m.senderName || (m.threadId && m.role !== "system" ? agentName(nameOverrides, m.threadId, m.role) : undefined)}
               />
             ))
           )}

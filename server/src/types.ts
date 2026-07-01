@@ -124,22 +124,35 @@ export interface ChatMessage {
   createdAt: number;
 }
 
-// Friendly office names for the gnomes — one per task, so agents address each other by name instead
-// of "the other implementor". A deterministic default is derived from the thread id (gnomeName,
-// mirrored in web/src/types.ts); an agent can pick its own via the office_set_name tool. Nordic/tomte
-// flavored to match the mascot.
+// Friendly office names for the gnomes — one per AGENT (a task's planner, researcher, implementor and
+// QA are distinct agents, so each gets its own name; they were never really one person). A deterministic
+// default is derived from the (thread, role) pair (gnomeName, mirrored in web/src/types.ts); an agent
+// can pick its own via the office_set_name tool. Nordic/tomte flavored to match the mascot.
 export const GNOME_NAMES = [
   "Pip", "Nim", "Bram", "Tova", "Fen", "Sol", "Rune", "Liv", "Ask", "Eir",
   "Odd", "Sten", "Tor", "Una", "Yara", "Knut", "Hilda", "Mads", "Sif", "Juni",
   "Lumi", "Pax", "Wren", "Zia", "Ole", "Greta", "Finn", "Bo", "Vik", "Saga",
 ] as const;
 
-/** Deterministic default office name for a task, from its id — stable across the task's life and
- *  mirrored byte-for-byte in web/src/types.ts so the agent's name and the UI's agree. */
-export function gnomeName(threadId: string): string {
+/** The identity key for one agent: a (thread, role) pair. Each role in a task is a fresh agent with its
+ *  own office name, so names key off this — never the bare thread id. Mirrored in web/src/types.ts. */
+export function agentKey(threadId: string, role: Role): string {
+  return `${threadId}::${role}`;
+}
+
+/** Fixed pipeline order of a task's agents — drives the per-role name offset below so a task's roles map
+ *  to CONSECUTIVE (hence distinct) default names. Mirrored in web/src/types.ts. */
+const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4 };
+
+/** Deterministic default office name for one agent (a task's role): the task's base name (hashed from
+ *  its id) stepped forward by the role's pipeline rank. Because the five roles occupy consecutive slots
+ *  in a 30-name ring, a single task's agents can never share a default name — no hash-collision edge.
+ *  Stable across the agent's life and mirrored byte-for-byte in web/src/types.ts so the agent's name and
+ *  the UI's agree. Cross-task collisions (two live gnomes) are still resolved by ensureNamed's walk. */
+export function gnomeName(threadId: string, role: Role): string {
   let h = 0;
   for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) >>> 0;
-  return GNOME_NAMES[h % GNOME_NAMES.length]!;
+  return GNOME_NAMES[(h + ROLE_RANK[role]) % GNOME_NAMES.length]!;
 }
 
 /** A rolled-up view of a project (per-repo) room — enough for the client to decide which tasks show

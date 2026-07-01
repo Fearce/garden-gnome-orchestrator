@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
-import { gnomeName, repoRoom } from "../types.js";
+import { agentName, repoRoom } from "../types.js";
 import { clock, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
@@ -234,7 +234,9 @@ export function ThreadDetail() {
   // died (reusing saved plan/research and the implementor's prior session) instead of from scratch.
   const isResumable = thread.state === "paused" || thread.state === "review" || thread.state === "failed";
   const terminal = isTerminal(thread.state);
-  const threadGnomeName = nameOverrides[id] ?? gnomeName(id);
+  // Each role in this task is a distinct agent with its own name — resolve per row/chip, never one
+  // thread-wide name (that was the "implementor and QA are both Nim" bug).
+  const nameFor = useMemo(() => (role: Role) => agentName(nameOverrides, id, role), [nameOverrides, id]);
 
   const doInject = (mode: "append" | "interrupt" | "queue") => {
     // Frozen tasks accept no manual inject/interrupt — the server auto-resumes them. Guard the handler
@@ -445,7 +447,7 @@ export function ThreadDetail() {
               >
                 <Gnome role={role} size={15} />
                 <span className="fchip-label">
-                  <RoleLabel role={role} name={threadGnomeName} />
+                  <RoleLabel role={role} name={nameFor(role)} />
                 </span>
                 <span className="n">{counts[role] ?? 0}</span>
                 {r ? <Elapsed className="fchip-time" startMs={r.startedAt} endMs={r.endedAt} running={runActive(r.state)} /> : null}
@@ -498,14 +500,14 @@ export function ThreadDetail() {
           </button>
         )}
         {windowed.map((f) => (
-          <FeedRow key={feedKey(f)} item={f} name={threadGnomeName} />
+          <FeedRow key={feedKey(f)} item={f} nameFor={nameFor} />
         ))}
         {draft && (roleFilter === "all" || draft.role === roleFilter) && (
           <div className="fi draft" style={roleVar(draft.role)}>
             <div className="head">
               <Gnome role={draft.role} size={30} />
               <span className="role-tag" style={{ color: roleColor(draft.role) }}>
-                <RoleLabel role={draft.role} name={threadGnomeName} />
+                <RoleLabel role={draft.role} name={nameFor(draft.role)} />
               </span>
             </div>
             <Markdown className="body" text={draft.text} />
@@ -597,7 +599,7 @@ export function ThreadDetail() {
   );
 }
 
-const FeedRow = memo(function FeedRow({ item, name }: { item: FeedItem; name: string }) {
+const FeedRow = memo(function FeedRow({ item, nameFor }: { item: FeedItem; nameFor: (role: Role) => string }) {
   switch (item.kind) {
     case "text":
       return (
@@ -605,7 +607,7 @@ const FeedRow = memo(function FeedRow({ item, name }: { item: FeedItem; name: st
           <div className="head">
             <Gnome role={item.role} size={30} />
             <span className="role-tag" style={{ color: roleColor(item.role) }}>
-              <RoleLabel role={item.role} name={name} />
+              <RoleLabel role={item.role} name={nameFor(item.role)} />
             </span>
             <span className="ts">{clock(item.at)}</span>
           </div>
@@ -617,7 +619,7 @@ const FeedRow = memo(function FeedRow({ item, name }: { item: FeedItem; name: st
         <div className="fi tool">
           <div className="head">
             <span className="role-tag dim">
-              <RoleLabel role={item.role} name={name} />
+              <RoleLabel role={item.role} name={nameFor(item.role)} />
             </span>
             <span className="ts">{clock(item.at)}</span>
           </div>
@@ -639,7 +641,7 @@ const FeedRow = memo(function FeedRow({ item, name }: { item: FeedItem; name: st
             <span className="sev-tag">⚑ {item.finding.severity}</span>
             {item.finding.fromRole ? (
               <span className="role-tag dim">
-                <RoleLabel role={item.finding.fromRole} name={name} />
+                <RoleLabel role={item.finding.fromRole} name={nameFor(item.finding.fromRole)} />
               </span>
             ) : null}
             <span className="ts">{clock(item.at)}</span>

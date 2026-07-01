@@ -53,7 +53,7 @@ export type ServerEvent =
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
   | { type: "chat.history"; room: string; messages: ChatMessage[] }
-  | { type: "chat.name"; threadId: string; name: string }
+  | { type: "chat.name"; threadId: string; role: Role; name: string }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }

@@ -34,7 +34,7 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
     {},
     async () => {
       const roster = api.officeRoster(ctx.threadId);
-      const me = api.officeName(ctx.threadId);
+      const me = api.officeName(ctx.threadId, ctx.role);
       const others = roster.filter((r) => !r.self);
       const youAre = `You're "${me}" in the office (rename with office_set_name if you like).`;
       if (!others.length) {
@@ -56,7 +56,7 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
     "Pick the name you go by in the office (how coworkers will address you, and what shows on your gnome). Optional — you get a default name otherwise. Choose something short and human.",
     { name: z.string().min(1).max(24).describe("Your chosen office name, e.g. 'Nova'.") },
     async (args) => {
-      const saved = api.setOfficeName(ctx.threadId, args.name);
+      const saved = api.setOfficeName(ctx.threadId, ctx.role, args.name);
       return { content: [{ type: "text", text: `You're now "${saved}" in the office.` }] };
     },
   );

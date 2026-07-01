@@ -141,18 +141,35 @@ export interface ChatMessage {
   createdAt: number;
 }
 
-// Mirror of the server's GNOME_NAMES + gnomeName (server/src/types.ts) so the office UI shows the same
-// default name the agent itself was told — picked-name overrides arrive via `nameOverrides`/chat.name.
+// Mirror of the server's GNOME_NAMES + gnomeName + agentKey (server/src/types.ts) so the office UI shows
+// the same default name the agent itself was told. Each role in a task is a distinct agent with its own
+// name, keyed by (thread, role); picked-name overrides arrive via `nameOverrides`/chat.name.
 export const GNOME_NAMES = [
   "Pip", "Nim", "Bram", "Tova", "Fen", "Sol", "Rune", "Liv", "Ask", "Eir",
   "Odd", "Sten", "Tor", "Una", "Yara", "Knut", "Hilda", "Mads", "Sif", "Juni",
   "Lumi", "Pax", "Wren", "Zia", "Ole", "Greta", "Finn", "Bo", "Vik", "Saga",
 ] as const;
 
-export function gnomeName(threadId: string): string {
+/** Identity key for one agent — a (thread, role) pair. Mirrors the server; the `nameOverrides` map is
+ *  keyed by this, so distinct roles of one task never collapse to a single name. */
+export function agentKey(threadId: string, role: Role): string {
+  return `${threadId}::${role}`;
+}
+
+/** Mirror of the server's ROLE_RANK — offsets each role's default name so a task's roles map to
+ *  consecutive (distinct) names. */
+const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4 };
+
+export function gnomeName(threadId: string, role: Role): string {
   let h = 0;
   for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) >>> 0;
-  return GNOME_NAMES[h % GNOME_NAMES.length]!;
+  return GNOME_NAMES[(h + ROLE_RANK[role]) % GNOME_NAMES.length]!;
+}
+
+/** The office name to show for one of a task's agents: its picked/assigned override, else the
+ *  deterministic per-(thread, role) default. The single place the UI resolves a name. */
+export function agentName(overrides: Record<string, string>, threadId: string, role: Role): string {
+  return overrides[agentKey(threadId, role)] ?? gnomeName(threadId, role);
 }
 
 export interface ChatRoomSummary {
@@ -257,7 +274,7 @@ export type ServerEvent =
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
   | { type: "chat.history"; room: string; messages: ChatMessage[] }
-  | { type: "chat.name"; threadId: string; name: string }
+  | { type: "chat.name"; threadId: string; role: Role; name: string }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }

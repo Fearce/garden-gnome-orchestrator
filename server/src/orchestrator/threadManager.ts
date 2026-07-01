@@ -34,7 +34,7 @@ import type {
   Role,
   Thread,
 } from "../types.js";
-import { GENERAL_ROOM, GNOME_NAMES, gnomeName, normalizeWorkspace, repoRoom } from "../types.js";
+import { agentKey, GENERAL_ROOM, GNOME_NAMES, gnomeName, normalizeWorkspace, repoRoom } from "../types.js";
 
 type ResultEvent = Extract<AgentEvent, { type: "result" }>;
 type Acct = { id: string; label: string; token: string | undefined };
@@ -1767,7 +1767,7 @@ export class ThreadManager implements OrchestratorApi {
       const qaNotes = this.directorNotes.get(thread.id);
       this.directorNotes.delete(thread.id);
       const noteBlock = qaNotes?.length ? `\n\n[New information from the director]\n${qaNotes.join("\n\n")}` : "";
-      const fixMsg = `QA review found issues — fix ALL of these, then we'll re-check:\n${formatQaIssues(qa)}${noteBlock}`;
+      const fixMsg = `${this.officeName(thread.id, "qa")} (your QA reviewer) found issues — fix ALL of these, then they'll re-check:\n${formatQaIssues(qa)}${noteBlock}`;
       // The implementor was fully stopped before QA, so RE-LAUNCH it through the same resume gate the
       // rest of the pipeline uses (warm full-session resume when the cache is fresh — fix-rounds are
       // minutes apart so it usually is — else a Haiku-compressed cold seed). This is what keeps the slot
@@ -2495,7 +2495,8 @@ export class ThreadManager implements OrchestratorApi {
 
   // ---- the office: cross-agent chat + grouping ----
 
-  /** Picked names live in one kv JSON map; the default is derived from the thread id. */
+  /** Assigned/picked office names live in one kv JSON map keyed by agentKey(thread, role) — each role
+   *  in a task is a distinct agent with its own name. The default for an unlisted key is gnomeName. */
   private officeNameMap(): Record<string, string> {
     try {
       const v = this.db.kvGet("office_names");
@@ -2505,24 +2506,32 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
-  officeName(threadId: string): string {
-    return this.officeNameMap()[threadId] || gnomeName(threadId);
+  officeName(threadId: string, role: Role): string {
+    return this.officeNameMap()[agentKey(threadId, role)] || gnomeName(threadId, role);
   }
 
-  /** Assign a stable office name the first time a task needs one, picking the deterministic default
-   *  but walking to the next free name if a currently-live coworker already holds it — so two gnomes
-   *  on screen at once never share a name. Persisted + broadcast so the UI and the agent agree. */
-  private ensureNamed(threadId: string): string {
+  /** Assign a stable office name the first time one of a task's agents (a role) needs one, picking the
+   *  deterministic default but walking to the next free name if a currently-live coworker — or another
+   *  role of this same task — already holds it, so no two gnomes on screen at once (nor two agents in one
+   *  task's feed) ever share a name. Persisted + broadcast so the UI and the agent agree. */
+  private ensureNamed(threadId: string, role: Role): string {
+    const key = agentKey(threadId, role);
     const map = this.officeNameMap();
-    if (map[threadId]) return map[threadId];
-    const used = new Set(
-      this.liveAgentThreads()
-        .filter((l) => l.threadId !== threadId)
-        .map((l) => this.officeName(l.threadId)),
-    );
+    if (map[key]) return map[key];
+    const used = new Set<string>([
+      // Names held by other live agents anywhere in the office...
+      ...this.liveAgentThreads()
+        .filter((l) => !(l.threadId === threadId && l.role === role))
+        .map((l) => this.officeName(l.threadId, l.role)),
+      // ...and names already assigned to this task's OTHER roles (which may not be live right now).
+      ...Object.entries(map)
+        .filter(([k]) => k.startsWith(`${threadId}::`) && k !== key)
+        .map(([, v]) => v),
+    ]);
     const names = GNOME_NAMES as readonly string[];
-    const start = Math.max(0, names.indexOf(gnomeName(threadId)));
-    let chosen = gnomeName(threadId);
+    const base = gnomeName(threadId, role);
+    const start = Math.max(0, names.indexOf(base));
+    let chosen = base;
     for (let i = 0; i < names.length; i++) {
       const cand = names[(start + i) % names.length]!;
       if (!used.has(cand)) {
@@ -2530,22 +2539,23 @@ export class ThreadManager implements OrchestratorApi {
         break;
       }
     }
-    map[threadId] = chosen;
+    map[key] = chosen;
     this.db.kvSet("office_names", JSON.stringify(map));
-    this.hub.publish({ type: "chat.name", threadId, name: chosen });
+    this.hub.publish({ type: "chat.name", threadId, role, name: chosen });
     return chosen;
   }
 
-  setOfficeName(threadId: string, name: string): string {
-    const clean = name.trim().replace(/\s+/g, " ").slice(0, 24) || gnomeName(threadId);
+  setOfficeName(threadId: string, role: Role, name: string): string {
+    const clean = name.trim().replace(/\s+/g, " ").slice(0, 24) || gnomeName(threadId, role);
     const map = this.officeNameMap();
-    map[threadId] = clean;
+    map[agentKey(threadId, role)] = clean;
     this.db.kvSet("office_names", JSON.stringify(map));
-    this.hub.publish({ type: "chat.name", threadId, name: clean });
+    this.hub.publish({ type: "chat.name", threadId, role, name: clean });
     return clean;
   }
 
-  /** The current name overrides (picked names only) — sent in the hello snapshot for the office UI. */
+  /** The current name overrides (assigned/picked names, keyed by agentKey) — sent in the hello snapshot
+   *  for the office UI, which falls back to the deterministic gnomeName for any agent not listed here. */
   officeNameOverrides(): Record<string, string> {
     return this.officeNameMap();
   }
@@ -2563,7 +2573,7 @@ export class ThreadManager implements OrchestratorApi {
       role: input.role,
       kind: "chat",
       body: input.body,
-      senderName: this.officeName(input.threadId),
+      senderName: this.officeName(input.threadId, input.role),
     });
     this.hub.publish({ type: "chat.message", message: m });
     // A team post is pushed straight into the session of every other live implementor in the same
@@ -2580,7 +2590,7 @@ export class ThreadManager implements OrchestratorApi {
   private deliverChatToPeers(m: ChatMessage): number {
     if (m.scope !== "project" || !m.workspace) return 0;
     const norm = normalizeWorkspace(m.workspace);
-    const who = m.senderName || (m.threadId ? this.officeName(m.threadId) : "a teammate");
+    const who = m.senderName || (m.threadId && m.role !== "system" ? this.officeName(m.threadId, m.role) : "a teammate");
     const text =
       `💬 [Office — ${who} (${m.role}) posted to your team room]: ${m.body}\n` +
       `(A teammate working in this same repo sent this. If it touches your work or asks something, reply with ` +
@@ -2681,7 +2691,7 @@ export class ThreadManager implements OrchestratorApi {
     const myNorm = normalizeWorkspace(me?.workspace ?? "");
     return this.liveAgentThreads().map((l) => ({
       threadId: l.threadId,
-      name: this.officeName(l.threadId),
+      name: this.officeName(l.threadId, l.role),
       title: l.title,
       workspace: l.workspace,
       role: l.role,
@@ -2759,7 +2769,7 @@ export class ThreadManager implements OrchestratorApi {
     this.checkedIn.add(key);
     const t = this.db.getThread(threadId);
     if (!t) return;
-    const name = this.ensureNamed(threadId);
+    const name = this.ensureNamed(threadId, role);
     const leaf = t.workspace.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || t.workspace;
     const m = this.db.addChatMessage({
       room: GENERAL_ROOM,
