@@ -982,7 +982,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   display: none; flex-direction: column; gap: 5px;
   padding: 10px 12px;
   background: var(--bg-1); border: 1px solid var(--line-strong); border-radius: var(--r-md);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-2);
 }
 .dl-chip:hover .dl-pop, .dl-chip:focus-within .dl-pop { display: flex; }
 /* Transparent bridge across the 6px gap so the cursor can travel chip → popover without :hover dropping. */
