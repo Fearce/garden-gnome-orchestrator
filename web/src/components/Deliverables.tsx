@@ -12,21 +12,23 @@ function copy(text: string): void {
 }
 
 /**
- * The right-panel Deliverables section: an agent-produced file (a finding of kind 'deliverable')
- * rendered as a card with View / Download / Copy-path actions. Renders nothing when the task has no
- * deliverables, so it's invisible on the vast majority of tasks.
+ * The right-panel Deliverables strip: each agent-produced file (a finding of kind 'deliverable') is a
+ * small clickable file icon. Clicking opens the inline preview; hovering (or focusing) reveals a
+ * popover with the label, filename, description and actions. The popover is an out-of-flow overlay so
+ * the strip stays a thin single bar and never pushes into or reflows the activity feed below it.
+ * Renders nothing when the task has no deliverables.
  */
 export function Deliverables({ items }: { items: Finding[] }) {
   const [viewing, setViewing] = useState<Finding | null>(null);
   if (!items.length) return null;
   return (
     <div className="deliverables">
-      <div className="deliverables-head">
+      <span className="deliverables-label">
         deliverables <span className="n">{items.length}</span>
-      </div>
-      <div className="deliverable-list">
+      </span>
+      <div className="deliverable-strip">
         {items.map((d) => (
-          <DeliverableCard key={d.id} d={d} onView={() => setViewing(d)} />
+          <DeliverableChip key={d.id} d={d} onView={() => setViewing(d)} />
         ))}
       </div>
       {viewing && (
@@ -38,43 +40,55 @@ export function Deliverables({ items }: { items: Finding[] }) {
   );
 }
 
-function DeliverableCard({ d, onView }: { d: Finding; onView: () => void }) {
+function DeliverableChip({ d, onView }: { d: Finding; onView: () => void }) {
   const path = d.path ?? "";
   const name = basenameOf(path);
   const kind = fileKindOf(name);
+  const previewable = isPreviewable(kind);
   const [copied, setCopied] = useState(false);
   const onCopy = () => {
     copy(path);
     setCopied(true);
     setTimeout(() => setCopied(false), 1400);
   };
+  const download = apiUrl(`/api/deliverable/${d.id}?download=1`);
   return (
-    <div className="deliverable-card">
-      <span className="dl-icon">
-        <FileIcon kind={kind} size={26} />
-      </span>
-      <div className="dl-meta">
-        <div className="dl-label" title={d.label ?? name}>
-          {d.label ?? name}
-        </div>
-        <div className="dl-name" title={path}>
+    <span className="dl-chip">
+      <button
+        className="dl-chip-btn"
+        onClick={previewable ? onView : undefined}
+        // A binary/unknown file can't be previewed, so its icon is a plain marker, not a button action.
+        aria-label={d.label ?? name}
+        title={d.label ?? name}
+        type="button"
+      >
+        <FileIcon kind={kind} size={19} />
+      </button>
+      <span className="dl-pop" role="tooltip">
+        <span className="dl-pop-head">
+          <span className="dl-pop-icon">
+            <FileIcon kind={kind} size={16} />
+          </span>
+          <span className="dl-pop-label">{d.label ?? name}</span>
+        </span>
+        <span className="dl-pop-name" title={path}>
           {name}
-        </div>
-        {d.detail ? <div className="dl-desc">{d.detail}</div> : null}
-      </div>
-      <div className="dl-actions">
-        {isPreviewable(kind) && (
-          <button className="btn ghost sm" onClick={onView} title="Preview the file inline">
-            View
+        </span>
+        {d.detail ? <span className="dl-pop-desc">{d.detail}</span> : null}
+        <span className="dl-pop-actions">
+          {previewable && (
+            <button className="btn ghost sm" onClick={onView} type="button" title="Preview the file inline">
+              View
+            </button>
+          )}
+          <a className="btn ghost sm" href={download} download={name} title="Download the file">
+            Download
+          </a>
+          <button className="btn ghost sm" onClick={onCopy} type="button" title="Copy the full file path to the clipboard">
+            {copied ? "Copied" : "Copy path"}
           </button>
-        )}
-        <a className="btn ghost sm" href={apiUrl(`/api/deliverable/${d.id}?download=1`)} download={name} title="Download the file">
-          Download
-        </a>
-        <button className="btn ghost sm" onClick={onCopy} title="Copy the full file path to the clipboard">
-          {copied ? "Copied" : "Copy path"}
-        </button>
-      </div>
-    </div>
+        </span>
+      </span>
+    </span>
   );
 }

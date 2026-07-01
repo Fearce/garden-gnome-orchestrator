@@ -949,27 +949,54 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   font-family: var(--font-mono); font-size: 11px; line-height: 1.5; color: var(--text-dim);
 }
 
-/* ---- deliverables (right-panel section + preview modal) ---- */
-.deliverables { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
-.deliverables-head {
+/* ---- deliverables (right-panel compact strip + hover popover + preview modal) ---- */
+/* A thin single-row bar: a label and a wrapping row of small file-icon chips. The per-chip info
+   popover is an out-of-flow overlay (see .dl-pop) so this bar never grows tall or reflows the feed. */
+.deliverables {
+  padding: 8px 16px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.deliverables-label {
   font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--text-faint); display: flex; align-items: center; gap: 7px;
+  color: var(--text-faint); flex: 0 0 auto;
 }
-.deliverables-head .n { font-size: 9px; opacity: 0.7; font-weight: 600; }
-.deliverable-list { display: flex; flex-direction: column; gap: 7px; }
-.deliverable-card {
-  display: flex; align-items: center; gap: 11px; padding: 9px 11px;
-  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-1);
-  transition: border-color 0.12s;
+.deliverables-label .n { font-size: 9px; opacity: 0.7; font-weight: 600; }
+.deliverable-strip { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+
+.dl-chip { position: relative; display: inline-flex; }
+.dl-chip-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg-1); color: var(--accent); cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
 }
-.deliverable-card:hover { border-color: var(--line-strong); }
-.deliverable-card .dl-icon { flex: 0 0 auto; display: flex; color: var(--accent); }
-.deliverable-card .dl-meta { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
-.deliverable-card .dl-label { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.deliverable-card .dl-name { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.deliverable-card .dl-desc { font-size: 11.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.deliverable-card .dl-actions { display: flex; gap: 5px; flex: 0 0 auto; }
-.deliverable-card .dl-actions a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+.dl-chip-btn:hover { border-color: var(--accent); background: var(--bg-2); }
+.dl-chip-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Info popover: floats below the chip as an overlay, so it never adds height to the bar or collides
+   with the feed's layout. Shown on hover or keyboard focus. */
+.dl-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 50;
+  width: 244px; max-width: 78vw;
+  display: none; flex-direction: column; gap: 5px;
+  padding: 10px 12px;
+  background: var(--bg-1); border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+}
+.dl-chip:hover .dl-pop, .dl-chip:focus-within .dl-pop { display: flex; }
+/* Transparent bridge across the 6px gap so the cursor can travel chip → popover without :hover dropping. */
+.dl-pop::before { content: ""; position: absolute; top: -6px; left: 0; right: 0; height: 6px; }
+.dl-pop-head { display: flex; align-items: center; gap: 8px; color: var(--accent); min-width: 0; }
+.dl-pop-icon { flex: 0 0 auto; display: flex; }
+.dl-pop-label {
+  font-size: 12.5px; font-weight: 600; color: var(--text); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dl-pop-name { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); word-break: break-all; }
+.dl-pop-desc { font-size: 11.5px; color: var(--text-dim); line-height: 1.4; }
+.dl-pop-actions { display: flex; gap: 5px; margin-top: 3px; }
+.dl-pop-actions a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 
 .modal.deliverable { width: min(900px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
 .dl-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
