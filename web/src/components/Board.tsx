@@ -340,7 +340,6 @@ function ClosedCard({ thread }: { thread: Thread }) {
   return (
     <div className="closed-card">
       <div className="closed-card-main">
-        <span className="badge closed-badge">closed</span>
         {isSuccessfulClose(thread) ? (
           <svg
             className="closed-check"
