@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
-import { repoRoom } from "../types.js";
+import { gnomeName, repoRoom } from "../types.js";
 import { clock, isDoneable, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
@@ -14,6 +14,15 @@ function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
 }
 
 const roleVar = (role: Role): CSSProperties => ({ "--role": roleColor(role) } as CSSProperties);
+
+function RoleLabel({ role, name }: { role: Role; name?: string }) {
+  return (
+    <>
+      <span className="role-word">{role}</span>
+      {name ? <span className="role-name">({name})</span> : null}
+    </>
+  );
+}
 
 const ROLE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
 
@@ -79,6 +88,7 @@ export function ThreadDetail() {
   const approve = useStore((s) => s.approve);
   const loadChanges = useStore((s) => s.loadChanges);
   const openOffice = useStore((s) => s.openOffice);
+  const nameOverrides = useStore((s) => s.nameOverrides);
   // The project chatroom for THIS task's repo, if one exists (≥2 tasks ever collaborated here —
   // possibly in a PAST task, since the room persists). Repo-keyed so a fresh task on a repo with
   // prior history also gets the button to read the old chatter; invisible on repos that never collaborated.
@@ -216,6 +226,7 @@ export function ThreadDetail() {
   // died (reusing saved plan/research and the implementor's prior session) instead of from scratch.
   const isResumable = thread.state === "paused" || thread.state === "review" || thread.state === "failed";
   const terminal = isTerminal(thread.state);
+  const threadGnomeName = nameOverrides[id] ?? gnomeName(id);
 
   const doInject = (mode: "append" | "interrupt") => {
     const t = msg.trim();
@@ -408,7 +419,10 @@ export function ThreadDetail() {
                 onClick={() => setRoleFilter(role)}
               >
                 <Gnome role={role} size={15} />
-                {role} <span className="n">{counts[role] ?? 0}</span>
+                <span className="fchip-label">
+                  <RoleLabel role={role} name={threadGnomeName} />
+                </span>
+                <span className="n">{counts[role] ?? 0}</span>
                 {r ? <Elapsed className="fchip-time" startMs={r.startedAt} endMs={r.endedAt} running={runActive(r.state)} /> : null}
               </button>
             );
@@ -459,14 +473,14 @@ export function ThreadDetail() {
           </button>
         )}
         {windowed.map((f) => (
-          <FeedRow key={feedKey(f)} item={f} />
+          <FeedRow key={feedKey(f)} item={f} name={threadGnomeName} />
         ))}
         {draft && (roleFilter === "all" || draft.role === roleFilter) && (
           <div className="fi draft" style={roleVar(draft.role)}>
             <div className="head">
               <Gnome role={draft.role} size={30} />
               <span className="role-tag" style={{ color: roleColor(draft.role) }}>
-                {draft.role}
+                <RoleLabel role={draft.role} name={threadGnomeName} />
               </span>
             </div>
             <Markdown className="body" text={draft.text} />
@@ -533,7 +547,7 @@ export function ThreadDetail() {
   );
 }
 
-const FeedRow = memo(function FeedRow({ item }: { item: FeedItem }) {
+const FeedRow = memo(function FeedRow({ item, name }: { item: FeedItem; name: string }) {
   switch (item.kind) {
     case "text":
       return (
@@ -541,7 +555,7 @@ const FeedRow = memo(function FeedRow({ item }: { item: FeedItem }) {
           <div className="head">
             <Gnome role={item.role} size={30} />
             <span className="role-tag" style={{ color: roleColor(item.role) }}>
-              {item.role}
+              <RoleLabel role={item.role} name={name} />
             </span>
             <span className="ts">{clock(item.at)}</span>
           </div>
@@ -552,7 +566,9 @@ const FeedRow = memo(function FeedRow({ item }: { item: FeedItem }) {
       return (
         <div className="fi tool">
           <div className="head">
-            <span className="role-tag dim">{item.role}</span>
+            <span className="role-tag dim">
+              <RoleLabel role={item.role} name={name} />
+            </span>
             <span className="ts">{clock(item.at)}</span>
           </div>
           <div className="body">
@@ -571,7 +587,11 @@ const FeedRow = memo(function FeedRow({ item }: { item: FeedItem }) {
         <div className="fi finding" style={{ "--sev": sevColor(item.finding.severity) } as CSSProperties}>
           <div className="head">
             <span className="sev-tag">⚑ {item.finding.severity}</span>
-            <span className="role-tag dim">{item.finding.fromRole}</span>
+            {item.finding.fromRole ? (
+              <span className="role-tag dim">
+                <RoleLabel role={item.finding.fromRole} name={name} />
+              </span>
+            ) : null}
             <span className="ts">{clock(item.at)}</span>
           </div>
           <div className="body">
