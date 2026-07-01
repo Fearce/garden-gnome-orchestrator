@@ -3,7 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
 import type { ChatMessage, Role } from "../types.js";
 import { GENERAL_ROOM, gnomeName, normalizeWorkspace, repoRoom } from "../types.js";
-import { clock, roleColor } from "../lib/format.js";
+import { clock, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
 
@@ -13,6 +13,7 @@ interface Worker {
   runId: string;
   threadId: string;
   role: Role;
+  model: string; // drives the walker's pacing tempo — a more capable model struts a quicker lap
   title: string;
   workspace: string;
 }
@@ -28,6 +29,48 @@ interface Group {
 
 // How long a freshly-posted message floats as a bubble above its gnome.
 const BUBBLE_MS = 9000;
+
+// A pacing gnome doesn't march non-stop — after some laps it stops and takes a breather. We decide this
+// in JS (not a fixed CSS cycle) so each gnome idles independently rather than all resting in lockstep.
+const IDLE_CHANCE = 0.22; // odds of resting at any given lap boundary — low, so they mostly keep strolling
+const IDLE_MIN_MS = 2000; // a breather lasts a random 2–7s
+const IDLE_MAX_MS = 7000;
+
+/** Gives a walker its own random idle rhythm: at each lap boundary (the gnome is back in its upright home
+ *  pose) it may pause for a random 2–7s before setting off again. Pausing only at the boundary means it
+ *  always rests standing still, never frozen mid-stride. Returns a ref to attach to the `.office-pacer`. */
+function useRandomIdle(active: boolean) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !active) return;
+    let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+    const onIteration = () => {
+      if (el.classList.contains("resting") || Math.random() >= IDLE_CHANCE) return;
+      el.classList.add("resting"); // stands in the home pose (CSS pauses the animation)
+      const rest = IDLE_MIN_MS + Math.random() * (IDLE_MAX_MS - IDLE_MIN_MS);
+      resumeTimer = setTimeout(() => el.classList.remove("resting"), rest);
+    };
+    el.addEventListener("animationiteration", onIteration);
+    return () => {
+      el.removeEventListener("animationiteration", onIteration);
+      if (resumeTimer) clearTimeout(resumeTimer);
+      el.classList.remove("resting");
+    };
+  }, [active]);
+  return ref;
+}
+
+/** A single pacing gnome (director or a lone agent). `active` gates the random-idle rhythm — pass the
+ *  director's busy flag, or `true` for a live agent. */
+function Pacer({ role, active }: { role: Role; active: boolean }) {
+  const ref = useRandomIdle(active);
+  return (
+    <span className="office-pacer" ref={ref}>
+      <Gnome role={role} size={20} />
+    </span>
+  );
+}
 
 function leaf(p: string): string {
   const norm = p.replace(/[\\/]+$/, "");
@@ -69,7 +112,7 @@ export function Office() {
     for (const r of [...runs].sort((a, b) => a.startedAt - b.startedAt)) {
       const t = threads[r.threadId];
       if (!t) continue;
-      perThread.set(r.threadId, { runId: r.id, threadId: r.threadId, role: r.role, title: t.title, workspace: t.workspace });
+      perThread.set(r.threadId, { runId: r.id, threadId: r.threadId, role: r.role, model: r.model, title: t.title, workspace: t.workspace });
     }
     const byRepo = new Map<string, Worker[]>();
     for (const w of perThread.values()) {
@@ -114,13 +157,12 @@ export function Office() {
       <div className="office-strip" title="The office — the director and any agents working right now. Click to open the chat.">
         <button
           className={"office-walker office-director" + (directorBusy ? " working" : "")}
-          style={{ "--pace-dur": "5s", "--pace-delay": "0s" } as CSSProperties}
+          // The director is a Sonnet — pace it at the same model-driven medium lap as any Sonnet worker.
+          style={{ "--pace-dur": `${pacePeriodForModel("claude-sonnet")}s`, "--pace-delay": "0s" } as CSSProperties}
           onClick={() => openOffice(GENERAL_ROOM)}
           title={directorBusy ? "The director is working — click to open the office chat" : "The director — click to open the office chat"}
         >
-          <span className="office-pacer">
-            <Gnome role="director" size={20} />
-          </span>
+          <Pacer role="director" active={directorBusy} />
         </button>
         {liveCount > 0
           ? groups.map((g) =>
@@ -144,13 +186,11 @@ export function Office() {
                 <button
                   key={w.threadId}
                   className="office-walker"
-                  style={{ "--pace-dur": `${3 + ((i * 7) % 5) * 0.5}s`, "--pace-delay": `${(i % 4) * 0.6}s` } as CSSProperties}
+                  style={{ "--pace-dur": `${pacePeriodForModel(w.model)}s`, "--pace-delay": `${(i % 4) * 0.6}s` } as CSSProperties}
                   onClick={() => openOffice(GENERAL_ROOM)}
                   title={`${nameOf(w.threadId)} (${w.role}) on "${w.title}" — click to open the office chat`}
                 >
-                  <span className="office-pacer">
-                    <Gnome role={w.role} size={20} />
-                  </span>
+                  <Pacer role={w.role} active={true} />
                   {bubbleFor(byRun.get(w.runId)) ? <span className="office-bubble">{bubbleFor(byRun.get(w.runId))}</span> : null}
                 </button>
               ))

@@ -171,3 +171,17 @@ export function soonestReset(accounts: AccountDTO[]): number | null {
   }
   return soonest;
 }
+
+/** How long one full pacing lap of an office walker takes, in seconds, picked from the agent's model
+ *  tier: a more capable model struts a quicker lap, a smaller one ambles. Purely cosmetic — it feeds the
+ *  `--pace-dur` custom property on `.office-pacer` (styles.css). Substring-matched so it tolerates dated /
+ *  vendored ids (`claude-opus-4-8`, `us.anthropic.claude-…`, `gpt-5`, `o3-mini`…); unknown → the medium lap. */
+export function pacePeriodForModel(model: string | null | undefined): number {
+  const m = (model ?? "").toLowerCase();
+  // Small / fast-latency tiers first (so `o3-mini`, `gpt-5-nano` land here, not in the flagship bucket).
+  if (/haiku|mini|nano|flash|small|lite/.test(m)) return 5;
+  // Flagship / top-tier reasoning models — the quickest strut.
+  if (/opus|fable|gpt-5|o3|o1/.test(m)) return 2.2;
+  // Everything else (Sonnet and unknowns) — a medium lap.
+  return 3.4;
+}

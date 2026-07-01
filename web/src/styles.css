@@ -122,19 +122,48 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ---- the office (top-bar gnomes + chatroom) ---- */
 .office { position: relative; flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: center; }
-.office-strip { display: flex; align-items: center; gap: 4px; height: 100%; min-width: 0; padding: 0 4px; }
+/* Gnomes stand on the FLOOR of the top bar (its bottom border), not floating mid-air — so bottom-align
+   the strip so boots rest just above the divider line. */
+.office-strip { display: flex; align-items: flex-end; gap: 4px; height: 100%; min-width: 0; padding: 0 4px; }
 
-/* A lone agent paces its own little lane while it churns. */
-.office-walker { position: relative; flex: 0 0 auto; width: 46px; height: 38px; background: none; border: 0; padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: flex-start; }
+/* A lone agent paces its own little lane while it churns. Its gnome is seated on the strip floor
+   (align-items: flex-end) so the boots touch down and the stride bop springs it up off the floor. */
+.office-walker { position: relative; flex: 0 0 auto; width: 46px; height: 38px; background: none; border: 0; padding: 0; cursor: pointer; display: flex; align-items: flex-end; justify-content: flex-start; }
+/* The gnome art has ~1.3px of empty viewBox below the boots; nudge the walking gnome down so the boots
+   actually rest on the bar's bottom edge instead of hovering. Applied to the inner .gnome (a child of the
+   animated .office-pacer) so it composes with the walk transform rather than clobbering it. */
+.office-walker .office-pacer .gnome { transform: translateY(1.3px); }
 .office-pacer { display: inline-flex; line-height: 0; will-change: transform; animation: office-pace var(--pace-dur, 3.4s) ease-in-out var(--pace-delay, 0s) infinite; }
 .office-walker:hover .office-pacer { animation-play-state: paused; }
+/* An idle director holds a static pose — only paces while actually working (.working from directorBusy). */
+.office-director:not(.working) .office-pacer { animation: none; }
+/* One lap = stroll out to the right (two footfall bops), turn, stroll back, turn to face forward, home.
+   The lap STARTS and ENDS in the same forward-facing home pose (0% === 100%), which is why the random
+   idle can safely pause it at a lap boundary (animationiteration) — the gnome freezes standing upright,
+   never mid-stride. Random resting is driven in JS (Office.tsx) so gnomes idle independently, not in
+   lockstep. The stride bop (~1.8px translateY, one per footfall) is baked into these same keyframes so it
+   stays a single transform animation — a second animation on .office-pacer would clobber the translateX. */
 @keyframes office-pace {
-  0%   { transform: translateX(0) scaleX(1); }
-  46%  { transform: translateX(20px) scaleX(1); }
-  50%  { transform: translateX(20px) scaleX(-1); }
-  96%  { transform: translateX(0) scaleX(-1); }
-  100% { transform: translateX(0) scaleX(1); }
+  /* stroll right */
+  0%   { transform: translateX(0) translateY(0) scaleX(1); }
+  9%   { transform: translateX(5px) translateY(-1.8px) scaleX(1); }
+  18%  { transform: translateX(10px) translateY(0) scaleX(1); }
+  27%  { transform: translateX(15px) translateY(-1.8px) scaleX(1); }
+  36%  { transform: translateX(20px) translateY(0) scaleX(1); }
+  /* turn around */
+  41%  { transform: translateX(20px) translateY(0) scaleX(-1); }
+  /* stroll back */
+  50%  { transform: translateX(15px) translateY(-1.8px) scaleX(-1); }
+  59%  { transform: translateX(10px) translateY(0) scaleX(-1); }
+  68%  { transform: translateX(5px) translateY(-1.8px) scaleX(-1); }
+  77%  { transform: translateX(0) translateY(0) scaleX(-1); }
+  /* turn back to face forward, then hold the home pose to the lap boundary */
+  82%  { transform: translateX(0) translateY(0) scaleX(1); }
+  100% { transform: translateX(0) translateY(0) scaleX(1); }
 }
+/* A gnome taking a breather stands in its home pose — paused at a lap boundary (see Office.tsx). Kept a
+   class rather than an inline style so the hover-to-pause rule still composes with it. */
+.office-pacer.resting { animation-play-state: paused; }
 
 /* 2+ agents in the same repo stand still together — a project chatroom in session. */
 .office-huddle {
@@ -152,6 +181,8 @@ button { font-family: inherit; cursor: pointer; }
 .office-huddle-gnomes { display: inline-flex; }
 .office-huddle-gnomes > .gnome { margin-left: -9px; } /* overlap so they read as a huddle */
 .office-huddle-gnomes > .gnome:first-child { margin-left: 0; }
+/* Huddled agents stand still together — a party in session reads as gathered, not marching. Only a LONE
+   active agent paces (see .office-pacer). Deliberately no per-gnome motion here. */
 .office-huddle-tag {
   font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.03em; color: var(--accent);
   max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -843,6 +874,11 @@ button { font-family: inherit; cursor: pointer; }
    ring above is dot-specific, but the gentle pulse is the shared "this role is working" signal. */
 .pip.active .gnome { animation: pulse 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .pip.active .pip-dot, .pip.active .gnome { animation: none; } }
+/* Still the top-bar office motion when the OS asks for reduced motion (this also covers the
+   pre-existing office-pace/huddle-pulse animations, which previously ignored the preference). */
+@media (prefers-reduced-motion: reduce) {
+  .office-pacer, .office-huddle { animation: none; }
+}
 @keyframes pulse { 50% { opacity: 0.5; } }
 /* Role name stacked over its timer (reads tidier than side-by-side, and keeps each pip narrow
    enough that the row stays on one line). */
