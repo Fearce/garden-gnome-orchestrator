@@ -701,6 +701,9 @@ button { font-family: inherit; cursor: pointer; }
 .closed-card-main { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .closed-card-title { font-size: 13px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .closed-badge { --state-color: var(--text-faint); flex: 0 0 auto; }
+/* A subtle "finished correctly" mark: the --ok green muted toward the faint text so it reads as a quiet
+   status glyph, native to the closed row rather than a bright badge. Shown only when the task closed from 'done'. */
+.closed-check { display: inline-flex; flex: 0 0 auto; color: color-mix(in oklch, var(--ok) 78%, var(--text-faint)); }
 .closed-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .closed-expiry { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); letter-spacing: 0.02em; }
 .closed-actions { display: inline-flex; gap: 7px; }

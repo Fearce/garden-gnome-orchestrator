@@ -41,9 +41,10 @@ function rowToThread(r: Row): Thread {
     brief: r.brief as string,
     rawPrompt: r.raw_prompt as string,
     error: (r.error as string | null) ?? null,
-    // closed_prev_state is deliberately NOT mapped onto the DTO — it's internal bookkeeping for
-    // restore, never shown to the UI. Only closedAt (the auto-purge clock) reaches the client.
     closedAt: (r.closed_at as number | null) ?? null,
+    // The state a closed task came from: kept for restore, and surfaced so the UI can mark tasks that
+    // finished correctly (closed_prev_state === 'done') with a checkmark. Null on never-closed rows.
+    closedPrevState: (r.closed_prev_state as ThreadState | null) ?? null,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
   };
@@ -245,7 +246,7 @@ export class Db {
         `UPDATE threads SET state='closed', closed_at=@at, closed_prev_state=@prev, updated_at=@at WHERE id=@id`,
       )
       .run({ id, at, prev: current.state });
-    return { ...current, state: "closed", closedAt: at, updatedAt: at };
+    return { ...current, state: "closed", closedAt: at, closedPrevState: current.state, updatedAt: at };
   }
 
   /** Restore a closed thread back to the state it was closed from (closed_prev_state; fallback

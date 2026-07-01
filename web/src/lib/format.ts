@@ -75,6 +75,14 @@ export function isClosable(state: ThreadState): boolean {
   return state === "done" || state === "failed" || state === "cancelled" || state === "review" || state === "paused";
 }
 
+/** Whether a closed task finished correctly — closed while in 'done' (the only successful outcome:
+ *  QA-verified or owner-accepted). failed/cancelled/review/paused closes are excluded, so a stalled or
+ *  abandoned task never earns the checkmark. Drives the closed-card ✓; the field comes straight from the
+ *  server's closed_prev_state. */
+export function isSuccessfulClose(thread: Thread): boolean {
+  return thread.state === "closed" && thread.closedPrevState === "done";
+}
+
 /** A closed task auto-purges 30 days after it was closed; mirrors CLOSED_TTL_MS on the server. */
 export const CLOSED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 

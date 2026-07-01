@@ -45,6 +45,7 @@ export interface Thread {
   rawPrompt: string; // the user's original ask
   error?: string | null;
   closedAt?: number | null; // when soft-closed (state === "closed"); drives the 30-day auto-purge clock
+  closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' means it finished correctly (drives the closed-card checkmark)
   createdAt: number;
   updatedAt: number;
 }

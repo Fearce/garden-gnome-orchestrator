@@ -16,7 +16,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
 import type { AgentRun, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
-import { clockHM, closesInDays, isCapParked, isClosable, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { clockHM, closesInDays, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 
@@ -341,6 +341,25 @@ function ClosedCard({ thread }: { thread: Thread }) {
     <div className="closed-card">
       <div className="closed-card-main">
         <span className="badge closed-badge">closed</span>
+        {isSuccessfulClose(thread) ? (
+          <svg
+            className="closed-check"
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            role="img"
+            aria-label="Completed successfully"
+          >
+            <title>Completed successfully</title>
+            <circle cx="12" cy="12" r="9" />
+            <path d="m8.5 12 2.5 2.5 4.5-5" />
+          </svg>
+        ) : null}
         <span className="closed-card-title" title={thread.title}>
           {thread.title}
         </span>

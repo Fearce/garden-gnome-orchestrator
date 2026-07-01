@@ -37,6 +37,7 @@ export interface Thread {
   rawPrompt: string;
   error?: string | null;
   closedAt?: number | null;
+  closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' marks a successful close
   createdAt: number;
   updatedAt: number;
 }
