@@ -277,6 +277,11 @@ export interface OrchestratorSettings {
   hasOpenaiKey: boolean; // read-only indicator — an OpenAI key is stored (the raw key is never broadcast)
   openaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
   codexChatgptLogin: boolean; // read-only — a ChatGPT-plan `codex login` is available; preferred over the key
+  // ---- Composer state, persisted server-side (not localStorage) so it survives across the HTTP and
+  //      HTTPS surfaces the console is served on — the two origins don't share localStorage. ----
+  skipDirector: boolean; // composer's skip-director mode — persists so "on" stays on next time it opens
+  maxRecentRepos: number; // how many recent-repo chips the composer shows (clamped 1–20, default 5)
+  recentRepos: string[]; // recently-dispatched repo paths, most-recent first (capped at maxRecentRepos)
 }
 
 /** The implementor backend chosen at dispatch by the subscription toggles. */

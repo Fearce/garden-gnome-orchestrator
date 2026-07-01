@@ -102,7 +102,7 @@ export interface OrchestratorApi {
   injectThread(
     threadId: string,
     message: string,
-    mode: "append" | "interrupt",
+    mode: "append" | "interrupt" | "queue",
     images?: ImageAttachment[],
   ): Promise<ThreadActionResult>;
   interruptThread(threadId: string): Promise<ThreadActionResult>;

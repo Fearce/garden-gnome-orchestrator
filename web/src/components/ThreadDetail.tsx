@@ -236,7 +236,7 @@ export function ThreadDetail() {
   const terminal = isTerminal(thread.state);
   const threadGnomeName = nameOverrides[id] ?? gnomeName(id);
 
-  const doInject = (mode: "append" | "interrupt") => {
+  const doInject = (mode: "append" | "interrupt" | "queue") => {
     // Frozen tasks accept no manual inject/interrupt — the server auto-resumes them. Guard the handler
     // itself (not just the disabled attribute) so a keyboard ⌘/Ctrl+Enter can't slip an inject through.
     if (frozen) return;
@@ -540,10 +540,18 @@ export function ThreadDetail() {
         <div className="row">
           <AttachButton onPick={att.addFiles} />
           <button
+            className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
+            onClick={() => doInject("queue")}
+            disabled={frozen || !msg.trim()}
+            title={frozen ? FROZEN_CONTROL_TOOLTIP : "Queue this for the implementor without interrupting — it picks it up when it finishes its current work, before handing off to QA"}
+          >
+            Queue
+          </button>
+          <button
             className={"btn primary sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("append")}
             disabled={frozen || !msg.trim()}
-            title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
+            title={frozen ? FROZEN_CONTROL_TOOLTIP : "Send to the implementor now — it uses this on its next step while it keeps working"}
           >
             Inject
           </button>
@@ -551,7 +559,7 @@ export function ThreadDetail() {
             className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("interrupt")}
             disabled={frozen || !msg.trim()}
-            title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
+            title={frozen ? FROZEN_CONTROL_TOOLTIP : "Stop the implementor now and hand it this immediately"}
           >
             Interrupt &amp; inject
           </button>

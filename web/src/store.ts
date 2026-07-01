@@ -101,7 +101,7 @@ interface State {
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
   sendDirect: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
   answer: (questionId: string, answer: string) => void;
-  inject: (threadId: string, message: string, mode: "append" | "interrupt", images?: ImageAttachment[]) => void;
+  inject: (threadId: string, message: string, mode: "append" | "interrupt" | "queue", images?: ImageAttachment[]) => void;
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   cancel: (threadId: string) => void;
@@ -242,6 +242,9 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   hasOpenaiKey: false,
   openaiKeyLast4: null,
   codexChatgptLogin: false,
+  skipDirector: false,
+  maxRecentRepos: 5,
+  recentRepos: [],
 };
 
 // A server that predates the settings broadcast (or any partial payload) must never null out the

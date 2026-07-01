@@ -223,6 +223,11 @@ export interface OrchestratorSettings {
   hasOpenaiKey: boolean; // read-only: a key is stored (raw key never reaches the client)
   openaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
   codexChatgptLogin: boolean; // read-only: a ChatGPT-plan `codex login` is available (preferred over a key)
+  // Composer state persisted server-side (survives across the HTTP/HTTPS surfaces, which don't share
+  // localStorage): the skip-director mode, the recent-repo chip cap, and the recent-repo list itself.
+  skipDirector: boolean;
+  maxRecentRepos: number;
+  recentRepos: string[];
 }
 
 /** A settings.set patch: writable fields plus the write-only raw OpenAI key (never read back). */
@@ -286,7 +291,7 @@ export type ClientCommand =
   | { type: "prompt.new"; text: string; workspace?: string; images?: ImageAttachment[] }
   | { type: "prompt.direct"; text: string; workspace?: string; images?: ImageAttachment[] }
   | { type: "question.answer"; questionId: string; answer: string }
-  | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt"; images?: ImageAttachment[] }
+  | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt" | "queue"; images?: ImageAttachment[] }
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.cancel"; threadId: string }

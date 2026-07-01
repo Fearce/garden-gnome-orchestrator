@@ -77,6 +77,17 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           <SubscriptionsSection />
         </Group>
 
+        <Group label="Composer">
+          <NumberRow
+            label="Recent repo chips"
+            hint="How many recent-repo shortcuts show under the composer. The list and the skip-director toggle persist server-side, so they survive a reload on any surface."
+            value={settings.maxRecentRepos}
+            min={1}
+            max={20}
+            onChange={(v) => setSettings({ maxRecentRepos: v })}
+          />
+        </Group>
+
         <Group label="Board">
           <ToggleRow
             label="Show completed tasks"

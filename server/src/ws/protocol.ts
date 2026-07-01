@@ -104,7 +104,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.inject"),
     threadId: z.string(),
     message: z.string().min(1),
-    mode: z.enum(["append", "interrupt"]).default("append"),
+    mode: z.enum(["append", "interrupt", "queue"]).default("append"),
     images: imagesField,
   }),
   z.object({ type: z.literal("thread.interrupt"), threadId: z.string() }),
@@ -137,6 +137,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         // Write-only: the raw OpenAI key is accepted here and stored server-side, never echoed back.
         // An empty string clears it. The broadcast OrchestratorSettings carries only hasOpenaiKey/last4.
         openaiApiKey: z.string().max(300),
+        // Composer state, persisted server-side so it survives across the HTTP/HTTPS surfaces.
+        skipDirector: z.boolean(),
+        maxRecentRepos: z.number().int().min(1).max(20),
+        recentRepos: z.array(z.string().max(600)).max(50),
       })
       .partial(),
   }),

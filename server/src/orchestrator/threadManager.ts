@@ -210,6 +210,10 @@ export class ThreadManager implements OrchestratorApi {
   // pipeline folds it into the implementor's kickoff.
   private readonly liveRole = new Map<string, AgentRunLike>();
   private readonly directorNotes = new Map<string, string[]>();
+  // Messages the director QUEUED (the composer's Queue button) for the implementor to pick up at its
+  // hand-off boundary rather than mid-run: held here while the implementor works, then drained by
+  // drainQueuedImplementor when the run finishes — the implementor does this work too before QA gets it.
+  private readonly queuedForImplementor = new Map<string, string[]>();
   // Per-thread count of consecutive turn-limit auto-resumes inside the current implementor→QA loop.
   // Reset when the loop (re)enters, cleared when it exits, and capped at config.maxAutoResumes so a
   // wedged implementor that keeps hitting the turn ceiling without progress can't spin forever.
@@ -566,7 +570,25 @@ export class ThreadManager implements OrchestratorApi {
       hasOpenaiKey: !!key,
       openaiKeyLast4: key && key.length >= 4 ? key.slice(-4) : null,
       codexChatgptLogin: chatgptLoginAvailable(),
+      skipDirector: this.settingBool("setting_skip_director", false),
+      maxRecentRepos: this.settingNum("setting_max_recent_repos", 5, 1, 20),
+      recentRepos: this.recentRepos(),
     };
+  }
+
+  /** The persisted recent-repo paths (most-recent first), trimmed to the configured cap. Stored as a
+   *  JSON array in kv; a corrupt/absent value degrades to an empty list rather than throwing. */
+  private recentRepos(): string[] {
+    const raw = this.db.kvGet("setting_recent_repos");
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw) as unknown;
+      const list = Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+      const max = this.settingNum("setting_max_recent_repos", 5, 1, 20);
+      return list.slice(0, max);
+    } catch {
+      return [];
+    }
   }
 
   private settingBool(key: string, dflt: boolean): boolean {
@@ -606,6 +628,16 @@ export class ThreadManager implements OrchestratorApi {
     // Write-only key: store the trimmed value, or clear it (empty string) so settings() falls back to
     // the env key (if any). The raw key is never returned to clients — only hasOpenaiKey/last4 are.
     if (patch.openaiApiKey !== undefined) this.db.kvSet("openai_api_key", patch.openaiApiKey.trim());
+    if (patch.skipDirector !== undefined) this.db.kvSet("setting_skip_director", patch.skipDirector ? "1" : "0");
+    if (patch.maxRecentRepos !== undefined) this.db.kvSet("setting_max_recent_repos", String(patch.maxRecentRepos));
+    // Recent repos: de-dupe (most-recent first), drop blanks, and cap at the current max before persisting
+    // so the stored list can never outgrow the display cap regardless of what a client sends.
+    if (patch.recentRepos !== undefined) {
+      const max = patch.maxRecentRepos ?? this.settingNum("setting_max_recent_repos", 5, 1, 20);
+      const cleaned = patch.recentRepos.map((p) => p.trim()).filter(Boolean);
+      const deduped = [...new Set(cleaned)].slice(0, Math.min(max, 20));
+      this.db.kvSet("setting_recent_repos", JSON.stringify(deduped));
+    }
     const settings = this.settings();
     this.hub.publish({ type: "settings", settings });
     this.pumpQueue();
@@ -1516,6 +1548,9 @@ export class ThreadManager implements OrchestratorApi {
       this.autoResumes.delete(thread.id);
       this.implementorProvider.delete(thread.id);
       this.codexResumeWedged.delete(thread.id);
+      // The loop drained the queue at each hand-off; drop any leftover (e.g. queued after the final
+      // drain, as the task settled) so it can't leak into an unrelated later run of this thread.
+      this.queuedForImplementor.delete(thread.id);
       await this.stopLive(thread.id);
     }
   }
@@ -1641,6 +1676,9 @@ export class ThreadManager implements OrchestratorApi {
       false,
       "Continue exactly where you left off and finish the task completely.",
     );
+    // Before the hand-off: if the director queued follow-ups while the implementor worked, it does that
+    // work too now (re-launched with them) instead of proceeding — the Queue button's whole point.
+    res = await this.drainQueuedImplementor(thread, effort, kickoff, res, pipe.qaEnabled);
 
     // QA disabled — the implementor's output is final. A clean finish goes straight to 'done'
     // (the only non-QA path to 'done' besides a manual markDone); an incomplete one parks for review.
@@ -1681,6 +1719,14 @@ export class ThreadManager implements OrchestratorApi {
         return;
       }
       if (qa.pass) {
+        // A follow-up queued during QA (routed to queuedForImplementor)? The implementor does it before
+        // we call the task done — the Queue button promises delivery at the hand-off, and a QA pass is
+        // one. At the round cap we still run the queued work but accept it without another QA pass.
+        if (this.queuedForImplementor.get(thread.id)?.length && res && !res.isError && !this.cancelled(thread.id)) {
+          res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
+          if (this.cancelled(thread.id)) return;
+          if (round < pipe.maxQaRounds) continue; // re-QA the newly-done work
+        }
         this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed: ${qa.summary}`, severity: "info" });
         this.setState(thread.id, "done");
         return;
@@ -1724,7 +1770,43 @@ export class ThreadManager implements OrchestratorApi {
       if (!start) return; // cancelled while compressing the prior session for the resume
       this.flushDirectorNotes(thread.id, start.run);
       res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, fixMsg);
+      // Honor anything queued during this fix round too, before we loop back to QA.
+      res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
     }
+  }
+
+  /** After the implementor finishes, deliver any messages the director QUEUED (the composer's Queue
+   *  button) so it completes that work too BEFORE handing off to QA — the queued note is held (never
+   *  injected mid-run) exactly so it lands at this boundary. Re-launches the warm session with the note,
+   *  the same proven path a QA fix-round uses. Loops so a note queued while draining is also honored;
+   *  stops on cancel, an errored/parked run (don't pile work onto a task that's already failing), or an
+   *  empty queue. A no-op (returns `res` untouched) when nothing was queued — the common case. */
+  private async drainQueuedImplementor(
+    thread: Thread,
+    effort: Effort | undefined,
+    kickoff: string,
+    res: ResultEvent | undefined,
+    qaFollows: boolean,
+  ): Promise<ResultEvent | undefined> {
+    while (this.queuedForImplementor.get(thread.id)?.length && !this.cancelled(thread.id) && res && !res.isError) {
+      const queued = this.queuedForImplementor.get(thread.id)!;
+      this.queuedForImplementor.delete(thread.id);
+      const msg = `[Queued follow-up from ${config.ownerName} — do this too before you finish and hand off]\n${queued.join("\n\n")}`;
+      // End the just-finished run before relaunching so only one implementor ever holds the slot (the
+      // same ordering QA fix-rounds use); the session id survives for the warm resume.
+      await this.stopLive(thread.id);
+      if (this.cancelled(thread.id)) break;
+      const start = await this.startResumedImplementor(
+        thread,
+        kickoff,
+        this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
+        { effort, resumeNudge: msg, directorNote: msg, qaFollows },
+      );
+      if (!start) break; // cancelled while compressing the prior session
+      this.flushDirectorNotes(thread.id, start.run);
+      res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, msg);
+    }
+    return res;
   }
 
   // ---- live thread controls ----
@@ -1732,7 +1814,7 @@ export class ThreadManager implements OrchestratorApi {
   async injectThread(
     threadId: string,
     message: string,
-    mode: "append" | "interrupt",
+    mode: "append" | "interrupt" | "queue",
     images?: ImageAttachment[],
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
@@ -1756,6 +1838,33 @@ export class ThreadManager implements OrchestratorApi {
       }
       return savedRefs;
     };
+    // Queue mode: DON'T touch the implementor's current turn — hold the message until it reaches its
+    // hand-off boundary, where drainQueuedImplementor gives it to the implementor before QA. A live
+    // implementor OR the QA stage (implementor stopped for review, about to re-run on a bounce or settle
+    // on a pass) both drain from queuedForImplementor — so routing QA-stage queues there, not to the
+    // director-note buffer, is what lets a QA-pass pick them up before 'done' instead of dropping them.
+    // A pre-implementor phase has no run yet, so buffer it as a note that folds into the kickoff. Either
+    // way it's delivered when the implementor next works — never injected mid-turn, never lost.
+    if (mode === "queue") {
+      if (!thread) return { ok: false, error: "No such task." };
+      if (this.live.has(threadId) || thread.state === "qa") {
+        this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
+      } else {
+        this.bufferDirectorNote(threadId, message);
+      }
+      if (images?.length) this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
+      const m = this.db.addMessage({
+        threadId,
+        role: "director",
+        kind: "system",
+        content: `⧗ queued for the implementor: ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+        attachments: injectRefs(),
+      });
+      this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.touchThread(threadId);
+      this.hub.log("info", `Queued a follow-up for ${threadId.slice(0, 8)} (delivered at the implementor's hand-off).`);
+      return { ok: true, state: thread.state };
+    }
     // QA stage gate (checked BEFORE `this.live`): during QA the implementor is fully stopped and the QA
     // agent runs alone in the slot. Falling through would either `send` to a live implementor (there is
     // none now, but this gate is the structural guarantee of that) or take the cold-resume path and SPAWN
@@ -2093,6 +2202,7 @@ export class ThreadManager implements OrchestratorApi {
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
     this.directorNotes.delete(threadId);
+    this.queuedForImplementor.delete(threadId);
     this.implementorProvider.delete(threadId);
     this.codexResumeWedged.delete(threadId);
     this.capParked.delete(threadId); // a cancelled task must never be cap-auto-resumed
@@ -2136,6 +2246,7 @@ export class ThreadManager implements OrchestratorApi {
     this.resuming.delete(threadId);
     this.pendingResumeMsgs.delete(threadId);
     this.directorNotes.delete(threadId);
+    this.queuedForImplementor.delete(threadId);
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
     this.capParked.delete(threadId);
@@ -2257,6 +2368,7 @@ export class ThreadManager implements OrchestratorApi {
     // stale liveQa handle behind (the window the QA-inject gate also guards) — drop it so it can't leak.
     this.liveQa.delete(threadId);
     this.directorNotes.delete(threadId);
+    this.queuedForImplementor.delete(threadId);
     this.implementorProvider.delete(threadId);
     this.codexResumeWedged.delete(threadId);
     this.stopping.delete(threadId);

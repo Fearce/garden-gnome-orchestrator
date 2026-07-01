@@ -7,35 +7,11 @@ import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
 import type { DirectorItem, OrchestratorSettings, Role } from "../types.js";
 
-// Recently used repo paths, client-only, persisted under one localStorage key (most-recent first).
-// Purely a composer convenience — clicking a chip prefills the dispatch workspace.
-const RECENT_REPOS_KEY = "orch-recent-repos";
-const RECENT_REPOS_MAX = 8;
-
-const loadRecentRepos = (): string[] => {
-  try {
-    const v = JSON.parse(localStorage.getItem(RECENT_REPOS_KEY) || "[]");
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-};
-const writeRecentRepos = (next: string[]): string[] => {
-  try {
-    localStorage.setItem(RECENT_REPOS_KEY, JSON.stringify(next));
-  } catch {
-    /* private mode */
-  }
-  return next;
-};
-// Promote `path` to the front, de-duped, capped — call when a task is actually dispatched.
-const pushRecentRepo = (path: string): string[] => {
-  const p = path.trim();
-  if (!p) return loadRecentRepos();
-  return writeRecentRepos([p, ...loadRecentRepos().filter((x) => x !== p)].slice(0, RECENT_REPOS_MAX));
-};
-const removeRecentRepo = (path: string): string[] => writeRecentRepos(loadRecentRepos().filter((x) => x !== path));
-// Trailing-separator-tolerant basename, cross-platform (handles / and \ paths).
+// The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
+// not localStorage — the console is served on both an HTTP and an HTTPS origin (the tablet Deck iframes
+// the HTTPS port) and those origins don't share localStorage, so a client-only store wouldn't carry
+// across surfaces. The list is capped at settings.maxRecentRepos. Trailing-separator-tolerant basename,
+// cross-platform (handles / and \ paths):
 const repoLabel = (p: string): string => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
 
 export function Director() {
@@ -45,13 +21,16 @@ export function Director() {
   const sendPrompt = useStore((s) => s.sendPrompt);
   const sendDirect = useStore((s) => s.sendDirect);
   const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
+  const setSettings = useStore((s) => s.setSettings);
+  // Skip-director mode + the recent-repo list live in the server-persisted settings so they survive a
+  // reload on ANY surface (see the repoLabel note above). setSettings is optimistic, so toggling/adding
+  // reflects instantly and the server broadcast reconciles every connected client.
+  const skip = useStore((s) => s.settings.skipDirector);
+  const recentRepos = useStore((s) => s.settings.recentRepos);
+  const maxRecentRepos = useStore((s) => s.settings.maxRecentRepos);
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
-  // Skip-director is a per-session mode (ephemeral, default OFF every reload): when on, a message
-  // bypasses the Sonnet director and dispatches straight to the pipeline's first active stage.
-  const [skip, setSkip] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [recentRepos, setRecentRepos] = useState<string[]>(loadRecentRepos);
   const setDirectorWidth = useStore((s) => s.setDirectorWidth);
   const selectedThreadId = useStore((s) => s.selectedThreadId);
   const att = useAttachments();
@@ -95,12 +74,21 @@ export function Director() {
   const firstStage = plannerEnabled ? "planner" : "implementor";
   const directNeedsWs = skip && !ws.trim();
 
+  // Promote a just-dispatched repo to the front (deduped, capped) and persist server-side; remove drops
+  // one chip. Both send the whole new list — setSettings is optimistic and the server re-caps/dedupes.
+  const pushRepo = (path: string) => {
+    const p = path.trim();
+    if (!p) return;
+    setSettings({ recentRepos: [p, ...recentRepos.filter((x) => x !== p)].slice(0, maxRecentRepos) });
+  };
+  const removeRepo = (path: string) => setSettings({ recentRepos: recentRepos.filter((x) => x !== path) });
+
   const submit = () => {
     const t = text.trim();
     if (!t || directNeedsWs) return;
     lastSentRef.current = t;
     const w = ws.trim();
-    if (w) setRecentRepos(pushRecentRepo(w));
+    if (w) pushRepo(w);
     if (skip) sendDirect(t, w || undefined, att.images);
     else sendPrompt(t, w || undefined, att.images);
     setText("");
@@ -150,7 +138,7 @@ export function Director() {
         {recentRepos.length > 1 && (
           <div className="recent-repos" role="group" aria-label="Recent repositories">
             <span className="recent-repos-label mono">repos</span>
-            {recentRepos.map((p) => {
+            {recentRepos.slice(0, maxRecentRepos).map((p) => {
               const active = p === ws.trim();
               return (
                 <span key={p} className={"repo-chip" + (active ? " on" : "")} title={p}>
@@ -167,7 +155,7 @@ export function Director() {
                     className="repo-chip-x"
                     aria-label={`Remove ${p} from recent repos`}
                     title="Remove from recents"
-                    onClick={() => setRecentRepos(removeRecentRepo(p))}
+                    onClick={() => removeRepo(p)}
                   >
                     ×
                   </button>
@@ -187,7 +175,7 @@ export function Director() {
                 ? `Skip-director ON — your message bypasses the director and dispatches straight to the ${firstStage}. Click to send via the director.`
                 : "Skip-director OFF — your message goes to the director, which enriches and dispatches. Click to send straight to the pipeline."
             }
-            onClick={() => setSkip((v) => !v)}
+            onClick={() => setSettings({ skipDirector: !skip })}
           >
             <span className="mode-dot" aria-hidden="true" />
             Skip director
