@@ -74,7 +74,8 @@ Concurrent tasks on the same repo would otherwise edit the same files blind. Eve
 (`ensureGroup` announces members). Messages persist in `chat_messages` (room `general` | `repo:<normalized-ws>`);
 `listProjectRooms` rolls up participants so only collaborating tasks show the top-bar **Office** gnomes
 (walk solo, huddle when grouped) and the per-task **Chatroom** button. Codex implementors have no MCP, so
-they get a toolless peer heads-up only. Grouping key = `normalizeWorkspace` (mirrored in server + web types).
+they coordinate through the runner's `OFFICE[team|office]: ...` text bridge. Grouping key =
+`normalizeWorkspace` (mirrored in server + web types).
 
 ## Deliverables (agent-produced files)
 A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the
