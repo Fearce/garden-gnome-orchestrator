@@ -920,6 +920,31 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .fi.finding .sev-tag { font-family: var(--font-mono); font-size: 9.5px; text-transform: uppercase; color: var(--sev, var(--warn)); }
 .fi.system .body { font-style: italic; color: var(--text-faint); border-left-color: var(--line); font-size: 12px; }
 
+/* Rendered markdown bodies (agent text + drafts) */
+.md { white-space: normal; display: flex; flex-direction: column; gap: 7px; }
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md .md-p { margin: 0; white-space: pre-wrap; line-height: 1.5; }
+.md .md-h { margin: 4px 0 0; font-weight: 700; line-height: 1.3; color: var(--text); }
+.md .md-h1 { font-size: 16px; }
+.md .md-h2 { font-size: 14.5px; }
+.md .md-h3 { font-size: 13.5px; }
+.md .md-h4, .md .md-h5, .md .md-h6 { font-size: 13px; color: var(--text-dim); }
+.md .md-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 3px; }
+.md .md-list li { line-height: 1.5; }
+.md .md-list li::marker { color: var(--text-faint); }
+.md .md-quote { margin: 0; padding: 2px 10px; border-left: 3px solid var(--line); color: var(--text-dim); font-style: italic; }
+.md .md-hr { border: none; border-top: 1px solid var(--line); margin: 3px 0; }
+.md .md-code { font-family: var(--font-mono); font-size: 0.88em; padding: 1px 4px; border-radius: 4px; background: color-mix(in oklch, var(--text) 10%, transparent); }
+.md .md-pre { margin: 0; padding: 9px 11px; border-radius: var(--r-md); background: var(--bg-1, var(--bg)); border: 1px solid var(--line); overflow-x: auto; }
+.md .md-pre code { font-family: var(--font-mono); font-size: 11.5px; white-space: pre; color: var(--text); }
+.md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.md .md-table { border-collapse: collapse; font-size: 12px; display: block; overflow-x: auto; max-width: 100%; }
+.md .md-table th, .md .md-table td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; vertical-align: top; }
+.md .md-table th { font-weight: 600; color: var(--text); background: color-mix(in oklch, var(--text) 6%, transparent); }
+.md .md-table td { color: var(--text-dim); }
+.md .md-table tbody tr:nth-child(even) td { background: color-mix(in oklch, var(--text) 3%, transparent); }
+
 .inject-bar { border-top: 1px solid var(--line); padding: 11px 12px; display: flex; flex-direction: column; gap: 8px; }
 .inject-bar textarea { width: 100%; resize: none; min-height: 50px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 11px; font-family: var(--font-sans); font-size: 13px; }
 .inject-bar textarea:focus { outline: none; border-color: var(--accent); }

@@ -7,6 +7,7 @@ import { Elapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
+import { Markdown } from "./Markdown.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -468,7 +469,7 @@ export function ThreadDetail() {
                 {draft.role}
               </span>
             </div>
-            <div className="body">{draft.text}</div>
+            <Markdown className="body" text={draft.text} />
           </div>
         )}
       </div>
@@ -544,7 +545,7 @@ const FeedRow = memo(function FeedRow({ item }: { item: FeedItem }) {
             </span>
             <span className="ts">{clock(item.at)}</span>
           </div>
-          <div className="body">{item.text}</div>
+          <Markdown className="body" text={item.text} />
         </div>
       );
     case "tool":

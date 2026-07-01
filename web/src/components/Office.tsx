@@ -5,6 +5,7 @@ import type { ChatMessage, Role } from "../types.js";
 import { GENERAL_ROOM, gnomeName, normalizeWorkspace, repoRoom } from "../types.js";
 import { clock, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
+import { Markdown } from "./Markdown.js";
 
 // One active task = one gnome in the office. The latest active run gives it its role (the gnome's hat
 // color + tool); the task gives it its repo (which decides who huddles with whom).
@@ -282,7 +283,7 @@ function OfficeMsg({ m, title, name }: { m: ChatMessage; title?: string; name?: 
           {title ? <span className="office-msg-task">on “{trim(title, 32)}”</span> : null}
           <span className="office-msg-ts">{clock(m.createdAt)}</span>
         </div>
-        <div className="office-msg-body">{m.body}</div>
+        <Markdown className="office-msg-body" text={m.body} />
       </div>
     </div>
   );

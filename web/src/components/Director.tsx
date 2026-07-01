@@ -4,6 +4,7 @@ import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../
 import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
+import { Markdown } from "./Markdown.js";
 import type { DirectorItem, OrchestratorSettings, Role } from "../types.js";
 
 // Recently used repo paths, client-only, persisted under one localStorage key (most-recent first).
@@ -322,7 +323,7 @@ function DirectorBubble({ item }: { item: DirectorItem }) {
     <div className={"msg " + item.kind}>
       <div className="by">{item.kind === "user" ? "you" : "director"}</div>
       <div className="bubble">
-        {item.text}
+        {item.kind === "user" ? item.text : <Markdown text={item.text} />}
         <MessageThumbs refs={item.attachments} />
       </div>
     </div>
