@@ -225,6 +225,11 @@ export class ThreadManager implements OrchestratorApi {
   // 'queued' state and starts when a slot frees. Resumes of in-flight work aren't gated — they
   // continue existing work — but they still count toward the active total.
   private readonly activePipelines = new Set<string>();
+  // Per-thread identity of the pipeline that currently owns the concurrency slot. A cancel→retry can
+  // start a NEW pipeline for a thread while the old one is still unwinding; the newer pipeline replaces
+  // this token, so the old pipeline's late releaseSlot() sees a mismatch and must NOT delete the slot
+  // the new run now holds (which would under-count activePipelines and let dispatch exceed maxConcurrent).
+  private readonly activePipelineToken = new Map<string, symbol>();
   private readonly dispatchQueue: string[] = [];
   // "No invisible workers": each (thread, role) auto-announces itself in the general office room the
   // first time it goes live. Keyed so a failover relaunch / warm resume of the same role doesn't spam,
@@ -850,8 +855,14 @@ export class ThreadManager implements OrchestratorApi {
   private async runPipeline(threadId: string, directorNote?: string): Promise<void> {
     const thread = this.db.getThread(threadId);
     if (!thread) return;
+    const slotToken = Symbol("pipeline");
     this.activePipelines.add(threadId);
+    this.activePipelineToken.set(threadId, slotToken);
     const releaseSlot = () => {
+      // Superseded by a newer pipeline for this thread (cancel→retry within our unwind window)? It owns
+      // the slot now — a stale finalizer deleting its entry would under-count the concurrency gate.
+      if (this.activePipelineToken.get(threadId) !== slotToken) return;
+      this.activePipelineToken.delete(threadId);
       this.activePipelines.delete(threadId);
       this.pumpQueue();
     };
@@ -2098,6 +2109,60 @@ export class ThreadManager implements OrchestratorApi {
     this.setState(threadId, "cancelled");
     this.stopping.delete(threadId);
     return { ok: true, state: "cancelled" };
+  }
+
+  /** Restart a cancelled task from the very beginning: re-run the whole pipeline (planner →
+   *  [researcher →] implementor → QA) from the brief the director first dispatched, as if freshly
+   *  created. Wipes the prior attempt's runs, findings, feed and every saved stage output — so no
+   *  stale plan is reused and, crucially, no dead implementor SDK session gets resumed (runPipeline
+   *  would otherwise pick it up via latestImplementorSession) — tells clients to drop that stale
+   *  slice, then re-enqueues through the normal concurrency gate. Cancelled-only: a live or parked
+   *  task has its own controls (Interrupt/Resume/Cancel). */
+  async retryThread(threadId: string): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (thread.state !== "cancelled") {
+      return { ok: false, error: `Only a cancelled task can be retried (this one is ${thread.state}).` };
+    }
+    if (!existsSync(thread.workspace)) {
+      this.setState(threadId, "failed", `Can't retry — workspace "${thread.workspace}" no longer exists on disk.`);
+      return { ok: false, error: "Workspace does not exist." };
+    }
+
+    // A cancelled task should already be fully torn down, but clear any lingering bookkeeping so
+    // nothing from the prior attempt bleeds into the fresh run.
+    this.stopping.delete(threadId);
+    this.dropFromQueue(threadId);
+    this.resuming.delete(threadId);
+    this.pendingResumeMsgs.delete(threadId);
+    this.directorNotes.delete(threadId);
+    this.liveRole.delete(threadId);
+    this.liveQa.delete(threadId);
+    this.capParked.delete(threadId);
+    this.implementorProvider.delete(threadId);
+    this.codexResumeWedged.delete(threadId);
+    this.dispatchImages.delete(threadId);
+    this.threadImages.delete(threadId);
+    // The DB wipe makes latestImplementorSession() return undefined, but the in-memory session map
+    // still holds the dead attempt's id — clear it too so a fresh run that errors before its first
+    // `init` event can't fall back onto the cancelled session.
+    this.lastImplementorSession.delete(threadId);
+    // Re-arm the office check-in dedupe so the retried run's agents re-announce themselves ("no
+    // invisible workers") instead of being silenced by the prior attempt's keys.
+    for (const role of ["planner", "researcher", "implementor", "qa"] as Role[]) this.checkedIn.delete(`${threadId}:${role}`);
+
+    // Wipe the prior attempt in the DB, then tell clients to drop the now-deleted runs/findings/feed
+    // for this thread BEFORE the fresh pipeline starts streaming new ones (else the stale slice
+    // lingers in the UI until the next full snapshot).
+    this.db.resetThreadForRetry(threadId);
+    this.hub.publish({ type: "thread.reset", threadId });
+
+    this.hub.log("info", `Retrying task ${threadId.slice(0, 8)} from the top.`);
+    this.enqueueOrRun(threadId);
+    // enqueueOrRun either started the pipeline synchronously (slot free → now on activePipelines) or
+    // parked it in the queue — report which, rather than re-reading the DB (still "cancelled" until the
+    // pipeline's first async setState).
+    return { ok: true, state: this.activePipelines.has(threadId) ? "planning" : "queued" };
   }
 
   /** Soft-close a parked task: move it to the 'closed' holding area (kept in the DB, off the main

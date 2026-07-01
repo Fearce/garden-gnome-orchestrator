@@ -108,4 +108,5 @@ export interface OrchestratorApi {
   interruptThread(threadId: string): Promise<ThreadActionResult>;
   resumeThread(threadId: string, message?: string): Promise<ThreadActionResult>;
   cancelThread(threadId: string): Promise<ThreadActionResult>;
+  retryThread(threadId: string): Promise<ThreadActionResult>;
 }

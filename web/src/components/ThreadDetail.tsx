@@ -83,6 +83,7 @@ export function ThreadDetail() {
   const interrupt = useStore((s) => s.interrupt);
   const resume = useStore((s) => s.resume);
   const cancel = useStore((s) => s.cancel);
+  const retry = useStore((s) => s.retry);
   const markDone = useStore((s) => s.markDone);
   const select = useStore((s) => s.select);
   const approve = useStore((s) => s.approve);
@@ -329,6 +330,15 @@ export function ThreadDetail() {
           {isResumable && (
             <button className="btn primary sm" onClick={() => resume(id)}>
               ▶ Resume
+            </button>
+          )}
+          {thread.state === "cancelled" && (
+            <button
+              className="btn primary sm"
+              onClick={() => retry(id)}
+              title="Start this task over from the beginning — re-runs the whole pipeline from the original brief"
+            >
+              ↻ Retry
             </button>
           )}
           {isDoneable(thread.state) && (

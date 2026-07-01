@@ -105,6 +105,7 @@ interface State {
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   cancel: (threadId: string) => void;
+  retry: (threadId: string) => void;
   markDone: (threadId: string) => void;
   close: (threadId: string) => void;
   restore: (threadId: string) => void;
@@ -342,6 +343,7 @@ export const useStore = create<State>((set) => ({
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
+  retry: (threadId) => sendCommand({ type: "thread.retry", threadId }),
   markDone: (threadId) => sendCommand({ type: "thread.markDone", threadId }),
   close: (threadId) => sendCommand({ type: "thread.close", threadId }),
   restore: (threadId) => sendCommand({ type: "thread.restore", threadId }),
@@ -639,6 +641,35 @@ function applyEvent(ev: ServerEvent): void {
           selectedThreadId: s.selectedThreadId === ev.threadId ? null : s.selectedThreadId,
         };
       });
+      break;
+    case "thread.reset":
+      // A cancelled task was restarted from scratch server-side: its prior runs/findings/feed were
+      // deleted. Prune that stale slice so the fresh pipeline's events repopulate cleanly — but KEEP
+      // the thread row (its state updates via thread.upsert) and the selection (mirrors thread.removed
+      // minus the thread drop).
+      useStore.setState((s) => {
+        const drop = <V,>(rec: Record<string, V>): Record<string, V> => {
+          if (!(ev.threadId in rec)) return rec;
+          const { [ev.threadId]: _omit, ...rest } = rec;
+          return rest;
+        };
+        const runs: Record<string, AgentRun> = {};
+        for (const [id, run] of Object.entries(s.runs)) {
+          if (run.threadId !== ev.threadId) runs[id] = run;
+        }
+        return {
+          runs,
+          findings: s.findings.filter((f) => f.threadId !== ev.threadId),
+          questions: s.questions.filter((q) => q.threadId !== ev.threadId),
+          threadFeeds: drop(s.threadFeeds),
+          threadDrafts: drop(s.threadDrafts),
+          pendingPlans: drop(s.pendingPlans),
+          threadChanges: drop(s.threadChanges),
+        };
+      });
+      // If this task is open, re-pull its (now-empty) history so the director-brief row that anchors
+      // the feed reappears immediately — the fresh pipeline's live events then stream in beneath it.
+      if (useStore.getState().selectedThreadId === ev.threadId) sendCommand({ type: "thread.history", threadId: ev.threadId });
       break;
     case "thread.history":
       // Merge the authoritative DB history with whatever streamed live, keyed by stable id —
