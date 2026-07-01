@@ -44,6 +44,7 @@ export function App() {
         </div>
         <RailToggle />
         <SettingsButton open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} />
+        <UpdateBadge />
         <Office />
         <Accounts />
         <span className="stat">
@@ -51,7 +52,6 @@ export function App() {
         </span>
         <ApprovalToggle />
         <NotifyBell />
-        <UpdateBadge />
         <div className="conn">
           <span className={"dot " + (connected ? "on" : "off")} />
           {connected ? "live" : "reconnecting…"}
