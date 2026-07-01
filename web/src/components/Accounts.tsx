@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store.js";
+import { isCapParked } from "../lib/format.js";
 import type { AccountDTO, CodexUsageDTO } from "../types.js";
 
 const clamp = (pct: number | null): number => (pct == null ? 0 : Math.min(100, Math.max(0, pct)));
@@ -33,6 +34,11 @@ export function Accounts() {
       (r) => r.role === "implementor" && (r.account ?? "").startsWith("codex:") && (r.state === "starting" || r.state === "running" || r.state === "idle"),
     ),
   );
+  // Global token freeze: at least one task is cap-parked, which the server only does when EVERY account
+  // was rate-limited (no failover headroom). Derived from real thread state — not cosmetic — so the
+  // strip frosts over exactly while the orchestrator is genuinely stalled on rate limits. Subscribe to
+  // the derived boolean so the strip only re-renders when the freeze flips, not on every thread upsert.
+  const frozen = useStore((s) => Object.values(s.threads).some((t) => isCapParked(t)));
   const now = useNow(accounts.length > 0 || !!codexUsage);
   const multi = accounts.length > 1;
   // Show the Codex chip once Codex is configured at all (enabled, a ChatGPT login, or a key stored) so
@@ -41,11 +47,13 @@ export function Accounts() {
   if (!accounts.length && !showCodex) return null;
   return (
     <div
-      className="accounts"
+      className={"accounts" + (frozen ? " frozen" : "")}
       title={
-        multi
-          ? "Dispatch alternates between subscriptions and favors more weekly headroom. Burn fills in from each run as the windows are used."
-          : "Subscription usage"
+        frozen
+          ? "Token freeze — every subscription is rate-limited right now. Parked tasks auto-resume the moment a window resets."
+          : multi
+            ? "Dispatch alternates between subscriptions and favors more weekly headroom. Burn fills in from each run as the windows are used."
+            : "Subscription usage"
       }
     >
       {accounts.map((a) => (

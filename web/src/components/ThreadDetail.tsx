@@ -2,7 +2,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSPr
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
 import { gnomeName, repoRoom } from "../types.js";
-import { clock, isDoneable, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { clock, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
@@ -211,6 +211,13 @@ export function ThreadDetail() {
 
   if (!id || !thread) return null;
 
+  // Frozen (cap-parked) thread: the pane renders normally so the operator can read the feed, view the
+  // Diff, and Cancel — their escape hatch. Only the MUTATING live-controls (the inject box + Inject +
+  // Interrupt + Interrupt & inject) get iced and disabled, because the server is already auto-resuming
+  // the task the moment an account frees up, so a manual inject/interrupt would fight it. Detection
+  // mirrors the server's own cap-park scan (isCapParked), never a plain human-review park.
+  const frozen = isCapParked(thread);
+
   const threadRuns = Object.values(runs).filter((r) => r.threadId === id);
   const impl = threadRuns.filter((r) => r.role === "implementor").sort((a, b) => b.startedAt - a.startedAt)[0];
   const totalCost = threadRuns.reduce((a, r) => a + (r.costUsd ?? 0), 0);
@@ -230,6 +237,9 @@ export function ThreadDetail() {
   const threadGnomeName = nameOverrides[id] ?? gnomeName(id);
 
   const doInject = (mode: "append" | "interrupt") => {
+    // Frozen tasks accept no manual inject/interrupt — the server auto-resumes them. Guard the handler
+    // itself (not just the disabled attribute) so a keyboard ⌘/Ctrl+Enter can't slip an inject through.
+    if (frozen) return;
     const t = msg.trim();
     if (!t) return;
     lastSentRef.current = t;
@@ -288,7 +298,7 @@ export function ThreadDetail() {
                 {impl.effort}
               </span>
             ) : null}
-            <span className="badge" style={{ "--state-color": stateColor(thread.state) } as CSSProperties}>
+            <span className="badge" style={{ "--state-color": frozen ? "var(--frost-strong)" : stateColor(thread.state) } as CSSProperties}>
               {stateLabel(thread.state)}
             </span>
             <button className="close-x" onClick={() => select(null)} aria-label="Close" title="Close">
@@ -323,7 +333,12 @@ export function ThreadDetail() {
         )}
         <div className="detail-controls">
           {isLive && (
-            <button className="btn ghost sm" onClick={() => interrupt(id)}>
+            <button
+              className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
+              onClick={() => { if (!frozen) interrupt(id); }}
+              disabled={frozen}
+              title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
+            >
               ⏸ Interrupt
             </button>
           )}
@@ -498,12 +513,19 @@ export function ThreadDetail() {
         )}
       </div>
 
-      <div className={"inject-bar" + (att.dragging ? " dragging" : "")} {...att.dropHandlers}>
+      <div
+        className={"inject-bar" + (att.dragging ? " dragging" : "") + (frozen ? " frozen" : "")}
+        title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
+        {...(frozen ? {} : att.dropHandlers)}
+      >
+        {frozen ? <span className="inject-frost" aria-hidden="true" /> : null}
         <textarea
           value={msg}
-          placeholder="Feed new information to the implementor…  (paste/drop images · ⌘/Ctrl+Enter = inject)"
+          placeholder={frozen ? "Frozen — every account is rate-limited; this task auto-resumes on its own." : "Feed new information to the implementor…  (paste/drop images · ⌘/Ctrl+Enter = inject)"}
           onChange={(e) => setMsg(e.target.value)}
           onPaste={att.onPaste}
+          disabled={frozen}
+          title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
               e.preventDefault();
@@ -517,10 +539,20 @@ export function ThreadDetail() {
         <ComposerThumbs images={att.images} onRemove={att.remove} />
         <div className="row">
           <AttachButton onPick={att.addFiles} />
-          <button className="btn primary sm" onClick={() => doInject("append")} disabled={!msg.trim()}>
+          <button
+            className={"btn primary sm" + (frozen ? " frozen-ctl" : "")}
+            onClick={() => doInject("append")}
+            disabled={frozen || !msg.trim()}
+            title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
+          >
             Inject
           </button>
-          <button className="btn ghost sm" onClick={() => doInject("interrupt")} disabled={!msg.trim()}>
+          <button
+            className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
+            onClick={() => doInject("interrupt")}
+            disabled={frozen || !msg.trim()}
+            title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
+          >
             Interrupt &amp; inject
           </button>
           <div style={{ flex: 1 }} />

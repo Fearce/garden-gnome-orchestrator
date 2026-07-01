@@ -24,6 +24,8 @@
   --warn: oklch(0.82 0.14 92);
   --danger: oklch(0.68 0.2 25);
   --crit: oklch(0.7 0.21 18);
+  --frost: oklch(0.83 0.08 232); /* cold blue-white — token-freeze / rate-limited "iced over" signal */
+  --frost-strong: oklch(0.88 0.13 226); /* brighter, more saturated cold cyan for rime edges + shimmer */
 
   --font-sans: "Inter Tight", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", monospace;
@@ -119,6 +121,16 @@ button { font-family: inherit; cursor: pointer; }
 .acct.codex.is-off { opacity: 0.55; }
 .acct-tag.ok { color: var(--ok); }
 .codex-model { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-dim); letter-spacing: 0.02em; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Token freeze on the top bar: when EVERY subscription is rate-limited (some task is cap-parked), EACH
+   account chip ices over individually — a cold blue-white tint + a frosty rim broken into a jagged ice
+   edge by the `ice-jagged` SVG filter — so the freeze is visible at a glance. Per-chip, NOT one box
+   wrapping the whole strip. Conditioned on real derived state (Accounts.tsx `frozen`), not cosmetic. */
+.accounts.frozen .acct {
+  border-color: color-mix(in oklch, var(--frost-strong) 55%, var(--line));
+  background: color-mix(in oklch, var(--frost) 17%, var(--bg-2));
+  box-shadow: inset 0 0 12px color-mix(in oklch, var(--frost) 18%, transparent);
+}
+.accounts.frozen .acct-label { color: color-mix(in oklch, var(--frost-strong) 65%, var(--text-dim)); }
 
 /* ---- the office (top-bar gnomes + chatroom) ---- */
 .office { position: relative; flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: center; }
@@ -798,16 +810,69 @@ button { font-family: inherit; cursor: pointer; }
   border: 1px dashed var(--line-strong); pointer-events: none;
 }
 /* Token freeze: the task gave up because every account hit its rate limit and is parked in review,
-   auto-resuming when one frees up. A calm, muted amber wash (not the 0.4 dim of a mid-drag slot, nor a
-   "broken" red) marks it as paused-and-waiting — distinct from a live card (green pulsing dot) and a
-   terminal one. The left rail is already --warn (review state); this just settles the whole card. */
+   auto-resuming when one frees up. It reads as FROSTED OVER — a cold blue-white wash, a rime border, and
+   a faint frost sheen — so it's clearly distinct from a live card (green pulse), a done/failed one, and a
+   plain review park. It stays fully OPENABLE (normal cursor + click), because the mutating live-controls
+   inside the detail pane are what get iced/disabled — not the card. */
 .card.frozen {
-  background: color-mix(in oklch, var(--warn) 6%, var(--bg-1));
-  border-color: color-mix(in oklch, var(--warn) 22%, var(--line));
+  /* A calm cold wash — clearly "iced" but quiet enough to sit in a list without pulling the eye. Static
+     (no motion). Crucially it SWAPS the state accent: a review card is normally amber, but a frozen one
+     recolors --state-color to cold cyan, so the 3px left bar AND the state badge read as ICE, not warmth.
+     The base .card::before accent bar is inherited (not overridden) so it simply takes the icy color. */
+  --state-color: var(--frost-strong);
+  background:
+    radial-gradient(135% 95% at 100% 0%, color-mix(in oklch, var(--frost-strong) 11%, transparent), transparent 60%),
+    color-mix(in oklch, var(--frost) 12%, var(--bg-1));
+  border-color: color-mix(in oklch, var(--frost-strong) 40%, var(--line));
+  box-shadow: inset 0 0 18px color-mix(in oklch, var(--frost) 15%, transparent);
 }
-.card.frozen:hover { background: color-mix(in oklch, var(--warn) 9%, var(--bg-2)); }
-/* A selected frozen card keeps the accent focus ring (selection wins) but holds its warm tint. */
-.card.frozen.sel { background: color-mix(in oklch, var(--warn) 7%, var(--bg-1)); }
+/* Token-freeze frost on the TASKS PANE only: while a task is cap-parked (every account rate-limited), the
+   board area alone frosts over — a whisper-faint cold tint + a soft inset frost glow at its edges + a very
+   fine frosted-glass grain (an SVG fractal-noise texture with its alpha knocked down to ~6% via
+   feColorMatrix — the "ice on the window" look). Scoped to .board (not the whole console), STATIC, and
+   painted on the board box so it stays put behind the cards as they scroll. Deliberately very subtle. */
+.board.frozen {
+  background-color: color-mix(in oklch, var(--frost) 4%, transparent);
+  background-image:
+    radial-gradient(90% 26% at 50% 0%, color-mix(in oklch, var(--frost-strong) 8%, transparent), transparent 60%),
+    radial-gradient(70% 24% at 50% 100%, color-mix(in oklch, var(--frost) 7%, transparent), transparent 65%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.82 0 0 0 0 0.9 0 0 0 0 1 0 0 0 0.055 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  box-shadow: inset 0 0 50px color-mix(in oklch, var(--frost) 6%, transparent);
+}
+/* Dim the frozen card's own content (title/path/pips/foot) just enough to read "iced" while still
+   clearly clickable — NOT so faded it looks disabled. The ice cube is hoisted back to full opacity below. */
+.card.frozen > *:not(.freeze-cube) { opacity: 0.72; }
+.card.frozen:hover {
+  background: color-mix(in oklch, var(--frost) 18%, var(--bg-2));
+  border-color: color-mix(in oklch, var(--frost-strong) 60%, var(--line));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--frost-strong) 46%, transparent),
+    inset 0 0 26px color-mix(in oklch, var(--frost) 26%, transparent);
+}
+/* Selected (now reachable — a frozen card opens): keep the cold frost identity but add a frost selection
+   ring so it still reads as the open card, rather than the default accent wash. */
+.card.frozen.sel {
+  background: color-mix(in oklch, var(--frost) 16%, var(--bg-1));
+  border-color: color-mix(in oklch, var(--frost-strong) 66%, var(--line));
+  box-shadow:
+    0 0 0 2px color-mix(in oklch, var(--frost-strong) 40%, transparent),
+    inset 0 0 22px color-mix(in oklch, var(--frost) 22%, transparent);
+}
+/* The ice-cube marker: the SOLE freeze indicator, a bare emoji (no text) in the card's top-right, styled
+   like the live-dot corner glyph. It re-enables pointer events over the inert card and lifts its own
+   cursor so hovering it shows the rate-limited message + reset time as a native tooltip. */
+.card .freeze-cube {
+  position: absolute; top: 11px; right: 12px; z-index: 3;
+  font-size: 15px; line-height: 1; opacity: 1 !important;
+  pointer-events: auto; cursor: help;
+  filter: drop-shadow(0 0 7px color-mix(in oklch, var(--frost-strong) 70%, transparent));
+  animation: freeze-shimmer 3s ease-in-out infinite;
+}
+@keyframes freeze-shimmer {
+  0%, 100% { filter: drop-shadow(0 0 5px color-mix(in oklch, var(--frost-strong) 55%, transparent)); }
+  50%      { filter: drop-shadow(0 0 11px color-mix(in oklch, var(--frost-strong) 85%, transparent)); }
+}
+@media (prefers-reduced-motion: reduce) { .card .freeze-cube { animation: none; } }
 .card-drag-overlay { cursor: grabbing; }
 .card-drag-overlay .card {
   border-color: var(--line-strong); box-shadow: var(--shadow-2);
@@ -836,16 +901,6 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--state-color, var(--text-dim)); background: color-mix(in oklch, var(--state-color, var(--text-faint)) 16%, transparent);
   border: 1px solid color-mix(in oklch, var(--state-color, var(--text-faint)) 35%, transparent);
 }
-/* The token-freeze pill: an amber badge that sits beside the review state badge. Lower-case (it's a
-   status note, not a state keyword) and gently breathing so it reads as "waiting", not "stuck". */
-.badge.frozen {
-  --state-color: var(--warn);
-  text-transform: none; letter-spacing: 0.02em;
-  animation: frozen-breathe 2.4s ease-in-out infinite;
-}
-@keyframes frozen-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.62; } }
-@media (prefers-reduced-motion: reduce) { .badge.frozen { animation: none; } }
-
 /* Implementor effort, scaled muted (low) → hot (max). --eff drives color/border/bg. */
 .effort-badge {
   font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700;
@@ -922,6 +977,38 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 }
 .close-x:hover { background: var(--bg-3); color: var(--text); }
 .detail-controls { display: flex; flex-wrap: wrap; gap: 7px; }
+
+/* Frozen detail pane: the pane renders NORMALLY (feed/Diff/Cancel all live — the operator's escape hatch)
+   and only the MUTATING live-controls get iced: the inject compose box + Inject + Interrupt + Interrupt &
+   inject. The server auto-resumes a cap-parked task on its own, so a manual inject/interrupt would fight
+   it — these controls carry the `disabled` attribute (enforced in the handler too) and this iced look. */
+.inject-bar.frozen { position: relative; }
+.inject-bar.frozen textarea {
+  background: color-mix(in oklch, var(--frost) 14%, var(--bg-2));
+  border-color: color-mix(in oklch, var(--frost-strong) 50%, var(--line));
+  color: var(--text-faint); cursor: not-allowed;
+  box-shadow: inset 0 0 18px color-mix(in oklch, var(--frost) 20%, transparent);
+}
+/* A frost sheen over the compose box: cold diagonal shimmer + rime ring. pointer-events off so it never
+   eats a click on the still-live Diff/Cancel controls above it (it only covers the textarea area). */
+.inject-frost {
+  position: absolute; inset: 0; border-radius: var(--r-md); pointer-events: none; z-index: 2;
+  /* A quiet static rime over the compose box — a faint cold wash + a thin frost ring. No shimmer: a
+     sweeping animation right under the cursor was distracting, and this control is already clearly
+     disabled by its dimmed text + not-allowed cursor, so the frost only needs to say "iced", calmly. */
+  background: color-mix(in oklch, var(--frost) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--frost-strong) 32%, transparent);
+}
+/* The disabled Inject / Interrupt / Interrupt & inject buttons: frosted + dimmed, not-allowed cursor.
+   `.frozen-ctl` overrides the base .btn:disabled so a frozen button still reads as ICED, not just greyed. */
+.btn.frozen-ctl,
+.btn.frozen-ctl:disabled {
+  background: color-mix(in oklch, var(--frost) 20%, var(--bg-2));
+  border-color: color-mix(in oklch, var(--frost-strong) 55%, var(--line));
+  color: color-mix(in oklch, var(--frost-strong) 55%, var(--text-faint));
+  box-shadow: inset 0 0 10px color-mix(in oklch, var(--frost) 26%, transparent);
+  cursor: not-allowed; opacity: 0.85;
+}
 
 .feed-filter { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .feed-filter .fchip {

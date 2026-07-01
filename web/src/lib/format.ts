@@ -158,6 +158,21 @@ export function isCapParked(thread: Thread): boolean {
   return thread.state === "review" && (thread.error ?? "").startsWith(CAP_PARK_PREFIX);
 }
 
+/** The hover tooltip for a frozen card's ice cube: the server's rate-limited message, with the soonest
+ *  reset time folded in as a "Resumes HH:MM" line when known. The ice cube carries no visible text, so
+ *  this is the sole place the operator reads WHY the task is frozen and when it'll come back. */
+export function freezeTooltip(thread: Thread, resetMs: number | null): string {
+  const base = thread.error ?? "Every account was rate-limited — this task auto-resumes when one frees up.";
+  return resetMs ? `${base}\n\nResumes ~${clockHM(resetMs)}` : base;
+}
+
+/** The tooltip for the detail pane's frozen (disabled) live-controls — the inject box, Inject button,
+ *  Interrupt button, and Interrupt & inject button. It explains WHY they're inert: every account is
+ *  rate-limited and the server auto-resumes the task on its own, so no manual steering is possible (or
+ *  needed). Diff / Cancel stay live as the operator's escape hatch, so this only fronts the mutating ones. */
+export const FROZEN_CONTROL_TOOLTIP =
+  "Frozen — every account is rate-limited; this task auto-resumes on its own (no manual inject/interrupt needed)";
+
 /** The soonest moment any account frees up: the min future reset across accounts. Mirrors the server's
  *  AccountManager.soonestResetAt (rateLimitResetAt ?? fiveHourReset), with the weekly window as a last
  *  resort so a known reset still surfaces. Null when no future reset is known — caller shows the badge

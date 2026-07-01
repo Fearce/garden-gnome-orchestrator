@@ -16,7 +16,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
 import type { AgentRun, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
-import { clockHM, closesInDays, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { closesInDays, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 
@@ -91,6 +91,9 @@ export function Board() {
   const setTaskOrder = useStore((s) => s.setTaskOrder);
   const setTaskSort = useStore((s) => s.setTaskSort);
   const all = Object.values(threads);
+  // Token freeze: any task cap-parked (every account rate-limited) frosts the tasks pane. Derived from the
+  // threads we already subscribe to — no extra store read — and mirrors the server's cap-park scan.
+  const frozen = all.some((t) => isCapParked(t));
   // Closed tasks are pulled out of the main board into the Closed holding area below; completed tasks
   // are hidden too when the owner turned that off in settings.
   const hiddenCompleted = !showCompleted ? all.filter((t) => COMPLETED_STATES.has(t.state)).length : 0;
@@ -169,7 +172,7 @@ export function Board() {
   );
 
   return (
-    <main className="board">
+    <main className={"board" + (frozen ? " frozen" : "")}>
       <div className="board-head">
         <h2>Tasks</h2>
         <div className="board-head-right">
@@ -486,6 +489,12 @@ const Card = memo(function Card({
       ref={innerRef}
       className={"card" + (selected ? " sel" : "") + (live ? " live" : "") + (capParked ? " frozen" : "") + (dragging ? " dragging" : "") + (draggableCard ? " draggable" : "")}
       style={{ "--state-color": stateColor(thread.state), ...style } as CSSProperties}
+      // A frozen card is frosted but still fully OPENABLE — clicking it selects/opens the detail pane
+      // like any other card, where the mutating live-controls (inject/interrupt) are the parts that get
+      // iced/disabled. The ice cube keeps its own pointer events so its tooltip works over the card.
+      // Hovering ANYWHERE on a frozen card surfaces the same why-frozen tooltip (not just the tiny cube),
+      // so the freeze reason + reset time is discoverable without hunting for the icon.
+      title={capParked ? freezeTooltip(thread, frozenReset) : undefined}
       onClick={() => select(thread.id)}
       {...dragProps}
     >
@@ -510,6 +519,14 @@ const Card = memo(function Card({
         </button>
       ) : null}
       {live ? <span className="live-dot" title="Active — an agent is working on this task right now" /> : null}
+      {/* Token freeze: a bare ice-cube marker (no text) in the card's top-right corner, the sole freeze
+          indicator. It re-enables its own pointer events over the inert card so hovering it still shows
+          the rate-limited message (and the soonest reset time) as a tooltip. */}
+      {capParked ? (
+        <span className="freeze-cube" title={freezeTooltip(thread, frozenReset)} aria-label="Frozen — rate-limited, auto-resuming">
+          🧊
+        </span>
+      ) : null}
       <div className="title">{thread.title}</div>
       <WorkspacePath path={thread.workspace} />
       <div className="pips">
@@ -533,20 +550,11 @@ const Card = memo(function Card({
       {activity !== null ? <div className="activity">{activity}</div> : null}
       <div className="foot">
         <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-          <span className="badge" style={{ "--state-color": stateColor(thread.state) } as CSSProperties}>
+          {/* Frozen cards recolor the state badge from the review amber to cold cyan, matching the icy
+              accent bar — so the whole card reads as ICE, not a warm review park. */}
+          <span className="badge" style={{ "--state-color": capParked ? "var(--frost-strong)" : stateColor(thread.state) } as CSSProperties}>
             {stateLabel(thread.state)}
           </span>
-          {/* Token-freeze pill: shown only while the task is cap-parked, so it reads as an informational
-              "rate-limited, resuming itself" note next to the review badge — not an alarm. The reset clock
-              is appended when known; otherwise just the ⏳ rate-limited label (never an empty/Invalid time). */}
-          {capParked ? (
-            <span
-              className="badge frozen"
-              title={thread.error ?? "Every account was rate-limited — this task auto-resumes when one frees up."}
-            >
-              ⏳ rate-limited{frozenReset ? ` · resumes ${clockHM(frozenReset)}` : ""}
-            </span>
-          ) : null}
           {impl?.effort ? (
             <span className={"effort-badge eff-" + impl.effort} title="Implementor effort (planner-chosen)">
               {impl.effort}
