@@ -190,7 +190,8 @@ interface ViewSettings {
   verbosity: Verbosity;
   // Off by default: the board keeps its automatic most-recent-first ordering until the owner opts in.
   taskDragAndDrop: boolean;
-  // Which comparator the board sorts by while drag-and-drop is off; ignored when the manual order rules.
+  // Which comparator the board sorts by. Fully authoritative when drag-and-drop is off; when it's on, its
+  // primary key still groups the board live while manual drag orders cards within an equal-rank group.
   taskSort: TaskSort;
 }
 const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc" };

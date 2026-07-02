@@ -70,6 +70,19 @@ const SORT_OPTIONS: { value: TaskSort; label: string; cmp: (a: Thread, b: Thread
 ];
 const sortComparator = (sort: TaskSort) => (SORT_OPTIONS.find((o) => o.value === sort) ?? SORT_OPTIONS[0]!).cmp;
 
+// The primary discriminator of each sort, WITHOUT the byRecency tiebreaker. Under drag-and-drop the board
+// is regrouped by this key while equal-rank cards keep their manual order — so a real key change (a status
+// flip, a rename) reflows the card live, but a bare updatedAt bump, which shares a rank, never reshuffles a
+// group and yanks a card out from under a drag. Exhaustive over TaskSort by construction.
+const PRIMARY_CMP: Record<TaskSort, (a: Thread, b: Thread) => number> = {
+  created_desc: (a, b) => b.createdAt - a.createdAt,
+  created_asc: (a, b) => a.createdAt - b.createdAt,
+  updated: (a, b) => b.updatedAt - a.updatedAt,
+  status: (a, b) => STATUS_RANK[a.state] - STATUS_RANK[b.state],
+  workspace: (a, b) => repoKey(a).localeCompare(repoKey(b)),
+  title: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }),
+};
+
 /** Lay the active board out by the owner's manual drag order. Tasks already in `order` keep their
  *  manual slot (so a live updatedAt bump never reshuffles them); tasks not yet placed — brand-new
  *  ones — lead by recency, matching the default board's feel until they're dragged. Stale ids in
@@ -98,18 +111,25 @@ export function Board() {
   // are hidden too when the owner turned that off in settings.
   const hiddenCompleted = !showCompleted ? all.filter((t) => COMPLETED_STATES.has(t.state)).length : 0;
   const active = all.filter((t) => t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)));
-  // With drag-and-drop on, the manual order is authoritative (no recency re-sort, or cards would jump
-  // out from under a drag on the next WS event); off, the board behaves exactly as it always has.
-  const list = useMemo(
-    () => (dndEnabled ? orderByManual(active, taskOrder) : [...active].sort(sortComparator(taskSort))),
-    [dndEnabled, active, taskOrder, taskSort],
-  );
+  // The id of the card currently being dragged (null when idle); declared here so `list` can freeze its
+  // order mid-drag.
+  const [activeId, setActiveId] = useState<string | null>(null);
+  // Off: the board behaves exactly as it always has, re-sorting by the chosen comparator every render.
+  // On: the manual order still positions cards WITHIN an equal-rank group, but the board is regrouped live
+  // by the sort's primary key (a stable re-sort preserves manual order within a group) — so marking a task
+  // done drops it into the "done" band immediately, matching the chosen sort, instead of clinging to its old
+  // slot until the sort is re-picked. Frozen while a drag is in flight so cards don't slide under the pointer.
+  const list = useMemo(() => {
+    if (!dndEnabled) return [...active].sort(sortComparator(taskSort));
+    const manual = orderByManual(active, taskOrder);
+    return activeId ? manual : [...manual].sort(PRIMARY_CMP[taskSort]);
+  }, [dndEnabled, active, taskOrder, taskSort, activeId]);
 
   // Picking a sort always persists the choice. With DnD off the `list` memo re-sorts on it directly.
-  // With DnD on the manual order is authoritative, so a pick wouldn't otherwise move anything — re-seed
-  // the manual order from the chosen comparator so the board visibly reflows, leaving drag to fine-tune
-  // from there. Seeding the FULL active set means the canonicalization effect finds it already canonical
-  // (every id placed, none fresh) and converges in the same pass — no reorder loop.
+  // With DnD on the memo already regroups by the new primary key, but the WITHIN-group order is whatever
+  // the old manual order was — so re-seed from the FULL comparator to give the fresh pick a sensible
+  // newest-first order inside each group, leaving drag to fine-tune from there. Seeding the whole active
+  // set means the canonicalization effect finds it already canonical and converges in the same pass.
   const applySort = (sort: TaskSort) => {
     setTaskSort(sort);
     if (dndEnabled) setTaskOrder([...active].sort(sortComparator(sort)).map((t) => t.id));
@@ -126,8 +146,9 @@ export function Board() {
   const cur = Math.min(page, pageCount - 1);
   const pageItems = list.slice(cur * PER_PAGE, cur * PER_PAGE + PER_PAGE);
 
-  // Keep the persisted order canonical while DnD is on: fold brand-new tasks in (at their fresh-lead
-  // slot) and drop stale ids, so localStorage doesn't accumulate cruft and a new task's position is
+  // Keep the persisted order canonical while DnD is on: this mirrors `list`, so it folds brand-new tasks
+  // in, drops stale ids, and — since `list` is regrouped by the sort's primary key — records a card's new
+  // slot after a status flip moves it. localStorage stays free of cruft and a new task's position is
   // remembered before it's ever dragged. Converges in one pass — the next render finds them equal.
   const orderSig = list.map((t) => t.id).join("\n");
   useEffect(() => {
@@ -148,7 +169,6 @@ export function Board() {
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-  const [activeId, setActiveId] = useState<string | null>(null);
   const activeThread = activeId ? threads[activeId] : undefined;
 
   const onDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
