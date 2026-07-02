@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { elapsed } from "./format.js";
+import { elapsed, formatDuration, runActive } from "./format.js";
+import type { AgentRunState } from "../types.js";
 
 /** A `Date.now()` that re-renders every second while `active`, so running clocks tick.
  *  Idle when `active` is false — a board full of finished tasks schedules no intervals. */
@@ -35,6 +36,27 @@ export function Elapsed({
   return (
     <span className={className} title={title}>
       {elapsed(startMs, end)}
+    </span>
+  );
+}
+
+type RunSpan = { startedAt: number; endedAt?: number | null; state: AgentRunState };
+
+/** Cumulative time a role has worked, summed across ALL of its runs. Each resume (turn-limit,
+ *  cap failover, manual) spawns a fresh `agent_runs` row, so a single-run clock would reset to the
+ *  latest segment; summing every span keeps the timer counting up from where it left off. Each run
+ *  contributes `(endedAt ?? now) - startedAt` — finished runs carry a frozen span, the one live run
+ *  ticks — and the whole clock ticks while any run is still active. The server finalizes (stamps
+ *  endedAt on) the prior run before starting a resumed one, so at most one span is open at a time. */
+export function RoleElapsed({ runs, className, title }: { runs: RunSpan[]; className?: string; title?: string }) {
+  const ticking = runs.some((r) => r.endedAt == null && runActive(r.state));
+  const now = useNow(ticking);
+  let total = 0;
+  for (const r of runs) total += Math.max(0, (r.endedAt ?? now) - r.startedAt);
+  if (total <= 0 && !ticking) return null;
+  return (
+    <span className={className} title={title}>
+      {formatDuration(total)}
     </span>
   );
 }

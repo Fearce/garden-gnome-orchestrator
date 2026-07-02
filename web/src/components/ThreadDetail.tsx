@@ -3,7 +3,7 @@ import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
 import { agentName, repoRoom } from "../types.js";
 import { clock, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
-import { Elapsed } from "../lib/timing.js";
+import { Elapsed, RoleElapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
@@ -316,7 +316,7 @@ export function ThreadDetail() {
           {impl ? (
             <>
               {" · "}
-              <Elapsed startMs={impl.startedAt} endMs={impl.endedAt} running={runActive(impl.state)} title="Implementor run time" />
+              <RoleElapsed runs={threadRuns.filter((r) => r.role === "implementor")} title="Implementor time — cumulative across every run/resume" />
             </>
           ) : null}
           {totalCost > 0 ? ` · ~$${totalCost.toFixed(2)} equiv (subscription)` : ""}
@@ -440,6 +440,7 @@ export function ThreadDetail() {
             all <span className="n">{feedItems.length}</span>
           </button>
           {activeRoles.map((role) => {
+            const roleRuns = threadRuns.filter((r) => r.role === role);
             const r = latestRunOf(threadRuns, role);
             return (
               <button
@@ -453,7 +454,7 @@ export function ThreadDetail() {
                   <RoleLabel role={role} name={nameFor(role)} />
                 </span>
                 <span className="n">{counts[role] ?? 0}</span>
-                {r ? <Elapsed className="fchip-time" startMs={r.startedAt} endMs={r.endedAt} running={runActive(r.state)} /> : null}
+                {r ? <RoleElapsed className="fchip-time" runs={roleRuns} /> : null}
               </button>
             );
           })}

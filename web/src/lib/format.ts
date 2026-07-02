@@ -101,14 +101,19 @@ export function closesInDays(closedAt: number): number {
   return Math.max(0, Math.ceil((closedAt + CLOSED_TTL_MS - Date.now()) / (24 * 60 * 60 * 1000)));
 }
 
-/** Compact running-or-final duration: "9s", "2m 34s", "1h 12m". */
-export function elapsed(startMs: number, endMs?: number | null): string {
-  const s = Math.max(0, Math.floor(((endMs ?? Date.now()) - startMs) / 1000));
+/** Compact millisecond duration: "9s", "2m 34s", "1h 12m". */
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ${s % 60}s`;
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m`;
+}
+
+/** Compact running-or-final duration of a single span: "9s", "2m 34s", "1h 12m". */
+export function elapsed(startMs: number, endMs?: number | null): string {
+  return formatDuration((endMs ?? Date.now()) - startMs);
 }
 
 export function sevColor(sev: string): string {

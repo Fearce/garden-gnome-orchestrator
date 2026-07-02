@@ -17,7 +17,7 @@ import { useStore, type TaskSort } from "../store.js";
 import type { AgentRun, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
 import { closesInDays, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
-import { Elapsed } from "../lib/timing.js";
+import { Elapsed, RoleElapsed } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
@@ -551,6 +551,7 @@ const Card = memo(function Card({
       <WorkspacePath path={thread.workspace} />
       <div className="pips">
         {pipRoles(threadRuns).map((role) => {
+          const roleRuns = threadRuns.filter((x) => x.role === role);
           const r = latestRun(threadRuns, role);
           const active = r && runActive(r.state);
           const cls = active ? "active" : r ? "done" : "idle";
@@ -561,7 +562,7 @@ const Card = memo(function Card({
               {active ? <Gnome role={role} size={15} /> : <span className="pip-dot" aria-hidden="true" />}
               <span className="pip-text">
                 <span className="pip-role">{role[0]!.toUpperCase() + role.slice(1, 4)}</span>
-                {r ? <Elapsed className="pip-time" startMs={r.startedAt} endMs={r.endedAt} running={!!active} /> : null}
+                {r ? <RoleElapsed className="pip-time" runs={roleRuns} /> : null}
               </span>
             </span>
           );
