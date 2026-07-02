@@ -1,4 +1,4 @@
-import type { AccountManager } from "../accounts/accountManager.js";
+import type { AccountDispatchPreview, AccountManager } from "../accounts/accountManager.js";
 import { untilReset } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
@@ -55,6 +55,14 @@ interface LiveImplementor {
   accountId: string;
 }
 
+interface ProviderCandidate {
+  provider: ImplementorProvider;
+  hasHeadroom: boolean;
+  fiveHour: number | null;
+  sevenDay: number | null;
+  sevenDayReset: number | null;
+}
+
 /** A settings.set patch: the writable subset of OrchestratorSettings plus the write-only raw key. The
  *  read-only masked indicators (hasOpenaiKey/openaiKeyLast4) are derived, never set by a client. */
 export type SettingsPatch = Partial<Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin">> & { openaiApiKey?: string };
@@ -100,6 +108,7 @@ const MAX_ACCOUNT_FAILOVERS = 3;
 // after which Codex is tried again (a failing turn simply re-arms the latch). kv key persists it across boots.
 const CODEX_CAP_COOLDOWN_MS = 60 * 60_000;
 const CODEX_CAP_KV_KEY = "codex_cap_until";
+const PROVIDER_HARD_LIMIT = 98;
 // After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
 // doesn't need a manual Resume click. Human-gated phases (a pending question/approval, paused, or
 // pre-planner intake) were waiting on a person, so they're left failed for a manual Resume instead.
@@ -712,6 +721,32 @@ export class ThreadManager implements OrchestratorApi {
     return codexUsageCapped(now);
   }
 
+  private claudeProviderCandidate(): ProviderCandidate {
+    const c = this.accounts.dispatchPreview();
+    return providerCandidateFromClaude(c);
+  }
+
+  private codexProviderCandidate(): ProviderCandidate {
+    const now = Date.now();
+    const u = readCodexUsage();
+    const nearLimit = (pct: number | null, reset: number | null): boolean =>
+      pct != null && pct >= PROVIDER_HARD_LIMIT && (reset == null || reset > now);
+    return {
+      provider: "codex",
+      hasHeadroom:
+        !nearLimit(u?.fiveHour ?? null, u?.fiveHourReset ?? null) &&
+        !nearLimit(u?.sevenDay ?? null, u?.sevenDayReset ?? null),
+      fiveHour: u?.fiveHour ?? null,
+      sevenDay: u?.sevenDay ?? null,
+      sevenDayReset: u?.sevenDayReset ?? null,
+    };
+  }
+
+  private preferredImplementorProvider(claude: ProviderCandidate, codex: ProviderCandidate): ImplementorProvider {
+    if (claude.hasHeadroom !== codex.hasHeadroom) return claude.hasHeadroom ? "claude" : "codex";
+    return providerPriority(claude, codex) <= 0 ? claude.provider : codex.provider;
+  }
+
   /** Restore each Claude account's persisted enabled flag into the live AccountManager on boot. */
   private applyAccountEnabled(): void {
     for (const a of config.accounts) {
@@ -731,10 +766,10 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Resolve which backend implements tasks right now from the subscription toggles, or an error
-   *  explaining why none can. Codex wins when enabled (it's the opt-in implementor, requires a valid
-   *  key); otherwise Claude, gated by its own toggle. Planner/researcher/QA always run on Claude. */
+   *  explaining why none can. Codex is opt-in, but competes with Claude subscriptions under the same
+   *  soonest-weekly-reset policy instead of overriding them. Planner/researcher/QA always run on Claude. */
   private resolveImplementorProvider(): { provider?: ImplementorProvider; error?: string } {
-    // Codex is the opt-in implementor: when enabled with usable auth it takes over building tasks.
+    // Codex is the opt-in implementor backend: when enabled with usable auth it joins the dispatch pool.
     // Usable auth is EITHER a ChatGPT-plan `codex login` (preferred — no API billing) OR a valid
     // OpenAI API key. Otherwise the implementor is Claude (the default; planner/researcher/QA always are).
     if (this.settings().codexEnabled) {
@@ -750,7 +785,12 @@ export class ThreadManager implements OrchestratorApi {
         this.hub.log("info", "Codex is usage-capped — routing this implementor to Claude until its window resets.");
         return { provider: "claude" };
       }
-      return { provider: "codex" };
+      const claude = this.claudeProviderCandidate();
+      const codex = this.codexProviderCandidate();
+      const provider = this.preferredImplementorProvider(claude, codex);
+      const now = Date.now();
+      this.hub.log("info", `Implementor provider: ${provider} (Claude weekly ${fmtUsage(claude.sevenDay)} reset ${untilReset(claude.sevenDayReset, now)}; Codex weekly ${fmtUsage(codex.sevenDay)} reset ${untilReset(codex.sevenDayReset, now)}).`);
+      return { provider };
     }
     return { provider: "claude" };
   }
@@ -3064,6 +3104,36 @@ function qaRecheckKickoff(): string {
 function formatQaIssues(qa: QaOutput): string {
   const lines = (qa.issues ?? []).map((i) => `- [${i.severity ?? "issue"}] ${i.description}${i.location ? ` (${i.location})` : ""}`);
   return (qa.summary ? `${qa.summary}\n` : "") + (lines.length ? lines.join("\n") : "(see QA summary)");
+}
+
+function providerCandidateFromClaude(c: AccountDispatchPreview): ProviderCandidate {
+  return {
+    provider: "claude",
+    hasHeadroom: c.hasHeadroom,
+    fiveHour: c.fiveHour,
+    sevenDay: c.sevenDay,
+    sevenDayReset: c.sevenDayReset,
+  };
+}
+
+function providerPriority(x: ProviderCandidate, y: ProviderCandidate): number {
+  return (
+    providerWeeklyResetAt(x) - providerWeeklyResetAt(y) ||
+    providerHeadroom(y.sevenDay) - providerHeadroom(x.sevenDay) ||
+    providerHeadroom(y.fiveHour) - providerHeadroom(x.fiveHour)
+  );
+}
+
+function providerWeeklyResetAt(c: ProviderCandidate): number {
+  return c.sevenDayReset ?? Number.POSITIVE_INFINITY;
+}
+
+function providerHeadroom(pct: number | null): number {
+  return 100 - (pct ?? 0);
+}
+
+function fmtUsage(n: number | null): string {
+  return n == null ? "-" : `${Math.round(n)}%`;
 }
 
 function safeJson(v: unknown): string {

@@ -22,6 +22,15 @@ interface AccountState {
   updatedAt: number;
 }
 
+export interface AccountDispatchPreview {
+  account: Account;
+  hasHeadroom: boolean;
+  fiveHour: number | null;
+  sevenDay: number | null;
+  fiveHourReset: number | null;
+  sevenDayReset: number | null;
+}
+
 // At/above this on the tightest window, treat the account as effectively capped.
 const HARD_LIMIT = 98;
 const STALE_MS = 20 * 60 * 1000; // a value older than this (ping failing) shows "stale"
@@ -253,16 +262,7 @@ export class AccountManager {
       return { account: only, reason: "single account" };
     }
     const now = Date.now();
-    const all = [...this.states.values()];
-    // Operator-disabled accounts are held out of the rotation. Safety net: if every account is
-    // disabled, ignore the toggles rather than strand the pipeline (planner/researcher/QA need Claude).
-    const enabledStates = all.filter((s) => s.enabled);
-    const base = enabledStates.length ? enabledStates : all;
-    const usable = base.filter((s) => {
-      const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
-      return !limited && tightest(s) < HARD_LIMIT;
-    });
-    const pool = usable.length ? usable : base;
+    const { usable, pool } = this.selectionPool(now);
     // Burn the account whose weekly window resets soonest first (see bySelectionPriority).
     pool.sort(bySelectionPriority);
     const chosen = pool[0]!;
@@ -275,6 +275,24 @@ export class AccountManager {
         ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} · resets ${untilReset(chosen.sevenDayReset, now)} — soonest weekly reset`
         : "round-robin (no burn data yet)";
     return { account: chosen.account, reason };
+  }
+
+  /** Non-mutating view of the account `select()` would choose. Used by provider routing so the
+   *  Codex backend competes with Claude subscriptions without bumping round-robin state or the
+   *  active account marker before a dispatch is actually committed. */
+  dispatchPreview(): AccountDispatchPreview {
+    const now = Date.now();
+    const { usable, pool } = this.selectionPool(now);
+    pool.sort(bySelectionPriority);
+    const chosen = pool[0]!;
+    return {
+      account: chosen.account,
+      hasHeadroom: usable.includes(chosen),
+      fiveHour: chosen.fiveHour,
+      sevenDay: chosen.sevenDay,
+      fiveHourReset: chosen.fiveHourReset,
+      sevenDayReset: chosen.sevenDayReset,
+    };
   }
 
   /**
@@ -335,14 +353,7 @@ export class AccountManager {
    *  capped is only auto-resumed once this turns true (a window reset, or a sub freed up). Mirrors the
    *  `usable` predicate in select() so "has headroom" and "what select would dispatch to" never diverge. */
   hasHeadroom(): boolean {
-    const now = Date.now();
-    const all = [...this.states.values()];
-    const enabledStates = all.filter((s) => s.enabled);
-    const base = enabledStates.length ? enabledStates : all;
-    return base.some((s) => {
-      const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
-      return !limited && tightest(s) < HARD_LIMIT;
-    });
+    return this.selectionPool(Date.now()).usable.length > 0;
   }
 
   /** Register the callback fired after each usage refresh (periodic + reset pings). One consumer
@@ -396,6 +407,19 @@ export class AccountManager {
 
   private publish(): void {
     this.hub.publish({ type: "accounts", accounts: this.dto() });
+  }
+
+  private selectionPool(now: number): { usable: AccountState[]; pool: AccountState[] } {
+    const all = [...this.states.values()];
+    // Operator-disabled accounts are held out of the rotation. Safety net: if every account is
+    // disabled, ignore the toggles rather than strand the pipeline (planner/researcher/QA need Claude).
+    const enabledStates = all.filter((s) => s.enabled);
+    const base = enabledStates.length ? enabledStates : all;
+    const usable = base.filter((s) => {
+      const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
+      return !limited && tightest(s) < HARD_LIMIT;
+    });
+    return { usable, pool: usable.length ? [...usable] : [...base] };
   }
 }
 
