@@ -203,9 +203,10 @@ function Meter({
   now: number;
 }) {
   const win = k === "5h" ? "5-hour" : "weekly";
-  // A stale read carries a stale reset epoch — almost certainly already passed —
-  // so only count down against a live read with a reset still in the future.
-  const left = stale || reset == null || reset <= now ? "" : countdown(reset, now);
+  // The reset epoch is an absolute wall-clock time — it doesn't drift just because our usage snapshot
+  // went stale, so keep counting down as long as it's still in the future. The `reset <= now` guard
+  // already drops a window that has actually rolled over (its new reset is unknown until the next run).
+  const left = reset == null || reset <= now ? "" : countdown(reset, now);
   const usageTip = pct == null ? `${win} usage: —` : `${win} usage: ${stale ? "~" : ""}${label(pct)}${stale ? " (last known)" : ""}`;
   const tip = left ? `${usageTip} · resets in ${left}` : usageTip;
   return (
