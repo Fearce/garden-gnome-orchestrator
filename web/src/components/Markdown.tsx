@@ -51,14 +51,14 @@ function MarkdownImpl({ text, className }: { text: string; className?: string })
   let key = 0;
 
   while (i < lines.length) {
-    const line = lines[i];
+    const line = lines[i]!;
 
     // Fenced code block
     const fence = /^\s*```(.*)$/.exec(line);
     if (fence) {
       const buf: string[] = [];
       i++;
-      while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
+      while (i < lines.length && !/^\s*```/.test(lines[i]!)) buf.push(lines[i++]!);
       i++; // closing fence
       blocks.push(
         <pre key={key++} className="md-pre">
@@ -84,10 +84,10 @@ function MarkdownImpl({ text, className }: { text: string; className?: string })
     // Heading
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     if (heading) {
-      const level = heading[1].length;
+      const level = heading[1]!.length;
       blocks.push(
         <div key={key++} className={`md-h md-h${level}`}>
-          {renderInline(heading[2], `h${key}`)}
+          {renderInline(heading[2]!, `h${key}`)}
         </div>,
       );
       i++;
@@ -97,8 +97,8 @@ function MarkdownImpl({ text, className }: { text: string; className?: string })
     // Blockquote
     if (/^\s*>\s?/.test(line)) {
       const buf: string[] = [];
-      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
-        buf.push(lines[i].replace(/^\s*>\s?/, ""));
+      while (i < lines.length && /^\s*>\s?/.test(lines[i]!)) {
+        buf.push(lines[i]!.replace(/^\s*>\s?/, ""));
         i++;
       }
       blocks.push(
@@ -110,12 +110,12 @@ function MarkdownImpl({ text, className }: { text: string; className?: string })
     }
 
     // GFM table: a header row followed by a delimiter row, then zero+ body rows.
-    if (line.includes("|") && i + 1 < lines.length && TABLE_DELIM.test(lines[i + 1])) {
+    if (line.includes("|") && i + 1 < lines.length && TABLE_DELIM.test(lines[i + 1]!)) {
       const header = splitRow(line);
       i += 2; // header + delimiter
       const rows: string[][] = [];
-      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
-        rows.push(splitRow(lines[i]));
+      while (i < lines.length && lines[i]!.includes("|") && lines[i]!.trim()) {
+        rows.push(splitRow(lines[i]!));
         i++;
       }
       blocks.push(
@@ -145,8 +145,8 @@ function MarkdownImpl({ text, className }: { text: string; className?: string })
     if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(line)) {
       const ordered = /^\s*\d+[.)]\s+/.test(line);
       const items: ReactNode[] = [];
-      while (i < lines.length && /^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[i])) {
-        const content = lines[i].replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "");
+      while (i < lines.length && /^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[i]!)) {
+        const content = lines[i]!.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "");
         items.push(<li key={items.length}>{renderInline(content, `li${key}-${items.length}`)}</li>);
         i++;
       }
@@ -164,15 +164,15 @@ function MarkdownImpl({ text, className }: { text: string; className?: string })
     const buf: string[] = [];
     while (
       i < lines.length &&
-      lines[i].trim() &&
-      !/^\s*```/.test(lines[i]) &&
-      !/^(#{1,6})\s+/.test(lines[i]) &&
-      !/^\s*>\s?/.test(lines[i]) &&
-      !/^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[i]) &&
-      !/^\s*(?:[-*_]\s*){3,}$/.test(lines[i]) &&
-      !(lines[i].includes("|") && i + 1 < lines.length && TABLE_DELIM.test(lines[i + 1]))
+      lines[i]!.trim() &&
+      !/^\s*```/.test(lines[i]!) &&
+      !/^(#{1,6})\s+/.test(lines[i]!) &&
+      !/^\s*>\s?/.test(lines[i]!) &&
+      !/^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[i]!) &&
+      !/^\s*(?:[-*_]\s*){3,}$/.test(lines[i]!) &&
+      !(lines[i]!.includes("|") && i + 1 < lines.length && TABLE_DELIM.test(lines[i + 1]!))
     ) {
-      buf.push(lines[i]);
+      buf.push(lines[i]!);
       i++;
     }
     blocks.push(
