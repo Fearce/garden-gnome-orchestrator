@@ -44,15 +44,17 @@ type RunSpan = { startedAt: number; endedAt?: number | null; state: AgentRunStat
 
 /** Cumulative time a role has worked, summed across ALL of its runs. Each resume (turn-limit,
  *  cap failover, manual) spawns a fresh `agent_runs` row, so a single-run clock would reset to the
- *  latest segment; summing every span keeps the timer counting up from where it left off. Each run
- *  contributes `(endedAt ?? now) - startedAt` — finished runs carry a frozen span, the one live run
- *  ticks — and the whole clock ticks while any run is still active. The server finalizes (stamps
- *  endedAt on) the prior run before starting a resumed one, so at most one span is open at a time. */
+ *  latest segment; summing every span keeps the timer counting up from where it left off. Finished
+ *  runs carry a frozen `endedAt - startedAt` span; only a genuinely ACTIVE run extends to `now` and
+ *  ticks. A run that's dead-but-unfinalized (error/interrupted/idle with a NULL endedAt — legacy rows
+ *  predate endedAt entirely) contributes nothing, mirroring Elapsed's no-end guard: extending it to
+ *  `now` would inflate the clock by days of wall time nobody worked. The server finalizes the prior
+ *  run before starting a resumed one, so at most one span is open at a time. */
 export function RoleElapsed({ runs, className, title }: { runs: RunSpan[]; className?: string; title?: string }) {
   const ticking = runs.some((r) => r.endedAt == null && runActive(r.state));
   const now = useNow(ticking);
   let total = 0;
-  for (const r of runs) total += Math.max(0, (r.endedAt ?? now) - r.startedAt);
+  for (const r of runs) total += Math.max(0, (r.endedAt ?? (runActive(r.state) ? now : r.startedAt)) - r.startedAt);
   if (total <= 0 && !ticking) return null;
   return (
     <span className={className} title={title}>
