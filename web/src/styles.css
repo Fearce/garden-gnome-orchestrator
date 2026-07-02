@@ -67,16 +67,19 @@ button { font-family: inherit; cursor: pointer; }
   /* Above the board so office chat bubbles rising over the gnomes paint over it, not under it. */
   position: relative; z-index: 10;
 }
-.brand { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.brand { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
 .build-tag {
   font-family: var(--font-mono); font-size: 9px; line-height: 1; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--text-faint); cursor: default;
   display: inline-flex; align-items: center; gap: 5px;
 }
 .build-tag .sha { color: var(--accent); opacity: 0.85; }
-.wordmark { font-family: var(--font-serif); font-size: 23px; letter-spacing: 0; display: flex; align-items: baseline; gap: 8px; }
-.wordmark em { font-style: italic; color: var(--accent); }
-.wordmark .sub { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); }
+.wordmark { display: flex; align-items: flex-end; gap: 11px; }
+/* The wordmark PNG carries a solid-black backdrop; `screen` renders those pixels as the topbar
+   gradient exactly (screen over near-black backdrop ≈ source; over the logo's black ≈ backdrop),
+   so the mark sits on the bar seamlessly without a baked-in rectangle. */
+.brand-logo { height: 38px; width: auto; display: block; mix-blend-mode: screen; }
+.wordmark .sub { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); padding-bottom: 4px; }
 .topbar .spacer { flex: 1; }
 
 .conn { display: flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
@@ -1265,6 +1268,10 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .modal { width: min(560px, 92vw); background: var(--bg-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-2); overflow: hidden; }
 .modal .m-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
 .modal.login { width: min(380px, 92vw); }
+/* The logo ships on its own black field, so give the login header a matching black panel and let
+   the mark sit on it directly (no blend needed — the backdrops are identical black). */
+.modal.login .login-head { background: #000; padding: 22px 18px; display: flex; justify-content: center; }
+.login-logo { height: 40px; width: auto; display: block; }
 .login-body { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
 .login-body input {
   background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-sm);
@@ -1353,7 +1360,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   /* topbar wraps to two rows: brand + controls, then a full-width
      horizontally-scrollable accounts strip that never widens the viewport. */
   .topbar { flex-wrap: wrap; gap: 10px; row-gap: 8px; padding: 9px 12px; }
-  .wordmark { font-size: 18px; }
+  .brand-logo { height: 30px; }
   .wordmark .sub { display: none; }
   .stat { display: none; }
   .conn { font-size: 0; gap: 0; }            /* drop the "live" label, keep the dot */

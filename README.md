@@ -1,6 +1,6 @@
-# Claude Orchestrator
+# GG Orchestrator
 
-A single director's console for running Claude Code agents the way you already
+*Garden Gnome Orchestrator* — a single director's console for running Claude Code agents the way you already
 work by hand: a Sonnet **director** enriches a raw prompt, pulls in relevant
 memories, and asks the clarifying questions you'd otherwise forget to answer,
 then dispatches the task to a self-assembling agent pipeline — a **planner**

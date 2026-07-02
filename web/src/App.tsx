@@ -11,6 +11,7 @@ import { SettingsPanel } from "./components/SettingsPanel.js";
 import { NoticeBanner } from "./components/NoticeBanner.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
+import ggLogo from "./assets/gg-logo.png";
 
 type MobilePane = "director" | "board";
 
@@ -38,7 +39,7 @@ export function App() {
         <div className="brand">
           <BuildTag />
           <div className="wordmark">
-            Claude&nbsp;<em>Orchestrator</em>
+            <img className="brand-logo" src={ggLogo} alt="GG Orchestrator" />
             <span className="sub">director&nbsp;console</span>
           </div>
         </div>
@@ -135,8 +136,8 @@ function Login() {
   return (
     <div className="scrim">
       <div className="modal login">
-        <div className="m-head">
-          <h3>Claude Orchestrator</h3>
+        <div className="m-head login-head">
+          <img className="login-logo" src={ggLogo} alt="GG Orchestrator" />
         </div>
         <div className="login-body">
           {authError === "forbidden" ? (

@@ -450,7 +450,7 @@ async function main(): Promise<void> {
     console.log(
       [
         ``,
-        `  Claude Orchestrator server`,
+        `  GG Orchestrator server`,
         `  http://${config.host}:${config.port}   (ws: /ws)`,
         httpsLine,
         `  auth: ${config.oauthToken ? "CLAUDE_CODE_OAUTH_TOKEN" : "inherited Claude Code login"} (subscription, no API credits)`,
