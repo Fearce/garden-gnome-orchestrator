@@ -6,6 +6,7 @@ import type { MemoryService } from "../memory/memory.js";
 import { AgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { codexUsageCapped, readCodexUsage } from "../agents/codexUsage.js";
+import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, uniq } from "../agents/modelCatalog.js";
 import { implementorConfig, plannerConfig, qaConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
@@ -26,6 +27,7 @@ import type {
   Finding,
   ImageAttachment,
   ImplementorProvider,
+  ModelOverrides,
   OrchestratorSettings,
   PlanOutput,
   QaOutput,
@@ -34,7 +36,29 @@ import type {
   Role,
   Thread,
 } from "../types.js";
-import { agentKey, GENERAL_ROOM, GNOME_NAMES, gnomeName, normalizeWorkspace, repoRoom } from "../types.js";
+import { agentKey, CODEX_SUB_ID, DEFAULT_SUB_ID, GENERAL_ROOM, GNOME_NAMES, gnomeName, MODEL_ROLES, normalizeWorkspace, repoRoom } from "../types.js";
+
+// A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
+// caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
+const MAX_MODEL_SUB_ENTRIES = 64;
+
+/** Validate an incoming model-overrides map: keep only known roles, trim + length-cap the model ids,
+ *  drop blanks, drop subscriptions left with no entries, and cap the number of subscriptions. Bounds a
+ *  client-supplied blob before it's persisted (subscription ids and model ids both originate from the client). */
+function sanitizeModelOverrides(input: ModelOverrides): ModelOverrides {
+  const out: ModelOverrides = {};
+  for (const [subId, roles] of Object.entries(input ?? {})) {
+    if (typeof subId !== "string" || subId.length > 64 || !roles || typeof roles !== "object") continue;
+    const clean: Partial<Record<Role, string>> = {};
+    for (const role of MODEL_ROLES) {
+      const v = roles[role];
+      if (typeof v === "string" && v.trim()) clean[role] = v.trim().slice(0, 100);
+    }
+    if (Object.keys(clean).length) out[subId] = clean;
+    if (Object.keys(out).length >= MAX_MODEL_SUB_ENTRIES) break;
+  }
+  return out;
+}
 
 type ResultEvent = Extract<AgentEvent, { type: "result" }>;
 type Acct = { id: string; label: string; token: string | undefined };
@@ -65,7 +89,9 @@ interface ProviderCandidate {
 
 /** A settings.set patch: the writable subset of OrchestratorSettings plus the write-only raw key. The
  *  read-only masked indicators (hasOpenaiKey/openaiKeyLast4) are derived, never set by a client. */
-export type SettingsPatch = Partial<Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin">> & { openaiApiKey?: string };
+export type SettingsPatch = Partial<
+  Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin" | "modelDefaults" | "claudeModels" | "codexModels">
+> & { openaiApiKey?: string };
 
 /** The slice of operator settings the implementor→QA stage needs, captured at pipeline start. */
 interface PipeOpts {
@@ -266,6 +292,8 @@ export class ThreadManager implements OrchestratorApi {
   // preferred, else a cooldown); auto-clears when the window passes. Persisted in kv so a restart's
   // auto-resume wave doesn't slam Codex again on stale-good routing. Undefined = Codex not latched-capped.
   private codexCapUntil: number | undefined;
+  // Owns the live pickable-model lists (Settings dropdowns). Rebroadcasts settings when a list changes.
+  private readonly modelCatalog: ModelCatalog;
 
   constructor(
     readonly db: Db,
@@ -273,6 +301,12 @@ export class ThreadManager implements OrchestratorApi {
     readonly memory: MemoryService,
     readonly accounts: AccountManager,
   ) {
+    this.modelCatalog = new ModelCatalog(
+      db,
+      accounts,
+      () => this.openaiApiKey(),
+      () => this.hub.publish({ type: "settings", settings: this.settings() }),
+    );
     this.markInterrupted();
     this.applyAccountEnabled();
     this.loadCodexCap();
@@ -283,6 +317,12 @@ export class ThreadManager implements OrchestratorApi {
     // React to every live usage refresh — the token-safety limit stops running agents when burn crosses
     // the operator threshold. Registered here (before accounts.start() fires the first ping in index.ts).
     this.accounts.onUsageRefresh(() => this.enforceTokenSafetyLimit());
+  }
+
+  /** Kick off the live model-list catalog (boot fetch + slow refresh). Called from index.ts after the
+   *  account manager has started, so a subscription token is available for the Anthropic models fetch. */
+  startModelCatalog(): void {
+    this.modelCatalog.start();
   }
 
   /** Poll for rate-limit-parked tasks and resume them the moment an account regains headroom, so a
@@ -598,7 +638,64 @@ export class ThreadManager implements OrchestratorApi {
       skipDirector: this.settingBool("setting_skip_director", false),
       maxRecentRepos: this.settingNum("setting_max_recent_repos", 5, 1, 20),
       recentRepos: this.recentRepos(),
+      modelOverrides: this.modelOverrides(),
+      modelDefaults: { ...config.models },
+      claudeModels: this.pickableClaudeModels(),
+      codexModels: this.pickableCodexModels(),
     };
+  }
+
+  // ---- per-(subscription × role) model selection ----
+
+  /** The operator-picked model overrides ({subId → {role → modelId}}), parsed from kv. A corrupt or
+   *  absent value degrades to an empty map rather than throwing. */
+  private modelOverrides(): ModelOverrides {
+    const raw = this.db.kvGet("setting_model_overrides");
+    if (!raw) return {};
+    try {
+      const v = JSON.parse(raw) as unknown;
+      return v && typeof v === "object" && !Array.isArray(v) ? (v as ModelOverrides) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** The Claude model a given subscription runs a role on: the sub's own override, else the global
+   *  "default" override, else the built-in config.models default. Used at dispatch so a change applies
+   *  to the next run. `subId` is the AccountDTO.id the role will run on. */
+  modelFor(subId: string, role: Role): string {
+    const ov = this.modelOverrides();
+    return ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim() || config.models[role];
+  }
+
+  /** Set (or, with a blank value, clear) one (subId, role) model override in the persisted matrix. */
+  private setModelOverride(subId: string, role: Role, model: string): void {
+    const ov = this.modelOverrides();
+    const sub = { ...(ov[subId] ?? {}) };
+    if (model.trim()) sub[role] = model.trim().slice(0, 100);
+    else delete sub[role];
+    if (Object.keys(sub).length) ov[subId] = sub;
+    else delete ov[subId];
+    this.db.kvSet("setting_model_overrides", JSON.stringify(ov));
+  }
+
+  /** Pickable Claude model ids for the Settings dropdowns: the live list unioned with the curated
+   *  fallback and every currently-selected Claude model, so a picked model never drops out of its list. */
+  private pickableClaudeModels(): string[] {
+    const ov = this.modelOverrides();
+    const selected: string[] = [];
+    for (const [subId, roles] of Object.entries(ov)) {
+      if (subId === CODEX_SUB_ID) continue; // codex ids belong to the Codex list, not the Claude one
+      for (const m of Object.values(roles)) if (m) selected.push(m);
+    }
+    return uniq([...this.modelCatalog.claudeModels(), ...CURATED_CLAUDE_MODELS, ...Object.values(config.models), ...selected]);
+  }
+
+  /** Pickable Codex model ids for the Settings dropdown: curated flagships first, then any additional
+   *  live models the key exposes, plus the currently-selected Codex model. */
+  private pickableCodexModels(): string[] {
+    const selected = [this.codexModel(), this.modelOverrides()[CODEX_SUB_ID]?.implementor].filter((x): x is string => !!x);
+    return uniq([...CURATED_CODEX_MODELS, ...this.modelCatalog.codexModels(), ...selected]);
   }
 
   /** The persisted recent-repo paths (most-recent first), trimmed to the configured cap. Stored as a
@@ -634,9 +731,15 @@ export class ThreadManager implements OrchestratorApi {
     return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : dflt;
   }
 
-  /** The selected Codex model (free-text — any id the OpenAI key can access), or the default if unset. */
+  /** The selected Codex implementor model. Resolution: the model-overrides matrix (codex.implementor),
+   *  then the legacy `setting_codex_model` kv (so pre-matrix configs migrate seamlessly), then the
+   *  built-in default. Never inherits a Claude default — a Claude model id is invalid for the Codex CLI. */
   private codexModel(): string {
-    return this.db.kvGet("setting_codex_model")?.trim() || config.codex.defaultModel;
+    return (
+      this.modelOverrides()[CODEX_SUB_ID]?.implementor?.trim() ||
+      this.db.kvGet("setting_codex_model")?.trim() ||
+      config.codex.defaultModel
+    );
   }
 
   /** The raw OpenAI key: the kv-stored UI value if present, else the server/.env fallback. NEVER
@@ -658,10 +761,21 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
-    if (patch.codexModel !== undefined && patch.codexModel.trim()) this.db.kvSet("setting_codex_model", patch.codexModel.trim());
+    // Legacy free-text codex model field: mirror it into the matrix (codex.implementor) so the two stay
+    // coherent regardless of which UI wrote it, and keep the legacy kv as a migration fallback.
+    if (patch.codexModel !== undefined && patch.codexModel.trim()) {
+      this.db.kvSet("setting_codex_model", patch.codexModel.trim());
+      this.setModelOverride(CODEX_SUB_ID, "implementor", patch.codexModel.trim());
+    }
+    if (patch.modelOverrides !== undefined) this.db.kvSet("setting_model_overrides", JSON.stringify(sanitizeModelOverrides(patch.modelOverrides)));
     // Write-only key: store the trimmed value, or clear it (empty string) so settings() falls back to
     // the env key (if any). The raw key is never returned to clients — only hasOpenaiKey/last4 are.
-    if (patch.openaiApiKey !== undefined) this.db.kvSet("openai_api_key", patch.openaiApiKey.trim());
+    if (patch.openaiApiKey !== undefined) {
+      this.db.kvSet("openai_api_key", patch.openaiApiKey.trim());
+      // A freshly-entered key can now list its models — refresh the Codex dropdown right away instead of
+      // waiting for the slow timer (it rebroadcasts settings itself when the list changes).
+      void this.modelCatalog.refresh();
+    }
     if (patch.skipDirector !== undefined) this.db.kvSet("setting_skip_director", patch.skipDirector ? "1" : "0");
     if (patch.maxRecentRepos !== undefined) this.db.kvSet("setting_max_recent_repos", String(patch.maxRecentRepos));
     // Recent repos: de-dupe (most-recent first), drop blanks, and cap at the current max before persisting
@@ -1102,7 +1216,6 @@ export class ThreadManager implements OrchestratorApi {
   private async runRole(
     thread: Thread,
     role: "planner" | "researcher" | "qa",
-    model: string,
     kickoff: string | unknown[],
     makeCfg: (ctx: { token: string | undefined; resume?: string; runId: string }) => AgentRunConfig,
     initialResume?: string,
@@ -1111,9 +1224,15 @@ export class ThreadManager implements OrchestratorApi {
     let resume: string | undefined = initialResume;
     let message: string | unknown[] = kickoff;
     for (let attempt = 0; attempt <= MAX_ACCOUNT_FAILOVERS; attempt++) {
+      // Resolve the model from the account this role will actually run on — a per-subscription override,
+      // else the global default, else the built-in. Re-resolved each attempt so a failover to another
+      // account picks up that account's model too.
+      const model = this.modelFor(acct.id, role);
       const run = this.db.createRun({ threadId: thread.id, role, model, account: acct.label });
       this.emitRun(run.id);
-      const agent = new AgentRun(makeCfg({ token: acct.token, resume, runId: run.id }));
+      const cfg = makeCfg({ token: acct.token, resume, runId: run.id });
+      cfg.model = model;
+      const agent = new AgentRun(cfg);
       this.wireRun(agent, thread.id, run.id, role, acct.id);
       this.track(thread.id, agent);
       this.officeCheckIn(thread.id, role);
@@ -1175,7 +1294,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private async runPlanner(thread: Thread): Promise<PlanOutput | undefined> {
-    const res = await this.runRole(thread, "planner", config.models.planner, this.kickoffContent(thread.id, thread.brief), ({ token, resume, runId }) => {
+    const res = await this.runRole(thread, "planner", this.kickoffContent(thread.id, thread.brief), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "planner", getRunId: () => runId });
       const office = createOfficeServer(this, { threadId: thread.id, role: "planner", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
       const cfg = plannerConfig(thread.workspace, { bus, office });
@@ -1187,7 +1306,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private async runResearcher(thread: Thread, plan: PlanOutput | undefined): Promise<ResearchOutput | undefined> {
-    const res = await this.runRole(thread, "researcher", config.models.researcher, this.kickoffContent(thread.id, researcherKickoff(thread, plan)), ({ token, resume, runId }) => {
+    const res = await this.runRole(thread, "researcher", this.kickoffContent(thread.id, researcherKickoff(thread, plan)), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "researcher", getRunId: () => runId });
       const memory = createMemoryServer(this.memory);
       const office = createOfficeServer(this, { threadId: thread.id, role: "researcher", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
@@ -1214,7 +1333,6 @@ export class ThreadManager implements OrchestratorApi {
     const res = await this.runRole(
       thread,
       "qa",
-      config.models.qa,
       // On resume the QA session already holds the pasted images; only wrap them for a fresh start.
       resume ? kickoff : this.kickoffContent(thread.id, kickoff),
       ({ token, resume: r, runId }) => {
@@ -1282,12 +1400,15 @@ export class ThreadManager implements OrchestratorApi {
     } else {
       const acct = opts?.account ?? this.dispatchAccount();
       accountId = acct.id;
-      const run = this.db.createRun({ threadId: thread.id, role: "implementor", model: config.models.implementor, account: acct.label, effort });
+      // Model resolved from the subscription this implementor runs on (per-sub override → default → built-in).
+      const model = this.modelFor(acct.id, "implementor");
+      const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: acct.label, effort });
       runId = run.id;
       this.emitRun(run.id);
       const bus = createBusServer(this, { threadId: thread.id, role: "implementor", getRunId: () => run.id });
       const office = createOfficeServer(this, { threadId: thread.id, role: "implementor", workspace: thread.workspace, title: thread.title, getRunId: () => run.id });
       const cfg = implementorConfig(thread.workspace, { bus, office }, { resume: opts?.resume, effort });
+      cfg.model = model;
       cfg.oauthToken = acct.token;
       // On a fresh start, fold in a heads-up naming any teammates already live in this repo so the
       // implementor coordinates from turn one (a resumed session already saw the office context).

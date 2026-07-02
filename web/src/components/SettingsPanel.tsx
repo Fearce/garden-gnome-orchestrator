@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store.js";
-import { CODEX_MODELS } from "../types.js";
+import { CODEX_MODELS, CODEX_SUB_ID, DEFAULT_SUB_ID, MODEL_ROLES, type ModelOverrides, type Role } from "../types.js";
 
 /** The gear-icon panel: everything that isn't a per-task agent toggle (those live in the topbar).
  *  A light popover anchored under the topbar with a click-anywhere-outside backdrop to dismiss. */
@@ -84,6 +84,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           />
         </Group>
 
+        <Group label="Agent models">
+          <AgentModelsSection />
+        </Group>
+
         <Group label="Subscriptions">
           <SubscriptionsSection />
         </Group>
@@ -128,6 +132,174 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           Agent toggles (planner · researcher · QA) live in the top bar — flip them per task before dispatching.
         </p>
       </div>
+    </div>
+  );
+}
+
+/** Shared read/update surface for the per-(subscription × role) model matrix. Sends the FULL overrides
+ *  map on each change (it's small), which the server sanitizes + persists. */
+function useModelOverrides() {
+  const overrides = useStore((s) => s.settings.modelOverrides);
+  const setSettings = useStore((s) => s.setSettings);
+  const setModel = (subId: string, role: Role, model: string) => {
+    const next: ModelOverrides = {};
+    for (const [sid, roles] of Object.entries(overrides ?? {})) next[sid] = { ...roles };
+    const sub = { ...(next[subId] ?? {}) };
+    if (model) sub[role] = model;
+    else delete sub[role];
+    if (Object.keys(sub).length) next[subId] = sub;
+    else delete next[subId];
+    setSettings({ modelOverrides: next });
+  };
+  return { overrides: overrides ?? {}, setModel };
+}
+
+const CUSTOM = "__custom__";
+
+/** A model dropdown. When `allowInherit`, a leading option ("" value) is the inherit/default fallback
+ *  labelled by `defaultLabel`. The live model list follows; a "Custom…" entry reveals a free-text field
+ *  for any id not in the list (a brand-new model, or anything an OpenAI key can access). A current value
+ *  absent from the list is shown as its own selected option so a pick never silently disappears. */
+function ModelSelect({
+  value,
+  options,
+  onChange,
+  allowInherit = true,
+  defaultLabel = "",
+}: {
+  value: string;
+  options: readonly string[];
+  onChange: (v: string) => void;
+  allowInherit?: boolean;
+  defaultLabel?: string;
+}) {
+  const [custom, setCustom] = useState(false);
+  const [draft, setDraft] = useState(value);
+  // Don't clobber an in-progress custom-entry draft if a settings rebroadcast changes `value` mid-type.
+  useEffect(() => {
+    if (!custom) setDraft(value);
+  }, [value, custom]);
+
+  if (custom) {
+    const commit = () => {
+      onChange(draft.trim());
+      setCustom(false);
+    };
+    return (
+      <input
+        className="model-input"
+        autoFocus
+        value={draft}
+        spellCheck={false}
+        autoComplete="off"
+        placeholder="type a model id…"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") {
+            setDraft(value);
+            setCustom(false);
+          }
+        }}
+      />
+    );
+  }
+
+  const known = new Set(options);
+  return (
+    <select
+      className={"model-select" + (allowInherit && !value ? " inherited" : "")}
+      value={value}
+      onChange={(e) => {
+        const v = e.target.value;
+        if (v === CUSTOM) {
+          setDraft("");
+          setCustom(true);
+        } else onChange(v);
+      }}
+    >
+      {allowInherit && <option value="">{defaultLabel}</option>}
+      {value && !known.has(value) && <option value={value}>{value}</option>}
+      {options.map((m) => (
+        <option key={m} value={m}>
+          {m}
+        </option>
+      ))}
+      <option value={CUSTOM}>Custom…</option>
+    </select>
+  );
+}
+
+/** Global per-role defaults (the "default" subscription layer): the Claude model each agent runs unless
+ *  a specific subscription overrides it below. Empty = the built-in default. */
+function AgentModelsSection() {
+  const models = useStore((s) => s.settings.claudeModels);
+  const defaults = useStore((s) => s.settings.modelDefaults);
+  const { overrides, setModel } = useModelOverrides();
+  const def = overrides[DEFAULT_SUB_ID] ?? {};
+  return (
+    <>
+      <p className="settings-note">
+        The Claude model each agent runs by default. Override it per subscription in Subscriptions below. New models you gain access
+        to appear here automatically.
+      </p>
+      <div className="model-grid">
+        {MODEL_ROLES.map((role) => (
+          <div className="model-row" key={role}>
+            <span className="model-row-label">{role}</span>
+            <ModelSelect
+              value={def[role] ?? ""}
+              options={models}
+              defaultLabel={`Built-in (${defaults[role] ?? "—"})`}
+              onChange={(m) => setModel(DEFAULT_SUB_ID, role, m)}
+            />
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+const Caret = () => (
+  <svg className="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 1l5 4-5 4" />
+  </svg>
+);
+
+/** Per-role model overrides for one Claude subscription — collapsed by default; each row inherits the
+ *  global default unless set. Lets the operator run, e.g., a heavier model for implementor on one sub. */
+function AccountModels({ accountId }: { accountId: string }) {
+  const models = useStore((s) => s.settings.claudeModels);
+  const defaults = useStore((s) => s.settings.modelDefaults);
+  const [open, setOpen] = useState(false);
+  const { overrides, setModel } = useModelOverrides();
+  const sub = overrides[accountId] ?? {};
+  const globalDef = overrides[DEFAULT_SUB_ID] ?? {};
+  const count = Object.keys(sub).length;
+  return (
+    <div className="sub-field">
+      <button className={"sub-disclosure" + (open ? " open" : "")} onClick={() => setOpen((o) => !o)}>
+        <Caret /> Per-role models{count ? ` · ${count} overriding` : " · all inherit default"}
+      </button>
+      {open && (
+        <div className="sub-models">
+          {MODEL_ROLES.map((role) => {
+            const inherited = globalDef[role] ?? defaults[role] ?? "—";
+            return (
+              <div className="sub-model-row" key={role}>
+                <span className="sub-model-label">{role}</span>
+                <ModelSelect
+                  value={sub[role] ?? ""}
+                  options={models}
+                  defaultLabel={`Inherit (${inherited})`}
+                  onChange={(m) => setModel(accountId, role, m)}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -243,7 +415,7 @@ function SubscriptionsSection() {
           {!codexTest && settings.hasOpenaiKey && !draftBad && <div className="sub-msg dim">Key stored (••••{settings.openaiKeyLast4 ?? ""}). Test it to confirm it works.</div>}
         </div>
 
-        <ModelField value={settings.codexModel} onCommit={(m) => setSettings({ codexModel: m })} />
+        <CodexModelField />
       </SubCard>
     </div>
   );
@@ -290,42 +462,25 @@ function AccountCard({
         </button>
       </div>
       <div className="sub-card-meta">{meta}</div>
+      {acct.enabled && <AccountModels accountId={acct.id} />}
     </div>
   );
 }
 
-/** Free-text Codex model field with flagship suggestions — commits on blur / Enter / pick so a change
- *  isn't sent on every keystroke. Any model id the OpenAI key can access is valid. */
-function ModelField({ value, onCommit }: { value: string; onCommit: (m: string) => void }) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
-  const commit = () => {
-    const v = draft.trim();
-    if (v && v !== value) onCommit(v);
-    else if (!v) setDraft(value);
-  };
+/** The Codex implementor model, as a dropdown of the OpenAI models the key can access (live-refreshed,
+ *  curated flagships first), with a Custom escape hatch. Codex only implements, so there's one model to
+ *  pick. Writes into the model matrix (codex.implementor); the top-bar chip reads the resolved value. */
+function CodexModelField() {
+  const liveModels = useStore((s) => s.settings.codexModels);
+  const resolved = useStore((s) => s.settings.codexModel);
+  const { overrides, setModel } = useModelOverrides();
+  const options = liveModels.length ? liveModels : (CODEX_MODELS as readonly string[]);
+  const picked = overrides[CODEX_SUB_ID]?.implementor ?? resolved;
   return (
     <div className="sub-field">
-      <label className="sub-label">Model</label>
-      <input
-        className="model-input"
-        list="codex-model-suggestions"
-        value={draft}
-        spellCheck={false}
-        autoComplete="off"
-        placeholder="gpt-5.5"
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        }}
-      />
-      <datalist id="codex-model-suggestions">
-        {CODEX_MODELS.map((m) => (
-          <option key={m} value={m} />
-        ))}
-      </datalist>
-      <div className="sub-msg dim">Flagship suggestions in the list — or type any model your key can access.</div>
+      <label className="sub-label">Implementor model</label>
+      <ModelSelect value={picked} options={options} allowInherit={false} onChange={(m) => setModel(CODEX_SUB_ID, "implementor", m)} />
+      <div className="sub-msg dim">Models your key can access appear automatically — or pick Custom to type any id.</div>
     </div>
   );
 }

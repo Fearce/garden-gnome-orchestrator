@@ -288,7 +288,7 @@ export interface OrchestratorSettings {
   // Claude is the default implementor and always powers planner/researcher/QA; individual Claude
   // accounts are toggled via the AccountDTO.enabled flag (account.set), not a setting here.
   codexEnabled: boolean; // OpenAI Codex: when on (with a valid key), it becomes the implementor backend
-  codexModel: string; // which Codex model the implementor runs (free-text; flagship suggestions in config.codex.models)
+  codexModel: string; // the resolved Codex implementor model (mirrors modelOverrides.codex.implementor; kept for the top-bar chip + back-compat)
   hasOpenaiKey: boolean; // read-only indicator — an OpenAI key is stored (the raw key is never broadcast)
   openaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
   codexChatgptLogin: boolean; // read-only — a ChatGPT-plan `codex login` is available; preferred over the key
@@ -297,10 +297,30 @@ export interface OrchestratorSettings {
   skipDirector: boolean; // composer's skip-director mode — persists so "on" stays on next time it opens
   maxRecentRepos: number; // how many recent-repo chips the composer shows (clamped 1–20, default 5)
   recentRepos: string[]; // recently-dispatched repo paths, most-recent first (capped at maxRecentRepos)
+  // ---- Per-(subscription × role) model selection ----
+  modelOverrides: ModelOverrides; // operator-picked models: {subId → {role → modelId}} (writable via settings.set)
+  modelDefaults: Partial<Record<Role, string>>; // read-only: the built-in per-role defaults (config.models)
+  claudeModels: string[]; // read-only: pickable Claude model ids (live ∪ curated ∪ selected), most-capable first
+  codexModels: string[]; // read-only: pickable Codex/OpenAI model ids (live ∪ curated ∪ selected)
 }
 
 /** The implementor backend chosen at dispatch by the subscription toggles. */
 export type ImplementorProvider = "claude" | "codex";
+
+/** The five agent roles a model can be picked for. Mirrored in web/src/types.ts. */
+export const MODEL_ROLES: Role[] = ["director", "planner", "researcher", "implementor", "qa"];
+
+/**
+ * Which model each agent role runs on, per subscription. Keyed by subscription id — a Claude account
+ * id (AccountDTO.id), the literal "codex" for the OpenAI backend, or "default" for the global per-role
+ * fallback applied when a specific subscription has no override. Inner map is role → model id. A missing
+ * entry falls through: subscription override → "default" override → the built-in config.models default.
+ * Codex only implements, so only its "implementor" entry is meaningful and it never inherits a Claude
+ * default (a Claude model id would be invalid for the Codex CLI).
+ */
+export const DEFAULT_SUB_ID = "default";
+export const CODEX_SUB_ID = "codex";
+export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
 
 export interface RateLimitInfo {
   status: "allowed" | "allowed_warning" | "rejected";

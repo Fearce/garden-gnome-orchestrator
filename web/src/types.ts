@@ -246,13 +246,31 @@ export interface OrchestratorSettings {
   skipDirector: boolean;
   maxRecentRepos: number;
   recentRepos: string[];
+  // Per-(subscription × role) model picks. See ModelOverrides. modelDefaults/claudeModels/codexModels
+  // are read-only (server-derived): the built-in per-role defaults and the pickable model lists.
+  modelOverrides: ModelOverrides;
+  modelDefaults: Partial<Record<Role, string>>;
+  claudeModels: string[];
+  codexModels: string[];
 }
 
-/** A settings.set patch: writable fields plus the write-only raw OpenAI key (never read back). */
-export type SettingsPatch = Partial<Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin">> & { openaiApiKey?: string };
+/** The five agent roles a model can be picked for. Mirrors the server's MODEL_ROLES. */
+export const MODEL_ROLES: Role[] = ["director", "planner", "researcher", "implementor", "qa"];
 
-/** Flagship Codex models suggested in the Subscriptions selector (most-capable first). The field is
- *  free-text — any model id the OpenAI key can access works — so this is just quick picks. */
+/** Which model each role runs on, per subscription. Keyed by subscription id — a Claude account id,
+ *  "codex", or "default" (the global per-role fallback). Mirrors the server's ModelOverrides. */
+export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
+
+/** Subscription-id sentinels for the model matrix (mirror the server). */
+export const DEFAULT_SUB_ID = "default";
+export const CODEX_SUB_ID = "codex";
+
+/** A settings.set patch: writable fields plus the write-only raw OpenAI key (never read back). */
+export type SettingsPatch = Partial<
+  Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin" | "modelDefaults" | "claudeModels" | "codexModels">
+> & { openaiApiKey?: string };
+
+/** Flagship Codex models suggested when the live list hasn't loaded yet (most-capable first). */
 export const CODEX_MODELS = ["gpt-5.5", "gpt-5.1-codex-max", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex-mini", "codex-mini-latest"] as const;
 
 export type ServerEvent =

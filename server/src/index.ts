@@ -71,6 +71,9 @@ async function main(): Promise<void> {
   const manager = new ThreadManager(db, hub, memory, accounts);
   const director = new Director(manager, db, hub);
   accounts.start();
+  // Live pickable-model lists for the Settings dropdowns — needs a subscription token, so start it after
+  // the account manager. Boot-fetches from the provider models endpoints, then refreshes on a slow timer.
+  manager.startModelCatalog();
   startWebAutoBuild();
   // Poll git for new upstream commits so the console can surface a quiet "update available" badge.
   startUpdatePoll();

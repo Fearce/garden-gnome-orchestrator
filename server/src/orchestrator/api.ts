@@ -100,6 +100,10 @@ export interface OrchestratorApi {
   /** The director persona's operator-chosen display name (from Settings; default "ChangeNameInSettings"). */
   directorName(): string;
 
+  /** The model a role should run on for a given subscription id (per-sub override → global default →
+   *  built-in config.models). Used so the director runs on the operator's picked model. */
+  modelFor(subId: string, role: Role): string;
+
   /** Let an agent pick/rename its own office gnome (per role); returns the stored name (trimmed/clamped). */
   setOfficeName(threadId: string, role: Role, name: string): string;
 

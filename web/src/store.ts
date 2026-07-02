@@ -247,6 +247,10 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   skipDirector: false,
   maxRecentRepos: 5,
   recentRepos: [],
+  modelOverrides: {},
+  modelDefaults: {},
+  claudeModels: [],
+  codexModels: [],
 };
 
 // A server that predates the settings broadcast (or any partial payload) must never null out the

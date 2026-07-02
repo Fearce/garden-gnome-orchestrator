@@ -118,6 +118,7 @@ export class Director {
     const acct = account ?? this.api.accounts.select().account;
     this.accountId = acct.id;
     this.accountLabel = acct.label;
+    cfg.model = this.api.modelFor(acct.id, "director");
     cfg.oauthToken = acct.token || undefined;
     if (this.sessionId) cfg.resume = this.sessionId;
     const run = new AgentRun(cfg);

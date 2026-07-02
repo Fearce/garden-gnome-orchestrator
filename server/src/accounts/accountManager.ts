@@ -387,6 +387,14 @@ export class AccountManager {
     return st.rateLimited && (st.rateLimitResetAt == null || st.rateLimitResetAt > Date.now());
   }
 
+  /** A usable OAuth token for out-of-band API calls that just need *some* valid subscription token
+   *  (e.g. listing the account's available models). Prefers an enabled account; any token otherwise. */
+  firstUsableToken(): string | undefined {
+    const states = [...this.states.values()];
+    const enabled = states.find((s) => s.enabled && s.account.token);
+    return (enabled ?? states.find((s) => s.account.token))?.account.token || undefined;
+  }
+
   dto(): AccountDTO[] {
     return [...this.states.values()].map((s) => ({
       id: s.account.id,

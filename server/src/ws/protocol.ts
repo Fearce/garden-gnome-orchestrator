@@ -142,6 +142,12 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         skipDirector: z.boolean(),
         maxRecentRepos: z.number().int().min(1).max(20),
         recentRepos: z.array(z.string().max(600)).max(50),
+        // Per-(subscription × role) model picks: {subId → {role → modelId}}. Role keys are the five valid
+        // roles; the subscription-count cap mirrors the server-side sanitize bound so a client can't bloat
+        // the single persisted kv blob. The server sanitizes further (trims + length-caps) before storing.
+        modelOverrides: z
+          .record(z.string().max(64), z.record(z.enum(["director", "planner", "researcher", "implementor", "qa"]), z.string().max(100)))
+          .refine((m) => Object.keys(m).length <= 64, { message: "too many subscription entries" }),
       })
       .partial(),
   }),
