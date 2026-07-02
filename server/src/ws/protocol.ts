@@ -143,10 +143,13 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         maxRecentRepos: z.number().int().min(1).max(20),
         recentRepos: z.array(z.string().max(600)).max(50),
         // Per-(subscription × role) model picks: {subId → {role → modelId}}. Role keys are the five valid
-        // roles; the subscription-count cap mirrors the server-side sanitize bound so a client can't bloat
-        // the single persisted kv blob. The server sanitizes further (trims + length-caps) before storing.
+        // roles, but the pick is PARTIAL (usually one role) — so the inner record must be z.partialRecord:
+        // Zod v4's enum-keyed z.record is EXHAUSTIVE (demands all five keys), which would reject every
+        // realistic single-role pick and silently drop the whole settings.set. partialRecord still rejects
+        // unknown role keys at the boundary. The subscription-count cap mirrors the server-side sanitize
+        // bound so a client can't bloat the single persisted kv blob; the server trims + length-caps too.
         modelOverrides: z
-          .record(z.string().max(64), z.record(z.enum(["director", "planner", "researcher", "implementor", "qa"]), z.string().max(100)))
+          .record(z.string().max(64), z.partialRecord(z.enum(["director", "planner", "researcher", "implementor", "qa"]), z.string().max(100)))
           .refine((m) => Object.keys(m).length <= 64, { message: "too many subscription entries" }),
       })
       .partial(),
