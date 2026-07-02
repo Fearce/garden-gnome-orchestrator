@@ -90,6 +90,7 @@ export function ThreadDetail() {
   const loadChanges = useStore((s) => s.loadChanges);
   const openOffice = useStore((s) => s.openOffice);
   const nameOverrides = useStore((s) => s.nameOverrides);
+  const directorName = useStore((s) => s.settings.directorName);
   // The project chatroom for THIS task's repo, if one exists (≥2 tasks ever collaborated here —
   // possibly in a PAST task, since the room persists). Repo-keyed so a fresh task on a repo with
   // prior history also gets the button to read the old chatter; invisible on repos that never collaborated.
@@ -234,9 +235,11 @@ export function ThreadDetail() {
   // died (reusing saved plan/research and the implementor's prior session) instead of from scratch.
   const isResumable = thread.state === "paused" || thread.state === "review" || thread.state === "failed";
   const terminal = isTerminal(thread.state);
-  // Each role in this task is a distinct agent with its own name — resolve per row/chip, never one
-  // thread-wide name (that was the "implementor and QA are both Nim" bug).
-  const nameFor = useMemo(() => (role: Role) => agentName(nameOverrides, id, role), [nameOverrides, id]);
+  // Pipeline workers are per-task agents; the director is the singleton persona from settings.
+  const nameFor = useMemo(
+    () => (role: Role) => (role === "director" ? directorName : agentName(nameOverrides, id, role)),
+    [nameOverrides, id, directorName],
+  );
 
   const doInject = (mode: "append" | "interrupt" | "queue") => {
     // Frozen tasks accept no manual inject/interrupt — the server auto-resumes them. Guard the handler

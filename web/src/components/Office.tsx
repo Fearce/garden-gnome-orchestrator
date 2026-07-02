@@ -104,9 +104,12 @@ export function Office() {
   const openOffice = useStore((s) => s.openOffice);
   const directorBusy = useStore((s) => s.directorBusy);
   const nameOverrides = useStore((s) => s.nameOverrides);
+  const directorName = useStore((s) => s.settings.directorName);
   // A worker's name is per (thread, role) — the running role IS the agent, so the gnome carries that
-  // agent's name, and it advances as the pipeline hands off (planner → implementor → …).
-  const nameOf = (threadId: string, role: Role) => agentName(nameOverrides, threadId, role);
+  // agent's name, and it advances as the pipeline hands off (planner → implementor → …). The director
+  // is the singleton persona from settings, not a gnome from the pool.
+  const nameOf = (threadId: string, role: Role) =>
+    role === "director" ? directorName : agentName(nameOverrides, threadId, role);
 
   // One worker per active task (latest active run wins), then grouped by normalized repo.
   const groups = useMemo<Group[]>(() => {
@@ -214,6 +217,7 @@ function OfficePanel() {
   const roomHistory = useStore((s) => s.roomHistory);
   const threads = useStore((s) => s.threads);
   const nameOverrides = useStore((s) => s.nameOverrides);
+  const directorName = useStore((s) => s.settings.directorName);
   const postChat = useStore((s) => s.postChat);
   const [draft, setDraft] = useState("");
 
@@ -278,7 +282,14 @@ function OfficePanel() {
                 key={m.id}
                 m={m}
                 title={m.threadId ? threads[m.threadId]?.title : undefined}
-                name={m.senderName || (m.threadId && m.role !== "system" ? agentName(nameOverrides, m.threadId, m.role) : undefined)}
+                name={
+                  m.senderName ||
+                  (m.role === "director"
+                    ? directorName
+                    : m.threadId && m.role !== "system"
+                      ? agentName(nameOverrides, m.threadId, m.role)
+                      : undefined)
+                }
               />
             ))
           )}
