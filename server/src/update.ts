@@ -13,6 +13,7 @@ const REPO_ROOT = resolve(config.serverRoot, "..");
 // manual check still goes through). Matches the client's "every few minutes" poll cadence.
 const FETCH_THROTTLE_MS = 5 * 60_000;
 const GIT_TIMEOUT_MS = 30_000;
+const INSTALL_TIMEOUT_MS = 10 * 60_000;
 const BUILD_TIMEOUT_MS = 6 * 60_000;
 // The script-hub that owns this server's process on the Windows deployment. Its atomic restart re-arms
 // keepAlive and survives the caller being killed mid-restart (see CLAUDE.md "Deploying a change").
@@ -38,7 +39,7 @@ export interface UpdateStatus {
 export interface ApplyResult {
   ok: boolean;
   /** Which step failed, when ok is false. */
-  stage?: "pull" | "build";
+  stage?: "pull" | "install" | "build";
   /** The server is being restarted by the hub; the client should wait for it to come back, then reload. */
   restarting: boolean;
   /** Server code changed but no hub was reachable to restart it — the owner must restart manually. */
@@ -47,7 +48,7 @@ export interface ApplyResult {
   webChanged: boolean;
   /** How many commits were pulled in. */
   pulled: number;
-  /** Trimmed stdout/stderr from the pull + build, for surfacing in a failure. */
+  /** Trimmed stdout/stderr from the pull, any installs, and build, for surfacing in a failure. */
   log: string;
   error?: string;
 }
@@ -177,11 +178,11 @@ function npmBin(): string {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
-function runBuild(): Promise<{ ok: boolean; tail: string }> {
+function runNpm(args: string[], cwd: string, timeoutMs: number): Promise<{ ok: boolean; tail: string }> {
   return new Promise((resolveP) => {
     let out = "";
-    const child = spawn(npmBin(), ["run", "build"], {
-      cwd: REPO_ROOT,
+    const child = spawn(npmBin(), args, {
+      cwd,
       shell: process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -200,7 +201,7 @@ function runBuild(): Promise<{ ok: boolean; tail: string }> {
       } catch {
         /* already gone */
       }
-    }, BUILD_TIMEOUT_MS);
+    }, timeoutMs);
     timer.unref();
     child.on("error", (e) => {
       clearTimeout(timer);
@@ -211,6 +212,28 @@ function runBuild(): Promise<{ ok: boolean; tail: string }> {
       resolveP({ ok: code === 0, tail: out.slice(-3000) });
     });
   });
+}
+
+function runBuild(): Promise<{ ok: boolean; tail: string }> {
+  return runNpm(["run", "build"], REPO_ROOT, BUILD_TIMEOUT_MS);
+}
+
+function runInstall(cwd: string): Promise<{ ok: boolean; tail: string }> {
+  return runNpm(["install", "--no-audit", "--no-fund"], cwd, INSTALL_TIMEOUT_MS);
+}
+
+const PACKAGE_FILES = new Set(["package.json", "package-lock.json", "npm-shrinkwrap.json"]);
+
+function packageFileChanged(changed: string[], dir: "server" | "web"): boolean {
+  const prefix = `${dir}/`;
+  return changed.some((p) => p.startsWith(prefix) && PACKAGE_FILES.has(p.slice(prefix.length)));
+}
+
+function installTargets(changed: string[]): Array<{ label: string; cwd: string }> {
+  const out: Array<{ label: string; cwd: string }> = [];
+  if (packageFileChanged(changed, "server")) out.push({ label: "server", cwd: config.serverRoot });
+  if (packageFileChanged(changed, "web")) out.push({ label: "web", cwd: resolve(REPO_ROOT, "web") });
+  return out;
 }
 
 async function hubReachable(): Promise<boolean> {
@@ -237,7 +260,7 @@ function scheduleRestart(): void {
   }, 800);
 }
 
-/** Pull the latest upstream, rebuild, and (if server code changed) restart. User-initiated only. */
+/** Pull the latest upstream, install changed package sets, rebuild, and (if server code changed) restart. User-initiated only. */
 export async function applyUpdate(): Promise<ApplyResult> {
   const res: ApplyResult = {
     ok: false,
@@ -266,8 +289,9 @@ export async function applyUpdate(): Promise<ApplyResult> {
     }
 
     const after = (await runGit(["rev-parse", "HEAD"])).stdout.trim();
+    let changed: string[] = [];
     if (before && after && before !== after) {
-      const changed = (await runGit(["diff", "--name-only", `${before}..${after}`])).stdout
+      changed = (await runGit(["diff", "--name-only", `${before}..${after}`])).stdout
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean);
@@ -275,6 +299,16 @@ export async function applyUpdate(): Promise<ApplyResult> {
       res.webChanged = changed.some((p) => p.startsWith("web/"));
       const count = await runGit(["rev-list", "--count", `${before}..${after}`]);
       res.pulled = Number.parseInt(count.stdout.trim(), 10) || 0;
+    }
+
+    for (const target of installTargets(changed)) {
+      const install = await runInstall(target.cwd);
+      res.log += `$ npm install --no-audit --no-fund (${target.label})\n${install.tail.trim()}\n`;
+      if (!install.ok) {
+        res.stage = "install";
+        res.error = `npm install failed for ${target.label} - see the server log`;
+        return res;
+      }
     }
 
     // Rebuild web (so an open client reloads onto the new bundle) and server (keeps dist/ fresh for a

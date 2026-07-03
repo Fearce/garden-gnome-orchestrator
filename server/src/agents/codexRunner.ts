@@ -5,6 +5,7 @@ import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo } from "../types.js";
+import { withAgentToolPath } from "./env.js";
 import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "./runner.js";
 
 export interface CodexRunConfig {
@@ -454,7 +455,7 @@ export class CodexAgentRun implements AgentRunLike {
     // OPENAI_API_KEY ONLY in apikey mode — under a ChatGPT login an inherited key could nudge the CLI
     // toward the API path it documents as incompatible with a ChatGPT account, so strip it. Driving this
     // off writeAuth's returned mode (not a re-read) keeps the env and the auth.json from ever diverging.
-    const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: config.codex.home };
+    const env: NodeJS.ProcessEnv = withAgentToolPath({ ...process.env, CODEX_HOME: config.codex.home });
     const key = this.cfg.apiKey?.trim();
     if (authMode === "apikey" && key) env.OPENAI_API_KEY = key;
     else delete env.OPENAI_API_KEY;

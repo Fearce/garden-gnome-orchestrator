@@ -12,6 +12,7 @@ import type {
 import { EventEmitter } from "node:events";
 import { config } from "../config.js";
 import type { AgentEvent, RateLimitInfo } from "../types.js";
+import { withAgentToolPath } from "./env.js";
 
 export type UserContent = string | unknown[];
 
@@ -77,7 +78,7 @@ export interface AgentRunLike {
  * close timeout keeps a human-blocked MCP tool (e.g. ask_user) from aborting.
  */
 function buildEnv(token?: string): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...process.env };
+  const env = withAgentToolPath();
   delete env.ANTHROPIC_API_KEY;
   env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT ?? "1800000";
   const oauth = token ?? config.oauthToken;
