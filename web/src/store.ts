@@ -242,6 +242,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   tokenLimitPercent: 80,
   codexEnabled: false,
   codexModel: "gpt-5.5",
+  codexEffort: "high",
   hasOpenaiKey: false,
   openaiKeyLast4: null,
   codexChatgptLogin: false,

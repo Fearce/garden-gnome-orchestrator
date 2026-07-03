@@ -4,12 +4,14 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../config.js";
-import type { AgentEvent, ChatScope, RateLimitInfo } from "../types.js";
+import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo } from "../types.js";
 import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "./runner.js";
 
 export interface CodexRunConfig {
   /** The Codex model to run, e.g. `codex-mini-latest`. */
   model: string;
+  /** Codex CLI reasoning effort, passed as model_reasoning_effort. */
+  effort: CodexEffort;
   cwd: string;
   /** The OpenAI API key — injected as OPENAI_API_KEY into the isolated CODEX_HOME so it, not any
    *  personal ChatGPT login in the user's ~/.codex, drives auth. */
@@ -432,6 +434,8 @@ export class CodexAgentRun implements AgentRunLike {
     // output as clean JSONL regardless of the color flag.
     if (!resumeId) args.push("--color", "never", "-C", this.cfg.cwd);
     args.push(
+      "-c",
+      `model_reasoning_effort="${this.cfg.effort}"`,
       "-m",
       this.cfg.model,
       // The prompt goes via STDIN ("-"), not argv: a real implementor kickoff (doctrine + plan +

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store.js";
 import { isCapParked } from "../lib/format.js";
-import type { AccountDTO, CodexUsageDTO } from "../types.js";
+import type { AccountDTO, CodexEffort, CodexUsageDTO } from "../types.js";
 
 const clamp = (pct: number | null): number => (pct == null ? 0 : Math.min(100, Math.max(0, pct)));
 const label = (pct: number | null): string => (pct == null ? "—" : `${Math.round(pct)}%`);
@@ -65,6 +65,7 @@ export function Accounts() {
           hasAuth={settings.hasOpenaiKey || settings.codexChatgptLogin}
           chatgpt={settings.codexChatgptLogin}
           model={settings.codexModel}
+          effort={settings.codexEffort}
           live={codexLive}
           usage={codexUsage}
           now={now}
@@ -88,6 +89,7 @@ function CodexChip({
   hasAuth,
   chatgpt,
   model,
+  effort,
   live,
   usage,
   now,
@@ -96,6 +98,7 @@ function CodexChip({
   hasAuth: boolean;
   chatgpt: boolean;
   model: string;
+  effort: CodexEffort;
   live: boolean;
   usage: CodexUsageDTO | null;
   now: number;
@@ -106,12 +109,12 @@ function CodexChip({
   const authNote = chatgpt ? "via your ChatGPT plan" : "via API key";
   const title =
     state === "implementing"
-      ? `Codex is implementing a task now · ${authNote} · model ${model}`
+      ? `Codex is implementing a task now · ${authNote} · model ${model} · ${effort} effort`
       : state === "ready"
-        ? `Codex (OpenAI) enabled · ${authNote} · model ${model} · implements dispatched tasks`
+        ? `Codex (OpenAI) enabled · ${authNote} · model ${model} · ${effort} effort · implements dispatched tasks`
         : state === "noauth"
           ? "Codex is enabled but has no usable auth — sign in with `codex login` or add an API key in Settings → Subscriptions"
-          : `Codex (OpenAI) configured but off · model ${model}`;
+          : `Codex (OpenAI) configured but off · model ${model} · ${effort} effort`;
   // Render meters whenever we have any usage reading, regardless of on/off — the headroom is real and
   // useful even when Codex isn't the active backend right now.
   const showMeters = !!usage && (usage.fiveHour != null || usage.sevenDay != null);
@@ -132,8 +135,8 @@ function CodexChip({
           <Meter k="7d" pct={usage!.sevenDay} kind="week" stale={stale} reset={usage!.sevenDayReset} now={now} />
         </div>
       ) : (
-        <div className="codex-model" title={model}>
-          {model}
+        <div className="codex-model" title={`${model} · ${effort} effort`}>
+          {model} · {effort}
         </div>
       )}
     </div>

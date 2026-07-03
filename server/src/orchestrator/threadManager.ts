@@ -23,6 +23,7 @@ import type {
   AgentRunState,
   AttachmentRef,
   ChatMessage,
+  CodexEffort,
   Effort,
   Finding,
   ImageAttachment,
@@ -36,7 +37,7 @@ import type {
   Role,
   Thread,
 } from "../types.js";
-import { agentKey, CODEX_SUB_ID, DEFAULT_SUB_ID, GENERAL_ROOM, GNOME_NAMES, gnomeName, MODEL_ROLES, normalizeWorkspace, repoRoom } from "../types.js";
+import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, GENERAL_ROOM, GNOME_NAMES, gnomeName, MODEL_ROLES, normalizeWorkspace, repoRoom } from "../types.js";
 
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
@@ -632,6 +633,7 @@ export class ThreadManager implements OrchestratorApi {
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
       codexEnabled: this.settingBool("setting_codex_enabled", false),
       codexModel: this.codexModel(),
+      codexEffort: this.codexEffort(),
       hasOpenaiKey: !!key,
       openaiKeyLast4: key && key.length >= 4 ? key.slice(-4) : null,
       codexChatgptLogin: chatgptLoginAvailable(),
@@ -742,6 +744,13 @@ export class ThreadManager implements OrchestratorApi {
     );
   }
 
+  /** The Codex CLI reasoning-effort override. `max` is a Claude-only tier, so Codex exposes the
+   *  Responses-compatible range this CLI accepts: low/medium/high/xhigh. */
+  private codexEffort(): CodexEffort {
+    const v = this.db.kvGet("setting_codex_effort")?.trim();
+    return CODEX_EFFORTS.includes(v as CodexEffort) ? (v as CodexEffort) : "high";
+  }
+
   /** The raw OpenAI key: the kv-stored UI value if present, else the server/.env fallback. NEVER
    *  broadcast — only its presence + last 4 chars leave the server (settings()). */
   private openaiApiKey(): string | undefined {
@@ -761,6 +770,7 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
+    if (patch.codexEffort !== undefined && CODEX_EFFORTS.includes(patch.codexEffort)) this.db.kvSet("setting_codex_effort", patch.codexEffort);
     // Legacy free-text codex model field: mirror it into the matrix (codex.implementor) so the two stay
     // coherent regardless of which UI wrote it, and keep the legacy kv as a migration fallback.
     if (patch.codexModel !== undefined && patch.codexModel.trim()) {
@@ -1356,9 +1366,9 @@ export class ThreadManager implements OrchestratorApi {
     opts?: { resume?: string; effort?: Effort; account?: Acct; freshFallback?: string },
   ): { run: AgentRunLike; runId: string; accountId: string } {
     this.setState(thread.id, "implementing");
-    // Coerce a gated `xhigh` down to `high` here too, so the stored/displayed effort matches what the
-    // implementor actually runs at (implementorConfig applies the same gate before the SDK call).
-    const effort = resolveEffort(opts?.effort);
+    // Claude uses the planner's per-task effort (with the xhigh gate applied). Codex has its own
+    // operator-selected reasoning effort because the CLI takes a persistent model_reasoning_effort.
+    const plannerEffort = resolveEffort(opts?.effort);
     // Provider factory: the routing gate (gateImplementorProvider) stored the backend for this thread.
     // Codex runs the CLI (no Claude account/oauth); Claude runs the SDK on a selected subscription.
     const provider = this.implementorProvider.get(thread.id) ?? "claude";
@@ -1372,6 +1382,7 @@ export class ThreadManager implements OrchestratorApi {
     let startKickoff = kickoff;
     if (provider === "codex") {
       const model = this.codexModel();
+      const effort = this.codexEffort();
       accountId = "openai-codex";
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `codex:${model}`, effort });
       runId = run.id;
@@ -1385,6 +1396,7 @@ export class ThreadManager implements OrchestratorApi {
       // gpt-5 session) by restarting fresh — so it must carry the SAME doctrine + task a fresh start gets.
       const codexAgent = new CodexAgentRun({
         model,
+        effort,
         cwd: thread.workspace,
         apiKey: this.openaiApiKey() ?? "",
         resume: opts?.resume,
@@ -1398,6 +1410,7 @@ export class ThreadManager implements OrchestratorApi {
       codexAgent.onEnd(() => { if (codexAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
       agent = codexAgent;
     } else {
+      const effort = plannerEffort;
       const acct = opts?.account ?? this.dispatchAccount();
       accountId = acct.id;
       // Model resolved from the subscription this implementor runs on (per-sub override → default → built-in).

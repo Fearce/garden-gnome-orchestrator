@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store.js";
-import { CODEX_MODELS, CODEX_SUB_ID, DEFAULT_SUB_ID, MODEL_ROLES, type ModelOverrides, type Role } from "../types.js";
+import { CODEX_EFFORTS, CODEX_MODELS, CODEX_SUB_ID, DEFAULT_SUB_ID, MODEL_ROLES, type ModelOverrides, type Role } from "../types.js";
 
 /** The gear-icon panel: everything that isn't a per-task agent toggle (those live in the topbar).
  *  A light popover anchored under the topbar with a click-anywhere-outside backdrop to dismiss. */
@@ -362,7 +362,7 @@ function SubscriptionsSection() {
         meta={
           settings.codexEnabled
             ? codexHasAuth
-              ? `Implementing tasks via the Codex CLI${settings.codexChatgptLogin ? " · ChatGPT plan login" : ""} · model ${settings.codexModel}`
+              ? `Implementing tasks via the Codex CLI${settings.codexChatgptLogin ? " · ChatGPT plan login" : ""} · model ${settings.codexModel} · ${settings.codexEffort} effort`
               : "Enabled but no usable auth — sign in with `codex login` or add a key below before tasks can route here."
             : "Off — enable to implement tasks with the Codex CLI instead of Claude."
         }
@@ -416,6 +416,7 @@ function SubscriptionsSection() {
         </div>
 
         <CodexModelField />
+        <CodexEffortField />
       </SubCard>
     </div>
   );
@@ -481,6 +482,28 @@ function CodexModelField() {
       <label className="sub-label">Implementor model</label>
       <ModelSelect value={picked} options={options} allowInherit={false} onChange={(m) => setModel(CODEX_SUB_ID, "implementor", m)} />
       <div className="sub-msg dim">Models your key can access appear automatically — or pick Custom to type any id.</div>
+    </div>
+  );
+}
+
+/** Codex reasoning effort is independent from the planner's per-task effort suggestion: this is a
+ *  backend setting passed directly to the Codex CLI as model_reasoning_effort for every Codex turn. */
+function CodexEffortField() {
+  const effort = useStore((s) => s.settings.codexEffort);
+  const setSettings = useStore((s) => s.setSettings);
+  return (
+    <div className="sub-field">
+      <label className="sub-label">Reasoning effort</label>
+      <div className="sub-segment">
+        <div className="segment">
+          {CODEX_EFFORTS.map((value) => (
+            <button key={value} className={effort === value ? "on" : ""} onClick={() => setSettings({ codexEffort: value })}>
+              {value}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="sub-msg dim">Applied to Codex CLI runs with model_reasoning_effort.</div>
     </div>
   );
 }

@@ -135,6 +135,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         tokenLimitPercent: z.number().int().min(50).max(99),
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
+        codexEffort: z.enum(["low", "medium", "high", "xhigh"]),
         // Write-only: the raw OpenAI key is accepted here and stored server-side, never echoed back.
         // An empty string clears it. The broadcast OrchestratorSettings carries only hasOpenaiKey/last4.
         openaiApiKey: z.string().max(300),

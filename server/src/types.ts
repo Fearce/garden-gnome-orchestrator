@@ -20,6 +20,8 @@ export type ThreadState =
   | "closed"; // soft-closed: kept in the DB (restorable) but off the main board; auto-purged after 30d
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export type CodexEffort = "low" | "medium" | "high" | "xhigh";
+export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
 
 export type AgentRunState =
   | "starting"
@@ -289,6 +291,7 @@ export interface OrchestratorSettings {
   // accounts are toggled via the AccountDTO.enabled flag (account.set), not a setting here.
   codexEnabled: boolean; // OpenAI Codex: when on (with a valid key), it becomes the implementor backend
   codexModel: string; // the resolved Codex implementor model (mirrors modelOverrides.codex.implementor; kept for the top-bar chip + back-compat)
+  codexEffort: CodexEffort; // Codex CLI reasoning effort, applied via model_reasoning_effort
   hasOpenaiKey: boolean; // read-only indicator — an OpenAI key is stored (the raw key is never broadcast)
   openaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
   codexChatgptLogin: boolean; // read-only — a ChatGPT-plan `codex login` is available; preferred over the key

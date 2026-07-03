@@ -3,6 +3,8 @@
 export type Role = "director" | "planner" | "researcher" | "implementor" | "qa";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export type CodexEffort = "low" | "medium" | "high" | "xhigh";
+export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
 
 export type ThreadState =
   | "intake"
@@ -238,6 +240,7 @@ export interface OrchestratorSettings {
   // default backend; individual Claude accounts toggle via AccountDTO.enabled (account.set), not here.
   codexEnabled: boolean;
   codexModel: string;
+  codexEffort: CodexEffort;
   hasOpenaiKey: boolean; // read-only: a key is stored (raw key never reaches the client)
   openaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
   codexChatgptLogin: boolean; // read-only: a ChatGPT-plan `codex login` is available (preferred over a key)

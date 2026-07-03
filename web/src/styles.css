@@ -709,6 +709,8 @@ button { font-family: inherit; cursor: pointer; }
 .sub-msg.ok { color: var(--ok); }
 .sub-msg.bad { color: var(--danger); }
 .sub-msg.dim { color: var(--text-faint); }
+.sub-segment .segment { width: 100%; }
+.sub-segment .segment button { flex: 1 1 0; min-width: 0; font-family: var(--font-mono); text-transform: lowercase; }
 
 /* ---- model selection (per-role, per-subscription) ---- */
 .model-select {
