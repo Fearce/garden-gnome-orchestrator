@@ -130,6 +130,25 @@ function rowToMessage(r: Row): Message {
   };
 }
 
+function rowToDirectorMessage(r: Row): DirectorMessage {
+  const refs = parseAttachments(r.attachments);
+  return {
+    id: r.id as string,
+    role: r.role as DirectorMessage["role"],
+    kind: r.kind as DirectorMessage["kind"],
+    content: r.content as string,
+    attachments: refs.length ? refs : undefined,
+    createdAt: r.created_at as number,
+  };
+}
+
+// Escape the LIKE wildcards in a user query so a literal % or _ matches itself, not "any run of
+// chars". Paired with `ESCAPE '\'` on the statement. Backslash is escaped first so it can't
+// double-escape a following wildcard.
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => "\\" + c);
+}
+
 export class Db {
   readonly raw: Database.Database;
 
@@ -564,17 +583,24 @@ export class Db {
     const rows = limit
       ? (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at DESC LIMIT ?").all(limit) as Row[]).reverse()
       : (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at ASC").all() as Row[]);
-    return rows.map((r) => {
-      const refs = parseAttachments(r.attachments);
-      return {
-        id: r.id as string,
-        role: r.role as DirectorMessage["role"],
-        kind: r.kind as DirectorMessage["kind"],
-        content: r.content as string,
-        attachments: refs.length ? refs : undefined,
-        createdAt: r.created_at as number,
-      };
-    });
+    return rows.map(rowToDirectorMessage);
+  }
+
+  /** Substring search across the ENTIRE director conversation (both the user's prompts and the
+   *  director's replies) — the "find where I mentioned X across every task" search, so it spans the
+   *  whole table, not the bounded snapshot slice. Newest-first, capped. Match is case-insensitive for
+   *  ASCII (SQLite LIKE's built-in fold); non-ASCII letters match case-sensitively. */
+  searchDirectorMessages(query: string, limit = 100): DirectorMessage[] {
+    const q = query.trim();
+    if (!q) return [];
+    const rows = this.raw
+      .prepare(
+        `SELECT * FROM director_messages
+         WHERE content LIKE ? ESCAPE '\\'
+         ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(`%${escapeLike(q)}%`, limit) as Row[];
+    return rows.map(rowToDirectorMessage);
   }
 
   // ---- office chat ----

@@ -160,6 +160,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       send(socket, { type: "thread.changes", threadId: cmd.threadId, diff: changes.diff, log: changes.log });
       break;
     }
+    case "director.search":
+      send(socket, { type: "director.results", query: cmd.query, messages: ctx.db.searchDirectorMessages(cmd.query) });
+      break;
     case "chat.history":
       send(socket, { type: "chat.history", room: cmd.room, messages: ctx.db.listRoomMessages(cmd.room) });
       break;

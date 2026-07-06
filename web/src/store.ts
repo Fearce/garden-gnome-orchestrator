@@ -57,6 +57,11 @@ interface State {
   director: DirectorItem[];
   directorDraft: string;
   directorBusy: boolean;
+  // Director-conversation search — matches span the WHOLE conversation across every task (the snapshot
+  // only carries the recent slice, so old mentions are found via a server query; the server match is
+  // ASCII case-insensitive). Null when the search box is empty/closed; `searching` gates the spinner
+  // between the request and its reply.
+  directorSearch: { query: string; results: DirectorMessage[]; searching: boolean } | null;
   threadFeeds: Record<string, FeedItem[]>;
   threadDrafts: Record<string, ThreadDraft | undefined>;
   selectedThreadId: string | null;
@@ -99,6 +104,9 @@ interface State {
   notice: { title: string; message: string } | null;
 
   select: (id: string | null) => void;
+  // Search the whole director conversation (across every task) for a substring, or clear the search.
+  searchDirector: (query: string) => void;
+  clearDirectorSearch: () => void;
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
   sendDirect: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
   answer: (questionId: string, answer: string) => void;
@@ -317,6 +325,7 @@ export const useStore = create<State>((set) => ({
   director: [],
   directorDraft: "",
   directorBusy: false,
+  directorSearch: null,
   threadFeeds: {},
   threadDrafts: {},
   selectedThreadId: null,
@@ -345,6 +354,20 @@ export const useStore = create<State>((set) => ({
     set({ selectedThreadId: id });
     if (id) sendCommand({ type: "thread.history", threadId: id });
   },
+  searchDirector: (query) => {
+    const q = query.trim();
+    if (!q) {
+      set({ directorSearch: null });
+      return;
+    }
+    // Keep the prior results visible while a new query for the same string is in flight (no flash);
+    // a changed query starts empty. The reply reconciles both via the echoed query.
+    set((s) => ({
+      directorSearch: { query: q, results: s.directorSearch?.query === q ? s.directorSearch.results : [], searching: true },
+    }));
+    sendCommand({ type: "director.search", query: q });
+  },
+  clearDirectorSearch: () => set({ directorSearch: null }),
   sendPrompt: (text, workspace, images) =>
     sendCommand({ type: "prompt.new", text, workspace: workspace || undefined, images: images?.length ? images : undefined }),
   sendDirect: (text, workspace, images) =>
@@ -799,6 +822,13 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "director.busy":
       useStore.setState({ directorBusy: ev.busy });
+      break;
+    case "director.results":
+      useStore.setState((s) => {
+        // Drop a reply for a query the operator has since retyped or cleared.
+        if (!s.directorSearch || s.directorSearch.query !== ev.query) return {};
+        return { directorSearch: { query: ev.query, results: ev.messages, searching: false } };
+      });
       break;
     case "notice":
       // A user-facing notification (the token-safety auto-stop). Show the always-visible banner AND fire

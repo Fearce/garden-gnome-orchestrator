@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
-import type { DirectorItem, OrchestratorSettings, Role } from "../types.js";
+import type { DirectorItem, DirectorMessage, OrchestratorSettings, Role } from "../types.js";
 
 // The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
 // not localStorage — the console is served on both an HTTP and an HTTPS origin (the tablet Deck iframes
@@ -32,9 +32,25 @@ export function Director() {
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const directorSearch = useStore((s) => s.directorSearch);
+  const searchDirector = useStore((s) => s.searchDirector);
+  const clearDirectorSearch = useStore((s) => s.clearDirectorSearch);
   const setDirectorWidth = useStore((s) => s.setDirectorWidth);
   const selectedThreadId = useStore((s) => s.selectedThreadId);
   const att = useAttachments();
+
+  // Debounce the query so a live search doesn't hit the server on every keystroke; an empty box clears
+  // the results (and hands the transcript back). The store drops any reply whose query has since changed.
+  useEffect(() => {
+    const q = searchText.trim();
+    if (!q) {
+      clearDirectorSearch();
+      return;
+    }
+    const t = setTimeout(() => searchDirector(q), 200);
+    return () => clearTimeout(t);
+  }, [searchText, searchDirector, clearDirectorSearch]);
 
   // Selecting a task pre-fills the repo path from that task's workspace. Keyed on the id
   // alone so manual edits and same-task re-selects never re-fire — only a different task wins.
@@ -117,23 +133,50 @@ export function Director() {
         </div>
       </div>
 
-      <div className="transcript" ref={scrollRef}>
-        {items.length === 0 && (
-          <div className="faint" style={{ fontSize: 13 }}>
-            Tell the Director what you want. It pulls your memories, asks anything it needs to avoid steering wrong, then
-            dispatches a planned, researched task to an Opus 4.8 implementor.
-          </div>
-        )}
-        {items.map((it) => (
-          <DirectorBubble key={it.id} item={it} />
-        ))}
-        {draft && (
-          <div className="msg director draft">
-            <div className="by">{directorName}</div>
-            <div className="bubble">{draft}</div>
-          </div>
+      <div className="rail-search">
+        <svg className="rail-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.2-3.2" />
+        </svg>
+        <input
+          className="rail-search-input"
+          type="search"
+          value={searchText}
+          placeholder="Search director messages across all tasks…"
+          aria-label="Search director messages across all tasks"
+          onChange={(e) => setSearchText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setSearchText("");
+          }}
+        />
+        {searchText && (
+          <button className="rail-search-clear" type="button" aria-label="Clear search" title="Clear search" onClick={() => setSearchText("")}>
+            ×
+          </button>
         )}
       </div>
+
+      {directorSearch ? (
+        <DirectorSearchResults search={directorSearch} directorName={directorName} />
+      ) : (
+        <div className="transcript" ref={scrollRef}>
+          {items.length === 0 && (
+            <div className="faint" style={{ fontSize: 13 }}>
+              Tell the Director what you want. It pulls your memories, asks anything it needs to avoid steering wrong, then
+              dispatches a planned, researched task to an Opus 4.8 implementor.
+            </div>
+          )}
+          {items.map((it) => (
+            <DirectorBubble key={it.id} item={it} />
+          ))}
+          {draft && (
+            <div className="msg director draft">
+              <div className="by">{directorName}</div>
+              <div className="bubble">{draft}</div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className={"composer" + (att.dragging ? " dragging" : "") + (skip ? " direct" : "")} {...att.dropHandlers}>
         {recentRepos.length > 1 && (
@@ -317,5 +360,74 @@ function DirectorBubble({ item }: { item: DirectorItem }) {
         <MessageThumbs refs={item.attachments} />
       </div>
     </div>
+  );
+}
+
+/** Whole-conversation search results, shown in place of the transcript while a query is active. Each hit
+ *  renders a snippet centered on the match so a long director reply stays readable but the match is seen. */
+function DirectorSearchResults({ search, directorName }: { search: { query: string; results: DirectorMessage[]; searching: boolean }; directorName: string }) {
+  const { query, results, searching } = search;
+  const count = results.length;
+  return (
+    <div className="ds-results" role="region" aria-label="Director message search results">
+      <div className="ds-status mono">
+        {searching && count === 0 ? "Searching…" : `${count} ${count === 1 ? "match" : "matches"} for “${query}”`}
+      </div>
+      {!searching && count === 0 && (
+        <div className="faint" style={{ fontSize: 13 }}>
+          No director message across any task contains “{query}”.
+        </div>
+      )}
+      {results.map((m) => (
+        <div key={m.id} className={"ds-result " + m.role}>
+          <div className="ds-meta">
+            <span className="ds-role">{m.role === "user" ? "you" : directorName}</span>
+            <span className="ds-date">{resultDate(m.createdAt)}</span>
+          </div>
+          <div className="ds-snippet">{highlightSnippet(m.content, query)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const resultDate = (ts: number): string =>
+  new Date(ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+// Build a snippet centered on the first case-insensitive match of `q`, wrapping every match inside the
+// window in <mark>. A window (not the full body) keeps long director replies from dominating the list.
+function highlightSnippet(text: string, q: string): ReactNode {
+  const needle = q.toLowerCase();
+  const first = text.toLowerCase().indexOf(needle);
+  const anchor = first < 0 ? 0 : first;
+  const WINDOW_BEFORE = 90;
+  const WINDOW_AFTER = 240;
+  const start = anchor > WINDOW_BEFORE ? anchor - WINDOW_BEFORE : 0;
+  const end = Math.min(text.length, anchor + needle.length + WINDOW_AFTER);
+  const slice = text.slice(start, end);
+  const sliceLc = slice.toLowerCase();
+
+  const nodes: ReactNode[] = [];
+  let i = 0;
+  while (i < slice.length) {
+    const idx = sliceLc.indexOf(needle, i);
+    if (idx < 0) {
+      nodes.push(slice.slice(i));
+      break;
+    }
+    if (idx > i) nodes.push(slice.slice(i, idx));
+    nodes.push(
+      <mark key={idx} className="ds-hit">
+        {slice.slice(idx, idx + needle.length)}
+      </mark>,
+    );
+    i = idx + needle.length;
+  }
+  return (
+    <>
+      {start > 0 && "…"}
+      {nodes}
+      {end < text.length && "…"}
+    </>
   );
 }

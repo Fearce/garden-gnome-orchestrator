@@ -323,6 +323,9 @@ export type ServerEvent =
   | { type: "director.message"; message: DirectorMessage }
   | { type: "director.tool"; name: string; input: unknown }
   | { type: "director.busy"; busy: boolean }
+  // Reply to a director.search: whole-conversation matches (newest-first) for `query`; the echoed
+  // query lets the client drop a stale reply if the operator has retyped since.
+  | { type: "director.results"; query: string; messages: DirectorMessage[] }
   // A user-facing notification (the token-safety auto-stop). Shown as a dismissible banner + desktop notify.
   | { type: "notice"; level: "warn"; title: string; message: string }
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
@@ -347,6 +350,7 @@ export type ClientCommand =
   | { type: "codex.test"; apiKey?: string }
   | { type: "account.set"; id: string; enabled: boolean }
   | { type: "thread.changes"; threadId: string }
+  | { type: "director.search"; query: string }
   | { type: "chat.history"; room: string }
   | { type: "chat.post"; room: string; body: string }
   | { type: "snapshot.request" };

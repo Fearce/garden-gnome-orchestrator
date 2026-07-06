@@ -79,6 +79,9 @@ export type ServerEvent =
   | { type: "director.message"; message: DirectorMessage }
   | { type: "director.tool"; name: string; input: unknown }
   | { type: "director.busy"; busy: boolean }
+  // Reply to a director.search: the whole-conversation matches (newest-first) for `query`. Echoing
+  // the query lets the client ignore a stale reply if the operator has since retyped.
+  | { type: "director.results"; query: string; messages: DirectorMessage[] }
   // A dedicated user-facing notification channel (unlike `log`, which the client drops). Currently the
   // token-safety auto-stop notice; the client shows it as a dismissible banner and fires a desktop notify.
   | { type: "notice"; level: "warn"; title: string; message: string }
@@ -161,6 +164,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // Toggle a Claude account in/out of the dispatch+failover rotation (per-account subscription switch).
   z.object({ type: z.literal("account.set"), id: z.string(), enabled: z.boolean() }),
   z.object({ type: z.literal("thread.changes"), threadId: z.string() }),
+  // Search the WHOLE director conversation (across every task) for a substring; replies with
+  // director.results. The snapshot only ships the recent slice, so old mentions need a server query.
+  z.object({ type: z.literal("director.search"), query: z.string().min(1).max(200) }),
   // Fetch the full message history for one office room (the expanded chatroom view / a task's button).
   z.object({ type: z.literal("chat.history"), room: z.string().min(1).max(300) }),
   // Post into a room AS THE DIRECTOR (the human): lands in the chat and is pushed to the live agents
