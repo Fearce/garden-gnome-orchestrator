@@ -111,6 +111,9 @@ export interface DirectorMessage {
   kind: string;
   content: string;
   attachments?: AttachmentRef[];
+  // The task this message's turn dispatched, if any — lets a search hit jump to the task. May dangle
+  // (the task was purged); the UI only offers the jump when the thread still exists in the store.
+  threadId?: string | null;
   createdAt: number;
 }
 

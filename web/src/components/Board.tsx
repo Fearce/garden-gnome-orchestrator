@@ -507,6 +507,7 @@ const Card = memo(function Card({
   return (
     <div
       ref={innerRef}
+      data-thread-id={thread.id}
       className={"card" + (selected ? " sel" : "") + (live ? " live" : "") + (capParked ? " frozen" : "") + (dragging ? " dragging" : "") + (draggableCard ? " draggable" : "")}
       style={{ "--state-color": stateColor(thread.state), ...style } as CSSProperties}
       // A frozen card is frosted but still fully OPENABLE — clicking it selects/opens the detail pane

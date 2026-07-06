@@ -74,12 +74,16 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at  INTEGER NOT NULL
 );
 
+-- thread_id links a message's conversation turn to the task it dispatched (for the search's "go to
+-- task" jump). Nullable, and deliberately NO FK: the director conversation is durable, so a message
+-- survives its task's purge — a dangling link just means the UI hides the jump.
 CREATE TABLE IF NOT EXISTS director_messages (
   id          TEXT PRIMARY KEY,
   role        TEXT NOT NULL,
   kind        TEXT NOT NULL,
   content     TEXT NOT NULL,
   attachments TEXT NOT NULL DEFAULT '[]',
+  thread_id   TEXT,
   created_at  INTEGER NOT NULL
 );
 

@@ -30,6 +30,9 @@ export class Director {
   /** The in-flight turn's content — kept so a usage-cap failover can re-send it. */
   private pending: UserContent | undefined;
   private failovers = 0;
+  /** Director-message ids added during the current user turn (the prompt + the director's replies).
+   *  When a dispatch fires mid-turn, these get linked to the new task so a search hit can jump to it. */
+  private currentTurnMsgIds: string[] = [];
 
   constructor(
     private readonly api: ThreadManager,
@@ -43,6 +46,9 @@ export class Director {
     );
     const msg = this.db.addDirectorMessage({ role: "user", kind: "text", content: text, attachments: refs });
     this.hub.publish({ type: "director.message", message: msg });
+    // A new user turn opens a fresh segment; a dispatch during it links back to this prompt (+ the
+    // director's replies, appended as they stream) so the task is reachable from a search hit.
+    this.currentTurnMsgIds = [msg.id];
 
     this.pendingImages = images ?? [];
     // A path the owner typed in the path field is AUTHORITATIVE — it's the exact dispatch workspace, not
@@ -88,6 +94,8 @@ export class Director {
     this.hub.publish({ type: "director.message", message: userMsg });
 
     const ws = workspace?.trim();
+    // Skip-director dispatches straight below (no director tool call), so link this prompt to the task
+    // it produces right after api.dispatch returns the id.
     if (!ws) {
       this.postDirectorNote(
         `Skip-director is on, so I send your message straight to the pipeline — but I need the repo path for that (there's no director to find it). Set the workspace path in the composer, then send again.`,
@@ -103,6 +111,7 @@ export class Director {
 
     const title = directTitle(text);
     const id = await this.api.dispatch({ title, workspace: ws, brief: text, images });
+    this.db.linkDirectorMessagesToThread([userMsg.id], id);
     this.postDirectorNote(`Skipped the director — dispatched "${title}" straight to the pipeline (task ${id.slice(0, 8)}).`);
     // Without the director there's no one to name the task, so the lane would show only the raw first
     // line. Mint a proper title with a cheap Haiku call after dispatch (best-effort, never blocks the
@@ -116,7 +125,9 @@ export class Director {
   }
 
   private start(firstContent: UserContent, account?: Account): void {
-    const director = createDirectorServer(this.api, () => this.pendingImages);
+    const director = createDirectorServer(this.api, () => this.pendingImages, (threadId) =>
+      this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId),
+    );
     const memory = createMemoryServer(this.api.memory);
     const cfg = directorConfig({ director, memory }, this.api.directorName());
     const acct = account ?? this.api.accounts.select().account;
@@ -151,6 +162,7 @@ export class Director {
           break;
         case "text": {
           const m = this.db.addDirectorMessage({ role: "director", kind: "text", content: e.text });
+          this.currentTurnMsgIds.push(m.id); // part of this turn's segment — links to a dispatch it precedes
           this.hub.publish({ type: "director.message", message: m });
           break;
         }

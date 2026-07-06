@@ -38,7 +38,20 @@ export function Director() {
   const clearDirectorSearch = useStore((s) => s.clearDirectorSearch);
   const setDirectorWidth = useStore((s) => s.setDirectorWidth);
   const selectedThreadId = useStore((s) => s.selectedThreadId);
+  const select = useStore((s) => s.select);
   const att = useAttachments();
+
+  // Jump from a search hit to the task its conversation turn dispatched: open the task, then clear the
+  // search so the rail returns to the transcript (the task's detail panel is now open on the right).
+  // Best-effort scroll the task's board lane into view too, so the jump is anchored — a no-op if that
+  // lane isn't currently rendered (paginated/filtered off the board).
+  const goToTask = (threadId: string) => {
+    select(threadId);
+    setSearchText("");
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-thread-id="${threadId}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  };
 
   // Debounce the query so a live search doesn't hit the server on every keystroke; an empty box clears
   // the results (and hands the transcript back). The store drops any reply whose query has since changed.
@@ -157,7 +170,7 @@ export function Director() {
       </div>
 
       {directorSearch ? (
-        <DirectorSearchResults search={directorSearch} directorName={directorName} />
+        <DirectorSearchResults search={directorSearch} directorName={directorName} onGoToTask={goToTask} />
       ) : (
         <div className="transcript" ref={scrollRef}>
           {items.length === 0 && (
@@ -364,9 +377,19 @@ function DirectorBubble({ item }: { item: DirectorItem }) {
 }
 
 /** Whole-conversation search results, shown in place of the transcript while a query is active. Each hit
- *  renders a snippet centered on the match so a long director reply stays readable but the match is seen. */
-function DirectorSearchResults({ search, directorName }: { search: { query: string; results: DirectorMessage[]; searching: boolean }; directorName: string }) {
+ *  renders a snippet centered on the match so a long director reply stays readable but the match is seen,
+ *  plus a jump to the task its turn dispatched (when that task still exists). */
+function DirectorSearchResults({
+  search,
+  directorName,
+  onGoToTask,
+}: {
+  search: { query: string; results: DirectorMessage[]; searching: boolean };
+  directorName: string;
+  onGoToTask: (threadId: string) => void;
+}) {
   const { query, results, searching } = search;
+  const threads = useStore((s) => s.threads);
   const count = results.length;
   return (
     <div className="ds-results" role="region" aria-label="Director message search results">
@@ -378,15 +401,29 @@ function DirectorSearchResults({ search, directorName }: { search: { query: stri
           No director message across any task contains “{query}”.
         </div>
       )}
-      {results.map((m) => (
-        <div key={m.id} className={"ds-result " + m.role}>
-          <div className="ds-meta">
-            <span className="ds-role">{m.role === "user" ? "you" : directorName}</span>
-            <span className="ds-date">{resultDate(m.createdAt)}</span>
+      {results.map((m) => {
+        const task = m.threadId ? threads[m.threadId] : undefined;
+        return (
+          <div key={m.id} className={"ds-result " + m.role}>
+            <div className="ds-meta">
+              <span className="ds-role">{m.role === "user" ? "you" : directorName}</span>
+              <span className="ds-date">{resultDate(m.createdAt)}</span>
+            </div>
+            <div className="ds-snippet">{highlightSnippet(m.content, query)}</div>
+            {task ? (
+              <button type="button" className="ds-goto" title={`Open task “${task.title}”`} onClick={() => onGoToTask(m.threadId!)}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M7 17 17 7" />
+                  <path d="M8 7h9v9" />
+                </svg>
+                <span className="ds-goto-title">{task.title}</span>
+              </button>
+            ) : m.threadId ? (
+              <span className="ds-goto-gone">task no longer exists</span>
+            ) : null}
           </div>
-          <div className="ds-snippet">{highlightSnippet(m.content, query)}</div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

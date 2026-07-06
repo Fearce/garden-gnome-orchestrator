@@ -199,6 +199,11 @@ export interface DirectorMessage {
   kind: MessageKind;
   content: string;
   attachments?: AttachmentRef[];
+  // The task this message's conversation turn dispatched, if any — set when the director (or a
+  // skip-director send) creates a thread, so a search hit can jump to the task it produced. Null for
+  // pure chatter that spawned nothing, and left dangling (task may be gone) rather than cascade-deleted:
+  // the director conversation is durable, so the UI just hides the jump when the thread no longer exists.
+  threadId?: string | null;
   createdAt: number;
 }
 

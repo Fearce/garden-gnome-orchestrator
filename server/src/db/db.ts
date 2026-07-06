@@ -138,6 +138,7 @@ function rowToDirectorMessage(r: Row): DirectorMessage {
     kind: r.kind as DirectorMessage["kind"],
     content: r.content as string,
     attachments: refs.length ? refs : undefined,
+    threadId: (r.thread_id as string | null) ?? null,
     createdAt: r.created_at as number,
   };
 }
@@ -178,6 +179,7 @@ export class Db {
       "ALTER TABLE findings ADD COLUMN kind TEXT NOT NULL DEFAULT 'finding'",
       "ALTER TABLE findings ADD COLUMN path TEXT",
       "ALTER TABLE findings ADD COLUMN label TEXT",
+      "ALTER TABLE director_messages ADD COLUMN thread_id TEXT",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -185,6 +187,26 @@ export class Db {
         /* column already present */
       }
     }
+    this.backfillDirectorThreadLinks();
+  }
+
+  // One-time: attribute each pre-existing director message to the task it led to, so the search's
+  // "go to task" jump works for history dispatched before message→task links were recorded. Heuristic:
+  // link a message to the FIRST task created at/after it (you talk, then a task is dispatched). Messages
+  // with no following task stay null. New messages are linked exactly at dispatch time, so this only ever
+  // needs to run once — the kv flag guards against re-linking genuinely-null new chatter on later boots.
+  private backfillDirectorThreadLinks(): void {
+    if (this.kvGet("director_thread_backfill_v1")) return;
+    this.raw.exec(`
+      UPDATE director_messages
+      SET thread_id = (
+        SELECT t.id FROM threads t
+        WHERE t.created_at >= director_messages.created_at
+        ORDER BY t.created_at ASC LIMIT 1
+      )
+      WHERE thread_id IS NULL
+    `);
+    this.kvSet("director_thread_backfill_v1", "1");
   }
 
   // ---- kv ----
@@ -575,6 +597,17 @@ export class Db {
       )
       .run({ ...m, attachments: JSON.stringify(m.attachments ?? []) });
     return m;
+  }
+
+  /** Link the given director messages to the task their conversation turn dispatched, so a search hit
+   *  can jump to it. Only fills still-unlinked rows (thread_id IS NULL), so an earlier dispatch in the
+   *  same turn keeps ownership of the shared lead-up messages when a second task is dispatched after. */
+  linkDirectorMessagesToThread(messageIds: string[], threadId: string): void {
+    if (!messageIds.length) return;
+    const placeholders = messageIds.map(() => "?").join(",");
+    this.raw
+      .prepare(`UPDATE director_messages SET thread_id = ? WHERE thread_id IS NULL AND id IN (${placeholders})`)
+      .run(threadId, ...messageIds);
   }
 
   /** The director conversation (ASC), or — for the connect snapshot — the most recent `limit`

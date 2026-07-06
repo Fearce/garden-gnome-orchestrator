@@ -13,7 +13,11 @@ import { findWorkspaces } from "../workspace/findWorkspace.js";
  * steer live threads. ask_user blocks the tool call until the GUI answers — the
  * runner sets a long CLAUDE_CODE_STREAM_CLOSE_TIMEOUT so that wait is safe.
  */
-export function createDirectorServer(api: OrchestratorApi, getImages: () => ImageAttachment[]): McpServerConfig {
+export function createDirectorServer(
+  api: OrchestratorApi,
+  getImages: () => ImageAttachment[],
+  onDispatch: (threadId: string) => void,
+): McpServerConfig {
   const askUser = tool(
     "ask_user",
     `Ask ${config.ownerName} a clarifying question BEFORE dispatching work, when the request is ambiguous or you're filling a gap they likely forgot to mention. Prefer multiple-choice options when you can; leave options empty for a free-text answer. Blocks until they answer. Don't over-ask — bundle related questions, and only ask what actually changes what you'd dispatch. Keep the question SHORT: a sentence or two of the essential ask, not a wall of text.`,
@@ -92,6 +96,7 @@ export function createDirectorServer(api: OrchestratorApi, getImages: () => Imag
         };
       }
       const id = await api.dispatch({ title: args.title, workspace: args.workspace, brief: args.brief, images: getImages() });
+      onDispatch(id); // link this turn's director messages to the new task so a search hit can jump to it
       return { content: [{ type: "text", text: `Dispatched task ${id} ("${args.title}") in ${args.workspace}.` }] };
     },
   );
