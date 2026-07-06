@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../store.js";
 import type { Question } from "../types.js";
+import { Markdown } from "./Markdown.js";
 
 export function QuestionModal() {
   const questions = useStore((s) => s.questions);
@@ -41,7 +42,7 @@ function QuestionCard({ q, context, onAnswer }: { q: Question; context: string; 
         <div className="m-head">
           <div className="q-context">{q.threadId ? `${context} needs your input` : context}</div>
           <span className="chip">{q.header}</span>
-          <h3>{q.question}</h3>
+          <Markdown className="q-question" text={q.question} />
         </div>
         <div className="m-body">
           {q.options.map((o) => (

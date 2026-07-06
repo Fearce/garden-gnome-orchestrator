@@ -16,10 +16,14 @@ import { findWorkspaces } from "../workspace/findWorkspace.js";
 export function createDirectorServer(api: OrchestratorApi, getImages: () => ImageAttachment[]): McpServerConfig {
   const askUser = tool(
     "ask_user",
-    `Ask ${config.ownerName} a clarifying question BEFORE dispatching work, when the request is ambiguous or you're filling a gap they likely forgot to mention. Prefer multiple-choice options when you can; leave options empty for a free-text answer. Blocks until they answer. Don't over-ask — bundle related questions, and only ask what actually changes what you'd dispatch.`,
+    `Ask ${config.ownerName} a clarifying question BEFORE dispatching work, when the request is ambiguous or you're filling a gap they likely forgot to mention. Prefer multiple-choice options when you can; leave options empty for a free-text answer. Blocks until they answer. Don't over-ask — bundle related questions, and only ask what actually changes what you'd dispatch. Keep the question SHORT: a sentence or two of the essential ask, not a wall of text.`,
     {
       header: z.string().describe("A 1-3 word chip label for the question, e.g. 'Target repo'."),
-      question: z.string().describe("The full question."),
+      question: z
+        .string()
+        .describe(
+          "The question, kept concise — a few short sentences at most. Markdown is rendered (bold, lists, inline/fenced code), so use a code block for a snippet or path rather than inlining it, but don't pad the prose.",
+        ),
       options: z
         .array(z.object({ label: z.string(), description: z.string().optional() }))
         .optional()

@@ -84,10 +84,14 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
 
   const askUser = tool(
     "ask_user",
-    `Ask ${config.ownerName} for help when you hit a blocker only THEY can resolve — a missing file/credential, a needed secret or access, or a decision you can't make yourself. Pauses this task until they answer. Use it EARLY: the moment you identify a hard blocker, ask — do NOT spend turns hunting workarounds for something they can fix in seconds. Prefer multiple-choice options when you can.`,
+    `Ask ${config.ownerName} for help when you hit a blocker only THEY can resolve — a missing file/credential, a needed secret or access, or a decision you can't make yourself. Pauses this task until they answer. Use it EARLY: the moment you identify a hard blocker, ask — do NOT spend turns hunting workarounds for something they can fix in seconds. Prefer multiple-choice options when you can. Keep the question SHORT: lead with the one thing you need, drop background ${config.ownerName} already knows, and aim for a few sentences — a wall of text is harder to answer, not easier.`,
     {
       header: z.string().describe("A 1-3 word chip label, e.g. 'Missing creds'."),
-      question: z.string().describe(`What you need from ${config.ownerName}, with enough context for them to act.`),
+      question: z
+        .string()
+        .describe(
+          `The essential ask, in a few short sentences with just enough context to act — concise, not a wall of text. Markdown is rendered (bold, lists, inline code, fenced code blocks), so use a code block for a command/snippet/path instead of inlining it — but keep prose tight; markdown is for clarity, not length.`,
+        ),
       options: z
         .array(z.object({ label: z.string(), description: z.string().optional() }))
         .optional()

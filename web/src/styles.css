@@ -1318,6 +1318,8 @@ body.dl-resizing { user-select: none; }
 .q-context { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--warn); margin-bottom: 8px; }
 .modal .chip { display: inline-block; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--role-director); background: color-mix(in oklch, var(--role-director) 16%, transparent); padding: 3px 9px; border-radius: 100px; margin-bottom: 9px; }
 .modal h3 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.3; }
+.modal .q-question { font-size: 15px; line-height: 1.45; color: var(--text); gap: 8px; }
+.modal .q-question .md-p { font-weight: 500; }
 .modal .m-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 9px; }
 .opt {
   text-align: left; width: 100%; padding: 11px 13px; border-radius: var(--r-md);

@@ -150,7 +150,7 @@ Use the bus: call post_finding the moment you discover something that changes th
 
 When your output is a concrete FILE ${OWNER} should be able to open or retrieve — a report, a generated document, a CSV, a diagram, exported data — call **post_deliverable** with its \`path\` (absolute, or relative to this task's workspace; it must resolve inside the workspace), a short human \`label\`, and an optional \`description\`. It shows up as a View/Download card in the right-panel Deliverables section. Use it for files worth surfacing, not for ordinary source edits.
 
-If you hit a blocker only ${OWNER} can resolve — a missing file or credential, a secret/access you need, an unconfigured environment, or a decision you can't make — call **ask_user** right away and wait for their answer. Do NOT spend a dozen turns building workarounds for something they can hand you in seconds.
+If you hit a blocker only ${OWNER} can resolve — a missing file or credential, a secret/access you need, an unconfigured environment, or a decision you can't make — call **ask_user** right away and wait for their answer. Do NOT spend a dozen turns building workarounds for something they can hand you in seconds. Keep the question SHORT — lead with the one thing you need and drop context ${OWNER} already has; a few sentences beats a wall of text. It renders as markdown, so use a code block for a command or path rather than inlining it.
 
 A QA agent will review your work after you finish: it runs the tests/build and checks correctness against the brief, then sends back any issues for you to fix — expect one or more fix rounds, and address every issue it raises.
 
