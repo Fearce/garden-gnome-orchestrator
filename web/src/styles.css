@@ -49,6 +49,7 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   letter-spacing: -0.006em;
+  overflow: hidden;
 }
 
 button { font-family: inherit; cursor: pointer; }
@@ -57,8 +58,22 @@ button { font-family: inherit; cursor: pointer; }
 ::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 8px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-thumb:hover { background: var(--line-strong); }
 
+@supports (height: 100dvh) {
+  html, body, #root { height: 100dvh; }
+}
+
 /* ---- layout ---- */
-.app { display: grid; grid-template-rows: 52px 1fr; height: 100%; }
+.app {
+  display: grid;
+  grid-template-rows: 52px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@supports (height: 100dvh) {
+  .app { height: 100dvh; }
+}
 
 .topbar {
   display: flex; align-items: center; gap: 16px;
@@ -271,7 +286,13 @@ button { font-family: inherit; cursor: pointer; }
 }
 .card-chatroom:hover { background: color-mix(in oklch, var(--accent) 20%, transparent); }
 
-.workbench { display: grid; grid-template-columns: var(--rail-w, 384px) 1fr; min-height: 0; }
+.workbench {
+  display: grid;
+  grid-template-columns: var(--rail-w, 384px) 1fr;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
 .workbench.detail-open { grid-template-columns: var(--rail-w, 384px) minmax(320px, 1fr) var(--detail-w, 480px); }
 /* Desktop-only: hiding the director rail + resizable detail — kept out of the mobile
    single-pane layout (which overrides .workbench at max-width:768px) via min-width. */
@@ -282,7 +303,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 
 /* ---- director rail ---- */
-.rail { position: relative; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--bg-1); }
+.rail { position: relative; display: flex; flex-direction: column; min-height: 0; overflow: hidden; border-right: 1px solid var(--line); background: var(--bg-1); }
 .rail-head { padding: 13px 16px 10px; border-bottom: 1px solid var(--line); }
 .rail-head h2 { margin: 0; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); font-weight: 600; }
 .rail-head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px 14px; flex-wrap: wrap; }
@@ -741,7 +762,7 @@ button { font-family: inherit; cursor: pointer; }
 .sub-model-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); }
 
 /* ---- board ---- */
-.board { overflow-y: auto; padding: 18px; min-height: 0; }
+.board { display: flex; flex-direction: column; overflow-y: auto; padding: 18px; min-height: 0; }
 .board-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
 .board-head h2 { margin: 0; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); font-weight: 600; }
 .board-head-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
@@ -1001,7 +1022,7 @@ button { font-family: inherit; cursor: pointer; }
 .feed-filter .fchip .fchip-time { font-size: 9px; opacity: 0.6; font-variant-numeric: tabular-nums; }
 
 /* ---- detail panel ---- */
-.detail { position: relative; border-left: 1px solid var(--line); background: var(--bg-1); display: flex; flex-direction: column; min-height: 0; }
+.detail { position: relative; border-left: 1px solid var(--line); background: var(--bg-1); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .resize-handle { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px; z-index: 6; cursor: col-resize; }
 .resize-handle::after { content: ""; position: absolute; left: 2px; top: 0; bottom: 0; width: 2px; background: transparent; transition: background 0.12s; }
 .resize-handle:hover::after { background: var(--accent); }
@@ -1013,6 +1034,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .detail-head .top { display: flex; align-items: start; gap: 10px; justify-content: space-between; }
 .detail-head h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.25; }
 .detail-head .meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+.detail-title-actions { display: flex; gap: 8px; align-items: center; }
 /* Plain window-style close: borderless X in the top-right of the detail panel. */
 .close-x {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
@@ -1263,6 +1285,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .hljs-strong { font-weight: 600; }
 
 .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-faint); gap: 8px; text-align: center; padding: 30px; }
+.board > .empty { flex: 1; height: auto; min-height: 0; }
 .empty .big { font-family: var(--font-serif); font-style: italic; font-size: 22px; color: var(--text-dim); }
 
 /* ---- question modal ---- */
@@ -1357,7 +1380,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
    ============================================================ */
 @media (max-width: 768px) {
   /* topbar (auto, wraps) · workbench (1fr) · bottom nav (auto) */
-  .app { grid-template-rows: auto 1fr auto; }
+  .app { grid-template-rows: auto minmax(0, 1fr) auto; }
 
   /* topbar wraps to two rows: brand + controls, then a full-width
      horizontally-scrollable accounts strip that never widens the viewport. */
@@ -1385,13 +1408,16 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   .settings-pop { position: static; top: auto; right: auto; margin-top: 12px; width: calc(100vw - 24px); }
 
   /* single pane, toggled by the .pane-* class on the workbench */
-  .workbench, .workbench.detail-open { grid-template-columns: 1fr; }
+  .workbench, .workbench.detail-open { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); }
   .workbench.pane-director .board { display: none; }
   .workbench.pane-board .rail { display: none; }
   .rail { border-right: none; }
 
   /* detail becomes a full-screen overlay; its existing ✕ closes it */
-  .detail { position: fixed; inset: 0; z-index: 40; border-left: none; }
+  .detail { position: fixed; inset: 0; z-index: 40; height: 100%; border-left: none; }
+  @supports (height: 100dvh) {
+    .detail { height: 100dvh; }
+  }
   .inject-bar { padding-bottom: calc(11px + env(safe-area-inset-bottom)); }
 
   /* Sticky header so the close control stays reachable while the feed scrolls,
@@ -1399,6 +1425,16 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   .detail-head {
     position: sticky; top: 0; z-index: 1; background: var(--bg-1);
     padding-top: calc(13px + env(safe-area-inset-top));
+  }
+  .detail-head .top {
+    position: relative; display: block; padding-right: 52px;
+  }
+  .detail-title-actions {
+    margin-top: 8px; flex-wrap: wrap; align-items: center;
+  }
+  .detail-title-actions .task-elapsed { display: none; }
+  .detail-title-actions .close-x {
+    position: absolute; top: 0; right: 0;
   }
   /* Long titles wrap instead of shoving the close button off-screen. */
   .detail-head .top > div:first-child { min-width: 0; }
@@ -1423,6 +1459,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
     display: flex; border-top: 1px solid var(--line);
     background: linear-gradient(to top, var(--bg-1), var(--bg));
     padding-bottom: env(safe-area-inset-bottom);
+    flex: 0 0 auto;
   }
   .mnav-btn {
     flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;

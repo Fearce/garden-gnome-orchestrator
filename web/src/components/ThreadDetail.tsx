@@ -290,7 +290,7 @@ export function ThreadDetail() {
             <h2>{thread.title}</h2>
             <div className="meta">{thread.workspace}</div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div className="detail-title-actions">
             <Elapsed
               className="task-elapsed"
               startMs={thread.createdAt}
