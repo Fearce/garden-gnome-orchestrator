@@ -190,23 +190,43 @@ export class Db {
     this.backfillDirectorThreadLinks();
   }
 
-  // One-time: attribute each pre-existing director message to the task it led to, so the search's
-  // "go to task" jump works for history dispatched before message→task links were recorded. Heuristic:
-  // link a message to the FIRST task created at/after it (you talk, then a task is dispatched). Messages
-  // with no following task stay null. New messages are linked exactly at dispatch time, so this only ever
-  // needs to run once — the kv flag guards against re-linking genuinely-null new chatter on later boots.
+  // One-time: attribute each pre-existing director message to the task its turn dispatched, so the
+  // search's "go to task" jump works for history recorded before message→task links existed. New messages
+  // are linked exactly at dispatch time (Director), so this only backfills the past. The rule is
+  // ROLE-AWARE, because a prompt and a note sit on opposite sides of the dispatch — and it only links
+  // when it's CONFIDENT, leaving everything else null (no chip) rather than inventing a wrong jump target:
+  //   - a USER prompt reliably precedes its dispatch → the FIRST task created at/after it.
+  //   - a DIRECTOR note is only confidently a DISPATCH CONFIRMATION when a task was created in the short
+  //     window just BEFORE it (the "dispatched X" note is written right after api.dispatch returns) → link
+  //     to that task. Enrichment replies, clarifying questions and error notices have no task in that
+  //     window → they stay null. (This is the fix for the v1 bug, where a single at/after rule sent every
+  //     confirmation to the FOLLOWING task, and an unguarded nearest-task rule mislinked every non-dispatch
+  //     director note to a neighbouring task.)
+  // It recomputes EVERY row (not just nulls) because v1 already wrote wrong links into existing DBs that
+  // must be corrected; the corrected director rule only ever yields the confirmation's own task or null,
+  // so it can't produce a wrong jump target. The v2 flag guards against re-running.
   private backfillDirectorThreadLinks(): void {
-    if (this.kvGet("director_thread_backfill_v1")) return;
-    this.raw.exec(`
-      UPDATE director_messages
-      SET thread_id = (
-        SELECT t.id FROM threads t
-        WHERE t.created_at >= director_messages.created_at
-        ORDER BY t.created_at ASC LIMIT 1
+    if (this.kvGet("director_thread_backfill_v2")) return;
+    const CONFIRMATION_WINDOW_MS = 15000;
+    this.raw
+      .prepare(
+        `UPDATE director_messages
+         SET thread_id = CASE director_messages.role
+           WHEN 'user' THEN (
+             SELECT t.id FROM threads t
+             WHERE t.created_at >= director_messages.created_at
+             ORDER BY t.created_at ASC LIMIT 1
+           )
+           ELSE (
+             SELECT t.id FROM threads t
+             WHERE t.created_at <= director_messages.created_at
+               AND director_messages.created_at - t.created_at <= ?
+             ORDER BY t.created_at DESC LIMIT 1
+           )
+         END`,
       )
-      WHERE thread_id IS NULL
-    `);
-    this.kvSet("director_thread_backfill_v1", "1");
+      .run(CONFIRMATION_WINDOW_MS);
+    this.kvSet("director_thread_backfill_v2", "1");
   }
 
   // ---- kv ----
