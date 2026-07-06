@@ -115,6 +115,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     case "thread.retry":
       await ctx.manager.retryThread(cmd.threadId);
       break;
+    case "thread.rename":
+      ctx.manager.renameThread(cmd.threadId, cmd.title);
+      break;
     case "thread.markDone":
       await ctx.manager.markDone(cmd.threadId);
       break;

@@ -342,6 +342,7 @@ export type ClientCommand =
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.cancel"; threadId: string }
   | { type: "thread.retry"; threadId: string }
+  | { type: "thread.rename"; threadId: string; title: string }
   | { type: "thread.markDone"; threadId: string }
   | { type: "thread.close"; threadId: string }
   | { type: "thread.restore"; threadId: string }

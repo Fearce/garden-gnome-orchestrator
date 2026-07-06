@@ -1074,6 +1074,15 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .detail-head .top { display: flex; align-items: start; gap: 10px; justify-content: space-between; }
 .detail-head h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.25; }
 .detail-head .meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+/* Click-to-rename title: the h2 keeps its size, the pencil fades in on hover as the affordance. */
+.editable-title { display: inline-flex; align-items: baseline; gap: 7px; cursor: text; border-radius: 5px; }
+.editable-title:hover .editable-title-text { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.title-edit-hint { align-self: center; display: inline-flex; color: var(--text-faint); opacity: 0; transition: opacity 0.12s ease; }
+.editable-title:hover .title-edit-hint { opacity: 0.85; }
+.title-edit {
+  margin: 0; width: 100%; box-sizing: border-box; font: inherit; font-size: 16px; font-weight: 600; line-height: 1.25;
+  color: var(--text); background: var(--bg-2); border: 1px solid var(--accent); border-radius: 6px; padding: 3px 7px; outline: none;
+}
 .detail-title-actions { display: flex; gap: 8px; align-items: center; }
 /* Plain window-style close: borderless X in the top-right of the detail panel. */
 .close-x {
