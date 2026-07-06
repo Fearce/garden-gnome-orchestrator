@@ -5,6 +5,7 @@ import hljs from "highlight.js/lib/common";
 import type { Finding } from "../types.js";
 import { apiUrl } from "../lib/base.js";
 import { FileIcon, fileKindOf, basenameOf, type FileKind } from "./FileIcon.js";
+import { useResizableModal } from "./useResizableModal.js";
 
 // The deliverable preview modal and its per-type renderers. Split into its own module so the heavy
 // markdown/highlight.js deps load lazily (on first View) instead of weighing down the main bundle.
@@ -13,9 +14,10 @@ export default function DeliverableModal({ d, onClose }: { d: Finding; onClose: 
   const path = d.path ?? "";
   const name = basenameOf(path);
   const kind = fileKindOf(name);
+  const { ref, style, startResize, reset } = useResizableModal();
   return (
     <div className="scrim" onClick={onClose}>
-      <div className="modal deliverable" onClick={(e) => e.stopPropagation()}>
+      <div className="modal deliverable" ref={ref} style={style} onClick={(e) => e.stopPropagation()}>
         <div className="m-head dl-modal-head">
           <div className="dl-modal-title">
             <FileIcon kind={kind} size={20} />
@@ -38,6 +40,14 @@ export default function DeliverableModal({ d, onClose }: { d: Finding; onClose: 
         <div className="deliverable-body">
           <DeliverablePreview id={d.id} name={name} kind={kind} />
         </div>
+        <div className="dl-resize dl-resize-r" onPointerDown={(e) => startResize(e, 1, 0)} title="Drag to resize" />
+        <div className="dl-resize dl-resize-b" onPointerDown={(e) => startResize(e, 0, 1)} title="Drag to resize" />
+        <div
+          className="dl-resize dl-resize-br"
+          onPointerDown={(e) => startResize(e, 1, 1)}
+          onDoubleClick={reset}
+          title="Drag to resize · double-click to reset"
+        />
       </div>
     </div>
   );

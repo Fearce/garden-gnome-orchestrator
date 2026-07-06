@@ -1224,7 +1224,18 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .dl-pop-actions { display: flex; gap: 5px; margin-top: 3px; }
 .dl-pop-actions a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 
-.modal.deliverable { width: min(900px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+.modal.deliverable { position: relative; width: min(900px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+.dl-resize { position: absolute; z-index: 5; touch-action: none; }
+.dl-resize-r { top: 8px; bottom: 12px; right: 0; width: 7px; cursor: ew-resize; }
+.dl-resize-b { left: 12px; right: 12px; bottom: 0; height: 7px; cursor: ns-resize; }
+.dl-resize-br { right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; z-index: 6; }
+.dl-resize-br::after {
+  content: ""; position: absolute; right: 4px; bottom: 4px; width: 8px; height: 8px;
+  border-right: 2px solid var(--line-strong); border-bottom: 2px solid var(--line-strong);
+  border-bottom-right-radius: 3px; opacity: 0.45; transition: opacity 0.15s ease;
+}
+.modal.deliverable:hover .dl-resize-br::after { opacity: 0.85; }
+body.dl-resizing { user-select: none; }
 .dl-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .dl-modal-title { display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--accent); }
 .dl-modal-title h3 { line-height: 1.25; }
