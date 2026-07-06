@@ -247,6 +247,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   openaiKeyLast4: null,
   codexChatgptLogin: false,
   skipDirector: false,
+  skipDirectorRetitle: true,
   maxRecentRepos: 5,
   recentRepos: [],
   modelOverrides: {},

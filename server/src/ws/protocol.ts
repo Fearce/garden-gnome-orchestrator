@@ -141,6 +141,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         openaiApiKey: z.string().max(300),
         // Composer state, persisted server-side so it survives across the HTTP/HTTPS surfaces.
         skipDirector: z.boolean(),
+        skipDirectorRetitle: z.boolean(),
         maxRecentRepos: z.number().int().min(1).max(20),
         recentRepos: z.array(z.string().max(600)).max(50),
         // Per-(subscription × role) model picks: {subId → {role → modelId}}. Role keys are the five valid

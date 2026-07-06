@@ -13,7 +13,7 @@ import { createBusServer } from "../bus/busServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
-import { titleFromInjection } from "./titleFromInjection.js";
+import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { config } from "../config.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -638,6 +638,7 @@ export class ThreadManager implements OrchestratorApi {
       openaiKeyLast4: key && key.length >= 4 ? key.slice(-4) : null,
       codexChatgptLogin: chatgptLoginAvailable(),
       skipDirector: this.settingBool("setting_skip_director", false),
+      skipDirectorRetitle: this.settingBool("setting_skip_director_retitle", true),
       maxRecentRepos: this.settingNum("setting_max_recent_repos", 5, 1, 20),
       recentRepos: this.recentRepos(),
       modelOverrides: this.modelOverrides(),
@@ -787,6 +788,7 @@ export class ThreadManager implements OrchestratorApi {
       void this.modelCatalog.refresh();
     }
     if (patch.skipDirector !== undefined) this.db.kvSet("setting_skip_director", patch.skipDirector ? "1" : "0");
+    if (patch.skipDirectorRetitle !== undefined) this.db.kvSet("setting_skip_director_retitle", patch.skipDirectorRetitle ? "1" : "0");
     if (patch.maxRecentRepos !== undefined) this.db.kvSet("setting_max_recent_repos", String(patch.maxRecentRepos));
     // Recent repos: de-dupe (most-recent first), drop blanks, and cap at the current max before persisting
     // so the stored list can never outgrow the display cap regardless of what a client sends.
@@ -2210,17 +2212,28 @@ export class ThreadManager implements OrchestratorApi {
    *  a ≤8-word Haiku summary), then broadcast the rename so the lane updates live. Best-effort: any
    *  failure is swallowed and the title simply stays as-is — this must never disturb the inject path. */
   private async retitleFromInjection(threadId: string, message: string): Promise<void> {
+    await this.applyRetitle(threadId, await titleFromInjection(message, this.accounts.auxToken()).catch(() => null), "injection");
+  }
+
+  /** Give a skip-director task a real board title (short → verbatim, longer → a ≤8-word Haiku summary)
+   *  in place of the truncated first line it was dispatched with. Best-effort and fired after dispatch,
+   *  so it never blocks the pipeline; gated by the skipDirectorRetitle setting at the call site. */
+  async retitleFromBrief(threadId: string, brief: string): Promise<void> {
+    await this.applyRetitle(threadId, await titleFromBrief(brief, this.accounts.auxToken()).catch(() => null), "brief");
+  }
+
+  /** Apply a best-effort auto-generated title (or null to leave it as-is) and broadcast the rename. */
+  private applyRetitle(threadId: string, title: string | null, reason: string): void {
     try {
-      const title = await titleFromInjection(message, this.accounts.auxToken());
       if (!title) return;
       const current = this.db.getThread(threadId);
       if (!current || current.title === title) return; // gone, or no change — skip the churn
       const t = this.db.updateThread(threadId, { title });
       if (!t) return;
       this.hub.publish({ type: "thread.upsert", thread: t });
-      this.hub.log("info", `Retitled ${threadId.slice(0, 8)} from injection → "${title}"`);
+      this.hub.log("info", `Retitled ${threadId.slice(0, 8)} from ${reason} → "${title}"`);
     } catch (e) {
-      this.hub.log("warn", `Auto-retitle failed for ${threadId.slice(0, 8)}: ${String(e)}`);
+      this.hub.log("warn", `Auto-retitle (${reason}) failed for ${threadId.slice(0, 8)}: ${String(e)}`);
     }
   }
 

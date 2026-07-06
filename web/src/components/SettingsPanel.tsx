@@ -93,9 +93,15 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         </Group>
 
         <Group label="Composer">
+          <ToggleRow
+            label="Name skipped tasks with Haiku"
+            hint="When the director is skipped, mint a concise task title with one cheap Haiku call instead of using the raw first line. Off: keep the verbatim first line and spend zero extra tokens."
+            on={settings.skipDirectorRetitle}
+            onChange={(v) => setSettings({ skipDirectorRetitle: v })}
+          />
           <NumberRow
             label="Recent repo chips"
-            hint="How many recent-repo shortcuts show under the composer. The list and the skip-director toggle persist server-side, so they survive a reload on any surface."
+            hint="How many recent-repo shortcuts show under the composer. The list and the skip-director toggles persist server-side, so they survive a reload on any surface."
             value={settings.maxRecentRepos}
             min={1}
             max={20}

@@ -104,6 +104,10 @@ export class Director {
     const title = directTitle(text);
     const id = await this.api.dispatch({ title, workspace: ws, brief: text, images });
     this.postDirectorNote(`Skipped the director — dispatched "${title}" straight to the pipeline (task ${id.slice(0, 8)}).`);
+    // Without the director there's no one to name the task, so the lane would show only the raw first
+    // line. Mint a proper title with a cheap Haiku call after dispatch (best-effort, never blocks the
+    // pipeline) — unless the owner turned it off to save those tokens.
+    if (this.api.settings().skipDirectorRetitle) void this.api.retitleFromBrief(id, text);
   }
 
   private postDirectorNote(content: string): void {

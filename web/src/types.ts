@@ -247,6 +247,7 @@ export interface OrchestratorSettings {
   // Composer state persisted server-side (survives across the HTTP/HTTPS surfaces, which don't share
   // localStorage): the skip-director mode, the recent-repo chip cap, and the recent-repo list itself.
   skipDirector: boolean;
+  skipDirectorRetitle: boolean; // when skip-director is on, mint a real title via a cheap Haiku call instead of the raw first line
   maxRecentRepos: number;
   recentRepos: string[];
   // Per-(subscription × role) model picks. See ModelOverrides. modelDefaults/claudeModels/codexModels
