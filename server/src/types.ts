@@ -109,6 +109,17 @@ export type MessageKind = "text" | "tool" | "result" | "system";
  *  per-repository room agents form when 2+ of them work the same workspace concurrently. */
 export type ChatScope = "general" | "project";
 
+/** A keyset cursor into a room's history: fetch the page of messages strictly older than this
+ *  (created_at, id) pair. Mirrored in web/src/types.ts. */
+export interface ChatCursor {
+  createdAt: number;
+  id: string;
+}
+
+/** How many chat messages one history page holds — the initial chatroom open and each scroll-up
+ *  load fetch this many, instead of the whole (potentially months-long) room at once. */
+export const CHAT_PAGE_SIZE = 50;
+
 /** One message in the office. Sent by an agent run (role/threadId/runId set) or by the orchestrator
  *  itself (kind 'system' — e.g. the notice posted when a project group forms). `room` is the durable
  *  key: "general", or "repo:<normalized-workspace>" for a project room. */

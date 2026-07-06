@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
 import type { ChatMessage, Role } from "../types.js";
-import { agentName, GENERAL_ROOM, normalizeWorkspace, repoRoom } from "../types.js";
+import { agentName, CHAT_PAGE_SIZE, GENERAL_ROOM, normalizeWorkspace, repoRoom } from "../types.js";
 import { clock, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
@@ -215,24 +215,68 @@ function OfficePanel() {
   const rooms = useStore((s) => s.chatRooms);
   const chat = useStore((s) => s.chat);
   const roomHistory = useStore((s) => s.roomHistory);
+  const roomHasMore = useStore((s) => s.roomHasMore);
+  const roomLoading = useStore((s) => s.roomLoading);
+  const loadMoreRoom = useStore((s) => s.loadMoreRoom);
   const threads = useStore((s) => s.threads);
   const nameOverrides = useStore((s) => s.nameOverrides);
   const directorName = useStore((s) => s.settings.directorName);
   const postChat = useStore((s) => s.postChat);
   const [draft, setDraft] = useState("");
 
-  // Full history if it's been fetched; otherwise fall back to the recent cross-room slice we hold.
+  // Loaded pages if any have been fetched; otherwise a placeholder from the recent cross-room slice we
+  // hold — capped to one page's worth so the initial view already matches the first fetched page (no
+  // shrink flash when the real newest page replaces a larger snapshot slice). Kept ASC.
   const messages = useMemo(() => {
     const loaded = roomHistory[officeRoom];
-    const base = loaded ?? chat.filter((m) => m.room === officeRoom);
-    return [...base].sort((a, b) => a.createdAt - b.createdAt);
+    const sorted = [...(loaded ?? chat.filter((m) => m.room === officeRoom))].sort((a, b) => a.createdAt - b.createdAt);
+    return loaded ? sorted : sorted.slice(-CHAT_PAGE_SIZE);
   }, [roomHistory, chat, officeRoom]);
 
+  const hasMore = roomHasMore[officeRoom] ?? false;
+  const loading = roomLoading[officeRoom] ?? false;
+
   const bodyRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
+  // Bottom-stick + prepend anchoring. When older messages load in above, the scroll position must hold
+  // on the same content (else the view yanks up); when a new message arrives at the bottom (or the room
+  // first opens) we follow it — but only if the user was already near the bottom, so scrolling up to read
+  // history isn't fought by every incoming line.
+  const stickBottom = useRef(true);
+  const prevRoom = useRef(officeRoom);
+  const prevFirstId = useRef<string | undefined>(undefined);
+  const prevScrollHeight = useRef(0);
+
+  useLayoutEffect(() => {
     const el = bodyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length, officeRoom]);
+    if (!el) return;
+    const firstId = messages[0]?.id;
+    const roomChanged = prevRoom.current !== officeRoom;
+    // A true older-page prepend keeps the previous top message in the list (older rows added above it).
+    // If the previous top is gone, the list was trimmed/replaced from the top (e.g. the initial snapshot
+    // placeholder giving way to the real newest page) — that must NOT be anchored, or it fights the bottom.
+    const prevTopStillPresent = prevFirstId.current !== undefined && messages.some((m) => m.id === prevFirstId.current);
+    const prepended = !roomChanged && firstId !== prevFirstId.current && prevTopStillPresent;
+
+    if (roomChanged) {
+      el.scrollTop = el.scrollHeight; // fresh room: land at the newest message
+      stickBottom.current = true;
+    } else if (prepended) {
+      el.scrollTop += el.scrollHeight - prevScrollHeight.current; // hold position across the older page
+    } else if (stickBottom.current) {
+      el.scrollTop = el.scrollHeight; // new bottom message and we were following along
+    }
+
+    prevRoom.current = officeRoom;
+    prevFirstId.current = firstId;
+    prevScrollHeight.current = el.scrollHeight;
+  }, [messages, officeRoom]);
+
+  const onScroll = () => {
+    const el = bodyRef.current;
+    if (!el) return;
+    stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    if (el.scrollTop < 80 && hasMore && !loading) loadMoreRoom(officeRoom);
+  };
 
   // Project rooms (≥2 participants) are the real collaborations worth a tab; the general room is always shown.
   const projectRooms = rooms.filter((r) => r.threadIds.length >= 2);
@@ -273,7 +317,12 @@ function OfficePanel() {
             ? "The general office — every active agent can talk here."
             : "Project room — agents sharing this repository coordinate here."}
         </div>
-        <div className="office-msgs" ref={bodyRef}>
+        {/* The "earlier messages" hint sits OUTSIDE the scroll container so its mount/unmount (when the
+            room becomes fully loaded) never shifts the scroll anchor mid-prepend. */}
+        {hasMore ? (
+          <div className="office-more">{loading ? "Loading earlier messages…" : "Scroll up for earlier messages"}</div>
+        ) : null}
+        <div className="office-msgs" ref={bodyRef} onScroll={onScroll}>
           {messages.length === 0 ? (
             <div className="office-empty">No messages yet{officeRoom === GENERAL_ROOM ? "" : " — they just grouped up"}.</div>
           ) : (

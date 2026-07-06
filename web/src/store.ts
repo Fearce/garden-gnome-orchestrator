@@ -93,6 +93,11 @@ interface State {
   chat: ChatMessage[];
   chatRooms: ChatRoomSummary[];
   roomHistory: Record<string, ChatMessage[]>;
+  // Per-room lazy-load state for the expanded chatroom: whether still-older messages exist to fetch as
+  // the user scrolls up, and whether a page request is currently in flight (so a burst of scroll events
+  // doesn't fire duplicate fetches). Absent room => not yet loaded / unknown.
+  roomHasMore: Record<string, boolean>;
+  roomLoading: Record<string, boolean>;
   // Assigned/picked office names keyed by agentKey(thread, role) — each role is a distinct agent; the
   // default for an unlisted agent is gnomeName(thread, role). Resolve via agentName().
   nameOverrides: Record<string, string>;
@@ -134,8 +139,11 @@ interface State {
   toggleRail: () => void;
   setDetailWidth: (px: number) => void;
   setDirectorWidth: (px: number) => void;
-  // Open the office panel on a room (defaults to the general room); fetches that room's full history.
+  // Open the office panel on a room (defaults to the general room); fetches that room's newest page.
   openOffice: (room?: string) => void;
+  // Fetch the next-older page of a room's history (called as the user scrolls toward the top). No-op if a
+  // page is already loading or the room has no older messages left.
+  loadMoreRoom: (room: string) => void;
   closeOffice: () => void;
   // Post into a room as the director (the human) — reaches the live agents there so they self-coordinate.
   postChat: (room: string, body: string) => void;
@@ -302,8 +310,14 @@ function clearTimers(): void {
   watchdog = null;
 }
 
-function sendCommand(cmd: ClientCommand): void {
-  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(cmd));
+/** Returns whether the command actually went out — callers with optimistic in-flight state (e.g. the
+ *  chatroom's per-room loading flag) roll back when the socket was closed and the send was dropped. */
+function sendCommand(cmd: ClientCommand): boolean {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(cmd));
+    return true;
+  }
+  return false;
 }
 
 export const useStore = create<State>((set) => ({
@@ -347,6 +361,8 @@ export const useStore = create<State>((set) => ({
   chat: [],
   chatRooms: [],
   roomHistory: {},
+  roomHasMore: {},
+  roomLoading: {},
   nameOverrides: {},
   officeRoom: null,
   notice: null,
@@ -447,8 +463,21 @@ export const useStore = create<State>((set) => ({
   },
   openOffice: (room) => {
     const r = room ?? GENERAL_ROOM;
-    set({ officeRoom: r });
-    sendCommand({ type: "chat.history", room: r }); // pull the room's full history for the expanded view
+    // Fresh open pulls just the newest page; older messages load on demand as the user scrolls up. Only
+    // arm the loading flag if the request actually went out — a dropped send (socket down) leaves it clear
+    // so a stuck flag can't permanently disable scroll-up for the room.
+    const sent = sendCommand({ type: "chat.history", room: r });
+    set((s) => ({ officeRoom: r, roomLoading: { ...s.roomLoading, [r]: sent } }));
+  },
+  loadMoreRoom: (room) => {
+    const s = useStore.getState();
+    if (s.roomLoading[room] || s.roomHasMore[room] === false) return;
+    const hist = s.roomHistory[room];
+    const oldest = hist && hist.length ? hist[0] : undefined;
+    // No history yet means the initial open is still pending — that fetch covers this.
+    if (!oldest) return;
+    const sent = sendCommand({ type: "chat.history", room, before: { createdAt: oldest.createdAt, id: oldest.id } });
+    if (sent) set({ roomLoading: { ...s.roomLoading, [room]: true } });
   },
   closeOffice: () => set({ officeRoom: null }),
   postChat: (room, body) => {
@@ -586,10 +615,14 @@ function applyEvent(ev: ServerEvent): void {
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
       useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}) });
+      // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
+      // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
+      useStore.setState({ roomLoading: {} });
       // If the office panel is open, re-pull the open room so it reflects anything that streamed
       // while the socket was gone (mirrors the thread.history re-fetch above).
       const openRoom = useStore.getState().officeRoom;
-      if (openRoom) sendCommand({ type: "chat.history", room: openRoom });
+      if (openRoom && sendCommand({ type: "chat.history", room: openRoom }))
+        useStore.setState((s) => ({ roomLoading: { ...s.roomLoading, [openRoom]: true } }));
       // hello also fires on WS reconnect (server restart / network blip). The feed kept its
       // pre-disconnect items but missed anything that streamed while we were gone — re-fetch
       // the open thread's history; the id-keyed merge fills the gap without dropping live items.
@@ -607,12 +640,17 @@ function applyEvent(ev: ServerEvent): void {
       useStore.setState((s) => {
         const chat = [...s.chat, ev.message];
         const capped = chat.length > CHAT_CAP ? chat.slice(chat.length - CHAT_CAP) : chat;
-        // Append to the open room's loaded history too, so a live message shows without a re-fetch.
-        // Capped per-room so a long-open, chatty room can't grow this slice without bound.
-        const hist = s.roomHistory[ev.message.room];
+        // Append to a room's loaded history too, so a live message shows without a re-fetch. Trim the
+        // oldest to bound a chatty room — but NOT the room the panel is currently showing: the user may
+        // have scrolled up and paginated older pages in, and clipping the top would both drop that loaded
+        // history and shove the load-more cursor (roomHistory[room][0]) forward, re-fetching what was
+        // clipped. A background room isn't being scrolled, so capping it is safe (re-open refetches).
+        const room = ev.message.room;
+        const hist = s.roomHistory[room];
         const grown = hist ? [...hist, ev.message] : undefined;
+        const trimmable = room !== s.officeRoom && grown && grown.length > ROOM_CAP;
         const roomHistory = grown
-          ? { ...s.roomHistory, [ev.message.room]: grown.length > ROOM_CAP ? grown.slice(grown.length - ROOM_CAP) : grown }
+          ? { ...s.roomHistory, [room]: trimmable ? grown.slice(grown.length - ROOM_CAP) : grown }
           : s.roomHistory;
         return { chat: capped, chatRooms: upsertRoom(s.chatRooms, ev.message), roomHistory };
       });
@@ -623,11 +661,16 @@ function applyEvent(ev: ServerEvent): void {
     case "chat.history":
       // Merge by id rather than replace: a live chat.message for this room can land between the
       // chat.history request and its reply, and a blind replace would drop it until the next message.
+      // This same merge serves both the initial newest page and each older scroll-up page.
       useStore.setState((s) => {
         const ids = new Set(ev.messages.map((m) => m.id));
         const extra = (s.roomHistory[ev.room] ?? []).filter((m) => !ids.has(m.id));
         const merged = [...ev.messages, ...extra].sort((a, b) => a.createdAt - b.createdAt);
-        return { roomHistory: { ...s.roomHistory, [ev.room]: merged } };
+        return {
+          roomHistory: { ...s.roomHistory, [ev.room]: merged },
+          roomHasMore: { ...s.roomHasMore, [ev.room]: ev.hasMore },
+          roomLoading: { ...s.roomLoading, [ev.room]: false },
+        };
       });
       break;
     case "plan.ready":

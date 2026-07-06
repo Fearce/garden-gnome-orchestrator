@@ -7,6 +7,7 @@ import type {
   AgentRun,
   AgentRunState,
   AttachmentRef,
+  ChatCursor,
   ChatMessage,
   ChatRoomSummary,
   ChatScope,
@@ -696,6 +697,28 @@ export class Db {
       ? (this.raw.prepare("SELECT * FROM chat_messages WHERE room = ? ORDER BY created_at DESC LIMIT ?").all(room, limit) as Row[]).reverse()
       : (this.raw.prepare("SELECT * FROM chat_messages WHERE room = ? ORDER BY created_at ASC").all(room) as Row[]);
     return rows.map(rowToChat);
+  }
+
+  /** One page of a room's history for the lazily-loaded chatroom view. Without `before` this returns the
+   *  most recent `limit` messages; with a `before` cursor it returns the `limit` messages immediately
+   *  older than that cursor. Always ASC. `hasMore` says whether still-older messages exist beyond this
+   *  page, so the client knows when to stop fetching as the user scrolls up. Keyset-paginated on
+   *  (created_at, id) — id (a UUID) is the deterministic tie-break within a millisecond, so no message is
+   *  skipped or duplicated at a page boundary even when several land in the same tick. */
+  listRoomMessagePage(room: string, limit: number, before?: ChatCursor): { messages: ChatMessage[]; hasMore: boolean } {
+    const probe = limit + 1; // fetch one extra to detect whether older messages remain
+    const rows = before
+      ? (this.raw
+          .prepare(
+            `SELECT * FROM chat_messages
+             WHERE room = ? AND (created_at < @createdAt OR (created_at = @createdAt AND id < @id))
+             ORDER BY created_at DESC, id DESC LIMIT @probe`,
+          )
+          .all(room, { createdAt: before.createdAt, id: before.id, probe }) as Row[])
+      : (this.raw.prepare("SELECT * FROM chat_messages WHERE room = ? ORDER BY created_at DESC, id DESC LIMIT ?").all(room, probe) as Row[]);
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    return { messages: page.reverse().map(rowToChat), hasMore };
   }
 
   /** The most recent `limit` chat messages across ALL rooms (returned ASC) — the connect-snapshot

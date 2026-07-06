@@ -52,7 +52,10 @@ export type ServerEvent =
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
-  | { type: "chat.history"; room: string; messages: ChatMessage[] }
+  // One page of a room's history (newest, or — when the request carried a `before` cursor — the page just
+  // older than it). The client merges by id, so both cases fold in the same way; `hasMore` says whether
+  // still-older messages remain to fetch as the user keeps scrolling up.
+  | { type: "chat.history"; room: string; messages: ChatMessage[]; hasMore: boolean }
   | { type: "chat.name"; threadId: string; role: Role; name: string }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
@@ -170,8 +173,14 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // Search the WHOLE director conversation (across every task) for a substring; replies with
   // director.results. The snapshot only ships the recent slice, so old mentions need a server query.
   z.object({ type: z.literal("director.search"), query: z.string().min(1).max(200) }),
-  // Fetch the full message history for one office room (the expanded chatroom view / a task's button).
-  z.object({ type: z.literal("chat.history"), room: z.string().min(1).max(300) }),
+  // Fetch one page of an office room's history (the expanded chatroom view / a task's button). Without
+  // `before` it's the newest page; with a `before` cursor it's the page just older than it — the client
+  // sends its oldest-loaded message as the cursor to lazily load more as the user scrolls up.
+  z.object({
+    type: z.literal("chat.history"),
+    room: z.string().min(1).max(300),
+    before: z.object({ createdAt: z.number(), id: z.string().min(1).max(100) }).optional(),
+  }),
   // Post into a room AS THE DIRECTOR (the human): lands in the chat and is pushed to the live agents
   // in that room so they self-coordinate who acts on it. room "general" = the whole office.
   z.object({ type: z.literal("chat.post"), room: z.string().min(1).max(300), body: z.string().min(1).max(2000) }),

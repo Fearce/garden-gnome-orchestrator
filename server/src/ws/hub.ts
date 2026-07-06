@@ -8,6 +8,7 @@ import type { ThreadManager } from "../orchestrator/threadManager.js";
 import { readCodexUsage } from "../agents/codexUsage.js";
 import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./protocol.js";
 import { isAuthed } from "../auth.js";
+import { CHAT_PAGE_SIZE } from "../types.js";
 
 export interface WsContext {
   db: Db;
@@ -166,9 +167,11 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     case "director.search":
       send(socket, { type: "director.results", query: cmd.query, messages: ctx.db.searchDirectorMessages(cmd.query) });
       break;
-    case "chat.history":
-      send(socket, { type: "chat.history", room: cmd.room, messages: ctx.db.listRoomMessages(cmd.room) });
+    case "chat.history": {
+      const page = ctx.db.listRoomMessagePage(cmd.room, CHAT_PAGE_SIZE, cmd.before);
+      send(socket, { type: "chat.history", room: cmd.room, messages: page.messages, hasMore: page.hasMore });
       break;
+    }
     case "chat.post":
       ctx.manager.directorChatPost(cmd.room, cmd.body);
       break;

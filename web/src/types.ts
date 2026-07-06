@@ -132,6 +132,17 @@ export interface Message {
 
 export type ChatScope = "general" | "project";
 
+/** A keyset cursor into a room's history — fetch the page just older than this (createdAt, id).
+ *  Mirrors ChatCursor in server/src/types.ts. */
+export interface ChatCursor {
+  createdAt: number;
+  id: string;
+}
+
+/** Messages per history page — mirrors CHAT_PAGE_SIZE in server/src/types.ts. Bounds the pre-load
+ *  placeholder slice so the initial view already matches the first fetched page (no shrink flash). */
+export const CHAT_PAGE_SIZE = 50;
+
 export interface ChatMessage {
   id: string;
   room: string;
@@ -299,7 +310,7 @@ export type ServerEvent =
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
-  | { type: "chat.history"; room: string; messages: ChatMessage[] }
+  | { type: "chat.history"; room: string; messages: ChatMessage[]; hasMore: boolean }
   | { type: "chat.name"; threadId: string; role: Role; name: string }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
@@ -355,7 +366,7 @@ export type ClientCommand =
   | { type: "account.set"; id: string; enabled: boolean }
   | { type: "thread.changes"; threadId: string }
   | { type: "director.search"; query: string }
-  | { type: "chat.history"; room: string }
+  | { type: "chat.history"; room: string; before?: ChatCursor }
   | { type: "chat.post"; room: string; body: string }
   | { type: "snapshot.request" };
 
