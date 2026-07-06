@@ -115,6 +115,7 @@ interface State {
   resume: (threadId: string, message?: string) => void;
   cancel: (threadId: string) => void;
   retry: (threadId: string) => void;
+  rename: (threadId: string, title: string) => void;
   markDone: (threadId: string) => void;
   close: (threadId: string) => void;
   restore: (threadId: string) => void;
@@ -379,6 +380,7 @@ export const useStore = create<State>((set) => ({
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
   retry: (threadId) => sendCommand({ type: "thread.retry", threadId }),
+  rename: (threadId, title) => sendCommand({ type: "thread.rename", threadId, title }),
   markDone: (threadId) => sendCommand({ type: "thread.markDone", threadId }),
   close: (threadId) => sendCommand({ type: "thread.close", threadId }),
   restore: (threadId) => sendCommand({ type: "thread.restore", threadId }),

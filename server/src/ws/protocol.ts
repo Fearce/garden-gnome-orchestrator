@@ -116,6 +116,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // Restart a cancelled task from the very beginning — wipes the prior attempt and re-runs the whole
   // pipeline from the brief the director first dispatched (see ThreadManager.retryThread).
   z.object({ type: z.literal("thread.retry"), threadId: z.string() }),
+  // Rename a task's board title. Trimmed + length-capped here so the operator-supplied string can't
+  // bloat the lane; the server rejects an empty result and leaves the title unchanged.
+  z.object({ type: z.literal("thread.rename"), threadId: z.string(), title: z.string().min(1).max(200) }),
   z.object({ type: z.literal("thread.markDone"), threadId: z.string() }),
   z.object({ type: z.literal("thread.close"), threadId: z.string() }),
   z.object({ type: z.literal("thread.restore"), threadId: z.string() }),

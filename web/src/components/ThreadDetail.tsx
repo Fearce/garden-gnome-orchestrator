@@ -24,6 +24,89 @@ function RoleLabel({ role, name }: { role: Role; name?: string }) {
   );
 }
 
+function PencilIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+/** The task's board title, click-to-rename in place. Enter/blur commits (a trimmed, changed value),
+ *  Escape reverts. The draft is (re)seeded from the current title each time editing opens, so an
+ *  external retitle while idle is never overwritten by a stale draft. */
+function EditableTitle({ threadId, title }: { threadId: string; title: string }) {
+  const rename = useStore((s) => s.rename);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Enter/Escape close the input, whose unmount can emit a trailing onBlur. This flag tells that blur
+  // to stand down, so it neither double-saves (after Enter) nor resurrects a cancelled edit (after
+  // Escape). Cleared each time editing opens, so a later genuine click-away still commits.
+  const handledRef = useRef(false);
+
+  useEffect(() => {
+    if (!editing) return;
+    const el = inputRef.current;
+    el?.focus();
+    el?.select();
+  }, [editing]);
+
+  const open = () => {
+    handledRef.current = false;
+    setDraft(title);
+    setEditing(true);
+  };
+  const persist = () => {
+    const next = draft.trim();
+    if (next && next !== title) rename(threadId, next);
+  };
+  const finish = (save: boolean) => {
+    handledRef.current = true;
+    if (save) persist();
+    setEditing(false);
+  };
+  // Click-away commits; Enter/Escape already handled it, so skip.
+  const onBlur = () => {
+    if (handledRef.current) return;
+    persist();
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        className="title-edit"
+        value={draft}
+        maxLength={200}
+        aria-label="Task title"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={onBlur}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            finish(true);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            finish(false);
+          }
+        }}
+      />
+    );
+  }
+
+  return (
+    <h2 className="editable-title" title="Click to rename this task" onClick={open}>
+      <span className="editable-title-text">{title}</span>
+      <span className="title-edit-hint" aria-hidden="true">
+        <PencilIcon />
+      </span>
+    </h2>
+  );
+}
+
 const ROLE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
 
 // Filter-chip order. Director is first so the DIRECTOR chip renders right after ALL (before
@@ -287,7 +370,7 @@ export function ThreadDetail() {
       <div className="detail-head">
         <div className="top">
           <div>
-            <h2>{thread.title}</h2>
+            <EditableTitle threadId={thread.id} title={thread.title} />
             <div className="meta">{thread.workspace}</div>
           </div>
           <div className="detail-title-actions">
