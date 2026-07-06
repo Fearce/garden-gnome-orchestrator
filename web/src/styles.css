@@ -258,6 +258,7 @@ button { font-family: inherit; cursor: pointer; }
 .office-panel-sub { padding: 7px 14px; font-size: 11px; color: var(--text-faint); border-bottom: 1px solid var(--line); }
 .office-msgs { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
 .office-empty { color: var(--text-faint); font-size: 13px; text-align: center; padding: 20px 0; }
+.office-more { color: var(--text-faint); font-size: 11px; text-align: center; padding: 5px 0; letter-spacing: 0.02em; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
 .office-sys { align-self: center; font-size: 11px; color: var(--text-faint); font-style: italic; text-align: center; max-width: 90%; }
 .office-msg { display: flex; gap: 9px; align-items: flex-start; }
 .office-msg-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; border-left: 2px solid var(--role, var(--line)); padding-left: 9px; }
