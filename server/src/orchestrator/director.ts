@@ -5,7 +5,7 @@ import { createMemoryServer } from "../bus/memoryServer.js";
 import { contentWithImages, toImageBlock } from "../attachments.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
-import type { AgentEvent, ImageAttachment } from "../types.js";
+import type { AgentEvent, DirectorMessage, ImageAttachment } from "../types.js";
 import type { ThreadManager } from "./threadManager.js";
 import type { Account } from "../accounts/account.js";
 import { untilReset } from "../accounts/accountManager.js";
@@ -33,6 +33,10 @@ export class Director {
   /** Director-message ids added during the current user turn (the prompt + the director's replies).
    *  When a dispatch fires mid-turn, these get linked to the new task so a search hit can jump to it. */
   private currentTurnMsgIds: string[] = [];
+  /** The task dispatched so far in the current turn, if any. Director replies written AFTER a dispatch
+   *  (e.g. the "dispatched X" confirmation) belong to that task, so they're linked to it as they stream —
+   *  a plain timeline heuristic would otherwise misfile a post-dispatch note under the NEXT task. */
+  private turnDispatchId: string | undefined;
 
   constructor(
     private readonly api: ThreadManager,
@@ -49,6 +53,7 @@ export class Director {
     // A new user turn opens a fresh segment; a dispatch during it links back to this prompt (+ the
     // director's replies, appended as they stream) so the task is reachable from a search hit.
     this.currentTurnMsgIds = [msg.id];
+    this.turnDispatchId = undefined;
 
     this.pendingImages = images ?? [];
     // A path the owner typed in the path field is AUTHORITATIVE — it's the exact dispatch workspace, not
@@ -111,23 +116,27 @@ export class Director {
 
     const title = directTitle(text);
     const id = await this.api.dispatch({ title, workspace: ws, brief: text, images });
-    this.db.linkDirectorMessagesToThread([userMsg.id], id);
-    this.postDirectorNote(`Skipped the director — dispatched "${title}" straight to the pipeline (task ${id.slice(0, 8)}).`);
+    const note = this.postDirectorNote(`Skipped the director — dispatched "${title}" straight to the pipeline (task ${id.slice(0, 8)}).`);
+    // Link BOTH the prompt (precedes the task) and the confirmation note (follows it) — the note would
+    // otherwise be misfiled under the next task by the history backfill's timeline heuristic.
+    this.db.linkDirectorMessagesToThread([userMsg.id, note.id], id);
     // Without the director there's no one to name the task, so the lane would show only the raw first
     // line. Mint a proper title with a cheap Haiku call after dispatch (best-effort, never blocks the
     // pipeline) — unless the owner turned it off to save those tokens.
     if (this.api.settings().skipDirectorRetitle) void this.api.retitleFromBrief(id, text);
   }
 
-  private postDirectorNote(content: string): void {
+  private postDirectorNote(content: string): DirectorMessage {
     const m = this.db.addDirectorMessage({ role: "director", kind: "text", content });
     this.hub.publish({ type: "director.message", message: m });
+    return m;
   }
 
   private start(firstContent: UserContent, account?: Account): void {
-    const director = createDirectorServer(this.api, () => this.pendingImages, (threadId) =>
-      this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId),
-    );
+    const director = createDirectorServer(this.api, () => this.pendingImages, (threadId) => {
+      this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId);
+      this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
+    });
     const memory = createMemoryServer(this.api.memory);
     const cfg = directorConfig({ director, memory }, this.api.directorName());
     const acct = account ?? this.api.accounts.select().account;
@@ -163,6 +172,9 @@ export class Director {
         case "text": {
           const m = this.db.addDirectorMessage({ role: "director", kind: "text", content: e.text });
           this.currentTurnMsgIds.push(m.id); // part of this turn's segment — links to a dispatch it precedes
+          // A reply written AFTER this turn already dispatched (the confirmation note) belongs to that
+          // task — link it now so it doesn't fall to the timeline heuristic and misfile under the next one.
+          if (this.turnDispatchId) this.db.linkDirectorMessagesToThread([m.id], this.turnDispatchId);
           this.hub.publish({ type: "director.message", message: m });
           break;
         }
