@@ -104,9 +104,10 @@ interface State {
   // Office panel UI: which room is open (room key) — null = closed. The strip, the task buttons, and
   // the card chips all drive this so one panel serves every entry point.
   officeRoom: string | null;
-  // The latest server-pushed user notice (currently the token-safety auto-stop), shown as a dismissible
-  // banner. Null when none/dismissed; only the most recent is held (a new one replaces an open banner).
-  notice: { title: string; message: string } | null;
+  // The latest server-pushed user notice (token-safety auto-stop / token-reset auto-resume), shown as a
+  // dismissible banner. Null when none/dismissed; only the most recent is held (a new one replaces an open
+  // banner). `level` drives the banner's tone (warn = amber alert, info = neutral).
+  notice: { level: "info" | "warn"; title: string; message: string } | null;
 
   select: (id: string | null) => void;
   // Search the whole director conversation (across every task) for a substring, or clear the search.
@@ -257,6 +258,8 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   maxConcurrent: 3,
   tokenLimitEnabled: false,
   tokenLimitPercent: 80,
+  autoResumeOnTokenReset: true,
+  autoResumeThresholdPercent: 80,
   codexEnabled: false,
   codexModel: "gpt-5.5",
   codexEffort: "high",
@@ -505,7 +508,7 @@ export const useStore = create<State>((set) => ({
       await waitForServer();
       if (j.needsManualRestart) {
         useStore.setState({
-          notice: { title: "Updated — restart needed", message: "Pulled and rebuilt, but backend code changed and no script-hub was reachable to restart it. Restart the orchestrator to fully apply." },
+          notice: { level: "warn", title: "Updated — restart needed", message: "Pulled and rebuilt, but backend code changed and no script-hub was reachable to restart it. Restart the orchestrator to fully apply." },
         });
       }
       location.reload();
@@ -876,9 +879,10 @@ function applyEvent(ev: ServerEvent): void {
       });
       break;
     case "notice":
-      // A user-facing notification (the token-safety auto-stop). Show the always-visible banner AND fire
-      // the opt-in desktop notify, so it's seen whether or not notifications are enabled.
-      useStore.setState({ notice: { title: ev.title, message: ev.message } });
+      // A user-facing notification (token-safety auto-stop / token-reset auto-resume). Show the
+      // always-visible banner AND fire the opt-in desktop notify, so it's seen whether or not
+      // notifications are enabled.
+      useStore.setState({ notice: { level: ev.level, title: ev.title, message: ev.message } });
       notify(ev.title, ev.message);
       break;
     // `log` events are intentionally ignored client-side — there is no log surface in the UI, and

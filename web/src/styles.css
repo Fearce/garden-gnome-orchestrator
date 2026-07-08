@@ -1426,6 +1426,12 @@ body.dl-resizing { user-select: none; }
   animation: notice-in 0.18s ease-out;
 }
 @keyframes notice-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+/* info tone — a recovery/resume notice (token-window reset): neutral green instead of the warn amber. */
+.notice-banner.info {
+  border-color: color-mix(in oklch, var(--ok) 45%, var(--line));
+  background: color-mix(in oklch, var(--ok) 12%, var(--bg-2));
+}
+.notice-banner.info .notice-icon { color: var(--ok); }
 .notice-icon { color: var(--warn); font-size: 15px; line-height: 1.4; flex: none; }
 .notice-text { flex: 1; min-width: 0; }
 .notice-title { font-weight: 600; font-size: 13px; color: var(--text); margin-bottom: 2px; }

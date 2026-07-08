@@ -302,6 +302,10 @@ export interface OrchestratorSettings {
   // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----
   tokenLimitEnabled: boolean; // off (default) → never auto-stop; on → stop running agents at the threshold
   tokenLimitPercent: number; // % of the token (rate-limit) window that trips the stop — clamped 50–99, default 80
+  // ---- Auto-resume on token-window reset: when usage is high, schedule a wakeup at the reset that
+  //      resumes work that froze on the cap — so the orchestrator recovers AFK, no manual Resume. ----
+  autoResumeOnTokenReset: boolean; // on (default) → arm a reset-timed resume when usage crosses the threshold below
+  autoResumeThresholdPercent: number; // % of the token window at which the resume is armed — clamped 50–95, default 80
   // ---- Subscriptions: which provider backs the implementor (hard routing gate at dispatch) ----
   // Claude is the default implementor and always powers planner/researcher/QA; individual Claude
   // accounts are toggled via the AccountDTO.enabled flag (account.set), not a setting here.
