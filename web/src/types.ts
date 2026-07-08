@@ -251,7 +251,7 @@ export interface OrchestratorSettings {
   tokenLimitEnabled: boolean;
   tokenLimitPercent: number;
   // Auto-resume on token-window reset: when usage crosses the threshold, arm a wakeup at the reset that
-  // resumes work frozen on the cap. Enabled by default; the percent is clamped 50–95 (default 80).
+  // resumes work frozen on the cap. Opt-in (off by default); the percent is clamped 50–95 (default 80).
   autoResumeOnTokenReset: boolean;
   autoResumeThresholdPercent: number;
   // Subscriptions: which provider backs the implementor (server-authoritative hard gate). Claude is the

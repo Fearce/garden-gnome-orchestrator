@@ -434,7 +434,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /**
-   * Token-reset auto-resume (opt-in, ON by default). When live utilization crosses the operator
+   * Token-reset auto-resume (opt-in, off by default). When live utilization crosses the operator
    * threshold, work is about to freeze on the cap — so arm a wakeup timed to the soonest window reset
    * that resumes whatever froze, letting the orchestrator recover while the owner is away. Driven by the
    * same usage-refresh hook as the safety limit (and re-evaluated on a settings change). Idempotent per
@@ -766,7 +766,7 @@ export class ThreadManager implements OrchestratorApi {
       maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
       tokenLimitEnabled: this.settingBool("setting_token_limit_enabled", false),
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
-      autoResumeOnTokenReset: this.settingBool("setting_auto_resume_on_token_reset", true),
+      autoResumeOnTokenReset: this.settingBool("setting_auto_resume_on_token_reset", false),
       autoResumeThresholdPercent: this.settingNum("setting_auto_resume_threshold_percent", 80, 50, 95),
       codexEnabled: this.settingBool("setting_codex_enabled", false),
       codexModel: this.codexModel(),
