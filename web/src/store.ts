@@ -258,7 +258,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   maxConcurrent: 3,
   tokenLimitEnabled: false,
   tokenLimitPercent: 80,
-  autoResumeOnTokenReset: true,
+  autoResumeOnTokenReset: false,
   autoResumeThresholdPercent: 80,
   codexEnabled: false,
   codexModel: "gpt-5.5",
