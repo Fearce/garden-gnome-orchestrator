@@ -85,9 +85,10 @@ export type ServerEvent =
   // Reply to a director.search: the whole-conversation matches (newest-first) for `query`. Echoing
   // the query lets the client ignore a stale reply if the operator has since retyped.
   | { type: "director.results"; query: string; messages: DirectorMessage[] }
-  // A dedicated user-facing notification channel (unlike `log`, which the client drops). Currently the
-  // token-safety auto-stop notice; the client shows it as a dismissible banner and fires a desktop notify.
-  | { type: "notice"; level: "warn"; title: string; message: string }
+  // A dedicated user-facing notification channel (unlike `log`, which the client drops). Used by the
+  // token-safety auto-stop (warn) and the token-reset auto-resume (info); the client shows it as a
+  // dismissible banner and fires a desktop notify.
+  | { type: "notice"; level: "info" | "warn"; title: string; message: string }
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
 // ---- Client -> Server commands (inbound; zod-validated) ----
@@ -142,6 +143,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         maxConcurrent: z.number().int().min(1).max(20),
         tokenLimitEnabled: z.boolean(),
         tokenLimitPercent: z.number().int().min(50).max(99),
+        autoResumeOnTokenReset: z.boolean(),
+        autoResumeThresholdPercent: z.number().int().min(50).max(95),
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
         codexEffort: z.enum(["low", "medium", "high", "xhigh"]),

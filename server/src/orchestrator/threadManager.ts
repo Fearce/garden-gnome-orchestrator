@@ -155,6 +155,9 @@ const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
 // Don't re-ping the external webhook about auto-resuming the SAME task more often than this — a task
 // that keeps re-capping every interval would otherwise flood the channel. The in-app log isn't throttled.
 const CAP_RESUME_NOTIFY_COOLDOWN_MS = 30 * 60_000;
+// Fire the token-reset auto-resume a touch AFTER the window's reset epoch — the reset time is an
+// estimate and can be slightly fuzzy, so a small grace avoids waking straight into an instant re-cap.
+const TOKEN_RESUME_BUFFER_MS = 60_000;
 // Shared prefix for every "a server restart killed this thread" error, so startResumedImplementor can
 // recognise a restart-triggered resume from the thread's persisted error alone.
 const RESTART_ERROR_PREFIX = "interrupted by a server restart";
@@ -288,6 +291,12 @@ export class ThreadManager implements OrchestratorApi {
   // utilization drops back below the threshold — so the stop fires once per crossing, not on every ping
   // while the window stays hot (which would re-stop tasks the owner just re-dispatched).
   private tokenLimitTripped = false;
+  // Token-reset auto-resume: the reset epoch (soonestResetAt) we've currently armed a wakeup timer for,
+  // and the timer itself. armedFor doubles as the idempotency latch — re-crossing the threshold for the
+  // SAME window is a no-op, so we schedule exactly one resume per window. Persisted to kv
+  // (token_resume_wakeup_at) so a restart re-arms (or fires, if the reset already passed while we were down).
+  private tokenResumeArmedFor: number | undefined;
+  private tokenResumeTimer: NodeJS.Timeout | undefined;
   // Epoch ms until which Codex is treated as usage-capped, so implementors route to the Claude backend
   // instead of dispatching straight into an instant 429. Set when a live Codex run caps (real reset epoch
   // preferred, else a cooldown); auto-clears when the window passes. Persisted in kv so a restart's
@@ -315,9 +324,18 @@ export class ThreadManager implements OrchestratorApi {
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
     this.startCapSupervisor();
+    // Re-arm (or fire) a token-reset auto-resume that a restart interrupted — after the cap supervisor,
+    // mirroring its boot sweep. Reads the persisted wakeup epoch; the account pings needed by fireTokenResume
+    // land shortly after via onUsageRefresh, so an "already elapsed" restore is deferred like the boot resume.
+    this.restoreTokenResume();
     // React to every live usage refresh — the token-safety limit stops running agents when burn crosses
-    // the operator threshold. Registered here (before accounts.start() fires the first ping in index.ts).
-    this.accounts.onUsageRefresh(() => this.enforceTokenSafetyLimit());
+    // the operator threshold, and (independently) the token-reset auto-resume arms a wakeup at the window
+    // reset. onUsageRefresh holds a single callback, so BOTH run from this one wrapper. Registered here
+    // (before accounts.start() fires the first ping in index.ts).
+    this.accounts.onUsageRefresh(() => {
+      this.enforceTokenSafetyLimit();
+      this.maybeScheduleTokenResume();
+    });
   }
 
   /** Kick off the live model-list catalog (boot fetch + slow refresh). Called from index.ts after the
@@ -413,6 +431,123 @@ export class ThreadManager implements OrchestratorApi {
         : `Token usage reached ${pct}% (your safety limit is ${threshold}%). No tasks were running, so none were stopped.`;
     this.hub.publish({ type: "notice", level: "warn", title, message });
     this.notifyExternal(`🛑 ${title} — ${message}`);
+  }
+
+  /**
+   * Token-reset auto-resume (opt-in, ON by default). When live utilization crosses the operator
+   * threshold, work is about to freeze on the cap — so arm a wakeup timed to the soonest window reset
+   * that resumes whatever froze, letting the orchestrator recover while the owner is away. Driven by the
+   * same usage-refresh hook as the safety limit (and re-evaluated on a settings change). Idempotent per
+   * window: `tokenResumeArmedFor` holds the reset epoch we've armed for, so re-crossing the threshold for
+   * the same window doesn't re-schedule. Layered independently of (and compatible with) the safety limit.
+   */
+  private maybeScheduleTokenResume(): void {
+    const { autoResumeOnTokenReset, autoResumeThresholdPercent } = this.settings();
+    if (!autoResumeOnTokenReset) {
+      this.disarmTokenResume(); // toggled off — cancel any pending wakeup so "off" truly does nothing
+      return;
+    }
+    const util = this.accounts.effectiveUtilization();
+    if (util == null || util < autoResumeThresholdPercent) return; // no data / under the line — leave any arm intact
+    const resetAt = this.accounts.soonestResetAt();
+    if (resetAt == null) return; // usage is high but no reset epoch known yet — a later ping will carry one
+    if (this.tokenResumeArmedFor === resetAt) return; // already scheduled for this window
+    this.hub.log(
+      "info",
+      `Token threshold hit (${Math.round(util)}%). Scheduling resume ${untilReset(resetAt, Date.now())}.`,
+    );
+    this.armTokenResume(resetAt);
+  }
+
+  /** Arm (or re-arm) the wakeup timer for a given reset epoch and persist it so a restart can restore it.
+   *  Split from the threshold check so restoreTokenResume can re-arm without re-logging a fresh crossing. */
+  private armTokenResume(resetAt: number): void {
+    if (this.tokenResumeTimer) clearTimeout(this.tokenResumeTimer);
+    this.tokenResumeArmedFor = resetAt;
+    this.db.kvSet("token_resume_wakeup_at", String(resetAt));
+    const delay = Math.max(0, resetAt + TOKEN_RESUME_BUFFER_MS - Date.now());
+    this.tokenResumeTimer = setTimeout(() => this.fireTokenResume(), delay);
+    this.tokenResumeTimer.unref?.();
+  }
+
+  /** Cancel any pending token-reset wakeup and clear the persisted arm — used when the feature is
+   *  toggled off and after a wakeup fires. */
+  private disarmTokenResume(): void {
+    if (this.tokenResumeTimer) {
+      clearTimeout(this.tokenResumeTimer);
+      this.tokenResumeTimer = undefined;
+    }
+    this.tokenResumeArmedFor = undefined;
+    this.db.kvSet("token_resume_wakeup_at", "");
+  }
+
+  /** The wakeup fired: the token window should have reset. Resume the work that froze on the cap —
+   *  paused tasks (nothing else auto-resumes these) and cap-parked review tasks — up to the free
+   *  concurrency slots, oldest first, and tell the owner. If the reset estimate was early and there's
+   *  still no headroom, re-arm for the next known reset rather than waking into an instant re-cap. */
+  private fireTokenResume(): void {
+    this.tokenResumeTimer = undefined;
+    this.tokenResumeArmedFor = undefined;
+    this.db.kvSet("token_resume_wakeup_at", "");
+    if (!this.settings().autoResumeOnTokenReset) return; // toggled off while the timer was pending
+    if (!this.accounts.hasHeadroom()) {
+      const next = this.accounts.soonestResetAt();
+      if (next != null) {
+        this.hub.log("info", `Token window reset fired early — no headroom yet, re-arming resume ${untilReset(next, Date.now())}.`);
+        this.armTokenResume(next);
+      } else {
+        this.hub.log("info", "Token window reset fired but no account has headroom yet — will re-arm on the next usage ping.");
+      }
+      return;
+    }
+    const stuck = this.db
+      .listThreads()
+      .filter((t) => t.state === "paused" || (t.state === "review" && (t.error ?? "").startsWith(CAP_PARK_PREFIX)))
+      .sort((a, b) => a.updatedAt - b.updatedAt); // oldest-stuck first — same fairness as the cap supervisor
+    const slots = this.settings().maxConcurrent - this.activePipelines.size;
+    if (stuck.length === 0 || slots <= 0) {
+      this.hub.log("info", `Token window reset — ${stuck.length} task(s) waiting${slots <= 0 ? ", but no free slots" : ", none stuck"}.`);
+      return;
+    }
+    const resuming = stuck.slice(0, slots);
+    const n = resuming.length;
+    this.hub.log("info", `Token window reset. Resuming ${n} paused/parked task${n === 1 ? "" : "s"}.`);
+    this.hub.publish({
+      type: "notice",
+      level: "info",
+      title: "Token window reset",
+      message: `Your token window reset — resuming ${n} ${n === 1 ? "task that was" : "tasks that were"} frozen on the cap.`,
+    });
+    this.notifyExternal(`↪ Token window reset. Resuming ${n} ${n === 1 ? "task" : "tasks"}.`);
+    for (const t of resuming) {
+      // Cap-parked review tasks re-enter via the failed→runPipeline path (like resumeCapParked), clearing
+      // the marker; a paused task resumes its implementor directly. resumeThread's own resuming/live guards
+      // keep this from double-starting a task the cap supervisor is also picking up.
+      if (t.state === "review") this.db.updateThread(t.id, { state: "failed", error: null });
+      const id = t.id;
+      void this.resumeThread(id).catch((e) => this.hub.log("error", `Token-reset resume of ${id.slice(0, 8)} failed: ${String(e)}`));
+    }
+  }
+
+  /** Restore a token-reset wakeup across a restart: re-arm the timer if the reset is still ahead, or fire
+   *  shortly (deferred like the boot auto-resume, so the account pings have landed) if it elapsed while
+   *  we were down. Cleared silently if the feature was turned off before the reboot. */
+  private restoreTokenResume(): void {
+    const raw = this.db.kvGet("token_resume_wakeup_at");
+    const at = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(at) || at <= 0) return;
+    if (!this.settings().autoResumeOnTokenReset) {
+      this.db.kvSet("token_resume_wakeup_at", "");
+      return;
+    }
+    if (at + TOKEN_RESUME_BUFFER_MS > Date.now()) {
+      this.hub.log("info", `Re-arming token-reset auto-resume after a restart (fires ${untilReset(at, Date.now())}).`);
+      this.armTokenResume(at);
+    } else {
+      this.hub.log("info", "Token window reset elapsed during a restart — resuming frozen tasks shortly.");
+      this.tokenResumeArmedFor = at; // hold the latch so a concurrent usage ping doesn't double-arm
+      setTimeout(() => this.fireTokenResume(), AUTO_RESUME_DELAY_MS).unref?.();
+    }
   }
 
   /** Any task left mid-flight by a server restart is dead in memory — its in-memory AgentRun is gone
@@ -631,6 +766,8 @@ export class ThreadManager implements OrchestratorApi {
       maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
       tokenLimitEnabled: this.settingBool("setting_token_limit_enabled", false),
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
+      autoResumeOnTokenReset: this.settingBool("setting_auto_resume_on_token_reset", true),
+      autoResumeThresholdPercent: this.settingNum("setting_auto_resume_threshold_percent", 80, 50, 95),
       codexEnabled: this.settingBool("setting_codex_enabled", false),
       codexModel: this.codexModel(),
       codexEffort: this.codexEffort(),
@@ -770,6 +907,8 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.maxConcurrent !== undefined) this.db.kvSet("setting_max_concurrent", String(patch.maxConcurrent));
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
+    if (patch.autoResumeOnTokenReset !== undefined) this.db.kvSet("setting_auto_resume_on_token_reset", patch.autoResumeOnTokenReset ? "1" : "0");
+    if (patch.autoResumeThresholdPercent !== undefined) this.db.kvSet("setting_auto_resume_threshold_percent", String(patch.autoResumeThresholdPercent));
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
     if (patch.codexEffort !== undefined && CODEX_EFFORTS.includes(patch.codexEffort)) this.db.kvSet("setting_codex_effort", patch.codexEffort);
     // Legacy free-text codex model field: mirror it into the matrix (codex.implementor) so the two stay
@@ -804,6 +943,9 @@ export class ThreadManager implements OrchestratorApi {
     // Re-evaluate the token-safety limit now, so enabling it (or lowering the threshold) while already
     // over the line stops running tasks immediately instead of waiting for the next ~10-min usage ping.
     this.enforceTokenSafetyLimit();
+    // And re-evaluate the token-reset auto-resume, so toggling it off cancels a pending wakeup at once and
+    // turning it on (or lowering the threshold) while usage is already high arms the resume immediately.
+    this.maybeScheduleTokenResume();
     return settings;
   }
 

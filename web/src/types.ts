@@ -250,6 +250,10 @@ export interface OrchestratorSettings {
   // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.
   tokenLimitEnabled: boolean;
   tokenLimitPercent: number;
+  // Auto-resume on token-window reset: when usage crosses the threshold, arm a wakeup at the reset that
+  // resumes work frozen on the cap. Enabled by default; the percent is clamped 50–95 (default 80).
+  autoResumeOnTokenReset: boolean;
+  autoResumeThresholdPercent: number;
   // Subscriptions: which provider backs the implementor (server-authoritative hard gate). Claude is the
   // default backend; individual Claude accounts toggle via AccountDTO.enabled (account.set), not here.
   codexEnabled: boolean;
@@ -340,8 +344,9 @@ export type ServerEvent =
   // Reply to a director.search: whole-conversation matches (newest-first) for `query`; the echoed
   // query lets the client drop a stale reply if the operator has retyped since.
   | { type: "director.results"; query: string; messages: DirectorMessage[] }
-  // A user-facing notification (the token-safety auto-stop). Shown as a dismissible banner + desktop notify.
-  | { type: "notice"; level: "warn"; title: string; message: string }
+  // A user-facing notification (token-safety auto-stop = warn; token-reset auto-resume = info). Shown as a
+  // dismissible banner + desktop notify.
+  | { type: "notice"; level: "info" | "warn"; title: string; message: string }
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
 export type ClientCommand =

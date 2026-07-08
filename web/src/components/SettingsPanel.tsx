@@ -71,6 +71,22 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               onChange={(v) => setSettings({ tokenLimitPercent: v })}
             />
           )}
+          <ToggleRow
+            label="Auto-resume on token reset"
+            hint="On: when usage crosses the threshold below, schedule a wakeup at the window's reset that resumes any paused or cap-parked tasks — so work picks back up on its own after the window frees, even if you're away. On by default."
+            on={settings.autoResumeOnTokenReset}
+            onChange={(v) => setSettings({ autoResumeOnTokenReset: v })}
+          />
+          {settings.autoResumeOnTokenReset && (
+            <NumberRow
+              label="Resume threshold %"
+              hint="Usage level at which the reset-timed resume is armed. When live burn crosses this, a wakeup is scheduled for the soonest window reset to continue frozen work."
+              value={settings.autoResumeThresholdPercent}
+              min={50}
+              max={95}
+              onChange={(v) => setSettings({ autoResumeThresholdPercent: v })}
+            />
+          )}
         </Group>
 
         <Group label="Director">
