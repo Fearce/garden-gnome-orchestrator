@@ -1556,3 +1556,28 @@ body.dl-resizing { user-select: none; }
   /* changes modal: title + close on one row (QuestionModal/login keep block stacking) */
   .modal.changes .m-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 }
+
+/* ---- composer voice-mode mic (bridged to the desk voice-gateway) ---- */
+.mic-toggle { position: relative; }
+.mic-toggle.offline { opacity: 0.38; cursor: default; }
+.mic-toggle .mic-dot {
+  position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px; border-radius: 50%;
+  background: transparent; pointer-events: none;
+}
+.mic-toggle.on {
+  color: var(--ok);
+  border-color: color-mix(in oklch, var(--ok) 45%, var(--line));
+  background: color-mix(in oklch, var(--ok) 10%, var(--bg-2));
+}
+.mic-toggle.on .mic-dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.mic-toggle.capturing {
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent) 55%, var(--line));
+  background: color-mix(in oklch, var(--accent) 12%, var(--bg-2));
+  animation: mic-capture-pulse 1.6s ease-in-out infinite;
+}
+.mic-toggle.capturing .mic-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+@keyframes mic-capture-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 35%, transparent); }
+  50%      { box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 16%, transparent); }
+}
