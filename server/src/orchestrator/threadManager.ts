@@ -1033,7 +1033,10 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Whether the Codex backend could take an implementor RIGHT NOW — enabled, authed, not usage-capped,
    *  and with window headroom. The Claude-cap failover and the cap supervisor use this, so "every account
-   *  is rate-limited" is only ever claimed (and frozen on) when Codex genuinely can't step in either. */
+   *  is rate-limited" is only ever claimed (and frozen on) when Codex genuinely can't step in either.
+   *  Deliberately treats "no usage reading yet" as headroom: API-key-billed Codex has no plan windows and
+   *  never produces one, so requiring a reading would permanently disable the failover for those setups.
+   *  A blind flip onto a secretly-capped Codex is bounded — the run 429s and flips back or parks. */
   private codexImplementorReady(): boolean {
     if (!this.settings().codexEnabled) return false;
     const key = this.openaiApiKey();

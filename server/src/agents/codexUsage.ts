@@ -49,6 +49,11 @@ export function codexUsageCapped(now: number): boolean {
 // the cap checks all see live data between real runs instead of a snapshot frozen at the last turn.
 let livePing: CodexUsageDTO | null = null;
 
+// A live ping older than this stops outranking the rollout snapshot: if the pings break (auth expiry,
+// a CLI upgrade changing the RPC), a last-known 100%-capped reading must not pin the cap checks past
+// reality — fall back to the rollout truth instead. ~3× the default ping cadence.
+const LIVE_PING_MAX_AGE_MS = 30 * 60_000;
+
 /** Record a live app-server rate-limit read. Called by the usage ping on every successful probe. */
 export function noteCodexPing(usage: CodexUsageDTO): void {
   livePing = usage;
@@ -68,7 +73,8 @@ export function readCodexUsage(): CodexUsageDTO | null {
     const snap = latestRollupUsage(home);
     if (snap && (!best || snap.updatedAt > best.updatedAt)) best = snap;
   }
-  if (livePing && (!best || livePing.updatedAt > best.updatedAt)) best = livePing;
+  const pingFresh = livePing && Date.now() - livePing.updatedAt <= LIVE_PING_MAX_AGE_MS;
+  if (pingFresh && (!best || livePing!.updatedAt > best.updatedAt)) best = livePing;
   return best;
 }
 

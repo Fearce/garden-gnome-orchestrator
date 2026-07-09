@@ -194,7 +194,7 @@ export class AccountManager {
       if (this.staggered() && (heldThrough || recentIdleRead)) {
         st.fiveHour = 0;
         st.fiveHourReset = null;
-        this.armHold(a, heldThrough ? p!.holdUntil! : this.nextWindowStart(a.id, now));
+        this.armHold(a, heldThrough ? p!.holdUntil! : Math.max(this.nextWindowStart(a.id, now), now));
       } else {
         toPing.push(a);
       }
