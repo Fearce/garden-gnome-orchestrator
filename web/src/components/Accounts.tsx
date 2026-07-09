@@ -50,9 +50,9 @@ export function Accounts() {
       className={"accounts" + (frozen ? " frozen" : "")}
       title={
         frozen
-          ? "Token freeze — every subscription is rate-limited right now. Parked tasks auto-resume the moment a window resets."
+          ? "Token freeze — a task is parked because every account it needs is rate-limited. Parked tasks auto-resume the moment a window resets or a backend frees up."
           : multi
-            ? "Dispatch alternates between subscriptions and favors more weekly headroom. Burn fills in from each run as the windows are used."
+            ? "Dispatch alternates between subscriptions and favors more weekly headroom. Idle 5h windows restart staggered (offset slots) so the subs reset alternately instead of all at once."
             : "Subscription usage"
       }
     >
@@ -75,14 +75,15 @@ export function Accounts() {
   );
 }
 
-// Codex usage older than this reads as "last-known" (the operator hasn't run Codex recently), shown with
-// the same ~/dim treatment as a stale Claude read. The snapshot is harvested from real runs, not polled.
+// Codex usage older than this reads as "last-known", shown with the same ~/dim treatment as a stale
+// Claude read. The server pings the codex app-server every ~10 min (plus real-run snapshots), so this
+// only trips when those live reads are failing.
 const CODEX_STALE_MS = 15 * 60 * 1000;
 
 /**
  * Top-bar chip for the OpenAI Codex backend. Shows the ChatGPT-plan 5h/weekly usage meters when we have
- * a snapshot (harvested from real Codex runs — see server readCodexUsage), plus the model and the
- * current state — implementing now / ready / needs auth / off.
+ * a reading (live app-server pings + real-run snapshots — see server readCodexUsage), plus the model and
+ * the current state — implementing now / ready / needs auth / off.
  */
 function CodexChip({
   enabled,
@@ -182,7 +183,7 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
         <div className="acct-err">{a.error}</div>
       ) : (
         <div className="acct-meters">
-          <Meter k="5h" pct={a.fiveHour} kind="five" stale={stale} reset={a.fiveHourReset} now={now} />
+          <Meter k="5h" pct={a.fiveHour} kind="five" stale={stale} reset={a.fiveHourReset} now={now} hold={a.holdUntil} />
           <Meter k="7d" pct={a.sevenDay} kind="week" stale={stale} reset={a.sevenDayReset} now={now} />
         </div>
       )}
@@ -197,6 +198,7 @@ function Meter({
   stale,
   reset,
   now,
+  hold,
 }: {
   k: string;
   pct: number | null;
@@ -204,14 +206,23 @@ function Meter({
   stale?: boolean;
   reset?: number | null;
   now: number;
+  hold?: number | null;
 }) {
   const win = k === "5h" ? "5-hour" : "weekly";
+  // Stagger hold-off: the 5h window rolled over and its restart ping deliberately waits for this
+  // account's slot, so the subs reset alternately. The window is idle at 0% — fully usable; a real
+  // dispatch starts it immediately.
+  const holding = hold != null && hold > now && (reset == null || reset <= now);
   // The reset epoch is an absolute wall-clock time — it doesn't drift just because our usage snapshot
   // went stale, so keep counting down as long as it's still in the future. The `reset <= now` guard
   // already drops a window that has actually rolled over (its new reset is unknown until the next run).
   const left = reset == null || reset <= now ? "" : countdown(reset, now);
   const usageTip = pct == null ? `${win} usage: —` : `${win} usage: ${stale ? "~" : ""}${label(pct)}${stale ? " (last known)" : ""}`;
-  const tip = left ? `${usageTip} · resets in ${left}` : usageTip;
+  const tip = holding
+    ? `${usageTip} · window idle — starts in ${countdown(hold, now)} (staggered so the subs reset alternately; a dispatch starts it right away)`
+    : left
+      ? `${usageTip} · resets in ${left}`
+      : usageTip;
   return (
     <div className="meter" title={tip}>
       <span className="meter-k">{k}</span>
@@ -222,7 +233,7 @@ function Meter({
         {pct != null && stale ? "~" : ""}
         {label(pct)}
       </span>
-      <span className="meter-r">{left}</span>
+      <span className="meter-r">{holding ? `idle ${countdown(hold, now)}` : left}</span>
     </div>
   );
 }

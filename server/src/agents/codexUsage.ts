@@ -44,12 +44,23 @@ export function codexUsageCapped(now: number): boolean {
   return hit(u.fiveHour, u.fiveHourReset) || hit(u.sevenDay, u.sevenDayReset);
 }
 
+// The freshest live read from the codex app-server's account/rateLimits/read RPC (see codexUsagePing).
+// Held here so readCodexUsage merges it in for EVERY consumer — the top-bar chip, provider routing, and
+// the cap checks all see live data between real runs instead of a snapshot frozen at the last turn.
+let livePing: CodexUsageDTO | null = null;
+
+/** Record a live app-server rate-limit read. Called by the usage ping on every successful probe. */
+export function noteCodexPing(usage: CodexUsageDTO): void {
+  livePing = usage;
+}
+
 /** The codex CLI does not expose rolling rate limits over `codex exec --json`, but it PERSISTS them to
  *  the session rollout after every turn — a `token_count` event whose `rate_limits` holds the plan-wide
- *  primary/secondary windows. Reading the freshest rollout therefore gives real usage at ZERO extra API
- *  cost, refreshed whenever Codex (here or the operator's own `codex`) actually runs. Account-wide, so the
+ *  primary/secondary windows. Reading the freshest rollout gives real usage at ZERO extra API cost,
+ *  refreshed whenever Codex (here or the operator's own `codex`) actually runs. Account-wide, so the
  *  snapshot is the same regardless of which home produced it; we scan both the orchestrator's isolated
- *  CODEX_HOME and the operator's ~/.codex and take the most recent. Returns null when no rollout exists yet. */
+ *  CODEX_HOME and the operator's ~/.codex, fold in the latest live app-server ping (codexUsagePing), and
+ *  return the most recent of them all. Returns null when nothing has produced a reading yet. */
 export function readCodexUsage(): CodexUsageDTO | null {
   const homes = [config.codex.home, config.codex.sourceAuthHome];
   let best: CodexUsageDTO | null = null;
@@ -57,6 +68,7 @@ export function readCodexUsage(): CodexUsageDTO | null {
     const snap = latestRollupUsage(home);
     if (snap && (!best || snap.updatedAt > best.updatedAt)) best = snap;
   }
+  if (livePing && (!best || livePing.updatedAt > best.updatedAt)) best = livePing;
   return best;
 }
 

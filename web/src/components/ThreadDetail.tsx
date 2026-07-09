@@ -610,7 +610,7 @@ export function ThreadDetail() {
         {frozen ? <span className="inject-frost" aria-hidden="true" /> : null}
         <textarea
           value={msg}
-          placeholder={frozen ? "Frozen — every account is rate-limited; this task auto-resumes on its own." : "Feed new information to the implementor…  (paste/drop images · ⌘/Ctrl+Enter = inject)"}
+          placeholder={frozen ? "Frozen — every account this task needs is rate-limited; it auto-resumes on its own." : "Feed new information to the implementor…  (paste/drop images · ⌘/Ctrl+Enter = inject)"}
           onChange={(e) => setMsg(e.target.value)}
           onPaste={att.onPaste}
           disabled={frozen}

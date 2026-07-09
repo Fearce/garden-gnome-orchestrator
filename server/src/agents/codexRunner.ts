@@ -173,6 +173,32 @@ export function codexAuthAvailable(hasApiKey: boolean): boolean {
   return chatgptLoginAvailable() || !!isolatedAuthMode() || hasApiKey;
 }
 
+/** Seed the `auth.json` the Codex CLI authenticates from into the isolated CODEX_HOME and return the
+ *  resolved auth mode — the single source of truth callers drive the child env off, so the file and the
+ *  env can never disagree. PREFERS the operator's ChatGPT-plan login (no API billing needed): copy
+ *  ~/.codex/auth.json in, but only when it's newer (or the dest is missing) — so a fresh re-login
+ *  propagates while a token codex refreshed in-place isn't clobbered by a staler source. Falls back to
+ *  writing an apikey auth.json from the given key, else keeps whatever login the home already holds.
+ *  Shared by every codex spawn: implementor turns (runTurn) and the usage ping (codexUsagePing). */
+export async function seedCodexAuth(apiKey: string | undefined): Promise<"chatgpt" | "apikey" | "none"> {
+  const dest = join(config.codex.home, "auth.json");
+  const chatgpt = chatgptLoginSource();
+  if (chatgpt) {
+    if (!existsSync(dest) || statSync(chatgpt).mtimeMs > statSync(dest).mtimeMs) await copyFile(chatgpt, dest);
+    return "chatgpt";
+  }
+  // No operator source. A configured API key always (re)writes the apikey auth.json — so a key
+  // rotated in the UI takes effect immediately, overriding any stale key already in the home.
+  const key = apiKey?.trim();
+  if (key) {
+    await writeFile(dest, JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: key }), "utf8");
+    return "apikey";
+  }
+  // No source and no key: keep whatever usable login the home already holds (a direct `codex login`
+  // against CODEX_HOME, or a previously-seeded ChatGPT token the CLI keeps refreshing).
+  return isolatedAuthMode() ?? "none";
+}
+
 /**
  * Validate an OpenAI API key cheaply by listing models — far faster than a `codex exec` probe, whose
  * 401 path retries ~10× before giving up. Returns a friendly verdict for the "Test connection" button.
@@ -349,31 +375,6 @@ export class CodexAgentRun implements AgentRunLike {
     }
   }
 
-  /** Seed the `auth.json` the Codex CLI authenticates from into the isolated CODEX_HOME and return the
-   *  resolved auth mode — the single source of truth runTurn drives the env off, so the file and the env
-   *  can never disagree. PREFERS the operator's ChatGPT-plan login (no API billing needed): copy
-   *  ~/.codex/auth.json in, but only when it's newer (or the dest is missing) — so a fresh re-login
-   *  propagates while a token codex refreshed in-place isn't clobbered by a staler source. Falls back to
-   *  writing an apikey auth.json from the configured key, else keeps whatever login the home already holds. */
-  private async writeAuth(): Promise<"chatgpt" | "apikey" | "none"> {
-    const dest = join(config.codex.home, "auth.json");
-    const chatgpt = chatgptLoginSource();
-    if (chatgpt) {
-      if (!existsSync(dest) || statSync(chatgpt).mtimeMs > statSync(dest).mtimeMs) await copyFile(chatgpt, dest);
-      return "chatgpt";
-    }
-    // No operator source. A configured API key always (re)writes the apikey auth.json — so a key
-    // rotated in the UI takes effect immediately, overriding any stale key already in the home.
-    const key = this.cfg.apiKey?.trim();
-    if (key) {
-      await writeFile(dest, JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: key }), "utf8");
-      return "apikey";
-    }
-    // No source and no key: keep whatever usable login the home already holds (a direct `codex login`
-    // against CODEX_HOME, or a previously-seeded ChatGPT token the CLI keeps refreshing).
-    return isolatedAuthMode() ?? "none";
-  }
-
   /** Write this turn's pasted images to temp files under CODEX_HOME and return their paths. Best-effort:
    *  an image that fails to write is skipped rather than sinking the turn. The paths are remembered in
    *  turnImagePaths and unlinked once the turn closes (they exist only long enough for codex to read). */
@@ -416,12 +417,12 @@ export class CodexAgentRun implements AgentRunLike {
     }
     // Auth: the modern Codex CLI (>=0.14x) does NOT read OPENAI_API_KEY from the env for its
     // /v1/responses transport — it authenticates only from `<CODEX_HOME>/auth.json`. Without it every
-    // turn 401s instantly ("Missing bearer …") and the implementor looks skipped. So writeAuth seeds
+    // turn 401s instantly ("Missing bearer …") and the implementor looks skipped. So seedCodexAuth seeds
     // that file into the dedicated CODEX_HOME (isolated from the operator's personal ~/.codex), PREFERRING
     // a ChatGPT-plan login and falling back to the API key, and returns the resolved mode. CODEX_HOME
     // must exist before spawn or codex errors + exits 1.
     await mkdir(config.codex.home, { recursive: true }).catch(() => {});
-    const authMode = await this.writeAuth().catch(() => "none" as const);
+    const authMode = await seedCodexAuth(this.cfg.apiKey).catch(() => "none" as const);
     // Materialize pasted screenshots to temp files up front — codex attaches them by path via --image.
     const imagePaths = await this.writeImages(images);
     const args = ["exec"];

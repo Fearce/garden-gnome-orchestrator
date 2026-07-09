@@ -152,6 +152,11 @@ const AUTO_RESUME_DELAY_MS = 4_000;
 // auto-resumes those tasks once an account frees up — so a cap wave doesn't leave the owner to
 // hand-resume every task. A normal "needs your review" park carries no such prefix and is left alone.
 const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
+// Substring of the cap-park message that marks a park needing a CLAUDE window specifically (a QA-stage
+// cap — QA always runs on Claude, so Codex headroom can't unblock it). The supervisor keys off this to
+// avoid resuming such a task on Codex headroom alone, which would relaunch the implementor only for QA
+// to instantly re-cap in a 2-minute burn loop. Persisted in the error text so it survives a restart.
+const CAP_PARK_QA_MARK = "(QA runs on Claude)";
 // Don't re-ping the external webhook about auto-resuming the SAME task more often than this — a task
 // that keeps re-capping every interval would otherwise flood the channel. The in-app log isn't throttled.
 const CAP_RESUME_NOTIFY_COOLDOWN_MS = 30 * 60_000;
@@ -280,9 +285,11 @@ export class ThreadManager implements OrchestratorApi {
   private readonly checkedIn = new Set<string>();
   // Threads whose current run gave up to 'review' because every account was capped (no failover
   // headroom). Set the instant the give-up happens, read+cleared when the task settles so the review
-  // message carries the CAP_PARK marker the supervisor keys off. In-memory only — the durable signal
-  // is the persisted error prefix, so a restart still finds (and resumes) cap-parked tasks.
-  private readonly capParked = new Set<string>();
+  // message carries the CAP_PARK marker the supervisor keys off. The value records WHICH stage capped:
+  // a QA park needs a Claude window specifically (QA always runs on Claude), while an implementor park
+  // can resume on either backend — the supervisor gates on that difference. In-memory only — the durable
+  // signal is the persisted error text (prefix + QA marker), so a restart still finds cap-parked tasks.
+  private readonly capParked = new Map<string, "qa" | "implementor">();
   // Last time we externally announced auto-resuming a given thread — throttles the webhook ping so a
   // task stuck in a re-cap loop doesn't spam the channel each interval (see CAP_RESUME_NOTIFY_COOLDOWN_MS).
   private readonly capResumeNotifiedAt = new Map<string, number>();
@@ -368,7 +375,13 @@ export class ThreadManager implements OrchestratorApi {
    *  through the same failed→runPipeline path the boot auto-resume uses (full resume-aware pipeline, QA
    *  included), clearing the marker so a later non-cap park isn't misread. */
   private resumeCapParked(): void {
-    if (!this.accounts.hasHeadroom()) return;
+    // Headroom on EITHER backend can unpark work: a Claude window freeing up resumes anything, while
+    // Codex freeing up (enabled + authed + under its caps) resumes implementor-phase parks — the
+    // provider gate then routes the relaunch to Codex. QA-phase parks (CAP_PARK_QA_MARK) still wait
+    // for a Claude window specifically, since QA never runs on Codex.
+    const claudeFree = this.accounts.hasHeadroom();
+    const codexFree = this.codexImplementorReady();
+    if (!claudeFree && !codexFree) return;
     let slots = this.settings().maxConcurrent - this.activePipelines.size;
     if (slots <= 0) return;
     const parked = this.db
@@ -377,6 +390,7 @@ export class ThreadManager implements OrchestratorApi {
       .sort((a, b) => a.updatedAt - b.updatedAt); // oldest-parked first — fairest, and bounded by free slots
     for (const t of parked) {
       if (slots <= 0) break;
+      if (!claudeFree && (t.error ?? "").includes(CAP_PARK_QA_MARK)) continue; // QA park — Codex can't run QA
       slots--;
       this.hub.log("info", `An account freed up — auto-resuming rate-limit-parked "${t.title.slice(0, 48)}".`);
       const now = Date.now();
@@ -890,8 +904,10 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** The raw OpenAI key: the kv-stored UI value if present, else the server/.env fallback. NEVER
-   *  broadcast — only its presence + last 4 chars leave the server (settings()). */
-  private openaiApiKey(): string | undefined {
+   *  broadcast — only its presence + last 4 chars leave the server (settings()). Public for the one
+   *  out-of-band server-side consumer (the Codex usage ping seeds auth with it); it must never
+   *  cross the WS. */
+  openaiApiKey(): string | undefined {
     return this.db.kvGet("openai_api_key")?.trim() || config.codex.envKey;
   }
 
@@ -1013,6 +1029,17 @@ export class ThreadManager implements OrchestratorApi {
   private preferredImplementorProvider(claude: ProviderCandidate, codex: ProviderCandidate): ImplementorProvider {
     if (claude.hasHeadroom !== codex.hasHeadroom) return claude.hasHeadroom ? "claude" : "codex";
     return providerPriority(claude, codex) <= 0 ? claude.provider : codex.provider;
+  }
+
+  /** Whether the Codex backend could take an implementor RIGHT NOW — enabled, authed, not usage-capped,
+   *  and with window headroom. The Claude-cap failover and the cap supervisor use this, so "every account
+   *  is rate-limited" is only ever claimed (and frozen on) when Codex genuinely can't step in either. */
+  private codexImplementorReady(): boolean {
+    if (!this.settings().codexEnabled) return false;
+    const key = this.openaiApiKey();
+    if (!codexAuthAvailable(!!key && /^sk-/.test(key))) return false;
+    if (this.codexCapActive()) return false;
+    return this.codexProviderCandidate().hasHeadroom;
   }
 
   /** Restore each Claude account's persisted enabled flag into the live AccountManager on boot. */
@@ -1178,16 +1205,34 @@ export class ThreadManager implements OrchestratorApi {
    *  it when an account frees up; otherwise use the human-facing reason (a genuine needs-your-eyes park).
    *  The flag is consumed here so it never leaks into an unrelated later settle of the same thread. */
   private settleReview(threadId: string, humanReason: string): void {
-    if (this.capParked.delete(threadId)) this.setState(threadId, "review", this.capParkMessage());
+    const need = this.capParked.get(threadId);
+    this.capParked.delete(threadId);
+    if (need) this.setState(threadId, "review", this.capParkMessage(need));
     else this.setState(threadId, "review", humanReason);
   }
 
-  /** Review message for a cap-park — doubles as the supervisor's marker (CAP_PARK_PREFIX) and tells the
-   *  owner it'll resume itself, naming when the soonest account frees up if we know it. */
-  private capParkMessage(): string {
-    const reset = this.accounts.soonestResetAt();
-    const when = reset ? ` Soonest account resets ${untilReset(reset, Date.now())}.` : "";
-    return `${CAP_PARK_PREFIX} — every account was rate-limited mid-task.${when} It will resume automatically when one frees up (no manual Resume needed).`;
+  /** Review message for a cap-park — doubles as the supervisor's marker (CAP_PARK_PREFIX, plus
+   *  CAP_PARK_QA_MARK for a Claude-only QA park) and tells the owner it'll resume itself, naming when
+   *  the soonest account frees up if we know it. Scoped honestly: it only claims "every account" when
+   *  Codex was genuinely unavailable too — an implementor park with Codex enabled means the Claude→Codex
+   *  failover already found Codex capped/unauthed, and a QA park is Claude-specific by design. */
+  private capParkMessage(need: "qa" | "implementor"): string {
+    const now = Date.now();
+    const codexOn = this.settings().codexEnabled;
+    const resets = [this.accounts.soonestResetAt()];
+    if (need === "implementor" && codexOn) {
+      const u = readCodexUsage();
+      resets.push(u?.fiveHourReset ?? null, u?.sevenDayReset ?? null);
+    }
+    const future = resets.filter((r): r is number => r != null && r > now);
+    const when = future.length ? ` Soonest account resets ${untilReset(Math.min(...future), now)}.` : "";
+    const scope =
+      need === "qa"
+        ? `every Claude subscription was rate-limited during QA ${CAP_PARK_QA_MARK}`
+        : codexOn
+          ? "every account — Claude subscriptions and Codex — was rate-limited mid-task"
+          : "every Claude subscription was rate-limited mid-task";
+    return `${CAP_PARK_PREFIX} — ${scope}.${when} It will resume automatically when one frees up (no manual Resume needed).`;
   }
 
   /** One-line ping to an external webhook (Discord etc.) when configured — for when you're away from the tab. */
@@ -1411,7 +1456,7 @@ export class ThreadManager implements OrchestratorApi {
       // QA is the only runRole role whose cap settles the task to 'review' (a planner/researcher cap
       // degrades to no-plan/no-research and proceeds). Flag it so that settle tags it for the supervisor.
       if (!next) {
-        if (role === "qa") this.capParked.add(thread.id);
+        if (role === "qa") this.capParked.set(thread.id, "qa");
         return res;
       }
       this.logFailover(thread, role, next.label, agent.rateLimitInfo);
@@ -1421,7 +1466,7 @@ export class ThreadManager implements OrchestratorApi {
     }
     // Loop exhausted MAX_ACCOUNT_FAILOVERS via repeated cap-failovers (the only fall-through path). For
     // QA — the one runRole role whose cap parks the task — flag it so the settle tags it for the supervisor.
-    if (role === "qa") this.capParked.add(thread.id);
+    if (role === "qa") this.capParked.set(thread.id, "qa");
     return undefined;
   }
 
@@ -1717,7 +1762,7 @@ export class ThreadManager implements OrchestratorApi {
       const sessionId = this.lastImplementorSession.get(thread.id);
       // No account with headroom (vs. a missing session) means a cap parked this — flag it so the
       // settle tags it for the supervisor, which resumes the task once an account frees up.
-      if (!next && current.rateLimited) this.capParked.add(thread.id);
+      if (!next && current.rateLimited) this.capParked.set(thread.id, "implementor");
       if (!next || !sessionId) return undefined;
       this.logFailover(thread, "implementor", next.label, current.rateLimitInfo);
       await current.stop();
@@ -1730,7 +1775,7 @@ export class ThreadManager implements OrchestratorApi {
     // path that falls through — every other outcome returns inside the loop). Each fresh account also
     // capped, so this is still a cap-park: flag it so the settle tags it for the supervisor rather than
     // mis-parking it as a needs-human review that never auto-resumes.
-    if (current.rateLimited) this.capParked.add(thread.id);
+    if (current.rateLimited) this.capParked.set(thread.id, "implementor");
     return undefined;
   }
 
@@ -1827,6 +1872,42 @@ export class ThreadManager implements OrchestratorApi {
           const relaunch = this.startImplementor(thread, seed, { effort });
           res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg);
         }
+      }
+    }
+    // The REVERSE flip: every Claude account capped mid-run (awaitImplementorResult found no failover
+    // headroom and flagged the cap-park) while Codex is enabled, authed and has headroom → continue on
+    // the Codex backend instead of freezing the task under "every account is rate-limited" with a ready
+    // Codex sitting idle. A Claude SDK session can't resume on the Codex CLI, so relaunch FRESH from a
+    // compressed-handoff + git-progress seed. Each direction only flips TO a backend with headroom, so
+    // the two blocks can't ping-pong; if Codex then caps too, the block above hands back or parks.
+    if (
+      res === undefined &&
+      !this.cancelled(thread.id) &&
+      this.capParked.get(thread.id) === "implementor" &&
+      this.implementorProvider.get(thread.id) === "claude" &&
+      this.codexImplementorReady()
+    ) {
+      this.capParked.delete(thread.id);
+      this.implementorProvider.set(thread.id, "codex");
+      // Fully end the capped Claude run before relaunching, so two implementors never share the
+      // workspace (same ordering as the Codex→Claude flip above).
+      await current.stop();
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "implementor",
+        summary: "Every Claude subscription hit its usage cap — switched this task to the Codex implementor",
+        detail: "All Claude accounts are rate-limited; the task continues on the Codex backend from the current working-tree state.",
+        severity: "warning",
+      });
+      this.notifyExternal(`↪ every Claude sub is capped — continuing "${thread.title}" on Codex.`);
+      const seed = await this.composeResumeKickoff(thread, kickoff, this.lastImplementorSession.get(thread.id), {
+        directorNote:
+          "Every Claude subscription hit its usage cap partway through this task, so you're taking over on the Codex backend. The prior implementor's changes are already in the working tree — review the git progress below, then continue and finish the task completely.",
+        qaFollows: true,
+      });
+      if (!this.cancelled(thread.id)) {
+        const relaunch = this.startImplementor(thread, seed, { effort });
+        res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg);
       }
     }
     return res;
