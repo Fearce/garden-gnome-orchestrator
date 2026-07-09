@@ -784,6 +784,9 @@ button { font-family: inherit; cursor: pointer; }
 }
 .model-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
 .model-select.inherited { color: var(--text-faint); }
+/* audio-device picks in the Voice mode settings group: fixed width inside the flex row,
+   ellipsized (Windows device names run long) */
+.settings-row .voice-device { flex: none; width: 210px; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
 
 /* global per-role defaults grid (Agent models group) */
 .model-grid { display: flex; flex-direction: column; gap: 9px; padding: 4px 16px 4px; }

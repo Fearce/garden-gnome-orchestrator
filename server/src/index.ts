@@ -185,6 +185,35 @@ async function main(): Promise<void> {
       }
     });
 
+    // Voice-mode settings (audio devices + wake phrases) — a thin pass-through to the gateway's
+    // /api/settings, so the console's settings panel can edit them without a separate origin. The
+    // POST forwards the gateway's status code (400 = validation, e.g. an empty wake-phrase list);
+    // a longer timeout because a device switch reopens live audio streams.
+    app.get("/api/voice/settings", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      reply.header("cache-control", "no-store");
+      try {
+        return await voiceFetch("/api/settings");
+      } catch {
+        return reply.code(502).send({ error: "voice-gateway unreachable — start it in Script Hub" });
+      }
+    });
+
+    app.post<{ Body: Record<string, unknown> }>("/api/voice/settings", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      try {
+        const res = await fetch(`${VOICE_GW}/api/settings`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(req.body ?? {}),
+          signal: AbortSignal.timeout(5000),
+        });
+        return reply.code(res.status).send(await res.json());
+      } catch {
+        return reply.code(502).send({ error: "voice-gateway unreachable — start it in Script Hub" });
+      }
+    });
+
     // ---- access auth: Google sign-in AND/OR a password (both valid) → signed session cookie ----
     const cookie30d = (name: string, value: string) =>
       `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`;

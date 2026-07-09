@@ -305,13 +305,14 @@ export function Director() {
 
 interface VoiceStatus {
   up: boolean;
-  wake?: { enabled: boolean; capturing: boolean; buffer?: string };
+  wake?: { enabled: boolean; conversing?: boolean; capturing?: boolean; buffer?: string; phrase?: string };
 }
 
 /** Hands-free voice mode toggle, bridged to the desk's voice-gateway (:3960) via this server.
- *  ON = the desk mic listens for "Hey Claude"; everything after accumulates as a director message
- *  until "Send it" sends it (or "Cancel that" discards). The gateway not running renders as a
- *  dimmed, disabled mic. Polled state (3.5s) — capture flashes are fine to arrive a beat late. */
+ *  ON = the desk mic listens for the wake phrase; saying it opens a spoken CONVERSATION with the
+ *  director — a pause sends what was said, her spoken reply keeps it open, "that's all" (or
+ *  silence) ends it. The gateway not running renders as a dimmed, disabled mic. Polled state
+ *  (3.5s) — conversation flashes are fine to arrive a beat late. */
 function MicToggle() {
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
   const [flipping, setFlipping] = useState(false);
@@ -337,7 +338,8 @@ function MicToggle() {
 
   const up = !!voice?.up;
   const on = up && !!voice?.wake?.enabled;
-  const capturing = on && !!voice?.wake?.capturing;
+  const conversing = on && !!voice?.wake?.conversing;
+  const phrase = voice?.wake?.phrase || "hey claude";
 
   const toggle = async () => {
     if (!up || flipping) return;
@@ -348,7 +350,7 @@ function MicToggle() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ on: !on }),
       });
-      setVoice((v) => (v ? { ...v, wake: { enabled: !on, capturing: false, buffer: "" } } : v));
+      setVoice((v) => (v ? { ...v, wake: { ...v.wake, enabled: !on, conversing: false, capturing: false, buffer: "" } } : v));
     } catch {
       /* next poll shows the truth */
     } finally {
@@ -356,18 +358,19 @@ function MicToggle() {
     }
   };
 
+  const heard = voice?.wake?.buffer;
   const title = !up
     ? "Voice mode unavailable — the voice-gateway isn't running (start it in Script Hub, or use PTT there)."
-    : capturing
-      ? `Capturing: “${voice?.wake?.buffer || "…"}” — say “Send it” to send, “Cancel that” to discard. Click to turn voice mode off.`
+    : conversing
+      ? `In conversation${heard ? ` — heard: “${heard}”` : ""} — just talk; a pause sends it. “Cancel that” discards, “That's all” ends the conversation. Click to turn voice mode off.`
       : on
-        ? "Voice mode ON — say “Hey Claude”, speak your message, then “Send it”. “Cancel that” discards. Click to turn off. (Desk mic)"
-        : "Voice mode — click, then say “Hey Claude”, your message, and “Send it” to message the director hands-free from the desk mic.";
+        ? `Voice mode ON — say “${phrase}” and just talk with the director: a pause sends, replies keep the conversation going, “That's all” ends it. Click to turn off. (Desk mic)`
+        : `Voice mode — click, then say “${phrase}” to open a hands-free conversation with the director from the desk mic.`;
 
   return (
     <button
       type="button"
-      className={"btn ghost sm mic-toggle" + (on ? " on" : "") + (capturing ? " capturing" : "") + (up ? "" : " offline")}
+      className={"btn ghost sm mic-toggle" + (on ? " on" : "") + (conversing ? " capturing" : "") + (up ? "" : " offline")}
       role="switch"
       aria-checked={on}
       aria-label="Voice mode"

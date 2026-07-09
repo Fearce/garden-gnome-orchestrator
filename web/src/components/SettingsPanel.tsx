@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store.js";
+import { apiUrl } from "../lib/base.js";
 import { CODEX_EFFORTS, CODEX_MODELS, CODEX_SUB_ID, DEFAULT_SUB_ID, MODEL_ROLES, type ModelOverrides, type Role } from "../types.js";
 
 /** The gear-icon panel: everything that isn't a per-task agent toggle (those live in the topbar).
@@ -100,6 +101,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           />
         </Group>
 
+        <Group label="Voice mode">
+          <VoiceSection />
+        </Group>
+
         <Group label="Agent models">
           <AgentModelsSection />
         </Group>
@@ -155,6 +160,135 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         </p>
       </div>
     </div>
+  );
+}
+
+interface VoiceSettingsDTO {
+  audio: { input_device: string | null; output_device: string | null; inputs: string[]; outputs: string[] };
+  wake: { wake_phrases: string[] };
+}
+
+/** Voice-mode-only settings, stored in the voice-gateway (not OrchestratorSettings): which mic the
+ *  wake listener + PTT record from, which speaker replies play on, and the wake phrase that opens a
+ *  conversation. Lives behind the /api/voice/settings bridge; when the gateway is down the section
+ *  is a single dim line and nothing outside voice mode is affected. */
+function VoiceSection() {
+  const [dto, setDto] = useState<VoiceSettingsDTO | "loading" | "offline">("loading");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const r = await fetch(apiUrl("/api/voice/settings"), { cache: "no-store" });
+        if (!r.ok) throw new Error();
+        const j = (await r.json()) as VoiceSettingsDTO;
+        if (live) setDto(j);
+      } catch {
+        if (live) setDto("offline");
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const push = async (patch: object) => {
+    setError(null);
+    try {
+      const r = await fetch(apiUrl("/api/voice/settings"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const j = (await r.json()) as VoiceSettingsDTO & { error?: string };
+      if (!r.ok) {
+        setError(j?.error || "The voice gateway rejected that change.");
+        return;
+      }
+      setDto(j);
+    } catch {
+      setError("Voice gateway unreachable — change not saved.");
+    }
+  };
+
+  if (dto === "loading") return <p className="settings-note">Checking the voice gateway…</p>;
+  if (dto === "offline")
+    return (
+      <p className="settings-note">
+        Voice gateway offline — these controls appear when voice mode is available (start voice-gateway in Script Hub). Everything
+        outside voice mode works as usual.
+      </p>
+    );
+
+  return (
+    <>
+      <DeviceRow
+        label="Microphone"
+        hint="Input device the wake listener and push-to-talk record from. Applies live."
+        value={dto.audio.input_device}
+        options={dto.audio.inputs}
+        onChange={(v) => void push({ audio: { input_device: v } })}
+      />
+      <DeviceRow
+        label="Speaker"
+        hint="Output device the director's spoken replies and cues play on. Applies live."
+        value={dto.audio.output_device}
+        options={dto.audio.outputs}
+        onChange={(v) => void push({ audio: { output_device: v } })}
+      />
+      <TextRow
+        label="Wake phrase"
+        hint='What you say to open a conversation. Comma-separate variants the transcriber might mishear (e.g. "hey claude, hey cloud").'
+        value={dto.wake.wake_phrases.join(", ")}
+        placeholder="hey claude"
+        maxLength={200}
+        onChange={(v) => {
+          const phrases = v.split(",").map((s) => s.trim()).filter(Boolean);
+          if (phrases.length) void push({ wake: { wake_phrases: phrases } });
+          else setError("At least one wake phrase is required.");
+        }}
+      />
+      {error && <div className="sub-msg bad">{error}</div>}
+      <p className="settings-note">Only affects hands-free voice mode (desk mic + spoken replies) — typing in the console is untouched.</p>
+    </>
+  );
+}
+
+/** An audio-device dropdown: system default plus the gateway's device list. The gateway matches the
+ *  stored name as a SUBSTRING, so a configured value that isn't verbatim in the list still resolves —
+ *  it stays visible as its own option, flagged "(not connected)" only when nothing matches it. */
+function DeviceRow({
+  label,
+  hint,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: string | null;
+  options: string[];
+  onChange: (v: string | null) => void;
+}) {
+  const exact = value != null && options.includes(value);
+  const resolves = value != null && options.some((o) => o.toLowerCase().includes(value.toLowerCase()));
+  return (
+    <Row
+      label={label}
+      hint={hint}
+      control={
+        <select className="model-select voice-device" value={value ?? ""} onChange={(e) => onChange(e.target.value || null)}>
+          <option value="">System default</option>
+          {value != null && !exact && <option value={value}>{resolves ? value : `${value} (not connected)`}</option>}
+          {options.map((d) => (
+            <option key={d} value={d}>
+              {d}
+            </option>
+          ))}
+        </select>
+      }
+    />
   );
 }
 

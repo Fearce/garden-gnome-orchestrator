@@ -93,7 +93,7 @@ export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
 async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientCommand): Promise<void> {
   switch (cmd.type) {
     case "prompt.new":
-      ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images);
+      ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images, cmd.source);
       break;
     case "prompt.direct":
       await ctx.director.dispatchDirect(cmd.text, cmd.workspace, cmd.images);
