@@ -98,6 +98,7 @@ function appServerRateLimits(child: ChildProcess, timeoutMs: number): Promise<Rp
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
       buf += chunk;
+      if (buf.length > 1_000_000) return finish(null); // runaway unterminated output — bail before the timeout
       let i;
       while ((i = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, i).trim();
