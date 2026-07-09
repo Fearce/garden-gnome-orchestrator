@@ -348,6 +348,8 @@ export type ServerEvent =
   // A user-facing notification (token-safety auto-stop = warn; token-reset auto-resume = info). Shown as a
   // dismissible banner + desktop notify.
   | { type: "notice"; level: "info" | "warn"; title: string; message: string }
+  // Voice mode: spoken completion line for a finished task — consumed by the voice-gateway, ignored here.
+  | { type: "voice.announce"; threadId: string; text: string }
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
 export type ClientCommand =

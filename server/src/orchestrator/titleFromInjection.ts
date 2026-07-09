@@ -39,10 +39,10 @@ function cleanTitle(s: string): string {
     .trim();
 }
 
-async function summarize(message: string, token: string, prompt: string): Promise<string | null> {
+async function summarize(message: string, token: string, prompt: string, maxTokens = 32): Promise<string | null> {
   const body = JSON.stringify({
     model: TITLE_MODEL,
-    max_tokens: 32,
+    max_tokens: maxTokens,
     messages: [{ role: "user", content: `${prompt}\n\n${message}` }],
   });
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -109,4 +109,10 @@ export function titleFromInjection(message: string, token: string | undefined): 
  *  caller's fallback (the truncated first line). Same verbatim-short / Haiku-long behaviour as injection. */
 export function titleFromBrief(message: string, token: string | undefined): Promise<string | null> {
   return autoTitle(message, token, BRIEF_PROMPT);
+}
+
+/** One short Haiku line for an arbitrary prompt (voice announcements etc.) — the same raw OAuth fetch
+ *  and best-effort contract as the titles: any failure (no token, network, non-200) yields null. */
+export function haikuLine(message: string, token: string | undefined, prompt: string, maxTokens = 64): Promise<string | null> {
+  return token ? summarize(message, token, prompt, maxTokens) : Promise.resolve(null);
 }
