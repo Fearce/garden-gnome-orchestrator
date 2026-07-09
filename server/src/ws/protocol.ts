@@ -27,6 +27,7 @@ export interface AccountDTO {
   resetsAt?: number | null;
   active: boolean; // last/preferred account for dispatch
   enabled: boolean; // operator toggle — a disabled account is held out of dispatch/failover
+  holdUntil?: number | null; // 5h window idle (stagger hold-off) — the next window starts at this epoch ms
   updatedAt: number;
   error?: string | null;
 }

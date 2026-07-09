@@ -77,11 +77,15 @@ Read the run trail to tell causes apart:
 - run `state='error'` → a real failure or a **usage cap**. A 5h/weekly cap auto-switches account and
   resumes the SDK session; `runner.ts` flags the cap from a `rate_limit_event`, an assistant
   `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
-  another sub with headroom. If EVERY sub is capped (no failover headroom), the task parks in `review`
-  with the marker `⏳ Auto-resume pending` in its `error` — a supervisor (`resumeCapParked`, every
-  `CAP_RETRY_MS`/120s) then auto-resumes it the moment `AccountManager.hasHeadroom()` turns true (a
-  window reset or a freed sub), so a cap wave doesn't strand the owner hand-resuming each task. A plain
-  "needs your review" park carries no marker and is left for a human.
+  another sub with headroom. If EVERY sub is capped, an implementor fails over to the CODEX backend
+  when it's enabled+authed with headroom (fresh seed — a Claude session can't resume on the codex CLI;
+  the reverse codex→Claude flip already existed). Only when no backend can continue does the task park
+  in `review` with the marker `⏳ Auto-resume pending` in its `error` — a supervisor (`resumeCapParked`,
+  every `CAP_RETRY_MS`/120s) auto-resumes it the moment a Claude sub OR Codex frees up; a QA-stage park
+  (message carries "(QA runs on Claude)") waits for a Claude window specifically. A plain "needs your
+  review" park carries no marker and is left for a human. Idle 5h windows restart STAGGERED across subs
+  (epoch-anchored slots, `AccountManager`) so their resets alternate; Codex meters stay live via a free
+  `codex app-server` `account/rateLimits/read` ping (`codexUsagePing.ts`).
 
 ## The office (cross-agent chat)
 Concurrent tasks on the same repo would otherwise edit the same files blind. Every running agent is

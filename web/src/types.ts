@@ -220,13 +220,14 @@ export interface AccountDTO {
   resetsAt?: number | null;
   active: boolean;
   enabled: boolean; // operator toggle — disabled accounts are held out of dispatch/failover
+  holdUntil?: number | null; // 5h window idle (stagger hold-off) — the next window starts at this epoch ms
   updatedAt: number;
   error?: string | null;
 }
 
 /** Codex (ChatGPT-plan) usage windows — mirrors the server's CodexUsageDTO. `fiveHour` is the rolling
- *  5-hour window, `sevenDay` the weekly one, both 0-100 used-percent with epoch-ms resets. Harvested
- *  from the codex session rollouts, so it reflects the last turn Codex actually ran (last-known). */
+ *  5-hour window, `sevenDay` the weekly one, both 0-100 used-percent with epoch-ms resets. Sourced from
+ *  the codex session rollouts AND a periodic live app-server read, so it stays current between runs. */
 export interface CodexUsageDTO {
   fiveHour: number | null;
   sevenDay: number | null;

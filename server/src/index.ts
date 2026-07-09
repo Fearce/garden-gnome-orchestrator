@@ -9,8 +9,8 @@ import { installCrashGuards } from "./crashLog.js";
 import { Db } from "./db/db.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
-import { AccountManager } from "./accounts/accountManager.js";
-import { readCodexUsage } from "./agents/codexUsage.js";
+import { AccountManager, type PersistedAccountUsage } from "./accounts/accountManager.js";
+import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
@@ -67,7 +67,22 @@ async function main(): Promise<void> {
   const db = new Db(config.dbPath);
   const hub = new EventHub();
   const memory = new FileMemoryService();
-  const accounts = new AccountManager(config.accounts, hub, config.accountPingMs);
+  // Persist each account's last usage read (kv) so a restart can restore the 5h window-start stagger
+  // instead of boot-pinging every account — which would start all their windows in sync again.
+  const accounts = new AccountManager(config.accounts, hub, config.accountPingMs, {
+    persist: {
+      load: (id) => {
+        const v = db.kvGet(`account_usage_${id}`);
+        if (!v) return null;
+        try {
+          return JSON.parse(v) as PersistedAccountUsage;
+        } catch {
+          return null;
+        }
+      },
+      save: (id, usage) => db.kvSet(`account_usage_${id}`, JSON.stringify(usage)),
+    },
+  });
   const manager = new ThreadManager(db, hub, memory, accounts);
   const director = new Director(manager, db, hub);
   accounts.start();
@@ -78,19 +93,16 @@ async function main(): Promise<void> {
   // Poll git for new upstream commits so the console can surface a quiet "update available" badge.
   startUpdatePoll();
 
-  // Codex usage: the codex CLI persists its plan-wide rate-limit snapshot to the session rollout after
-  // every turn, so we harvest live 5h/weekly meters for the top-bar Codex chip from real runs — no extra
-  // API call. Cheap file read; poll modestly and only broadcast on change so the WS isn't spammed.
-  let lastCodexUsage = "";
-  const pushCodexUsage = (): void => {
-    const usage = readCodexUsage();
-    const sig = JSON.stringify(usage);
-    if (sig === lastCodexUsage) return;
-    lastCodexUsage = sig;
-    hub.publish({ type: "codex.usage", usage });
-  };
-  pushCodexUsage();
-  setInterval(pushCodexUsage, 30_000).unref();
+  // Codex usage: rollout-file snapshots from real runs (cheap 30s poll) PLUS a periodic live read via
+  // the codex app-server's account/rateLimits/read RPC — free (no model turn), so the 5h/weekly meters
+  // and reset countdowns stay current even when Codex hasn't run for hours (the old "stuck at 13%").
+  startCodexUsageMonitor(hub, {
+    apiKey: () => manager.openaiApiKey(),
+    configured: () => {
+      const s = manager.settings();
+      return s.codexEnabled || s.hasOpenaiKey || s.codexChatgptLogin;
+    },
+  });
 
   // Shared across both listeners so the per-IP wrong-password cooldown can't be
   // sidestepped by alternating between the HTTP and HTTPS ports.
