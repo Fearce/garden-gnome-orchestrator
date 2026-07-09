@@ -44,7 +44,7 @@ export class Director {
     private readonly hub: EventHub,
   ) {}
 
-  handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[]): void {
+  handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice"): void {
     const refs = (images ?? []).map((img) =>
       this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
     );
@@ -61,7 +61,7 @@ export class Director {
     const base = workspace
       ? `${text}\n\n[TARGET WORKSPACE — ${config.ownerName} set this explicitly. Use this EXACT absolute path as the dispatch workspace; do NOT call find_workspace and do NOT substitute another path: ${workspace}]`
       : text;
-    const content = contentWithImages(base, this.pendingImages.map(toImageBlock));
+    const content = contentWithImages(source === "voice" ? `${base}\n\n${voiceNote()}` : base, this.pendingImages.map(toImageBlock));
     this.pending = content;
     this.failovers = 0;
 
@@ -264,6 +264,12 @@ export class Director {
       ? `${subject} right now, so I couldn't get to this. ${freesWhen} ${when} — resend then.`
       : `${subject} right now, so I couldn't get to this. ${freesGeneric} — resend then.`;
   }
+}
+
+/** Appended to voice-originated prompts: the reply is read aloud by TTS mid-conversation, so the
+ *  director must talk like a person and get a spoken go-ahead before dispatching. */
+function voiceNote(): string {
+  return `[VOICE — ${config.ownerName} spoke this aloud and your reply will be read out by TTS in a live back-and-forth conversation. Answer like you're talking: brief plain sentences, no markdown, no lists, no code, no file paths. Talk the idea through with them and get a spoken go-ahead before dispatching a task; a "yeah"/"sure"/"go ahead" means dispatch now without re-asking. Skip this only when they explicitly say to dispatch immediately.]`;
 }
 
 /** A board-lane title from a raw skip-director message: first non-empty line, trimmed to a short label. */

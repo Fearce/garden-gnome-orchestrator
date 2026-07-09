@@ -102,7 +102,9 @@ const imageAttachmentSchema = z.object({
 const imagesField = z.array(imageAttachmentSchema).max(8).optional();
 
 export const clientCommandSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("prompt.new"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField }),
+  // source:"voice" marks a spoken prompt (voice-gateway): the director gets a TTS-aware note
+  // appended so it answers conversationally and confirms aloud before dispatching.
+  z.object({ type: z.literal("prompt.new"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, source: z.literal("voice").optional() }),
   // Skip-director mode: bypass the Sonnet director and dispatch the message straight into the pipeline
   // (its first active stage — planner if enabled, else the implementor). workspace is required since
   // there's no director to resolve one.
