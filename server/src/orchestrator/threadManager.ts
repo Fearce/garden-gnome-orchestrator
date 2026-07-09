@@ -14,6 +14,7 @@ import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
+import { completionAnnouncement } from "./voiceAnnounce.js";
 import { config } from "../config.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -1196,11 +1197,21 @@ export class ThreadManager implements OrchestratorApi {
     const t = this.db.updateThread(threadId, { state, error: error ?? null });
     if (!t) return;
     this.hub.publish({ type: "thread.upsert", thread: t });
-    if (state === "done") this.notifyExternal(`✓ done: "${t.title}"`);
+    if (state === "done") {
+      this.notifyExternal(`✓ done: "${t.title}"`);
+      void this.announceDone(t);
+    }
     // A cap-park lands in 'review' too, but it's auto-handled by the supervisor — don't ping "needs your
     // review" (misleading, and it would re-fire every time a re-capping task re-parks).
     else if (state === "review" && !(t.error ?? "").startsWith(CAP_PARK_PREFIX)) this.notifyExternal(`⚠ needs your review: "${t.title}"`);
     else if (state === "failed") this.notifyExternal(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`);
+  }
+
+  /** Voice mode: speak a task-tailored completion line through the gateway. completionAnnouncement
+   *  returns null when the gateway is down (voice mode off) — nothing is published or spent. */
+  private async announceDone(t: Thread): Promise<void> {
+    const text = await completionAnnouncement(t, this.accounts.auxToken()).catch(() => null);
+    if (text) this.hub.publish({ type: "voice.announce", threadId: t.id, text });
   }
 
   /** Settle a task to 'review' after an incomplete run. If the run gave up ONLY because every account
