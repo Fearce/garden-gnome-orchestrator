@@ -141,6 +141,38 @@ async function main(): Promise<void> {
       return result;
     });
 
+    // ---- voice-gateway bridge: the composer's mic toggle → the local voice-gateway (:3960) ----
+    // Bridged here (same origin) so the HTTPS deck surface reaches it without mixed content, behind
+    // this console's auth gate. Short timeout: a stopped gateway must read as "off", never hang the UI.
+    const VOICE_GW = process.env.VOICE_GATEWAY_URL || "http://127.0.0.1:3960";
+    const voiceFetch = async (path: string, init?: RequestInit): Promise<unknown> => {
+      const res = await fetch(`${VOICE_GW}${path}`, { ...init, signal: AbortSignal.timeout(1500) });
+      return res.json();
+    };
+
+    app.get("/api/voice/status", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      reply.header("cache-control", "no-store");
+      try {
+        return { up: true, ...(await voiceFetch("/api/status") as object) };
+      } catch {
+        return { up: false };
+      }
+    });
+
+    app.post<{ Body: { on?: boolean } }>("/api/voice/wake", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      try {
+        return await voiceFetch("/api/wake", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ on: !!req.body?.on }),
+        });
+      } catch {
+        return reply.code(502).send({ error: "voice-gateway unreachable — start it in Script Hub" });
+      }
+    });
+
     // ---- access auth: Google sign-in AND/OR a password (both valid) → signed session cookie ----
     const cookie30d = (name: string, value: string) =>
       `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`;

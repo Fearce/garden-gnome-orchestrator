@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useStore } from "../store.js";
+import { apiUrl } from "../lib/base.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
@@ -264,6 +265,7 @@ export function Director() {
         />
         <ComposerThumbs images={att.images} onRemove={att.remove} />
         <div className="row">
+          <MicToggle />
           <AttachButton onPick={att.addFiles} />
           <PathInput
             className="ws"
@@ -298,6 +300,88 @@ export function Director() {
       <FolderPicker initialPath={ws} onSelect={setWs} onClose={() => setPickerOpen(false)} />
     )}
     </>
+  );
+}
+
+interface VoiceStatus {
+  up: boolean;
+  wake?: { enabled: boolean; capturing: boolean; buffer?: string };
+}
+
+/** Hands-free voice mode toggle, bridged to the desk's voice-gateway (:3960) via this server.
+ *  ON = the desk mic listens for "Hey Claude"; everything after accumulates as a director message
+ *  until "Send it" sends it (or "Cancel that" discards). The gateway not running renders as a
+ *  dimmed, disabled mic. Polled state (3.5s) — capture flashes are fine to arrive a beat late. */
+function MicToggle() {
+  const [voice, setVoice] = useState<VoiceStatus | null>(null);
+  const [flipping, setFlipping] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    const tick = async () => {
+      try {
+        const r = await fetch(apiUrl("/api/voice/status"), { cache: "no-store" });
+        const j = (await r.json()) as VoiceStatus;
+        if (live) setVoice(j);
+      } catch {
+        if (live) setVoice({ up: false });
+      }
+    };
+    void tick();
+    const t = setInterval(tick, 3500);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, []);
+
+  const up = !!voice?.up;
+  const on = up && !!voice?.wake?.enabled;
+  const capturing = on && !!voice?.wake?.capturing;
+
+  const toggle = async () => {
+    if (!up || flipping) return;
+    setFlipping(true);
+    try {
+      await fetch(apiUrl("/api/voice/wake"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ on: !on }),
+      });
+      setVoice((v) => (v ? { ...v, wake: { enabled: !on, capturing: false, buffer: "" } } : v));
+    } catch {
+      /* next poll shows the truth */
+    } finally {
+      setFlipping(false);
+    }
+  };
+
+  const title = !up
+    ? "Voice mode unavailable — the voice-gateway isn't running (start it in Script Hub, or use PTT there)."
+    : capturing
+      ? `Capturing: “${voice?.wake?.buffer || "…"}” — say “Send it” to send, “Cancel that” to discard. Click to turn voice mode off.`
+      : on
+        ? "Voice mode ON — say “Hey Claude”, speak your message, then “Send it”. “Cancel that” discards. Click to turn off. (Desk mic)"
+        : "Voice mode — click, then say “Hey Claude”, your message, and “Send it” to message the director hands-free from the desk mic.";
+
+  return (
+    <button
+      type="button"
+      className={"btn ghost sm mic-toggle" + (on ? " on" : "") + (capturing ? " capturing" : "") + (up ? "" : " offline")}
+      role="switch"
+      aria-checked={on}
+      aria-label="Voice mode"
+      disabled={!up}
+      title={title}
+      onClick={toggle}
+    >
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+        <line x1="12" x2="12" y1="19" y2="22" />
+      </svg>
+      <span className="mic-dot" aria-hidden="true" />
+    </button>
   );
 }
 
