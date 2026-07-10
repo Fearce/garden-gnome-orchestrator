@@ -295,7 +295,17 @@ export type SettingsPatch = Partial<
 > & { openaiApiKey?: string };
 
 /** Flagship Codex models suggested when the live list hasn't loaded yet (most-capable first). */
-export const CODEX_MODELS = ["gpt-5.5", "gpt-5.1-codex-max", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex-mini", "codex-mini-latest"] as const;
+export const CODEX_MODELS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.1-codex-max",
+  "gpt-5.3-codex",
+  "gpt-5.2-codex",
+  "gpt-5.1-codex-mini",
+  "codex-mini-latest",
+] as const;
 
 export type ServerEvent =
   | {

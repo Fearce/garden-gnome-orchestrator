@@ -111,11 +111,22 @@ export const config = {
   // in Settings (with a valid OpenAI key). Planner/researcher/QA always stay Claude.
   codex: {
     // First-boot default + the flagship models the Subscriptions selector suggests. The field is
-    // free-text (any model id the OpenAI key can access is accepted) — these are just quick picks,
-    // most-capable first. Default to the flagship gpt-5.5 for development work; codex-mini-latest is
-    // kept as the cheap option. Override the default with CODEX_MODEL.
+    // free-text (any model id the OpenAI key or ChatGPT-plan Codex login can access is accepted) —
+    // these are just quick picks, most-capable first. Keep GPT-5.6 in this curated fallback because
+    // ChatGPT-plan auth does not give us an OpenAI /v1/models list, even when Codex can run it.
+    // Override the default with CODEX_MODEL.
     defaultModel: process.env.CODEX_MODEL?.trim() || "gpt-5.5",
-    models: ["gpt-5.5", "gpt-5.1-codex-max", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex-mini", "codex-mini-latest"] as const,
+    models: [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+      "gpt-5.1-codex-max",
+      "gpt-5.3-codex",
+      "gpt-5.2-codex",
+      "gpt-5.1-codex-mini",
+      "codex-mini-latest",
+    ] as const,
     // The Codex CLI is a global npm install; we spawn its bin/codex.js with this node binary directly
     // (PATH-independent, no .cmd shim). Override CODEX_BIN_JS to point at a different install.
     binJs:
