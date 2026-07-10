@@ -38,7 +38,7 @@ import type {
   Role,
   Thread,
 } from "../types.js";
-import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, GENERAL_ROOM, GNOME_NAMES, gnomeName, MODEL_ROLES, normalizeWorkspace, repoRoom } from "../types.js";
+import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, MODEL_ROLES, normalizeWorkspace, repoRoom } from "../types.js";
 
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
@@ -92,7 +92,7 @@ interface ProviderCandidate {
 /** A settings.set patch: the writable subset of OrchestratorSettings plus the write-only raw key. The
  *  read-only masked indicators (hasOpenaiKey/openaiKeyLast4) are derived, never set by a client. */
 export type SettingsPatch = Partial<
-  Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin" | "modelDefaults" | "claudeModels" | "codexModels">
+  Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin" | "xhighEnabled" | "modelDefaults" | "claudeModels" | "codexModels">
 > & { openaiApiKey?: string };
 
 /** The slice of operator settings the implementor→QA stage needs, captured at pipeline start. */
@@ -742,7 +742,7 @@ export class ThreadManager implements OrchestratorApi {
   // ---- dispatch + pipeline ----
 
   async dispatch(input: DispatchInput): Promise<string> {
-    const thread = this.db.createThread({ title: input.title, workspace: input.workspace, rawPrompt: "", brief: input.brief });
+    const thread = this.db.createThread({ title: input.title, workspace: input.workspace, rawPrompt: "", brief: input.brief, effortOverride: input.effort ?? null });
     if (input.images?.length) this.dispatchImages.set(thread.id, input.images.map(toImageBlock));
     this.hub.publish({ type: "thread.upsert", thread });
     // Screenshots attached to the dispatching message reach the implementor model via dispatchImages
@@ -791,6 +791,8 @@ export class ThreadManager implements OrchestratorApi {
       codexChatgptLogin: chatgptLoginAvailable(),
       skipDirector: this.settingBool("setting_skip_director", false),
       showComposerModelPicker: this.settingBool("setting_show_composer_model_picker", true),
+      skipDirectorEffort: this.skipDirectorEffort(),
+      xhighEnabled: config.enableXhigh,
       skipDirectorRetitle: this.settingBool("setting_skip_director_retitle", true),
       maxRecentRepos: this.settingNum("setting_max_recent_repos", 5, 1, 20),
       recentRepos: this.recentRepos(),
@@ -905,6 +907,16 @@ export class ThreadManager implements OrchestratorApi {
     return CODEX_EFFORTS.includes(v as CodexEffort) ? (v as CodexEffort) : "high";
   }
 
+  /** The composer's implementor-effort pick for skip-director dispatches. "auto" (default) leaves the
+   *  planner's per-task pick in charge; a concrete tier is snapshotted onto the thread at dispatch and
+   *  beats the plan. A stored `xhigh` degrades to `high` while the ENABLE_XHIGH opt-in is off, mirroring
+   *  resolveEffort — so the dropdown never claims a tier this machine can't send. */
+  private skipDirectorEffort(): Effort | "auto" {
+    const v = this.db.kvGet("setting_skip_director_effort")?.trim();
+    if (!v || !EFFORTS.includes(v as Effort)) return "auto";
+    return v === "xhigh" && !config.enableXhigh ? "high" : (v as Effort);
+  }
+
   /** The raw OpenAI key: the kv-stored UI value if present, else the server/.env fallback. NEVER
    *  broadcast — only its presence + last 4 chars leave the server (settings()). Public for the one
    *  out-of-band server-side consumer (the Codex usage ping seeds auth with it); it must never
@@ -946,6 +958,8 @@ export class ThreadManager implements OrchestratorApi {
     }
     if (patch.skipDirector !== undefined) this.db.kvSet("setting_skip_director", patch.skipDirector ? "1" : "0");
     if (patch.showComposerModelPicker !== undefined) this.db.kvSet("setting_show_composer_model_picker", patch.showComposerModelPicker ? "1" : "0");
+    if (patch.skipDirectorEffort !== undefined && (patch.skipDirectorEffort === "auto" || EFFORTS.includes(patch.skipDirectorEffort)))
+      this.db.kvSet("setting_skip_director_effort", patch.skipDirectorEffort);
     if (patch.skipDirectorRetitle !== undefined) this.db.kvSet("setting_skip_director_retitle", patch.skipDirectorRetitle ? "1" : "0");
     if (patch.maxRecentRepos !== undefined) this.db.kvSet("setting_max_recent_repos", String(patch.maxRecentRepos));
     // Recent repos: de-dupe (most-recent first), drop blanks, and cap at the current max before persisting
@@ -1371,7 +1385,7 @@ export class ThreadManager implements OrchestratorApi {
       const buffered = this.directorNotes.get(threadId);
       this.directorNotes.delete(threadId);
       const note = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n") || undefined;
-      await this.runImplementorQa(thread, kickoff, plan?.effort, this.latestImplementorSession(threadId), note, {
+      await this.runImplementorQa(thread, kickoff, thread.effortOverride ?? plan?.effort, this.latestImplementorSession(threadId), note, {
         qaEnabled: settings.qaEnabled,
         maxQaRounds: settings.maxQaRounds,
       });
@@ -2606,7 +2620,7 @@ export class ThreadManager implements OrchestratorApi {
     const resumeNudge = message ?? "Continue where you left off.";
     let start: LiveImplementor | null;
     try {
-      start = await this.startResumedImplementor(thread, baseKickoff, resume, { resumeNudge, directorNote: message, qaFollows: false });
+      start = await this.startResumedImplementor(thread, baseKickoff, resume, { effort: thread.effortOverride ?? undefined, resumeNudge, directorNote: message, qaFollows: false });
     } catch (e) {
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} failed to start: ${String(e)}`);
       start = null;
@@ -2633,7 +2647,7 @@ export class ThreadManager implements OrchestratorApi {
       this.pendingResumeMsgs.delete(thread.id);
       for (const m of buffered) start.run.send(`[New information from the director]\n${m}`, { priority: "next" });
     }
-    await this.awaitImplementorResult(thread, undefined, start.run, start.accountId, false, resumeNudge)
+    await this.awaitImplementorResult(thread, thread.effortOverride ?? undefined, start.run, start.accountId, false, resumeNudge)
       .then(() => {
         // A re-cap during the manual resume tags it for the supervisor; a clean finish parks for review.
         if (this.db.getThread(thread.id)?.state === "implementing") this.settleReview(thread.id, "Resume finished — needs your review.");

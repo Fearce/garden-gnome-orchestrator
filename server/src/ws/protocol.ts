@@ -160,6 +160,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         // Composer state, persisted server-side so it survives across the HTTP/HTTPS surfaces.
         skipDirector: z.boolean(),
         showComposerModelPicker: z.boolean(),
+        skipDirectorEffort: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]),
         skipDirectorRetitle: z.boolean(),
         maxRecentRepos: z.number().int().min(1).max(20),
         recentRepos: z.array(z.string().max(600)).max(50),

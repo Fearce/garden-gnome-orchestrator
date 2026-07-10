@@ -1,13 +1,14 @@
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import type { ChatMessage, ChatScope, Finding, FindingKind, ImageAttachment, QuestionOption, Role, Severity, Thread } from "../types.js";
+import type { ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, QuestionOption, Role, Severity, Thread } from "../types.js";
 
 export interface DispatchInput {
   title: string;
   workspace: string;
   brief: string;
   images?: ImageAttachment[];
+  effort?: Effort; // pins the implementor effort for this task (skip-director composer pick) — beats the planner's
 }
 
 export interface AskUserInput {

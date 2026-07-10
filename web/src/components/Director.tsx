@@ -6,7 +6,7 @@ import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
-import { CODEX_SUB_ID, DEFAULT_SUB_ID, type DirectorItem, type DirectorMessage, type OrchestratorSettings, type Role } from "../types.js";
+import { CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, type CodexEffort, type DirectorItem, type DirectorMessage, type Effort, type OrchestratorSettings, type Role } from "../types.js";
 import { codexModelOptions } from "../lib/models.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 
@@ -248,6 +248,7 @@ export function Director() {
           )}
         </div>
         {showModelPicker && <ComposerImplementorModelPickers />}
+        {skip && <ComposerEffortPickers />}
         <textarea
           value={text}
           placeholder={
@@ -339,6 +340,67 @@ function ComposerImplementorModelPickers() {
         title="Pick the Codex model used when Codex implements or Claude fails over to Codex."
         onChange={(model) => setModel(CODEX_SUB_ID, "implementor", model)}
       />
+    </div>
+  );
+}
+
+/** Effort dropdowns, shown only in skip-director mode — with no director in the loop the owner picks how
+ *  hard the implementor works. The Claude pick is snapshotted onto each direct dispatch and beats the
+ *  planner's per-task choice ("Auto" leaves the planner — or the high default — in charge); the Codex pick
+ *  binds the same global reasoning effort as Settings → Subscriptions, applied to every Codex run. */
+function ComposerEffortPickers() {
+  const effort = useStore((s) => s.settings.skipDirectorEffort);
+  const codexEffort = useStore((s) => s.settings.codexEffort);
+  const xhighEnabled = useStore((s) => s.settings.xhighEnabled);
+  const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
+  const setSettings = useStore((s) => s.setSettings);
+  const claudeTiers = EFFORTS.filter((t) => t !== "xhigh" || xhighEnabled);
+  const claudeTitle = `How hard the Claude implementor works on tasks dispatched directly. Auto = ${
+    plannerEnabled ? "the planner's per-task pick" : "the built-in default (high) — the planner is off"
+  }; a concrete tier overrides it.`;
+  const codexTitle = "Codex CLI reasoning effort (model_reasoning_effort) — the same global setting as Settings → Subscriptions, applied to every Codex run.";
+
+  return (
+    <div className="composer-model-row" aria-label="Implementor effort">
+      <div className="composer-model" title={claudeTitle}>
+        <div className="composer-model-meta">
+          <span className="composer-model-label mono">Effort</span>
+          <span className="composer-model-provider">Claude</span>
+        </div>
+        <select
+          className={"model-select" + (effort === "auto" ? " inherited" : "")}
+          value={effort}
+          aria-label="Claude implementor effort"
+          title={claudeTitle}
+          onChange={(e) => setSettings({ skipDirectorEffort: e.target.value as Effort | "auto" })}
+        >
+          <option value="auto">{plannerEnabled ? "Auto (planner decides)" : "Auto (high)"}</option>
+          {claudeTiers.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="composer-model" title={codexTitle}>
+        <div className="composer-model-meta">
+          <span className="composer-model-label mono">Effort</span>
+          <span className="composer-model-provider">Codex</span>
+        </div>
+        <select
+          className="model-select"
+          value={codexEffort}
+          aria-label="Codex reasoning effort"
+          title={codexTitle}
+          onChange={(e) => setSettings({ codexEffort: e.target.value as CodexEffort })}
+        >
+          {CODEX_EFFORTS.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
