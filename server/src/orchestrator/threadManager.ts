@@ -790,6 +790,7 @@ export class ThreadManager implements OrchestratorApi {
       openaiKeyLast4: key && key.length >= 4 ? key.slice(-4) : null,
       codexChatgptLogin: chatgptLoginAvailable(),
       skipDirector: this.settingBool("setting_skip_director", false),
+      showComposerModelPicker: this.settingBool("setting_show_composer_model_picker", true),
       skipDirectorRetitle: this.settingBool("setting_skip_director_retitle", true),
       maxRecentRepos: this.settingNum("setting_max_recent_repos", 5, 1, 20),
       recentRepos: this.recentRepos(),
@@ -944,6 +945,7 @@ export class ThreadManager implements OrchestratorApi {
       void this.modelCatalog.refresh();
     }
     if (patch.skipDirector !== undefined) this.db.kvSet("setting_skip_director", patch.skipDirector ? "1" : "0");
+    if (patch.showComposerModelPicker !== undefined) this.db.kvSet("setting_show_composer_model_picker", patch.showComposerModelPicker ? "1" : "0");
     if (patch.skipDirectorRetitle !== undefined) this.db.kvSet("setting_skip_director_retitle", patch.skipDirectorRetitle ? "1" : "0");
     if (patch.maxRecentRepos !== undefined) this.db.kvSet("setting_max_recent_repos", String(patch.maxRecentRepos));
     // Recent repos: de-dupe (most-recent first), drop blanks, and cap at the current max before persisting
