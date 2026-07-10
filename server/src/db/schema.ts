@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS threads (
   brief         TEXT NOT NULL DEFAULT '',
   raw_prompt    TEXT NOT NULL DEFAULT '',
   error         TEXT,
+  effort_override TEXT,
   stage_outputs TEXT,
   closed_at         INTEGER,
   closed_prev_state TEXT,

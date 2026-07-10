@@ -81,8 +81,11 @@ deliberately no per-command approval gate; it would defeat firing many concurren
 tasks. (The `permission_request` event type exists as a hook point if a future
 opt-in gate is ever wanted.)
 
-Effort: implementor runs `effort: "high"` (Opus 4.8 sweet spot for agentic
-work, per the 4.8 guidance — give the full spec up front, run at high effort).
+Effort: the implementor defaults to `effort: "high"` (Opus 4.8 sweet spot for
+agentic work, per the 4.8 guidance — give the full spec up front, run at high
+effort). The planner picks a per-task tier (`plan.effort`), and in skip-director
+mode the composer's own effort dropdown pins one onto the dispatch
+(`threads.effort_override`), beating the planner's pick.
 
 ## 4. In-process MCP servers (`server/src/bus/`)
 

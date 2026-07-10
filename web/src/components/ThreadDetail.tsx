@@ -382,7 +382,7 @@ export function ThreadDetail() {
               title="Time since the task was dispatched"
             />
             {impl?.effort ? (
-              <span className={"effort-badge eff-" + impl.effort} title="Implementor effort level (chosen by the planner)">
+              <span className={"effort-badge eff-" + impl.effort} title="Implementor effort level (your composer pick, or the planner's)">
                 {impl.effort}
               </span>
             ) : null}

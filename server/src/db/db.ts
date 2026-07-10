@@ -42,6 +42,7 @@ function rowToThread(r: Row): Thread {
     brief: r.brief as string,
     rawPrompt: r.raw_prompt as string,
     error: (r.error as string | null) ?? null,
+    effortOverride: (r.effort_override as Effort | null) ?? null,
     closedAt: (r.closed_at as number | null) ?? null,
     // The state a closed task came from: kept for restore, and surfaced so the UI can mark tasks that
     // finished correctly (closed_prev_state === 'done') with a checkmark. Null on never-closed rows.
@@ -174,6 +175,7 @@ export class Db {
       "ALTER TABLE director_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
+      "ALTER TABLE threads ADD COLUMN effort_override TEXT",
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
       "ALTER TABLE threads ADD COLUMN closed_prev_state TEXT",
       "ALTER TABLE chat_messages ADD COLUMN sender_name TEXT",
@@ -242,7 +244,7 @@ export class Db {
   }
 
   // ---- threads ----
-  createThread(input: { title: string; workspace: string; rawPrompt: string; brief?: string }): Thread {
+  createThread(input: { title: string; workspace: string; rawPrompt: string; brief?: string; effortOverride?: Effort | null }): Thread {
     const t: Thread = {
       id: newId(),
       title: input.title,
@@ -251,13 +253,14 @@ export class Db {
       brief: input.brief ?? "",
       rawPrompt: input.rawPrompt,
       error: null,
+      effortOverride: input.effortOverride ?? null,
       createdAt: now(),
       updatedAt: now(),
     };
     this.raw
       .prepare(
-        `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, created_at, updated_at)
-         VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @createdAt, @updatedAt)`,
+        `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, effort_override, created_at, updated_at)
+         VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @effortOverride, @createdAt, @updatedAt)`,
       )
       .run(t);
     return t;

@@ -20,6 +20,7 @@ export type ThreadState =
   | "closed"; // soft-closed: kept in the DB (restorable) but off the main board; auto-purged after 30d
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 export type CodexEffort = "low" | "medium" | "high" | "xhigh";
 export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
 
@@ -46,6 +47,7 @@ export interface Thread {
   brief: string; // enriched brief that kicked off the pipeline
   rawPrompt: string; // the user's original ask
   error?: string | null;
+  effortOverride?: Effort | null; // operator-pinned implementor effort, snapshotted at a skip-director dispatch — beats the planner's pick
   closedAt?: number | null; // when soft-closed (state === "closed"); drives the 30-day auto-purge clock
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' means it finished correctly (drives the closed-card checkmark)
   createdAt: number;
@@ -319,6 +321,8 @@ export interface OrchestratorSettings {
   //      HTTPS surfaces the console is served on — the two origins don't share localStorage. ----
   skipDirector: boolean; // composer's skip-director mode — persists so "on" stays on next time it opens
   showComposerModelPicker: boolean; // whether the director composer shows compact Claude/Codex implementor model dropdowns
+  skipDirectorEffort: Effort | "auto"; // composer's implementor effort for skip-director dispatches — "auto" leaves it to the planner
+  xhighEnabled: boolean; // read-only — the ENABLE_XHIGH opt-in is on, so the xhigh tier is offerable
   skipDirectorRetitle: boolean; // when skip-director is on, mint a real title via a cheap Haiku call instead of the raw first line (default on)
   maxRecentRepos: number; // how many recent-repo chips the composer shows (clamped 1–20, default 5)
   recentRepos: string[]; // recently-dispatched repo paths, most-recent first (capped at maxRecentRepos)

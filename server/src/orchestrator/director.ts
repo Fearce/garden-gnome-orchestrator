@@ -115,7 +115,10 @@ export class Director {
     }
 
     const title = directTitle(text);
-    const id = await this.api.dispatch({ title, workspace: ws, brief: text, images });
+    // The composer's effort pick rides along: with no planner-adjacent director in the loop, the owner
+    // chooses how hard the implementor works. "auto" keeps the planner (or the high default) in charge.
+    const effort = this.api.settings().skipDirectorEffort;
+    const id = await this.api.dispatch({ title, workspace: ws, brief: text, images, effort: effort === "auto" ? undefined : effort });
     const note = this.postDirectorNote(`Skipped the director — dispatched "${title}" straight to the pipeline (task ${id.slice(0, 8)}).`);
     // Link BOTH the prompt (precedes the task) and the confirmation note (follows it) — the note would
     // otherwise be misfiled under the next task by the history backfill's timeline heuristic.

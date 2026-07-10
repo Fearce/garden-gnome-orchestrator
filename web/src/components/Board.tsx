@@ -578,7 +578,7 @@ const Card = memo(function Card({
             {stateLabel(thread.state)}
           </span>
           {impl?.effort ? (
-            <span className={"effort-badge eff-" + impl.effort} title="Implementor effort (planner-chosen)">
+            <span className={"effort-badge eff-" + impl.effort} title="Implementor effort (your composer pick, or the planner's)">
               {impl.effort}
             </span>
           ) : null}

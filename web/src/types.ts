@@ -3,6 +3,7 @@
 export type Role = "director" | "planner" | "researcher" | "implementor" | "qa";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 export type CodexEffort = "low" | "medium" | "high" | "xhigh";
 export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
 
@@ -267,6 +268,8 @@ export interface OrchestratorSettings {
   // localStorage): the skip-director mode, the recent-repo chip cap, and the recent-repo list itself.
   skipDirector: boolean;
   showComposerModelPicker: boolean; // when on, the director composer exposes compact Claude/Codex implementor model dropdowns
+  skipDirectorEffort: Effort | "auto"; // composer's implementor effort for skip-director dispatches — "auto" leaves it to the planner
+  xhighEnabled: boolean; // read-only: the server's ENABLE_XHIGH opt-in is on, so the xhigh tier is offerable
   skipDirectorRetitle: boolean; // when skip-director is on, mint a real title via a cheap Haiku call instead of the raw first line
   maxRecentRepos: number;
   recentRepos: string[];
@@ -291,7 +294,7 @@ export const CODEX_SUB_ID = "codex";
 
 /** A settings.set patch: writable fields plus the write-only raw OpenAI key (never read back). */
 export type SettingsPatch = Partial<
-  Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin" | "modelDefaults" | "claudeModels" | "codexModels">
+  Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin" | "xhighEnabled" | "modelDefaults" | "claudeModels" | "codexModels">
 > & { openaiApiKey?: string };
 
 /** Flagship Codex models suggested when the live list hasn't loaded yet (most-capable first). */
