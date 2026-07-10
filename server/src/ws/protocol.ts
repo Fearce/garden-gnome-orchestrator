@@ -90,8 +90,8 @@ export type ServerEvent =
   // token-safety auto-stop (warn) and the token-reset auto-resume (info); the client shows it as a
   // dismissible banner and fires a desktop notify.
   | { type: "notice"; level: "info" | "warn"; title: string; message: string }
-  // Voice mode: a task-tailored spoken line for a just-completed task. Only published while the
-  // voice-gateway is up; the gateway speaks it, the web console ignores it.
+  // Voice mode: a task-tailored spoken line for a just-completed task. Only published while voice
+  // mode is on (gateway up AND wake/mic enabled); the gateway speaks it, the web console ignores it.
   | { type: "voice.announce"; threadId: string; text: string }
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
