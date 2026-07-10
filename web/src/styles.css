@@ -1181,6 +1181,14 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   text-transform: none;
   opacity: 0.58;
 }
+/* The model+effort sits inside the parens after the script-font name — render it in the mono UI face
+ * (not the handwriting one) so it reads as a technical tag, at the label's base size. */
+.role-model {
+  font-family: var(--font-mono);
+  font-size: 0.72em;
+  letter-spacing: 0;
+  text-transform: none;
+}
 .fi .ts { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); margin-left: auto; }
 .fi .body { font-size: 13px; white-space: pre-wrap; word-break: break-word; padding-left: 11px; border-left: 2px solid var(--role, var(--line)); color: var(--text); }
 .fi.draft .body { color: var(--text-dim); }

@@ -161,6 +161,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             on={taskDragAndDrop}
             onChange={setTaskDragAndDrop}
           />
+          <ToggleRow
+            label="Show agent model"
+            hint={'On: agent labels in the task feed name the model they ran on — "QA (Tor, Opus 4.8 High)". Off: just the agent name.'}
+            on={settings.showAgentModel}
+            onChange={(v) => setSettings({ showAgentModel: v })}
+          />
         </Group>
 
         <p className="settings-note">
