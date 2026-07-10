@@ -6,7 +6,8 @@ import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
-import type { DirectorItem, DirectorMessage, OrchestratorSettings, Role } from "../types.js";
+import { CODEX_MODELS, CODEX_SUB_ID, DEFAULT_SUB_ID, type DirectorItem, type DirectorMessage, type OrchestratorSettings, type Role } from "../types.js";
+import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 
 // The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
 // not localStorage — the console is served on both an HTTP and an HTTPS origin (the tablet Deck iframes
@@ -28,6 +29,7 @@ export function Director() {
   // reload on ANY surface (see the repoLabel note above). setSettings is optimistic, so toggling/adding
   // reflects instantly and the server broadcast reconciles every connected client.
   const skip = useStore((s) => s.settings.skipDirector);
+  const showModelPicker = useStore((s) => s.settings.showComposerModelPicker);
   const recentRepos = useStore((s) => s.settings.recentRepos);
   const maxRecentRepos = useStore((s) => s.settings.maxRecentRepos);
   const [text, setText] = useState("");
@@ -244,6 +246,7 @@ export function Director() {
             </span>
           )}
         </div>
+        {showModelPicker && <ComposerImplementorModelPicker />}
         <textarea
           value={text}
           placeholder={
@@ -300,6 +303,40 @@ export function Director() {
       <FolderPicker initialPath={ws} onSelect={setWs} onClose={() => setPickerOpen(false)} />
     )}
     </>
+  );
+}
+
+/** Compact provider-aware shortcut for the model the next implementor will use. Codex only implements,
+ *  so when it is the active backend this writes codex.implementor; otherwise it writes the global Claude
+ *  implementor default that Claude subscriptions inherit unless they have their own override. */
+function ComposerImplementorModelPicker() {
+  const settings = useStore((s) => s.settings);
+  const { overrides, setModel } = useModelOverrides();
+  const codexActive = settings.codexEnabled && (settings.codexChatgptLogin || settings.hasOpenaiKey);
+  const provider = codexActive ? "Codex" : "Claude";
+  const value = codexActive ? (overrides[CODEX_SUB_ID]?.implementor ?? settings.codexModel) : (overrides[DEFAULT_SUB_ID]?.implementor ?? "");
+  const options = codexActive ? (settings.codexModels.length ? settings.codexModels : CODEX_MODELS) : settings.claudeModels;
+  const defaultLabel = `Built-in (${settings.modelDefaults.implementor ?? "n/a"})`;
+  const title = codexActive
+    ? "Pick the Codex model used by the next implementor run."
+    : "Pick the default Claude model used by future implementor runs.";
+
+  return (
+    <div className="composer-model" title={title}>
+      <div className="composer-model-meta">
+        <span className="composer-model-label mono">implementor</span>
+        <span className="composer-model-provider">{provider}</span>
+      </div>
+      <ModelSelect
+        value={value}
+        options={options}
+        allowInherit={!codexActive}
+        defaultLabel={defaultLabel}
+        ariaLabel="Implementor model"
+        title={title}
+        onChange={(model) => setModel(codexActive ? CODEX_SUB_ID : DEFAULT_SUB_ID, "implementor", model)}
+      />
+    </div>
   );
 }
 
