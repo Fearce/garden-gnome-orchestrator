@@ -3132,8 +3132,10 @@ export class ThreadManager implements OrchestratorApi {
       senderName: who,
     });
     this.hub.publish({ type: "chat.message", message: m });
-    // Push it into the sessions of the live implementors who should act on it (priority "next", so it
-    // arrives at their next turn boundary — same mechanism as a teammate ping / heads-up finding).
+    // Push it into the sessions of the live implementors who should act on it with human-priority
+    // steering. Claude can consume priority "now" in its streaming query; the batch-oriented Codex
+    // runner interrupts its pre-message turn and immediately resumes with this directive. Without that
+    // distinction a long Codex turn keeps visibly working on stale context while the user's post is unread.
     const where = general ? "the office" : "this repo";
     const push =
       `📣 [${who} (director) → ${general ? "office" : "your team"}] ${text}\n` +
@@ -3145,7 +3147,7 @@ export class ThreadManager implements OrchestratorApi {
         const t = this.db.getThread(tid);
         if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
       }
-      live.run.send(live.accountId === "openai-codex" ? this.codexDirectorChatPush(text, general) : push, { priority: "next" });
+      live.run.send(live.accountId === "openai-codex" ? this.codexDirectorChatPush(text, general) : push, { priority: "now" });
       pinged++;
     }
     this.hub.log("info", `Director posted to ${general ? "the office" : `team ${workspace}`} — pinged ${pinged} live agent(s).`);
