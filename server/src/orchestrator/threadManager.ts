@@ -1208,7 +1208,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Voice mode: speak a task-tailored completion line through the gateway. completionAnnouncement
-   *  returns null when the gateway is down (voice mode off) — nothing is published or spent. */
+   *  returns null when voice mode is off (gateway down or mic toggled off) — nothing is published or spent. */
   private async announceDone(t: Thread): Promise<void> {
     const text = await completionAnnouncement(t, this.accounts.auxToken()).catch(() => null);
     if (text) this.hub.publish({ type: "voice.announce", threadId: t.id, text });
