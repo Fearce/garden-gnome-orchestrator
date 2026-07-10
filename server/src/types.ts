@@ -318,7 +318,7 @@ export interface OrchestratorSettings {
   // ---- Composer state, persisted server-side (not localStorage) so it survives across the HTTP and
   //      HTTPS surfaces the console is served on — the two origins don't share localStorage. ----
   skipDirector: boolean; // composer's skip-director mode — persists so "on" stays on next time it opens
-  showComposerModelPicker: boolean; // whether the director composer shows the compact implementor model dropdown
+  showComposerModelPicker: boolean; // whether the director composer shows compact Claude/Codex implementor model dropdowns
   skipDirectorRetitle: boolean; // when skip-director is on, mint a real title via a cheap Haiku call instead of the raw first line (default on)
   maxRecentRepos: number; // how many recent-repo chips the composer shows (clamped 1–20, default 5)
   recentRepos: string[]; // recently-dispatched repo paths, most-recent first (capped at maxRecentRepos)

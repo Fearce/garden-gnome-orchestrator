@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CODEX_EFFORTS, CODEX_MODELS, CODEX_SUB_ID, DEFAULT_SUB_ID, MODEL_ROLES } from "../types.js";
+import { CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, MODEL_ROLES } from "../types.js";
+import { codexModelOptions } from "../lib/models.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 
 /** The gear-icon panel: everything that isn't a per-task agent toggle (those live in the topbar).
@@ -116,8 +117,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
         <Group label="Composer">
           <ToggleRow
-            label="Show implementor model"
-            hint="On: show an implementor model dropdown in the director composer, between Skip director and the message box. Off: keep the composer compact."
+            label="Show implementor models"
+            hint="On: show Claude and Codex implementor dropdowns in the director composer, between Skip director and the message box. Off: keep the composer compact."
             on={settings.showComposerModelPicker}
             onChange={(v) => setSettings({ showComposerModelPicker: v })}
           />
@@ -543,7 +544,7 @@ function CodexModelField() {
   const liveModels = useStore((s) => s.settings.codexModels);
   const resolved = useStore((s) => s.settings.codexModel);
   const { overrides, setModel } = useModelOverrides();
-  const options = liveModels.length ? liveModels : (CODEX_MODELS as readonly string[]);
+  const options = codexModelOptions(liveModels);
   const picked = overrides[CODEX_SUB_ID]?.implementor ?? resolved;
   return (
     <div className="sub-field">

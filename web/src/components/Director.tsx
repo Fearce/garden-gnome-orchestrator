@@ -6,7 +6,8 @@ import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
-import { CODEX_MODELS, CODEX_SUB_ID, DEFAULT_SUB_ID, type DirectorItem, type DirectorMessage, type OrchestratorSettings, type Role } from "../types.js";
+import { CODEX_SUB_ID, DEFAULT_SUB_ID, type DirectorItem, type DirectorMessage, type OrchestratorSettings, type Role } from "../types.js";
+import { codexModelOptions } from "../lib/models.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 
 // The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
@@ -246,7 +247,7 @@ export function Director() {
             </span>
           )}
         </div>
-        {showModelPicker && <ComposerImplementorModelPicker />}
+        {showModelPicker && <ComposerImplementorModelPickers />}
         <textarea
           value={text}
           placeholder={
@@ -306,35 +307,77 @@ export function Director() {
   );
 }
 
-/** Compact provider-aware shortcut for the model the next implementor will use. Codex only implements,
- *  so when it is the active backend this writes codex.implementor; otherwise it writes the global Claude
- *  implementor default that Claude subscriptions inherit unless they have their own override. */
-function ComposerImplementorModelPicker() {
+/** Compact shortcuts for both implementor backends. Claude writes the global implementor default that
+ *  subscriptions inherit unless overridden; Codex writes codex.implementor for OpenAI failover/routing. */
+function ComposerImplementorModelPickers() {
   const settings = useStore((s) => s.settings);
   const { overrides, setModel } = useModelOverrides();
-  const codexActive = settings.codexEnabled && (settings.codexChatgptLogin || settings.hasOpenaiKey);
-  const provider = codexActive ? "Codex" : "Claude";
-  const value = codexActive ? (overrides[CODEX_SUB_ID]?.implementor ?? settings.codexModel) : (overrides[DEFAULT_SUB_ID]?.implementor ?? "");
-  const options = codexActive ? (settings.codexModels.length ? settings.codexModels : CODEX_MODELS) : settings.claudeModels;
+  const claudeValue = overrides[DEFAULT_SUB_ID]?.implementor ?? "";
+  const codexValue = overrides[CODEX_SUB_ID]?.implementor ?? settings.codexModel;
   const defaultLabel = `Built-in (${settings.modelDefaults.implementor ?? "n/a"})`;
-  const title = codexActive
-    ? "Pick the Codex model used by the next implementor run."
-    : "Pick the default Claude model used by future implementor runs.";
 
+  return (
+    <div className="composer-model-row" aria-label="Implementor models">
+      <ComposerModelField
+        label="Claude"
+        provider="Anthropic"
+        value={claudeValue}
+        options={settings.claudeModels}
+        allowInherit
+        defaultLabel={defaultLabel}
+        ariaLabel="Claude implementor model"
+        title="Pick the default Claude model used by future implementor runs."
+        onChange={(model) => setModel(DEFAULT_SUB_ID, "implementor", model)}
+      />
+      <ComposerModelField
+        label="Codex"
+        provider="OpenAI"
+        value={codexValue}
+        options={codexModelOptions(settings.codexModels)}
+        allowInherit={false}
+        ariaLabel="Codex implementor model"
+        title="Pick the Codex model used when Codex implements or Claude fails over to Codex."
+        onChange={(model) => setModel(CODEX_SUB_ID, "implementor", model)}
+      />
+    </div>
+  );
+}
+
+function ComposerModelField({
+  label,
+  provider,
+  value,
+  options,
+  onChange,
+  allowInherit = true,
+  defaultLabel,
+  ariaLabel,
+  title,
+}: {
+  label: string;
+  provider: string;
+  value: string;
+  options: readonly string[];
+  onChange: (model: string) => void;
+  allowInherit?: boolean;
+  defaultLabel?: string;
+  ariaLabel: string;
+  title: string;
+}) {
   return (
     <div className="composer-model" title={title}>
       <div className="composer-model-meta">
-        <span className="composer-model-label mono">implementor</span>
+        <span className="composer-model-label mono">{label}</span>
         <span className="composer-model-provider">{provider}</span>
       </div>
       <ModelSelect
         value={value}
         options={options}
-        allowInherit={!codexActive}
+        allowInherit={allowInherit}
         defaultLabel={defaultLabel}
-        ariaLabel="Implementor model"
+        ariaLabel={ariaLabel}
         title={title}
-        onChange={(model) => setModel(codexActive ? CODEX_SUB_ID : DEFAULT_SUB_ID, "implementor", model)}
+        onChange={onChange}
       />
     </div>
   );
