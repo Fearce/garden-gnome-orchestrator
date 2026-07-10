@@ -1,8 +1,8 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
-import { agentName, repoRoom } from "../types.js";
-import { clock, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { agentName, MODEL_ROLES, repoRoom } from "../types.js";
+import { clock, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed, RoleElapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
@@ -15,11 +15,18 @@ function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
 
 const roleVar = (role: Role): CSSProperties => ({ "--role": roleColor(role) } as CSSProperties);
 
-function RoleLabel({ role, name }: { role: Role; name?: string }) {
+function RoleLabel({ role, name, model }: { role: Role; name?: string; model?: string }) {
   return (
     <>
       <span className="role-word">{role}</span>
-      {name ? <span className="role-name">({name})</span> : null}
+      {name || model ? (
+        <span className="role-name">
+          (
+          {name}
+          {name && model ? ", " : ""}
+          {model ? <span className="role-model">{model}</span> : null})
+        </span>
+      ) : null}
     </>
   );
 }
@@ -174,6 +181,7 @@ export function ThreadDetail() {
   const openOffice = useStore((s) => s.openOffice);
   const nameOverrides = useStore((s) => s.nameOverrides);
   const directorName = useStore((s) => s.settings.directorName);
+  const showAgentModel = useStore((s) => s.settings.showAgentModel);
   // The project chatroom for THIS task's repo, if one exists (≥2 tasks ever collaborated here —
   // possibly in a PAST task, since the room persists). Repo-keyed so a fresh task on a repo with
   // prior history also gets the button to read the old chatter; invisible on repos that never collaborated.
@@ -323,6 +331,30 @@ export function ThreadDetail() {
     () => (role: Role) => (role === "director" ? directorName : agentName(nameOverrides, id, role)),
     [nameOverrides, id, directorName],
   );
+
+  // The model + effort each role ran on, taken from its latest run — appended to the label when the
+  // "Show agent model" setting is on. Keyed by a signature over the roles' current model/effort so the
+  // returned lookup keeps a stable identity across renders (FeedRow is memoised on it), rebuilding only
+  // when a run's model actually changes or the setting flips.
+  const modelSig = showAgentModel
+    ? MODEL_ROLES.map((role) => {
+        const r = latestRunOf(threadRuns, role);
+        return r ? `${role}:${r.model}:${r.effort ?? ""}` : "";
+      }).join("|")
+    : "";
+  const modelFor = useMemo(() => {
+    const byRole = new Map<Role, string>();
+    if (showAgentModel) {
+      for (const role of MODEL_ROLES) {
+        const r = latestRunOf(threadRuns, role);
+        const label = r ? modelEffortLabel(r.model, r.effort) : "";
+        if (label) byRole.set(role, label);
+      }
+    }
+    return (role: Role): string | undefined => byRole.get(role);
+    // threadRuns is captured for the map build; modelSig is the real dependency (its data fingerprint).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAgentModel, modelSig]);
 
   const doInject = (mode: "append" | "interrupt" | "queue") => {
     // Frozen tasks accept no manual inject/interrupt — the server auto-resumes them. Guard the handler
@@ -534,7 +566,7 @@ export function ThreadDetail() {
               >
                 <Gnome role={role} size={15} />
                 <span className="fchip-label">
-                  <RoleLabel role={role} name={nameFor(role)} />
+                  <RoleLabel role={role} name={nameFor(role)} model={modelFor(role)} />
                 </span>
                 <span className="n">{counts[role] ?? 0}</span>
                 {r ? <RoleElapsed className="fchip-time" runs={roleRuns} /> : null}
@@ -587,14 +619,14 @@ export function ThreadDetail() {
           </button>
         )}
         {windowed.map((f) => (
-          <FeedRow key={feedKey(f)} item={f} nameFor={nameFor} />
+          <FeedRow key={feedKey(f)} item={f} nameFor={nameFor} modelFor={modelFor} />
         ))}
         {draft && (roleFilter === "all" || draft.role === roleFilter) && (
           <div className="fi draft" style={roleVar(draft.role)}>
             <div className="head">
               <Gnome role={draft.role} size={30} />
               <span className="role-tag" style={{ color: roleColor(draft.role) }}>
-                <RoleLabel role={draft.role} name={nameFor(draft.role)} />
+                <RoleLabel role={draft.role} name={nameFor(draft.role)} model={modelFor(draft.role)} />
               </span>
             </div>
             <Markdown className="body" text={draft.text} />
@@ -686,7 +718,15 @@ export function ThreadDetail() {
   );
 }
 
-const FeedRow = memo(function FeedRow({ item, nameFor }: { item: FeedItem; nameFor: (role: Role) => string }) {
+const FeedRow = memo(function FeedRow({
+  item,
+  nameFor,
+  modelFor,
+}: {
+  item: FeedItem;
+  nameFor: (role: Role) => string;
+  modelFor: (role: Role) => string | undefined;
+}) {
   switch (item.kind) {
     case "text":
       return (
@@ -694,7 +734,7 @@ const FeedRow = memo(function FeedRow({ item, nameFor }: { item: FeedItem; nameF
           <div className="head">
             <Gnome role={item.role} size={30} />
             <span className="role-tag" style={{ color: roleColor(item.role) }}>
-              <RoleLabel role={item.role} name={nameFor(item.role)} />
+              <RoleLabel role={item.role} name={nameFor(item.role)} model={modelFor(item.role)} />
             </span>
             <span className="ts">{clock(item.at)}</span>
           </div>
@@ -706,7 +746,7 @@ const FeedRow = memo(function FeedRow({ item, nameFor }: { item: FeedItem; nameF
         <div className="fi tool">
           <div className="head">
             <span className="role-tag dim">
-              <RoleLabel role={item.role} name={nameFor(item.role)} />
+              <RoleLabel role={item.role} name={nameFor(item.role)} model={modelFor(item.role)} />
             </span>
             <span className="ts">{clock(item.at)}</span>
           </div>
@@ -728,7 +768,7 @@ const FeedRow = memo(function FeedRow({ item, nameFor }: { item: FeedItem; nameF
             <span className="sev-tag">⚑ {item.finding.severity}</span>
             {item.finding.fromRole ? (
               <span className="role-tag dim">
-                <RoleLabel role={item.finding.fromRole} name={nameFor(item.finding.fromRole)} />
+                <RoleLabel role={item.finding.fromRole} name={nameFor(item.finding.fromRole)} model={modelFor(item.finding.fromRole)} />
               </span>
             ) : null}
             <span className="ts">{clock(item.at)}</span>

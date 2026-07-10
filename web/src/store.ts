@@ -268,6 +268,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   codexChatgptLogin: false,
   skipDirector: false,
   showComposerModelPicker: true,
+  showAgentModel: true,
   skipDirectorEffort: "auto",
   xhighEnabled: false,
   skipDirectorRetitle: true,

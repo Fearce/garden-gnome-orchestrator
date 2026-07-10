@@ -791,6 +791,7 @@ export class ThreadManager implements OrchestratorApi {
       codexChatgptLogin: chatgptLoginAvailable(),
       skipDirector: this.settingBool("setting_skip_director", false),
       showComposerModelPicker: this.settingBool("setting_show_composer_model_picker", true),
+      showAgentModel: this.settingBool("setting_show_agent_model", true),
       skipDirectorEffort: this.skipDirectorEffort(),
       xhighEnabled: config.enableXhigh,
       skipDirectorRetitle: this.settingBool("setting_skip_director_retitle", true),
@@ -958,6 +959,7 @@ export class ThreadManager implements OrchestratorApi {
     }
     if (patch.skipDirector !== undefined) this.db.kvSet("setting_skip_director", patch.skipDirector ? "1" : "0");
     if (patch.showComposerModelPicker !== undefined) this.db.kvSet("setting_show_composer_model_picker", patch.showComposerModelPicker ? "1" : "0");
+    if (patch.showAgentModel !== undefined) this.db.kvSet("setting_show_agent_model", patch.showAgentModel ? "1" : "0");
     if (patch.skipDirectorEffort !== undefined && (patch.skipDirectorEffort === "auto" || EFFORTS.includes(patch.skipDirectorEffort)))
       this.db.kvSet("setting_skip_director_effort", patch.skipDirectorEffort);
     if (patch.skipDirectorRetitle !== undefined) this.db.kvSet("setting_skip_director_retitle", patch.skipDirectorRetitle ? "1" : "0");

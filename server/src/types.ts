@@ -321,6 +321,7 @@ export interface OrchestratorSettings {
   //      HTTPS surfaces the console is served on — the two origins don't share localStorage. ----
   skipDirector: boolean; // composer's skip-director mode — persists so "on" stays on next time it opens
   showComposerModelPicker: boolean; // whether the director composer shows compact Claude/Codex implementor model dropdowns
+  showAgentModel: boolean; // whether agent labels in the thread feed append the run's model + effort — "QA (Tor, Opus 4.8 High)"
   skipDirectorEffort: Effort | "auto"; // composer's implementor effort for skip-director dispatches — "auto" leaves it to the planner
   xhighEnabled: boolean; // read-only — the ENABLE_XHIGH opt-in is on, so the xhigh tier is offerable
   skipDirectorRetitle: boolean; // when skip-director is on, mint a real title via a cheap Haiku call instead of the raw first line (default on)

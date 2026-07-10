@@ -1,4 +1,4 @@
-import type { AccountDTO, AgentRunState, Role, Thread, ThreadState } from "../types.js";
+import type { AccountDTO, AgentRunState, Effort, Role, Thread, ThreadState } from "../types.js";
 
 export function roleColor(role: Role): string {
   return `var(--role-${role})`;
@@ -198,6 +198,51 @@ export function soonestReset(accounts: AccountDTO[]): number | null {
  *  tier: a more capable model struts a quicker lap, a smaller one ambles. Purely cosmetic — it feeds the
  *  `--pace-dur` custom property on `.office-pacer` (styles.css). Substring-matched so it tolerates dated /
  *  vendored ids (`claude-opus-4-8`, `us.anthropic.claude-…`, `gpt-5`, `o3-mini`…); unknown → the medium lap. */
+/** Capitalise the first character of a word ("high" → "High"), leaving the rest untouched. */
+function titleWord(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+/** A raw effort tier as a display word: "high" → "High", "xhigh" → "X-High", "max" → "Max". */
+export function effortLabel(effort: Effort): string {
+  return effort === "xhigh" ? "X-High" : titleWord(effort);
+}
+
+/** Turn a raw model id into the short display name shown next to an agent — "claude-opus-4-8" →
+ *  "Opus 4.8", "claude-haiku-4-5-20251001" → "Haiku 4.5", "gpt-5.1-codex-max" → "GPT-5.1 Codex Max".
+ *  Claude ids drop the family prefix and any trailing date segment, joining the version parts with dots;
+ *  gpt/codex ids uppercase the GPT prefix and title-case the trailing words. Anything unrecognised is
+ *  title-cased from its dash segments so a novel id still reads cleanly rather than showing raw. */
+export function modelLabel(model: string | null | undefined): string {
+  const id = (model ?? "").trim();
+  if (!id) return "";
+  const claude = /^claude-(opus|sonnet|haiku|fable)-(.+)$/.exec(id.toLowerCase());
+  if (claude) {
+    const family = titleWord(claude[1] ?? "");
+    // Drop a trailing date-like segment (e.g. `-20251001`) and join the remaining version parts as `4.8`.
+    const version = (claude[2] ?? "")
+      .split("-")
+      .filter((p) => !/^\d{6,}$/.test(p))
+      .join(".");
+    return version ? `${family} ${version}` : family;
+  }
+  if (id.toLowerCase().startsWith("gpt-")) {
+    const [, ...rest] = id.split("-");
+    const words = rest.map((p, i) => (i === 0 ? p : titleWord(p)));
+    return `GPT-${words.join(" ")}`;
+  }
+  return id.split("-").map(titleWord).join(" ");
+}
+
+/** The full "model + effort" suffix for an agent label — "Opus 4.8 High", or just "Opus 4.8" when the
+ *  run carries no effort (Claude runs at a default tier, Codex before an effort is set). Empty when the
+ *  model id is missing, so callers can skip the suffix entirely. */
+export function modelEffortLabel(model: string | null | undefined, effort: Effort | null | undefined): string {
+  const name = modelLabel(model);
+  if (!name) return "";
+  return effort ? `${name} ${effortLabel(effort)}` : name;
+}
+
 export function pacePeriodForModel(model: string | null | undefined): number {
   const m = (model ?? "").toLowerCase();
   // Small / fast-latency tiers first (so `o3-mini`, `gpt-5-nano` land here, not in the flagship bucket).
