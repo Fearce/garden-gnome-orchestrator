@@ -403,21 +403,24 @@ button { font-family: inherit; cursor: pointer; }
 }
 .mode-toggle.on .mode-dot { background: var(--role-implementor); box-shadow: 0 0 7px color-mix(in oklch, var(--role-implementor) 70%, transparent); }
 .mode-hint { font-size: 10px; letter-spacing: 0.04em; color: var(--role-implementor); opacity: 0.85; }
+.composer-model-row {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 7px;
+}
 .composer-model {
-  display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: center; gap: 9px;
+  min-width: 0; display: flex; flex-direction: column; gap: 5px;
   min-height: 34px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--r-sm);
   background: var(--bg-2);
 }
-.composer-model-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.composer-model-meta { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
 .composer-model-label {
   font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint);
   white-space: nowrap;
 }
 .composer-model-provider {
-  font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  min-width: 0; font-size: 10px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .composer-model .model-select, .composer-model .model-input {
-  min-width: 0; height: 30px; font-size: 11px; padding-top: 6px; padding-bottom: 6px;
+  min-width: 0; height: 30px; font-size: 11px; padding-top: 6px; padding-bottom: 6px; text-overflow: ellipsis;
 }
 .composer.direct textarea { border-color: color-mix(in oklch, var(--role-implementor) 35%, var(--line)); }
 .composer.direct textarea:focus {
