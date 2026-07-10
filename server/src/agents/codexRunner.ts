@@ -236,8 +236,10 @@ export async function testOpenAiKey(key: string | undefined): Promise<CodexTestR
  * Claude Agent SDK. The CLI is batch-oriented: each `codex exec [resume <id>]` invocation runs ONE
  * turn to completion and exits, so multi-turn continuity (QA fix-rounds, manual resume) is achieved
  * by resuming the captured Codex thread id in a fresh invocation — exactly the resume path the
- * orchestrator already uses for Claude. A follow-up `send()` that arrives while a turn is live is
- * buffered and replayed as a resume turn once the current one ends (unless the run was stopped).
+ * orchestrator already uses for Claude. A normal follow-up `send()` that arrives while a turn is live
+ * is buffered and replayed as a resume turn once the current one ends (unless the run was stopped).
+ * Priority-now messages interrupt the batch turn and resume it immediately so human steering is not
+ * stranded behind minutes of work the model started before the message existed.
  */
 export class CodexAgentRun implements AgentRunLike {
   readonly emitter = new EventEmitter();
@@ -253,6 +255,9 @@ export class CodexAgentRun implements AgentRunLike {
   capped = false;
 
   private child: ChildProcess | undefined;
+  // runTurn does async auth/image preparation before it spawns the CLI. Treat that window as busy too:
+  // otherwise an office message arriving there starts a second Codex process beside the first.
+  private turnStarting = false;
   private turnActive = false;
   private stopped = false;
   // Set by interrupt() so onTurnClose treats the killed turn as an intentional pause (no synthetic
@@ -261,6 +266,10 @@ export class CodexAgentRun implements AgentRunLike {
   private stdoutBuf = "";
   private lastErrorMsg: string | undefined;
   private sawTerminal = false; // turn.completed / turn.failed seen for the current turn
+  // A CLI terminal event arrives just before the child closes. Hold it until onTurnClose has checked
+  // pendingSends, otherwise the pipeline can accept this result and hand off to QA while steering that
+  // arrived in the close gap is still waiting to resume.
+  private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number } | undefined;
   private readonly pendingSends: { text: string; images: CodexImage[] }[] = [];
   // Images pasted with the initial kickoff, kept so a self-healed wedged-resume fresh restart re-attaches
   // them (the freshFallback string carries only doctrine + task). Temp files written per turn live in
@@ -301,15 +310,17 @@ export class CodexAgentRun implements AgentRunLike {
     else this.emitter.once("end", cb);
   }
 
-  /** Queue a follow-up. The CLI can't accept mid-turn input, so a send during a live turn is buffered
-   *  and delivered as a resume turn when this one ends; a send after the turn ended starts one now. */
-  send(content: UserContent, _opts?: SendOpts): void {
+  /** Queue a follow-up. The CLI can't accept mid-turn input, so ordinary sends wait for the current
+   *  batch turn. `priority: "now"` is reserved for human steering: end the old batch as soon as its
+   *  session id is known, then onTurnClose resumes that session with the buffered message. */
+  send(content: UserContent, opts?: SendOpts): void {
     if (this.stopped) return;
     const text = toText(content);
     const images = toImages(content);
     if (!text.trim() && !images.length) return;
-    if (this.turnActive) {
+    if (this.turnStarting || this.turnActive) {
       this.pendingSends.push({ text, images });
+      if (opts?.priority === "now") this.requestInterrupt();
       return;
     }
     void this.runTurn(text, this.sessionId, images);
@@ -320,8 +331,7 @@ export class CodexAgentRun implements AgentRunLike {
     // it so onTurnClose doesn't surface a spurious failure: a follow-up send() (the inject-interrupt
     // path) is replayed as a resume turn; a bare interrupt (the Pause control) leaves the run alive,
     // mirroring Claude, until a later send() resumes it or stop() tears it down.
-    this.interrupting = true;
-    this.killChild();
+    this.requestInterrupt();
   }
 
   // The CLI has no live model/permission switch; these exist only to satisfy AgentRunLike.
@@ -362,6 +372,14 @@ export class CodexAgentRun implements AgentRunLike {
 
   private emit(e: AgentEvent): void {
     this.emitter.emit("event", e);
+  }
+
+  /** Mark the current batch for interruption. A fresh `codex exec` cannot safely be killed before its
+   *  thread.started event: without that id there is nothing to resume and the original task context
+   *  would be lost. In that short startup window handleEvent completes the interrupt once the id lands. */
+  private requestInterrupt(): void {
+    this.interrupting = true;
+    if (this.turnActive && this.sessionId) this.killChild();
   }
 
   private killChild(): void {
@@ -411,7 +429,18 @@ export class CodexAgentRun implements AgentRunLike {
    *  images are written to temp files and attached via `--image` (both subcommands accept it). */
   private async runTurn(prompt: string, resumeId?: string, images: CodexImage[] = []): Promise<void> {
     if (this.stopped) return;
+    this.turnStarting = true;
+    this.sawTerminal = false;
+    this.sawFirstEvent = false;
+    this.isResumeTurn = !!resumeId;
+    this.lastErrorMsg = undefined;
+    this.pendingTerminalResult = undefined;
+    this.stdoutBuf = "";
+    // A resumed invocation already has a durable thread id even before the CLI repeats thread.started.
+    // Keeping it here lets an immediate priority-now message safely interrupt the startup window.
+    this.sessionId = resumeId;
     if (!existsSync(config.codex.binJs)) {
+      this.turnStarting = false;
       this.finishTurn({ subtype: "error", isError: true, result: `Codex CLI not found at ${config.codex.binJs}. Install it with \`npm i -g @openai/codex\` or set CODEX_BIN_JS.` });
       return;
     }
@@ -446,12 +475,6 @@ export class CodexAgentRun implements AgentRunLike {
       // instantly skipped. codex reads instructions from stdin when the prompt arg is `-`.
       "-",
     );
-    this.sawTerminal = false;
-    this.sawFirstEvent = false;
-    this.isResumeTurn = !!resumeId;
-    this.lastErrorMsg = undefined;
-    this.stdoutBuf = "";
-    this.turnActive = true;
     // CODEX_HOME points the CLI at the isolated home whose auth.json writeAuth just seeded. Carry
     // OPENAI_API_KEY ONLY in apikey mode — under a ChatGPT login an inherited key could nudge the CLI
     // toward the API path it documents as incompatible with a ChatGPT account, so strip it. Driving this
@@ -464,6 +487,7 @@ export class CodexAgentRun implements AgentRunLike {
     try {
       child = spawn(process.execPath, [config.codex.binJs, ...args], { cwd: this.cfg.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     } catch (err) {
+      this.turnStarting = false;
       this.turnActive = false;
       this.finishTurn({ subtype: "error", isError: true, result: `Failed to spawn Codex CLI: ${err instanceof Error ? err.message : String(err)}` });
       return;
@@ -477,6 +501,8 @@ export class CodexAgentRun implements AgentRunLike {
       /* child already gone; onTurnClose will synthesize the failure */
     }
     this.child = child;
+    this.turnStarting = false;
+    this.turnActive = true;
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => this.onStdout(chunk));
     child.stderr?.setEncoding("utf8");
@@ -490,7 +516,10 @@ export class CodexAgentRun implements AgentRunLike {
       this.lastErrorMsg = err.message;
     });
     child.on("close", (code) => this.onTurnClose(code));
-    this.armWatchdog();
+    // A priority-now send can land during async startup. A resume already has its session id and can
+    // stop here; a fresh run waits for thread.started below so its original task remains resumable.
+    if (this.interrupting && this.sessionId) this.killChild();
+    else this.armWatchdog();
   }
 
   /** (Re)arm the no-output watchdog for the live turn. Called on spawn and after every parsed event —
@@ -548,17 +577,18 @@ export class CodexAgentRun implements AgentRunLike {
         if (ev.thread_id) {
           this.sessionId = ev.thread_id;
           this.emit({ type: "init", sessionId: ev.thread_id });
+          if (this.interrupting) this.killChild();
         }
         break;
       case "turn.completed":
         this.sawTerminal = true;
-        this.finishTurn({ subtype: "success", isError: false, numTurns: 1 });
+        this.pendingTerminalResult = { subtype: "success", isError: false, numTurns: 1 };
         break;
       case "turn.failed": {
         this.sawTerminal = true;
         const msg = ev.error?.message ?? this.lastErrorMsg ?? "Codex turn failed.";
         if (RATE_LIMIT_RE.test(msg)) this.markCapped();
-        this.finishTurn({ subtype: "error", isError: true, result: msg });
+        this.pendingTerminalResult = { subtype: "error", isError: true, result: msg };
         break;
       }
       case "error":
@@ -637,6 +667,7 @@ export class CodexAgentRun implements AgentRunLike {
   }
 
   private onTurnClose(code: number | null): void {
+    this.turnStarting = false;
     this.turnActive = false;
     this.child = undefined;
     this.clearWatchdog();
@@ -686,6 +717,10 @@ export class CodexAgentRun implements AgentRunLike {
       // "dies in ~2s" symptom. Flag it here too so the provider failover fires instead of parking.
       if (RATE_LIMIT_RE.test(msg)) this.markCapped();
       this.finishTurn({ subtype: "error", isError: true, result: msg });
+    } else if (this.pendingTerminalResult) {
+      // Only publish completion once we know no buffered steering is chaining another turn. This keeps
+      // awaitImplementorResult blocked across the interrupt/resume pair instead of racing onward to QA.
+      this.finishTurn(this.pendingTerminalResult);
     }
     if (!this.finished) {
       this.finished = true;
