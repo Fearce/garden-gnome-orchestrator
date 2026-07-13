@@ -129,6 +129,21 @@ export function readCodexUsage(): CodexUsageDTO | null {
   return { ...best, wakeAt };
 }
 
+/** The newest REAL codex turn's own rate-limit snapshot (freshest rollout token_count in either
+ *  home), independent of the live ping — which fires without turns. Needed because a tiny turn can
+ *  start a 5h window the backend doesn't REPORT yet: a fresh wake turn's own token_count shows
+ *  primary=weekly, secondary=null (verified live on a plus plan), so the turn evidence is the only
+ *  signal that a window is presumably rolling invisibly. `updatedAt` is the turn time; when the
+ *  backend DID report the 5h window, `fiveHourReset` names that window's real reset. */
+export function latestTurnSnapshot(): CodexUsageDTO | null {
+  let best: CodexUsageDTO | null = null;
+  for (const home of [config.codex.home, config.codex.sourceAuthHome]) {
+    const snap = latestRollupUsage(home);
+    if (snap && (!best || snap.updatedAt > best.updatedAt)) best = snap;
+  }
+  return best;
+}
+
 /** Newest `rate_limits` snapshot from the most recent rollout file under `<home>/sessions`. */
 function latestRollupUsage(home: string): CodexUsageDTO | null {
   const sessions = join(home, "sessions");
