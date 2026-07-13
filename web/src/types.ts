@@ -236,6 +236,7 @@ export interface CodexUsageDTO {
   sevenDayReset: number | null;
   planType: string | null;
   updatedAt: number;
+  wakeAt?: number | null; // 5h window idle — a cheap wake turn is scheduled at this epoch ms (stagger slot)
 }
 
 /** Operator-tunable pipeline settings — server-authoritative (persisted in the DB kv table, broadcast

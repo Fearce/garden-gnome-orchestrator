@@ -83,9 +83,14 @@ Read the run trail to tell causes apart:
   in `review` with the marker `⏳ Auto-resume pending` in its `error` — a supervisor (`resumeCapParked`,
   every `CAP_RETRY_MS`/120s) auto-resumes it the moment a Claude sub OR Codex frees up; a QA-stage park
   (message carries "(QA runs on Claude)") waits for a Claude window specifically. A plain "needs your
-  review" park carries no marker and is left for a human. Idle 5h windows restart STAGGERED across subs
-  (epoch-anchored slots, `AccountManager`) so their resets alternate; Codex meters stay live via a free
-  `codex app-server` `account/rateLimits/read` ping (`codexUsagePing.ts`).
+  review" park carries no marker and is left for a human. Idle 5h windows restart STAGGERED: a shared
+  `ResetStagger` (`accounts/resetStagger.ts`) places each restart at the midpoint of the largest gap
+  between the OTHER participants' live 5h reset phases — Claude subs AND Codex — so resets spread out
+  and re-converge dynamically (a sub some outside consumer keeps waking, e.g. a background service, is detected
+  via `extWakeAt` and left unheld — its phase anchors the rest). Codex meters stay live via a free
+  `codex app-server` `account/rateLimits/read` ping (`codexUsagePing.ts`), and an IDLE Codex 5h window
+  is re-started at its slot by a cheap real wake turn (one-word prompt, `gpt-5.5` low effort — mini
+  models 400 on ChatGPT-plan auth; `CODEX_WAKE=off` disables, `CODEX_WAKE_MODEL` overrides).
 
 ## The office (cross-agent chat)
 Concurrent tasks on the same repo would otherwise edit the same files blind. Every running agent is

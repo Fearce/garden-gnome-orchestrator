@@ -52,7 +52,7 @@ export function Accounts() {
         frozen
           ? "Token freeze — a task is parked because every account it needs is rate-limited. Parked tasks auto-resume the moment a window resets or a backend frees up."
           : multi
-            ? "Dispatch alternates between subscriptions and favors more weekly headroom. Idle 5h windows restart staggered (offset slots) so the subs reset alternately instead of all at once."
+            ? "Dispatch alternates between subscriptions and favors more weekly headroom. Idle 5h windows restart staggered — placed dynamically around every other subscription's live reset (Codex included) — so 5h resets spread out instead of all landing at once."
             : "Subscription usage"
       }
     >
@@ -132,7 +132,7 @@ function CodexChip({
       </div>
       {showMeters ? (
         <div className="acct-meters">
-          <Meter k="5h" pct={usage!.fiveHour} kind="five" stale={stale} reset={usage!.fiveHourReset} now={now} />
+          <Meter k="5h" pct={usage!.fiveHour} kind="five" stale={stale} reset={usage!.fiveHourReset} now={now} hold={usage!.wakeAt} />
           <Meter k="7d" pct={usage!.sevenDay} kind="week" stale={stale} reset={usage!.sevenDayReset} now={now} />
         </div>
       ) : (
@@ -219,7 +219,7 @@ function Meter({
   const left = reset == null || reset <= now ? "" : countdown(reset, now);
   const usageTip = pct == null ? `${win} usage: —` : `${win} usage: ${stale ? "~" : ""}${label(pct)}${stale ? " (last known)" : ""}`;
   const tip = holding
-    ? `${usageTip} · window idle — starts in ${countdown(hold, now)} (staggered so the subs reset alternately; a dispatch starts it right away)`
+    ? `${usageTip} · window idle — starts in ${countdown(hold, now)} (staggered so 5h resets spread out across subscriptions; a dispatch starts it right away)`
     : left
       ? `${usageTip} · resets in ${left}`
       : usageTip;

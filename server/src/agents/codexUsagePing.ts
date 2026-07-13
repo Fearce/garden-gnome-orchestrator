@@ -4,9 +4,10 @@ import { mkdir } from "node:fs/promises";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { EventHub } from "../events.js";
+import type { ResetStagger } from "../accounts/resetStagger.js";
 import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
-import { classifyRateWindows, noteCodexPing, readCodexUsage, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
+import { classifyRateWindows, noteCodexPing, noteCodexWake, readCodexUsage, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 
 /**
  * A live Codex usage read — the ChatGPT-plan counterpart of the Claude Haiku ping. The rollout-file
@@ -15,6 +16,12 @@ import { classifyRateWindows, noteCodexPing, readCodexUsage, type CodexUsageDTO,
  * `account/rateLimits/read` over stdio JSON-RPC, which fetches the CURRENT plan-wide windows from the
  * backend WITHOUT running a model turn — exact 5h/weekly used-percent + reset epochs, zero quota cost.
  * (Verified live on codex-cli 0.142.4.)
+ *
+ * The free read can't START a 5h window, though — only a real model turn can — so an idle Codex has
+ * no rolling 5h reset at all. The monitor therefore also WAKES Codex: whenever a live read shows no
+ * running 5h window, it schedules the cheapest real turn we found (one-word prompt, low effort,
+ * read-only sandbox — ~5 output tokens) at the slot the shared ResetStagger picks, so Codex's resets
+ * interleave with the Claude subscriptions' instead of clumping or never rolling.
  */
 
 const PING_TIMEOUT_MS = 30_000;
@@ -22,6 +29,22 @@ const PING_TIMEOUT_MS = 30_000;
 const CODEX_PING_MS = Number(process.env.CODEX_PING_MS) > 0 ? Number(process.env.CODEX_PING_MS) : 600_000;
 const RESET_BUFFER_MS = 5_000; // re-read shortly after a window reset so the meter flips without waiting a full interval
 const ROLLOUT_POLL_MS = 30_000; // the cheap rollout-file poll (fresh mid-run data) + change broadcast
+
+// ---- the cheap wake turn ----
+// gpt-5.5 is the cheapest model a ChatGPT-plan login can run: the mini/codex-mini ids 400 with "not
+// supported when using Codex with a ChatGPT account" (verified live, CLI 0.142.4). Effort "low", not
+// "minimal" — minimal 400s against the built-in web_search tool. CODEX_WAKE=off disables waking.
+const WAKE_OFF = process.env.CODEX_WAKE === "off";
+const WAKE_MODEL = process.env.CODEX_WAKE_MODEL?.trim() || "gpt-5.5";
+const WAKE_EFFORT = "low";
+const WAKE_PROMPT = "Reply with exactly: ok";
+const WAKE_TIMEOUT_MS = 180_000;
+// After a failed wake turn (bad model id, transient 5xx), hold off before trying again so a broken
+// wake can't burn a spawn every ping cycle.
+const WAKE_FAIL_BACKOFF_MS = 30 * 60_000;
+// At/above this weekly used-percent, don't wake: a fresh 5h window can't add headroom the weekly cap
+// has already taken away, and the turn itself would likely 429.
+const WAKE_WEEKLY_GUARD = 98;
 
 interface RpcWindow {
   usedPercent?: number;
@@ -136,17 +159,109 @@ function toMeterWindow(w: RpcWindow | null | undefined): MeterWindow | null {
   };
 }
 
+/** Run the cheapest real Codex turn we can — a one-word prompt, low effort, read-only sandbox, no
+ *  repo. Unlike the free rateLimits read this consumes a (trivial) slice of quota, which is exactly
+ *  the point: it STARTS a fresh 5h window. The rollout it writes doubles as a free meter snapshot.
+ *  Resolves true only on a completed turn. */
+export async function codexWakeTurn(apiKey: string | undefined, model: string, timeoutMs = WAKE_TIMEOUT_MS): Promise<boolean> {
+  if (!existsSync(config.codex.binJs)) return false;
+  await mkdir(config.codex.home, { recursive: true }).catch(() => {});
+  const authMode = await seedCodexAuth(apiKey).catch(() => "none" as const);
+  if (authMode === "none") return false;
+  const env: NodeJS.ProcessEnv = withAgentToolPath({ ...process.env, CODEX_HOME: config.codex.home });
+  const key = apiKey?.trim();
+  if (authMode === "apikey" && key) env.OPENAI_API_KEY = key;
+  else delete env.OPENAI_API_KEY;
+  const args = [
+    config.codex.binJs,
+    "exec",
+    "--json",
+    "--skip-git-repo-check",
+    "-s",
+    "read-only",
+    "--color",
+    "never",
+    "-C",
+    config.codex.home,
+    "-c",
+    `model_reasoning_effort="${WAKE_EFFORT}"`,
+    "-m",
+    model,
+    "-",
+  ];
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(process.execPath, args, { cwd: config.codex.home, env, stdio: ["pipe", "pipe", "ignore"] });
+    } catch {
+      resolve(false);
+      return;
+    }
+    let ok = false;
+    let buf = "";
+    const timer = setTimeout(() => child.kill(), timeoutMs);
+    child.stdin?.on("error", () => {});
+    try {
+      child.stdin?.end(WAKE_PROMPT);
+    } catch {
+      /* child died instantly; close resolves false */
+    }
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      if (ok) return;
+      buf += chunk;
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        try {
+          if ((JSON.parse(line) as { type?: string }).type === "turn.completed") ok = true;
+        } catch {
+          /* non-JSON noise */
+        }
+      }
+      if (buf.length > 65536) buf = buf.slice(-1024); // runaway unterminated line — keep memory bounded
+    });
+    child.on("error", () => {});
+    child.on("close", () => {
+      clearTimeout(timer);
+      resolve(ok);
+    });
+  });
+}
+
 /**
  * Keep the Codex meters live: broadcast `codex.usage` whenever the merged reading (rollout snapshot ∪
  * live ping) changes, ping the app-server periodically and once shortly after each 5h/weekly reset —
  * so the chip's percentages AND reset countdowns track reality even when no Codex turn has run for
  * hours. Skips entirely (and cheaply) while Codex isn't configured; picks up the moment it is.
+ *
+ * With a `stagger`, the monitor also enrolls Codex as a stagger participant and keeps its 5h window
+ * ROLLING: a live read proving the window idle schedules a cheap wake turn at Codex's slot, so its
+ * resets interleave with the Claude subs' — and a cap-parked task gets a fresh Codex window on the
+ * same cadence as everyone else instead of waiting for the next real dispatch.
  */
-export function startCodexUsageMonitor(hub: EventHub, opts: { apiKey: () => string | undefined; configured: () => boolean }): void {
+export function startCodexUsageMonitor(
+  hub: EventHub,
+  opts: {
+    apiKey: () => string | undefined;
+    configured: () => boolean;
+    stagger?: ResetStagger;
+    /** The configured implementor model — the wake turn's fallback when WAKE_MODEL is rejected. */
+    runModel?: () => string;
+  },
+): void {
   let lastSig = "";
   let resetTimer: NodeJS.Timeout | undefined;
   let resetArmedFor = 0;
   let pinging = false;
+  let lastRead: CodexUsageDTO | null = null; // last successful live RPC read — the only proof of idleness
+  let wakeTimer: NodeJS.Timeout | undefined;
+  let wakeAt: number | null = null;
+  let waking = false;
+  let lastWakeFailAt = 0;
+  let registered = false;
 
   const push = (): void => {
     const usage = readCodexUsage();
@@ -158,14 +273,98 @@ export function startCodexUsageMonitor(hub: EventHub, opts: { apiKey: () => stri
     armResetPing(usage);
   };
 
+  // Codex participates in the reset stagger only while it's configured; its phase is the merged 5h
+  // reset when a window is live, or the planned wake when one is scheduled.
+  const syncRegistration = (): void => {
+    if (!opts.stagger) return;
+    const want = opts.configured();
+    if (want && !registered) {
+      opts.stagger.register("codex", () => {
+        const now = Date.now();
+        if (wakeAt != null && wakeAt > now) return wakeAt;
+        const reset = readCodexUsage()?.fiveHourReset;
+        return reset != null && reset > now ? reset : null;
+      });
+      registered = true;
+    } else if (!want && registered) {
+      opts.stagger.unregister("codex");
+      registered = false;
+      setWake(null);
+      push(); // clear the chip's wake countdown right away, not on the next poll
+    }
+  };
+
+  const setWake = (at: number | null): void => {
+    if (wakeTimer) clearTimeout(wakeTimer);
+    wakeTimer = undefined;
+    wakeAt = at;
+    noteCodexWake(at);
+    if (at == null) return;
+    wakeTimer = setTimeout(() => void fireWake().catch((e) => logCrash("codexWake.fire", e)), Math.max(at - Date.now(), 1_000));
+    wakeTimer.unref?.();
+  };
+
+  /** (Re)plan the wake from the latest live read: window running → no wake; provably idle (and the
+   *  weekly window not capped) → wake at the stagger slot. An already-armed future wake is left
+   *  alone so the plan other participants spaced around stays put. */
+  const maybeScheduleWake = (): void => {
+    if (WAKE_OFF || !opts.configured() || waking) return;
+    const now = Date.now();
+    const live = lastRead;
+    if (!live) return; // no live read — can't tell idle from broken auth; don't spend a turn blind
+    if (live.fiveHourReset != null && live.fiveHourReset > now) {
+      if (wakeAt != null) setWake(null); // a real turn started the window — the plan is moot
+      return;
+    }
+    if (wakeAt != null && wakeAt > now) return; // already planned; others are spacing around it
+    if ((live.sevenDay ?? 0) >= WAKE_WEEKLY_GUARD) return;
+    if (now - lastWakeFailAt < WAKE_FAIL_BACKOFF_MS) return;
+    setWake(opts.stagger?.nextStart("codex", now) ?? now);
+    push();
+  };
+
+  const fireWake = async (): Promise<void> => {
+    setWake(null);
+    if (WAKE_OFF || !opts.configured()) return;
+    waking = true;
+    try {
+      // Re-verify right before spending a real turn — a genuine run may have started the window
+      // (or the weekly cap landed) since this wake was planned.
+      lastRead = await pingCodexUsage(opts.apiKey());
+      const now = Date.now();
+      if (!lastRead || (lastRead.fiveHourReset != null && lastRead.fiveHourReset > now)) return;
+      if ((lastRead.sevenDay ?? 0) >= WAKE_WEEKLY_GUARD) return;
+      const models = [...new Set([WAKE_MODEL, opts.runModel?.(), config.codex.defaultModel].filter((m): m is string => !!m))];
+      let woke = false;
+      for (const m of models) {
+        if (await codexWakeTurn(opts.apiKey(), m)) {
+          woke = true;
+          break;
+        }
+      }
+      if (!woke) {
+        lastWakeFailAt = Date.now();
+        logCrash("codexWake.turn", new Error(`codex wake turn failed on ${models.join(", ")}`));
+        return;
+      }
+      lastRead = await pingCodexUsage(opts.apiKey()); // read the freshly-started window
+    } finally {
+      waking = false;
+      push();
+      maybeScheduleWake();
+    }
+  };
+
   const ping = async (): Promise<void> => {
+    syncRegistration();
     if (pinging || !opts.configured()) return; // never stack spawns; a wedged child times out on its own
     pinging = true;
     try {
-      await pingCodexUsage(opts.apiKey());
+      lastRead = await pingCodexUsage(opts.apiKey());
     } finally {
       pinging = false;
     }
+    maybeScheduleWake();
     push();
   };
 
