@@ -4,10 +4,10 @@ import { mkdir } from "node:fs/promises";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { EventHub } from "../events.js";
-import type { ResetStagger } from "../accounts/resetStagger.js";
+import { WINDOW_MS, type ResetStagger } from "../accounts/resetStagger.js";
 import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
-import { classifyRateWindows, noteCodexPing, noteCodexWake, readCodexUsage, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
+import { classifyRateWindows, latestTurnSnapshot, noteCodexPing, noteCodexWake, readCodexUsage, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 
 /**
  * A live Codex usage read — the ChatGPT-plan counterpart of the Claude Haiku ping. The rollout-file
@@ -273,8 +273,22 @@ export function startCodexUsageMonitor(
     armResetPing(usage);
   };
 
+  // The backend does not REPORT a 5h window whose usage is tiny: a wake turn's own token_count comes
+  // back primary=weekly, secondary=null (verified live on a plus plan). So "no visible 5h reset" must
+  // NOT read as idle right after a turn — without this, every wake would look like it did nothing and
+  // the loop would re-fire a real turn each cycle. Presume a window from the newest REAL turn's own
+  // snapshot (rollout evidence, either home — survives restarts and covers implementor/operator turns
+  // too): the snapshot's 5h reset when the backend reported one, else turn + 5h — the latest possible
+  // reset of the window that turn started or rode.
+  const presumedReset = (now: number): number | null => {
+    const snap = latestTurnSnapshot();
+    if (!snap) return null;
+    const reset = snap.fiveHourReset ?? snap.updatedAt + WINDOW_MS;
+    return reset > now ? reset : null;
+  };
+
   // Codex participates in the reset stagger only while it's configured; its phase is the merged 5h
-  // reset when a window is live, or the planned wake when one is scheduled.
+  // reset when a window is live (visible or presumed), or the planned wake when one is scheduled.
   const syncRegistration = (): void => {
     if (!opts.stagger) return;
     const want = opts.configured();
@@ -283,7 +297,8 @@ export function startCodexUsageMonitor(
         const now = Date.now();
         if (wakeAt != null && wakeAt > now) return wakeAt;
         const reset = readCodexUsage()?.fiveHourReset;
-        return reset != null && reset > now ? reset : null;
+        if (reset != null && reset > now) return reset;
+        return presumedReset(now);
       });
       registered = true;
     } else if (!want && registered) {
@@ -304,16 +319,19 @@ export function startCodexUsageMonitor(
     wakeTimer.unref?.();
   };
 
-  /** (Re)plan the wake from the latest live read: window running → no wake; provably idle (and the
-   *  weekly window not capped) → wake at the stagger slot. An already-armed future wake is left
-   *  alone so the plan other participants spaced around stays put. */
+  /** (Re)plan the wake from the latest live read: window running (visible or presumed from a recent
+   *  turn) → no wake; provably idle (and the weekly window not capped) → wake at the stagger slot.
+   *  An already-armed future wake is left alone so the plan others spaced around stays put. */
   const maybeScheduleWake = (): void => {
     if (WAKE_OFF || !opts.configured() || waking) return;
     const now = Date.now();
     const live = lastRead;
     if (!live) return; // no live read — can't tell idle from broken auth; don't spend a turn blind
-    if (live.fiveHourReset != null && live.fiveHourReset > now) {
-      if (wakeAt != null) setWake(null); // a real turn started the window — the plan is moot
+    if ((live.fiveHourReset != null && live.fiveHourReset > now) || presumedReset(now) != null) {
+      if (wakeAt != null) {
+        setWake(null); // a real turn started the window — the plan is moot
+        push();
+      }
       return;
     }
     if (wakeAt != null && wakeAt > now) return; // already planned; others are spacing around it
@@ -329,10 +347,10 @@ export function startCodexUsageMonitor(
     waking = true;
     try {
       // Re-verify right before spending a real turn — a genuine run may have started the window
-      // (or the weekly cap landed) since this wake was planned.
+      // (visibly or not) or the weekly cap may have landed since this wake was planned.
       lastRead = await pingCodexUsage(opts.apiKey());
       const now = Date.now();
-      if (!lastRead || (lastRead.fiveHourReset != null && lastRead.fiveHourReset > now)) return;
+      if (!lastRead || (lastRead.fiveHourReset != null && lastRead.fiveHourReset > now) || presumedReset(now) != null) return;
       if ((lastRead.sevenDay ?? 0) >= WAKE_WEEKLY_GUARD) return;
       const models = [...new Set([WAKE_MODEL, opts.runModel?.(), config.codex.defaultModel].filter((m): m is string => !!m))];
       let woke = false;
