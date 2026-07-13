@@ -11,6 +11,7 @@ export interface CodexUsageDTO {
   sevenDayReset: number | null; // epoch ms
   planType: string | null; // "plus" | "pro" | …
   updatedAt: number; // epoch ms of the turn that produced this snapshot (for the stale check)
+  wakeAt?: number | null; // 5h window idle — a cheap wake turn is scheduled at this epoch ms (stagger slot)
 }
 
 interface RateLimitWindow {
@@ -97,6 +98,16 @@ export function noteCodexPing(usage: CodexUsageDTO): void {
   livePing = usage;
 }
 
+// When the 5h window is idle, the monitor schedules a cheap wake turn at Codex's stagger slot
+// (codexUsagePing). Kept here so every readCodexUsage consumer — the top-bar chip via the hello
+// event and the codex.usage broadcasts alike — sees the plan without threading monitor state around.
+let plannedWakeAt: number | null = null;
+
+/** Record (or clear, with null) the scheduled Codex wake turn. */
+export function noteCodexWake(at: number | null): void {
+  plannedWakeAt = at;
+}
+
 /** The codex CLI does not expose rolling rate limits over `codex exec --json`, but it PERSISTS them to
  *  the session rollout after every turn — a `token_count` event whose `rate_limits` holds the plan-wide
  *  primary/secondary windows. Reading the freshest rollout gives real usage at ZERO extra API cost,
@@ -113,7 +124,9 @@ export function readCodexUsage(): CodexUsageDTO | null {
   }
   const pingFresh = livePing && Date.now() - livePing.updatedAt <= LIVE_PING_MAX_AGE_MS;
   if (pingFresh && (!best || livePing!.updatedAt > best.updatedAt)) best = livePing;
-  return best;
+  if (!best) return null;
+  const wakeAt = plannedWakeAt != null && plannedWakeAt > Date.now() ? plannedWakeAt : null;
+  return { ...best, wakeAt };
 }
 
 /** Newest `rate_limits` snapshot from the most recent rollout file under `<home>/sessions`. */

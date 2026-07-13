@@ -3,6 +3,7 @@ import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
 import type { Account } from "./account.js";
 import { pingUsage, type PingFailReason } from "./usagePing.js";
+import { ResetStagger, WINDOW_MS } from "./resetStagger.js";
 import { logCrash } from "../crashLog.js";
 
 interface AccountState {
@@ -20,6 +21,7 @@ interface AccountState {
   enabled: boolean; // operator toggle — a disabled account is held out of dispatch/failover rotation
   lastPick: number; // monotonic selection sequence — round-robin tiebreak
   holdUntil: number | null; // stagger hold-off: the 5h window is idle and its start ping waits for this slot
+  extWakeAt: number | null; // last time a hold-release ping found the window ALREADY started by someone else
   updatedAt: number;
 }
 
@@ -32,6 +34,7 @@ export interface PersistedAccountUsage {
   sevenDayReset: number | null;
   usageAt: number;
   holdUntil?: number | null;
+  extWakeAt?: number | null;
 }
 
 export interface AccountUsagePersistence {
@@ -53,18 +56,23 @@ const HARD_LIMIT = 98;
 const STALE_MS = 20 * 60 * 1000; // a value older than this (ping failing) shows "stale"
 const RESET_BUFFER_MS = 3_000; // ping this long after a window reset to catch the rollover
 const MIN_RESET_DELAY_MS = 1_000;
-// ---- 5h window-start staggering (multi-account) ----
+// ---- 5h window-start staggering ----
 // Any /v1/messages request — including our own usage pings — STARTS a new 5h window when none is
 // running, so pinging every account right at its reset keeps all subscriptions phase-locked: they
-// cap together and reset together. Instead each account gets an epoch-anchored slot (i·5h/N) and an
-// idle window is only restarted at its slot, so with 2 subs one window resets every ~2.5h.
-const WINDOW_MS = 5 * 3_600_000;
-// A back-to-back window drifts a few seconds past its slot each cycle (reset buffer + ping latency);
-// snap to the boundary just behind the reset so that drift doesn't cost a whole extra idle slot.
-const SLOT_TOLERANCE_MS = 15 * 60 * 1000;
+// cap together and reset together. Instead an idle window is only restarted at the slot the shared
+// ResetStagger computes from every OTHER participant's live reset phase (Claude subs + Codex), so
+// resets spread out and re-converge even when outside traffic moves some window's phase.
 // If the hold would be shorter than this, just ping at the reset — a sub-minute stagger isn't worth
 // the synthesized-idle bookkeeping.
 const MIN_HOLD_MS = 60_000;
+// A hold-release ping that finds the window started this much before the ping was sent proves an
+// OUTSIDE consumer (the operator's own sessions, a background service pinging the sub) woke the account
+// while we held it idle. Generous enough to absorb ping latency and modest clock skew.
+const EXT_WAKE_TOLERANCE_MS = 120_000;
+// An externally-woken account skips stagger holds for this long: we can't place its phase anyway,
+// and a hold would blind us (and dispatch decisions) to the burn the outside consumer keeps adding.
+// After it lapses, one probing hold re-tests whether the outside consumer is still there.
+const EXT_WAKE_TTL_MS = 24 * 3_600_000;
 // Persisted usage older than this isn't trusted to skip the boot ping (the operator's own interactive
 // sessions may have burned the account while we were down) — unless a persisted holdUntil proves the
 // account was deliberately idle.
@@ -102,10 +110,12 @@ const bySelectionPriority = (x: AccountState, y: AccountState): number =>
  * /v1/messages response headers carry exact live 5h + weekly utilization for the
  * token's account — works with setup-tokens, which 403 on the /usage endpoint.
  * Pings run on an interval (fresh display) and are also scheduled at each window's
- * reset, which flips the strip to ~0% and starts the new window's timer. With
- * MULTIPLE accounts those window-start pings are STAGGERED (each account restarts
- * its idle 5h window only at its own epoch-anchored slot, i·5h/N) so the windows
- * reset alternately instead of all at once — see the WINDOW_MS block above.
+ * reset, which flips the strip to ~0% and starts the new window's timer. Those
+ * window-start pings are STAGGERED: each account restarts its idle 5h window only
+ * at the slot the shared ResetStagger derives from every other participant's live
+ * reset phase (Claude subs + Codex), so the windows reset spread-out instead of
+ * all at once — and an account something else keeps waking (a background service) is
+ * detected and left unheld, its phase anchoring the rest.
  * `select()` round-robins until burn is known, then **burns the account whose
  * weekly window resets soonest** — spending the "perishable" weekly allowance
  * first and keeping the one with days of runway in reserve — avoiding any that
@@ -118,6 +128,7 @@ export class AccountManager {
   private preferredId: string | undefined;
   private selSeq = 0;
   private readonly persist?: AccountUsagePersistence;
+  private readonly stagger?: ResetStagger;
   // Fired right after every usage publish (periodic ping + reset ping), so a consumer can react to a
   // fresh utilization read — drives the token-safety auto-stop in ThreadManager. Set once at construction.
   private onUsage?: () => void;
@@ -126,9 +137,10 @@ export class AccountManager {
     private readonly accounts: Account[],
     private readonly hub: EventHub,
     private readonly pingIntervalMs = 600_000, // 10 min
-    opts?: { persist?: AccountUsagePersistence },
+    opts?: { persist?: AccountUsagePersistence; stagger?: ResetStagger },
   ) {
     this.persist = opts?.persist;
+    this.stagger = opts?.stagger;
     for (const a of accounts) {
       this.states.set(a.id, {
         account: a,
@@ -145,8 +157,10 @@ export class AccountManager {
         enabled: true,
         lastPick: 0,
         holdUntil: null,
+        extWakeAt: null,
         updatedAt: 0,
       });
+      this.stagger?.register(a.id, () => this.phase(a.id));
     }
   }
 
@@ -163,20 +177,38 @@ export class AccountManager {
     this.resetTimers.clear();
   }
 
-  /** Whether the 5h window-start stagger applies — only meaningful across 2+ subscriptions. */
+  /** Whether the 5h window-start stagger applies — 2+ participants in the shared coordinator
+   *  (Claude subs plus Codex when it's configured). */
   private staggered(): boolean {
-    return this.accounts.length > 1 && process.env.ACCOUNT_STAGGER !== "off";
+    return this.stagger?.enabled() ?? false;
+  }
+
+  /** This account's phase input to the shared stagger: the live window's reset, or the armed hold's
+   *  planned start (same phase — a window is exactly 5h). Null while idle with no plan. */
+  private phase(accountId: string): number | null {
+    const st = this.states.get(accountId);
+    if (!st) return null;
+    const now = Date.now();
+    if (st.holdUntil != null && st.holdUntil > now) return st.holdUntil;
+    if (st.fiveHourReset != null && st.fiveHourReset > now) return st.fiveHourReset;
+    return null;
+  }
+
+  private recentExtWake(st: AccountState, now: number): boolean {
+    return st.extWakeAt != null && now - st.extWakeAt < EXT_WAKE_TTL_MS;
   }
 
   /**
    * First read after a (re)start. A plain ping-everyone would START every idle 5h window in the same
    * second — re-syncing all subscriptions on every deploy and undoing the stagger — so accounts whose
    * persisted state shows a deliberately idle window (a live hold, or a recent read with the window
-   * expired) restore from the snapshot and wait for their slot instead of pinging.
+   * expired) restore from the snapshot and wait for their slot instead of pinging. The live accounts
+   * ping FIRST so the idle ones are placed around fresh observations, not the stale snapshot.
    */
   private async bootPing(): Promise<void> {
     const now = Date.now();
     const toPing: Account[] = [];
+    const toHold: Array<{ a: Account; restoredHold: number | null }> = [];
     for (const a of this.accounts) {
       const st = this.states.get(a.id)!;
       const p = this.persist?.load(a.id) ?? null;
@@ -186,20 +218,27 @@ export class AccountManager {
         st.fiveHourReset = p.fiveHourReset;
         st.sevenDayReset = p.sevenDayReset;
         st.usageAt = p.usageAt;
+        st.extWakeAt = p.extWakeAt ?? null;
         st.updatedAt = now;
       }
       const windowRunning = p?.fiveHourReset != null && p.fiveHourReset > now;
       const heldThrough = p?.holdUntil != null && p.holdUntil > now;
       const recentIdleRead = !windowRunning && p != null && now - p.usageAt < BOOT_TRUST_MS;
-      if (this.staggered() && (heldThrough || recentIdleRead)) {
-        st.fiveHour = 0;
-        st.fiveHourReset = null;
-        this.armHold(a, heldThrough ? p!.holdUntil! : Math.max(this.nextWindowStart(a.id, now), now));
+      // An externally-woken account never boot-holds: the outside consumer has likely started the
+      // window again already, so a restored "idle" would just mask its live burn — read the truth.
+      if (this.staggered() && !this.recentExtWake(st, now) && (heldThrough || recentIdleRead)) {
+        toHold.push({ a, restoredHold: heldThrough ? p!.holdUntil! : null });
       } else {
         toPing.push(a);
       }
     }
     await Promise.all(toPing.map((a) => this.pingOne(a)));
+    for (const { a, restoredHold } of toHold) {
+      const st = this.states.get(a.id)!;
+      st.fiveHour = 0;
+      st.fiveHourReset = null;
+      this.armHold(a, restoredHold ?? (this.stagger?.nextStart(a.id, Date.now()) ?? Date.now()));
+    }
     this.publish();
     this.onUsage?.();
   }
@@ -222,8 +261,11 @@ export class AccountManager {
     this.onUsage?.();
   }
 
-  /** Tiny Haiku ping → live usage from rate-limit headers; also (re)schedules the reset ping. */
-  private async pingOne(a: Account): Promise<void> {
+  /** Tiny Haiku ping → live usage from rate-limit headers; also (re)schedules the reset ping.
+   *  `expectIdle` marks a ping we believed would START the window (a hold release): finding the
+   *  window already running then proves an outside consumer woke the account during the hold. */
+  private async pingOne(a: Account, expectIdle = false): Promise<void> {
+    const sentAt = Date.now();
     const r = await pingUsage(a.token);
     const st = this.states.get(a.id);
     if (!st) return;
@@ -243,6 +285,9 @@ export class AccountManager {
       return;
     }
     const u = r.usage;
+    if (expectIdle && u.fiveHourReset != null && u.fiveHourReset - WINDOW_MS < sentAt - EXT_WAKE_TOLERANCE_MS) {
+      st.extWakeAt = now; // window started well before this ping — someone else woke the held account
+    }
     st.fiveHour = u.fiveHour;
     st.sevenDay = u.sevenDay;
     st.fiveHourReset = u.fiveHourReset;
@@ -258,6 +303,7 @@ export class AccountManager {
       sevenDayReset: u.sevenDayReset,
       usageAt: now,
       holdUntil: null,
+      extWakeAt: st.extWakeAt,
     });
     // Preserve a run-flagged cap whose reset is still in the future. A per-session ("You've hit your
     // session limit") cap is invisible to these 5h/weekly headers, so a routine ping would otherwise
@@ -310,12 +356,19 @@ export class AccountManager {
    *  immediately — starting the next window back-to-back, today's behavior. Staggered, show the truth
    *  instead: the window is idle at 0%, and the start ping waits for this account's slot. */
   private rollover5h(a: Account, resetAt: number): void {
-    const startAt = this.staggered() ? Math.max(this.nextWindowStart(a.id, resetAt), resetAt) : resetAt;
+    const st = this.states.get(a.id);
+    // An externally-woken account gets no hold: something outside the orchestrator keeps starting its
+    // window anyway, so its phase isn't ours to place, and holding it would just hide the burn that
+    // consumer adds from dispatch decisions. Ping right at the reset — the others space around it.
+    if (st && this.recentExtWake(st, Date.now())) {
+      this.resetPing(a);
+      return;
+    }
+    const startAt = this.staggered() ? this.stagger!.nextStart(a.id, resetAt) : resetAt;
     if (startAt - Date.now() < MIN_HOLD_MS) {
       this.resetPing(a);
       return;
     }
-    const st = this.states.get(a.id);
     if (st) {
       st.fiveHour = 0;
       st.fiveHourReset = null;
@@ -327,6 +380,7 @@ export class AccountManager {
         sevenDayReset: st.sevenDayReset,
         usageAt: st.usageAt,
         holdUntil: startAt,
+        extWakeAt: st.extWakeAt,
       });
     }
     this.armHold(a, startAt);
@@ -342,7 +396,7 @@ export class AccountManager {
     this.armTimer(a, Math.max(startAt - Date.now(), MIN_RESET_DELAY_MS), () => {
       const s = this.states.get(a.id);
       if (s) s.holdUntil = null;
-      this.resetPing(a);
+      this.resetPing(a, true);
     });
   }
 
@@ -354,12 +408,12 @@ export class AccountManager {
     const prev = this.resetTimers.get(st.account.id);
     if (prev) clearTimeout(prev);
     this.resetTimers.delete(st.account.id);
-    this.resetPing(st.account);
+    this.resetPing(st.account, true);
   }
 
   /** One-shot ping + publish (reset edges, hold releases). pingOne re-schedules the next event itself. */
-  private resetPing(a: Account): void {
-    void this.pingOne(a)
+  private resetPing(a: Account, expectIdle = false): void {
+    void this.pingOne(a, expectIdle)
       .then(() => {
         this.publish();
         this.onUsage?.();
@@ -373,22 +427,6 @@ export class AccountManager {
     const t = setTimeout(fn, delayMs);
     t.unref?.();
     this.resetTimers.set(a.id, t);
-  }
-
-  /** This account's stagger slot offset: accounts are spread evenly across the 5h window (i·5h/N) in
-   *  config order, so with 2 subs one window starts (and therefore resets) every ~2.5h. */
-  private staggerOffset(accountId: string): number {
-    const i = this.accounts.findIndex((x) => x.id === accountId);
-    return (Math.max(0, i) * WINDOW_MS) / this.accounts.length;
-  }
-
-  /** The next slot-aligned window-start time at/after `from`. Epoch-anchored, so slots are deterministic
-   *  across restarts and accounts converge back to their phase after any disturbance (a mid-window real
-   *  dispatch, the operator's own usage, a reboot). Snapped back by SLOT_TOLERANCE_MS so the few seconds
-   *  a back-to-back window drifts past its boundary don't cost a whole extra idle slot. */
-  private nextWindowStart(accountId: string, from: number): number {
-    const offset = this.staggerOffset(accountId);
-    return Math.ceil((from - SLOT_TOLERANCE_MS - offset) / WINDOW_MS) * WINDOW_MS + offset;
   }
 
   /** Toggle an account in/out of the dispatch+failover rotation (operator control). Refuses to disable
@@ -441,6 +479,8 @@ export class AccountManager {
       // configured), so accounts[0] is always defined — no synthetic fallback needed here.
       const only = this.accounts[0]!;
       this.preferredId = only.id;
+      const st = this.states.get(only.id);
+      if (st) this.releaseHold(st); // a lone sub can still be held (staggered against Codex) — dispatch starts the window anyway
       return { account: only, reason: "single account" };
     }
     const now = Date.now();
@@ -502,12 +542,21 @@ export class AccountManager {
     return chosen.account;
   }
 
-  /** A subscription token for an ANCILLARY call (e.g. resume-compression's Haiku summary) — purely
-   *  read-only: unlike select(), it does NOT bump round-robin state, change the preferred/"active"
-   *  account, or publish. Prefers the currently-preferred account, else the first. */
+  /** A subscription token for an ANCILLARY call (e.g. resume-compression's Haiku summary) — unlike
+   *  select(), it does NOT bump round-robin state or change the preferred/"active" account. It DOES
+   *  prefer an account whose 5h window is already RUNNING: the call rides the live window without
+   *  moving anyone's stagger phase. When only a held/idle account exists its hold is released first —
+   *  the call is about to start that window anyway, so the idle plan would become a lie. */
   auxToken(): string | undefined {
-    const pick = (this.preferredId ? this.states.get(this.preferredId)?.account : undefined) ?? this.accounts[0];
-    return pick?.token || undefined;
+    const now = Date.now();
+    const states = [...this.states.values()];
+    const preferred = this.preferredId ? this.states.get(this.preferredId) : undefined;
+    const live = (s: AccountState | undefined): boolean =>
+      !!s?.account.token && s.fiveHourReset != null && s.fiveHourReset > now && !this.inHold(s, now);
+    const pick = (live(preferred) ? preferred : undefined) ?? states.find((s) => s.enabled && live(s)) ?? preferred ?? states[0];
+    if (!pick?.account.token) return undefined;
+    this.releaseHold(pick);
+    return pick.account.token;
   }
 
   /** How many Claude subscriptions are configured (one account per setup-token; a single synthetic

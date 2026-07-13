@@ -10,6 +10,7 @@ import { Db } from "./db/db.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
 import { AccountManager, type PersistedAccountUsage } from "./accounts/accountManager.js";
+import { ResetStagger } from "./accounts/resetStagger.js";
 import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
@@ -67,9 +68,13 @@ async function main(): Promise<void> {
   const db = new Db(config.dbPath);
   const hub = new EventHub();
   const memory = new FileMemoryService();
+  // One shared 5h-reset coordinator across every participant — the Claude subs AND Codex — so idle
+  // window restarts are placed dynamically around each other's live reset phases (see resetStagger.ts).
+  const stagger = new ResetStagger();
   // Persist each account's last usage read (kv) so a restart can restore the 5h window-start stagger
   // instead of boot-pinging every account — which would start all their windows in sync again.
   const accounts = new AccountManager(config.accounts, hub, config.accountPingMs, {
+    stagger,
     persist: {
       load: (id) => {
         const v = db.kvGet(`account_usage_${id}`);
@@ -96,12 +101,16 @@ async function main(): Promise<void> {
   // Codex usage: rollout-file snapshots from real runs (cheap 30s poll) PLUS a periodic live read via
   // the codex app-server's account/rateLimits/read RPC — free (no model turn), so the 5h/weekly meters
   // and reset countdowns stay current even when Codex hasn't run for hours (the old "stuck at 13%").
+  // The stagger also makes the monitor WAKE an idle Codex 5h window with a cheap real turn at Codex's
+  // slot, so its resets keep rolling interleaved with the Claude subs'.
   startCodexUsageMonitor(hub, {
     apiKey: () => manager.openaiApiKey(),
     configured: () => {
       const s = manager.settings();
       return s.codexEnabled || s.hasOpenaiKey || s.codexChatgptLogin;
     },
+    stagger,
+    runModel: () => manager.settings().codexModel,
   });
 
   // Shared across both listeners so the per-IP wrong-password cooldown can't be
