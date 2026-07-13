@@ -308,8 +308,10 @@ export function Director() {
   );
 }
 
-/** Compact shortcuts for both implementor backends. Claude writes the global implementor default that
- *  subscriptions inherit unless overridden; Codex writes codex.implementor for OpenAI failover/routing. */
+/** Compact shortcuts for the implementor backends. Claude writes the global implementor default that
+ *  subscriptions inherit unless overridden; Codex writes codex.implementor for OpenAI failover/routing.
+ *  The Codex picker only exists while Codex is enabled — the server hard-gates routing on that toggle,
+ *  so on a Claude-only deployment the control would configure a backend that can never run. */
 function ComposerImplementorModelPickers() {
   const settings = useStore((s) => s.settings);
   const { overrides, setModel } = useModelOverrides();
@@ -330,16 +332,18 @@ function ComposerImplementorModelPickers() {
         title="Pick the default Claude model used by future implementor runs."
         onChange={(model) => setModel(DEFAULT_SUB_ID, "implementor", model)}
       />
-      <ComposerModelField
-        label="Codex"
-        provider="OpenAI"
-        value={codexValue}
-        options={codexModelOptions(settings.codexModels)}
-        allowInherit={false}
-        ariaLabel="Codex implementor model"
-        title="Pick the Codex model used when Codex implements or Claude fails over to Codex."
-        onChange={(model) => setModel(CODEX_SUB_ID, "implementor", model)}
-      />
+      {settings.codexEnabled && (
+        <ComposerModelField
+          label="Codex"
+          provider="OpenAI"
+          value={codexValue}
+          options={codexModelOptions(settings.codexModels)}
+          allowInherit={false}
+          ariaLabel="Codex implementor model"
+          title="Pick the Codex model used when Codex implements or Claude fails over to Codex."
+          onChange={(model) => setModel(CODEX_SUB_ID, "implementor", model)}
+        />
+      )}
     </div>
   );
 }
@@ -347,10 +351,12 @@ function ComposerImplementorModelPickers() {
 /** Effort dropdowns, shown only in skip-director mode — with no director in the loop the owner picks how
  *  hard the implementor works. The Claude pick is snapshotted onto each direct dispatch and beats the
  *  planner's per-task choice ("Auto" leaves the planner — or the high default — in charge); the Codex pick
- *  binds the same global reasoning effort as Settings → Subscriptions, applied to every Codex run. */
+ *  binds the same global reasoning effort as Settings → Subscriptions, applied to every Codex run.
+ *  Like the model picker, the Codex select is omitted while Codex is disabled. */
 function ComposerEffortPickers() {
   const effort = useStore((s) => s.settings.skipDirectorEffort);
   const codexEffort = useStore((s) => s.settings.codexEffort);
+  const codexEnabled = useStore((s) => s.settings.codexEnabled);
   const xhighEnabled = useStore((s) => s.settings.xhighEnabled);
   const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
   const setSettings = useStore((s) => s.setSettings);
@@ -382,25 +388,27 @@ function ComposerEffortPickers() {
           ))}
         </select>
       </div>
-      <div className="composer-model" title={codexTitle}>
-        <div className="composer-model-meta">
-          <span className="composer-model-label mono">Effort</span>
-          <span className="composer-model-provider">Codex</span>
+      {codexEnabled && (
+        <div className="composer-model" title={codexTitle}>
+          <div className="composer-model-meta">
+            <span className="composer-model-label mono">Effort</span>
+            <span className="composer-model-provider">Codex</span>
+          </div>
+          <select
+            className="model-select"
+            value={codexEffort}
+            aria-label="Codex reasoning effort"
+            title={codexTitle}
+            onChange={(e) => setSettings({ codexEffort: e.target.value as CodexEffort })}
+          >
+            {CODEX_EFFORTS.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
         </div>
-        <select
-          className="model-select"
-          value={codexEffort}
-          aria-label="Codex reasoning effort"
-          title={codexTitle}
-          onChange={(e) => setSettings({ codexEffort: e.target.value as CodexEffort })}
-        >
-          {CODEX_EFFORTS.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-      </div>
+      )}
     </div>
   );
 }
