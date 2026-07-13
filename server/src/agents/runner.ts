@@ -396,12 +396,16 @@ const RATE_LIMIT_RESULT_RE =
 
 /**
  * Tight match for the CLI's own session-limit notice as it appears in an assistant TEXT block
- * ("You've hit your session limit · resets 7pm", "You've hit your usage limit · resets …").
- * Deliberately narrower than RATE_LIMIT_RESULT_RE so a legitimate message that merely mentions a
- * rate/session limit (e.g. the director explaining a cap to the owner) isn't swallowed.
+ * ("You've hit your session limit · resets 7pm", "You've hit your usage limit · resets …"). The
+ * optional fable/model slot also catches a model-scoped pool notice ("You've hit your Fable usage
+ * limit"), which classifyCap then routes to the same-account model fallback instead of an account
+ * switch — the slot names those qualifiers rather than any word, so ordinary advice like "you've hit
+ * your daily usage limit" isn't swallowed. Deliberately narrower than RATE_LIMIT_RESULT_RE so a
+ * legitimate message that merely mentions a rate/session limit (e.g. the director explaining a cap
+ * to the owner) isn't swallowed either.
  */
 const SESSION_LIMIT_TEXT_RE =
-  /you'?ve hit your (?:session|usage|\d+-hour|weekly) limit|(?:session|usage|weekly) limit\s*[·:—–-]\s*resets/i;
+  /you'?ve hit your (?:fable[\w .-]{0,10}?|model )?(?:session|usage|\d+-hour|weekly) limit|(?:session|usage|weekly) limit\s*[·:—–-]\s*resets/i;
 
 // A session-limit notice with no parseable reset clock is held for the ~5h session cadence, so the cap
 // self-expires and the account rejoins rotation rather than staying stuck limited forever.

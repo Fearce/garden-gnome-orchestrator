@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store.js";
-import { isCapParked } from "../lib/format.js";
+import { isCapParked, modelLabel } from "../lib/format.js";
 import type { AccountDTO, CodexEffort, CodexUsageDTO } from "../types.js";
 
 const clamp = (pct: number | null): number => (pct == null ? 0 : Math.min(100, Math.max(0, pct)));
 const label = (pct: number | null): string => (pct == null ? "—" : `${Math.round(pct)}%`);
+// "claude-fable-5" → "Fable": the family word alone keeps the pool-cap tag chip-sized.
+const familyWord = (model: string): string => modelLabel(model).split(" ")[0] ?? model;
 
 /** Compact "time until reset", e.g. 4d 6h · 2h 14m · 47m 12s · 9s. */
 function countdown(reset: number | null | undefined, now: number): string {
@@ -187,6 +189,17 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
         ) : stale ? (
           <span className="acct-tag dim">stale</span>
         ) : null}
+        {(a.modelLimits ?? [])
+          .filter((ml) => ml.resetsAt > now)
+          .map((ml) => (
+            <span
+              key={ml.model}
+              className="acct-tag"
+              title={`${ml.model} has its own usage pool, and it's exhausted on this sub — dispatch falls back to ${ml.fallback} until it frees up (retries in ${countdown(ml.resetsAt, now)}). The normal 5h/weekly windows are unaffected.`}
+            >
+              {familyWord(ml.model)} → {familyWord(ml.fallback)}
+            </span>
+          ))}
       </div>
       {errored ? (
         <div className="acct-err">{a.error}</div>

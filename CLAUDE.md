@@ -77,7 +77,12 @@ Read the run trail to tell causes apart:
 - run `state='error'` → a real failure or a **usage cap**. A 5h/weekly cap auto-switches account and
   resumes the SDK session; `runner.ts` flags the cap from a `rate_limit_event`, an assistant
   `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
-  another sub with headroom. If EVERY sub is capped, an implementor fails over to the CODEX backend
+  another sub with headroom. A cap on a **Fable** model is first classified (`classifyCap`: fresh Haiku
+  usage ping — Fable's allowance is its OWN gated pool, separate from the 5h/weekly windows): normal
+  windows still free ⇒ the run resumes on the SAME account with `config.fableFallbackModel` (default
+  `claude-opus-4-8`, env `FABLE_FALLBACK_MODEL`), the pool cap is latched per (sub, model) until its
+  reset (5h self-expiry when unknown), `modelFor` resolves the fallback for every role meanwhile, and
+  the account chip shows a "Fable → Opus" tag. If EVERY sub is capped, an implementor fails over to the CODEX backend
   when it's enabled+authed with headroom (fresh seed — a Claude session can't resume on the codex CLI;
   the reverse codex→Claude flip already existed). Only when no backend can continue does the task park
   in `review` with the marker `⏳ Auto-resume pending` in its `error` — a supervisor (`resumeCapParked`,

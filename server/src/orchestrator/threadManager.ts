@@ -15,7 +15,7 @@ import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
-import { config } from "../config.js";
+import { config, fallbackModelFor } from "../config.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
@@ -131,6 +131,11 @@ const STALL_NUDGE =
   `genuinely blocked on ${config.ownerName}.`;
 // On a mid-run 5h/weekly cap, relaunch on another account (resuming the session) up to N times.
 const MAX_ACCOUNT_FAILOVERS = 3;
+// On a model-pool cap (Fable's own gated allowance, separate from the 5h/weekly windows) the run
+// relaunches on the SAME account with the fallback model — this is that relaunch's continuation nudge,
+// mirroring the account-failover one.
+const MODEL_FALLBACK_CONTINUE_MSG =
+  "Your session was switched to a fallback model after a model-specific usage limit. Continue exactly where you left off and finish.";
 // When Codex hits its usage cap we route implementors to the Claude backend until its window resets. The
 // real reset epoch (from the usage snapshot) is preferred; this cooldown is the fallback when it's unknown,
 // after which Codex is tried again (a failing turn simply re-arms the latch). kv key persists it across boots.
@@ -641,6 +646,31 @@ export class ThreadManager implements OrchestratorApi {
     return a ? { id: a.id, label: a.label, token: a.token || undefined } : null;
   }
 
+  /** The configured Claude account with this id as dispatch metadata, or null (e.g. the Codex
+   *  pseudo-account) — used to relaunch a model-fallback run on the SAME subscription. */
+  private acctById(id: string): Acct | null {
+    const a = this.accounts.byId(id);
+    return a ? { id: a.id, label: a.label, token: a.token || undefined } : null;
+  }
+
+  /**
+   * When a rate-limited run's model has its OWN metered pool (Fable) and a fresh usage read shows the
+   * account's normal windows still have headroom, the cap is the pool's — classifyCap latches it (so
+   * modelFor resolves the fallback for this sub) and this reports true: the caller relaunches on the
+   * SAME account, resuming the session. False means a real account cap → normal account failover.
+   */
+  private async modelCapFallback(thread: Thread, role: Role, model: string, acct: Acct, agent: AgentRunLike): Promise<boolean> {
+    const fb = fallbackModelFor(model);
+    if (!fb || !agent.rateLimited) return false;
+    if ((await this.accounts.classifyCap(acct.id, model, agent.rateLimitInfo)) !== "model") return false;
+    this.hub.log(
+      "warn",
+      `${role} on "${thread.title.slice(0, 48)}" hit the ${model} usage pool on ${acct.label} — falling back to ${fb} on the same account, resuming the session.`,
+    );
+    this.notifyExternal(`↪ ${role} hit the ${model} pool limit mid-task — continuing "${thread.title}" on ${fb} (same account).`);
+    return true;
+  }
+
   private logFailover(thread: Thread, role: Role, toLabel: string, info?: RateLimitInfo): void {
     const win = info?.rateLimitType ?? "usage";
     this.hub.log("warn", `${role} on "${thread.title.slice(0, 48)}" hit the ${win} limit — auto-switched account → ${toLabel}, resuming the session.`);
@@ -824,7 +854,12 @@ export class ThreadManager implements OrchestratorApi {
    *  to the next run. `subId` is the AccountDTO.id the role will run on. */
   modelFor(subId: string, role: Role): string {
     const ov = this.modelOverrides();
-    return ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim() || config.models[role];
+    const model = ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim() || config.models[role];
+    // A model whose OWN metered pool is exhausted on this sub (Fable's gated allowance) dispatches on
+    // its fallback until the pool frees — the sub's normal windows still have headroom, so neither
+    // parking the task nor switching accounts would be right. classifyCap latches the limit.
+    const fb = fallbackModelFor(model);
+    return fb && this.accounts.isModelLimited(subId, model) ? fb : model;
   }
 
   /** Set (or, with a blank value, clear) one (subId, role) model override in the persisted matrix. */
@@ -1484,6 +1519,16 @@ export class ThreadManager implements OrchestratorApi {
       this.untrack(thread.id, agent);
       this.finishRun(run.id, res, agent);
       if ((res && !res.isError) || this.cancelled(thread.id) || !agent.rateLimited) return res;
+      // A rejection on a model with its OWN metered pool (Fable) while this account's normal windows
+      // still have headroom isn't an account cap — another sub's Fable pool is just as gated, and
+      // parking would idle a sub with headroom. Relaunch on the SAME account: modelFor resolves the
+      // fallback (Opus) for it now that classifyCap latched the pool limit.
+      if (await this.modelCapFallback(thread, role, model, acct, agent)) {
+        resume = agent.sessionId ?? resume;
+        message = MODEL_FALLBACK_CONTINUE_MSG;
+        attempt--; // the model fallback isn't an account switch — don't spend an account-failover slot on it
+        continue; // bounded: the latched pool makes modelFor resolve the fallback next pass, which has no fallback of its own
+      }
       const next = this.failoverAccount(acct.id);
       // QA is the only runRole role whose cap settles the task to 'review' (a planner/researcher cap
       // degrades to no-plan/no-research and proceeds). Flag it so that settle tags it for the supervisor.
@@ -1788,6 +1833,31 @@ export class ThreadManager implements OrchestratorApi {
     for (let attempt = 0; attempt <= MAX_ACCOUNT_FAILOVERS; attempt++) {
       const res = useNext ? await current.nextResult() : await current.result();
       if ((res && !res.isError) || this.cancelled(thread.id) || !current.rateLimited) return res;
+      // A Fable-pool rejection with normal-window headroom relaunches on the SAME account — modelFor
+      // resolves the fallback model now that classifyCap latched the pool limit (see modelCapFallback).
+      // acctById is null for the Codex pseudo-account, so a Codex cap can never take this branch. The
+      // rejected model comes from the newest run ROW (the model actually dispatched), not a re-resolve
+      // that a limit latched by a concurrent thread could have already redirected.
+      const sameAcct = this.acctById(currentAccountId);
+      const fbSession = this.lastImplementorSession.get(thread.id);
+      const runModel = this.db
+        .listRuns(thread.id)
+        .filter((r) => r.role === "implementor")
+        .sort((a, b) => b.startedAt - a.startedAt)[0]?.model;
+      if (
+        sameAcct &&
+        fbSession &&
+        runModel &&
+        (await this.modelCapFallback(thread, "implementor", runModel, sameAcct, current))
+      ) {
+        await current.stop();
+        const relaunch = this.startImplementor(thread, MODEL_FALLBACK_CONTINUE_MSG, { resume: fbSession, effort, account: sameAcct });
+        current = relaunch.run;
+        currentAccountId = relaunch.accountId;
+        useNext = false;
+        attempt--; // the model fallback isn't an account switch — don't spend an account-failover slot on it
+        continue; // bounded: the relaunch's run row records the fallback model, which has no fallback of its own
+      }
       // Rate-limited: fail over to another account, or give up to "review" (return undefined so the
       // caller doesn't run QA on / mark done a half-finished implementation).
       const next = this.failoverAccount(currentAccountId);
