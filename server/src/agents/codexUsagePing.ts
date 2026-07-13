@@ -6,7 +6,7 @@ import { logCrash } from "../crashLog.js";
 import type { EventHub } from "../events.js";
 import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
-import { noteCodexPing, readCodexUsage, type CodexUsageDTO } from "./codexUsage.js";
+import { classifyRateWindows, noteCodexPing, readCodexUsage, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 
 /**
  * A live Codex usage read — the ChatGPT-plan counterpart of the Claude Haiku ping. The rollout-file
@@ -60,10 +60,7 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
     const rl = await appServerRateLimits(child, timeoutMs);
     if (!rl) return null;
     const usage: CodexUsageDTO = {
-      fiveHour: pct(rl.primary),
-      sevenDay: pct(rl.secondary),
-      fiveHourReset: resetMs(rl.primary),
-      sevenDayReset: resetMs(rl.secondary),
+      ...classifyRateWindows(toMeterWindow(rl.primary), toMeterWindow(rl.secondary)),
       planType: rl.planType ?? null,
       updatedAt: Date.now(),
     };
@@ -130,11 +127,13 @@ function appServerRateLimits(child: ChildProcess, timeoutMs: number): Promise<Rp
   });
 }
 
-function pct(w: RpcWindow | null | undefined): number | null {
-  return w && typeof w.usedPercent === "number" ? Math.min(100, Math.max(0, w.usedPercent)) : null;
-}
-function resetMs(w: RpcWindow | null | undefined): number | null {
-  return w && typeof w.resetsAt === "number" ? w.resetsAt * 1000 : null;
+function toMeterWindow(w: RpcWindow | null | undefined): MeterWindow | null {
+  if (!w) return null;
+  return {
+    pct: typeof w.usedPercent === "number" ? Math.min(100, Math.max(0, w.usedPercent)) : null,
+    resetMs: typeof w.resetsAt === "number" ? w.resetsAt * 1000 : null,
+    durationMins: typeof w.windowDurationMins === "number" ? w.windowDurationMins : null,
+  };
 }
 
 /**

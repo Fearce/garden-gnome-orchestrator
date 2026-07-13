@@ -24,6 +24,44 @@ interface RateLimits {
   plan_type?: string | null;
 }
 
+/** A rate-limit window normalized from either wire shape (rollout snake_case / app-server camelCase). */
+export interface MeterWindow {
+  pct: number | null;
+  resetMs: number | null;
+  durationMins: number | null;
+}
+
+/** The DTO's four meter fields, as classified from a primary/secondary window pair. */
+export type MeterFields = Pick<CodexUsageDTO, "fiveHour" | "sevenDay" | "fiveHourReset" | "sevenDayReset">;
+
+// Windows spanning a day or more are the weekly meter; the rolling window is 5h (300 mins).
+const WEEKLY_MIN_MINS = 24 * 60;
+
+/** Map a primary/secondary window pair onto the 5h/weekly meters. The backend does NOT pin which slot
+ *  holds which window: normally primary=5h and secondary=weekly, but when only the weekly window is
+ *  reported (e.g. the 5h meter is idle) it arrives AS `primary` with `secondary: null` — positional
+ *  mapping then paints weekly data into the 5h row. Classify by each window's own duration instead,
+ *  falling back to slot position only when the duration is absent. */
+export function classifyRateWindows(primary: MeterWindow | null, secondary: MeterWindow | null): MeterFields {
+  const out: MeterFields = { fiveHour: null, sevenDay: null, fiveHourReset: null, sevenDayReset: null };
+  const slots: Array<[MeterWindow | null, boolean]> = [
+    [primary, false],
+    [secondary, true],
+  ];
+  for (const [w, isSecondarySlot] of slots) {
+    if (!w || w.pct == null) continue; // no used_percent — carries no meter info
+    const weekly = w.durationMins != null ? w.durationMins >= WEEKLY_MIN_MINS : isSecondarySlot;
+    if (weekly && out.sevenDay == null) {
+      out.sevenDay = w.pct;
+      out.sevenDayReset = w.resetMs;
+    } else if (!weekly && out.fiveHour == null) {
+      out.fiveHour = w.pct;
+      out.fiveHourReset = w.resetMs;
+    }
+  }
+  return out;
+}
+
 // How many recent rollout files readCodexUsage scans (newest-first) looking for the last real usage
 // snapshot. Sized to ride out a burst of instant-death capped dispatches without losing the last reading.
 const USAGE_SCAN_FILES = 40;
@@ -141,15 +179,11 @@ function parseRollout(file: string): CodexUsageDTO | null {
     }
     const rl = obj.payload?.rate_limits;
     if (obj.payload?.type !== "token_count" || !rl) continue;
-    const fiveHour = pct(rl.primary);
-    const sevenDay = pct(rl.secondary);
-    if (fiveHour == null && sevenDay == null) continue; // empty windows — no meter info to surface
+    const meters = classifyRateWindows(toMeterWindow(rl.primary), toMeterWindow(rl.secondary));
+    if (meters.fiveHour == null && meters.sevenDay == null) continue; // empty windows — no meter info to surface
     const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
     found = {
-      fiveHour,
-      sevenDay,
-      fiveHourReset: resetMs(rl.primary),
-      sevenDayReset: resetMs(rl.secondary),
+      ...meters,
       planType: rl.plan_type ?? null,
       updatedAt: Number.isFinite(ts) ? ts : safeMtime(file),
     };
@@ -157,9 +191,11 @@ function parseRollout(file: string): CodexUsageDTO | null {
   return found;
 }
 
-function pct(w: RateLimitWindow | null | undefined): number | null {
-  return w && typeof w.used_percent === "number" ? Math.min(100, Math.max(0, w.used_percent)) : null;
-}
-function resetMs(w: RateLimitWindow | null | undefined): number | null {
-  return w && typeof w.resets_at === "number" ? w.resets_at * 1000 : null;
+function toMeterWindow(w: RateLimitWindow | null | undefined): MeterWindow | null {
+  if (!w) return null;
+  return {
+    pct: typeof w.used_percent === "number" ? Math.min(100, Math.max(0, w.used_percent)) : null,
+    resetMs: typeof w.resets_at === "number" ? w.resets_at * 1000 : null,
+    durationMins: typeof w.window_minutes === "number" ? w.window_minutes : null,
+  };
 }
