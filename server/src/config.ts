@@ -140,6 +140,10 @@ export const config = {
     // config/sessions don't inherit personal plugins/notify hooks (which would misfire under headless
     // `codex exec`). Auth is SEEDED into it — see sourceAuthHome — rather than relying on env vars
     // (the modern CLI authenticates only from <CODEX_HOME>/auth.json, not OPENAI_API_KEY).
+    // EXTERNAL CONSUMER: the agent agent orchestrator (~/.claude/agent-orchestrator, source
+    // repo agent-config) runs its gpt-5.6-sol fleet off this same <home>/auth.json — its
+    // codex_agent_loop.ps1 defaults ORCH_CODEX_HOME to this directory. Relocating CODEX_HOME_DIR or
+    // wiping the seeded login also de-authenticates that fleet; update the wrapper in the same change.
     home: process.env.CODEX_HOME_DIR || resolve(dataDir, "codex-home"),
     // The operator's personal codex home, where `codex login` writes auth.json. A ChatGPT-plan login
     // there (auth_mode "chatgpt") is the PREFERRED Codex auth — it bills against the Plus/Pro/etc. plan,

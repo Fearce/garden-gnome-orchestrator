@@ -60,6 +60,16 @@ service uses a `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`.
 > Note: from 2026-06-15, subscription Agent SDK usage draws from a separate
 > monthly "Agent SDK credit" pool (still your subscription, not API billing).
 
+Codex agents authenticate the same zero-API-billing way: a ChatGPT-plan
+`codex login` seeded into the isolated `server/data/codex-home/auth.json`
+(see the `codex` block in `server/src/config.ts`). That seeded login is
+**shared infrastructure**: the agent agent orchestrator
+(`~/.claude/agent-orchestrator`, source repo `agent-config`) points its own
+Codex fleet (`gpt-5.6-sol`) at the same `codex-home` — GPT models can't run
+on the Anthropic subscription, so the ChatGPT-plan login is the one account
+both orchestrators' Codex agents draw from. Don't log it out, rotate it, or
+move `CODEX_HOME_DIR` without updating that fleet's `codex_agent_loop.ps1`.
+
 ## Layout
 
 ```
