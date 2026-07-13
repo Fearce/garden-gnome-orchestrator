@@ -8,6 +8,8 @@ export interface CodexUsageDTO {
   fiveHour: number | null;
   sevenDay: number | null;
   fiveHourReset: number | null; // epoch ms
+  /** True when Codex omitted the 5h window and the reset is bounded from the latest real turn. */
+  fiveHourResetEstimated?: boolean;
   sevenDayReset: number | null; // epoch ms
   planType: string | null; // "plus" | "pro" | …
   updatedAt: number; // epoch ms of the turn that produced this snapshot (for the stale check)
@@ -37,6 +39,7 @@ export type MeterFields = Pick<CodexUsageDTO, "fiveHour" | "sevenDay" | "fiveHou
 
 // Windows spanning a day or more are the weekly meter; the rolling window is 5h (300 mins).
 const WEEKLY_MIN_MINS = 24 * 60;
+const FIVE_HOUR_MS = 5 * 60 * 60_000;
 
 /** Map a primary/secondary window pair onto the 5h/weekly meters. The backend does NOT pin which slot
  *  holds which window: normally primary=5h and secondary=weekly, but when only the weekly window is
@@ -118,14 +121,26 @@ export function noteCodexWake(at: number | null): void {
 export function readCodexUsage(): CodexUsageDTO | null {
   const homes = [config.codex.home, config.codex.sourceAuthHome];
   let best: CodexUsageDTO | null = null;
+  let latestTurn: CodexUsageDTO | null = null;
   for (const home of homes) {
     const snap = latestRollupUsage(home);
+    if (snap && (!latestTurn || snap.updatedAt > latestTurn.updatedAt)) latestTurn = snap;
     if (snap && (!best || snap.updatedAt > best.updatedAt)) best = snap;
   }
   const pingFresh = livePing && Date.now() - livePing.updatedAt <= LIVE_PING_MAX_AGE_MS;
   if (pingFresh && (!best || livePing!.updatedAt > best.updatedAt)) best = livePing;
   if (!best) return null;
-  const wakeAt = plannedWakeAt != null && plannedWakeAt > Date.now() ? plannedWakeAt : null;
+  const now = Date.now();
+  const wakeAt = plannedWakeAt != null && plannedWakeAt > now ? plannedWakeAt : null;
+  const inferred = turnFiveHourReset(latestTurn, now);
+  if ((best.fiveHourReset == null || best.fiveHourReset <= now) && inferred) {
+    return {
+      ...best,
+      fiveHourReset: inferred.reset,
+      fiveHourResetEstimated: inferred.estimated,
+      wakeAt,
+    };
+  }
   return { ...best, wakeAt };
 }
 
@@ -142,6 +157,23 @@ export function latestTurnSnapshot(): CodexUsageDTO | null {
     if (snap && (!best || snap.updatedAt > best.updatedAt)) best = snap;
   }
   return best;
+}
+
+/** The still-running 5h window implied by the newest real Codex turn. Codex sometimes supplies the
+ * exact reset while omitting the percentage; when it supplies neither, turn + 5h is the latest time
+ * the window can reset (the turn may have ridden a window that was already running). */
+export function latestTurnFiveHourReset(now: number): { reset: number; estimated: boolean } | null {
+  return turnFiveHourReset(latestTurnSnapshot(), now);
+}
+
+function turnFiveHourReset(
+  snap: CodexUsageDTO | null,
+  now: number,
+): { reset: number; estimated: boolean } | null {
+  if (!snap) return null;
+  const estimated = snap.fiveHourReset == null;
+  const reset = snap.fiveHourReset ?? snap.updatedAt + FIVE_HOUR_MS;
+  return reset > now ? { reset, estimated } : null;
 }
 
 /** Newest `rate_limits` snapshot from the most recent rollout file under `<home>/sessions`. */
