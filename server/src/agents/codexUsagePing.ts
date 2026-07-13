@@ -4,10 +4,10 @@ import { mkdir } from "node:fs/promises";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { EventHub } from "../events.js";
-import { WINDOW_MS, type ResetStagger } from "../accounts/resetStagger.js";
+import type { ResetStagger } from "../accounts/resetStagger.js";
 import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
-import { classifyRateWindows, latestTurnSnapshot, noteCodexPing, noteCodexWake, readCodexUsage, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
+import { classifyRateWindows, latestTurnFiveHourReset, noteCodexPing, noteCodexWake, readCodexUsage, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 
 /**
  * A live Codex usage read — the ChatGPT-plan counterpart of the Claude Haiku ping. The rollout-file
@@ -281,10 +281,7 @@ export function startCodexUsageMonitor(
   // too): the snapshot's 5h reset when the backend reported one, else turn + 5h — the latest possible
   // reset of the window that turn started or rode.
   const presumedReset = (now: number): number | null => {
-    const snap = latestTurnSnapshot();
-    if (!snap) return null;
-    const reset = snap.fiveHourReset ?? snap.updatedAt + WINDOW_MS;
-    return reset > now ? reset : null;
+    return latestTurnFiveHourReset(now)?.reset ?? null;
   };
 
   // Codex participates in the reset stagger only while it's configured; its phase is the merged 5h

@@ -233,6 +233,7 @@ export interface CodexUsageDTO {
   fiveHour: number | null;
   sevenDay: number | null;
   fiveHourReset: number | null;
+  fiveHourResetEstimated?: boolean;
   sevenDayReset: number | null;
   planType: string | null;
   updatedAt: number;

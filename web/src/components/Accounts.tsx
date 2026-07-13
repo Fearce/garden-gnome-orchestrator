@@ -132,7 +132,16 @@ function CodexChip({
       </div>
       {showMeters ? (
         <div className="acct-meters">
-          <Meter k="5h" pct={usage!.fiveHour} kind="five" stale={stale} reset={usage!.fiveHourReset} now={now} hold={usage!.wakeAt} />
+          <Meter
+            k="5h"
+            pct={usage!.fiveHour}
+            kind="five"
+            stale={stale}
+            reset={usage!.fiveHourReset}
+            resetEstimated={usage!.fiveHourResetEstimated}
+            now={now}
+            hold={usage!.wakeAt}
+          />
           <Meter k="7d" pct={usage!.sevenDay} kind="week" stale={stale} reset={usage!.sevenDayReset} now={now} />
         </div>
       ) : (
@@ -197,6 +206,7 @@ function Meter({
   kind,
   stale,
   reset,
+  resetEstimated,
   now,
   hold,
 }: {
@@ -205,6 +215,7 @@ function Meter({
   kind: "five" | "week";
   stale?: boolean;
   reset?: number | null;
+  resetEstimated?: boolean;
   now: number;
   hold?: number | null;
 }) {
@@ -218,10 +229,11 @@ function Meter({
   // already drops a window that has actually rolled over (its new reset is unknown until the next run).
   const left = reset == null || reset <= now ? "" : countdown(reset, now);
   const usageTip = pct == null ? `${win} usage: —` : `${win} usage: ${stale ? "~" : ""}${label(pct)}${stale ? " (last known)" : ""}`;
+  const resetTip = resetEstimated ? `estimated reset in ${left} (Codex omitted the 5-hour window)` : `resets in ${left}`;
   const tip = holding
     ? `${usageTip} · window idle — starts in ${countdown(hold, now)} (staggered so 5h resets spread out across subscriptions; a dispatch starts it right away)`
     : left
-      ? `${usageTip} · resets in ${left}`
+      ? `${usageTip} · ${resetTip}`
       : usageTip;
   return (
     <div className="meter" title={tip}>
@@ -233,7 +245,7 @@ function Meter({
         {pct != null && stale ? "~" : ""}
         {label(pct)}
       </span>
-      <span className="meter-r">{holding ? `idle ${countdown(hold, now)}` : left}</span>
+      <span className="meter-r">{holding ? `idle ${countdown(hold, now)}` : left ? `${resetEstimated ? "~" : ""}${left}` : ""}</span>
     </div>
   );
 }
