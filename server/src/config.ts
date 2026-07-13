@@ -106,6 +106,10 @@ export const config = {
     implementor: "claude-opus-4-8",
     qa: "claude-opus-4-8",
   },
+  // Fable access is gated by its OWN usage pool, separate from the normal 5h/weekly windows. When a
+  // Fable run is rejected while those windows still show headroom, dispatch falls back to this model
+  // on the SAME subscription until the Fable pool frees up (see fallbackModelFor / classifyCap).
+  fableFallbackModel: process.env.FABLE_FALLBACK_MODEL?.trim() || "claude-opus-4-8",
   // ---- OpenAI Codex (second, optional implementor backend) ----
   // The implementor can run on the Codex CLI instead of Claude when the Codex subscription is enabled
   // in Settings (with a valid OpenAI key). Planner/researcher/QA always stay Claude.
@@ -194,3 +198,14 @@ export const config = {
 };
 
 export type RoleModelKey = keyof typeof config.models;
+
+/**
+ * The stand-in for a model whose own separately-metered usage pool (today: Fable's gated allowance) is
+ * exhausted while the account's normal 5h/weekly windows still have headroom — or undefined when the
+ * model has no separate pool, so a rejection on it means the account itself is capped. Matching on the
+ * family keyword keeps a Fable version bump (claude-fable-5-1…) covered without a config change.
+ */
+export function fallbackModelFor(model: string): string | undefined {
+  const fb = /fable/i.test(model) ? config.fableFallbackModel : undefined;
+  return fb && fb !== model ? fb : undefined;
+}

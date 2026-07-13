@@ -1,8 +1,9 @@
 import type { EventHub } from "../events.js";
+import { fallbackModelFor } from "../config.js";
 import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
 import type { Account } from "./account.js";
-import { pingUsage, type PingFailReason } from "./usagePing.js";
+import { pingUsage, type PingFailReason, type PingUsage } from "./usagePing.js";
 import { ResetStagger, WINDOW_MS } from "./resetStagger.js";
 import { logCrash } from "../crashLog.js";
 
@@ -22,6 +23,10 @@ interface AccountState {
   lastPick: number; // monotonic selection sequence — round-robin tiebreak
   holdUntil: number | null; // stagger hold-off: the 5h window is idle and its start ping waits for this slot
   extWakeAt: number | null; // last time a hold-release ping found the window ALREADY started by someone else
+  // Model-scoped pool caps (Fable's separately-gated allowance): model id → reset epoch. While latched,
+  // dispatch on this account falls back to the model's stand-in (fallbackModelFor) instead of parking —
+  // the account's NORMAL windows still have headroom, so the account itself stays in rotation.
+  modelLimits: Map<string, number>;
   updatedAt: number;
 }
 
@@ -35,6 +40,7 @@ export interface PersistedAccountUsage {
   usageAt: number;
   holdUntil?: number | null;
   extWakeAt?: number | null;
+  modelLimits?: Record<string, number>;
 }
 
 export interface AccountUsagePersistence {
@@ -77,6 +83,9 @@ const EXT_WAKE_TTL_MS = 24 * 3_600_000;
 // sessions may have burned the account while we were down) — unless a persisted holdUntil proves the
 // account was deliberately idle.
 const BOOT_TRUST_MS = 30 * 60 * 1000;
+// A model-pool cap whose rejection carried no reset self-expires after this, so the fallback never
+// sticks forever — the next dispatch simply re-probes the model and re-latches if it's still gated.
+const MODEL_LIMIT_FALLBACK_MS = 5 * 60 * 60 * 1000;
 
 const tightest = (s: AccountState): number => Math.max(s.fiveHour ?? 0, s.sevenDay ?? 0);
 const weeklyHeadroom = (s: AccountState): number => 100 - (s.sevenDay ?? 0);
@@ -158,6 +167,7 @@ export class AccountManager {
         lastPick: 0,
         holdUntil: null,
         extWakeAt: null,
+        modelLimits: new Map(),
         updatedAt: 0,
       });
       this.stagger?.register(a.id, () => this.phase(a.id));
@@ -219,6 +229,7 @@ export class AccountManager {
         st.sevenDayReset = p.sevenDayReset;
         st.usageAt = p.usageAt;
         st.extWakeAt = p.extWakeAt ?? null;
+        st.modelLimits = new Map(Object.entries(p.modelLimits ?? {}).filter(([, r]) => r > now));
         st.updatedAt = now;
       }
       const windowRunning = p?.fiveHourReset != null && p.fiveHourReset > now;
@@ -262,13 +273,15 @@ export class AccountManager {
   }
 
   /** Tiny Haiku ping → live usage from rate-limit headers; also (re)schedules the reset ping.
-   *  `expectIdle` marks a ping we believed would START the window (a hold release): finding the
-   *  window already running then proves an outside consumer woke the account during the hold. */
-  private async pingOne(a: Account, expectIdle = false): Promise<void> {
+   *  Returns the fresh read (null when the ping had no usable one) so classifyCap can judge headroom
+   *  from the raw headers. `expectIdle` marks a ping we believed would START the window (a hold
+   *  release): finding the window already running then proves an outside consumer woke the account
+   *  during the hold. */
+  private async pingOne(a: Account, expectIdle = false): Promise<PingUsage | null> {
     const sentAt = Date.now();
     const r = await pingUsage(a.token);
     const st = this.states.get(a.id);
-    if (!st) return;
+    if (!st) return null;
     const now = Date.now();
     if (!r.ok) {
       // Surface the failure immediately (don't wait 20 min for usageStale): a
@@ -282,7 +295,7 @@ export class AccountManager {
         st.usageStale = true;
         st.updatedAt = now;
       }
-      return;
+      return null;
     }
     const u = r.usage;
     if (expectIdle && u.fiveHourReset != null && u.fiveHourReset - WINDOW_MS < sentAt - EXT_WAKE_TOLERANCE_MS) {
@@ -304,6 +317,7 @@ export class AccountManager {
       usageAt: now,
       holdUntil: null,
       extWakeAt: st.extWakeAt,
+      modelLimits: liveModelLimits(st, now),
     });
     // Preserve a run-flagged cap whose reset is still in the future. A per-session ("You've hit your
     // session limit") cap is invisible to these 5h/weekly headers, so a routine ping would otherwise
@@ -328,6 +342,7 @@ export class AccountManager {
     }
     st.updatedAt = now;
     this.scheduleResetEvent(a, u);
+    return u;
   }
 
   /**
@@ -381,6 +396,7 @@ export class AccountManager {
         usageAt: st.usageAt,
         holdUntil: startAt,
         extWakeAt: st.extWakeAt,
+        modelLimits: liveModelLimits(st, Date.now()),
       });
     }
     this.armHold(a, startAt);
@@ -470,6 +486,79 @@ export class AccountManager {
     }
     st.updatedAt = Date.now();
     this.publish();
+  }
+
+  /**
+   * Classify a rejected run's cap: the account's normal 5h/weekly window ("account" → fail over to
+   * another subscription), or the run model's OWN separately-metered pool ("model" → the caller retries
+   * on the SAME account with the fallback model). A fresh usage ping decides — it rides Haiku, which a
+   * model-scoped gate doesn't touch, and its unified headers are ground truth for the normal windows.
+   * On "model" the pool cap is latched for `modelFor`-style resolution AND the account-wide flag the
+   * event fast-path set (updateFromRateLimit) is lifted, so the account stays in rotation for every
+   * other role. An unreadable ping conservatively classifies "account" (today's failover behavior).
+   */
+  async classifyCap(accountId: string, model: string, info: RateLimitInfo | undefined): Promise<"account" | "model"> {
+    const st = this.states.get(accountId);
+    if (!st) return "account";
+    // pingOne may re-assert the account-wide cap flag via its capHold preservation (the event fast
+    // path stored a future resetsAt) — the clear below overrides it once headroom is header-confirmed,
+    // so it must stay AFTER this ping.
+    const u = await this.pingOne(st.account).catch(() => null);
+    const headroom =
+      !!u && !u.fiveHourRejected && !u.sevenDayRejected && Math.max(u.fiveHour ?? 0, u.sevenDay ?? 0) < HARD_LIMIT;
+    if (!headroom) {
+      this.publish();
+      return "account";
+    }
+    this.noteModelLimit(accountId, model, info?.resetsAt);
+    st.rateLimited = false; // the fast path flagged the whole account; the fresh headers prove its normal windows are fine
+    st.rateLimitWindow = null;
+    st.rateLimitResetAt = null;
+    st.updatedAt = Date.now();
+    this.publish();
+    return "model";
+  }
+
+  /** Latch `model` as pool-capped on this account until `resetsAt` (its own metered allowance is
+   *  exhausted — the account's normal windows are unaffected). A rejection with no reset self-expires
+   *  after MODEL_LIMIT_FALLBACK_MS so the fallback never sticks forever. */
+  noteModelLimit(accountId: string, model: string, resetsAt?: number | null): void {
+    const st = this.states.get(accountId);
+    if (!st) return;
+    const now = Date.now();
+    const until = resetsAt != null && resetsAt > now ? resetsAt : now + MODEL_LIMIT_FALLBACK_MS;
+    st.modelLimits = new Map([...st.modelLimits].filter(([, r]) => r > now));
+    st.modelLimits.set(model, until);
+    st.updatedAt = now;
+    this.persist?.save(accountId, {
+      fiveHour: st.fiveHour,
+      sevenDay: st.sevenDay,
+      fiveHourReset: st.fiveHourReset,
+      sevenDayReset: st.sevenDayReset,
+      usageAt: st.usageAt,
+      holdUntil: st.holdUntil,
+      extWakeAt: st.extWakeAt,
+      modelLimits: liveModelLimits(st, now),
+    });
+    this.publish();
+  }
+
+  /** Is `model` latched as pool-capped on this account (and not yet past its reset)? Expired latches
+   *  are pruned on read, so the next dispatch re-probes the model itself. */
+  isModelLimited(accountId: string, model: string): boolean {
+    const st = this.states.get(accountId);
+    const until = st?.modelLimits.get(model);
+    if (st == null || until == null) return false;
+    if (until <= Date.now()) {
+      st.modelLimits.delete(model);
+      return false;
+    }
+    return true;
+  }
+
+  /** The configured account with this id (dispatch metadata — id/label/token), or undefined. */
+  byId(accountId: string): Account | undefined {
+    return this.states.get(accountId)?.account;
   }
 
   /** Pick the best account for the next dispatch. */
@@ -629,6 +718,7 @@ export class AccountManager {
   }
 
   dto(): AccountDTO[] {
+    const now = Date.now();
     return [...this.states.values()].map((s) => ({
       id: s.account.id,
       label: s.account.label,
@@ -642,6 +732,9 @@ export class AccountManager {
       active: s.account.id === this.preferredId,
       enabled: s.enabled,
       holdUntil: s.holdUntil,
+      modelLimits: [...s.modelLimits]
+        .filter(([, r]) => r > now)
+        .map(([model, resetsAt]) => ({ model, fallback: fallbackModelFor(model) ?? model, resetsAt })),
       updatedAt: s.updatedAt,
       error: s.error,
     }));
@@ -667,6 +760,11 @@ export class AccountManager {
 
 function fmt(n: number | null | undefined): string {
   return n == null ? "—" : `${Math.round(n)}%`;
+}
+
+/** The still-live model-pool latches as a persistable record, dropping expired entries. */
+function liveModelLimits(st: AccountState, now: number): Record<string, number> {
+  return Object.fromEntries([...st.modelLimits].filter(([, r]) => r > now));
 }
 
 /** Short, actionable label for why a usage ping had no usable read — shown on the chip. */

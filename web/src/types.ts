@@ -222,6 +222,9 @@ export interface AccountDTO {
   active: boolean;
   enabled: boolean; // operator toggle — disabled accounts are held out of dispatch/failover
   holdUntil?: number | null; // 5h window idle (stagger hold-off) — the next window starts at this epoch ms
+  // Model-scoped pool caps (Fable's separately-gated allowance): dispatch resolves `fallback` in place
+  // of `model` on this sub until `resetsAt`. The account's normal windows are unaffected.
+  modelLimits?: { model: string; fallback: string; resetsAt: number }[];
   updatedAt: number;
   error?: string | null;
 }

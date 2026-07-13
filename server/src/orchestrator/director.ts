@@ -9,7 +9,7 @@ import type { AgentEvent, DirectorMessage, ImageAttachment } from "../types.js";
 import type { ThreadManager } from "./threadManager.js";
 import type { Account } from "../accounts/account.js";
 import { untilReset } from "../accounts/accountManager.js";
-import { config } from "../config.js";
+import { config, fallbackModelFor } from "../config.js";
 import { existsSync } from "node:fs";
 
 const MAX_DIRECTOR_FAILOVERS = 2;
@@ -30,6 +30,9 @@ export class Director {
   /** The in-flight turn's content — kept so a usage-cap failover can re-send it. */
   private pending: UserContent | undefined;
   private failovers = 0;
+  /** A cap classification (usage ping) is in flight — blocks a duplicate classify/double-start when
+   *  both the result handler and onEnd report the same capped run. */
+  private classifying = false;
   /** Director-message ids added during the current user turn (the prompt + the director's replies).
    *  When a dispatch fires mid-turn, these get linked to the new task so a search hit can jump to it. */
   private currentTurnMsgIds: string[] = [];
@@ -219,13 +222,53 @@ export class Director {
   }
 
   /**
-   * The turn ran out of usable allowance on `acct` and produced no real answer. Move to a sub with
-   * headroom (resume the session so context survives) and re-send the same message; if no sub has
-   * headroom, tell the owner when the soonest one frees up instead of going silently idle. Safe to
-   * call from both the `result` handler (live streaming turn) and onEnd (run died) — the
-   * `this.run !== run` guards in wire() neutralize the superseded run's trailing events.
+   * The turn ran out of usable allowance on `acct` and produced no real answer. When the director's
+   * model has its OWN metered pool (Fable), first classify the cap with a fresh usage read — a pool
+   * cap retries on the SAME account with the fallback model (classifyCap latches it, so modelFor
+   * resolves the fallback). Otherwise move to a sub with headroom (resume the session so context
+   * survives) and re-send the same message; if no sub has headroom, tell the owner when the soonest
+   * one frees up instead of going silently idle. Safe to call from both the `result` handler (live
+   * streaming turn) and onEnd (run died) — the `this.run !== run` guards in wire() neutralize the
+   * superseded run's trailing events.
    */
   private reactiveFailover(run: AgentRun, acct: Account): void {
+    if (this.classifying) return; // an in-flight classification owns this turn's revival — don't race it
+    if (run.rateLimited && this.pending !== undefined && this.failovers < MAX_DIRECTOR_FAILOVERS) {
+      const model = this.api.modelFor(acct.id, "director");
+      if (fallbackModelFor(model)) {
+        // classifyCap pings the account (async) — latch a flag so a result-handler call and an onEnd
+        // call for the same dead run can't both classify and double-start the replacement.
+        this.classifying = true;
+        void this.classifyThenFailover(run, acct, model).finally(() => (this.classifying = false));
+        return;
+      }
+    }
+    this.accountFailoverOrSettle(run, acct);
+  }
+
+  /** Async half of reactiveFailover for a fallback-capable model: a pool cap restarts the turn on the
+   *  SAME account (modelFor now resolves the fallback); a real account cap falls through to the normal
+   *  account switch. Re-checks that the turn wasn't superseded while the classify ping ran. */
+  private async classifyThenFailover(run: AgentRun, acct: Account, model: string): Promise<void> {
+    const kind = await this.api.accounts.classifyCap(acct.id, model, run.rateLimitInfo).catch(() => "account" as const);
+    // Superseded while we pinged (a new user turn started another run) → leave the new turn alone.
+    // this.run === undefined means the capped run died without a replacement — still ours to revive.
+    if (this.pending === undefined || (this.run !== run && this.run !== undefined)) return;
+    if (kind === "model") {
+      this.failovers++;
+      this.hub.log(
+        "warn",
+        `Director hit the ${model} usage pool on ${acct.label} — falling back to ${this.api.modelFor(acct.id, "director")} on the same account, resuming.`,
+      );
+      void run.stop();
+      this.start(this.pending, acct); // keeps busy + pending set; modelFor resolves the fallback now
+      return;
+    }
+    this.accountFailoverOrSettle(run, acct);
+  }
+
+  /** The account-switch / all-capped / settle tail of reactiveFailover (the pre-Fable behavior). */
+  private accountFailoverOrSettle(run: AgentRun, acct: Account): void {
     if (run.rateLimited && this.pending !== undefined && this.failovers < MAX_DIRECTOR_FAILOVERS) {
       const next = this.api.accounts.selectFailover(acct.id);
       if (next && this.sessionId) {
