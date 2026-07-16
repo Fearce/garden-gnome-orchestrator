@@ -115,11 +115,27 @@ const IMPLEMENTOR_DONE_RE =
 // Forward-looking "I'll come back and confirm later" phrasing in the implementor's FINAL words — it ended
 // its turn (a VOLUNTARY success, not a cutoff/cap) waiting to be woken when some process it kicked off
 // finishes. Nothing wakes a voluntary turn-end, so the task would park for hours; we treat this like a
-// turn-limit stop and auto-resume with a nudge to block in-turn instead. Narrow on purpose: it must promise
-// future confirmation/continuation gated on something finishing — a genuine finish (IMPLEMENTOR_DONE_RE) and
-// a real blocker (which goes through ask_user, never a bare turn-end) are both excluded.
-const IMPLEMENTOR_STALL_RE =
-  /\b(i'll|i will|i'm going to|i am going to|let me)\b[^.!?\n]*\b(confirm|report back|reporting back|let you know|update you|check back|circle back|follow up|come back|verify)\b[^.!?\n]*\b(once|when|after|as soon as)\b|\b(once|when|after)\b[^.!?\n]*\b(finish|finishes|finished|complete|completes|completed|done|ready)\b[^.!?\n]*\bi'll\b|\bwaiting (?:for|on)\b[^.!?\n]*\bto (?:finish|complete|build|restore|run|rebuild)\b/;
+// turn-limit stop and auto-resume with a nudge to block in-turn instead. Leans BROAD: a false positive
+// costs one cheap warm resume (the nudged agent just re-states it's done), while a miss parks the task
+// on a manual Resume click — the subject is optional because agents drop it ("Will report once…"), and
+// describing an operation as still in flight in the final words counts as waiting on it. A genuine finish
+// (IMPLEMENTOR_DONE_RE) and a real blocker (which goes through ask_user, never a bare turn-end) are excluded.
+const IMPLEMENTOR_STALL_RE = new RegExp(
+  [
+    // "I'll report back once the build finishes" — and subject-dropped: "Will report once the server is up"
+    /\b(?:i'll|i will|will|i'm going to|i am going to|going to|let me)\b[^.!?\n]*\b(?:confirm|report(?: back)?|reporting(?: back)?|let you know|update you|check back|circle back|follow up|come back|verify|validate)\b[^.!?\n]*\b(?:once|when|after|as soon as)\b/,
+    // "Once the restore completes, (I)'ll verify …"
+    /\b(?:once|when|after)\b[^.!?\n]*\b(?:finish(?:es|ed)?|complete[sd]?|done|ready|back up)\b[^.!?\n]*\b(?:i'll|i will|will)\b/,
+    // "waiting for the build to finish"
+    /\bwaiting (?:for|on)\b[^.!?\n]*\bto (?:finish|complete|build|restore|run|rebuild)\b/,
+    // an operation left in flight as the last words: "deploy is in flight", "the migration is still running"
+    /\b(?:deploy(?:ment)?|build|restore|install|restart|migration|rollout|job|script|process|pipeline|run)\b[^.!?\n]*\b(?:in flight|in progress|underway|still running)\b/,
+    // "monitoring the script output for the … milestones"
+    /\b(?:monitoring|watching|tracking)\b[^.!?\n]*\b(?:output|progress|logs?|milestones?|status|completion)\b/,
+  ]
+    .map((r) => r.source)
+    .join("|"),
+);
 // The nudge sent when we auto-resume a voluntary stall: tell the agent the hard truth (no callback) and
 // make it block in-turn on whatever it started, rather than ending the turn waiting to be woken.
 const STALL_NUDGE =
@@ -1903,6 +1919,7 @@ export class ThreadManager implements OrchestratorApi {
     accountId: string,
     useNext: boolean,
     continueMsg: string,
+    qaFollows = true, // false on a manual resume (no QA loop follows), so nudges/seeds don't promise QA
   ): Promise<ResultEvent | undefined> {
     let res = await this.awaitImplementorResult(thread, effort, run, accountId, useNext, continueMsg);
     let current = run;
@@ -1923,7 +1940,9 @@ export class ThreadManager implements OrchestratorApi {
       this.logAutoResume(thread.id, n, turnLimit ? "turn limit hit" : "ended its turn without finishing");
       const nudge = turnLimit
         ? "You haven't finished — you stopped at a turn limit, not because the work is done. Continue exactly " +
-          "where you left off and complete the task. A QA agent will review your work when you're genuinely done."
+          "where you left off and complete the task. " +
+          (qaFollows ? "A QA agent" : config.ownerName) +
+          " will review your work when you're genuinely done."
         : STALL_NUDGE;
       // Close the turn-maxed query before resuming so we never run two implementors on one workspace;
       // startImplementor's onEnd guard tolerates the relaunch replacing `this.live` first either way.
@@ -1932,7 +1951,7 @@ export class ThreadManager implements OrchestratorApi {
       const start = await this.startResumedImplementor(thread, kickoff, session, {
         effort,
         resumeNudge: nudge,
-        qaFollows: true,
+        qaFollows,
       });
       if (!start) break; // cancelled while compressing the prior session
       this.flushDirectorNotes(thread.id, start.run);
@@ -1968,11 +1987,11 @@ export class ThreadManager implements OrchestratorApi {
         const seed = await this.composeResumeKickoff(thread, kickoff, undefined, {
           directorNote:
             "The Codex implementor hit its usage cap partway through this task, so you're taking over on the Claude backend. Its changes are already in the working tree — review the git progress below, then continue and finish the task completely.",
-          qaFollows: true,
+          qaFollows,
         });
         if (!this.cancelled(thread.id)) {
           const relaunch = this.startImplementor(thread, seed, { effort });
-          res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg);
+          res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg, qaFollows);
         }
       }
     }
@@ -2005,11 +2024,11 @@ export class ThreadManager implements OrchestratorApi {
       const seed = await this.composeResumeKickoff(thread, kickoff, this.lastImplementorSession.get(thread.id), {
         directorNote:
           "Every Claude subscription hit its usage cap partway through this task, so you're taking over on the Codex backend. The prior implementor's changes are already in the working tree — review the git progress below, then continue and finish the task completely.",
-        qaFollows: true,
+        qaFollows,
       });
       if (!this.cancelled(thread.id)) {
         const relaunch = this.startImplementor(thread, seed, { effort });
-        res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg);
+        res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg, qaFollows);
       }
     }
     return res;
@@ -2201,6 +2220,7 @@ export class ThreadManager implements OrchestratorApi {
       start.accountId,
       false,
       "Continue exactly where you left off and finish the task completely.",
+      pipe.qaEnabled,
     );
     // Before the hand-off: if the director queued follow-ups while the implementor worked, it does that
     // work too now (re-launched with them) instead of proceeding — the Queue button's whole point.
@@ -2330,7 +2350,7 @@ export class ThreadManager implements OrchestratorApi {
       );
       if (!start) break; // cancelled while compressing the prior session
       this.flushDirectorNotes(thread.id, start.run);
-      res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, msg);
+      res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, msg, qaFollows);
     }
     return res;
   }
@@ -2666,16 +2686,21 @@ export class ThreadManager implements OrchestratorApi {
    *  gets the result. Crucially it reuses the prior session through the SAME warm/cold gate as the
    *  pipeline, so a manual resume on a cold cache compresses the prior session instead of paying the
    *  full-transcript reload it used to. Runs in the background so the triggering command returns at
-   *  once; failover-aware via awaitImplementorResult. The caller must have added threadId to
-   *  `resuming`; this clears it once the implementor is live (or the start was abandoned). */
+   *  once. Awaited via awaitImplementorCompletion — the same account-failover PLUS turn-limit/stall
+   *  auto-continue the pipeline gets: a manually-resumed agent that ends its turn promising to "report
+   *  once the deploy finishes" is nudged to block in-turn instead of re-parking on the Resume button.
+   *  The caller must have added threadId to `resuming`; this clears it once the implementor is live
+   *  (or the start was abandoned). */
   private async resumeImplementorOnly(thread: Thread, message?: string): Promise<void> {
     // A manual resume occupies a concurrency slot for the run's lifetime (like a pipeline), so it
     // counts toward maxConcurrent and frees a queued task when it settles.
     this.activePipelines.add(thread.id);
     this.capParked.delete(thread.id); // fresh resume — drop any stale cap flag before this run sets its own
+    this.autoResumes.set(thread.id, 0); // fresh budget for the stall/turn-limit auto-continues
     const releaseSlot = () => {
       this.activePipelines.delete(thread.id);
       this.implementorProvider.delete(thread.id);
+      this.autoResumes.delete(thread.id);
       this.codexResumeWedged.delete(thread.id); // a fresh dispatch's first session may resume fine
       this.pumpQueue();
     };
@@ -2719,7 +2744,7 @@ export class ThreadManager implements OrchestratorApi {
       this.pendingResumeMsgs.delete(thread.id);
       for (const m of buffered) start.run.send(`[New information from the director]\n${m}`, { priority: "next" });
     }
-    await this.awaitImplementorResult(thread, thread.effortOverride ?? undefined, start.run, start.accountId, false, resumeNudge)
+    await this.awaitImplementorCompletion(thread, thread.effortOverride ?? undefined, baseKickoff, start.run, start.accountId, false, resumeNudge, false)
       .then(() => {
         // A re-cap during the manual resume tags it for the supervisor; a clean finish parks for review.
         if (this.db.getThread(thread.id)?.state === "implementing") this.settleReview(thread.id, "Resume finished — needs your review.");
