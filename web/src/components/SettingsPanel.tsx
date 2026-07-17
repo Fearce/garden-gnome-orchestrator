@@ -90,6 +90,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               onChange={(v) => setSettings({ autoResumeThresholdPercent: v })}
             />
           )}
+          <ToggleRow
+            label="Fast usage polling"
+            hint="On: refresh the account usage meters every ~30s so the % and reset countdown track Claude's own UI within ~1-2%, instead of lagging up to 10 minutes behind a live burn. Costs a tiny extra Haiku ping per account. Off by default."
+            on={settings.fastUsagePolling}
+            onChange={(v) => setSettings({ fastUsagePolling: v })}
+          />
         </Group>
 
         <Group label="Director">

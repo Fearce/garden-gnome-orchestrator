@@ -145,7 +145,7 @@ export class AccountManager {
   constructor(
     private readonly accounts: Account[],
     private readonly hub: EventHub,
-    private readonly pingIntervalMs = 600_000, // 10 min
+    private pingIntervalMs = 600_000, // 10 min (operator can switch to the fast cadence via setPingInterval)
     opts?: { persist?: AccountUsagePersistence; stagger?: ResetStagger },
   ) {
     this.persist = opts?.persist;
@@ -185,6 +185,19 @@ export class AccountManager {
     if (this.periodic) clearInterval(this.periodic);
     for (const t of this.resetTimers.values()) clearTimeout(t);
     this.resetTimers.clear();
+  }
+
+  /** Retune the periodic usage-ping cadence live (the "Fast usage polling" setting flips between the
+   *  default 10-min interval and a 30s one). A no-op when unchanged; when the interval is already
+   *  running it's cleared and re-armed so the new cadence takes effect without a restart. Applied
+   *  before start() at boot simply updates the field the first setInterval reads. */
+  setPingInterval(ms: number): void {
+    if (!Number.isFinite(ms) || ms <= 0 || ms === this.pingIntervalMs) return;
+    this.pingIntervalMs = ms;
+    if (!this.periodic) return; // not started yet — start() will pick up the new value
+    clearInterval(this.periodic);
+    this.periodic = setInterval(() => void this.pingAll().catch((e) => logCrash("accountPing.periodic", e)), ms);
+    this.periodic.unref?.();
   }
 
   /** Whether the 5h window-start stagger applies — 2+ participants in the shared coordinator

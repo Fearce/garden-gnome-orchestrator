@@ -308,6 +308,8 @@ export interface OrchestratorSettings {
   //      resumes work that froze on the cap — so the orchestrator recovers AFK, no manual Resume. ----
   autoResumeOnTokenReset: boolean; // off (default) → opt-in; on → arm a reset-timed resume when usage crosses the threshold below
   autoResumeThresholdPercent: number; // % of the token window at which the resume is armed — clamped 50–95, default 80
+  // ---- Fast usage polling: opt-in tighter cadence for the account usage ping ----
+  fastUsagePolling: boolean; // off (default) → 10-min ping; on → poll every ~30s so the strip tracks the live burn within ~1-2%
   // ---- Subscriptions: which provider backs the implementor (hard routing gate at dispatch) ----
   // Claude is the default implementor and always powers planner/researcher/QA; individual Claude
   // accounts are toggled via the AccountDTO.enabled flag (account.set), not a setting here.

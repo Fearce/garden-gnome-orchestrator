@@ -98,6 +98,11 @@ export const config = {
   oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN || undefined,
   accounts: loadAccounts(),
   accountPingMs: Number(process.env.ACCOUNT_PING_MS ?? 600_000),
+  // The faster cadence the opt-in "Fast usage polling" setting switches the account ping to, so the
+  // top-bar strip (utilization % + reset countdown) tracks Claude's own UI within ~1-2% instead of
+  // lagging up to a full accountPingMs behind a live burn. A 1-token Haiku ping (~2/min/account), so
+  // the extra cost/window budget is negligible; FAST_ACCOUNT_PING_MS overrides the 30s default.
+  fastAccountPingMs: Number(process.env.FAST_ACCOUNT_PING_MS ?? 30_000),
   notifyWebhookUrl: process.env.NOTIFY_WEBHOOK_URL || undefined,
   models: {
     director: "claude-sonnet-4-6",
