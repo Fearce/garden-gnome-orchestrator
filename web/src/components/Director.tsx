@@ -8,6 +8,7 @@ import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
 import { CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, type CodexEffort, type DirectorItem, type DirectorMessage, type Effort, type OrchestratorSettings, type Role } from "../types.js";
 import { codexModelOptions } from "../lib/models.js";
+import { modelLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 
 // The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
@@ -25,6 +26,12 @@ export function Director() {
   const sendDirect = useStore((s) => s.sendDirect);
   const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
   const directorName = useStore((s) => s.settings.directorName);
+  // The director's model, resolved like the server's modelFor: the operator's default-layer override
+  // (Settings → Agent models), else the built-in default. Per-sub overrides aren't resolvable here —
+  // the console doesn't know which subscription the director run landed on.
+  const directorModel = useStore(
+    (s) => s.settings.modelOverrides?.[DEFAULT_SUB_ID]?.director?.trim() || s.settings.modelDefaults.director || "",
+  );
   const setSettings = useStore((s) => s.setSettings);
   // Skip-director mode + the recent-repo list live in the server-persisted settings so they survive a
   // reload on ANY surface (see the repoLabel note above). setSettings is optimistic, so toggling/adding
@@ -142,7 +149,7 @@ export function Director() {
             <div className="rail-head-title">
               <h2>{directorName}</h2>
               <span className="dim mono" style={{ fontSize: 11 }}>
-                {busy ? "director · thinking…" : "director · sonnet 4.6"}
+                {busy ? "director · thinking…" : "director" + (directorModel ? ` · ${modelLabel(directorModel).toLowerCase()}` : "")}
               </span>
             </div>
           </div>
