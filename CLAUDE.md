@@ -119,6 +119,18 @@ which is auth-gated and **confines the resolved real path inside the owning task
 resolved, `..`/absolute/cross-drive escapes rejected, files-only, 25 MB cap) — keep that guard intact:
 the path is agent-supplied and the server is LAN-reachable.
 
+**Reliable emission (deterministic backstop).** Emitting a deliverable is a discretionary `post_deliverable`
+call the implementor can forget, so a task could produce a real artifact and finish without surfacing it. Two
+layers make it reliable: (1) the implementor prompt frames the deliverables pass as a MANDATORY, self-verified
+completion step (not an optional aside); (2) QA — the gate that marks a task done — runs a required deliverables
+check every round and fails (blocker → bounce) if a produced owner-facing artifact wasn't surfaced. QA's check is
+seeded by a harness-computed hint: `orchestrator/deliverableCheck.ts` (`detectUnsurfacedArtifacts`) replays the
+run's own recorded `Write` tool calls and deliverable findings to list artifact-type files (docs/data/media by
+extension; source, config, meta-docs, and `_`-prefixed scratch excluded) the implementor wrote but never surfaced.
+It's a HINT injected into `qaKickoff`, not an auto-emit — surfacing every changed file would spam the console with
+ordinary source edits. Bash/script-generated artifacts don't show as `Write` calls, so QA also checks the real git
+diff itself. Codex-backend implementors have no bus tools and so can't emit deliverables at all (a known gap).
+
 **Emitting one — avoid the "file not available" 404:** a *relative* `path` resolves as `join(thread.workspace,
 path)`, and the task workspace is often the **parent** of this git repo (e.g. workspace
 `…\claude-orchastrator` vs. repo `…\claude-orchastrator\claude-orchestrator`). A file you save into the repo

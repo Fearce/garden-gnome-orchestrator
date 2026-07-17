@@ -13,6 +13,7 @@ import { createBusServer } from "../bus/busServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
+import { detectUnsurfacedArtifacts } from "./deliverableCheck.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import { config, fallbackModelFor } from "../config.js";
@@ -1635,7 +1636,12 @@ export class ThreadManager implements OrchestratorApi {
     // A fresh QA session gets a scope hint (plan summary + touched files) so it starts from the real
     // change surface instead of spending Opus turns rediscovering it; resumed QA already knows it.
     const plan = resume ? undefined : (this.db.getThreadStageOutputs(thread.id).plan ?? undefined);
-    const kickoff = resume ? qaRecheckKickoff() : qaKickoff(thread, plan);
+    // Deterministic deliverables backstop: hand QA the artifact files the implementor produced but
+    // never surfaced (computed from the run's own tool calls + findings), so its mandatory
+    // deliverables check starts from a concrete list instead of the model's memory. Recomputed each
+    // round — a fix-round that emits a forgotten deliverable drops it from the next round's hint.
+    const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
+    const kickoff = resume ? qaRecheckKickoff(unsurfaced) : qaKickoff(thread, plan, unsurfaced);
     const res = await this.runRole(
       thread,
       "qa",
@@ -3596,7 +3602,7 @@ function researcherKickoff(thread: Thread, plan: PlanOutput | undefined): string
   return parts.join("\n");
 }
 
-function qaKickoff(thread: Thread, plan?: PlanOutput): string {
+function qaKickoff(thread: Thread, plan?: PlanOutput, unsurfacedArtifacts: string[] = []): string {
   const parts: string[] = [
     `# QA review for task: ${thread.title}`,
     "",
@@ -3616,19 +3622,51 @@ function qaKickoff(thread: Thread, plan?: PlanOutput): string {
   parts.push(
     "",
     "Verify the work in this repo: inspect the changes (git diff), run the project's build/typecheck/tests, and check correctness and completeness against the brief. Then return your structured verdict (pass + issues). Pass only if you'd actually ship it.",
+    "",
+    deliverablesCheckBlock(unsurfacedArtifacts),
   );
   return parts.join("\n");
 }
 
 /** The kickoff for a RESUMED QA session (fix-rounds 2..N): the session already holds the brief, the
- *  prior diff, and the test output, so this is just a short re-check nudge — no re-statement. */
-function qaRecheckKickoff(): string {
+ *  prior diff, and the test output, so this is just a short re-check nudge — no re-statement. The
+ *  deliverables check is repeated (with the freshly-recomputed unsurfaced list) because a fix-round
+ *  is exactly where a forgotten deliverable gets emitted — or still doesn't. */
+function qaRecheckKickoff(unsurfacedArtifacts: string[] = []): string {
   return [
     "The implementor reports it has addressed the issues you raised. Re-verify:",
     "- Re-run `git diff` to see the NEW state and re-run the project's build/typecheck/tests.",
     "- Confirm each issue you raised is actually resolved, and watch for any regression the fix introduced.",
     "Then return your updated structured verdict (pass + remaining issues). Pass only if you'd ship it.",
+    "",
+    deliverablesCheckBlock(unsurfacedArtifacts),
   ].join("\n");
+}
+
+/** The mandatory deliverables-verification step folded into every QA kickoff. Deliverable emission is
+ *  a discretionary tool call the implementor can forget, and QA is the gate that marks a task done —
+ *  so QA is where the reliability backstop lives. When the harness detected artifact files the
+ *  implementor wrote but never surfaced, they're listed as concrete candidates; either way QA must
+ *  confirm every owner-facing artifact this task produced was surfaced, and fail (blocker) if not. */
+function deliverablesCheckBlock(unsurfacedArtifacts: string[]): string {
+  const lines = [
+    "## Deliverables check (REQUIRED — do this every round)",
+    "A deliverable is a file the owner should be able to open/download from the console; the implementor surfaces one by calling `post_deliverable`, which is easy to forget. Verify it did so for EVERY owner-facing artifact this task produced — a report, generated document, CSV/data export, diagram, rendered image/video, or generated asset (NOT ordinary source-code or config edits). Cross-check the actual git diff / new files against the deliverables already recorded (use `read_findings` — deliverables show as `[info]` findings whose summary is the file's label).",
+    "If any produced artifact was NOT surfaced, that is a **blocker** issue: fail the review and tell the implementor exactly which file(s) to `post_deliverable` (with an absolute path so the card resolves). Do not surface them yourself — bounce it back.",
+  ];
+  if (unsurfacedArtifacts.length) {
+    lines.push(
+      "",
+      "The harness flagged these files the implementor WROTE but did not surface as deliverables — check each; if it's an owner-facing artifact, its absence is a blocker (if it's genuinely just a source/support file, note that and move on):",
+      ...unsurfacedArtifacts.map((p) => `- ${p}`),
+    );
+  } else {
+    lines.push(
+      "",
+      "(The harness did not auto-detect any unsurfaced artifact from the implementor's file writes, but that detection misses files generated via scripts/Bash — still verify against the real git diff yourself.)",
+    );
+  }
+  return lines.join("\n");
 }
 
 function formatQaIssues(qa: QaOutput): string {
