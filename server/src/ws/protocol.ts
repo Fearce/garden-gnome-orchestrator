@@ -150,6 +150,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         directorName: z.string().max(40),
         maxQaRounds: z.number().int().min(1).max(12),
         maxConcurrent: z.number().int().min(1).max(20),
+        selfImproveEnabled: z.boolean(),
         tokenLimitEnabled: z.boolean(),
         tokenLimitPercent: z.number().int().min(50).max(99),
         autoResumeOnTokenReset: z.boolean(),

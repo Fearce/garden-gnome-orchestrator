@@ -253,6 +253,7 @@ export interface OrchestratorSettings {
   directorName: string; // the director persona's display name, operator-set (default "ChangeNameInSettings")
   maxQaRounds: number;
   maxConcurrent: number;
+  selfImproveEnabled: boolean; // opt-in (off by default): completed tasks get one extra implementor round that builds the tools/skills/memories the session showed were missing
   // Token-usage safety limit: opt-in auto-stop when live utilization reaches the threshold. Disabled by
   // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.
   tokenLimitEnabled: boolean;

@@ -300,6 +300,7 @@ export interface OrchestratorSettings {
   autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
   directorName: string; // the director persona's display name, set by the operator (default "ChangeNameInSettings")
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
+  selfImproveEnabled: boolean; // off (default) → opt-in; on → after a task completes, the implementor runs one extra round building the tools/skills/memories that would have made the task easier
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
   // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----
   tokenLimitEnabled: boolean; // off (default) → never auto-stop; on → stop running agents at the threshold
