@@ -59,6 +59,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             onChange={(v) => setSettings({ maxConcurrent: v })}
           />
           <ToggleRow
+            label="Self-improve after tasks"
+            hint="On: once a task is accepted (QA pass, or a clean finish with QA off), the implementor runs one bonus round — 'what tools/skills/memories would have made this easier? Build them.' — before the task settles to done. Off by default; the extra round costs extra tokens."
+            on={settings.selfImproveEnabled}
+            onChange={(v) => setSettings({ selfImproveEnabled: v })}
+          />
+          <ToggleRow
             label="Token safety limit"
             hint="On: when live token usage reaches the threshold below, every running task is stopped automatically to protect your remaining allowance. Off by default."
             on={settings.tokenLimitEnabled}

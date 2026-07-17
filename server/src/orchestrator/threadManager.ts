@@ -146,6 +146,19 @@ const STALL_NUDGE =
   "restore, test run, server start), WAIT for it to finish IN THIS TURN — block on it, await it, or poll it in " +
   "a loop — then act on the result. Continue now and finish the task completely, or call ask_user if you're " +
   `genuinely blocked on ${config.ownerName}.`;
+// The opt-in post-completion prompt (the "Self-improve after tasks" setting): once a task is done —
+// QA passed, or the implementor finished clean with QA disabled — the implementor gets one extra round
+// with this message so the lessons of the session turn into real tooling instead of evaporating with it.
+// The task is already complete when this runs, so the round is best-effort: it never blocks 'done'.
+const SELF_IMPROVE_MSG =
+  "[Post-task self-improvement round — the task itself is COMPLETE and accepted; this is an opt-in bonus " +
+  `round ${config.ownerName} enabled in settings]\n` +
+  "What tools/apps/skills/memories/scripts/docs/etc could have made this session easier, faster, or better? " +
+  "If any, BUILD or implement them now — don't just list them. If improvements to existing tooling, project " +
+  "docs (CLAUDE.md / .claude/rules), saved memories, or workflows would have made this task easier, make " +
+  "those improvements. Keep this work in its own commit(s), separate from the task's commits, and follow the " +
+  "same commit/push doctrine the task used. Scope it to what THIS session actually taught you — no " +
+  "speculative frameworks. If nothing genuinely worth building surfaced, say so in one line and finish.";
 // On a mid-run 5h/weekly cap, relaunch on another account (resuming the session) up to N times.
 const MAX_ACCOUNT_FAILOVERS = 3;
 // On a model-pool cap (Fable's own gated allowance, separate from the 5h/weekly windows) the run
@@ -829,6 +842,7 @@ export class ThreadManager implements OrchestratorApi {
       directorName: this.directorName(),
       maxQaRounds: this.settingNum("setting_max_qa_rounds", config.maxQaRounds, 1, 12),
       maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
+      selfImproveEnabled: this.settingBool("setting_self_improve_enabled", false),
       tokenLimitEnabled: this.settingBool("setting_token_limit_enabled", false),
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
       autoResumeOnTokenReset: this.settingBool("setting_auto_resume_on_token_reset", false),
@@ -992,6 +1006,7 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.directorName !== undefined) this.db.kvSet("setting_director_name", patch.directorName.trim().slice(0, 40));
     if (patch.maxQaRounds !== undefined) this.db.kvSet("setting_max_qa_rounds", String(patch.maxQaRounds));
     if (patch.maxConcurrent !== undefined) this.db.kvSet("setting_max_concurrent", String(patch.maxConcurrent));
+    if (patch.selfImproveEnabled !== undefined) this.db.kvSet("setting_self_improve_enabled", patch.selfImproveEnabled ? "1" : "0");
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
     if (patch.autoResumeOnTokenReset !== undefined) this.db.kvSet("setting_auto_resume_on_token_reset", patch.autoResumeOnTokenReset ? "1" : "0");
@@ -2252,6 +2267,8 @@ export class ThreadManager implements OrchestratorApi {
       if (this.cancelled(thread.id)) return;
       if (res && !res.isError) {
         this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Implementor finished — QA review is disabled, accepted as done.", severity: "info" });
+        await this.runSelfImprovement(thread, effort, kickoff);
+        if (this.cancelled(thread.id)) return;
         this.setState(thread.id, "done");
       } else {
         this.settleReview(thread.id, "Implementor ended without completing — needs your review (QA is disabled for this task).");
@@ -2294,6 +2311,8 @@ export class ThreadManager implements OrchestratorApi {
           if (round < pipe.maxQaRounds) continue; // re-QA the newly-done work
         }
         this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed: ${qa.summary}`, severity: "info" });
+        await this.runSelfImprovement(thread, effort, kickoff);
+        if (this.cancelled(thread.id)) return;
         this.setState(thread.id, "done");
         return;
       }
@@ -2373,6 +2392,55 @@ export class ThreadManager implements OrchestratorApi {
       res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, msg, qaFollows);
     }
     return res;
+  }
+
+  /** Opt-in post-completion round (the "Self-improve after tasks" setting): once the task is accepted —
+   *  QA passed, or a clean finish with QA disabled — re-launch the finished implementor ONCE with
+   *  SELF_IMPROVE_MSG so it builds the tools/skills/memories this session showed were missing, before the
+   *  task settles to done. Read live so flipping the toggle applies to tasks already in flight. Strictly
+   *  best-effort: the task is already complete, so an errored or capped round is noted and the task goes
+   *  'done' anyway — it never parks a finished task back into review. */
+  private async runSelfImprovement(thread: Thread, effort: Effort | undefined, kickoff: string): Promise<void> {
+    if (!this.settings().selfImproveEnabled || this.cancelled(thread.id)) return;
+    const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
+    if (!session) return; // no implementor session to build on — nothing this round could reflect over
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "implementor",
+      summary: "Self-improvement round: building the tools/skills/memories that would have made this task easier",
+      severity: "info",
+    });
+    const m = this.db.addMessage({
+      threadId: thread.id,
+      role: "implementor",
+      kind: "system",
+      content: "🛠 Task accepted — running the opt-in self-improvement round before settling to done.",
+    });
+    this.hub.publish({ type: "thread.message", threadId: thread.id, message: m });
+    // Same slot discipline as a QA fix-round: fully end the finished run, then re-launch through the
+    // resume gate (warm resume when the cache is fresh, else a compressed cold seed).
+    await this.stopLive(thread.id);
+    if (this.cancelled(thread.id)) return;
+    const start = await this.startResumedImplementor(thread, kickoff, session, {
+      effort,
+      resumeNudge: SELF_IMPROVE_MSG,
+      directorNote: SELF_IMPROVE_MSG,
+      qaFollows: false,
+    });
+    if (!start) return; // cancelled while compressing the prior session
+    this.flushDirectorNotes(thread.id, start.run);
+    const res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, SELF_IMPROVE_MSG, false);
+    // A cap flagged during this bonus round must not tag the task's settle — the task is going 'done',
+    // and a stale flag could otherwise leak into a later settle of this thread.
+    this.capParked.delete(thread.id);
+    if (!res || res.isError) {
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "implementor",
+        summary: "Self-improvement round didn't finish cleanly — the task itself is already complete and unaffected",
+        severity: "note",
+      });
+    }
   }
 
   // ---- live thread controls ----

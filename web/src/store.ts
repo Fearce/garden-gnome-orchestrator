@@ -256,6 +256,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   directorName: "ChangeNameInSettings",
   maxQaRounds: 4,
   maxConcurrent: 3,
+  selfImproveEnabled: false,
   tokenLimitEnabled: false,
   tokenLimitPercent: 80,
   autoResumeOnTokenReset: false,
