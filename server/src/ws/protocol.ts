@@ -154,6 +154,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         tokenLimitPercent: z.number().int().min(50).max(99),
         autoResumeOnTokenReset: z.boolean(),
         autoResumeThresholdPercent: z.number().int().min(50).max(95),
+        fastUsagePolling: z.boolean(),
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
         codexEffort: z.enum(["low", "medium", "high", "xhigh"]),

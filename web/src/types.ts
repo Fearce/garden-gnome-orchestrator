@@ -261,6 +261,9 @@ export interface OrchestratorSettings {
   // resumes work frozen on the cap. Opt-in (off by default); the percent is clamped 50–95 (default 80).
   autoResumeOnTokenReset: boolean;
   autoResumeThresholdPercent: number;
+  // Fast usage polling: opt-in tighter cadence for the account usage ping. Off (default) = 10-min
+  // ping; on = ~30s so the top-bar usage strip tracks the live burn within ~1-2% of Claude's own UI.
+  fastUsagePolling: boolean;
   // Subscriptions: which provider backs the implementor (server-authoritative hard gate). Claude is the
   // default backend; individual Claude accounts toggle via AccountDTO.enabled (account.set), not here.
   codexEnabled: boolean;

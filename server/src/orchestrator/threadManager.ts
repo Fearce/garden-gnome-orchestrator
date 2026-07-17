@@ -365,6 +365,9 @@ export class ThreadManager implements OrchestratorApi {
       this.enforceTokenSafetyLimit();
       this.maybeScheduleTokenResume();
     });
+    // Honor a persisted "Fast usage polling" opt-in on boot — set before accounts.start() arms the
+    // ping timer in index.ts, so the first interval already uses the chosen cadence.
+    this.applyUsagePollInterval();
   }
 
   /** Kick off the live model-list catalog (boot fetch + slow refresh). Called from index.ts after the
@@ -829,6 +832,7 @@ export class ThreadManager implements OrchestratorApi {
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
       autoResumeOnTokenReset: this.settingBool("setting_auto_resume_on_token_reset", false),
       autoResumeThresholdPercent: this.settingNum("setting_auto_resume_threshold_percent", 80, 50, 95),
+      fastUsagePolling: this.settingBool("setting_fast_usage_polling", false),
       codexEnabled: this.settingBool("setting_codex_enabled", false),
       codexModel: this.codexModel(),
       codexEffort: this.codexEffort(),
@@ -991,6 +995,7 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
     if (patch.autoResumeOnTokenReset !== undefined) this.db.kvSet("setting_auto_resume_on_token_reset", patch.autoResumeOnTokenReset ? "1" : "0");
     if (patch.autoResumeThresholdPercent !== undefined) this.db.kvSet("setting_auto_resume_threshold_percent", String(patch.autoResumeThresholdPercent));
+    if (patch.fastUsagePolling !== undefined) this.db.kvSet("setting_fast_usage_polling", patch.fastUsagePolling ? "1" : "0");
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
     if (patch.codexEffort !== undefined && CODEX_EFFORTS.includes(patch.codexEffort)) this.db.kvSet("setting_codex_effort", patch.codexEffort);
     // Legacy free-text codex model field: mirror it into the matrix (codex.implementor) so the two stay
@@ -1032,7 +1037,16 @@ export class ThreadManager implements OrchestratorApi {
     // And re-evaluate the token-reset auto-resume, so toggling it off cancels a pending wakeup at once and
     // turning it on (or lowering the threshold) while usage is already high arms the resume immediately.
     this.maybeScheduleTokenResume();
+    // Retune the account usage-ping cadence in case the fast-polling toggle just flipped.
+    this.applyUsagePollInterval();
     return settings;
+  }
+
+  /** Point the account manager's periodic usage ping at the cadence the "Fast usage polling" setting
+   *  selects — the 30s fast interval when opted in, else the default. Called on boot and whenever
+   *  settings change; setPingInterval no-ops when the cadence is unchanged. */
+  private applyUsagePollInterval(): void {
+    this.accounts.setPingInterval(this.settings().fastUsagePolling ? config.fastAccountPingMs : config.accountPingMs);
   }
 
   /** Validate the stored (or a just-typed) OpenAI key against the API for the Test-connection button. */
