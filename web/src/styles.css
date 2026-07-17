@@ -1611,3 +1611,204 @@ body.dl-resizing { user-select: none; }
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 35%, transparent); }
   50%      { box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 16%, transparent); }
 }
+
+/* ================================================================================================
+   RUN HUB — design preview (mock data, #run-hub route). Self-contained; reuses the app's tokens and
+   component classes (.card/.badge/.btn/.switch/.settings-pop/.scrim/.modal/.segment). Nothing below
+   affects the real console — the demo mounts on its own hash route.
+   ================================================================================================ */
+
+/* A quiet "this is a preview" marker in the top bar — a role-director violet pill, distinct from the
+   amber accent so it reads as meta-chrome, not a live control. */
+.demo-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 24px; padding: 0 10px; border-radius: 100px;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--role-director);
+  background: color-mix(in oklch, var(--role-director) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--role-director) 40%, transparent);
+  cursor: default; white-space: nowrap;
+}
+.demo-pill svg { opacity: 0.9; }
+.topbar .spacer { flex: 1; }
+
+/* Top-bar Hub launcher — a labelled chip, sibling to the gear/gate controls. */
+.hub-btn {
+  display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px; cursor: pointer;
+  border-radius: var(--r-sm); font-size: 12px; font-weight: 500; letter-spacing: 0.01em;
+  border: 1px solid color-mix(in oklch, var(--accent) 45%, var(--line));
+  background: color-mix(in oklch, var(--accent) 8%, var(--bg-2)); color: var(--accent);
+  transition: border-color 0.12s, background 0.12s;
+}
+.hub-btn:hover { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 16%, var(--bg-2)); }
+.hub-btn-n {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700; line-height: 1;
+  padding: 2px 5px; border-radius: 100px; color: oklch(0.2 0.03 78);
+  background: color-mix(in oklch, var(--accent) 78%, var(--bg));
+}
+
+/* The board's "feature is off" nudge — a single quiet row pointing at Settings. */
+.board-hint {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
+  padding: 11px 13px; border: 1px dashed var(--line-strong); border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--bg-2) 70%, transparent);
+}
+.board-hint-ico { flex: 0 0 auto; display: inline-flex; color: var(--role-director); }
+.board-hint-text { flex: 1; min-width: 0; }
+.board-hint-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.board-hint-sub { font-size: 11.5px; color: var(--text-faint); line-height: 1.45; margin-top: 1px; }
+.board-hint-sub b { color: var(--text-dim); font-weight: 600; }
+
+.demo-foot-note { margin: 22px 2px 4px; font-size: 11px; color: var(--text-faint); line-height: 1.5; max-width: 640px; }
+.demo-foot-note code {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim);
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px;
+}
+
+/* ---- per-card run-actions strip ---- */
+.run-actions {
+  display: flex; flex-direction: column; gap: 8px;
+  padding-top: 11px; border-top: 1px solid var(--line);
+}
+.run-actions-label {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.run-verified {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: color-mix(in oklch, var(--ok) 82%, var(--text-faint));
+  letter-spacing: 0.08em;
+}
+.run-strip { display: flex; flex-wrap: wrap; gap: 7px; }
+
+.run-btn {
+  display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+  padding: 5px 10px 5px 8px; border-radius: var(--r-sm); cursor: pointer;
+  border: 1px solid color-mix(in oklch, var(--k, var(--accent)) 38%, var(--line));
+  background: color-mix(in oklch, var(--k, var(--accent)) 8%, var(--bg-2));
+  color: var(--text); font-size: 12px; font-weight: 500; text-align: left;
+  transition: border-color 0.12s, background 0.12s, transform 0.08s;
+}
+.run-btn:hover { border-color: color-mix(in oklch, var(--k, var(--accent)) 62%, var(--line)); background: color-mix(in oklch, var(--k, var(--accent)) 15%, var(--bg-2)); }
+.run-btn:active { transform: translateY(1px); }
+.run-btn-ico { flex: 0 0 auto; display: inline-flex; color: var(--k, var(--accent)); }
+.run-btn-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* An unverified action: inert, dashed, dimmed, with a "not verified" tail — the tested-gate made visible. */
+.run-btn.gated {
+  cursor: not-allowed; border-style: dashed;
+  border-color: var(--line); background: transparent; color: var(--text-faint);
+}
+.run-btn.gated:hover { border-color: var(--line); background: transparent; transform: none; }
+.run-btn.gated .run-btn-ico { color: var(--text-faint); }
+.run-btn-tag {
+  font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--warn); padding-left: 3px; border-left: 1px solid var(--line);
+}
+
+/* ---- shell confirm dialog (reuses .scrim/.modal) ---- */
+.modal.confirm-run { width: min(520px, 92vw); }
+.modal.confirm-run .m-head { display: flex; flex-direction: column; gap: 9px; }
+.modal .chip.warn {
+  color: var(--warn);
+  background: color-mix(in oklch, var(--warn) 16%, transparent);
+  align-self: flex-start; margin-bottom: 0;
+}
+.cmd-block {
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: 11px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.cmd-line { display: flex; align-items: baseline; gap: 9px; }
+.cmd-prompt { font-family: var(--font-mono); font-size: 13px; color: var(--accent); flex: 0 0 auto; }
+.cmd-text {
+  font-family: var(--font-mono); font-size: 13px; color: var(--text); line-height: 1.5;
+  word-break: break-all; user-select: all;
+}
+.cmd-cwd {
+  display: flex; align-items: center; gap: 7px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+  padding-top: 8px; border-top: 1px solid var(--line); word-break: break-all;
+}
+.cmd-cwd svg { flex: 0 0 auto; color: var(--text-faint); }
+.confirm-note { margin: 0; font-size: 12px; color: var(--text-faint); line-height: 1.5; }
+
+/* ---- the aggregate Hub (right-side drawer) ---- */
+.hub-scrim { position: fixed; inset: 0; z-index: 60; background: oklch(0 0 0 / 0.5); backdrop-filter: blur(2px); display: flex; justify-content: flex-end; }
+.hub-panel {
+  width: min(460px, 96vw); height: 100%; background: var(--bg-1); border-left: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-2); display: flex; flex-direction: column; min-height: 0;
+  animation: hub-slide 0.16s ease-out;
+}
+@keyframes hub-slide { from { transform: translateX(24px); opacity: 0.4; } to { transform: none; opacity: 1; } }
+.hub-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+.hub-head-title { display: flex; align-items: center; gap: 11px; }
+.hub-head-ico {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: var(--r-sm); color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 12%, var(--bg-2));
+  border: 1px solid color-mix(in oklch, var(--accent) 35%, var(--line));
+}
+.hub-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.hub-head-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 1px; }
+
+.hub-controls { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 8px; }
+.hub-filter { display: flex; flex-wrap: wrap; gap: 6px; }
+.hub-chip {
+  padding: 4px 10px; border-radius: 100px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint);
+  font-size: 11.5px; letter-spacing: 0.01em; transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.hub-chip:hover { color: var(--text-dim); border-color: var(--line-strong); }
+.hub-chip.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); background: color-mix(in oklch, var(--accent) 10%, var(--bg-2)); }
+.hub-sort { display: flex; align-items: center; gap: 9px; }
+.hub-sort-label { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint); }
+.hub-count { padding: 4px 16px 8px; font-size: 10.5px; color: var(--text-faint); letter-spacing: 0.02em; }
+
+.hub-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 16px; display: flex; flex-direction: column; gap: 7px; }
+.hub-row {
+  display: flex; align-items: center; gap: 11px;
+  padding: 10px 11px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-2);
+  transition: border-color 0.12s, background 0.12s;
+}
+.hub-row:hover { border-color: var(--line-strong); background: var(--bg-3); }
+.hub-row-ico {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: var(--r-sm); color: var(--k, var(--accent));
+  background: color-mix(in oklch, var(--k, var(--accent)) 12%, var(--bg));
+  border: 1px solid color-mix(in oklch, var(--k, var(--accent)) 30%, var(--line));
+}
+.hub-row-main { flex: 1; min-width: 0; }
+.hub-row-label { font-size: 13px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-row-meta { display: flex; align-items: center; gap: 7px; margin-top: 3px; flex-wrap: wrap; }
+.hub-row-project { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-tag {
+  font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 1.5px 6px; border-radius: 100px; white-space: nowrap;
+}
+.hub-tag.kind { color: var(--text-faint); background: var(--bg); border: 1px solid var(--line); }
+.hub-tag.archived { color: var(--text-faint); background: color-mix(in oklch, var(--text-faint) 14%, transparent); border: 1px solid color-mix(in oklch, var(--text-faint) 30%, transparent); }
+.hub-row-run { flex: 0 0 auto; }
+.hub-row-gated {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--warn);
+}
+.hub-row.gated { opacity: 0.7; }
+.hub-row.gated:hover { opacity: 0.85; }
+.hub-empty { padding: 26px 12px; text-align: center; color: var(--text-faint); font-size: 12.5px; }
+
+/* ---- simulated-action toast ---- */
+.demo-toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 70;
+  max-width: min(680px, 92vw);
+  padding: 10px 15px; border-radius: var(--r-md);
+  background: var(--bg-3); border: 1px solid var(--line-strong); box-shadow: var(--shadow-2);
+  font-family: var(--font-mono); font-size: 12px; color: var(--text); letter-spacing: -0.01em;
+  white-space: pre-wrap; word-break: break-word;
+  animation: toast-in 0.18s ease-out;
+}
+@keyframes toast-in { from { transform: translate(-50%, 8px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+
+/* The demo shell borrows the app grid but only needs a top bar + board. */
+.runhub-demo.app { grid-template-rows: 52px minmax(0, 1fr); }
