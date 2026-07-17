@@ -19,6 +19,7 @@ import { completionAnnouncement } from "./voiceAnnounce.js";
 import { config, fallbackModelFor } from "../config.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import type {
   AgentEvent,
@@ -153,11 +154,17 @@ const STALL_NUDGE =
 const SELF_IMPROVE_MSG =
   "[Post-task self-improvement round — the task itself is COMPLETE and accepted; this is an opt-in bonus " +
   `round ${config.ownerName} enabled in settings]\n` +
-  "What tools/apps/skills/memories/scripts/docs/etc could have made this session easier, faster, or better? " +
-  "If any, BUILD or implement them now — don't just list them. If improvements to existing tooling, project " +
-  "docs (CLAUDE.md / .claude/rules), saved memories, or workflows would have made this task easier, make " +
-  "those improvements. Keep this work in its own commit(s), separate from the task's commits, and follow the " +
-  "same commit/push doctrine the task used. Scope it to what THIS session actually taught you — no " +
+  `First, ground yourself in ${config.ownerName}'s memories so you know the setup you're improving: read the ` +
+  `global index at ${join(config.memoryDir, "MEMORY.md")} (grep ${config.memoryDir} for topics related to what ` +
+  "you just worked on) and this project's memory/rules if present — they tell you what already exists, so you " +
+  "extend instead of duplicating. Know your reach: you have FULL control of this computer and are NOT confined " +
+  "to this task's repo — you may create new folders, projects, and git repos, install tools, add " +
+  "scripts/skills/memories, and register services, whatever the improvement needs.\n" +
+  "Then: what tools/apps/skills/memories/scripts/docs/etc could have made this session easier, faster, or " +
+  "better? If any, BUILD or implement them now — don't just list them. If improvements to existing tooling, " +
+  "project docs (CLAUDE.md / .claude/rules), saved memories, or workflows would have made this task easier, " +
+  "make those improvements. Keep this work in its own commit(s), separate from the task's commits, and follow " +
+  "the same commit/push doctrine the task used. Scope it to what THIS session actually taught you — no " +
   "speculative frameworks. If nothing genuinely worth building surfaced, say so in one line and finish.";
 // On a mid-run 5h/weekly cap, relaunch on another account (resuming the session) up to N times.
 const MAX_ACCOUNT_FAILOVERS = 3;
