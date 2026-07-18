@@ -8,6 +8,13 @@ paths:
 
 # Adding an operator setting (the 6-file pattern)
 
+**Not for Voice-mode settings.** A knob in the Settings → Voice mode group
+(mic/speaker/volume/wake) is gateway-owned, NOT an `OrchestratorSettings` — it
+lives in the voice-gateway (a separate repo) behind the transparent
+`/api/voice/settings` passthrough, so it needs a different both-sides change.
+Use the recipe in project memory `voice-gateway-conversation-mode`, not the
+pattern below.
+
 Every operator-tunable setting follows one fixed shape. Touch all six spots —
 missing one typechecks fine but silently drops the value at that layer:
 
