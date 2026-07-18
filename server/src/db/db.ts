@@ -22,6 +22,7 @@ import type {
   Severity,
   StageOutputs,
   Thread,
+  ThreadLane,
   ThreadState,
 } from "../types.js";
 
@@ -47,6 +48,9 @@ function rowToThread(r: Row): Thread {
     // The state a closed task came from: kept for restore, and surfaced so the UI can mark tasks that
     // finished correctly (closed_prev_state === 'done') with a checkmark. Null on never-closed rows.
     closedPrevState: (r.closed_prev_state as ThreadState | null) ?? null,
+    // Dispatch lane: null = normal pipeline, 'read' = the read-only reader lane. A small scalar the UI
+    // reads for the READ badge, so it belongs on the DTO (unlike the heavy stage_outputs blob).
+    lane: (r.lane as ThreadLane | null) ?? null,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
   };
@@ -183,6 +187,7 @@ export class Db {
       "ALTER TABLE findings ADD COLUMN path TEXT",
       "ALTER TABLE findings ADD COLUMN label TEXT",
       "ALTER TABLE director_messages ADD COLUMN thread_id TEXT",
+      "ALTER TABLE threads ADD COLUMN lane TEXT",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -244,7 +249,7 @@ export class Db {
   }
 
   // ---- threads ----
-  createThread(input: { title: string; workspace: string; rawPrompt: string; brief?: string; effortOverride?: Effort | null }): Thread {
+  createThread(input: { title: string; workspace: string; rawPrompt: string; brief?: string; effortOverride?: Effort | null; lane?: ThreadLane | null }): Thread {
     const t: Thread = {
       id: newId(),
       title: input.title,
@@ -254,13 +259,14 @@ export class Db {
       rawPrompt: input.rawPrompt,
       error: null,
       effortOverride: input.effortOverride ?? null,
+      lane: input.lane ?? null,
       createdAt: now(),
       updatedAt: now(),
     };
     this.raw
       .prepare(
-        `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, effort_override, created_at, updated_at)
-         VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @effortOverride, @createdAt, @updatedAt)`,
+        `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, effort_override, lane, created_at, updated_at)
+         VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @effortOverride, @lane, @createdAt, @updatedAt)`,
       )
       .run(t);
     return t;

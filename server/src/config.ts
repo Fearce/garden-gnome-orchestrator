@@ -112,6 +112,10 @@ export const config = {
     researcher: "claude-sonnet-4-6",
     implementor: "claude-opus-4-8",
     qa: "claude-opus-4-8",
+    // The single-agent read-only "reader" lane (dispatch_read). Sonnet, not Haiku: misrouting TO the
+    // reader is the unsafe direction (it has no QA behind it), so it's biased to capability — a Sonnet
+    // reader that occasionally escalates beats a Haiku one that half-answers. Configurable like any role.
+    reader: "claude-sonnet-4-6",
   },
   // Fable access is gated by its OWN usage pool, separate from the normal 5h/weekly windows. When a
   // Fable run is rejected while those windows still show headroom, dispatch falls back to this model

@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS threads (
   stage_outputs TEXT,
   closed_at         INTEGER,
   closed_prev_state TEXT,
+  -- Dispatch lane. NULL = the normal planner→implementor→QA pipeline; 'read' = the cheap single-agent
+  -- read-only reader lane (dispatch_read) — one Sonnet reader that answers a lookup and escalates
+  -- rather than half-answering, no QA. Drives the card's READ badge and runPipeline's short-circuit.
+  lane          TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );

@@ -68,6 +68,13 @@ Model + tool policy per role:
 | Researcher  | claude-sonnet-4-6| plan           | WebSearch/WebFetch, memory, bus — **no Read/Grep/Glob** (external info only; the planner reads the repo) |
 | Implementor | claude-opus-4-8  | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
 | QA          | claude-opus-4-8  | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); sole role that can mark a task done |
+| Reader      | claude-sonnet-4-6| bypassPermissions | Read/Grep/Glob + `git_read` (allowlisted log/show/status/diff, **no Bash**), bus/office — **no Write/Edit/Bash/web** (§5, the read-only `dispatch_read` lane); answers a lookup, no QA |
+
+The **reader** is the same harness-level enforcement as QA — under `bypassPermissions` the
+`disallowedTools` denylist is a HARD block, so listing `Write`/`Edit`/`Bash`/`WebFetch`/… there
+makes them un-invokable even though the model runs unsupervised (`readerConfig`, `agents/roles.ts`).
+It gets read-only git history without a shell via the `git` MCP server's single `git_read` tool
+(`bus/gitReadServer.ts` → `gitService.runReadonlyGit`, allowlist `log`/`show`/`status`/`diff`).
 
 The **director only directs** — it has no filesystem or shell tools, so it cannot
 investigate a repo itself; any "figure out / debug / why is X" request is forced into
@@ -143,6 +150,21 @@ intake → enriching → [awaiting_user] → planning → [researching] → [awa
   looping up to `config.maxQaRounds`; **QA is the only role that can declare a task done**
   (else it settles to `review`). The optional approval gate (§12) fires after the plan +
   any research exist, before the implementor.
+- **Read lane (`dispatch_read`) — a single-agent short-circuit.** A thread dispatched with
+  `lane: "read"` (the director's `dispatch_read` tool) skips the whole planner→implementor→QA
+  pipeline: `runPipeline` sees the lane and runs ONE read-only **reader** (`runReader` → Sonnet,
+  the §3 read-only toolset), which answers a pure lookup by posting the answer as a finding — no
+  planner, no QA. It's for the ~1% of tasks that are answered just by reading (the cost/benefit
+  analysis's Option C): seconds-to-minutes and a fraction of the cost of the three-Opus pipeline a
+  trivial read otherwise pays for. Its disposition is a lean structured output (`ReaderOutput`):
+  `answered` → `done`; `escalated` → it posts a `warning` "needs full pipeline because …" finding
+  and parks in `review` so the director re-dispatches through the normal `dispatch`. **The reader
+  never half-answers** — anything needing an edit, a build/test, verification, or a broad multi-file
+  investigation is an escalation, not a guess. `readerDone` is a sticky stage marker (like
+  `planDone`) so a restart mid-read can't re-run the reader and double-post. The card shows a distinct
+  **READ** badge (`lane === "read"`), since no QA ran. Sonnet, not Haiku, is the reader's default
+  because misrouting *to* the reader is the unsafe direction — it has no QA behind it — so the lane
+  is biased to capability (`config.models.reader`, configurable like every role's model).
 - **QA fix-rounds resume the QA session.** Round 1 is a fresh QA session seeded with a *scope hint*
   (the plan summary + the files it expected to touch) so QA doesn't burn Opus turns rediscovering the
   change surface. Rounds 2..N **resume that same QA session** (same warm/cold gate as the implementor;

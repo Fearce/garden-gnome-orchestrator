@@ -577,6 +577,11 @@ const Card = memo(function Card({
           <span className="badge" style={{ "--state-color": capParked ? "var(--frost-strong)" : stateColor(thread.state) } as CSSProperties}>
             {stateLabel(thread.state)}
           </span>
+          {thread.lane === "read" ? (
+            <span className="read-badge" title="Read lane — answered by a single read-only reader, no QA">
+              Read
+            </span>
+          ) : null}
           {impl?.effort ? (
             <span className={"effort-badge eff-" + impl.effort} title="Implementor effort (your composer pick, or the planner's)">
               {impl.effort}

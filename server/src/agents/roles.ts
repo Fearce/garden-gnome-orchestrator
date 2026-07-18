@@ -2,8 +2,8 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.js";
 import type { Effort } from "../types.js";
 import type { AgentRunConfig } from "./runner.js";
-import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, MEMORY_SERVER, OFFICE_SERVER, OFFICE_TOOLS, T } from "./toolNames.js";
-import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
+import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, GIT_SERVER, MEMORY_SERVER, OFFICE_SERVER, OFFICE_TOOLS, READER_TOOLS, T } from "./toolNames.js";
+import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_PROMPT, READER_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
 
 // Only `summary` is required. `nextAgent` is intentionally OPTIONAL: the code already defaults a
 // missing route to the implementor (threadManager: anything but "researcher" ⇒ implementor), and
@@ -90,6 +90,20 @@ export const QA_SCHEMA: Record<string, unknown> = {
         },
       },
     },
+  },
+};
+
+// The reader's lean structured output: did it ANSWER the question read-only, or ESCALATE because the
+// task actually needs the full pipeline? The answer itself is posted as a finding (post_finding); this
+// only reports the disposition so runReader knows whether to mark the task done or park it for redispatch.
+export const READER_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["answered", "escalated"],
+  properties: {
+    answered: { type: "boolean", description: "You fully answered the question read-only and posted the answer as a finding." },
+    escalated: { type: "boolean", description: "The task needs the full pipeline (edits/verification/depth) — you posted a 'needs full pipeline' finding instead of half-answering." },
+    reason: { type: "string", description: "When escalated: the one-line reason the full pipeline is needed." },
   },
 };
 
@@ -198,5 +212,50 @@ export function qaConfig(cwd: string, servers: { bus: McpServerConfig; office: M
     effort: "high",
     includePartialMessages: true,
     maxTurns: 60,
+  };
+}
+
+/**
+ * The read-only "reader" lane (dispatch_read): ONE cheap Sonnet agent that answers a lookup/question and
+ * posts its answer as a finding — no planner/researcher/implementor/QA. Read-only is enforced at the
+ * HARNESS level, not by the prompt: under bypassPermissions the disallowedTools denylist is a HARD block
+ * (the exact mechanism that stops the QA role from editing today), so Write/Edit/NotebookEdit/Bash/
+ * PowerShell literally cannot be invoked. Its capabilities are Read/Grep/Glob for the codebase plus the
+ * allowlisted git_read MCP tool for history (no Bash), and the bus/office tools to post its answer and
+ * coordinate. It escalates (structured escalated:true + a warning finding) rather than half-answering.
+ */
+export function readerConfig(
+  cwd: string,
+  servers: { bus: McpServerConfig; office: McpServerConfig; git: McpServerConfig },
+): AgentRunConfig {
+  return {
+    model: config.models.reader,
+    cwd,
+    systemPrompt: READER_PROMPT,
+    // bypassPermissions auto-approves the read tools so the reader runs unsupervised; the write/shell/
+    // network tools below are then hard-blocked by disallowedTools (a real block under bypass, proven by
+    // the QA role) — so the read-only guarantee holds even if the model is told, or tricked, to write.
+    permissionMode: "bypassPermissions",
+    allowedTools: ["Read", "Grep", "Glob", ...READER_TOOLS],
+    disallowedTools: [
+      "Write",
+      "Edit",
+      "NotebookEdit",
+      "MultiEdit",
+      "Bash",
+      "PowerShell",
+      "KillShell",
+      "BashOutput",
+      "WebSearch",
+      "WebFetch",
+      "Task",
+      "AskUserQuestion",
+    ],
+    mcpServers: { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office, [GIT_SERVER]: servers.git },
+    settingSources: ["project"],
+    outputFormat: { type: "json_schema", schema: READER_SCHEMA },
+    includePartialMessages: true,
+    // A lookup shouldn't need many turns; enough to read several files + git history, then answer.
+    maxTurns: 40,
   };
 }
