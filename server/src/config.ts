@@ -55,6 +55,10 @@ export const config = {
   // orchestrator reads as a shareable tool rather than one person's. Set OWNER_NAME in
   // server/.env; left unset it falls back to the neutral "the user".
   ownerName: process.env.OWNER_NAME?.trim() || "the user",
+  // Optional substring: repos whose git origin URL contains it are commit-only (never pushed) by
+  // agents. Lets you keep work/private repos from being pushed while every other repo auto-pushes.
+  // Unset (default) = agents push every repo. Set NO_PUSH_REPO_PATTERN in server/.env to enable.
+  noPushRepoPattern: process.env.NO_PUSH_REPO_PATTERN?.trim() || "",
   port: Number(process.env.PORT ?? 4317),
   // Second, TLS listener so the orchestrator can be embedded as a same-protocol
   // iframe inside the HTTPS Dashboard Deck (https://localhost:3940) — Chromium
@@ -64,10 +68,8 @@ export const config = {
   // cert has to be accepted. Missing/unreadable cert → HTTPS is skipped, never
   // breaking the plain HTTP listener.
   httpsPort: Number(process.env.HTTPS_PORT ?? 4319),
-  httpsPfxPath:
-    process.env.HTTPS_PFX_PATH ??
-    resolve(homedir(), ".runtime", "workspace", "script-hub", "web", "certs", "certhub.pfx"),
-  httpsPfxPassphrase: process.env.HTTPS_PFX_PASSPHRASE ?? "runtime",
+  httpsPfxPath: process.env.HTTPS_PFX_PATH ?? resolve(serverRoot, "certs", "cert.pfx"),
+  httpsPfxPassphrase: process.env.HTTPS_PFX_PASSPHRASE ?? "changeit",
   host: exposeBlocked ? "127.0.0.1" : requestedHost,
   authPassword,
   // Wrong-password lockout per client IP (anti-brute-force). A short PIN is safe behind this.
@@ -145,10 +147,9 @@ export const config = {
     // config/sessions don't inherit personal plugins/notify hooks (which would misfire under headless
     // `codex exec`). Auth is SEEDED into it — see sourceAuthHome — rather than relying on env vars
     // (the modern CLI authenticates only from <CODEX_HOME>/auth.json, not OPENAI_API_KEY).
-    // EXTERNAL CONSUMER: the agent agent orchestrator (C:\agent-orchestrator, source
-    // repo agent-config) runs its gpt-5.6-sol fleet off this same <home>/auth.json — its
-    // codex_agent_loop.ps1 defaults ORCH_CODEX_HOME to this directory. Relocating CODEX_HOME_DIR or
-    // wiping the seeded login also de-authenticates that fleet; update the wrapper in the same change.
+    // NOTE: other tools on the machine may point their own Codex runs at this same <home>/auth.json.
+    // Relocating CODEX_HOME_DIR or wiping the seeded login de-authenticates those consumers too, so
+    // update any external wrapper that defaults to this directory in the same change.
     home: process.env.CODEX_HOME_DIR || resolve(dataDir, "codex-home"),
     // The operator's personal codex home, where `codex login` writes auth.json. A ChatGPT-plan login
     // there (auth_mode "chatgpt") is the PREFERRED Codex auth — it bills against the Plus/Pro/etc. plan,

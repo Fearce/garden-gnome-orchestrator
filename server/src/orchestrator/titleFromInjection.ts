@@ -1,7 +1,7 @@
 // Derive a concise board title from raw prose — used in two places, both best-effort:
 //   • titleFromInjection: after the director injects a directive into a running task, so a lane whose
 //     scope drifted (created "Fix the login redirect bug", re-injected to do unrelated work) stops
-//     showing the stale title. the user runs 4–5 tasks at once and loses track otherwise.
+//     showing the stale title. The user runs several tasks at once and loses track otherwise.
 //   • titleFromBrief: when the director is SKIPPED, the raw message is dispatched verbatim and the only
 //     title we'd otherwise have is its truncated first line ("trash"). This gives skip-director tasks a
 //     real board title without paying for the full Sonnet director — just one cheap Haiku call.

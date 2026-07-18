@@ -48,8 +48,8 @@ export function createDirectorServer(
 
   const findWorkspace = tool(
     "find_workspace",
-    `Resolve a project/repo NAME to its real absolute path on disk. ALWAYS use this to get the workspace before dispatch instead of guessing a path — pass the project name or keywords from ${config.ownerName}'s request (e.g. 'my web app', 'example'). Returns ranked EXISTING directories (git repos preferred). One clear match → use it as the workspace; several plausible → ask ${config.ownerName} which; none → ask ${config.ownerName} for the path.`,
-    { query: z.string().describe("Project name / keywords to locate, e.g. 'example' or 'my web app'.") },
+    `Resolve a project/repo NAME to its real absolute path on disk. ALWAYS use this to get the workspace before dispatch instead of guessing a path — pass the project name or keywords from ${config.ownerName}'s request (e.g. 'my web app', 'api server'). Returns ranked EXISTING directories (git repos preferred). One clear match → use it as the workspace; several plausible → ask ${config.ownerName} which; none → ask ${config.ownerName} for the path.`,
+    { query: z.string().describe("Project name / keywords to locate, e.g. 'api server' or 'my web app'.") },
     async (args) => {
       const matches = findWorkspaces(args.query, config.workspaceSearchRoots);
       if (!matches.length) {
@@ -75,7 +75,7 @@ export function createDirectorServer(
       workspace: z
         .string()
         .describe(
-          "Absolute path of an EXISTING repo/dir the implementor works in, e.g. /Users/you/example. It must already be on disk — agents can't run in a path that isn't there, so don't guess folder names.",
+          "Absolute path of an EXISTING repo/dir the implementor works in, e.g. /Users/you/my-project. It must already be on disk — agents can't run in a path that isn't there, so don't guess folder names.",
         ),
       brief: z
         .string()
