@@ -1563,15 +1563,19 @@ body.dl-resizing { user-select: none; }
     padding-top: calc(13px + env(safe-area-inset-top));
   }
   .detail-head .top {
-    position: relative; display: block; padding-right: 52px;
+    position: relative; display: block; padding-right: 96px; /* strip for the two corner buttons */
   }
   .detail-title-actions {
     margin-top: 8px; flex-wrap: wrap; align-items: center;
   }
   .detail-title-actions .task-elapsed { display: none; }
+  /* Two buttons here carry .close-x — the collapse-header chevron (.head-toggle) and the real ✕
+     close. Pin them SIDE BY SIDE in the top-right corner instead of stacking on top of each other:
+     the ✕ closes at right:0, the collapse chevron sits to its left (44px button + 4px gap). */
   .detail-title-actions .close-x {
     position: absolute; top: 0; right: 0;
   }
+  .detail-title-actions .head-toggle { right: 48px; }
   /* Long titles wrap instead of shoving the close button off-screen. */
   .detail-head .top > div:first-child { min-width: 0; }
   .detail-head h2 { overflow-wrap: anywhere; }
