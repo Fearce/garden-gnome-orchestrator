@@ -92,6 +92,27 @@ Cross-platform: runs on macOS, Linux, and Windows. Paths shown Unix-style;
 `server/.env` (`DEFAULT_WORKSPACE`, `WORKSPACE_SEARCH_ROOTS`) defaults to your home dir
 when unset, so no config is needed to start.
 
+### Configuration & personal rules — `server/.env`
+
+All per-machine and personal settings live in **`server/.env`**, which is
+**gitignored** — copy `server/.env.example` to `server/.env` and fill in what you
+need. Nothing is required to run locally; every value has a sensible default. This
+is where you put anything specific to *you* rather than shipping it in the code:
+
+- **`OWNER_NAME`** — your name, woven into the agent prompts (defaults to "the user").
+- **`NO_PUSH_REPO_PATTERN`** — a personal git rule: agents commit-only (never push)
+  any repo whose origin URL contains this substring, while every other repo
+  auto-pushes. Handy for keeping work/private repos from being pushed. Unset = push
+  everything.
+- **`HTTPS_PFX_PATH` / `HTTPS_PFX_PASSPHRASE`** — your own TLS cert for the optional
+  HTTPS listener; **`PLAYWRIGHT_RUNTIME_DEPS_DIR`** — a custom Playwright location for
+  agent browser-tests.
+- Auth (`AUTH_PASSWORD`, Google `CLIENT_ID/SECRET`, `ALLOWED_EMAIL`), account tokens,
+  `DEFAULT_WORKSPACE`, and more — all documented inline in `server/.env.example`.
+
+Because `server/.env` is gitignored, your personal values never end up in the repo;
+the committed code carries only generic defaults.
+
 ### Run modes — `serve` vs `dev`
 
 The server runs under `tsx`. `npm run dev` adds `tsx watch`, which hot-restarts the
