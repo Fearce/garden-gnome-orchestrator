@@ -40,6 +40,25 @@ function PencilIcon() {
   );
 }
 
+function ChevronIcon({ down }: { down: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ transform: down ? "rotate(180deg)" : undefined, transition: "transform 0.15s ease" }}
+    >
+      <path d="m18 15-6-6-6 6" />
+    </svg>
+  );
+}
+
 /** The task's board title, click-to-rename in place. Enter/blur commits (a trimmed, changed value),
  *  Escape reverts. The draft is (re)seeded from the current title each time editing opens, so an
  *  external retitle while idle is never overwritten by a stale draft. */
@@ -233,6 +252,23 @@ export function ThreadDetail() {
     }
     setShowToolsState(v);
   };
+  // Persisted globally, same reason as the tools toggle: collapsing the header is a reading-mode
+  // preference, so it should survive both task switches and reloads.
+  const [headCollapsed, setHeadCollapsedState] = useState(() => {
+    try {
+      return localStorage.getItem("orch-head-collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setHeadCollapsed = (v: boolean) => {
+    try {
+      localStorage.setItem("orch-head-collapsed", v ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+    setHeadCollapsedState(v);
+  };
   const stickRef = useRef(true);
 
   const runRole = useMemo(() => {
@@ -399,11 +435,11 @@ export function ThreadDetail() {
   return (
     <section className="detail">
       <div className="resize-handle" onMouseDown={startResize} title="Drag to resize this panel" />
-      <div className="detail-head">
+      <div className={"detail-head" + (headCollapsed ? " collapsed" : "")}>
         <div className="top">
           <div>
             <EditableTitle threadId={thread.id} title={thread.title} />
-            <div className="meta">{thread.workspace}</div>
+            {!headCollapsed && <div className="meta">{thread.workspace}</div>}
           </div>
           <div className="detail-title-actions">
             <Elapsed
@@ -421,93 +457,106 @@ export function ThreadDetail() {
             <span className="badge" style={{ "--state-color": frozen ? "var(--frost-strong)" : stateColor(thread.state) } as CSSProperties}>
               {stateLabel(thread.state)}
             </span>
+            <button
+              className="close-x head-toggle"
+              onClick={() => setHeadCollapsed(!headCollapsed)}
+              aria-label={headCollapsed ? "Expand header" : "Collapse header"}
+              aria-expanded={!headCollapsed}
+              title={headCollapsed ? "Expand the header — show task details and controls" : "Collapse the header — more room for the feed"}
+            >
+              <ChevronIcon down={headCollapsed} />
+            </button>
             <button className="close-x" onClick={() => select(null)} aria-label="Close" title="Close">
               ✕
             </button>
           </div>
         </div>
-        <div className="meta">
-          {impl ? `${impl.model}${impl.account ? ` · ${impl.account}` : ""}${impl.effort ? ` · ${impl.effort} effort` : ""} · ${impl.state}` : "—"}
-          {impl ? (
-            <>
-              {" · "}
-              <RoleElapsed runs={threadRuns.filter((r) => r.role === "implementor")} title="Implementor time — cumulative across every run/resume" />
-            </>
-          ) : null}
-          {totalCost > 0 ? ` · ~$${totalCost.toFixed(2)} equiv (subscription)` : ""}
-          {thread.error ? ` · ERROR: ${thread.error}` : ""}
-        </div>
-        {path.length > 0 && (
-          <div className="meta" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }} title="The actual agent path this task took">
-            {path.map((role, i) => {
-              const live = roleIsLive(role);
-              return (
-                <span key={role} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                  {i > 0 ? <span style={{ opacity: 0.4 }}>→</span> : null}
-                  <Gnome role={role} size={28} active={live} />
-                  <span style={{ color: live ? roleColor(role) : "var(--text-faint)", textTransform: "capitalize", fontWeight: 600 }}>{role}</span>
-                </span>
-              );
-            })}
-          </div>
+        {!headCollapsed && (
+          <>
+            <div className="meta">
+              {impl ? `${impl.model}${impl.account ? ` · ${impl.account}` : ""}${impl.effort ? ` · ${impl.effort} effort` : ""} · ${impl.state}` : "—"}
+              {impl ? (
+                <>
+                  {" · "}
+                  <RoleElapsed runs={threadRuns.filter((r) => r.role === "implementor")} title="Implementor time — cumulative across every run/resume" />
+                </>
+              ) : null}
+              {totalCost > 0 ? ` · ~$${totalCost.toFixed(2)} equiv (subscription)` : ""}
+              {thread.error ? ` · ERROR: ${thread.error}` : ""}
+            </div>
+            {path.length > 0 && (
+              <div className="meta" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }} title="The actual agent path this task took">
+                {path.map((role, i) => {
+                  const live = roleIsLive(role);
+                  return (
+                    <span key={role} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      {i > 0 ? <span style={{ opacity: 0.4 }}>→</span> : null}
+                      <Gnome role={role} size={28} active={live} />
+                      <span style={{ color: live ? roleColor(role) : "var(--text-faint)", textTransform: "capitalize", fontWeight: 600 }}>{role}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            <div className="detail-controls">
+              {isLive && (
+                <button
+                  className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
+                  onClick={() => { if (!frozen) interrupt(id); }}
+                  disabled={frozen}
+                  title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
+                >
+                  ⏸ Interrupt
+                </button>
+              )}
+              {isResumable && (
+                <button className="btn primary sm" onClick={() => resume(id)}>
+                  ▶ Resume
+                </button>
+              )}
+              {thread.state === "cancelled" && (
+                <button
+                  className="btn primary sm"
+                  onClick={() => retry(id)}
+                  title="Start this task over from the beginning — re-runs the whole pipeline from the original brief"
+                >
+                  ↻ Retry
+                </button>
+              )}
+              {isDoneable(thread.state) && (
+                <button className="btn success sm" onClick={() => markDone(id)} title="Accept this task as finished and mark it done">
+                  ✓ Mark done
+                </button>
+              )}
+              <button
+                className="btn ghost sm"
+                onClick={() => {
+                  setShowChanges(true);
+                  loadChanges(id);
+                }}
+              >
+                Diff
+              </button>
+              {chatRoom && (
+                <button
+                  className="btn ghost sm"
+                  onClick={() => openOffice(chatRoom.room)}
+                  title={`Open this repo's chatroom — ${chatRoom.threadIds.length} task(s) have collaborated here`}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 5, verticalAlign: "-2px" }}>
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  </svg>
+                  Chatroom
+                </button>
+              )}
+              {!terminal && (
+                <button className="btn danger sm" onClick={() => cancel(id)}>
+                  Cancel
+                </button>
+              )}
+            </div>
+          </>
         )}
-        <div className="detail-controls">
-          {isLive && (
-            <button
-              className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
-              onClick={() => { if (!frozen) interrupt(id); }}
-              disabled={frozen}
-              title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
-            >
-              ⏸ Interrupt
-            </button>
-          )}
-          {isResumable && (
-            <button className="btn primary sm" onClick={() => resume(id)}>
-              ▶ Resume
-            </button>
-          )}
-          {thread.state === "cancelled" && (
-            <button
-              className="btn primary sm"
-              onClick={() => retry(id)}
-              title="Start this task over from the beginning — re-runs the whole pipeline from the original brief"
-            >
-              ↻ Retry
-            </button>
-          )}
-          {isDoneable(thread.state) && (
-            <button className="btn success sm" onClick={() => markDone(id)} title="Accept this task as finished and mark it done">
-              ✓ Mark done
-            </button>
-          )}
-          <button
-            className="btn ghost sm"
-            onClick={() => {
-              setShowChanges(true);
-              loadChanges(id);
-            }}
-          >
-            Diff
-          </button>
-          {chatRoom && (
-            <button
-              className="btn ghost sm"
-              onClick={() => openOffice(chatRoom.room)}
-              title={`Open this repo's chatroom — ${chatRoom.threadIds.length} task(s) have collaborated here`}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 5, verticalAlign: "-2px" }}>
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-              </svg>
-              Chatroom
-            </button>
-          )}
-          {!terminal && (
-            <button className="btn danger sm" onClick={() => cancel(id)}>
-              Cancel
-            </button>
-          )}
-        </div>
       </div>
       {thread.state === "awaiting_approval" && (
         <div className="approval">
