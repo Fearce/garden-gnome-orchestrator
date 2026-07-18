@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, MODEL_ROLES } from "../types.js";
@@ -190,7 +190,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 }
 
 interface VoiceSettingsDTO {
-  audio: { input_device: string | null; output_device: string | null; inputs: string[]; outputs: string[] };
+  audio: { input_device: string | null; output_device: string | null; volume: number; inputs: string[]; outputs: string[] };
   wake: { wake_phrases: string[] };
 }
 
@@ -263,6 +263,12 @@ function VoiceSection() {
         options={dto.audio.outputs}
         onChange={(v) => void push({ audio: { output_device: v } })}
       />
+      <SliderRow
+        label="Volume"
+        hint="Playback loudness for spoken replies and cues. 100% is full scale; lower to soften without touching the system mixer."
+        value={dto.audio.volume ?? 1}
+        onChange={(v) => void push({ audio: { volume: v } })}
+      />
       <TextRow
         label="Wake phrase"
         hint='What you say to open a conversation. Comma-separate variants the transcriber might mishear (e.g. "hey claude, hey cloud").'
@@ -313,6 +319,62 @@ function DeviceRow({
             </option>
           ))}
         </select>
+      }
+    />
+  );
+}
+
+/** A 0–100% volume slider. Drags update the local draft continuously (smooth thumb + live readout)
+ *  but only commit to the gateway on release — each POST reopens audio and echoes a fresh DTO, so
+ *  firing one per drag frame would fight the drag. Stored as a 0.0–1.0 gain. */
+function SliderRow({
+  label,
+  hint,
+  value,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  const toPct = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 100);
+  const [draft, setDraft] = useState(toPct(value));
+  const [dragging, setDragging] = useState(false);
+  useEffect(() => {
+    if (!dragging) setDraft(toPct(value));
+  }, [value, dragging]);
+
+  const commit = (pct: number) => {
+    setDragging(false);
+    const gain = pct / 100;
+    if (gain !== value) onChange(gain);
+  };
+  return (
+    <Row
+      label={label}
+      hint={hint}
+      control={
+        <div className="slider">
+          <input
+            type="range"
+            className="slider-range"
+            aria-label={label}
+            style={{ "--fill": `${draft}%` } as CSSProperties}
+            min={0}
+            max={100}
+            step={1}
+            value={draft}
+            onChange={(e) => {
+              setDragging(true);
+              setDraft(Number(e.target.value));
+            }}
+            onPointerUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
+            onKeyUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
+            onBlur={(e) => commit(Number((e.target as HTMLInputElement).value))}
+          />
+          <span className="slider-val mono">{draft}%</span>
+        </div>
       }
     />
   );
