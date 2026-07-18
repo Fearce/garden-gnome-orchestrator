@@ -347,8 +347,7 @@ function SliderRow({
 
   const commit = (pct: number) => {
     setDragging(false);
-    const gain = pct / 100;
-    if (gain !== value) onChange(gain);
+    if (pct !== toPct(value)) onChange(pct / 100);
   };
   return (
     <Row
@@ -370,6 +369,7 @@ function SliderRow({
               setDraft(Number(e.target.value));
             }}
             onPointerUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
+            onPointerCancel={(e) => commit(Number((e.target as HTMLInputElement).value))}
             onKeyUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
             onBlur={(e) => commit(Number((e.target as HTMLInputElement).value))}
           />
