@@ -1114,6 +1114,11 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   color: var(--text-faint); border-radius: var(--r-sm); font-size: 17px; line-height: 1;
 }
 .close-x:hover { background: var(--bg-3); color: var(--text); }
+/* Collapse/expand chevron — shares the borderless window-button look of the close X. When the header
+   is collapsed the panel keeps only the title row, freeing vertical space for the feed. */
+.head-toggle { color: var(--text-dim); }
+.head-toggle:hover { color: var(--text); }
+.detail-head.collapsed { gap: 0; padding-top: 9px; padding-bottom: 9px; }
 .detail-controls { display: flex; flex-wrap: wrap; gap: 7px; }
 
 /* Frozen detail pane: the pane renders NORMALLY (feed/Diff/Cancel all live — the operator's escape hatch)
