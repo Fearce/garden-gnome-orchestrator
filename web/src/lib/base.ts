@@ -1,6 +1,6 @@
-// The console is served either at an origin root (https://localhost:4319/, the local deck's iframe)
-// OR under a path prefix when proxied through the Zero-Trust deck
-// (https://example.com/orchestrator/). Vite `base: "./"` keeps ASSET urls relative so
+// The console is served either at an origin root (https://localhost:4319/, the local iframe)
+// OR under a path prefix when reverse-proxied behind a hostname
+// (e.g. https://example.com/orchestrator/). Vite `base: "./"` keeps ASSET urls relative so
 // they resolve under either mount; this module does the same for the API + WebSocket urls, which live
 // in JS and would otherwise be hard-coded to the origin root and 404 behind the proxy.
 //

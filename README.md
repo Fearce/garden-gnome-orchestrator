@@ -9,8 +9,8 @@ reads the repo and plans, an optional **researcher** gathers external context, a
 reviews it. Fire many tasks at once, watch them as concurrent lanes, feed a
 running agent new information mid-flight, and resume a task that died partway.
 
-> Not to be confused with the agent "agent orchestrator". This is the
-> *Claude* orchestrator — a local cockpit for directing coding agents.
+> A local cockpit for directing coding agents — not a hosted service or a
+> finance/background "agent" bot.
 
 ## Why it exists
 
@@ -62,13 +62,10 @@ service uses a `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`.
 
 Codex agents authenticate the same zero-API-billing way: a ChatGPT-plan
 `codex login` seeded into the isolated `server/data/codex-home/auth.json`
-(see the `codex` block in `server/src/config.ts`). That seeded login is
-**shared infrastructure**: the agent agent orchestrator
-(`~/.claude/agent-orchestrator`, source repo `agent-config`) points its own
-Codex fleet (`gpt-5.6-sol`) at the same `codex-home` — GPT models can't run
-on the Anthropic subscription, so the ChatGPT-plan login is the one account
-both orchestrators' Codex agents draw from. Don't log it out, rotate it, or
-move `CODEX_HOME_DIR` without updating that fleet's `codex_agent_loop.ps1`.
+(see the `codex` block in `server/src/config.ts`). If any other tool on your
+machine points its own Codex runs at the same `codex-home`, note that they
+share this one login — logging it out, rotating it, or moving `CODEX_HOME_DIR`
+affects those consumers too, so update their config in the same change.
 
 ## Layout
 

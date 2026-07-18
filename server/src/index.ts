@@ -407,7 +407,7 @@ async function main(): Promise<void> {
     // Shell-style path completion for the dispatch path field. Unlike /api/fs/ls (which browses the
     // children of a confirmed directory), this takes a PARTIAL path, resolves it to the nearest
     // existing directory ancestor, and returns the child directories whose names start with the
-    // unmatched fragment — e.g. "C:\claude-o" → "C:\claude-orchestrator", "D:\Wow" → "D:\MyProject".
+    // unmatched fragment — e.g. "C:\claude-o" → "C:\claude-orchestrator", "D:\proj" → "D:\projects".
     // Dirs only (workspace paths are always directories); symlinks are excluded (Dirent.isDirectory()
     // is false for a symlink, which is also how we avoid following them).
     const COMPLETE_LIMIT = 8;

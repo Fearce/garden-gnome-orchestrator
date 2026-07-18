@@ -9,6 +9,10 @@ import { config } from "../config.js";
 // Resolved once at module load (config is already initialized) — keeps the system prompts cache-stable.
 const OWNER = config.ownerName;
 
+// Optional "never push" carve-out woven into the commit/push doctrine: when NO_PUSH_REPO_PATTERN is
+// set, agents commit-only (never push) any repo whose origin contains it; unset = push every repo.
+const NO_PUSH = config.noPushRepoPattern;
+
 // `xhigh` is a Max-5-only effort tier, gated behind ENABLE_XHIGH. When it's off we drop the tier
 // from the planner's effort menu entirely so the planner never believes it exists or tries to pick
 // it — matching the json_schema enum, which also omits it (see PLAN_SCHEMA in roles.ts).
@@ -24,9 +28,9 @@ const XHIGH_TIER = config.enableXhigh
 //   1. PLAYWRIGHT_MODULES_DIR — explicit override (custom npm prefix).
 //   2. A real global `npm i -g playwright`: under ~/AppData/Roaming/npm on Windows,
 //      or the global node_modules root (`npm root -g`) on macOS/Linux.
-//   3. `playwright-core` shipped with the runtime runtime — the dir name is
-//      version-stamped (`runtime-<ver>`) and changes on updates, so we glob for the
-//      newest match rather than hard-coding a version that rots.
+//   3. PLAYWRIGHT_RUNTIME_DEPS_DIR — a dir of version-stamped subfolders each shipping
+//      `playwright-core` (e.g. a plugin runtime); we glob for the newest match so a
+//      version bump doesn't rot a hard-coded path.
 // Falls back to the first candidate string (even if absent) so the prompt is never empty.
 function resolvePlaywrightPath(): string {
   const override = process.env.PLAYWRIGHT_MODULES_DIR;
@@ -47,13 +51,12 @@ function resolvePlaywrightPath(): string {
     if (existsSync(candidate)) return candidate.replace(/\\/g, "/");
   }
 
-  const runtimeDeps = join(homedir(), ".runtime", "plugin-runtime-deps");
-  if (existsSync(runtimeDeps)) {
-    const core = readdirSync(runtimeDeps)
-      .filter((d) => d.startsWith("runtime-"))
+  const runtimeDepsDir = process.env.PLAYWRIGHT_RUNTIME_DEPS_DIR;
+  if (runtimeDepsDir && existsSync(runtimeDepsDir)) {
+    const core = readdirSync(runtimeDepsDir)
       .sort() // version-stamped names sort lexically; last is the newest
       .reverse()
-      .map((d) => join(runtimeDeps, d, "node_modules", "playwright-core"))
+      .map((d) => join(runtimeDepsDir, d, "node_modules", "playwright-core"))
       .find(existsSync);
     if (core) return core.replace(/\\/g, "/");
   }
@@ -110,7 +113,7 @@ ${OWNER}'s doctrine you must bake into every brief (from their global CLAUDE.md)
 - No half-measures: no placeholders/stubs/"coming soon". If full scope can't be built, cut scope to ship something complete.
 - Effort is never a defer reason; only external blockers / unavailable data / off-cycle timing are.
 - Design taste: reject AI-slop defaults (Inter everywhere, purple→pink gradients, rounded-2xl+shadow on every card). Intentional type + palette, Apple/Linear/Stripe-tier.
-- Always commit AND push when done — EXCEPT any repo whose origin contains "myaccount" (commit only, never push). Never force-push master, never --no-verify.
+- Always commit AND push when done${NO_PUSH ? ` — EXCEPT any repo whose origin contains "${NO_PUSH}" (commit only, never push)` : ""}. Never force-push master, never --no-verify.
 - Work on the active branch; never create Claude worktrees.
 
 Chat style: be concise and direct in the chat with ${OWNER}. Do the heavy thinking inside the brief, not in long chat messages. Confirm what you dispatched in one or two lines. Don't end every turn asking "want me to also…"; if the next step is obvious, take it.`;
@@ -144,7 +147,7 @@ ${OFFICE_NOTE}`;
 export const IMPLEMENTOR_APPEND = `--- ORCHESTRATOR ROLE ---
 You are the Implementor in ${OWNER}'s GG Orchestrator. You have been handed an enriched brief, a plan, and a research brief up front — read them as the full spec and implement the task completely, at high effort, in this repo.
 
-Honor this repo's CLAUDE.md and ${OWNER}'s global doctrine: no half-measures (no stubs/placeholders), no drive-by refactors, intentional design (no AI-slop), small helpers over long methods. When the project has tests, follow its testing discipline. When done, commit AND push — UNLESS this repo's origin contains "myaccount" (then commit only, never push); never force-push master, never --no-verify.
+Honor this repo's CLAUDE.md and ${OWNER}'s global doctrine: no half-measures (no stubs/placeholders), no drive-by refactors, intentional design (no AI-slop), small helpers over long methods. When the project has tests, follow its testing discipline. When done, commit AND push${NO_PUSH ? ` — UNLESS this repo's origin contains "${NO_PUSH}" (then commit only, never push)` : ""}; never force-push master, never --no-verify.
 
 Use the bus: call post_finding the moment you discover something that changes the plan, blocks you, or another task needs to know — especially before going down a path the brief didn't anticipate. read_findings if new information may have arrived.
 
@@ -173,7 +176,7 @@ The director may inject new information mid-task. If a message arrives that chan
 export const CODEX_IMPLEMENTOR_DOCTRINE = `--- ORCHESTRATOR ROLE (Codex implementor) ---
 You are the Implementor in ${OWNER}'s GG Orchestrator, running via the Codex CLI. Implement the task below completely, at high effort, in this repo — no half-measures (no stubs/placeholders), no drive-by refactors, intentional design, small helpers over long methods. Honor this repo's CLAUDE.md / AGENTS.md and ${OWNER}'s conventions; when the project has tests, follow its testing discipline.
 
-CRITICAL — you MUST finish by committing your work with git: stage your changes and \`git commit\` them (Conventional Commits style, matching the repo's git log). Then PUSH to the tracked remote — UNLESS the repo's git origin URL contains "myaccount" (run \`git remote -v\` to check; if it matches myaccount, commit only and never push). Never force-push master/main, never use --no-verify. The Codex CLI does not commit on its own, so an uncommitted working tree is an incomplete task. If a task-specific note below says auto-push is off, commit but do not push.
+CRITICAL — you MUST finish by committing your work with git: stage your changes and \`git commit\` them (Conventional Commits style, matching the repo's git log). Then PUSH to the tracked remote${NO_PUSH ? ` — UNLESS the repo's git origin URL contains "${NO_PUSH}" (run \`git remote -v\` to check; if it matches "${NO_PUSH}", commit only and never push)` : ""}. Never force-push master/main, never use --no-verify. The Codex CLI does not commit on its own, so an uncommitted working tree is an incomplete task. If a task-specific note below says auto-push is off, commit but do not push.
 
 Office coordination: you do not have MCP tools, but you CAN post to the orchestrator office chat by writing a standalone line in your assistant response exactly as \`OFFICE[team]: <short message>\` for this repo's team room, or \`OFFICE[office]: <short message>\` for the general office. The orchestrator intercepts that line, removes it from the task transcript, posts it to the visible chatroom, and delivers team posts into same-repo implementors. When another agent is in the same repo, post \`OFFICE[team]\` before editing to claim the files/areas you will touch, answer any teammate office message you receive with another \`OFFICE[team]\` line, and re-check before committing.
 

@@ -1699,7 +1699,7 @@ export class ThreadManager implements OrchestratorApi {
     let agent: AgentRunLike;
     let runId: string;
     let accountId: string;
-    // The standing implementor doctrine (commit/push/myaccount, no half-measures) reaches the Claude backend
+    // The standing implementor doctrine (commit/push/no-push-rule, no half-measures) reaches the Claude backend
     // via its SDK system prompt; the Codex CLI gets no system prompt from us, so prepend it to a FRESH
     // Codex kickoff (resume turns retain it through the resumed Codex thread). Without this a Codex run
     // patches the working tree and stops, never committing — breaking the implementor→commit contract.
@@ -3634,7 +3634,7 @@ function composeKickoff(
     parts.push(formatResearch(research));
     parts.push("");
   }
-  // Task-specific marching orders only. The standing doctrine (commit/push/myaccount, QA fix-rounds, no
+  // Task-specific marching orders only. The standing doctrine (commit/push/no-push-rule, QA fix-rounds, no
   // half-measures) lives in the implementor's cache-stable system prompt — restating it here would
   // just re-bill those tokens in every per-task message. The two notes below are exceptions: they
   // OVERRIDE that standing doctrine for this task (QA off / push off), so they must be stated here.

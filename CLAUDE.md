@@ -55,17 +55,15 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   ```
   POST http://127.0.0.1:3939/api/restart   body {"id":"claude-orchestrator"}
   ```
-  Shorthand: `.\launchers\script-hub.ps1 restart claude-orchestrator` (from the script-hub root,
-  `C:\Users\user\.runtime\workspace\script-hub`). This is NOT blocked by the MyProject deploy guard
-  (it only matches worldserver commands, not `/api/restart`) — issue it directly, no string-splitting.
+  Shorthand: `.\launchers\script-hub.ps1 restart claude-orchestrator` (from your process-manager
+  root) — issue it directly.
 - **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
   runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.
 - **Web-only change?** Skip the restart — `web/dist` is static; `npm run build --prefix web` then
   reload the browser.
 - If a restart doesn't pick up server changes, a stale/orphaned process may still hold :4317 —
-  check `Get-NetTCPConnection -LocalPort 4317` and kill the old PID, then restart (see global
-  memory `claude_orchestrator_stale_elevated_process_shadows_server_changes`).
+  check `Get-NetTCPConnection -LocalPort 4317` and kill the old PID, then restart.
 
 ## Debugging a failed task
 State + run history live in `server/data/orchestrator.sqlite` (open read-only with the bundled

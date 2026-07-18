@@ -18,9 +18,9 @@ const gitSha = (() => {
 const buildTime = new Date().toISOString();
 
 export default defineConfig({
-  // Relative asset URLs so the built console works both at an origin root (the local deck's
-  // https://localhost:4319/ iframe) AND under a path prefix when reverse-proxied through the
-  // Zero-Trust deck (https://example.com/orchestrator/). API/WS urls are made
+  // Relative asset URLs so the built console works both at an origin root (the local
+  // https://localhost:4319/ iframe) AND under a path prefix when reverse-proxied behind a
+  // hostname (e.g. https://example.com/orchestrator/). API/WS urls are made
   // mount-aware separately in lib/base.ts (they live in JS, not asset tags).
   base: "./",
   plugins: [react()],
