@@ -1502,8 +1502,12 @@ body.dl-resizing { user-select: none; }
    the breakpoint so the desktop three-column layout above is untouched.
    ============================================================ */
 @media (max-width: 768px) {
-  /* topbar (auto, wraps) · workbench (1fr) · bottom nav (auto) */
-  .app { grid-template-rows: auto minmax(0, 1fr) auto; }
+  /* topbar (auto, wraps) · workbench (1fr) · bottom nav (auto). The single column is pinned to
+     minmax(0, 1fr): an implicit/auto grid column sizes to its widest child's max-content and, with
+     .app's overflow:hidden, would balloon the layout wider than the viewport and clip the right edge
+     off-screen with no scrollbar (the "can't see the right side on mobile" bug). minmax(0,…) lets the
+     track shrink to the viewport so content reflows/scrolls inside it instead. */
+  .app { grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); }
 
   /* topbar wraps to two rows: brand + controls, then a full-width
      horizontally-scrollable accounts strip that never widens the viewport. */
@@ -1524,14 +1528,20 @@ body.dl-resizing { user-select: none; }
   .bell { width: 44px; height: 44px; }
   .update-badge { width: 44px; height: 44px; }
   .rail-toggle, .resize-handle { display: none; } /* rail-hide + resize are desktop-only */
+  /* The ambient office (pacing/huddling gnomes) is a multi-agent presence visualization that needs
+     horizontal room a phone doesn't have — it overflowed and overlapped the topbar controls. Keep the
+     .office element as the flexible spacer that right-aligns the conn/bell cluster, but drop the strip;
+     per-task chatroom access remains on the board cards. */
+  .office-strip { display: none; }
   .agent-toggle { height: 40px; }
   .settings-btn { width: 40px; height: 40px; }
   /* The gear popover centers as a sheet on mobile instead of anchoring under a wrapped topbar. */
   .settings-scrim { display: flex; align-items: flex-start; justify-content: center; }
   .settings-pop { position: static; top: auto; right: auto; margin-top: 12px; width: calc(100vw - 24px); }
 
-  /* single pane, toggled by the .pane-* class on the workbench */
-  .workbench, .workbench.detail-open { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); }
+  /* single pane, toggled by the .pane-* class on the workbench. minmax(0, 1fr) (not a bare 1fr, whose
+     auto minimum is min-content) so the active pane can't force the track past the viewport width. */
+  .workbench, .workbench.detail-open { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
   .workbench.pane-director .board { display: none; }
   .workbench.pane-board .rail { display: none; }
   .rail { border-right: none; }
@@ -1542,6 +1552,9 @@ body.dl-resizing { user-select: none; }
     .detail { height: 100dvh; }
   }
   .inject-bar { padding-bottom: calc(11px + env(safe-area-inset-bottom)); }
+  /* The inject + approval action rows are nowrap flex rows whose buttons (Queue · Inject ·
+     Interrupt & inject, Approve · Reject) overflow the narrowest phones — let them wrap. */
+  .inject-bar .row, .approval .row { flex-wrap: wrap; }
 
   /* Sticky header so the close control stays reachable while the feed scrolls,
      and clears the notch / browser chrome via the safe-area inset. */
