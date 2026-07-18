@@ -6,6 +6,9 @@ export const MEMORY_SERVER = "memory";
 export const BUS_SERVER = "bus";
 export const DIRECTOR_SERVER = "director";
 export const OFFICE_SERVER = "office";
+// A tiny read-only git server exposed ONLY to the reader lane: an allowlisted git_read tool (log/show/
+// status/diff via execFile, no shell) so read-only git history is available without enabling Bash.
+export const GIT_SERVER = "git";
 
 export const T = {
   searchMemory: `mcp__${MEMORY_SERVER}__search_memory`,
@@ -19,9 +22,11 @@ export const T = {
   officeSetName: `mcp__${OFFICE_SERVER}__office_set_name`,
   chatPost: `mcp__${OFFICE_SERVER}__chat_post`,
   chatRead: `mcp__${OFFICE_SERVER}__chat_read`,
+  gitRead: `mcp__${GIT_SERVER}__git_read`,
   askUser: `mcp__${DIRECTOR_SERVER}__ask_user`,
   findWorkspace: `mcp__${DIRECTOR_SERVER}__find_workspace`,
   dispatch: `mcp__${DIRECTOR_SERVER}__dispatch`,
+  dispatchRead: `mcp__${DIRECTOR_SERVER}__dispatch_read`,
   listThreads: `mcp__${DIRECTOR_SERVER}__list_threads`,
   threadStatus: `mcp__${DIRECTOR_SERVER}__thread_status`,
   inject: `mcp__${DIRECTOR_SERVER}__inject`,
@@ -31,12 +36,17 @@ export const T = {
 
 export const BUS_TOOLS = [T.postFinding, T.postDeliverable, T.readFindings, T.notifyThread, T.busAskUser];
 export const OFFICE_TOOLS = [T.officeLook, T.officeSetName, T.chatPost, T.chatRead];
+// Read-only tools the reader lane runs with — the codebase-read surface (Read/Grep/Glob are built-in and
+// added alongside these in readerConfig) plus allowlisted git history. No write/edit/shell tool appears
+// here, and readerConfig hard-blocks them via disallowedTools under bypassPermissions.
+export const READER_TOOLS = [T.gitRead, ...BUS_TOOLS, ...OFFICE_TOOLS];
 export const DIRECTOR_TOOLS = [
   T.searchMemory,
   T.readMemory,
   T.askUser,
   T.findWorkspace,
   T.dispatch,
+  T.dispatchRead,
   T.listThreads,
   T.threadStatus,
   T.inject,

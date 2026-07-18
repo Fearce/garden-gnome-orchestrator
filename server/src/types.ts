@@ -1,6 +1,11 @@
 // Shared domain types — the contract the whole server builds against.
 
-export type Role = "director" | "planner" | "researcher" | "implementor" | "qa";
+export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" | "reader";
+
+/** Dispatch lane. Absent/null = the normal planner→implementor→QA pipeline; 'read' = the cheap
+ *  single-agent read-only reader lane (dispatch_read) — one Sonnet reader answers a lookup and escalates
+ *  rather than half-answering, no QA. Persisted on the thread so it survives resume and drives the badge. */
+export type ThreadLane = "read";
 
 export type ThreadState =
   | "intake" // just created, brief not yet built
@@ -50,6 +55,7 @@ export interface Thread {
   effortOverride?: Effort | null; // operator-pinned implementor effort, snapshotted at a skip-director dispatch — beats the planner's pick
   closedAt?: number | null; // when soft-closed (state === "closed"); drives the 30-day auto-purge clock
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' means it finished correctly (drives the closed-card checkmark)
+  lane?: ThreadLane | null; // dispatch lane: null = normal pipeline, 'read' = the read-only reader lane (drives the card's READ badge)
   createdAt: number;
   updatedAt: number;
 }
@@ -157,7 +163,7 @@ export function agentKey(threadId: string, role: Role): string {
 
 /** Fixed pipeline order of a task's agents — drives the per-role name offset below so a task's roles map
  *  to CONSECUTIVE (hence distinct) default names. Mirrored in web/src/types.ts. */
-const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4 };
+const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4, reader: 5 };
 
 /** Deterministic default office name for one agent (a task's role): the task's base name (hashed from
  *  its id) stepped forward by the role's pipeline rank. Because the five roles occupy consecutive slots
@@ -273,6 +279,15 @@ export interface ResearchOutput {
   warnings: string[];
 }
 
+/** The reader lane's lean disposition (the answer itself is posted as a finding, not returned here):
+ *  did the reader answer the lookup read-only, or escalate because the task actually needs the full
+ *  pipeline? runReader reads this to mark the task done vs. park it in 'review' for re-dispatch. */
+export interface ReaderOutput {
+  answered: boolean; // fully answered read-only and posted the answer as a finding
+  escalated: boolean; // needs the full pipeline (edits/verification/depth) — posted a 'needs full pipeline' finding instead of half-answering
+  reason?: string; // when escalated: the one-line reason
+}
+
 /**
  * Per-stage pipeline outputs persisted to disk so a task that dies mid-pipeline (crash, restart,
  * timeout, Claude exit error) can resume from where it failed instead of redoing finished stages.
@@ -286,6 +301,7 @@ export interface StageOutputs {
   researchDone?: boolean; // the researcher stage ran (true even if it produced nothing) — don't re-run on resume
   approved?: boolean; // the plan cleared the approval gate — don't re-prompt on resume
   kickoff?: string | null; // the composed brief the implementor was handed (record of what it got)
+  readerDone?: boolean; // the read-lane reader stage ran (answered or escalated) — don't re-run/double-post on resume
 }
 
 /**

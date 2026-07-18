@@ -20,6 +20,15 @@ A director's console for running Claude Code agents: a Sonnet **director** enric
 prompt, runs a planner + researcher, then dispatches Opus 4.8 **implementor** workers you
 can inject into mid-work. Node/Fastify API (`server/`) + React/Vite console (`web/`), single origin.
 
+**Read lane (`dispatch_read`).** A pure read-only lookup ("read HANDOFF.md and report it", "which
+model does role X use", "explain how Z works") can skip the whole planner→implementor→QA pipeline:
+the director dispatches it with `dispatch_read`, which runs ONE cheap **reader** (Sonnet) that answers
+by posting a finding — read-only enforced at the harness level (Read/Grep/Glob + an allowlisted
+`git_read`, no Write/Edit/Bash), no QA. The reader **escalates rather than half-answers**: anything
+needing an edit/build/verification/broad investigation gets a "needs full pipeline" finding and parks
+for a normal re-dispatch. Bias toward the full `dispatch` when unsure — misrouting to Opus is safe,
+misrouting a real task to the reader is not. The card shows a **READ** badge. See ARCHITECTURE.md §5.
+
 ## Run / build
 - Dev (hot reload): `npm run dev` at repo root — tsx-watch server + Vite web.
 - Prod: `npm run build` (web then server) → `npm start` runs `node dist/index.js` from
