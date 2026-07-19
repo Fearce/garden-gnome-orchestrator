@@ -494,6 +494,7 @@ export async function getGitSummary(workspace: string): Promise<GitSummary> {
 // that file's delta leaks into both. We attribute conservatively there — prefer under- to over-reporting.
 
 const taskSummaryCache = new Map<string, { at: number; value: GitSummary }>();
+const taskStatusCache = new Map<string, { at: number; value: GitStatus }>();
 
 export interface TaskGitScope {
   /** Cache identity — the thread whose chip this is. */
@@ -664,6 +665,9 @@ async function collectTaskCommits(repoRoot: string, baseline: string, rels: stri
  *  getTaskGitSummary's scoping so the drawer and the card chip tell the same story. Never throws — a
  *  non-repo / git failure returns the repo-wide empty status with hasDiffAnchor:false. */
 export async function getTaskGitStatus(workspace: string, scope: TaskGitScope): Promise<GitStatus> {
+  const cached = taskStatusCache.get(scope.threadId);
+  if (cached && Date.now() - cached.at < SUMMARY_TTL_MS) return cached.value;
+
   const status = await getGitStatus(workspace);
   if (!status.isRepo || !status.repoRoot) return status; // already hasDiffAnchor:false + error set
   const repoRoot = status.repoRoot;
@@ -682,13 +686,15 @@ export async function getTaskGitStatus(workspace: string, scope: TaskGitScope): 
     ? await collectTaskCommits(repoRoot, baseline, rels, status.pushRef, status.upstreamRef)
     : [];
 
-  return {
+  const value: GitStatus = {
     ...status,
     hasUncommitted: files.length > 0,
     files,
     commits,
     hasDiffAnchor: baseline !== null,
   };
+  taskStatusCache.set(scope.threadId, { at: Date.now(), value });
+  return value;
 }
 
 /** True if `sha` names a real commit in this repo — guards the baseline before we diff against it, so a
@@ -838,5 +844,6 @@ export async function checkoutBranch(workspace: string, branch: string): Promise
   // threadId (not repoRoot), and a checkout changes the repo for every task sharing it, so clear it whole.
   summaryCache.delete(repoRoot);
   taskSummaryCache.clear();
+  taskStatusCache.clear();
   return { ok: true, branch };
 }
