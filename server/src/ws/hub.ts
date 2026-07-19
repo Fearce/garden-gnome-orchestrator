@@ -6,6 +6,7 @@ import type { EventHub } from "../events.js";
 import type { Director } from "../orchestrator/director.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
 import { readCodexUsage } from "../agents/codexUsage.js";
+import { readGrokUsage } from "../agents/grokUsage.js";
 import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./protocol.js";
 import { isAuthed } from "../auth.js";
 import { CHAT_PAGE_SIZE } from "../types.js";
@@ -47,6 +48,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     director: ctx.db.listDirectorMessages(SNAPSHOT_DIRECTOR_MSGS),
     accounts: ctx.accounts.dto(),
     codexUsage: readCodexUsage(),
+    grokUsage: ctx.manager.settings().grokEnabled || readGrokUsage().signedIn ? readGrokUsage() : null,
     approvalMode: ctx.manager.approvalMode(),
     settings: ctx.manager.settings(),
     // The office: a recent slice of chat for the live feed, plus the project-room roll-up (full

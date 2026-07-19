@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import { config } from "../config.js";
@@ -11,6 +13,7 @@ import { config } from "../config.js";
 
 const CLAUDE_MODELS_KEY = "cache_claude_models";
 const CODEX_MODELS_KEY = "cache_codex_models";
+const GROK_MODELS_KEY = "cache_grok_models";
 const REFRESH_MS = 6 * 60 * 60 * 1000; // 6h — model access changes rarely; a boot fetch covers new grants.
 const FETCH_TIMEOUT_MS = 12_000;
 
@@ -26,6 +29,9 @@ export const CURATED_CLAUDE_MODELS = [
 
 /** Curated Codex fallback — the flagship coding models, mirroring config.codex.models. */
 export const CURATED_CODEX_MODELS = [...config.codex.models];
+
+/** Curated Grok fallback, mirroring config.grok.models. */
+export const CURATED_GROK_MODELS = [...config.grok.models];
 
 /** Dedup preserving first-seen order, dropping blanks. */
 export function uniq(ids: (string | undefined | null)[]): string[] {
@@ -79,6 +85,21 @@ export async function fetchOpenAiModels(key: string): Promise<string[]> {
   return uniq(ids);
 }
 
+/** List the Grok models the CLI has cached for this login. The `grok` CLI writes ~/.grok/models_cache.json
+ *  (a free, local file refreshed after each session) with a `models` map keyed by model id — read it
+ *  directly rather than spawning the CLI. Returns the non-hidden ids, or an empty list when absent/corrupt. */
+export function readGrokModelsFile(): string[] {
+  const file = join(config.grok.home, "models_cache.json");
+  if (!existsSync(file)) return [];
+  try {
+    const body = JSON.parse(readFileSync(file, "utf8")) as { models?: Record<string, { info?: { hidden?: boolean } }> };
+    const models = body.models ?? {};
+    return uniq(Object.entries(models).filter(([, v]) => !v?.info?.hidden).map(([id]) => id));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Owns the live model lists shown in the Settings dropdowns. Reads/writes the cached lists in kv,
  * refreshes them from the providers on boot and on a slow timer, and fires `onChange` (a settings
@@ -112,6 +133,11 @@ export class ModelCatalog {
   /** Cached live Codex model ids (empty until the first successful fetch). */
   codexModels(): string[] {
     return this.readCache(CODEX_MODELS_KEY);
+  }
+
+  /** Cached live Grok model ids (empty until the first refresh reads the CLI's models cache). */
+  grokModels(): string[] {
+    return this.readCache(GROK_MODELS_KEY);
   }
 
   private readCache(key: string): string[] {
@@ -154,6 +180,11 @@ export class ModelCatalog {
         // Transient — keep the last-known cached Codex list.
       }
     }
+
+    // Grok models come from the CLI's own local cache file (no network / no auth needed); keep whatever
+    // was last cached if the file is momentarily unreadable.
+    const grokModels = readGrokModelsFile();
+    if (grokModels.length && this.storeIfChanged(GROK_MODELS_KEY, grokModels)) changed = true;
 
     if (changed) this.onChange();
   }

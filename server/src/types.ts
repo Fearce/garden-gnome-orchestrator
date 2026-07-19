@@ -28,6 +28,8 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 export type CodexEffort = "low" | "medium" | "high" | "xhigh";
 export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
+export type GrokEffort = "low" | "medium" | "high";
+export const GROK_EFFORTS: GrokEffort[] = ["low", "medium", "high"];
 
 export type AgentRunState =
   | "starting"
@@ -337,6 +339,11 @@ export interface OrchestratorSettings {
   hasOpenaiKey: boolean; // read-only indicator — an OpenAI key is stored (the raw key is never broadcast)
   openaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
   codexChatgptLogin: boolean; // read-only — a ChatGPT-plan `codex login` is available; preferred over the key
+  grokEnabled: boolean; // xAI Grok (SuperGrok): when on (with a `grok login`), it joins the implementor backends
+  grokModel: string; // the resolved Grok implementor model (mirrors modelOverrides.grok.implementor; kept for the chip + back-compat)
+  grokEffort: GrokEffort; // Grok CLI reasoning effort, applied via --reasoning-effort
+  grokSignedIn: boolean; // read-only — a `grok login` (auth.json) is present, so Grok can authenticate
+  grokAccount?: string | null; // read-only — the signed-in Grok account email, for the Subscriptions panel
   // ---- Composer state, persisted server-side (not localStorage) so it survives across the HTTP and
   //      HTTPS surfaces the console is served on — the two origins don't share localStorage. ----
   skipDirector: boolean; // composer's skip-director mode — persists so "on" stays on next time it opens
@@ -352,10 +359,11 @@ export interface OrchestratorSettings {
   modelDefaults: Partial<Record<Role, string>>; // read-only: the built-in per-role defaults (config.models)
   claudeModels: string[]; // read-only: pickable Claude model ids (live ∪ curated ∪ selected), most-capable first
   codexModels: string[]; // read-only: pickable Codex/OpenAI model ids (live ∪ curated ∪ selected)
+  grokModels: string[]; // read-only: pickable Grok model ids (curated ∪ live ∪ selected)
 }
 
 /** The implementor backend chosen at dispatch by the subscription toggles. */
-export type ImplementorProvider = "claude" | "codex";
+export type ImplementorProvider = "claude" | "codex" | "grok";
 
 /** The five agent roles a model can be picked for. Mirrored in web/src/types.ts. */
 export const MODEL_ROLES: Role[] = ["director", "planner", "researcher", "implementor", "qa"];
@@ -370,6 +378,7 @@ export const MODEL_ROLES: Role[] = ["director", "planner", "researcher", "implem
  */
 export const DEFAULT_SUB_ID = "default";
 export const CODEX_SUB_ID = "codex";
+export const GROK_SUB_ID = "grok";
 export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
 
 export interface RateLimitInfo {

@@ -1,4 +1,4 @@
-import { CODEX_MODELS } from "../types.js";
+import { CODEX_MODELS, GROK_MODELS } from "../types.js";
 
 export function mergeModelOptions(...groups: readonly (readonly string[])[]): string[] {
   const seen = new Set<string>();
@@ -16,4 +16,8 @@ export function mergeModelOptions(...groups: readonly (readonly string[])[]): st
 
 export function codexModelOptions(liveModels: readonly string[]): string[] {
   return mergeModelOptions(CODEX_MODELS, liveModels);
+}
+
+export function grokModelOptions(liveModels: readonly string[]): string[] {
+  return mergeModelOptions(GROK_MODELS, liveModels);
 }

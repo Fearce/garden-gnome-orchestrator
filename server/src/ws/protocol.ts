@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { CodexUsageDTO } from "../agents/codexUsage.js";
+import type { GrokUsageDTO } from "../agents/grokUsage.js";
 import type { GitFileDiff, GitStatus, GitSummary } from "../gitService.js";
 import type {
   AgentRun,
@@ -37,6 +38,7 @@ export interface AccountDTO {
 }
 
 export type { CodexUsageDTO } from "../agents/codexUsage.js";
+export type { GrokUsageDTO } from "../agents/grokUsage.js";
 
 export type ServerEvent =
   | {
@@ -48,6 +50,7 @@ export type ServerEvent =
       director: DirectorMessage[];
       accounts: AccountDTO[];
       codexUsage: CodexUsageDTO | null;
+      grokUsage: GrokUsageDTO | null;
       approvalMode: boolean;
       settings: OrchestratorSettings;
       chat: ChatMessage[];
@@ -56,6 +59,7 @@ export type ServerEvent =
     }
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
+  | { type: "grok.usage"; usage: GrokUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
   // One page of a room's history (newest, or — when the request carried a `before` cursor — the page just
   // older than it). The client merges by id, so both cases fold in the same way; `hasMore` says whether
@@ -163,6 +167,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
         codexEffort: z.enum(["low", "medium", "high", "xhigh"]),
+        grokEnabled: z.boolean(),
+        grokModel: z.string().min(1).max(64),
+        grokEffort: z.enum(["low", "medium", "high"]),
         // Write-only: the raw OpenAI key is accepted here and stored server-side, never echoed back.
         // An empty string clears it. The broadcast OrchestratorSettings carries only hasOpenaiKey/last4.
         openaiApiKey: z.string().max(300),

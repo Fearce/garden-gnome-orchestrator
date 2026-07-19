@@ -9,6 +9,8 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 export type CodexEffort = "low" | "medium" | "high" | "xhigh";
 export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
+export type GrokEffort = "low" | "medium" | "high";
+export const GROK_EFFORTS: GrokEffort[] = ["low", "medium", "high"];
 
 export type ThreadState =
   | "intake"
@@ -247,6 +249,17 @@ export interface CodexUsageDTO {
   wakeAt?: number | null; // 5h window idle — a cheap wake turn is scheduled at this epoch ms (stagger slot)
 }
 
+/** Grok (SuperGrok) "usage" — mirrors the server's GrokUsageDTO. Unlike Claude/Codex the Grok CLI exposes
+ *  no rolling rate-limit windows, so there are no meters: just the signed-in identity and the countdown to
+ *  a latched usage-cap retry (an honest surface, not a faked meter). */
+export interface GrokUsageDTO {
+  signedIn: boolean;
+  email: string | null;
+  tier: number | null;
+  capUntil: number | null; // epoch ms a usage-cap rejection is latched until, else null
+  updatedAt: number;
+}
+
 /** Operator-tunable pipeline settings — server-authoritative (persisted in the DB kv table, broadcast
  *  to every client). Mirrors the server's OrchestratorSettings. */
 export interface OrchestratorSettings {
@@ -277,6 +290,11 @@ export interface OrchestratorSettings {
   hasOpenaiKey: boolean; // read-only: a key is stored (raw key never reaches the client)
   openaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
   codexChatgptLogin: boolean; // read-only: a ChatGPT-plan `codex login` is available (preferred over a key)
+  grokEnabled: boolean; // xAI Grok (SuperGrok): when on (with a `grok login`), it joins the implementor backends
+  grokModel: string;
+  grokEffort: GrokEffort;
+  grokSignedIn: boolean; // read-only: a `grok login` (auth.json) is present, so Grok can authenticate
+  grokAccount?: string | null; // read-only: the signed-in Grok account email
   // Composer state persisted server-side (survives across the HTTP/HTTPS surfaces, which don't share
   // localStorage): the skip-director mode, the recent-repo chip cap, and the recent-repo list itself.
   skipDirector: boolean;
@@ -293,6 +311,7 @@ export interface OrchestratorSettings {
   modelDefaults: Partial<Record<Role, string>>;
   claudeModels: string[];
   codexModels: string[];
+  grokModels: string[]; // read-only: pickable Grok model ids
 }
 
 /** The five agent roles a model can be picked for. Mirrors the server's MODEL_ROLES. */
@@ -305,10 +324,23 @@ export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
 /** Subscription-id sentinels for the model matrix (mirror the server). */
 export const DEFAULT_SUB_ID = "default";
 export const CODEX_SUB_ID = "codex";
+export const GROK_SUB_ID = "grok";
 
 /** A settings.set patch: writable fields plus the write-only raw OpenAI key (never read back). */
 export type SettingsPatch = Partial<
-  Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin" | "xhighEnabled" | "modelDefaults" | "claudeModels" | "codexModels">
+  Omit<
+    OrchestratorSettings,
+    | "hasOpenaiKey"
+    | "openaiKeyLast4"
+    | "codexChatgptLogin"
+    | "grokSignedIn"
+    | "grokAccount"
+    | "xhighEnabled"
+    | "modelDefaults"
+    | "claudeModels"
+    | "codexModels"
+    | "grokModels"
+  >
 > & { openaiApiKey?: string };
 
 /** Flagship Codex models suggested when the live list hasn't loaded yet (most-capable first). */
@@ -323,6 +355,9 @@ export const CODEX_MODELS = [
   "gpt-5.1-codex-mini",
   "codex-mini-latest",
 ] as const;
+
+/** Grok models suggested when the live list hasn't loaded yet. */
+export const GROK_MODELS = ["grok-4.5"] as const;
 
 // ---- the real-git "Changes" surface (mirrors server/src/gitService.ts) ----
 
@@ -400,6 +435,7 @@ export type ServerEvent =
       director: DirectorMessage[];
       accounts: AccountDTO[];
       codexUsage: CodexUsageDTO | null;
+      grokUsage: GrokUsageDTO | null;
       approvalMode: boolean;
       settings: OrchestratorSettings;
       chat: ChatMessage[];
@@ -408,6 +444,7 @@ export type ServerEvent =
     }
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
+  | { type: "grok.usage"; usage: GrokUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
   | { type: "chat.history"; room: string; messages: ChatMessage[]; hasMore: boolean }
   | { type: "chat.name"; threadId: string; role: Role; name: string }

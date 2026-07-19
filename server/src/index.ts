@@ -12,6 +12,7 @@ import { FileMemoryService } from "./memory/memory.js";
 import { AccountManager, type PersistedAccountUsage } from "./accounts/accountManager.js";
 import { ResetStagger } from "./accounts/resetStagger.js";
 import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
+import { startGrokUsageMonitor } from "./agents/grokUsagePing.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
@@ -111,6 +112,16 @@ async function main(): Promise<void> {
     },
     stagger,
     runModel: () => manager.settings().codexModel,
+  });
+
+  // Grok usage: no rate-limit windows to read (SuperGrok exposes none), so this just re-reads the local
+  // ~/.grok/auth.json identity + the cap-latch countdown on a cheap timer and broadcasts `grok.usage` when
+  // it changes, keeping the top-bar chip live without any model turn or network call.
+  startGrokUsageMonitor(hub, {
+    configured: () => {
+      const s = manager.settings();
+      return s.grokEnabled || s.grokSignedIn;
+    },
   });
 
   // Shared across both listeners so the per-IP wrong-password cooldown can't be

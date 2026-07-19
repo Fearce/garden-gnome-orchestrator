@@ -142,6 +142,8 @@ button { font-family: inherit; cursor: pointer; }
  * than the Claude meter chips and dimmed when configured-but-off. */
 .acct.codex { min-width: auto; gap: 4px; }
 .acct.codex.is-off { opacity: 0.55; }
+.acct.grok { min-width: auto; gap: 4px; }
+.acct.grok.is-off { opacity: 0.55; }
 .acct-tag.ok { color: var(--ok); }
 .codex-model { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-dim); letter-spacing: 0.02em; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Token freeze on the top bar: when EVERY subscription is rate-limited (some task is cap-parked), EACH

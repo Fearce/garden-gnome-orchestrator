@@ -6,9 +6,11 @@ import type { MemoryService } from "../memory/memory.js";
 import { AgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { codexUsageCapped, readCodexUsage } from "../agents/codexUsage.js";
-import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, uniq } from "../agents/modelCatalog.js";
+import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRunner.js";
+import { noteGrokCap } from "../agents/grokUsage.js";
+import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, uniq } from "../agents/modelCatalog.js";
 import { implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
-import { CODEX_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
+import { CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createGitReadServer } from "../bus/gitReadServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
@@ -31,6 +33,7 @@ import type {
   CodexEffort,
   Effort,
   Finding,
+  GrokEffort,
   ImageAttachment,
   ImplementorProvider,
   ModelOverrides,
@@ -43,7 +46,7 @@ import type {
   Role,
   Thread,
 } from "../types.js";
-import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, MODEL_ROLES, normalizeWorkspace, repoRoom } from "../types.js";
+import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, normalizeWorkspace, repoRoom } from "../types.js";
 
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
@@ -97,7 +100,19 @@ interface ProviderCandidate {
 /** A settings.set patch: the writable subset of OrchestratorSettings plus the write-only raw key. The
  *  read-only masked indicators (hasOpenaiKey/openaiKeyLast4) are derived, never set by a client. */
 export type SettingsPatch = Partial<
-  Omit<OrchestratorSettings, "hasOpenaiKey" | "openaiKeyLast4" | "codexChatgptLogin" | "xhighEnabled" | "modelDefaults" | "claudeModels" | "codexModels">
+  Omit<
+    OrchestratorSettings,
+    | "hasOpenaiKey"
+    | "openaiKeyLast4"
+    | "codexChatgptLogin"
+    | "grokSignedIn"
+    | "grokAccount"
+    | "xhighEnabled"
+    | "modelDefaults"
+    | "claudeModels"
+    | "codexModels"
+    | "grokModels"
+  >
 > & { openaiApiKey?: string };
 
 /** The slice of operator settings the implementor→QA stage needs, captured at pipeline start. */
@@ -181,6 +196,9 @@ const MODEL_FALLBACK_CONTINUE_MSG =
 // after which Codex is tried again (a failing turn simply re-arms the latch). kv key persists it across boots.
 const CODEX_CAP_COOLDOWN_MS = 60 * 60_000;
 const CODEX_CAP_KV_KEY = "codex_cap_until";
+// Grok exposes no usage windows, so a cap is only knowable from a rejected turn — with no reset epoch to
+// read, the latch is a fixed cooldown (config.grok.capCooldownMs), after which Grok is retried. kv-persisted.
+const GROK_CAP_KV_KEY = "grok_cap_until";
 const PROVIDER_HARD_LIMIT = 98;
 // After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
 // doesn't need a manual Resume click. Human-gated phases (a pending question/approval, paused, or
@@ -355,6 +373,10 @@ export class ThreadManager implements OrchestratorApi {
   // preferred, else a cooldown); auto-clears when the window passes. Persisted in kv so a restart's
   // auto-resume wave doesn't slam Codex again on stale-good routing. Undefined = Codex not latched-capped.
   private codexCapUntil: number | undefined;
+  // Epoch ms until which Grok is treated as usage-capped (route implementors elsewhere). Set when a live
+  // Grok run is rejected; a fixed cooldown (no reset epoch is exposed). Persisted so a restart's auto-resume
+  // wave doesn't slam a still-capped Grok. Undefined = Grok not latched-capped.
+  private grokCapUntil: number | undefined;
   // Owns the live pickable-model lists (Settings dropdowns). Rebroadcasts settings when a list changes.
   private readonly modelCatalog: ModelCatalog;
 
@@ -373,6 +395,7 @@ export class ThreadManager implements OrchestratorApi {
     this.markInterrupted();
     this.applyAccountEnabled();
     this.loadCodexCap();
+    this.loadGrokCap();
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
@@ -424,13 +447,13 @@ export class ThreadManager implements OrchestratorApi {
    *  through the same failed→runPipeline path the boot auto-resume uses (full resume-aware pipeline, QA
    *  included), clearing the marker so a later non-cap park isn't misread. */
   private resumeCapParked(): void {
-    // Headroom on EITHER backend can unpark work: a Claude window freeing up resumes anything, while
-    // Codex freeing up (enabled + authed + under its caps) resumes implementor-phase parks — the
-    // provider gate then routes the relaunch to Codex. QA-phase parks (CAP_PARK_QA_MARK) still wait
-    // for a Claude window specifically, since QA never runs on Codex.
+    // Headroom on ANY backend can unpark work: a Claude window freeing up resumes anything, while a CLI
+    // backend (Codex or Grok) freeing up (enabled + authed + under its caps) resumes implementor-phase
+    // parks — the provider gate then routes the relaunch to it. QA-phase parks (CAP_PARK_QA_MARK) still
+    // wait for a Claude window specifically, since QA never runs on a CLI backend.
     const claudeFree = this.accounts.hasHeadroom();
-    const codexFree = this.codexImplementorReady();
-    if (!claudeFree && !codexFree) return;
+    const cliFree = this.codexImplementorReady() || this.grokImplementorReady();
+    if (!claudeFree && !cliFree) return;
     let slots = this.settings().maxConcurrent - this.activePipelines.size;
     if (slots <= 0) return;
     const parked = this.db
@@ -439,7 +462,7 @@ export class ThreadManager implements OrchestratorApi {
       .sort((a, b) => a.updatedAt - b.updatedAt); // oldest-parked first — fairest, and bounded by free slots
     for (const t of parked) {
       if (slots <= 0) break;
-      if (!claudeFree && (t.error ?? "").includes(CAP_PARK_QA_MARK)) continue; // QA park — Codex can't run QA
+      if (!claudeFree && (t.error ?? "").includes(CAP_PARK_QA_MARK)) continue; // QA park — a CLI can't run QA
       slots--;
       this.hub.log("info", `An account freed up — auto-resuming rate-limit-parked "${t.title.slice(0, 48)}".`);
       const now = Date.now();
@@ -849,6 +872,7 @@ export class ThreadManager implements OrchestratorApi {
    *  time so a change applies to the next task — the agent toggles especially are flipped per task. */
   settings(): OrchestratorSettings {
     const key = this.openaiApiKey();
+    const grokAuth = readGrokAuth();
     return {
       plannerEnabled: this.settingBool("setting_planner_enabled", true),
       researcherEnabled: this.settingBool("setting_researcher_enabled", true),
@@ -869,6 +893,11 @@ export class ThreadManager implements OrchestratorApi {
       hasOpenaiKey: !!key,
       openaiKeyLast4: key && key.length >= 4 ? key.slice(-4) : null,
       codexChatgptLogin: chatgptLoginAvailable(),
+      grokEnabled: this.settingBool("setting_grok_enabled", false),
+      grokModel: this.grokModel(),
+      grokEffort: this.grokEffort(),
+      grokSignedIn: grokAuth.signedIn,
+      grokAccount: grokAuth.email,
       skipDirector: this.settingBool("setting_skip_director", false),
       showComposerModelPicker: this.settingBool("setting_show_composer_model_picker", true),
       showAgentModel: this.settingBool("setting_show_agent_model", true),
@@ -881,6 +910,7 @@ export class ThreadManager implements OrchestratorApi {
       modelDefaults: { ...config.models },
       claudeModels: this.pickableClaudeModels(),
       codexModels: this.pickableCodexModels(),
+      grokModels: this.pickableGrokModels(),
     };
   }
 
@@ -929,7 +959,7 @@ export class ThreadManager implements OrchestratorApi {
     const ov = this.modelOverrides();
     const selected: string[] = [];
     for (const [subId, roles] of Object.entries(ov)) {
-      if (subId === CODEX_SUB_ID) continue; // codex ids belong to the Codex list, not the Claude one
+      if (subId === CODEX_SUB_ID || subId === GROK_SUB_ID) continue; // non-Claude ids belong to their own lists
       for (const m of Object.values(roles)) if (m) selected.push(m);
     }
     return uniq([...this.modelCatalog.claudeModels(), ...CURATED_CLAUDE_MODELS, ...Object.values(config.models), ...selected]);
@@ -940,6 +970,13 @@ export class ThreadManager implements OrchestratorApi {
   private pickableCodexModels(): string[] {
     const selected = [this.codexModel(), this.modelOverrides()[CODEX_SUB_ID]?.implementor].filter((x): x is string => !!x);
     return uniq([...CURATED_CODEX_MODELS, ...this.modelCatalog.codexModels(), ...selected]);
+  }
+
+  /** Pickable Grok model ids for the Settings dropdown: curated defaults first, then any additional models
+   *  the CLI's local cache reports, plus the currently-selected Grok model. */
+  private pickableGrokModels(): string[] {
+    const selected = [this.grokModel(), this.modelOverrides()[GROK_SUB_ID]?.implementor].filter((x): x is string => !!x);
+    return uniq([...CURATED_GROK_MODELS, ...this.modelCatalog.grokModels(), ...selected]);
   }
 
   /** The persisted recent-repo paths (most-recent first), trimmed to the configured cap. Stored as a
@@ -993,6 +1030,23 @@ export class ThreadManager implements OrchestratorApi {
     return CODEX_EFFORTS.includes(v as CodexEffort) ? (v as CodexEffort) : "high";
   }
 
+  /** The selected Grok implementor model. Resolution: the model-overrides matrix (grok.implementor), then
+   *  the legacy `setting_grok_model` kv (migration fallback), then the built-in default. Never inherits a
+   *  Claude/Codex default — those model ids are invalid for the Grok CLI. */
+  private grokModel(): string {
+    return (
+      this.modelOverrides()[GROK_SUB_ID]?.implementor?.trim() ||
+      this.db.kvGet("setting_grok_model")?.trim() ||
+      config.grok.defaultModel
+    );
+  }
+
+  /** The Grok CLI reasoning-effort override (low/medium/high; the model default is high). */
+  private grokEffort(): GrokEffort {
+    const v = this.db.kvGet("setting_grok_effort")?.trim();
+    return GROK_EFFORTS.includes(v as GrokEffort) ? (v as GrokEffort) : "high";
+  }
+
   /** The composer's implementor-effort pick for skip-director dispatches. "auto" (default) leaves the
    *  planner's per-task pick in charge; a concrete tier is snapshotted onto the thread at dispatch and
    *  beats the plan. A stored `xhigh` degrades to `high` while the ENABLE_XHIGH opt-in is off, mirroring
@@ -1034,6 +1088,13 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.codexModel !== undefined && patch.codexModel.trim()) {
       this.db.kvSet("setting_codex_model", patch.codexModel.trim());
       this.setModelOverride(CODEX_SUB_ID, "implementor", patch.codexModel.trim());
+    }
+    if (patch.grokEnabled !== undefined) this.db.kvSet("setting_grok_enabled", patch.grokEnabled ? "1" : "0");
+    if (patch.grokEffort !== undefined && GROK_EFFORTS.includes(patch.grokEffort)) this.db.kvSet("setting_grok_effort", patch.grokEffort);
+    // Legacy free-text grok model field mirrors into the matrix (grok.implementor), same as codex.
+    if (patch.grokModel !== undefined && patch.grokModel.trim()) {
+      this.db.kvSet("setting_grok_model", patch.grokModel.trim());
+      this.setModelOverride(GROK_SUB_ID, "implementor", patch.grokModel.trim());
     }
     if (patch.modelOverrides !== undefined) this.db.kvSet("setting_model_overrides", JSON.stringify(sanitizeModelOverrides(patch.modelOverrides)));
     // Write-only key: store the trimmed value, or clear it (empty string) so settings() falls back to
@@ -1120,9 +1181,67 @@ export class ThreadManager implements OrchestratorApi {
     return codexUsageCapped(now);
   }
 
+  /** Restore the persisted Grok usage-cap latch on boot (mirrors loadCodexCap). */
+  private loadGrokCap(): void {
+    const v = this.db.kvGet(GROK_CAP_KV_KEY);
+    const until = v ? Number(v) : NaN;
+    if (Number.isFinite(until) && until > Date.now()) {
+      this.grokCapUntil = until;
+      noteGrokCap(until);
+    } else if (v) this.db.kvSet(GROK_CAP_KV_KEY, ""); // stale/expired — clear it
+  }
+
+  /** Latch Grok as usage-capped after a rejected turn, routing implementors to another backend. Grok
+   *  exposes no reset epoch, so the latch is a fixed cooldown that self-expires; a still-capped retry
+   *  simply re-arms it. Mirrors the chip's countdown via noteGrokCap. */
+  private noteGrokCap(): void {
+    const until = Date.now() + config.grok.capCooldownMs;
+    if (this.grokCapUntil && this.grokCapUntil >= until) return; // already latched at least this long
+    this.grokCapUntil = until;
+    this.db.kvSet(GROK_CAP_KV_KEY, String(until));
+    noteGrokCap(until);
+    this.hub.log("warn", `Grok hit its usage cap — routing implementors elsewhere until ${new Date(until).toLocaleString()}.`);
+  }
+
+  /** Whether Grok should be treated as usage-capped right now. Clears an expired latch as a side effect. */
+  private grokCapActive(): boolean {
+    const now = Date.now();
+    if (this.grokCapUntil != null) {
+      if (now < this.grokCapUntil) return true;
+      this.grokCapUntil = undefined;
+      this.db.kvSet(GROK_CAP_KV_KEY, "");
+      noteGrokCap(null);
+    }
+    return false;
+  }
+
   private claudeProviderCandidate(): ProviderCandidate {
     const c = this.accounts.dispatchPreview();
     return providerCandidateFromClaude(c);
+  }
+
+  /** Grok's dispatch candidate. It has no usage windows, so it's treated as always having headroom while
+   *  its cap latch is clear — the null windows sort it LAST among headroom-having providers in
+   *  providerPriority (a windowed backend with real headroom is preferred while it has room; Grok is the
+   *  resilient bottom rung). A blind flip onto a secretly-capped Grok is bounded — the run is rejected and
+   *  flips back or parks. */
+  private grokProviderCandidate(): ProviderCandidate {
+    return {
+      provider: "grok",
+      hasHeadroom: !this.grokCapActive(),
+      fiveHour: null,
+      sevenDay: null,
+      sevenDayReset: null,
+    };
+  }
+
+  /** Whether the Grok backend could take an implementor RIGHT NOW — enabled, signed in, and not
+   *  usage-capped. Used by the failover ladder + cap supervisor so "every account is rate-limited" is only
+   *  ever claimed when Grok genuinely can't step in either. */
+  private grokImplementorReady(): boolean {
+    if (!this.settings().grokEnabled) return false;
+    if (!grokAuthAvailable()) return false;
+    return !this.grokCapActive();
   }
 
   private codexProviderCandidate(): ProviderCandidate {
@@ -1141,9 +1260,29 @@ export class ThreadManager implements OrchestratorApi {
     };
   }
 
-  private preferredImplementorProvider(claude: ProviderCandidate, codex: ProviderCandidate): ImplementorProvider {
-    if (claude.hasHeadroom !== codex.hasHeadroom) return claude.hasHeadroom ? "claude" : "codex";
-    return providerPriority(claude, codex) <= 0 ? claude.provider : codex.provider;
+  /** Pick the best implementor backend from N candidates: prefer any WITH headroom, and within a headroom
+   *  class break ties by providerPriority (soonest weekly reset, then most headroom). Grok's null windows
+   *  sort it last among headroom-havers, making it the resilient fallback. The caller always passes at
+   *  least the Claude candidate, so this never sees an empty list. Reused by nextReadyImplementor. */
+  private preferredImplementorProvider(candidates: ProviderCandidate[]): ImplementorProvider {
+    const withHeadroom = candidates.filter((c) => c.hasHeadroom);
+    const pool = withHeadroom.length ? withHeadroom : candidates;
+    return pool.reduce((best, c) => (providerPriority(best, c) <= 0 ? best : c)).provider;
+  }
+
+  /** The best implementor backend OTHER than `exclude` that can take over RIGHT NOW (has headroom), or
+   *  undefined when none can. Drives cross-provider failover: a capped backend hands off to whichever of
+   *  the remaining ones is readiest. */
+  private nextReadyImplementor(exclude: ImplementorProvider): ImplementorProvider | undefined {
+    const cands: ProviderCandidate[] = [];
+    if (exclude !== "claude") {
+      const c = this.claudeProviderCandidate();
+      if (c.hasHeadroom) cands.push(c);
+    }
+    if (exclude !== "codex" && this.codexImplementorReady()) cands.push(this.codexProviderCandidate());
+    if (exclude !== "grok" && this.grokImplementorReady()) cands.push(this.grokProviderCandidate());
+    if (!cands.length) return undefined;
+    return this.preferredImplementorProvider(cands);
   }
 
   /** Whether the Codex backend could take an implementor RIGHT NOW — enabled, authed, not usage-capped,
@@ -1179,33 +1318,43 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Resolve which backend implements tasks right now from the subscription toggles, or an error
-   *  explaining why none can. Codex is opt-in, but competes with Claude subscriptions under the same
-   *  soonest-weekly-reset policy instead of overriding them. Planner/researcher/QA always run on Claude. */
+   *  explaining why none can. Claude is always in the pool; Codex and Grok are opt-in and, when enabled +
+   *  authed + uncapped, compete with Claude under the same soonest-weekly-reset policy instead of overriding
+   *  it (Grok has no windows, so it sorts last — the resilient fallback). Planner/researcher/QA are Claude. */
   private resolveImplementorProvider(): { provider?: ImplementorProvider; error?: string } {
-    // Codex is the opt-in implementor backend: when enabled with usable auth it joins the dispatch pool.
-    // Usable auth is EITHER a ChatGPT-plan `codex login` (preferred — no API billing) OR a valid
-    // OpenAI API key. Otherwise the implementor is Claude (the default; planner/researcher/QA always are).
-    if (this.settings().codexEnabled) {
+    const s = this.settings();
+    const candidates: ProviderCandidate[] = [this.claudeProviderCandidate()];
+
+    // Codex: usable auth is EITHER a ChatGPT-plan `codex login` (preferred — no API billing) OR a valid
+    // OpenAI API key. Enabled + authed but usage-capped → simply excluded from this dispatch (the latch
+    // auto-clears when its window resets, so Codex rejoins on its own).
+    if (s.codexEnabled) {
       const key = this.openaiApiKey();
-      const hasKey = !!key && /^sk-/.test(key);
-      if (!codexAuthAvailable(hasKey)) {
+      if (!codexAuthAvailable(!!key && /^sk-/.test(key))) {
         return { error: "Codex is enabled but has no usable auth: no ChatGPT `codex login` was found and no valid OpenAI API key (sk-…) is set. Sign in with `codex login --device-auth` (uses your ChatGPT plan), or add an API key under Settings → Subscriptions, or turn Codex off to use Claude." };
       }
-      // Codex is enabled + authed, but if it's usage-capped right now, route to the Claude backend rather
-      // than dispatching into an instant 429. The latch auto-clears when Codex's window resets, so Codex
-      // resumes taking tasks on its own with no operator action. Planner/researcher/QA are always Claude.
-      if (this.codexCapActive()) {
-        this.hub.log("info", "Codex is usage-capped — routing this implementor to Claude until its window resets.");
-        return { provider: "claude" };
-      }
-      const claude = this.claudeProviderCandidate();
-      const codex = this.codexProviderCandidate();
-      const provider = this.preferredImplementorProvider(claude, codex);
-      const now = Date.now();
-      this.hub.log("info", `Implementor provider: ${provider} (Claude weekly ${fmtUsage(claude.sevenDay)} reset ${untilReset(claude.sevenDayReset, now)}; Codex weekly ${fmtUsage(codex.sevenDay)} reset ${untilReset(codex.sevenDayReset, now)}).`);
-      return { provider };
+      if (this.codexCapActive()) this.hub.log("info", "Codex is usage-capped — excluding it from this dispatch until its window resets.");
+      else candidates.push(this.codexProviderCandidate());
     }
-    return { provider: "claude" };
+
+    // Grok: usable auth is a `grok login` (~/.grok/auth.json) or an XAI_API_KEY. Same cap-exclusion policy.
+    if (s.grokEnabled) {
+      if (!grokAuthAvailable()) {
+        return { error: "Grok is enabled but has no usable auth: no `grok login` was found (~/.grok/auth.json) and no XAI_API_KEY is set. Run `grok login` (or `grok login --device-auth` on a headless box), or turn Grok off to use Claude." };
+      }
+      if (this.grokCapActive()) this.hub.log("info", "Grok is usage-capped — excluding it from this dispatch until it frees up.");
+      else candidates.push(this.grokProviderCandidate());
+    }
+
+    const provider = this.preferredImplementorProvider(candidates);
+    if (candidates.length > 1) {
+      const now = Date.now();
+      const parts = candidates.map(
+        (c) => `${c.provider} weekly ${fmtUsage(c.sevenDay)}${c.sevenDayReset != null ? ` reset ${untilReset(c.sevenDayReset, now)}` : ""}`,
+      );
+      this.hub.log("info", `Implementor provider: ${provider} (${parts.join("; ")}).`);
+    }
+    return { provider };
   }
 
   /** Hard routing gate, run once at the start of a thread's implementor stage: resolve + remember the
@@ -1525,15 +1674,16 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Which backend produced the most recent implementor session for a thread — derived from the run's
-   *  account label ("codex:…" ⇒ Codex). A session id is provider-specific (a Claude SDK session vs a
-   *  Codex thread id), so a resume must only reuse one whose backend matches the now-resolved provider. */
+   *  account label ("codex:…" ⇒ Codex, "grok:…" ⇒ Grok, else Claude). A session id is provider-specific (a
+   *  Claude SDK session vs a Codex thread id vs a Grok session id), so a resume must only reuse one whose
+   *  backend matches the now-resolved provider. */
   private priorImplementorProvider(threadId: string): ImplementorProvider | undefined {
     const run = this.db
       .listRuns(threadId)
       .filter((r) => r.role === "implementor" && r.sessionId)
       .sort((a, b) => b.startedAt - a.startedAt)[0];
     if (!run) return undefined;
-    return run.account?.startsWith("codex:") ? "codex" : "claude";
+    return run.account?.startsWith("codex:") ? "codex" : run.account?.startsWith("grok:") ? "grok" : "claude";
   }
 
   /** The most recent QA run's SDK session id, so fix-rounds 2..N can resume it. DB-sourced (like
@@ -1798,6 +1948,31 @@ export class ThreadManager implements OrchestratorApi {
       // attempt (and its 60s watchdog) and goes straight to fresh — resume keeps wedging on this thread.
       codexAgent.onEnd(() => { if (codexAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
       agent = codexAgent;
+    } else if (provider === "grok") {
+      const model = this.grokModel();
+      const effort = this.grokEffort();
+      accountId = "xai-grok";
+      const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `grok:${model}`, effort });
+      runId = run.id;
+      this.emitRun(run.id);
+      // Like Codex, the Grok CLI is a separate process with no in-process bus MCP tools (no
+      // post_finding/ask_user) and no per-tool feed events — a documented degradation. The doctrine makes
+      // it commit; the QA loop still reviews the real diff. A fresh start gets the doctrine + peer heads-up.
+      if (!opts?.resume) startKickoff = [GROK_IMPLEMENTOR_DOCTRINE, kickoff, this.peerNote(thread, false)].filter(Boolean).join("\n\n");
+      const grokAgent = new GrokAgentRun({
+        model,
+        effort,
+        cwd: thread.workspace,
+        resume: opts?.resume,
+        freshFallback: opts?.freshFallback,
+        onOfficeChat: (scope, body) => {
+          this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
+        },
+      });
+      // Reuse the CLI-resume-wedged set (shared by both CLI backends): once a resume self-heals to fresh,
+      // every later turn on this thread starts fresh directly instead of re-attempting a wedging resume.
+      grokAgent.onEnd(() => { if (grokAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
+      agent = grokAgent;
     } else {
       const effort = plannerEffort;
       const acct = opts?.account ?? this.dispatchAccount();
@@ -1884,11 +2059,13 @@ export class ThreadManager implements OrchestratorApi {
       const text = extras.length ? `${baseKickoff}\n\n${extras.join("\n\n")}` : baseKickoff;
       return this.startImplementor(thread, text, { effort: opts.effort, account: opts.account });
     }
-    // Codex resumes by its own thread id via `codex exec resume <id>` — there is no local Claude
+    // A CLI backend (Codex or Grok) resumes by its own session id via the CLI — there is no local Claude
     // transcript to age-check or Haiku-compress, so the warm/cold gate below (keyed on transcript mtime)
-    // would always fall to the cold path and start a FRESH Codex run, throwing away the prior session.
-    // Resume the Codex thread directly with the nudge/note as the new turn's prompt.
-    if (resolvedProvider === "codex") {
+    // would always fall to the cold path and start a FRESH run, throwing away the prior session. Resume
+    // the CLI session directly with the nudge/note as the new turn's prompt.
+    if (resolvedProvider === "codex" || resolvedProvider === "grok") {
+      const doctrine = resolvedProvider === "grok" ? GROK_IMPLEMENTOR_DOCTRINE : CODEX_IMPLEMENTOR_DOCTRINE;
+      const label = providerLabel(resolvedProvider);
       const parts = [
         restartNote,
         opts.resumeNudge,
@@ -1900,16 +2077,16 @@ export class ThreadManager implements OrchestratorApi {
       // the original task — otherwise the fresh session re-runs the original task WITHOUT the requested
       // fixes, QA keeps bouncing it, and the task eventually fails. The prior edits live in the working
       // tree, so the fresh session re-reads them and applies the feedback on top.
-      const freshKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, baseKickoff, this.peerNote(thread, false), continuation].filter(Boolean).join("\n\n");
-      // Codex resume already wedged for this thread → don't pay the 60s watchdog + self-heal spam again;
+      const freshKickoff = [doctrine, baseKickoff, this.peerNote(thread, false), continuation].filter(Boolean).join("\n\n");
+      // CLI resume already wedged for this thread → don't pay the 60s watchdog + self-heal spam again;
       // start fresh directly. (startImplementor with no `resume` re-prepends doctrine + peerNote, so pass
       // just task + continuation here to avoid duplicating them.)
       if (this.codexResumeWedged.has(thread.id)) {
-        this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: Codex resume previously wedged — starting a fresh session directly.`);
+        this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: ${label} resume previously wedged — starting a fresh session directly.`);
         const freshText = [baseKickoff, continuation].filter(Boolean).join("\n\n");
         return this.startImplementor(thread, freshText, { effort: opts.effort, account: opts.account });
       }
-      this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: resuming the Codex session ${resumeSession.slice(0, 8)} via the CLI.`);
+      this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: resuming the ${label} session ${resumeSession.slice(0, 8)} via the CLI.`);
       return this.startImplementor(thread, continuation, { effort: opts.effort, resume: resumeSession, account: opts.account, freshFallback: freshKickoff });
     }
     const ageMs = sessionAgeMs(resumeSession);
@@ -2065,35 +2242,39 @@ export class ThreadManager implements OrchestratorApi {
       current = start.run;
       res = await this.awaitImplementorResult(thread, effort, start.run, start.accountId, false, nudge);
     }
-    // Codex hit its usage cap mid-run → fail OVER to the Claude backend rather than parking (Codex has no
-    // account-headroom of its own to fail over to). The Codex thread id is incompatible with a Claude
-    // resume, so relaunch FRESH from a git-progress seed: the working-tree edits persist, so the Claude
-    // implementor picks up on top of them. Guarded by the provider flip → switches at most once; the
-    // recursive await then handles Claude's own turn-limit/stall/account-failover from there.
+    // A CLI implementor backend (Codex or Grok) hit its usage cap mid-run → fail OVER to another ready
+    // backend rather than parking (a CLI has no account-headroom of its own to fail over to). Its session
+    // id is incompatible with any other backend's resume, so relaunch FRESH from a git-progress seed: the
+    // working-tree edits persist, so the next backend picks up on top of them. Guarded by the provider
+    // flip → switches at most once per cap; the recursive await then handles the new backend's own
+    // turn-limit/stall/account-failover from there.
     if (
       res?.isError &&
       !this.cancelled(thread.id) &&
-      this.implementorProvider.get(thread.id) === "codex" &&
-      current instanceof CodexAgentRun &&
+      (current instanceof CodexAgentRun || current instanceof GrokAgentRun) &&
       current.capped
     ) {
-      this.noteCodexCap();
-      this.implementorProvider.set(thread.id, "claude");
-      // Fully end the capped Codex run BEFORE anything else — postFinding routes a warning to this.live's
+      const from = this.implementorProvider.get(thread.id) ?? "claude";
+      if (from === "codex") this.noteCodexCap();
+      else if (from === "grok") this.noteGrokCap();
+      const next = this.nextReadyImplementor(from) ?? "claude";
+      this.implementorProvider.set(thread.id, next);
+      // Fully end the capped CLI run BEFORE anything else — postFinding routes a warning to this.live's
       // run, so stopping first guarantees it can never resume a fresh doomed turn on the just-capped session
       // (matches the "end the implementor before the next stage" ordering used across this file).
       await current.stop();
+      const fromName = providerLabel(from);
+      const toName = providerLabel(next);
       this.postFinding({
         threadId: thread.id,
         fromRole: "implementor",
-        summary: "Codex hit its usage cap — switched this task to the Claude implementor",
-        detail: "Codex's usage window is exhausted; the task continues on a Claude subscription from the current working-tree state.",
+        summary: `${fromName} hit its usage cap — switched this task to the ${toName} implementor`,
+        detail: `${fromName}'s usage is exhausted; the task continues on ${toName} from the current working-tree state.`,
         severity: "warning",
       });
       if (!this.cancelled(thread.id)) {
         const seed = await this.composeResumeKickoff(thread, kickoff, undefined, {
-          directorNote:
-            "The Codex implementor hit its usage cap partway through this task, so you're taking over on the Claude backend. Its changes are already in the working tree — review the git progress below, then continue and finish the task completely.",
+          directorNote: `The ${fromName} implementor hit its usage cap partway through this task, so you're taking over on the ${toName} backend. Its changes are already in the working tree — review the git progress below, then continue and finish the task completely.`,
           qaFollows,
         });
         if (!this.cancelled(thread.id)) {
@@ -2103,39 +2284,41 @@ export class ThreadManager implements OrchestratorApi {
       }
     }
     // The REVERSE flip: every Claude account capped mid-run (awaitImplementorResult found no failover
-    // headroom and flagged the cap-park) while Codex is enabled, authed and has headroom → continue on
-    // the Codex backend instead of freezing the task under "every account is rate-limited" with a ready
-    // Codex sitting idle. A Claude SDK session can't resume on the Codex CLI, so relaunch FRESH from a
-    // compressed-handoff + git-progress seed. Each direction only flips TO a backend with headroom, so
-    // the two blocks can't ping-pong; if Codex then caps too, the block above hands back or parks.
+    // headroom and flagged the cap-park) while a CLI backend (Codex/Grok) is enabled, authed and ready →
+    // continue on it instead of freezing the task under "every account is rate-limited" with a ready CLI
+    // sitting idle. A Claude SDK session can't resume on a CLI, so relaunch FRESH from a compressed-handoff
+    // + git-progress seed. Each direction only flips TO a ready backend, so the blocks can't ping-pong; if
+    // the CLI then caps too, the block above hands back or parks.
     if (
       res === undefined &&
       !this.cancelled(thread.id) &&
       this.capParked.get(thread.id) === "implementor" &&
-      this.implementorProvider.get(thread.id) === "claude" &&
-      this.codexImplementorReady()
+      this.implementorProvider.get(thread.id) === "claude"
     ) {
-      this.capParked.delete(thread.id);
-      this.implementorProvider.set(thread.id, "codex");
-      // Fully end the capped Claude run before relaunching, so two implementors never share the
-      // workspace (same ordering as the Codex→Claude flip above).
-      await current.stop();
-      this.postFinding({
-        threadId: thread.id,
-        fromRole: "implementor",
-        summary: "Every Claude subscription hit its usage cap — switched this task to the Codex implementor",
-        detail: "All Claude accounts are rate-limited; the task continues on the Codex backend from the current working-tree state.",
-        severity: "warning",
-      });
-      this.notifyExternal(`↪ every Claude sub is capped — continuing "${thread.title}" on Codex.`);
-      const seed = await this.composeResumeKickoff(thread, kickoff, this.lastImplementorSession.get(thread.id), {
-        directorNote:
-          "Every Claude subscription hit its usage cap partway through this task, so you're taking over on the Codex backend. The prior implementor's changes are already in the working tree — review the git progress below, then continue and finish the task completely.",
-        qaFollows,
-      });
-      if (!this.cancelled(thread.id)) {
-        const relaunch = this.startImplementor(thread, seed, { effort });
-        res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg, qaFollows);
+      const next = this.nextReadyImplementor("claude"); // codex or grok, whichever is readiest (claude excluded)
+      if (next) {
+        this.capParked.delete(thread.id);
+        this.implementorProvider.set(thread.id, next);
+        // Fully end the capped Claude run before relaunching, so two implementors never share the
+        // workspace (same ordering as the CLI→other flip above).
+        await current.stop();
+        const toName = providerLabel(next);
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "implementor",
+          summary: `Every Claude subscription hit its usage cap — switched this task to the ${toName} implementor`,
+          detail: `All Claude accounts are rate-limited; the task continues on the ${toName} backend from the current working-tree state.`,
+          severity: "warning",
+        });
+        this.notifyExternal(`↪ every Claude sub is capped — continuing "${thread.title}" on ${toName}.`);
+        const seed = await this.composeResumeKickoff(thread, kickoff, this.lastImplementorSession.get(thread.id), {
+          directorNote: `Every Claude subscription hit its usage cap partway through this task, so you're taking over on the ${toName} backend. The prior implementor's changes are already in the working tree — review the git progress below, then continue and finish the task completely.`,
+          qaFollows,
+        });
+        if (!this.cancelled(thread.id)) {
+          const relaunch = this.startImplementor(thread, seed, { effort });
+          res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg, qaFollows);
+        }
       }
     }
     return res;
@@ -3852,6 +4035,11 @@ function deliverablesCheckBlock(unsurfacedArtifacts: string[]): string {
 function formatQaIssues(qa: QaOutput): string {
   const lines = (qa.issues ?? []).map((i) => `- [${i.severity ?? "issue"}] ${i.description}${i.location ? ` (${i.location})` : ""}`);
   return (qa.summary ? `${qa.summary}\n` : "") + (lines.length ? lines.join("\n") : "(see QA summary)");
+}
+
+/** Human label for an implementor backend, for the failover findings/notices. */
+function providerLabel(p: ImplementorProvider): string {
+  return p === "codex" ? "Codex" : p === "grok" ? "Grok" : "Claude";
 }
 
 function providerCandidateFromClaude(c: AccountDispatchPreview): ProviderCandidate {

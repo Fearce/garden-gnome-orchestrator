@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store.js";
 import { isCapParked, modelLabel } from "../lib/format.js";
-import type { AccountDTO, CodexEffort, CodexUsageDTO } from "../types.js";
+import type { AccountDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO } from "../types.js";
 
 const clamp = (pct: number | null): number => (pct == null ? 0 : Math.min(100, Math.max(0, pct)));
 const label = (pct: number | null): string => (pct == null ? "—" : `${Math.round(pct)}%`);
@@ -28,6 +28,14 @@ export function Accounts() {
   const accounts = useStore((s) => s.accounts);
   const settings = useStore((s) => s.settings);
   const codexUsage = useStore((s) => s.codexUsage);
+  const grokUsage = useStore((s) => s.grokUsage);
+  // A Grok implementor is live when some implementor run on the Grok backend is still going — the server
+  // stamps the account label "grok:<model>". starting/running/idle all count as "implementing now".
+  const grokLive = useStore((s) =>
+    Object.values(s.runs).some(
+      (r) => r.role === "implementor" && (r.account ?? "").startsWith("grok:") && (r.state === "starting" || r.state === "running" || r.state === "idle"),
+    ),
+  );
   // A Codex implementor is live when some implementor run on the OpenAI backend is still going. The
   // account label is the discriminator the server stamps ("codex:<model>"); state idle = result emitted
   // but the run not yet finalized, so treat starting/running/idle as "implementing now".
@@ -41,12 +49,14 @@ export function Accounts() {
   // strip frosts over exactly while the orchestrator is genuinely stalled on rate limits. Subscribe to
   // the derived boolean so the strip only re-renders when the freeze flips, not on every thread upsert.
   const frozen = useStore((s) => Object.values(s.threads).some((t) => isCapParked(t)));
-  const now = useNow(accounts.length > 0 || !!codexUsage);
+  const now = useNow(accounts.length > 0 || !!codexUsage || !!grokUsage);
   const multi = accounts.length > 1;
   // Show the Codex chip once Codex is configured at all (enabled, a ChatGPT login, or a key stored) so
   // the top bar reflects it as a subscription alongside the Claude accounts.
   const showCodex = settings.codexEnabled || settings.hasOpenaiKey || settings.codexChatgptLogin;
-  if (!accounts.length && !showCodex) return null;
+  // Show the Grok chip once Grok is configured — enabled, or a `grok login` is present.
+  const showGrok = settings.grokEnabled || settings.grokSignedIn;
+  if (!accounts.length && !showCodex && !showGrok) return null;
   return (
     <div
       className={"accounts" + (frozen ? " frozen" : "")}
@@ -70,6 +80,18 @@ export function Accounts() {
           effort={settings.codexEffort}
           live={codexLive}
           usage={codexUsage}
+          now={now}
+        />
+      ) : null}
+      {showGrok ? (
+        <GrokChip
+          enabled={settings.grokEnabled}
+          hasAuth={settings.grokSignedIn}
+          account={settings.grokAccount ?? grokUsage?.email ?? null}
+          model={settings.grokModel}
+          effort={settings.grokEffort}
+          live={grokLive}
+          usage={grokUsage}
           now={now}
         />
       ) : null}
@@ -151,6 +173,63 @@ function CodexChip({
           {model} · {effort}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Top-bar chip for the xAI Grok backend. SuperGrok exposes no usage windows, so — unlike the Codex chip —
+ * there are no meters: it shows the signed-in account + the current state (implementing now / ready / needs
+ * auth / off), and when a turn was recently usage-capped, a countdown to the retry. An honest surface.
+ */
+function GrokChip({
+  enabled,
+  hasAuth,
+  account,
+  model,
+  effort,
+  live,
+  usage,
+  now,
+}: {
+  enabled: boolean;
+  hasAuth: boolean;
+  account: string | null;
+  model: string;
+  effort: GrokEffort;
+  live: boolean;
+  usage: GrokUsageDTO | null;
+  now: number;
+}) {
+  const capped = usage?.capUntil != null && usage.capUntil > now;
+  const state = !enabled ? "off" : !hasAuth ? "noauth" : capped ? "capped" : live ? "implementing" : "ready";
+  const tag =
+    state === "implementing" ? "implementing" : state === "ready" ? "ready" : state === "capped" ? "capped" : state === "noauth" ? "no auth" : "off";
+  const tagCls = state === "noauth" || state === "capped" ? "acct-tag" : state === "off" ? "acct-tag dim" : "acct-tag ok";
+  const who = account ? ` · ${account}` : "";
+  const title =
+    state === "implementing"
+      ? `Grok is implementing a task now${who} · model ${model} · ${effort} effort`
+      : state === "ready"
+        ? `Grok (SuperGrok) enabled${who} · model ${model} · ${effort} effort · implements dispatched tasks`
+        : state === "capped"
+          ? `Grok hit its usage limit — routing implementors elsewhere; retrying in ${countdown(usage!.capUntil, now)}`
+          : state === "noauth"
+            ? "Grok is enabled but not signed in — run `grok login` (or `grok login --device-auth`) on the host"
+            : `Grok (SuperGrok) configured but off · model ${model} · ${effort} effort`;
+  return (
+    <div
+      className={"acct grok" + (state === "implementing" ? " active" : "") + (state === "off" ? " is-off" : "") + (state === "capped" ? " limited" : "")}
+      title={title}
+    >
+      <div className="acct-head">
+        <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
+        <span className="acct-label">Grok</span>
+        <span className={tagCls}>{tag}</span>
+      </div>
+      <div className="codex-model" title={`${model} · ${effort} effort${who}`}>
+        {state === "capped" ? `retry in ${countdown(usage!.capUntil, now)}` : `${model} · ${effort}`}
+      </div>
     </div>
   );
 }

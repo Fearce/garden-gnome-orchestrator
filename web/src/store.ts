@@ -3,6 +3,7 @@ import { apiUrl, wsUrl } from "./lib/base.js";
 import type {
   AccountDTO,
   CodexUsageDTO,
+  GrokUsageDTO,
   AgentRun,
   ChatMessage,
   ChatRoomSummary,
@@ -53,6 +54,7 @@ interface State {
   authError: string | null;
   accounts: AccountDTO[];
   codexUsage: CodexUsageDTO | null;
+  grokUsage: GrokUsageDTO | null;
   threads: Record<string, Thread>;
   runs: Record<string, AgentRun>;
   findings: Finding[];
@@ -280,6 +282,11 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   hasOpenaiKey: false,
   openaiKeyLast4: null,
   codexChatgptLogin: false,
+  grokEnabled: false,
+  grokModel: "grok-4.5",
+  grokEffort: "high",
+  grokSignedIn: false,
+  grokAccount: null,
   skipDirector: false,
   showComposerModelPicker: true,
   showAgentModel: true,
@@ -292,6 +299,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   modelDefaults: {},
   claudeModels: [],
   codexModels: [],
+  grokModels: [],
 };
 
 // A server that predates the settings broadcast (or any partial payload) must never null out the
@@ -354,6 +362,7 @@ export const useStore = create<State>((set) => ({
   authError: null,
   accounts: [],
   codexUsage: null,
+  grokUsage: null,
   threads: {},
   runs: {},
   findings: [],
@@ -641,7 +650,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}) });
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
@@ -657,6 +666,9 @@ function applyEvent(ev: ServerEvent): void {
       if (selected) sendCommand({ type: "thread.history", threadId: selected });
       break;
     }
+    case "grok.usage":
+      useStore.setState({ grokUsage: ev.usage });
+      break;
     case "codex.usage":
       useStore.setState({ codexUsage: ev.usage });
       break;

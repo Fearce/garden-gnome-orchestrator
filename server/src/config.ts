@@ -180,6 +180,35 @@ export const config = {
     firstEventMs: numEnv(process.env.CODEX_FIRST_EVENT_MS, 60_000),
     inactivityMs: numEnv(process.env.CODEX_INACTIVITY_MS, 1_800_000),
   },
+  // ---- xAI Grok (third, optional implementor backend) ----
+  // The implementor can run on the Grok CLI (SuperGrok subscription) instead of Claude/Codex when the
+  // Grok subscription is enabled in Settings. Like Codex it's a batch-oriented agentic CLI, authed by a
+  // flat-fee `grok login` (OAuth, ~/.grok/auth.json) — no per-token API billing. Planner/researcher/QA
+  // stay Claude by default (the Grok CLI has no in-process MCP bus tools).
+  grok: {
+    // First-boot default + the models the Subscriptions selector suggests. Free-text; a SuperGrok login
+    // today exposes only grok-4.5, but the pickable list unions this with whatever ~/.grok/models_cache.json
+    // reports live, so a newly-granted model shows up on its own. Override the default with GROK_MODEL.
+    defaultModel: process.env.GROK_MODEL?.trim() || "grok-4.5",
+    models: ["grok-4.5"] as const,
+    // The Grok CLI is a native executable (no node shim). Spawned by absolute path so it's PATH-independent.
+    // Override GROK_BIN to point at a different install.
+    bin:
+      process.env.GROK_BIN ||
+      resolve(homedir(), ".grok", "bin", process.platform === "win32" ? "grok.exe" : "grok"),
+    // ~/.grok — where `grok login` writes auth.json and the CLI caches models/sessions. Read (never written)
+    // for the signed-in email/tier the usage chip surfaces. Override with GROK_HOME_DIR.
+    home: process.env.GROK_HOME_DIR || resolve(homedir(), ".grok"),
+    // No-output watchdog bounds, mirroring Codex: firstEventMs bounds spawn→first event (a wedged turn
+    // emits nothing), inactivityMs bounds the gap between events once streaming has begun (must exceed the
+    // longest single silent command a Grok implementor runs). Set either to 0 to disable.
+    firstEventMs: numEnv(process.env.GROK_FIRST_EVENT_MS, 60_000),
+    inactivityMs: numEnv(process.env.GROK_INACTIVITY_MS, 1_800_000),
+    // SuperGrok exposes no rate-limit windows (unlike Claude/Codex), so a usage cap is only knowable when
+    // a turn is rejected. That rejection latches a cap for this cooldown (no reset epoch is available), after
+    // which Grok is retried; a still-capped turn simply re-arms the latch. Override GROK_CAP_COOLDOWN_MS.
+    capCooldownMs: numEnv(process.env.GROK_CAP_COOLDOWN_MS, 60 * 60_000),
+  },
   // When every Claude account is rate-limited mid-task, the task parks in 'review' with a cap marker
   // instead of stranding the owner to hand-resume it. A supervisor re-checks this often and resumes
   // each parked task the moment any account regains headroom (a window reset / a freed sub). Set
