@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, MODEL_ROLES } from "../types.js";
+import { CODEX_EFFORTS, CODEX_SUB_ID, MODEL_ROLES, type Role } from "../types.js";
 import { codexModelOptions } from "../lib/models.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 
@@ -117,10 +117,6 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
         <Group label="Voice mode">
           <VoiceSection />
-        </Group>
-
-        <Group label="Agent models">
-          <AgentModelsSection />
         </Group>
 
         <Group label="Subscriptions">
@@ -380,33 +376,45 @@ function SliderRow({
   );
 }
 
-/** Global per-role defaults (the "default" subscription layer): the Claude model each agent runs unless
- *  a specific subscription overrides it below. Empty = the built-in default. */
-function AgentModelsSection() {
-  const models = useStore((s) => s.settings.claudeModels);
-  const defaults = useStore((s) => s.settings.modelDefaults);
+/** Per-(subscription × role) model overrides, collapsed by default. One grid shared by every subscription
+ *  card — a Claude account, Codex, or Grok — so each role can run a different model on that subscription.
+ *  An unset row inherits the subscription's default (the built-in per-role Claude model, or a CLI backend's
+ *  configured default), labelled by `defaultLabelFor`. There is no longer a global "default" override layer:
+ *  a role either has a per-subscription pick here or falls straight through to the built-in default. */
+function SubRoleModels({
+  subId,
+  models,
+  defaultLabelFor,
+}: {
+  subId: string;
+  models: string[];
+  defaultLabelFor: (role: Role) => string;
+}) {
+  const [open, setOpen] = useState(false);
   const { overrides, setModel } = useModelOverrides();
-  const def = overrides[DEFAULT_SUB_ID] ?? {};
+  const sub = overrides[subId] ?? {};
+  const count = Object.keys(sub).length;
   return (
-    <>
-      <p className="settings-note">
-        The Claude model each agent runs by default. Override it per subscription in Subscriptions below. New models you gain access
-        to appear here automatically.
-      </p>
-      <div className="model-grid">
-        {MODEL_ROLES.map((role) => (
-          <div className="model-row" key={role}>
-            <span className="model-row-label">{role}</span>
-            <ModelSelect
-              value={def[role] ?? ""}
-              options={models}
-              defaultLabel={`Built-in (${defaults[role] ?? "—"})`}
-              onChange={(m) => setModel(DEFAULT_SUB_ID, role, m)}
-            />
-          </div>
-        ))}
-      </div>
-    </>
+    <div className="sub-field">
+      <button className={"sub-disclosure" + (open ? " open" : "")} onClick={() => setOpen((o) => !o)}>
+        <Caret /> Per-role models{count ? ` · ${count} overriding` : " · all inherit default"}
+      </button>
+      {open && (
+        <div className="sub-models">
+          {MODEL_ROLES.map((role) => (
+            <div className="sub-model-row" key={role}>
+              <span className="sub-model-label">{role}</span>
+              <ModelSelect
+                value={sub[role] ?? ""}
+                options={models}
+                defaultLabel={`Inherit (${defaultLabelFor(role)})`}
+                onChange={(m) => setModel(subId, role, m)}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -416,41 +424,12 @@ const Caret = () => (
   </svg>
 );
 
-/** Per-role model overrides for one Claude subscription — collapsed by default; each row inherits the
- *  global default unless set. Lets the operator run, e.g., a heavier model for implementor on one sub. */
+/** Per-role model overrides for one Claude subscription — each row inherits the built-in per-role default
+ *  unless set. Lets the operator run, e.g., a heavier model for implementor on one sub. */
 function AccountModels({ accountId }: { accountId: string }) {
   const models = useStore((s) => s.settings.claudeModels);
   const defaults = useStore((s) => s.settings.modelDefaults);
-  const [open, setOpen] = useState(false);
-  const { overrides, setModel } = useModelOverrides();
-  const sub = overrides[accountId] ?? {};
-  const globalDef = overrides[DEFAULT_SUB_ID] ?? {};
-  const count = Object.keys(sub).length;
-  return (
-    <div className="sub-field">
-      <button className={"sub-disclosure" + (open ? " open" : "")} onClick={() => setOpen((o) => !o)}>
-        <Caret /> Per-role models{count ? ` · ${count} overriding` : " · all inherit default"}
-      </button>
-      {open && (
-        <div className="sub-models">
-          {MODEL_ROLES.map((role) => {
-            const inherited = globalDef[role] ?? defaults[role] ?? "—";
-            return (
-              <div className="sub-model-row" key={role}>
-                <span className="sub-model-label">{role}</span>
-                <ModelSelect
-                  value={sub[role] ?? ""}
-                  options={models}
-                  defaultLabel={`Inherit (${inherited})`}
-                  onChange={(m) => setModel(accountId, role, m)}
-                />
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
+  return <SubRoleModels subId={accountId} models={models} defaultLabelFor={(role) => defaults[role] ?? "—"} />;
 }
 
 /** The implementor backends. Each Claude account (Anthropic subscription) is an independently
@@ -564,7 +543,7 @@ function SubscriptionsSection() {
           {!codexTest && settings.hasOpenaiKey && !draftBad && <div className="sub-msg dim">Key stored (••••{settings.openaiKeyLast4 ?? ""}). Test it to confirm it works.</div>}
         </div>
 
-        <CodexModelField />
+        <CodexModels />
         <CodexEffortField />
       </SubCard>
     </div>
@@ -617,21 +596,18 @@ function AccountCard({
   );
 }
 
-/** The Codex implementor model, as a dropdown of the OpenAI models the key can access (live-refreshed,
- *  curated flagships first), with a Custom escape hatch. Codex only implements, so there's one model to
- *  pick. Writes into the model matrix (codex.implementor); the top-bar chip reads the resolved value. */
-function CodexModelField() {
+/** The Codex per-role model grid — one dropdown per agent role (director/planner/researcher/implementor/qa),
+ *  each a live-refreshed list of the OpenAI models the key can access (curated flagships first) with a Custom
+ *  escape hatch. Writes into the model matrix (codex.<role>); an unset row inherits Codex's configured
+ *  default. Roles run on Codex when the role layer routes them here (e.g. every Claude sub is maxed). */
+function CodexModels() {
   const liveModels = useStore((s) => s.settings.codexModels);
-  const resolved = useStore((s) => s.settings.codexModel);
-  const { overrides, setModel } = useModelOverrides();
   const options = codexModelOptions(liveModels);
-  const picked = overrides[CODEX_SUB_ID]?.implementor ?? resolved;
   return (
-    <div className="sub-field">
-      <label className="sub-label">Implementor model</label>
-      <ModelSelect value={picked} options={options} allowInherit={false} onChange={(m) => setModel(CODEX_SUB_ID, "implementor", m)} />
-      <div className="sub-msg dim">Models your key can access appear automatically — or pick Custom to type any id.</div>
-    </div>
+    <>
+      <SubRoleModels subId={CODEX_SUB_ID} models={options} defaultLabelFor={() => "Codex default"} />
+      <div className="sub-msg dim">Models your key can access appear automatically — or pick Custom to type any id. Unset roles use Codex's default model.</div>
+    </>
   );
 }
 
