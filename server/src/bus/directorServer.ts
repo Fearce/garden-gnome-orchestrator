@@ -101,6 +101,38 @@ export function createDirectorServer(
     },
   );
 
+  const dispatchRead = tool(
+    "dispatch_read",
+    `Dispatch a PURE READ-ONLY LOOKUP to the fast reader lane: ONE cheap agent reads the repo (files + git history) and posts the answer as a finding — NO planner, NO implementor, NO QA. It's seconds-to-minutes instead of the full pipeline. Use it ONLY for questions that are answered by reading — "where/what/why is X in the code", "is this done?", "which model/config does Y use?", "explain how Z works", "read file W and summarize". The reader CANNOT edit files, run builds/tests, or verify anything; if a request turns out to need any of that it will escalate back for a normal dispatch. So: reader lane ONLY for questions that change nothing and need no verified conclusion — for ANYTHING that edits/creates files, runs commands, needs a tested/verified answer, or spans a broad multi-file investigation, use \`dispatch\` (the full pipeline). Misrouting to the full pipeline is safe; misrouting a real task here wastes a round — WHEN IN DOUBT, use \`dispatch\`. Returns the task id immediately; the answer streams to the board (the card shows a READ badge).`,
+    {
+      title: z.string().describe("Short task title for the board lane."),
+      workspace: z
+        .string()
+        .describe("Absolute path of an EXISTING repo/dir the reader inspects. It must already be on disk."),
+      brief: z
+        .string()
+        .describe(
+          `The question to answer, with enough context for the reader to find it (what ${config.ownerName} is asking, any file/area hints). Keep it a lookup — if it implies changing or verifying anything, use \`dispatch\` instead.`,
+        ),
+    },
+    async (args) => {
+      if (!existsSync(args.workspace)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Workspace "${args.workspace}" does not exist on disk. Do NOT dispatch — confirm the exact absolute path with ${config.ownerName} (ask_user) and retry.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const id = await api.dispatch({ title: args.title, workspace: args.workspace, brief: args.brief, images: getImages(), lane: "read" });
+      onDispatch(id);
+      return { content: [{ type: "text", text: `Dispatched READ task ${id} ("${args.title}") in ${args.workspace} — reader lane, no QA.` }] };
+    },
+  );
+
   const listThreads = tool(
     "list_threads",
     "List all tasks and their current state so you can decide what to steer or report on.",
@@ -183,6 +215,6 @@ export function createDirectorServer(
   return createSdkMcpServer({
     name: DIRECTOR_SERVER,
     version: "0.1.0",
-    tools: [askUser, findWorkspace, dispatch, listThreads, threadStatus, inject, interruptThread, readFindings],
+    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, readFindings],
   });
 }

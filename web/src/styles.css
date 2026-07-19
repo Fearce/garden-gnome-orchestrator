@@ -19,6 +19,7 @@
   --role-researcher: oklch(0.76 0.12 195);
   --role-implementor: oklch(0.8 0.14 72);
   --role-qa: oklch(0.79 0.15 150);
+  --role-reader: oklch(0.77 0.13 350); /* soft rose — the read-only reader lane; fills the warm gap between director-violet (300) and implementor-amber (72), distinct from every role and from the darker, far-more-saturated danger/crit red alerts */
 
   --ok: oklch(0.77 0.15 152);
   --warn: oklch(0.82 0.14 92);
@@ -1065,6 +1066,18 @@ button { font-family: inherit; cursor: pointer; }
 .effort-badge.eff-high { --eff: var(--accent); }
 .effort-badge.eff-xhigh { --eff: var(--warn); }
 .effort-badge.eff-max { --eff: var(--danger); }
+
+/* Read-lane marker: a task answered by the single read-only reader (dispatch_read), no QA. Shares the
+   effort-badge pill shape but carries its own calm teal so it reads as "a lookup, nothing changed" —
+   distinct from the frost/rate-limit blue and the amber brand accent. */
+.read-badge {
+  --read: oklch(0.8 0.1 195);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700;
+  padding: 2px 7px; border-radius: 100px; white-space: nowrap;
+  color: var(--read);
+  background: color-mix(in oklch, var(--read) 13%, transparent);
+  border: 1px solid color-mix(in oklch, var(--read) 45%, transparent);
+}
 
 .pip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
 /* A small role-status dot stands in for the role: it inherits the pip's colour (faint for a

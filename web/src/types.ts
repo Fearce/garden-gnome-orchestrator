@@ -1,6 +1,9 @@
 // Mirror of the server's protocol + domain types (kept in sync by hand).
 
-export type Role = "director" | "planner" | "researcher" | "implementor" | "qa";
+export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" | "reader";
+
+/** Dispatch lane: undefined/null = the normal pipeline, 'read' = the read-only reader lane (dispatch_read). */
+export type ThreadLane = "read";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -41,6 +44,7 @@ export interface Thread {
   error?: string | null;
   closedAt?: number | null;
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' marks a successful close
+  lane?: ThreadLane | null; // 'read' = the read-only reader lane — drives the card's READ badge
   createdAt: number;
   updatedAt: number;
 }
@@ -175,7 +179,7 @@ export function agentKey(threadId: string, role: Role): string {
 
 /** Mirror of the server's ROLE_RANK — offsets each role's default name so a task's roles map to
  *  consecutive (distinct) names. */
-const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4 };
+const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4, reader: 5 };
 
 export function gnomeName(threadId: string, role: Role): string {
   let h = 0;

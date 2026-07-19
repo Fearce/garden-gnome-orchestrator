@@ -1,7 +1,7 @@
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import type { ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, QuestionOption, Role, Severity, Thread } from "../types.js";
+import type { ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, QuestionOption, Role, Severity, Thread, ThreadLane } from "../types.js";
 
 export interface DispatchInput {
   title: string;
@@ -9,6 +9,7 @@ export interface DispatchInput {
   brief: string;
   images?: ImageAttachment[];
   effort?: Effort; // pins the implementor effort for this task (skip-director composer pick) — beats the planner's
+  lane?: ThreadLane | null; // 'read' routes to the single read-only reader lane (dispatch_read); null/undefined = the normal pipeline
 }
 
 export interface AskUserInput {

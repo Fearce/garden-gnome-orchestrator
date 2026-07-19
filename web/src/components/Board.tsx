@@ -416,8 +416,11 @@ function latestRun(runs: AgentRun[], role: Role): AgentRun | undefined {
 
 /** The roles to show as pips: the ones that actually ran, in pipeline order (so the researcher pip
  *  appears only when the planner routed to it). Before any run exists, show the planner — it's
- *  always next — so a just-dispatched card isn't blank. */
-function pipRoles(runs: AgentRun[]): Role[] {
+ *  always next — so a just-dispatched card isn't blank. The read lane is its own single-agent lane
+ *  (one reader, no planner→qa pipeline), so it always shows just the reader pip — before the reader
+ *  run exists too, so a read-lane card never falls back to a misleading greyed "Plan" pip. */
+function pipRoles(runs: AgentRun[], lane: Thread["lane"]): Role[] {
+  if (lane === "read") return ["reader"];
   const ran = PIPELINE_ORDER.filter((role) => runs.some((r) => r.role === role));
   return ran.length ? ran : ["planner"];
 }
@@ -552,7 +555,7 @@ const Card = memo(function Card({
       <div className="title">{thread.title}</div>
       <WorkspacePath path={thread.workspace} />
       <div className="pips">
-        {pipRoles(threadRuns).map((role) => {
+        {pipRoles(threadRuns, thread.lane).map((role) => {
           const roleRuns = threadRuns.filter((x) => x.role === role);
           const r = latestRun(threadRuns, role);
           const active = r && runActive(r.state);
@@ -581,6 +584,11 @@ const Card = memo(function Card({
           <span className="badge" style={{ "--state-color": capParked ? "var(--frost-strong)" : stateColor(thread.state) } as CSSProperties}>
             {stateLabel(thread.state)}
           </span>
+          {thread.lane === "read" ? (
+            <span className="read-badge" title="Read lane — answered by a single read-only reader, no QA">
+              Read
+            </span>
+          ) : null}
           {impl?.effort ? (
             <span className={"effort-badge eff-" + impl.effort} title="Implementor effort (your composer pick, or the planner's)">
               {impl.effort}

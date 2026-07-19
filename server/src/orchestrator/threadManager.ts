@@ -7,9 +7,10 @@ import { AgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runn
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { codexUsageCapped, readCodexUsage } from "../agents/codexUsage.js";
 import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, uniq } from "../agents/modelCatalog.js";
-import { implementorConfig, plannerConfig, qaConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
+import { implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
+import { createGitReadServer } from "../bus/gitReadServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
@@ -37,6 +38,7 @@ import type {
   PlanOutput,
   QaOutput,
   RateLimitInfo,
+  ReaderOutput,
   ResearchOutput,
   Role,
   Thread,
@@ -813,7 +815,7 @@ export class ThreadManager implements OrchestratorApi {
   // ---- dispatch + pipeline ----
 
   async dispatch(input: DispatchInput): Promise<string> {
-    const thread = this.db.createThread({ title: input.title, workspace: input.workspace, rawPrompt: "", brief: input.brief, effortOverride: input.effort ?? null });
+    const thread = this.db.createThread({ title: input.title, workspace: input.workspace, rawPrompt: "", brief: input.brief, effortOverride: input.effort ?? null, lane: input.lane ?? null });
     // Stamp the repo's HEAD NOW, before any agent runs — the "before" point for scoping this task's
     // Changes chip to its own diff. Captured pre-enqueue so a foreign commit that lands between here and
     // the implementor starting is still excluded (its files aren't in the task's written-file set). Null
@@ -1410,6 +1412,15 @@ export class ThreadManager implements OrchestratorApi {
     const settings = this.settings();
     const saved = this.db.getThreadStageOutputs(threadId);
     try {
+      // Read lane (dispatch_read): short-circuit the whole planner→implementor→QA pipeline to a single
+      // read-only reader stage. readerDone (mirroring planDone) makes the answer sticky across resume, so
+      // a server restart mid-read can't re-run the reader and double-post the answer. releaseSlot still
+      // runs in `finally`.
+      if (thread.lane === "read") {
+        if (!saved.readerDone) await this.runReader(thread, directorNote);
+        return;
+      }
+
       // A persisted kickoff means this task already cleared the whole pre-implementor phase (planner +
       // any researcher + approval) in an earlier run and reached the implementor. A resume must NOT
       // re-run the planner/researcher and clobber that work — not even if an older build never persisted
@@ -1540,7 +1551,7 @@ export class ThreadManager implements OrchestratorApi {
    *  cap mid-run, relaunch on another account resuming the session — transparently. */
   private async runRole(
     thread: Thread,
-    role: "planner" | "researcher" | "qa",
+    role: "planner" | "researcher" | "qa" | "reader",
     kickoff: string | unknown[],
     makeCfg: (ctx: { token: string | undefined; resume?: string; runId: string }) => AgentRunConfig,
     initialResume?: string,
@@ -1651,6 +1662,54 @@ export class ThreadManager implements OrchestratorApi {
       return cfg;
     });
     return res?.structuredOutput as ResearchOutput | undefined;
+  }
+
+  /** The read lane: run ONE read-only reader that answers the question (posting its answer as a finding)
+   *  and finalizes the task — no QA. It mirrors runPlanner's shape (runRole + per-(thread,role) MCP
+   *  servers) but adds the git_read server for read-only history. Disposition comes from the reader's
+   *  structured output: an answer → 'done' (with the deliverables backstop, though a reader rarely writes
+   *  files); an escalation → parked in 'review' with a warning finding so the director can re-dispatch the
+   *  full pipeline. It never half-answers. readerDone is persisted so a resume can't re-run/double-post. */
+  private async runReader(thread: Thread, directorNote?: string): Promise<void> {
+    const res = await this.runRole(
+      thread,
+      "reader",
+      this.kickoffContent(thread.id, readerKickoff(thread, directorNote)),
+      ({ token, resume, runId }) => {
+        const bus = createBusServer(this, { threadId: thread.id, role: "reader", getRunId: () => runId });
+        const office = createOfficeServer(this, { threadId: thread.id, role: "reader", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
+        const git = createGitReadServer(thread.workspace);
+        const cfg = readerConfig(thread.workspace, { bus, office, git });
+        cfg.oauthToken = token;
+        if (resume) cfg.resume = resume;
+        return cfg;
+      },
+    );
+    if (this.cancelled(thread.id)) return;
+    // Sticky across resume — set BEFORE any settle so a restart between here and the state change can't
+    // re-enter runReader and post a second answer.
+    this.db.updateThreadStageOutputs(thread.id, { readerDone: true });
+
+    const out = res?.structuredOutput as ReaderOutput | undefined;
+    if (!res || res.isError) {
+      this.settleReview(thread.id, "Reader could not complete — needs your review (or a full re-dispatch).");
+      return;
+    }
+    if (out?.escalated) {
+      // The reader posted its own 'needs full pipeline because …' warning finding; record the disposition
+      // and park in 'review' (NOT done) so the director re-dispatches through the normal pipeline.
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "reader",
+        summary: `Reader escalated — needs the full pipeline${out.reason ? `: ${out.reason}` : ""}`,
+        severity: "warning",
+      });
+      this.settleReview(thread.id, `Reader escalated to the full pipeline${out.reason ? `: ${out.reason}` : ""} — re-dispatch with the normal \`dispatch\`.`);
+      return;
+    }
+    // Answered read-only. The answer already landed as a finding; record the disposition and finish.
+    this.postFinding({ threadId: thread.id, fromRole: "reader", summary: "Reader answered the lookup read-only — no QA (read lane).", severity: "info" });
+    this.setState(thread.id, "done");
   }
 
   private async runQA(thread: Thread, opts: { round: number }): Promise<QaOutput | undefined> {
@@ -3702,6 +3761,24 @@ function researcherKickoff(thread: Thread, plan: PlanOutput | undefined): string
   parts.push(
     `Gather ONLY external context: web search, official docs, library/API references, GitHub issues, Stack Overflow, changelogs/release notes, error-message lookups, plus relevant entries from ${config.ownerName}'s memory (search_memory). Do NOT read the codebase — the planner already did. Return your structured brief with sourced facts so the implementor inherits them.`,
   );
+  return parts.join("\n");
+}
+
+/** The reader lane's kickoff: the question to answer, plus the two rules that keep the lane honest —
+ *  post the answer as a finding, and escalate rather than half-answer. The full read-only doctrine lives
+ *  in READER_PROMPT (the system prompt); this is just the task hand-off. */
+function readerKickoff(thread: Thread, directorNote?: string): string {
+  const parts: string[] = [
+    `# Read task: ${thread.title}`,
+    "",
+    "## Question / brief",
+    thread.brief,
+    "",
+    "You are the READER on the read-only lane — there is no planner, implementor, or QA behind you. Investigate the repo (Read/Grep/Glob for code, git_read for history — you have NO shell and cannot edit) and ANSWER the question above by calling `post_finding` with the answer and concrete file references. That posted finding IS the deliverable of this task.",
+    "",
+    "Do NOT half-answer. If answering actually requires editing files, running a build/tests, verification you can't do read-only, or a broad multi-file investigation beyond a lookup, STOP: call `post_finding` (severity `warning`) explaining \"needs full pipeline because …\", and return structured output with `escalated: true` and a one-line `reason`. Otherwise, once you've posted the answer, return `answered: true`.",
+  ];
+  if (directorNote) parts.push("", "## Note from the director", directorNote);
   return parts.join("\n");
 }
 
