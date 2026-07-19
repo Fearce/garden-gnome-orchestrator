@@ -320,6 +320,72 @@ export const CODEX_MODELS = [
   "codex-mini-latest",
 ] as const;
 
+// ---- the real-git "Changes" surface (mirrors server/src/gitService.ts) ----
+
+export type GitFileStatus = "added" | "modified" | "deleted" | "renamed" | "untracked" | "conflicted";
+
+export interface GitFile {
+  path: string;
+  status: GitFileStatus;
+  added: number; // -1 for a binary file
+  removed: number;
+  binary: boolean;
+  oldPath?: string; // the pre-rename path, when status is "renamed"
+}
+
+export interface GitCommit {
+  hash: string;
+  subject: string;
+  author: string;
+  at: number; // epoch ms
+  local: boolean; // committed but not yet on the push remote
+}
+
+/** "commit-only" is the Vota steady state (neutral, no push nag); "unpushed" = local commits to push;
+ *  "pushed" = in sync; "no-remote" = no push target configured. Mirrors the server's PushState. */
+export type PushState = "pushed" | "unpushed" | "commit-only" | "no-remote";
+
+export interface GitStatus {
+  isRepo: boolean;
+  repoRoot: string | null;
+  branch: string | null;
+  detached: boolean;
+  branches: string[];
+  upstreamRef: string | null;
+  pushRef: string | null;
+  behind: number;
+  unpushed: number;
+  isVota: boolean;
+  pushState: PushState;
+  hasUncommitted: boolean;
+  files: GitFile[];
+  commits: GitCommit[];
+  /** True when a resolvable dispatch baseline scoped files/commits to this task's net changes. False for a
+   *  legacy task whose baseline was never recorded — the drawer's History then shows an explicit "no diff
+   *  anchor recorded" state instead of a repo-wide commit dump. Mirrors the server's GitStatus. */
+  hasDiffAnchor: boolean;
+  error: string | null;
+}
+
+export interface GitSummary {
+  isRepo: boolean;
+  fileCount: number; // task-scoped: files THIS task changed
+  added: number;
+  removed: number;
+  commitCount: number; // task-scoped: commits attributed to this task
+  branch: string | null;
+  unpushed: number;
+  isVota: boolean;
+  pushState: PushState;
+}
+
+export interface GitFileDiff {
+  path: string;
+  binary: boolean;
+  patch: string;
+  truncated: boolean;
+}
+
 export type ServerEvent =
   | {
       type: "hello";
@@ -346,6 +412,9 @@ export type ServerEvent =
   | { type: "settings"; settings: OrchestratorSettings }
   | { type: "codex.test.result"; ok: boolean; message: string }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
+  | { type: "thread.git"; threadId: string; status: GitStatus }
+  | { type: "thread.gitSummary"; threadId: string; summary: GitSummary }
+  | { type: "thread.gitDiff"; threadId: string; path: string; diff: GitFileDiff }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
   // A cancelled task was restarted from scratch: prune its now-deleted runs/findings/feed (keeping the
@@ -397,6 +466,9 @@ export type ClientCommand =
   | { type: "codex.test"; apiKey?: string }
   | { type: "account.set"; id: string; enabled: boolean }
   | { type: "thread.changes"; threadId: string }
+  | { type: "thread.git"; threadId: string }
+  | { type: "thread.gitSummary"; threadId: string }
+  | { type: "thread.gitDiff"; threadId: string; path: string }
   | { type: "director.search"; query: string }
   | { type: "chat.history"; room: string; before?: ChatCursor }
   | { type: "chat.post"; room: string; body: string }

@@ -11,6 +11,9 @@ import type {
   DirectorMessage,
   FeedItem,
   Finding,
+  GitSummary,
+  GitStatus,
+  GitFileDiff,
   ImageAttachment,
   Message,
   OrchestratorSettings,
@@ -85,6 +88,12 @@ interface State {
   taskOrder: string[];
   pendingPlans: Record<string, string>;
   threadChanges: Record<string, { diff: string; log: string }>;
+  // The real-git "Changes" surface, keyed by threadId. `gitSummaries` is the compact chip header (fetched
+  // per visible card, refreshed on demand); `gitStatus` is the full drawer payload (loaded when a drawer
+  // opens); `gitDiffs` caches each file's lazily-expanded unified diff (threadId → path → diff).
+  gitSummaries: Record<string, GitSummary>;
+  gitStatus: Record<string, GitStatus>;
+  gitDiffs: Record<string, Record<string, GitFileDiff>>;
   railHidden: boolean;
   detailWidth: number;
   directorWidth: number;
@@ -137,6 +146,9 @@ interface State {
   setTaskOrder: (ids: string[]) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
   loadChanges: (threadId: string) => void;
+  loadGitSummary: (threadId: string) => void;
+  loadGitStatus: (threadId: string) => void;
+  loadGitDiff: (threadId: string, path: string) => void;
   toggleRail: () => void;
   setDetailWidth: (px: number) => void;
   setDirectorWidth: (px: number) => void;
@@ -364,6 +376,9 @@ export const useStore = create<State>((set) => ({
   taskOrder: loadTaskOrder(),
   pendingPlans: {},
   threadChanges: {},
+  gitSummaries: {},
+  gitStatus: {},
+  gitDiffs: {},
   railHidden: lsBool("orch-rail-hidden", false),
   detailWidth: lsNum("orch-detail-w", 480),
   directorWidth: lsNum("orch-rail-w", 384),
@@ -456,6 +471,9 @@ export const useStore = create<State>((set) => ({
   },
   approve: (threadId, approved, feedback) => sendCommand({ type: "thread.approve", threadId, approved, feedback }),
   loadChanges: (threadId) => sendCommand({ type: "thread.changes", threadId }),
+  loadGitSummary: (threadId) => sendCommand({ type: "thread.gitSummary", threadId }),
+  loadGitStatus: (threadId) => sendCommand({ type: "thread.git", threadId }),
+  loadGitDiff: (threadId, path) => sendCommand({ type: "thread.gitDiff", threadId, path }),
   toggleRail: () =>
     set((s) => {
       const v = !s.railHidden;
@@ -698,6 +716,17 @@ function applyEvent(ev: ServerEvent): void {
     case "thread.changes":
       useStore.setState((s) => ({ threadChanges: { ...s.threadChanges, [ev.threadId]: { diff: ev.diff, log: ev.log } } }));
       break;
+    case "thread.gitSummary":
+      useStore.setState((s) => ({ gitSummaries: { ...s.gitSummaries, [ev.threadId]: ev.summary } }));
+      break;
+    case "thread.git":
+      useStore.setState((s) => ({ gitStatus: { ...s.gitStatus, [ev.threadId]: ev.status } }));
+      break;
+    case "thread.gitDiff":
+      useStore.setState((s) => ({
+        gitDiffs: { ...s.gitDiffs, [ev.threadId]: { ...(s.gitDiffs[ev.threadId] ?? {}), [ev.path]: ev.diff } },
+      }));
+      break;
     case "thread.upsert":
       useStore.setState((s) => {
         const prev = s.threads[ev.thread.id];
@@ -724,6 +753,9 @@ function applyEvent(ev: ServerEvent): void {
           threadDrafts: drop(s.threadDrafts),
           pendingPlans: drop(s.pendingPlans),
           threadChanges: drop(s.threadChanges),
+          gitSummaries: drop(s.gitSummaries),
+          gitStatus: drop(s.gitStatus),
+          gitDiffs: drop(s.gitDiffs),
           runs,
           findings: s.findings.filter((f) => f.threadId !== ev.threadId),
           questions: s.questions.filter((q) => q.threadId !== ev.threadId),
@@ -754,6 +786,9 @@ function applyEvent(ev: ServerEvent): void {
           threadDrafts: drop(s.threadDrafts),
           pendingPlans: drop(s.pendingPlans),
           threadChanges: drop(s.threadChanges),
+          gitSummaries: drop(s.gitSummaries),
+          gitStatus: drop(s.gitStatus),
+          gitDiffs: drop(s.gitDiffs),
         };
       });
       // If this task is open, re-pull its (now-empty) history so the director-brief row that anchors

@@ -50,6 +50,7 @@ export interface Thread {
   effortOverride?: Effort | null; // operator-pinned implementor effort, snapshotted at a skip-director dispatch — beats the planner's pick
   closedAt?: number | null; // when soft-closed (state === "closed"); drives the 30-day auto-purge clock
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' means it finished correctly (drives the closed-card checkmark)
+  baselineHead?: string | null; // repo HEAD sha captured at dispatch — the "before" point for scoping the Changes chip to this task's own diff; null when not a repo / legacy rows
   createdAt: number;
   updatedAt: number;
 }
