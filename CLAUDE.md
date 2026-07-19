@@ -73,6 +73,13 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   reload the browser.
 - If a restart doesn't pick up server changes, a stale/orphaned process may still hold :4317 —
   check `Get-NetTCPConnection -LocalPort 4317` and kill the old PID, then restart.
+- **`/api/restart` silently no-ops when the :4317/:4319 PID is elevated** — the hub can't kill it, so
+  the response is `ok:false` with `stop.killed:[]` and start `skipped:"already-running"` (HTTP 200, no
+  `errors` — looks fine, ships nothing). Self-elevate the kill (`Start-Process powershell -Verb RunAs
+  -File <kill.ps1>` → `Stop-Process -Id <pid> -Force`), then let **keepAlive respawn** the fresh build —
+  verify a NEW listener appears on :4317; don't manually `start` it (that races keepAlive into a
+  double-bind). Deploy from a **detached** elevated script, not this process tree: you're a child of
+  :4317, so killing it kills your shell before it can heal — the auto-resumed session verifies after.
 
 ## Debugging a failed task
 State + run history live in `server/data/orchestrator.sqlite` (open read-only with the bundled
