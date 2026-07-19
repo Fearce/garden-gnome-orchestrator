@@ -133,12 +133,16 @@ function EditableTitle({ threadId, title }: { threadId: string; title: string })
   );
 }
 
-const ROLE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
+// The agent pipelinePath order. `reader` is the read-only lane's single agent — it never coexists
+// with the planner→qa pipeline (a read-lane task runs only the reader), so listing it here just lets
+// a reader task surface its own agent-path row/gnome instead of rendering blank.
+const ROLE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa", "reader"];
 
 // Filter-chip order. Director is first so the DIRECTOR chip renders right after ALL (before
 // PLANNER). It's deliberately absent from ROLE_ORDER, which drives the agent pipelinePath —
-// the director isn't an agent run, just the brief + injected steering.
-const FILTER_ORDER: Role[] = ["director", "planner", "researcher", "implementor", "qa"];
+// the director isn't an agent run, just the brief + injected steering. `reader` trails at the end:
+// its chip only appears on a read-lane task (zero reader feed rows on a normal task → no chip).
+const FILTER_ORDER: Role[] = ["director", "planner", "researcher", "implementor", "qa", "reader"];
 
 // Only the most recent N feed rows are rendered; older ones load in batches as you scroll up.
 // A long task can accumulate thousands of tool calls — rendering them all made every keystroke
