@@ -14,7 +14,8 @@ import { createGitReadServer } from "../bus/gitReadServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
-import { detectUnsurfacedArtifacts } from "./deliverableCheck.js";
+import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
+import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import { config, fallbackModelFor } from "../config.js";
@@ -815,6 +816,11 @@ export class ThreadManager implements OrchestratorApi {
 
   async dispatch(input: DispatchInput): Promise<string> {
     const thread = this.db.createThread({ title: input.title, workspace: input.workspace, rawPrompt: "", brief: input.brief, effortOverride: input.effort ?? null, lane: input.lane ?? null });
+    // Stamp the repo's HEAD NOW, before any agent runs — the "before" point for scoping this task's
+    // Changes chip to its own diff. Captured pre-enqueue so a foreign commit that lands between here and
+    // the implementor starting is still excluded (its files aren't in the task's written-file set). Null
+    // when the workspace isn't a git repo; getTaskGitSummary then degrades to a HEAD-relative diff.
+    this.db.setBaselineHead(thread.id, await getHeadSha(input.workspace).catch(() => null));
     if (input.images?.length) this.dispatchImages.set(thread.id, input.images.map(toImageBlock));
     this.hub.publish({ type: "thread.upsert", thread });
     // Screenshots attached to the dispatching message reach the implementor model via dispatchImages
@@ -3640,6 +3646,28 @@ export class ThreadManager implements OrchestratorApi {
       }
     });
     agent.onEnd(() => off());
+  }
+
+  // ---- read-only Git/Changes drawer (per-task diff) ----
+
+  async getGitStatus(threadId: string): Promise<GitStatus> {
+    const t = this.db.getThread(threadId);
+    if (!t) return { isRepo: false, repoRoot: null, branch: null, detached: false, branches: [], upstreamRef: null, pushRef: null, behind: 0, unpushed: 0, isVota: false, pushState: "no-remote", hasUncommitted: false, files: [], commits: [], hasDiffAnchor: false, error: "No such task." };
+    const taskFiles = collectTaskWrittenFiles(this.db, t);
+    return getTaskGitStatus(t.workspace, { threadId, baselineHead: t.baselineHead ?? null, taskFiles });
+  }
+
+  async getGitSummary(threadId: string): Promise<GitSummary> {
+    const t = this.db.getThread(threadId);
+    if (!t) return { isRepo: false, fileCount: 0, added: 0, removed: 0, commitCount: 0, branch: null, unpushed: 0, isVota: false, pushState: "no-remote" };
+    const taskFiles = collectTaskWrittenFiles(this.db, t);
+    return getTaskGitSummary(t.workspace, { threadId, baselineHead: t.baselineHead ?? null, taskFiles });
+  }
+
+  async getFileDiff(threadId: string, path: string): Promise<GitFileDiff> {
+    const t = this.db.getThread(threadId);
+    if (!t) return { path, binary: false, patch: "", truncated: false };
+    return getFileDiff(t.workspace, path, t.baselineHead ?? null);
   }
 }
 
