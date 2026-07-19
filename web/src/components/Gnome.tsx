@@ -29,7 +29,8 @@ const INK = "oklch(0.42 0.02 250)"; // ruled lines on the clipboard's pale paper
  *  with round caps so the silhouette survives down to the 15px filter chips.
  *
  *  planner=clipboard · implementor=open-end wrench · researcher=magnifying glass · qa=bug net ·
- *  director=a furled plan-scroll (the one who only delegates carries the master plan). */
+ *  director=a furled plan-scroll (the one who only delegates carries the master plan) ·
+ *  reader=an open book (the read-only lookup lane). */
 function roleProp(role: Role) {
   switch (role) {
     case "planner": // clipboard — pale board with a steel clip, a ticked top line, two ruled rows
@@ -74,6 +75,16 @@ function roleProp(role: Role) {
           <path d="M27.5 31.9 32.7 34.3" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
         </g>
       );
+    case "reader": // open book — two pale pages fanning from a warm bound spine with ruled text lines;
+      // the right mitt cups the lower spine so it reads as held open (a librarian's read-only lane)
+      return (
+        <g strokeLinecap="round" strokeLinejoin="round">
+          <path d="M30.4 25.6 27.6 26.8 27 37.5 29.8 36.6Z" fill={BEARD} stroke={METAL} strokeWidth="1.2" />
+          <path d="M30.4 25.6 35 24.4 34.4 35.4 29.8 36.6Z" fill={BEARD} stroke={METAL} strokeWidth="1.2" />
+          <path d="M30.4 25.6 29.8 36.6" stroke={WOOD} strokeWidth="1.4" />
+          <path d="M28 29.4l1.9-.3M28 31.8l1.9-.3M31 28.8l2.4-.35M31 31.2l2.4-.35" stroke={INK} strokeWidth="0.85" strokeLinecap="round" opacity="0.7" />
+        </g>
+      );
     default:
       return null;
   }
@@ -90,7 +101,7 @@ function roleProp(role: Role) {
  *  contrast on the dark theme at any size.
  *
  *  Each role also holds a small on-theme tool (see `roleProp`): clipboard, wrench, magnifier,
- *  bug net, or the director's plan-scroll — gripped by the right mitt so it reads as held.
+ *  bug net, the director's plan-scroll, or the reader's open book — gripped by the right mitt so it reads as held.
  *
  *  `active` (default true) keeps the full role color; pass `active={false}` to grey the whole
  *  gnome out — used where several roles sit side-by-side and only one is currently working. */
