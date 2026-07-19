@@ -72,6 +72,10 @@ button { font-family: inherit; cursor: pointer; }
   overflow: hidden;
 }
 
+/* Global layout helper: a flex child that grows to fill its column and scrolls its own overflow
+   (the Changes drawer's file list / diff pane). */
+.viewport-fit-scroll { flex: 1; min-height: 0; overflow: auto; }
+
 @supports (height: 100dvh) {
   .app { height: 100dvh; }
 }

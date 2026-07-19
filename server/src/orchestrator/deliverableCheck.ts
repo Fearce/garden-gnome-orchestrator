@@ -1,6 +1,6 @@
 import { isAbsolute, join, resolve } from "node:path";
 import type { Db } from "../db/db.js";
-import type { Thread } from "../types.js";
+import type { Role, Thread } from "../types.js";
 
 // Deterministic backstop for deliverable emission. Emitting a deliverable is a discretionary
 // `post_deliverable` tool call the implementor can simply forget — so a task can produce a real
@@ -99,4 +99,165 @@ function looksLikeArtifact(path: string): boolean {
 function canonicalKey(workspace: string, path: string): string {
   const abs = isAbsolute(path) ? path : join(workspace, path);
   return resolve(abs).replace(/\\/g, "/").toLowerCase();
+}
+
+// ---------------------------------------------------------------------------
+// Task-scoped Changes attribution (read-only diff drawer).
+// Reuses the recorded-tool-call replay above, but WITHOUT the artifact filter: a task's git diff scope
+// is its own source files too, not just documents. Kept self-contained here so the deliverable detector
+// above is untouched.
+// ---------------------------------------------------------------------------
+
+// The agent roles that PRODUCE owner-facing output. QA is excluded: it reviews rather than produces, and
+// its own scratch (a notes file, a diff dump) is not a task deliverable. Recorded as `Message["role"]`.
+const PRODUCING_ROLES = new Set<Role | "user">(["implementor", "researcher", "planner"]);
+
+// Bound the task-file set that scopes the Changes diff — its paths become `git diff -- <pathspec>` args,
+// so an unbounded set could blow the command line. Real tasks touch a handful of files; a run that wrote
+// more than this attributes a (conservative) subset, matching the module's under-report-not-over stance.
+const MAX_TASK_FILES = 250;
+
+/**
+ * The absolute paths of files THIS task's producing agents wrote or modified, inside the task workspace.
+ * Replays the same recorded tool calls as `detectUnsurfacedArtifacts` (deterministic, thread-attributed —
+ * it reads only THIS run's own tool messages, never a filesystem scan that would pick up concurrent tasks
+ * sharing the repo) but WITHOUT the artifact-extension/meta-doc filter: this set scopes the task's git
+ * diff (source files included), so the Changes chip shows the task's OWN changes, not the whole dirty tree.
+ * Paths are resolved absolute and confined to the workspace (mirroring the deliverable serve guard — a
+ * path outside it isn't the task's own work in any surfaceable sense), de-duplicated, capped.
+ */
+export function collectTaskWrittenFiles(db: Db, thread: Thread): string[] {
+  const wsKey = workspaceKey(thread.workspace);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of db.listMessages(thread.id)) {
+    if (m.kind !== "tool" || !PRODUCING_ROLES.has(m.role)) continue;
+    for (const path of taskWrittenPaths(m.content)) {
+      const key = canonicalKey(thread.workspace, path);
+      if (!isInsideWorkspace(wsKey, key)) continue; // out-of-workspace files aren't this task's own tree
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(absPath(thread.workspace, path));
+      if (out.length >= MAX_TASK_FILES) return out;
+    }
+  }
+  return out;
+}
+
+/** The absolute, resolved form of a written path (relative paths resolve against the workspace) — the
+ *  shape gitService needs to relativize against the actual repo root. `canonicalKey` lowercases/slashes
+ *  for MATCHING; this keeps the real path for git. */
+function absPath(workspace: string, path: string): string {
+  return resolve(isAbsolute(path) ? path : join(workspace, path));
+}
+
+// The mutation tools whose input carries a `file_path` first key. Unlike the deliverable detector, which
+// counts only Write (a from-scratch create), TASK attribution counts every file the agent MUTATED, so
+// Edit/MultiEdit belong here. Read/Grep/Glob also carry a `path`-ish field but are NOT mutations, so
+// gating on this exact tool-name set is what keeps a merely-read file out of the diff scope.
+const FILE_MUTATION_TOOLS = ["Write ", "Edit ", "MultiEdit "];
+
+/** Every file path a single recorded tool call WROTE OR MODIFIED — the input to task-scoped git
+ *  attribution. Covers Write/Edit/MultiEdit (`file_path`), NotebookEdit (`notebook_path`), and a shell
+ *  command's redirect/output targets. No artifact-extension filter: a task's diff scope is its own
+ *  source files too, not just documents. */
+function taskWrittenPaths(content: string): string[] {
+  const out: string[] = [];
+  if (FILE_MUTATION_TOOLS.some((p) => content.startsWith(p))) {
+    const fp = jsonStringField(content, "file_path");
+    if (fp) out.push(fp);
+  } else if (content.startsWith("NotebookEdit ")) {
+    const np = jsonStringField(content, "notebook_path");
+    if (np) out.push(np);
+  }
+  out.push(...shellArtifactTargets(content)); // gated internally on Bash/PowerShell
+  return out;
+}
+
+/** Pull a JSON string value for `key` out of a (possibly 200-char-truncated) recorded tool input by
+ *  regex — the input is truncated when recorded (safeJson), so a full JSON.parse isn't reliable, but the
+ *  keys we read (`file_path`, `notebook_path`, `command`) are the FIRST key of their tool's input and so
+ *  survive the cut. Returns the unescaped string, or null when the key isn't present. */
+function jsonStringField(content: string, key: string): string | null {
+  const m = content.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+  const raw = m?.[1];
+  if (raw == null) return null;
+  try {
+    return JSON.parse(`"${raw}"`) as string; // unescape JSON string escapes (e.g. \\ → \ on Windows)
+  } catch {
+    return raw.replace(/\\\\/g, "\\");
+  }
+}
+
+// File-producing shell fragments. Each captures the destination token (bare or quoted). Ordered from
+// most-common (redirect) to shell-specific.
+const SHELL_TARGET_PATTERNS: RegExp[] = [
+  // stdout redirection: `> f`, `>> f`. Excludes fd-dup (`2>&1`, `>&2`) and fd-prefixed (`1>`, `2>`).
+  /(?:^|[^\d>&])>>?\s*(?!&)("[^"]+"|'[^']+'|[^\s;|&<>]+)/g,
+  // explicit output flag used by many generators (pandoc, wkhtmltopdf, jq/csvkit -o, …): `-o f`.
+  /(?:^|\s)(?:-o|--output(?:-file)?)(?:=|\s+)("[^"]+"|'[^']+'|[^\s;|&<>]+)/g,
+  // `tee [-a] f` — writes stdout to a file mid-pipeline.
+  /(?:^|[|&;\s])tee\s+(?:-a\s+)?("[^"]+"|'[^']+'|[^\s;|&<>]+)/g,
+  // PowerShell producers, path positional or via -Path/-FilePath/-LiteralPath.
+  /(?:Out-File|Set-Content|Add-Content|Export-Csv|Export-Excel|ConvertTo-Html)\s+(?:-(?:File|Literal)?Path[:\s]+)?("[^"]+"|'[^']+'|[^\s;|&<>]+)/gi,
+];
+
+/** Destination files a shell tool call writes to. Empty for a non-shell tool. */
+function shellArtifactTargets(content: string): string[] {
+  const cmd = shellCommand(content);
+  if (cmd == null) return [];
+  const out: string[] = [];
+  for (const re of SHELL_TARGET_PATTERNS) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(cmd)) != null) {
+      if (m[1] == null) continue;
+      const target = stripQuotes(m[1]);
+      if (target) out.push(target);
+    }
+  }
+  return out;
+}
+
+/** The `command` string of a `Bash`/`PowerShell` tool call, unescaped, or null for any other tool. Like
+ *  the Write path, the recorded input is truncated to 200 chars (safeJson) with a trailing "…", and
+ *  `command` is the first key — so it's extracted by regex tolerant of a missing closing quote. */
+function shellCommand(content: string): string | null {
+  if (!content.startsWith("Bash ") && !content.startsWith("PowerShell ")) return null;
+  // Greedy up to the closing JSON quote, or to end-of-string if truncation severed it (`"?`).
+  const m = content.match(/"command"\s*:\s*"((?:[^"\\]|\\.)*)"?/);
+  const raw = m?.[1];
+  if (raw == null) return null;
+  const trimmed = raw.replace(/…$/, ""); // drop the truncation ellipsis if it landed inside the command
+  try {
+    return JSON.parse(`"${trimmed}"`) as string;
+  } catch {
+    // Truncation can leave a half-formed escape that fails JSON.parse; unescape the common ones directly.
+    return trimmed
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\\\/g, "\\");
+  }
+}
+
+/** Strip a single layer of matching surrounding quotes from a captured shell token. */
+function stripQuotes(s: string): string {
+  const t = s.trim();
+  if (t.length >= 2 && ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))) {
+    return t.slice(1, -1);
+  }
+  return t;
+}
+
+/** Canonical key for the workspace root itself, in the same normalized form as `canonicalKey`. */
+function workspaceKey(workspace: string): string {
+  return resolve(workspace).replace(/\\/g, "/").toLowerCase();
+}
+
+/** True if a canonical path key lies within the workspace (the root itself, or a descendant). Both args
+ *  must already be `canonicalKey`/`workspaceKey` output (resolved, /-slashed, lowercased); the `/`
+ *  boundary stops `…/foo` from matching a sibling `…/foobar`. */
+function isInsideWorkspace(wsKey: string, key: string): boolean {
+  return key === wsKey || key.startsWith(wsKey.endsWith("/") ? wsKey : wsKey + "/");
 }

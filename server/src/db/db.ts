@@ -51,6 +51,9 @@ function rowToThread(r: Row): Thread {
     // Dispatch lane: null = normal pipeline, 'read' = the read-only reader lane. A small scalar the UI
     // reads for the READ badge, so it belongs on the DTO (unlike the heavy stage_outputs blob).
     lane: (r.lane as ThreadLane | null) ?? null,
+    // HEAD sha at dispatch — the baseline for task-scoped Changes attribution. Null on rows created
+    // before this column existed / before dispatch set it.
+    baselineHead: (r.baseline_head as string | null) ?? null,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
   };
@@ -182,6 +185,7 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN effort_override TEXT",
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
       "ALTER TABLE threads ADD COLUMN closed_prev_state TEXT",
+      "ALTER TABLE threads ADD COLUMN baseline_head TEXT",
       "ALTER TABLE chat_messages ADD COLUMN sender_name TEXT",
       "ALTER TABLE findings ADD COLUMN kind TEXT NOT NULL DEFAULT 'finding'",
       "ALTER TABLE findings ADD COLUMN path TEXT",
@@ -279,6 +283,13 @@ export class Db {
 
   listThreads(): Thread[] {
     return (this.raw.prepare("SELECT * FROM threads ORDER BY created_at DESC").all() as Row[]).map(rowToThread);
+  }
+
+  /** Record the task's baseline HEAD sha (captured at dispatch) for task-scoped Changes attribution.
+   *  Managed on its own — the generic updateThread SQL never writes this column, so a routine state
+   *  change can't clobber the baseline once it's set. */
+  setBaselineHead(id: string, sha: string | null): void {
+    this.raw.prepare("UPDATE threads SET baseline_head = ? WHERE id = ?").run(sha, id);
   }
 
   /** Permanently delete a thread and all its children. agent_runs/findings/messages drop via FK

@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS threads (
   -- read-only reader lane (dispatch_read) — one Sonnet reader that answers a lookup and escalates
   -- rather than half-answering, no QA. Drives the card's READ badge and runPipeline's short-circuit.
   lane          TEXT,
+  -- HEAD sha of the task's repo captured at dispatch — the "before" point for scoping the Changes
+  -- chip to THIS task's own diff (baseline_head..HEAD + the task's written files), excluding foreign WIP.
+  baseline_head TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
