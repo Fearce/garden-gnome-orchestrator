@@ -19,6 +19,7 @@ import { repoRoom } from "../types.js";
 import { closesInDays, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed, RoleElapsed } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
+import { ChangesChip } from "./GitChanges.js";
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -570,6 +571,9 @@ const Card = memo(function Card({
         })}
       </div>
       {activity !== null ? <div className="activity">{activity}</div> : null}
+      {/* The task's git footprint — the ONLY git affordance on the card face (progressive disclosure).
+          It renders itself only for a repo-backed task and opens the full Changes drawer on click. */}
+      <ChangesChip threadId={thread.id} />
       <div className="foot">
         <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
           {/* Frozen cards recolor the state badge from the review amber to cold cyan, matching the icy

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { CodexUsageDTO } from "../agents/codexUsage.js";
+import type { GitFileDiff, GitStatus, GitSummary } from "../gitService.js";
 import type {
   AgentRun,
   ChatMessage,
@@ -66,6 +67,9 @@ export type ServerEvent =
   | { type: "settings"; settings: OrchestratorSettings }
   | { type: "codex.test.result"; ok: boolean; message: string }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
+  | { type: "thread.git"; threadId: string; status: GitStatus }
+  | { type: "thread.gitSummary"; threadId: string; summary: GitSummary }
+  | { type: "thread.gitDiff"; threadId: string; path: string; diff: GitFileDiff }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
   // A cancelled task was restarted from scratch: its prior runs/findings/feed were deleted server-side,
@@ -187,6 +191,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // Toggle a Claude account in/out of the dispatch+failover rotation (per-account subscription switch).
   z.object({ type: z.literal("account.set"), id: z.string(), enabled: z.boolean() }),
   z.object({ type: z.literal("thread.changes"), threadId: z.string() }),
+  z.object({ type: z.literal("thread.git"), threadId: z.string() }),
+  z.object({ type: z.literal("thread.gitSummary"), threadId: z.string() }),
+  z.object({ type: z.literal("thread.gitDiff"), threadId: z.string(), path: z.string().min(1).max(4096) }),
   // Search the WHOLE director conversation (across every task) for a substring; replies with
   // director.results. The snapshot only ships the recent slice, so old mentions need a server query.
   z.object({ type: z.literal("director.search"), query: z.string().min(1).max(200) }),

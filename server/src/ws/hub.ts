@@ -164,6 +164,21 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       send(socket, { type: "thread.changes", threadId: cmd.threadId, diff: changes.diff, log: changes.log });
       break;
     }
+    case "thread.git": {
+      const status = await ctx.manager.getGitStatus(cmd.threadId);
+      send(socket, { type: "thread.git", threadId: cmd.threadId, status });
+      break;
+    }
+    case "thread.gitSummary": {
+      const summary = await ctx.manager.getGitSummary(cmd.threadId);
+      send(socket, { type: "thread.gitSummary", threadId: cmd.threadId, summary });
+      break;
+    }
+    case "thread.gitDiff": {
+      const diff = await ctx.manager.getFileDiff(cmd.threadId, cmd.path);
+      send(socket, { type: "thread.gitDiff", threadId: cmd.threadId, path: cmd.path, diff });
+      break;
+    }
     case "director.search":
       send(socket, { type: "director.results", query: cmd.query, messages: ctx.db.searchDirectorMessages(cmd.query) });
       break;
