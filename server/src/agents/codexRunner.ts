@@ -7,6 +7,7 @@ import { config } from "../config.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "./runner.js";
+import { parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
 
 export interface CodexRunConfig {
   /** The Codex model to run, e.g. `codex-mini-latest`. */
@@ -27,6 +28,11 @@ export interface CodexRunConfig {
   /** Codex has no office MCP tools. A standalone `OFFICE[team|office]: ...` line in its assistant
    *  message is intercepted here and posted through the orchestrator's real office chat backend. */
   onOfficeChat?: (scope: ChatScope, body: string) => void;
+  /** When set, this run is a structured role (planner/researcher/qa) rather than the free-form implementor:
+   *  the CLI can't be handed our json_schema tool, so the kickoff instructs it to end with a fenced ```json
+   *  block, and its final message is parsed against this schema into `result.structuredOutput`. A parse/shape
+   *  miss leaves `structuredOutput` unset and stashes `lastStructuredError` so the role layer can re-nudge. */
+  outputSchema?: JsonSchemaLike;
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Image blocks are handled
@@ -265,6 +271,12 @@ export class CodexAgentRun implements AgentRunLike {
   private interrupting = false;
   private stdoutBuf = "";
   private lastErrorMsg: string | undefined;
+  // The latest completed agent_message text of the current turn — parsed against cfg.outputSchema when this
+  // is a structured role run. Reset per turn so a turn that emits no message can't reuse a stale one.
+  private lastAgentText = "";
+  // Set when a structured role turn's final message failed to yield schema-valid JSON — the role layer reads
+  // it to send a targeted correction nudge and retry, instead of guessing why structuredOutput was empty.
+  lastStructuredError: string | undefined;
   private sawTerminal = false; // turn.completed / turn.failed seen for the current turn
   // A CLI terminal event arrives just before the child closes. Hold it until onTurnClose has checked
   // pendingSends, otherwise the pipeline can accept this result and hand off to QA while steering that
@@ -436,6 +448,8 @@ export class CodexAgentRun implements AgentRunLike {
     this.lastErrorMsg = undefined;
     this.pendingTerminalResult = undefined;
     this.stdoutBuf = "";
+    this.lastAgentText = "";
+    this.lastStructuredError = undefined;
     // A resumed invocation already has a durable thread id even before the CLI repeats thread.started.
     // Keeping it here lets an immediate priority-now message safely interrupt the startup window.
     this.sessionId = resumeId;
@@ -621,7 +635,10 @@ export class CodexAgentRun implements AgentRunLike {
               /* best-effort side channel; never fail the Codex turn because office chat failed */
             }
           }
-          if (visible) this.emit({ type: "text", text: visible });
+          if (visible) {
+            this.lastAgentText = visible;
+            this.emit({ type: "text", text: visible });
+          }
         }
         break;
       case "reasoning":
@@ -662,6 +679,14 @@ export class CodexAgentRun implements AgentRunLike {
   private finishTurn(partial: { subtype: string; isError: boolean; result?: string; numTurns?: number }): void {
     this.clearWatchdog();
     const evt: ResultEvent = { type: "result", subtype: partial.subtype, isError: partial.isError, result: partial.result, numTurns: partial.numTurns };
+    // A structured role run parses its final message into structuredOutput here so the pipeline reads it
+    // uniformly (the same field the Claude SDK and Grok's --json-schema populate). A miss leaves the field
+    // unset + records lastStructuredError; the role layer nudges and resumes rather than failing the turn.
+    if (!partial.isError && this.cfg.outputSchema) {
+      const parsed = parseStructuredText(this.lastAgentText, this.cfg.outputSchema);
+      if (parsed.value) evt.structuredOutput = parsed.value;
+      else this.lastStructuredError = parsed.error;
+    }
     this.lastResult = evt;
     this.emit(evt);
   }
