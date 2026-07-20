@@ -179,7 +179,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         openaiApiKey: z.string().max(300),
         // Composer state, persisted server-side so it survives across the HTTP/HTTPS surfaces.
         skipDirector: z.boolean(),
-        showComposerModelPicker: z.boolean(),
+        showComposerPickers: z.boolean(),
         showAgentModel: z.boolean(),
         skipDirectorEffort: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]),
         skipDirectorRetitle: z.boolean(),

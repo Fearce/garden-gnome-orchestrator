@@ -301,7 +301,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   grokSignedIn: false,
   grokAccount: null,
   skipDirector: false,
-  showComposerModelPicker: true,
+  showComposerPickers: false,
   showAgentModel: true,
   skipDirectorEffort: "auto",
   xhighEnabled: false,

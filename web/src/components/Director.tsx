@@ -37,7 +37,7 @@ export function Director() {
   // reload on ANY surface (see the repoLabel note above). setSettings is optimistic, so toggling/adding
   // reflects instantly and the server broadcast reconciles every connected client.
   const skip = useStore((s) => s.settings.skipDirector);
-  const showModelPicker = useStore((s) => s.settings.showComposerModelPicker);
+  const showPickers = useStore((s) => s.settings.showComposerPickers);
   const recentRepos = useStore((s) => s.settings.recentRepos);
   const maxRecentRepos = useStore((s) => s.settings.maxRecentRepos);
   const [text, setText] = useState("");
@@ -254,8 +254,8 @@ export function Director() {
             </span>
           )}
         </div>
-        {showModelPicker && <ComposerImplementorModelPickers />}
-        {skip && <ComposerEffortPickers />}
+        {showPickers && <ComposerImplementorModelPickers />}
+        {showPickers && skip && <ComposerEffortPickers />}
         <textarea
           value={text}
           placeholder={

@@ -125,10 +125,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
         <Group label="Composer">
           <ToggleRow
-            label="Show implementor models"
-            hint="On: show Claude and Codex implementor dropdowns in the director composer, between Skip director and the message box. Off: keep the composer compact."
-            on={settings.showComposerModelPicker}
-            onChange={(v) => setSettings({ showComposerModelPicker: v })}
+            label="Show model & effort pickers"
+            hint="Off (default): the director composer stays compact. On: show the quick implementor model dropdowns (Claude/Codex) and, in skip-director mode, the effort dropdowns."
+            on={settings.showComposerPickers}
+            onChange={(v) => setSettings({ showComposerPickers: v })}
           />
           <ToggleRow
             label="Name skipped tasks with Haiku"

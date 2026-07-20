@@ -926,7 +926,7 @@ export class ThreadManager implements OrchestratorApi {
       grokSignedIn: grokAuth.signedIn,
       grokAccount: grokAuth.email,
       skipDirector: this.settingBool("setting_skip_director", false),
-      showComposerModelPicker: this.settingBool("setting_show_composer_model_picker", true),
+      showComposerPickers: this.settingBool("setting_show_composer_pickers", false),
       showAgentModel: this.settingBool("setting_show_agent_model", true),
       skipDirectorEffort: this.skipDirectorEffort(),
       xhighEnabled: config.enableXhigh,
@@ -1165,7 +1165,7 @@ export class ThreadManager implements OrchestratorApi {
       void this.modelCatalog.refresh();
     }
     if (patch.skipDirector !== undefined) this.db.kvSet("setting_skip_director", patch.skipDirector ? "1" : "0");
-    if (patch.showComposerModelPicker !== undefined) this.db.kvSet("setting_show_composer_model_picker", patch.showComposerModelPicker ? "1" : "0");
+    if (patch.showComposerPickers !== undefined) this.db.kvSet("setting_show_composer_pickers", patch.showComposerPickers ? "1" : "0");
     if (patch.showAgentModel !== undefined) this.db.kvSet("setting_show_agent_model", patch.showAgentModel ? "1" : "0");
     if (patch.skipDirectorEffort !== undefined && (patch.skipDirectorEffort === "auto" || EFFORTS.includes(patch.skipDirectorEffort)))
       this.db.kvSet("setting_skip_director_effort", patch.skipDirectorEffort);
