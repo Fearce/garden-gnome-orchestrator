@@ -2,7 +2,7 @@
 // Run: npx tsx src/tests/officeBridge.test.ts
 
 import assert from "node:assert/strict";
-import { extractOfficeChat } from "../agents/officeBridge.js";
+import { extractOfficeChat, MAX_OFFICE_BODY } from "../agents/officeBridge.js";
 
 // Canonical standalone line (Codex agent_message shape).
 {
@@ -20,7 +20,7 @@ import { extractOfficeChat } from "../agents/officeBridge.js";
 // Grok streaming-json failure mode: successive model turns concatenated with NO newlines.
 // Real production sample (Sten/weekly-safety) left OFFICE markers in the feed because the old
 // ^...$ line regex never matched mid-string. When the marker is mid-blob with no trailing
-// separator, the body runs to end-of-string (capped at 500) — post still fires, marker still strips.
+// separator, the body runs to end-of-string (capped) — post still fires, marker still strips.
 {
   const raw =
     "I'll implement weekly safety.Weekly safety for Claude looks present.Safety commits are already on master." +
@@ -69,11 +69,11 @@ import { extractOfficeChat } from "../agents/officeBridge.js";
   assert.deepEqual(posts, [{ scope: "project", body: "hello world" }]);
 }
 
-// Body capped at 500 chars.
+// Body capped at MAX_OFFICE_BODY.
 {
   const long = "x".repeat(600);
   const { posts } = extractOfficeChat(`OFFICE[team]: ${long}`);
-  assert.equal(posts[0]!.body.length, 500);
+  assert.ok(posts[0]!.body.length <= MAX_OFFICE_BODY);
 }
 
 // Clean pass-through when no markers.
@@ -81,6 +81,71 @@ import { extractOfficeChat } from "../agents/officeBridge.js";
   const { visible, posts } = extractOfficeChat("Just normal implementor narration.\nNo office.");
   assert.deepEqual(posts, []);
   assert.equal(visible, "Just normal implementor narration.\nNo office.");
+}
+
+// REAL prod failure (Mads/trading_orchestrator, 2026-07-20): Grok glued successive model turns into
+// one blob. The first OFFICE claim must NOT swallow the following narration, and a second OFFICE
+// later in the blob must still post as its own short message. Prior extractor produced one mega-body
+// that included "Implementing…", "Next up…", and a nested second OFFICE[team] marker.
+{
+  const raw =
+    "I will integrate Grok." +
+    "OFFICE[team]: claiming trading_orchestrator grok integration — orchestrator.py, agent_spawn.ps1, new grok_agent_loop.ps1, selftest, README; plus script-hub agent-orchestrator SCHEMA/HTML" +
+    "Implementing the multi-provider failover, Grok account row, spawn/loop scripts, and dashboard wiring." +
+    "Next up: spawn path and Grok agent loop." +
+    "Accounts show Grok live. Committing and pushing both repos, then restarting the services." +
+    "OFFICE[team]: Grok fully integrated in trading_orchestrator — accounts row, 3-way failover, spawn ";
+  const { visible, posts } = extractOfficeChat(raw);
+  assert.equal(posts.length, 2, `expected 2 posts, got ${posts.length}: ${JSON.stringify(posts)}`);
+  assert.match(posts[0]!.body, /^claiming trading_orchestrator/);
+  assert.ok(!posts[0]!.body.includes("Implementing"), `first body swallowed narration: ${posts[0]!.body}`);
+  assert.ok(!posts[0]!.body.includes("OFFICE["), `first body nested a second marker: ${posts[0]!.body}`);
+  assert.match(posts[1]!.body, /^Grok fully integrated/);
+  assert.ok(!visible.includes("OFFICE["));
+  // Narration after the claim must remain visible in the transcript.
+  assert.match(visible, /Implementing the multi-provider/);
+  assert.match(visible, /I will integrate Grok/);
+}
+
+// Glued turn after a finished sentence: body ends at the period, next sentence stays visible.
+{
+  const raw = "OFFICE[team]: claiming accounts/routing.Next I will edit threadManager.";
+  const { visible, posts } = extractOfficeChat(raw);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0]!.body, "claiming accounts/routing.");
+  assert.match(visible, /Next I will edit threadManager/);
+}
+
+// Marker mid-string with a trailing newline then more content (weekly-safety shape).
+{
+  const raw =
+    "Safety commits are already on master. I'll verify nothing is still incomplete." +
+    "OFFICE[team]: weekly-safety feature already shipped on master (9c367d5) — not editing\n\n" +
+    "## Status: already complete";
+  const { visible, posts } = extractOfficeChat(raw);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0]!.body, /weekly-safety feature already shipped/);
+  assert.ok(!posts[0]!.body.includes("## Status"));
+  assert.match(visible, /## Status: already complete/);
+  assert.ok(!visible.includes("OFFICE["));
+}
+
+// Empty body — strip the marker, post nothing (Grok segment harvest relies on this to stay idempotent).
+{
+  const { visible, posts } = extractOfficeChat("Before.\nOFFICE[team]:\nAfter.");
+  assert.deepEqual(posts, []);
+  assert.ok(!visible.includes("OFFICE["));
+  assert.match(visible, /Before/);
+  assert.match(visible, /After/);
+}
+
+// Re-extracting the already-stripped visible text must not produce a second post (segment harvest + flush).
+{
+  const once = extractOfficeChat("OFFICE[team]: claiming foo.ts\nContinuing.");
+  assert.equal(once.posts.length, 1);
+  const twice = extractOfficeChat(once.visible);
+  assert.deepEqual(twice.posts, []);
+  assert.equal(twice.visible, once.visible);
 }
 
 console.log("All officeBridge extraction checks passed.");

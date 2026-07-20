@@ -172,6 +172,10 @@ export class GrokAgentRun implements AgentRunLike {
   private lastErrorMsg: string | undefined;
   private sawTerminal = false; // an `end` (or error) event seen for the current turn
   private textBuf = ""; // accumulated `text` chunks for the current turn — emitted as one message on close
+  /** True while the latest stream events are `text` chunks. A non-text event (thought/tool/…) ends the
+   *  model-turn segment: we harvest OFFICE posts then and insert a newline so the next turn can't glue
+   *  onto a claim body (the prod failure mode where "claiming foo" + "Implementing bar" became one post). */
+  private streamInText = false;
   private maxTurnsHit = false;
   /** CLI-native structured output from the latest `end` event (preferred over re-parsing streamed text). */
   private endStructuredOutput: unknown | undefined;
@@ -297,6 +301,7 @@ export class GrokAgentRun implements AgentRunLike {
     this.pendingTerminalResult = undefined;
     this.stdoutBuf = "";
     this.textBuf = "";
+    this.streamInText = false;
     this.maxTurnsHit = false;
     this.endStructuredOutput = undefined;
     this.lastStructuredError = undefined;
@@ -441,17 +446,24 @@ export class GrokAgentRun implements AgentRunLike {
         // Stream the chunk live into the feed AND accumulate it — the whole message is persisted as one
         // `text` block on close (office-bridge lines are stripped there before it reaches the transcript).
         if (ev.data) {
+          this.streamInText = true;
           this.textBuf += ev.data;
           this.emit({ type: "text_delta", text: ev.data });
         }
         break;
       case "thought":
+        // A thought after assistant text ends that model-turn segment. Harvest OFFICE posts NOW so peers
+        // see claims mid-run (not only when the whole CLI process exits), and separate segments with a
+        // newline so a later turn can't glue onto the claim body.
+        this.endTextSegment();
         if (ev.data) this.emit({ type: "thinking_delta", text: ev.data });
         break;
       case "max_turns_reached":
+        this.endTextSegment();
         this.maxTurnsHit = true;
         break;
       case "error": {
+        this.endTextSegment();
         this.sawTerminal = true;
         const msg = ev.message ?? this.lastErrorMsg ?? "Grok turn failed.";
         if (RATE_LIMIT_RE.test(msg)) this.markCapped();
@@ -460,6 +472,7 @@ export class GrokAgentRun implements AgentRunLike {
         break;
       }
       case "end": {
+        this.endTextSegment();
         this.sawTerminal = true;
         if (ev.sessionId && !this.sessionId) {
           this.sessionId = ev.sessionId;
@@ -488,8 +501,34 @@ export class GrokAgentRun implements AgentRunLike {
         break;
       }
       default:
+        // Unknown event types (future tool/status markers) also bound a text segment.
+        this.endTextSegment();
         break;
     }
+  }
+
+  /** Close the current assistant-text segment: post any OFFICE bridge lines immediately, strip them from
+   *  the buffer, and ensure a newline so the next model turn can't concatenate onto a claim body. */
+  private endTextSegment(): void {
+    if (!this.streamInText) return;
+    this.streamInText = false;
+    this.harvestOfficePosts();
+    if (this.textBuf && !this.textBuf.endsWith("\n")) this.textBuf += "\n";
+  }
+
+  /** Strip + post OFFICE[...] markers from textBuf in place. Safe to call repeatedly — already-posted
+   *  markers are gone from the buffer, so a later flush won't double-post. */
+  private harvestOfficePosts(): void {
+    if (!this.textBuf) return;
+    const { visible, posts } = extractOfficeChat(this.textBuf);
+    for (const post of posts) {
+      try {
+        this.cfg.onOfficeChat?.(post.scope, post.body);
+      } catch {
+        /* best-effort side channel; never fail the turn because office chat failed */
+      }
+    }
+    this.textBuf = visible;
   }
 
   /** Flag that this turn died to a usage cap. Drives the pipeline's provider failover to another backend —
@@ -521,19 +560,14 @@ export class GrokAgentRun implements AgentRunLike {
     this.emit(evt);
   }
 
-  /** Flush the turn's accumulated assistant text: strip + post any OFFICE[...] bridge lines, emit the rest
-   *  as one persisted `text` block, and resolve structuredOutput for schema-constrained roles. */
+  /** Flush the turn's accumulated assistant text: strip + post any remaining OFFICE[...] bridge lines
+   *  (segment harvest during the stream usually already did this), emit the rest as one persisted `text`
+   *  block, and resolve structuredOutput for schema-constrained roles. */
   private flushText(): unknown {
-    const raw = this.textBuf;
+    this.streamInText = false;
+    this.harvestOfficePosts();
+    const visible = this.textBuf;
     this.textBuf = "";
-    const { visible, posts } = extractOfficeChat(raw);
-    for (const post of posts) {
-      try {
-        this.cfg.onOfficeChat?.(post.scope, post.body);
-      } catch {
-        /* best-effort side channel; never fail the turn because office chat failed */
-      }
-    }
     if (visible.trim()) this.emit({ type: "text", text: visible });
     return this.resolveStructuredOutput(visible);
   }
