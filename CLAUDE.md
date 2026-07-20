@@ -92,7 +92,10 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
 
 ## Debugging a failed task
 State + run history live in `server/data/orchestrator.sqlite` (open read-only with the bundled
-`better-sqlite3`; columns are snake_case — `agent_runs.thread_id/started_at/ended_at/session_id`).
+`better-sqlite3`; columns are snake_case — `agent_runs.thread_id/started_at/ended_at/session_id`;
+there's NO `backend` column — the backend is encoded in `model`, e.g. `grok-4.5`/`gpt-*-sol`/`claude-*`).
+For one task's full trail + per-model cost/turn totals + a QA-loop budget check, run
+`npm run probe:task-runs --prefix server -- <thread-id|title-substring>` (read-only, safe while prod is up).
 Read the run trail to tell causes apart:
 - run `state='interrupted'` → a **server restart** killed it (`markInterrupted`), not the agent. A
   thread whose `error` starts with "interrupted by a server restart" died to a bounce; actively-running

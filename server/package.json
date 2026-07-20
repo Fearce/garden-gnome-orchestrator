@@ -24,6 +24,7 @@
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
     "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
+    "probe:task-runs": "node scripts/probe-task-runs.cjs",
     "health": "node scripts/nightly-health.cjs"
   },
   "dependencies": {
