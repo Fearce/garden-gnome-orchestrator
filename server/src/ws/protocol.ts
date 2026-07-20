@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CODEX_EFFORTS } from "../types.js";
 import type { CodexUsageDTO } from "../agents/codexUsage.js";
 import type { GrokUsageDTO } from "../agents/grokUsage.js";
 import type { GitFileDiff, GitStatus, GitSummary } from "../gitService.js";
@@ -174,9 +175,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         fastUsagePolling: z.boolean(),
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
-        // GPT-5.6 accepts the newer `max` tier; ThreadManager still normalizes it to the selected
-        // model's supported range before a Codex CLI run starts.
-        codexEffort: z.enum(["low", "medium", "high", "xhigh", "max"]),
+        // Use the domain constant so a new supported tier cannot be accepted by the runner but
+        // accidentally rejected at this WebSocket boundary.
+        codexEffort: z.enum(CODEX_EFFORTS),
         codexWeeklySafetyPct: z.number().int().min(1).max(100),
         grokEnabled: z.boolean(),
         grokModel: z.string().min(1).max(64),

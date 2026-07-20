@@ -26,10 +26,10 @@ export type ThreadState =
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
-export type CodexEffort = "low" | "medium" | "high" | "xhigh" | "max";
 /** All known Codex effort values. GPT-5.6 is the first supported family with `max`; earlier Codex
  * models stop at `xhigh`, so callers must use `codexEffortsForModel` before spawning a run. */
-export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max"];
+export const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type CodexEffort = (typeof CODEX_EFFORTS)[number];
 const CODEX_PRE_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
 
 /** GPT-5.6 and its snapshots support the newer `max` reasoning effort. */
