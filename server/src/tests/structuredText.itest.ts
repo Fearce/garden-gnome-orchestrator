@@ -175,8 +175,9 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
     '{ "pass": true, "summary": "Office-bridge fix for Grok team chat is complete, tested, and ready to ship." }';
   const human = formatStructuredRoleFeed(grokWall);
   check("does not leave raw JSON braces in the feed", !human.includes('"pass"') && !human.includes("{ "));
-  check("shows intermediate status as bullets", human.includes("• Inspecting") && human.includes("• Reading"));
+  check("shows intermediate status as markdown list bullets", human.includes("- Inspecting") && human.includes("- Reading"));
   check("shows the final pass as markdown Pass", /\*\*Pass\*\*/.test(human) && human.includes("Office-bridge fix"));
+  check("blank line separates checklist from final Pass (Markdown needs it)", /\n\n\*\*Pass\*\*/.test(human));
   // Pipeline parse of the RAW text must still recover the final verdict — feed humanization is display-only.
   const stillParsed = parseStructuredText(grokWall, QA_SCHEMA);
   check("raw multi-object text still parses for the pipeline", stillParsed.value?.pass === true);
@@ -201,7 +202,7 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
   // Live progress deltas: first object only, then the rest.
   const partial = '{ "pass": false, "summary": "Starting QA." }';
   const p1 = takeStructuredProgressLines(partial, 0);
-  check("progress helper emits the first complete object as a bullet", p1.lines.length === 1 && p1.lines[0]!.startsWith("• Starting"));
+  check("progress helper emits the first complete object as a bullet", p1.lines.length === 1 && p1.lines[0]!.startsWith("- Starting"));
   const more = partial + '{ "pass": false, "summary": "Still checking." }';
   const p2 = takeStructuredProgressLines(more, p1.nextIndex);
   check("progress helper only emits newly completed objects", p2.lines.length === 1 && p2.lines[0]!.includes("Still checking"));
@@ -224,7 +225,7 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
     '{ "pass": true, "summary": "Grok team-chat OFFICE bridge fix verified on master.", "issues": [{"severity":"nit","description":"Stale comment.","location":"threadManager.ts"}] }';
   const longHuman = formatStructuredRoleFeed(longWall);
   check("long Grok wall: no raw JSON left", !longHuman.includes('"pass"') && !longHuman.includes("{ "));
-  check("long Grok wall: only real status ticks as bullets (not 40 draft Passes)", (longHuman.match(/^• /gm) ?? []).length === 2);
+  check("long Grok wall: only real status ticks as bullets (not 40 draft Passes)", (longHuman.match(/^- /gm) ?? []).length === 3); // 2 progress + 1 issue
   check("long Grok wall: single final Pass markdown", (longHuman.match(/\*\*Pass\*\*/g) ?? []).length === 1);
   check("long Grok wall: surfaces final issues", longHuman.includes("nit") && longHuman.includes("threadManager.ts"));
   check("long Grok wall: already-humanized text is stable", formatStructuredRoleFeed(longHuman) === longHuman);
@@ -235,7 +236,7 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
   manyTicks += '{ "pass": true, "summary": "Done." }';
   const capped = formatStructuredRoleFeed(manyTicks);
   check("caps long progress lists with an ellipsis marker", capped.includes("…") && capped.includes("earlier checks"));
-  check("caps progress to a short checklist + final Pass", (capped.match(/^• /gm) ?? []).length <= 9 && /\*\*Pass\*\*/.test(capped));
+  check("caps progress to a short checklist + final Pass", (capped.match(/^- /gm) ?? []).length <= 9 && /\*\*Pass\*\*/.test(capped));
 
   const planObj = formatStructuredObject(
     { summary: "Ship the fix", steps: [{ title: "Patch runner", detail: "humanize feed" }], nextAgent: "implementor" },

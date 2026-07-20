@@ -141,12 +141,13 @@ function MarkdownImpl({ text, className }: { text: string; className?: string })
       continue;
     }
 
-    // Lists (grouped runs of adjacent list items)
-    if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(line)) {
+    // Lists (grouped runs of adjacent list items). Include unicode • — older Grok-QA humanizer
+    // output and some models emit it instead of markdown `-`/`*`.
+    if (/^\s*(?:[-*+•]|\d+[.)])\s+/.test(line)) {
       const ordered = /^\s*\d+[.)]\s+/.test(line);
       const items: ReactNode[] = [];
-      while (i < lines.length && /^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[i]!)) {
-        const content = lines[i]!.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "");
+      while (i < lines.length && /^\s*(?:[-*+•]|\d+[.)])\s+/.test(lines[i]!)) {
+        const content = lines[i]!.replace(/^\s*(?:[-*+•]|\d+[.)])\s+/, "");
         items.push(<li key={items.length}>{renderInline(content, `li${key}-${items.length}`)}</li>);
         i++;
       }
@@ -168,7 +169,7 @@ function MarkdownImpl({ text, className }: { text: string; className?: string })
       !/^\s*```/.test(lines[i]!) &&
       !/^(#{1,6})\s+/.test(lines[i]!) &&
       !/^\s*>\s?/.test(lines[i]!) &&
-      !/^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[i]!) &&
+      !/^\s*(?:[-*+•]|\d+[.)])\s+/.test(lines[i]!) &&
       !/^\s*(?:[-*_]\s*){3,}$/.test(lines[i]!) &&
       !(lines[i]!.includes("|") && i + 1 < lines.length && TABLE_DELIM.test(lines[i + 1]!))
     ) {

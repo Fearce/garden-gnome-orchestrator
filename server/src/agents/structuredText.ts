@@ -195,9 +195,10 @@ export function formatStructuredObject(
       : [];
     // Intermediate Grok turns: pass:false (+ empty issues) are status ticks; pass:true are draft
     // finals the model re-emits many times before the real end event — never surface those mid-stream.
+    // Use markdown `- ` (not unicode •) so the feed Markdown renderer actually builds a list.
     if (!isLast) {
       if (obj.pass) return null;
-      return `• ${obj.summary}`;
+      return `- ${obj.summary}`;
     }
     if (obj.pass) {
       const lines = [`**Pass** — ${obj.summary}`];
@@ -217,16 +218,16 @@ export function formatStructuredObject(
   if (typeof obj.answered === "boolean" || typeof obj.escalated === "boolean") {
     if (obj.escalated) {
       const reason = typeof obj.reason === "string" && obj.reason.trim() ? obj.reason.trim() : "needs full pipeline";
-      return isLast ? `**Escalated** — ${reason}` : `• Escalating: ${reason}`;
+      return isLast ? `**Escalated** — ${reason}` : `- Escalating: ${reason}`;
     }
-    if (obj.answered) return isLast ? "**Answered** — lookup complete (see findings)." : "• Answering lookup…";
+    if (obj.answered) return isLast ? "**Answered** — lookup complete (see findings)." : "- Answering lookup…";
     return isLast ? "**Reader** — no answer posted." : null;
   }
 
   // Plan / research / generic summary-bearing objects.
   if (typeof obj.summary === "string") {
     const summary = obj.summary;
-    if (!isLast) return `• ${summary}`;
+    if (!isLast) return `- ${summary}`;
     const hasSteps = Array.isArray(obj.steps) && (obj.steps as unknown[]).length > 0;
     const hasFacts = Array.isArray(obj.facts) && (obj.facts as unknown[]).length > 0;
     const hasMemories = Array.isArray(obj.memories) && (obj.memories as unknown[]).length > 0;
@@ -322,9 +323,16 @@ export function formatStructuredRoleFeed(text: string): string {
   // Keep the most recent progress ticks when Grok was chatty — older ones are usually "Starting QA".
   const capped =
     progress.length > MAX_FEED_PROGRESS
-      ? [`• …${progress.length - MAX_FEED_PROGRESS} earlier checks`, ...progress.slice(-MAX_FEED_PROGRESS)]
+      ? [`- …${progress.length - MAX_FEED_PROGRESS} earlier checks`, ...progress.slice(-MAX_FEED_PROGRESS)]
       : progress;
-  const blocks = finalBlock ? [...capped, finalBlock] : capped;
+  // Blank line before the final Pass/Fail so the Markdown renderer splits checklist vs verdict
+  // (adjacent non-blank lines would otherwise glue into one paragraph).
+  const blocks =
+    finalBlock && capped.length
+      ? [...capped, "", finalBlock]
+      : finalBlock
+        ? [finalBlock]
+        : capped;
 
   const prose = stripJsonish(text);
   if (prose && !isJsonLeftover(prose)) {

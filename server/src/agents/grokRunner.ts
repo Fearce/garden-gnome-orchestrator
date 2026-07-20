@@ -619,7 +619,7 @@ export class GrokAgentRun implements AgentRunLike {
   }
 
   /** Structured-role live progress: as complete JSON objects land in textBuf, emit short bullet lines
-   *  (• summary…) instead of raw `{ "pass": … }` chunks the owner can't read on the board/draft. */
+   *  (`- summary…`) instead of raw `{ "pass": … }` chunks the owner can't read on the board/draft. */
   private emitStructuredProgress(): void {
     const { nextIndex, lines } = takeStructuredProgressLines(this.textBuf, this.structuredProgressEmitted);
     this.structuredProgressEmitted = nextIndex;
