@@ -20,6 +20,10 @@ server/data/
 */.env
 */.env.local
 
+# agent scratch probes (throwaway e2e / db dumps; deliverable detector also ignores _*)
+server/src/tests/_*
+server/src/tests/_*.png
+
 # editor
 .vscode/
 .idea/
