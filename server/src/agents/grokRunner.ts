@@ -65,9 +65,12 @@ interface GrokEvent {
 }
 
 // Matches SuperGrok's plan usage-cap wording and the generic 429/quota errors the CLI can surface. Grok
-// exposes no rate-limit windows, so a rejected turn is the ONLY cap signal — err broad here.
+// exposes no rate-limit windows, so a rejected turn is the ONLY cap signal — err broad here. A flat-fee
+// sub whose period usage is spent surfaces as HTTP 402 "Payment Required: Grok Build usage balance
+// exhausted" — that's a cap (fails over to Claude/Codex + latches the cooldown), NOT a plain error that
+// parks the task for human review, so 402/payment-required/balance-exhausted must match too.
 const RATE_LIMIT_RE =
-  /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient|usage[ _]limit|reached your (?:usage|plan|limit)|limit reached|out of (?:capacity|credits)|capacity)/i;
+  /(rate.?limit|429|402|payment required|too many requests|quota (?:exceeded|reached)|insufficient|usage[ _]limit|reached your (?:usage|plan|limit)|limit reached|out of (?:capacity|credits)|(?:balance|credits?|quota) (?:exhausted|depleted)|capacity)/i;
 /** Max in-session re-prompts when a structured role (planner/QA) finishes without a schema-valid object. */
 const MAX_STRUCTURED_RETRIES = 2;
 

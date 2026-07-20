@@ -78,4 +78,29 @@ function feed(run: GrokAgentRun, lines: string[]): void {
   assert.equal(events.filter((e) => e.type === "thinking").length, 0, "whitespace-only reasoning must not persist");
 }
 
-console.log("All Grok reasoning-persistence checks passed.");
+// --- A 402 "balance exhausted" is a provider cap (fail over), not a plain error (park for review) ---
+{
+  const cap = new GrokAgentRun({ model: "grok-4.5", effort: "low", cwd: process.cwd() });
+  collect(cap);
+  feed(cap, [
+    JSON.stringify({
+      type: "error",
+      message: 'Internal error: {\n  "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",\n  "http_status": 402\n}',
+    }),
+  ]);
+  assert.equal(cap.capped, true, "a 402 'balance exhausted' must mark the run capped so it fails over to another backend");
+
+  // Regression: the pre-existing 429 / quota wording still caps.
+  const cap429 = new GrokAgentRun({ model: "grok-4.5", effort: "low", cwd: process.cwd() });
+  collect(cap429);
+  feed(cap429, [JSON.stringify({ type: "error", message: "429 Too Many Requests: rate limit reached" })]);
+  assert.equal(cap429.capped, true, "a 429 rate-limit error must still cap");
+
+  // A benign failure must NOT be misread as a cap (else it would silently fail over instead of surfacing).
+  const err = new GrokAgentRun({ model: "grok-4.5", effort: "low", cwd: process.cwd() });
+  collect(err);
+  feed(err, [JSON.stringify({ type: "error", message: "TypeError: cannot read property 'x' of undefined" })]);
+  assert.equal(err.capped, false, "an ordinary error must not be misclassified as a usage cap");
+}
+
+console.log("All Grok reasoning-persistence + cap-detection checks passed.");
