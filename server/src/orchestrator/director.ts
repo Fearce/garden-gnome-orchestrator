@@ -97,13 +97,12 @@ export class Director {
    * what was sent; the long-lived Sonnet session is left completely untouched.
    */
   async dispatchDirect(text: string, workspace?: string, images?: ImageAttachment[]): Promise<void> {
-    // Skip-director sends a one-off prompt straight to the pipeline — but a request to CREATE a recurring
-    // schedule needs the director, which owns the scheduling tools. So even with skip-director on, route a
-    // scheduling ask to the director instead of dispatching it as a normal task (owner requirement).
-    if (looksLikeScheduleRequest(text)) {
-      this.handleUserMessage(text, workspace, images);
-      return;
-    }
+    // Skip-director is an EXPLICIT owner choice, so honor it unconditionally: even a scheduling-shaped
+    // message goes straight to the pipeline. (We used to reroute anything that looked like a schedule
+    // request to the director — which owns the scheduling tools — but silently overriding the toggle
+    // surprised the owner, who set it on purpose. Instead we dispatch as asked and, when the message
+    // genuinely reads like a "set up / change a schedule" request, drop a non-blocking note pointing at
+    // the director route — informing without ever hijacking the toggle.)
     const refs = (images ?? []).map((img) =>
       this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
     );
@@ -135,6 +134,14 @@ export class Director {
     // Link BOTH the prompt (precedes the task) and the confirmation note (follows it) — the note would
     // otherwise be misfiled under the next task by the history backfill's timeline heuristic.
     this.db.linkDirectorMessagesToThread([userMsg.id, note.id], id);
+    // Only orchestrator schedules (cron entries) can be created/changed by the director's tools — an
+    // implementor can't. If this reads like a schedule request, say so without overriding the toggle:
+    // the task was still dispatched as asked; turning Skip Director off is how to reach the scheduler.
+    if (looksLikeScheduleRequest(text)) {
+      this.postDirectorNote(
+        `Heads up: that read like a scheduling request, but Skip Director is on so I dispatched it straight to the pipeline as asked. If you actually wanted to set up or change a recurring schedule (which I handle directly, not an implementor), turn Skip Director off and resend.`,
+      );
+    }
     // Without the director there's no one to name the task, so the lane would show only the raw first
     // line. Mint a proper title with a cheap Haiku call after dispatch (best-effort, never blocks the
     // pipeline) — unless the owner turned it off to save those tokens.
