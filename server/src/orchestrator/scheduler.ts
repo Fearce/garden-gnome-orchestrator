@@ -110,30 +110,32 @@ export class Scheduler {
   async runNow(id: string): Promise<ScheduleResult> {
     const s = this.db.getScheduledTask(id);
     if (!s) return { ok: false, error: "No such scheduled task." };
-    await this.fire(s);
+    await this.dispatchRun(s);
     return { ok: true, schedule: this.db.getScheduledTask(id) ?? undefined };
   }
 
   private tick(): void {
     const now = Date.now();
+    let due = false;
     for (const s of this.db.listScheduledTasks()) {
       if (!s.enabled || s.nextRunAt == null || s.nextRunAt > now) continue;
-      void this.fire(s);
+      due = true;
+      // Roll the next fire forward BEFORE dispatching (which awaits): if a dispatch is ever slow, the
+      // following tick must see a future nextRunAt, never this same past slot — so a schedule can never
+      // double-fire. Recompute from `now` so downtime skips missed slots instead of stacking a backlog.
+      this.db.updateScheduledTask(s.id, { nextRunAt: nextRun(s.cron, now) });
+      void this.dispatchRun(s);
     }
+    if (due) this.broadcast();
   }
 
-  /** Dispatch one run of a schedule and roll its next fire forward. Best-effort: a missing workspace or a
-   *  dispatch error is logged and the schedule still advances, so one bad fire never wedges the cadence. */
-  private async fire(s: ScheduledTask): Promise<void> {
-    const advance = () => {
-      const cur = this.db.getScheduledTask(s.id);
-      // Only advance if the row still exists and is enabled (it may have been edited/deleted mid-fire).
-      if (cur && cur.enabled) this.db.updateScheduledTask(s.id, { nextRunAt: nextRun(cur.cron, Date.now()) });
-      this.broadcast();
-    };
+  /** Dispatch one run of a schedule through the normal pipeline and record the last-run bookkeeping.
+   *  Best-effort: a missing workspace or a dispatch error is logged and swallowed, so one bad fire never
+   *  wedges the schedule. Does NOT touch nextRunAt — the cron cadence is advanced by the tick (or left
+   *  alone for a manual runNow). */
+  private async dispatchRun(s: ScheduledTask): Promise<void> {
     if (!existsSync(s.workspace)) {
       this.hub.log("warn", `Scheduled task "${s.title}" skipped — workspace ${s.workspace} does not exist.`);
-      advance();
       return;
     }
     try {
@@ -145,10 +147,10 @@ export class Scheduler {
       });
       this.db.updateScheduledTask(s.id, { lastRunAt: Date.now(), lastThreadId: threadId });
       this.hub.log("info", `Scheduled task "${s.title}" fired → task ${threadId.slice(0, 8)}`);
+      this.broadcast();
     } catch (e) {
       this.hub.log("error", `Scheduled task "${s.title}" failed to dispatch: ${String(e)}`);
     }
-    advance();
   }
 
   private broadcast(): void {

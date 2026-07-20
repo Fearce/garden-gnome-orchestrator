@@ -227,7 +227,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     prompt: z.string().min(1).max(20000),
     cron: z.string().min(1).max(120),
     enabled: z.boolean().default(true),
-    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).nullish(),
+    // Matches the effort options offered by the UI + director tools (xhigh is a gated tier not surfaced
+    // for schedules) so a schedule's effort is always re-selectable in the editor.
+    effort: z.enum(["low", "medium", "high", "max"]).nullish(),
   }),
   z.object({
     type: z.literal("schedule.update"),
@@ -239,7 +241,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       prompt: z.string().min(1).max(20000).optional(),
       cron: z.string().min(1).max(120).optional(),
       enabled: z.boolean().optional(),
-      effort: z.enum(["low", "medium", "high", "xhigh", "max"]).nullish(),
+      effort: z.enum(["low", "medium", "high", "max"]).nullish(),
     }),
   }),
   z.object({ type: z.literal("schedule.delete"), id: z.string() }),

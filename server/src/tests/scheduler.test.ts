@@ -73,8 +73,10 @@ async function main(): Promise<void> {
 
   console.log("scheduler: runNow fires the pipeline");
   const before = dispatched.length;
+  const nextBeforeRun = db.getScheduledTask(id)!.nextRunAt;
   await scheduler.runNow(id);
   check("runNow dispatched once", dispatched.length === before + 1);
+  check("runNow does NOT disturb the cron cadence", db.getScheduledTask(id)!.nextRunAt === nextBeforeRun);
   const last = dispatched[dispatched.length - 1]!;
   check("dispatch got the prompt as the brief", last.brief === "audit deps v2");
   check("dispatch got the title", last.title === "Nightly audit");

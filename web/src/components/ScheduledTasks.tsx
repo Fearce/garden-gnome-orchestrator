@@ -325,17 +325,24 @@ function RecurrenceBuilder({ rec, setRec, cron, cronValid }: { rec: Recurrence; 
 }
 
 function NumInput({ value, min, max, onChange, pad }: { value: number; min: number; max: number; onChange: (v: number) => void; pad?: boolean }) {
+  // `raw` holds the in-progress text so the user can clear the box and retype without it snapping to
+  // `min` on the empty keystroke; a parseable value still updates live (so the cron preview tracks it),
+  // and blur drops the override so the field re-displays the clamped store value.
+  const [raw, setRaw] = useState<string | null>(null);
+  const shown = raw ?? (pad ? String(value).padStart(2, "0") : String(value));
   return (
     <input
       type="number"
       className="sched-num"
       min={min}
       max={max}
-      value={pad ? String(value).padStart(2, "0") : value}
+      value={shown}
       onChange={(e) => {
+        setRaw(e.target.value);
         const n = Number(e.target.value);
-        if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, Math.round(n))));
+        if (e.target.value !== "" && Number.isFinite(n)) onChange(Math.max(min, Math.min(max, Math.round(n))));
       }}
+      onBlur={() => setRaw(null)}
     />
   );
 }
