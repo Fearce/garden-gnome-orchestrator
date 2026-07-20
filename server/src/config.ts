@@ -121,9 +121,9 @@ export const config = {
   // Fable run is rejected while those windows still show headroom, dispatch falls back to this model
   // on the SAME subscription until the Fable pool frees up (see fallbackModelFor / classifyCap).
   fableFallbackModel: process.env.FABLE_FALLBACK_MODEL?.trim() || "claude-opus-4-8",
-  // ---- OpenAI Codex (second, optional implementor backend) ----
-  // The implementor can run on the Codex CLI instead of Claude when the Codex subscription is enabled
-  // in Settings (with a valid OpenAI key). Planner/researcher/QA always stay Claude.
+  // ---- OpenAI Codex (second, optional agent backend) ----
+  // Implementors can be routed here normally. Structured roles stay on Claude unless repeated transient
+  // API failures force an outage failover, at which point the CLI's structured-output adapter takes over.
   codex: {
     // First-boot default + the flagship models the Subscriptions selector suggests. The field is
     // free-text (any model id the OpenAI key or ChatGPT-plan Codex login can access is accepted) —
@@ -214,6 +214,10 @@ export const config = {
   // each parked task the moment any account regains headroom (a window reset / a freed sub). Set
   // CAP_RETRY_MS=0 to disable the supervisor.
   capRetryMs: numEnv(process.env.CAP_RETRY_MS, 120_000),
+  // A provider-side 5xx/overload/transport failure is retried on the same provider before the task is
+  // handed to another enabled backend. Three consecutive failures means original + two retries.
+  maxTransientApiFailures: Math.max(1, Math.floor(numEnv(process.env.API_ERROR_MAX_FAILURES, 3))),
+  transientApiRetryBaseMs: Math.max(0, numEnv(process.env.API_ERROR_RETRY_BASE_MS, 1_500)),
   maxQaRounds: Number(process.env.MAX_QA_ROUNDS ?? 4),
   // Default ceiling on pipelines running at once; further dispatches wait in 'queued' until a slot
   // frees. Surfaced as an operator setting (persisted in kv) — this is just the first-boot default.

@@ -1674,3 +1674,138 @@ body.dl-resizing { user-select: none; }
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 35%, transparent); }
   50%      { box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 16%, transparent); }
 }
+
+/* ============================ Scheduled Tasks ============================ */
+/* The board's view switcher: the active view is a heading (matches .board-head h2), the inactive one a
+   quiet button that lights to the accent on hover — so the pair reads as one segmented control. */
+.board-tabs { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+.board-tab {
+  appearance: none; background: transparent; border: none; cursor: pointer;
+  font-family: var(--font-sans); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+  font-weight: 600; color: var(--text-faint); padding: 0; display: inline-flex; align-items: center; gap: 7px;
+  transition: color 0.14s;
+}
+.board-tab:hover { color: var(--text-dim); }
+.board-tab-count {
+  font-size: 10px; letter-spacing: 0; font-weight: 600; color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 16%, transparent); border-radius: 100px; padding: 1px 7px;
+}
+
+.sched-view { display: flex; flex-direction: column; min-height: 0; }
+.sched-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+
+.sched-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+
+.sched-card {
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 14px; display: flex; flex-direction: column; gap: 10px; position: relative; overflow: hidden;
+  transition: border-color 0.14s;
+}
+.sched-card:hover { border-color: var(--line-strong); }
+.sched-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); }
+.sched-card.off { opacity: 0.62; }
+.sched-card.off::before { background: var(--text-faint); }
+
+.sched-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.sched-title { font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.3; overflow-wrap: anywhere; }
+.sched-card .ws-path { font-size: 11px; }
+
+.sched-prompt {
+  font-size: 12.5px; color: var(--text-dim); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+.sched-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sched-cron {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600;
+  color: var(--accent); background: color-mix(in oklch, var(--accent) 12%, transparent);
+  padding: 2px 9px; border-radius: 100px;
+}
+.sched-card.off .sched-cron { color: var(--text-dim); background: var(--bg-2); }
+
+.sched-times { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--text-dim); }
+.sched-times b { color: var(--text); font-weight: 600; }
+.sched-lastlink {
+  appearance: none; background: transparent; border: none; padding: 0; text-align: left; cursor: pointer;
+  font-family: var(--font-sans); font-size: 11.5px; color: var(--role-planner);
+}
+.sched-lastlink:hover { text-decoration: underline; }
+
+.sched-actions { display: flex; gap: 6px; margin-top: 2px; }
+.sched-actions .btn { flex: 0 0 auto; }
+
+/* The enabled switch — a compact iOS-style toggle reusing the palette (accent when on). */
+.sched-switch { position: relative; display: inline-flex; flex: 0 0 auto; cursor: pointer; }
+.sched-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.sched-switch-track {
+  width: 34px; height: 19px; border-radius: 100px; background: var(--bg-3);
+  border: 1px solid var(--line); transition: background 0.16s, border-color 0.16s; display: inline-block; position: relative;
+}
+.sched-switch-thumb {
+  position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%;
+  background: var(--text-dim); transition: transform 0.16s, background 0.16s;
+}
+.sched-switch input:checked + .sched-switch-track { background: color-mix(in oklch, var(--accent) 65%, transparent); border-color: transparent; }
+.sched-switch input:checked + .sched-switch-track .sched-switch-thumb { transform: translateX(15px); background: oklch(0.2 0.03 78); }
+.sched-switch input:focus-visible + .sched-switch-track { box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent) 50%, transparent); }
+
+/* ---- create/edit modal ---- */
+.modal.sched-modal { width: min(560px, 94vw); max-height: 90vh; display: flex; flex-direction: column; }
+.modal.sched-modal .m-body { overflow-y: auto; }
+.sched-form { gap: 14px; }
+.sched-field { display: flex; flex-direction: column; gap: 6px; }
+.sched-label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); font-weight: 600; }
+.sched-field input[type="text"],
+.sched-field input:not([type]),
+.sched-field .ws-wrap input,
+.sched-field select {
+  width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--r-md); padding: 8px 11px; font-family: var(--font-sans); font-size: 14px;
+}
+.sched-field input:focus, .sched-field select:focus, .sched-prompt-input:focus { outline: none; border-color: var(--accent); }
+.sched-prompt-input {
+  width: 100%; min-height: 76px; resize: vertical; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 11px; font-family: var(--font-sans); font-size: 14px;
+}
+.sched-row { display: flex; gap: 16px; align-items: flex-end; }
+.sched-field-inline { flex: 0 0 auto; }
+.sched-field-inline select { width: auto; }
+.sched-enable { flex-direction: row; align-items: center; gap: 8px; padding-bottom: 8px; }
+.sched-enable span { font-size: 13px; color: var(--text-dim); text-transform: none; letter-spacing: 0; }
+.sched-enable input { width: 15px; height: 15px; accent-color: var(--accent); }
+
+.sched-recur { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.sched-freq { width: auto !important; }
+.sched-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); }
+.sched-num {
+  width: 58px; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 6px 8px; font-family: var(--font-mono); font-size: 13px;
+}
+.sched-time {
+  background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 6px 8px; font-family: var(--font-mono); font-size: 13px;
+}
+.sched-num:focus, .sched-time:focus, .sched-rawcron:focus { outline: none; border-color: var(--accent); }
+.sched-rawcron {
+  flex: 1 1 220px; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 7px 10px; font-family: var(--font-mono); font-size: 13px;
+}
+.sched-rawcron.invalid { border-color: var(--danger); }
+
+.sched-days { display: flex; gap: 5px; margin-top: 8px; flex-wrap: wrap; }
+.sched-day {
+  appearance: none; cursor: pointer; background: var(--bg); border: 1px solid var(--line);
+  color: var(--text-dim); border-radius: var(--r-sm); padding: 5px 9px; font-size: 12px; font-weight: 600;
+  font-family: var(--font-sans); transition: all 0.13s;
+}
+.sched-day:hover { border-color: var(--line-strong); color: var(--text); }
+.sched-day.on { background: color-mix(in oklch, var(--accent) 18%, transparent); border-color: transparent; color: var(--accent); }
+
+.sched-preview {
+  margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 11px; background: var(--bg-2); border-radius: var(--r-md); border: 1px solid var(--line);
+}
+.sched-preview.invalid { border-color: color-mix(in oklch, var(--danger) 50%, var(--line)); }
+.sched-desc { font-size: 13px; color: var(--text); font-weight: 500; }
+.sched-cronstr { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+.sched-foot { padding: 12px 18px 16px; border-top: 1px solid var(--line); }

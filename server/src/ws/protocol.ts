@@ -12,6 +12,7 @@ import type {
   OrchestratorSettings,
   Question,
   Role,
+  ScheduledTask,
   Thread,
 } from "../types.js";
 
@@ -56,8 +57,11 @@ export type ServerEvent =
       chat: ChatMessage[];
       chatRooms: ChatRoomSummary[];
       nameOverrides: Record<string, string>;
+      schedules: ScheduledTask[];
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  // The full scheduled-task list, rebroadcast on every create/update/delete/fire (it's small and bounded).
+  | { type: "schedules"; schedules: ScheduledTask[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
@@ -215,6 +219,31 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // Post into a room AS THE DIRECTOR (the human): lands in the chat and is pushed to the live agents
   // in that room so they self-coordinate who acts on it. room "general" = the whole office.
   z.object({ type: z.literal("chat.post"), room: z.string().min(1).max(300), body: z.string().min(1).max(2000) }),
+  // ---- Scheduled tasks (recurring dispatches) — create/edit/delete/run without the director ----
+  z.object({
+    type: z.literal("schedule.create"),
+    title: z.string().min(1).max(200),
+    workspace: z.string().min(1).max(600),
+    prompt: z.string().min(1).max(20000),
+    cron: z.string().min(1).max(120),
+    enabled: z.boolean().default(true),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).nullish(),
+  }),
+  z.object({
+    type: z.literal("schedule.update"),
+    id: z.string(),
+    // A partial patch — only the supplied fields change. `effort: null` clears the override.
+    patch: z.object({
+      title: z.string().min(1).max(200).optional(),
+      workspace: z.string().min(1).max(600).optional(),
+      prompt: z.string().min(1).max(20000).optional(),
+      cron: z.string().min(1).max(120).optional(),
+      enabled: z.boolean().optional(),
+      effort: z.enum(["low", "medium", "high", "xhigh", "max"]).nullish(),
+    }),
+  }),
+  z.object({ type: z.literal("schedule.delete"), id: z.string() }),
+  z.object({ type: z.literal("schedule.run"), id: z.string() }),
   z.object({ type: z.literal("snapshot.request") }),
 ]);
 

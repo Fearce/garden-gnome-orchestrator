@@ -15,6 +15,7 @@ import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
 import { startGrokUsageMonitor } from "./agents/grokUsagePing.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
+import { Scheduler } from "./orchestrator/scheduler.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
 import { refreshStatus, getStatus, applyUpdate, startUpdatePoll } from "./update.js";
@@ -90,8 +91,13 @@ async function main(): Promise<void> {
     },
   });
   const manager = new ThreadManager(db, hub, memory, accounts);
-  const director = new Director(manager, db, hub);
+  // Recurring dispatches: fires a schedule's prompt through the normal pipeline on its cron cadence.
+  // Standalone (depends only on manager.dispatch), so scheduled runs use whatever provider/model is
+  // active, exactly like a hand-dispatched task. The director can also create/edit schedules via its tools.
+  const scheduler = new Scheduler(db, hub, (input) => manager.dispatch(input));
+  const director = new Director(manager, db, hub, scheduler);
   accounts.start();
+  scheduler.start();
   // Live pickable-model lists for the Settings dropdowns — needs a subscription token, so start it after
   // the account manager. Boot-fetches from the provider models endpoints, then refreshes on a slow timer.
   manager.startModelCatalog();
@@ -140,7 +146,7 @@ async function main(): Promise<void> {
     // Pasted images travel inline (base64) in a single prompt.new frame; lift the
     // default ws payload cap so a few screenshots don't get dropped on send.
     await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
-    registerWs(app, { db, hub, manager, director, accounts });
+    registerWs(app, { db, hub, manager, director, accounts, scheduler });
 
     app.get("/api/health", async () => ({
       ok: true,

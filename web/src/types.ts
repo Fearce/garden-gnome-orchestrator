@@ -51,6 +51,23 @@ export interface Thread {
   updatedAt: number;
 }
 
+/** A recurring dispatch: a prompt that runs in a target repo on a cron schedule. Mirrors the server's
+ *  ScheduledTask. Each fire creates a normal task through the standard pipeline. */
+export interface ScheduledTask {
+  id: string;
+  title: string;
+  workspace: string;
+  prompt: string;
+  cron: string;
+  enabled: boolean;
+  effort?: Effort | null;
+  lastRunAt?: number | null;
+  nextRunAt?: number | null;
+  lastThreadId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface AgentRun {
   id: string;
   threadId: string;
@@ -441,8 +458,10 @@ export type ServerEvent =
       chat: ChatMessage[];
       chatRooms: ChatRoomSummary[];
       nameOverrides: Record<string, string>;
+      schedules: ScheduledTask[];
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  | { type: "schedules"; schedules: ScheduledTask[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
@@ -513,6 +532,10 @@ export type ClientCommand =
   | { type: "director.search"; query: string }
   | { type: "chat.history"; room: string; before?: ChatCursor }
   | { type: "chat.post"; room: string; body: string }
+  | { type: "schedule.create"; title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null }
+  | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null } }
+  | { type: "schedule.delete"; id: string }
+  | { type: "schedule.run"; id: string }
   | { type: "snapshot.request" };
 
 // ---- client-only view models ----

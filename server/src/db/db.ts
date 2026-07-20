@@ -19,6 +19,7 @@ import type {
   Question,
   QuestionOption,
   Role,
+  ScheduledTask,
   Severity,
   StageOutputs,
   Thread,
@@ -106,6 +107,23 @@ function rowToQuestion(r: Row): Question {
     answer: (r.answer as string | null) ?? null,
     answeredAt: (r.answered_at as number | null) ?? null,
     createdAt: r.created_at as number,
+  };
+}
+
+function rowToScheduledTask(r: Row): ScheduledTask {
+  return {
+    id: r.id as string,
+    title: r.title as string,
+    workspace: r.workspace as string,
+    prompt: r.prompt as string,
+    cron: r.cron as string,
+    enabled: Boolean(r.enabled),
+    effort: (r.effort as Effort | null) ?? null,
+    lastRunAt: (r.last_run_at as number | null) ?? null,
+    nextRunAt: (r.next_run_at as number | null) ?? null,
+    lastThreadId: (r.last_thread_id as string | null) ?? null,
+    createdAt: r.created_at as number,
+    updatedAt: r.updated_at as number,
   };
 }
 
@@ -784,6 +802,84 @@ export class Db {
       messageCount: r.message_count as number,
       lastAt: r.last_at as number,
     }));
+  }
+
+  // ---- scheduled tasks (recurring dispatches) ----
+  createScheduledTask(input: {
+    title: string;
+    workspace: string;
+    prompt: string;
+    cron: string;
+    enabled: boolean;
+    effort?: Effort | null;
+    nextRunAt?: number | null;
+  }): ScheduledTask {
+    const t: ScheduledTask = {
+      id: newId(),
+      title: input.title,
+      workspace: input.workspace,
+      prompt: input.prompt,
+      cron: input.cron,
+      enabled: input.enabled,
+      effort: input.effort ?? null,
+      lastRunAt: null,
+      nextRunAt: input.nextRunAt ?? null,
+      lastThreadId: null,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    this.raw
+      .prepare(
+        `INSERT INTO scheduled_tasks(id, title, workspace, prompt, cron, enabled, effort, last_run_at, next_run_at, last_thread_id, created_at, updated_at)
+         VALUES(@id, @title, @workspace, @prompt, @cron, @enabled, @effort, @lastRunAt, @nextRunAt, @lastThreadId, @createdAt, @updatedAt)`,
+      )
+      .run({ ...t, enabled: t.enabled ? 1 : 0 });
+    return t;
+  }
+
+  getScheduledTask(id: string): ScheduledTask | null {
+    const r = this.raw.prepare("SELECT * FROM scheduled_tasks WHERE id = ?").get(id) as Row | undefined;
+    return r ? rowToScheduledTask(r) : null;
+  }
+
+  listScheduledTasks(): ScheduledTask[] {
+    return (this.raw.prepare("SELECT * FROM scheduled_tasks ORDER BY created_at ASC").all() as Row[]).map(rowToScheduledTask);
+  }
+
+  updateScheduledTask(
+    id: string,
+    patch: Partial<Pick<ScheduledTask, "title" | "workspace" | "prompt" | "cron" | "enabled" | "effort" | "lastRunAt" | "nextRunAt" | "lastThreadId">>,
+  ): ScheduledTask | null {
+    const current = this.getScheduledTask(id);
+    if (!current) return null;
+    const sets: string[] = [];
+    const params: Row = { id };
+    const map: Record<string, string> = {
+      title: "title",
+      workspace: "workspace",
+      prompt: "prompt",
+      cron: "cron",
+      enabled: "enabled",
+      effort: "effort",
+      lastRunAt: "last_run_at",
+      nextRunAt: "next_run_at",
+      lastThreadId: "last_thread_id",
+    };
+    for (const [k, col] of Object.entries(map)) {
+      if (k in patch) {
+        sets.push(`${col} = @${k}`);
+        const v = (patch as Row)[k];
+        params[k] = k === "enabled" ? (v ? 1 : 0) : (v ?? null);
+      }
+    }
+    sets.push("updated_at = @updatedAt");
+    params.updatedAt = now();
+    this.raw.prepare(`UPDATE scheduled_tasks SET ${sets.join(", ")} WHERE id = @id`).run(params);
+    return this.getScheduledTask(id);
+  }
+
+  deleteScheduledTask(id: string): boolean {
+    return this.raw.prepare("DELETE FROM scheduled_tasks WHERE id = ?").run(id).changes > 0;
   }
 
   // ---- attachments (image bytes; served on demand over HTTP, refs over WS) ----

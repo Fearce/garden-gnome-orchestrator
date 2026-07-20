@@ -186,6 +186,7 @@ const SELF_IMPROVE_MSG =
   "speculative frameworks. If nothing genuinely worth building surfaced, say so in one line and finish.";
 // On a mid-run 5h/weekly cap, relaunch on another account (resuming the session) up to N times.
 const MAX_ACCOUNT_FAILOVERS = 3;
+const MAX_TRANSIENT_API_FAILURES = config.maxTransientApiFailures;
 // On a model-pool cap (Fable's own gated allowance, separate from the 5h/weekly windows) the run
 // relaunches on the SAME account with the fallback model — this is that relaunch's continuation nudge,
 // mirroring the account-failover one.
@@ -743,6 +744,19 @@ export class ThreadManager implements OrchestratorApi {
     this.notifyExternal(`↪ ${role} hit a ${win} limit mid-task — auto-switched to ${toLabel}, continuing "${thread.title}".`);
   }
 
+  private async waitForTransientRetry(thread: Thread, role: Role, failure: number, provider: ImplementorProvider): Promise<void> {
+    const delayMs = config.transientApiRetryBaseMs * Math.max(1, failure);
+    this.hub.log(
+      "warn",
+      `${role} on "${thread.title.slice(0, 48)}" hit a transient ${providerLabel(provider)} API failure (${failure}/${MAX_TRANSIENT_API_FAILURES}) — retrying${delayMs ? ` in ${delayMs}ms` : " now"}.`,
+    );
+    if (delayMs) await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  private providerForRun(agent: AgentRunLike): ImplementorProvider {
+    return agent instanceof CodexAgentRun ? "codex" : agent instanceof GrokAgentRun ? "grok" : "claude";
+  }
+
   private track(threadId: string, agent: AgentRunLike): void {
     let set = this.activeRuns.get(threadId);
     if (!set) {
@@ -1273,14 +1287,14 @@ export class ThreadManager implements OrchestratorApi {
   /** The best implementor backend OTHER than `exclude` that can take over RIGHT NOW (has headroom), or
    *  undefined when none can. Drives cross-provider failover: a capped backend hands off to whichever of
    *  the remaining ones is readiest. */
-  private nextReadyImplementor(exclude: ImplementorProvider): ImplementorProvider | undefined {
+  private nextReadyImplementor(exclude: ImplementorProvider, unavailable: ReadonlySet<ImplementorProvider> = new Set()): ImplementorProvider | undefined {
     const cands: ProviderCandidate[] = [];
-    if (exclude !== "claude") {
+    if (exclude !== "claude" && !unavailable.has("claude")) {
       const c = this.claudeProviderCandidate();
       if (c.hasHeadroom) cands.push(c);
     }
-    if (exclude !== "codex" && this.codexImplementorReady()) cands.push(this.codexProviderCandidate());
-    if (exclude !== "grok" && this.grokImplementorReady()) cands.push(this.grokProviderCandidate());
+    if (exclude !== "codex" && !unavailable.has("codex") && this.codexImplementorReady()) cands.push(this.codexProviderCandidate());
+    if (exclude !== "grok" && !unavailable.has("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate());
     if (!cands.length) return undefined;
     return this.preferredImplementorProvider(cands);
   }
@@ -1697,8 +1711,8 @@ export class ThreadManager implements OrchestratorApi {
     );
   }
 
-  /** Run a one-shot role (planner/researcher/qa) to a result. If its account hits a 5h/weekly
-   *  cap mid-run, relaunch on another account resuming the session — transparently. */
+  /** Run a one-shot role to a result. Usage caps switch Claude accounts as before. Transient provider
+   *  failures retry three times, then planner/researcher/QA can continue on an enabled CLI backend. */
   private async runRole(
     thread: Thread,
     role: "planner" | "researcher" | "qa" | "reader",
@@ -1709,17 +1723,47 @@ export class ThreadManager implements OrchestratorApi {
     let acct = this.dispatchAccount();
     let resume: string | undefined = initialResume;
     let message: string | unknown[] = kickoff;
-    for (let attempt = 0; attempt <= MAX_ACCOUNT_FAILOVERS; attempt++) {
-      // Resolve the model from the account this role will actually run on — a per-subscription override,
-      // else the global default, else the built-in. Re-resolved each attempt so a failover to another
-      // account picks up that account's model too.
-      const model = this.modelFor(acct.id, role);
-      const run = this.db.createRun({ threadId: thread.id, role, model, account: acct.label });
+    let provider: ImplementorProvider = "claude";
+    let accountFailovers = 0;
+    let transientFailures = 0;
+    const unavailableProviders = new Set<ImplementorProvider>();
+
+    while (!this.cancelled(thread.id)) {
+      const model = provider === "codex" ? this.codexModel() : provider === "grok" ? this.grokModel() : this.modelFor(acct.id, role);
+      const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : acct.label;
+      const effort = provider === "codex" ? this.codexEffort() : provider === "grok" ? this.grokEffort() : undefined;
+      const run = this.db.createRun({ threadId: thread.id, role, model, account: accountLabel, effort });
       this.emitRun(run.id);
-      const cfg = makeCfg({ token: acct.token, resume, runId: run.id });
+      const cfg = makeCfg({ token: provider === "claude" ? acct.token : undefined, resume: provider === "claude" ? resume : undefined, runId: run.id });
       cfg.model = model;
-      const agent = new AgentRun(cfg);
-      this.wireRun(agent, thread.id, run.id, role, acct.id);
+      let agent: AgentRunLike;
+      let startMessage: string | unknown[] = message;
+      let accountId = acct.id;
+      if (provider === "codex") {
+        accountId = "openai-codex";
+        if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Codex");
+        agent = new CodexAgentRun({
+          model,
+          effort: this.codexEffort(),
+          cwd: thread.workspace,
+          apiKey: this.openaiApiKey() ?? "",
+          resume,
+          outputSchema: cfg.outputFormat?.schema,
+        });
+      } else if (provider === "grok") {
+        accountId = "xai-grok";
+        if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Grok");
+        agent = new GrokAgentRun({
+          model,
+          effort: this.grokEffort(),
+          cwd: thread.workspace,
+          resume,
+          outputSchema: cfg.outputFormat?.schema,
+        });
+      } else {
+        agent = new AgentRun(cfg);
+      }
+      this.wireRun(agent, thread.id, run.id, role, accountId);
       this.track(thread.id, agent);
       this.officeCheckIn(thread.id, role);
       this.ensureGroup(thread.id);
@@ -1730,7 +1774,7 @@ export class ThreadManager implements OrchestratorApi {
       // (Researcher-phase notes flow forward into the implementor's kickoff instead.)
       if (role === "planner") this.liveRole.set(thread.id, agent);
       if (role === "qa") this.liveQa.set(thread.id, agent);
-      agent.start(message);
+      agent.start(startMessage);
       let res = await agent.result();
       if (role === "planner" && res && !res.isError) res = await this.drainDirectorNotes(thread, agent, res);
       if (role === "planner") this.liveRole.delete(thread.id);
@@ -1738,7 +1782,58 @@ export class ThreadManager implements OrchestratorApi {
       await agent.stop();
       this.untrack(thread.id, agent);
       this.finishRun(run.id, res, agent);
-      if ((res && !res.isError) || this.cancelled(thread.id) || !agent.rateLimited) return res;
+      if ((res && !res.isError) || this.cancelled(thread.id)) return res;
+
+      if (agent.transientApiError) {
+        transientFailures++;
+        if (transientFailures < MAX_TRANSIENT_API_FAILURES) {
+          await this.waitForTransientRetry(thread, role, transientFailures, provider);
+          resume = agent.sessionId;
+          message = resume
+            ? `The ${providerLabel(provider)} API returned a temporary server error. Retry the interrupted work now and continue exactly where you left off.`
+            : kickoff;
+          continue;
+        }
+        unavailableProviders.add(provider);
+        // The read-only reader depends on harness-enforced MCP/tool restrictions and post_finding, which
+        // the CLI adapters cannot provide. Other structured roles can safely use their schema adapters.
+        const next: ImplementorProvider | undefined = role === "reader" ? undefined : this.nextReadyImplementor(provider, unavailableProviders);
+        if (!next) return res;
+        const fromName = providerLabel(provider);
+        const toName = providerLabel(next);
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: role,
+          summary: `${fromName} API failed ${MAX_TRANSIENT_API_FAILURES} times — switched ${role} to ${toName}`,
+          detail: `${agent.transientApiErrorMessage ?? "The provider returned repeated temporary server errors."} The ${role} stage is continuing on ${toName}.`,
+          severity: "warning",
+        });
+        this.notifyExternal(`↪ ${role} hit repeated ${fromName} API errors — continuing "${thread.title}" on ${toName}.`);
+        provider = next;
+        transientFailures = 0;
+        accountFailovers = 0;
+        resume = undefined;
+        message = prependUserContent(kickoff, `[Provider outage handoff]\n${fromName} failed ${MAX_TRANSIENT_API_FAILURES} consecutive times. Continue this ${role} stage on ${toName} and complete it fully.`);
+        continue;
+      }
+
+      if (provider !== "claude") {
+        const capped = (agent instanceof CodexAgentRun || agent instanceof GrokAgentRun) && agent.capped;
+        if (!capped) return res;
+        if (provider === "codex") this.noteCodexCap();
+        else this.noteGrokCap();
+        unavailableProviders.add(provider);
+        const next = this.nextReadyImplementor(provider, unavailableProviders);
+        if (!next) return res;
+        provider = next;
+        transientFailures = 0;
+        accountFailovers = 0;
+        resume = undefined;
+        message = prependUserContent(kickoff, `[Provider usage-limit handoff]\nContinue this ${role} stage on ${providerLabel(next)} and complete it fully.`);
+        continue;
+      }
+
+      if (!agent.rateLimited) return res;
       // A rejection on a model with its OWN metered pool (Fable) while this account's normal windows
       // still have headroom isn't an account cap — another sub's Fable pool is just as gated, and
       // parking would idle a sub with headroom. Relaunch on the SAME account: modelFor resolves the
@@ -1746,7 +1841,6 @@ export class ThreadManager implements OrchestratorApi {
       if (await this.modelCapFallback(thread, role, model, acct, agent)) {
         resume = agent.sessionId ?? resume;
         message = MODEL_FALLBACK_CONTINUE_MSG;
-        attempt--; // the model fallback isn't an account switch — don't spend an account-failover slot on it
         continue; // bounded: the latched pool makes modelFor resolve the fallback next pass, which has no fallback of its own
       }
       const next = this.failoverAccount(acct.id);
@@ -1756,14 +1850,16 @@ export class ThreadManager implements OrchestratorApi {
         if (role === "qa") this.capParked.set(thread.id, "qa");
         return res;
       }
+      if (accountFailovers >= MAX_ACCOUNT_FAILOVERS) {
+        if (role === "qa") this.capParked.set(thread.id, "qa");
+        return res;
+      }
       this.logFailover(thread, role, next.label, agent.rateLimitInfo);
       acct = next;
+      accountFailovers++;
       resume = agent.sessionId;
       message = "Your session was switched to another account after a usage limit. Continue exactly where you left off and finish.";
     }
-    // Loop exhausted MAX_ACCOUNT_FAILOVERS via repeated cap-failovers (the only fall-through path). For
-    // QA — the one runRole role whose cap parks the task — flag it so the settle tags it for the supervisor.
-    if (role === "qa") this.capParked.set(thread.id, "qa");
     return undefined;
   }
 
@@ -2125,14 +2221,41 @@ export class ThreadManager implements OrchestratorApi {
   private async awaitImplementorResult(
     thread: Thread,
     effort: Effort | undefined,
+    kickoff: string,
     current: AgentRunLike,
     currentAccountId: string,
     useNext: boolean,
     continueMsg: string,
   ): Promise<ResultEvent | undefined> {
-    for (let attempt = 0; attempt <= MAX_ACCOUNT_FAILOVERS; attempt++) {
+    let accountFailovers = 0;
+    let transientFailures = 0;
+    while (accountFailovers <= MAX_ACCOUNT_FAILOVERS) {
       const res = useNext ? await current.nextResult() : await current.result();
-      if ((res && !res.isError) || this.cancelled(thread.id) || !current.rateLimited) return res;
+      if ((res && !res.isError) || this.cancelled(thread.id)) return res;
+
+      // 500/529/overload/transport failures are provider incidents, not quota. Retry the SAME provider
+      // twice (three consecutive failures total) and preserve its session whenever one was established.
+      // The enclosing completion layer switches backend after the third failure.
+      if (current.transientApiError) {
+        transientFailures++;
+        if (transientFailures >= MAX_TRANSIENT_API_FAILURES) return res;
+        const provider = this.providerForRun(current);
+        await this.waitForTransientRetry(thread, "implementor", transientFailures, provider);
+        await current.stop();
+        if (this.cancelled(thread.id)) return res;
+        const session = current.sessionId ?? this.lastImplementorSession.get(thread.id);
+        const acct = provider === "claude" ? this.acctById(currentAccountId) ?? undefined : undefined;
+        const retryMessage = `The ${providerLabel(provider)} API returned a temporary server error. Retry the interrupted work now and continue exactly where you left off.`;
+        const relaunch = session
+          ? this.startImplementor(thread, retryMessage, { resume: session, effort, account: acct })
+          : this.startImplementor(thread, `${kickoff}\n\n${retryMessage}`, { effort, account: acct });
+        current = relaunch.run;
+        currentAccountId = relaunch.accountId;
+        useNext = false;
+        continue;
+      }
+
+      if (!current.rateLimited) return res;
       // A Fable-pool rejection with normal-window headroom relaunches on the SAME account — modelFor
       // resolves the fallback model now that classifyCap latched the pool limit (see modelCapFallback).
       // acctById is null for the Codex pseudo-account, so a Codex cap can never take this branch. The
@@ -2155,7 +2278,6 @@ export class ThreadManager implements OrchestratorApi {
         current = relaunch.run;
         currentAccountId = relaunch.accountId;
         useNext = false;
-        attempt--; // the model fallback isn't an account switch — don't spend an account-failover slot on it
         continue; // bounded: the relaunch's run row records the fallback model, which has no fallback of its own
       }
       // Rate-limited: fail over to another account, or give up to "review" (return undefined so the
@@ -2172,6 +2294,7 @@ export class ThreadManager implements OrchestratorApi {
       current = relaunch.run;
       currentAccountId = relaunch.accountId;
       useNext = false;
+      accountFailovers++;
     }
     // Reaching here means the loop exhausted MAX_ACCOUNT_FAILOVERS via repeated cap-failovers (the only
     // path that falls through — every other outcome returns inside the loop). Each fresh account also
@@ -2204,8 +2327,9 @@ export class ThreadManager implements OrchestratorApi {
     useNext: boolean,
     continueMsg: string,
     qaFollows = true, // false on a manual resume (no QA loop follows), so nudges/seeds don't promise QA
+    unavailableProviders: Set<ImplementorProvider> = new Set(),
   ): Promise<ResultEvent | undefined> {
-    let res = await this.awaitImplementorResult(thread, effort, run, accountId, useNext, continueMsg);
+    let res = await this.awaitImplementorResult(thread, effort, kickoff, run, accountId, useNext, continueMsg);
     let current = run;
     while (
       (this.isTurnLimitStop(res) || this.implementorStalled(thread.id, res)) &&
@@ -2240,7 +2364,49 @@ export class ThreadManager implements OrchestratorApi {
       if (!start) break; // cancelled while compressing the prior session
       this.flushDirectorNotes(thread.id, start.run);
       current = start.run;
-      res = await this.awaitImplementorResult(thread, effort, start.run, start.accountId, false, nudge);
+      res = await this.awaitImplementorResult(thread, effort, kickoff, start.run, start.accountId, false, nudge);
+    }
+    // Three consecutive transient API failures exhausted the same-provider retries. Hand the task to
+    // another enabled backend from the durable working-tree state. Track failed providers through the
+    // recursive handoff so a multi-provider outage is bounded instead of ping-ponging forever.
+    const failedRun = this.live.get(thread.id)?.run ?? current;
+    if (res?.isError && failedRun.transientApiError && !this.cancelled(thread.id)) {
+      const from = this.providerForRun(failedRun);
+      unavailableProviders.add(from);
+      const next = this.nextReadyImplementor(from, unavailableProviders);
+      await failedRun.stop();
+      if (next) {
+        this.implementorProvider.set(thread.id, next);
+        const fromName = providerLabel(from);
+        const toName = providerLabel(next);
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "implementor",
+          summary: `${fromName} API failed ${MAX_TRANSIENT_API_FAILURES} times — switched this task to ${toName}`,
+          detail: `${failedRun.transientApiErrorMessage ?? "The provider returned repeated temporary server errors."} The task is continuing on ${toName} from the current working-tree state.`,
+          severity: "warning",
+        });
+        this.notifyExternal(`↪ ${fromName} API errors persisted — continuing "${thread.title}" on ${toName}.`);
+        const seed = await this.composeResumeKickoff(thread, kickoff, undefined, {
+          directorNote: `${fromName} returned ${MAX_TRANSIENT_API_FAILURES} consecutive temporary API errors, so you're taking over on ${toName}. Review the existing working-tree progress and finish the task completely.`,
+          qaFollows,
+        });
+        if (!this.cancelled(thread.id)) {
+          const relaunch = this.startImplementor(thread, seed, { effort });
+          return this.awaitImplementorCompletion(
+            thread,
+            effort,
+            kickoff,
+            relaunch.run,
+            relaunch.accountId,
+            false,
+            continueMsg,
+            qaFollows,
+            unavailableProviders,
+          );
+        }
+      }
+      return res;
     }
     // A CLI implementor backend (Codex or Grok) hit its usage cap mid-run → fail OVER to another ready
     // backend rather than parking (a CLI has no account-headroom of its own to fail over to). Its session
@@ -2279,7 +2445,7 @@ export class ThreadManager implements OrchestratorApi {
         });
         if (!this.cancelled(thread.id)) {
           const relaunch = this.startImplementor(thread, seed, { effort });
-          res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg, qaFollows);
+          res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg, qaFollows, unavailableProviders);
         }
       }
     }
@@ -2317,7 +2483,7 @@ export class ThreadManager implements OrchestratorApi {
         });
         if (!this.cancelled(thread.id)) {
           const relaunch = this.startImplementor(thread, seed, { effort });
-          res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg, qaFollows);
+          res = await this.awaitImplementorCompletion(thread, effort, kickoff, relaunch.run, relaunch.accountId, false, continueMsg, qaFollows, unavailableProviders);
         }
       }
     }
@@ -2533,7 +2699,7 @@ export class ThreadManager implements OrchestratorApi {
 
     for (let round = 1; round <= pipe.maxQaRounds; round++) {
       if (this.cancelled(thread.id)) return;
-      if (!res) {
+      if (!res || res.isError) {
         this.settleReview(thread.id, "Implementor ended without completing — needs your review.");
         return;
       }
@@ -4035,6 +4201,49 @@ function deliverablesCheckBlock(unsurfacedArtifacts: string[]): string {
 function formatQaIssues(qa: QaOutput): string {
   const lines = (qa.issues ?? []).map((i) => `- [${i.severity ?? "issue"}] ${i.description}${i.location ? ` (${i.location})` : ""}`);
   return (qa.summary ? `${qa.summary}\n` : "") + (lines.length ? lines.join("\n") : "(see QA summary)");
+}
+
+function prependUserContent(content: string | unknown[], note: string): string | unknown[] {
+  if (typeof content === "string") return `${note}\n\n${content}`;
+  return [{ type: "text", text: note }, ...content];
+}
+
+/** Turn a Claude structured-role config into a self-contained CLI kickoff. CLI backends cannot attach
+ * the in-process bus MCP servers, but they can perform the role's core repo/web/test work and both expose
+ * structured-output adapters. The prompt preserves the original system doctrine and schema contract. */
+function cliRoleKickoff(
+  cfg: AgentRunConfig,
+  content: string | unknown[],
+  role: "planner" | "researcher" | "qa" | "reader",
+  provider: "Codex" | "Grok",
+): string | unknown[] {
+  const system =
+    typeof cfg.systemPrompt === "string"
+      ? cfg.systemPrompt
+      : cfg.systemPrompt && typeof cfg.systemPrompt === "object"
+        ? cfg.systemPrompt.append ?? ""
+        : "";
+  const schema = cfg.outputFormat?.schema;
+  const safety =
+    role === "qa"
+      ? "You are a reviewer: inspect and run checks, but do not edit the implementation."
+      : role === "planner"
+        ? "Plan only: inspect the repository, but do not edit it."
+        : role === "researcher"
+          ? "Research external sources only; do not edit the repository."
+          : "Remain read-only.";
+  const prelude = [
+    `[Temporary provider fallback: run the ${role} role on ${provider}.]`,
+    system,
+    safety,
+    "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the core role directly; do not invent tool calls.",
+    schema
+      ? `Your final response MUST be only one JSON object matching this exact JSON Schema (no prose outside it):\n${JSON.stringify(schema)}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return prependUserContent(content, prelude);
 }
 
 /** Human label for an implementor backend, for the failover findings/notices. */

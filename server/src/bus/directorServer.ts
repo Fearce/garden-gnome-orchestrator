@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { OrchestratorApi } from "../orchestrator/api.js";
+import type { Scheduler } from "../orchestrator/scheduler.js";
 import type { ImageAttachment } from "../types.js";
 import { DIRECTOR_SERVER } from "../agents/toolNames.js";
 import { existsSync } from "node:fs";
@@ -17,6 +18,7 @@ export function createDirectorServer(
   api: OrchestratorApi,
   getImages: () => ImageAttachment[],
   onDispatch: (threadId: string) => void,
+  scheduler: Scheduler,
 ): McpServerConfig {
   const askUser = tool(
     "ask_user",
@@ -212,9 +214,82 @@ export function createDirectorServer(
     },
   );
 
+  const cronHelp =
+    "5-field cron (minute hour day-of-month month day-of-week), server-local time. Examples: '0 9 * * *' = every day 09:00; '*/30 * * * *' = every 30 min; '0 8 * * 1-5' = 08:00 on weekdays; '0 0 1 * *' = midnight on the 1st.";
+
+  const createScheduledTask = tool(
+    "create_scheduled_task",
+    `Create a RECURRING task: a prompt that runs in a target repo on a cron schedule. Each fire dispatches a normal task through the full pipeline (planner→implementor→QA), using whatever provider/model is active — just like a one-off dispatch, but automatic. Use this when ${config.ownerName} asks to run something on a schedule ("every morning", "nightly", "each Monday"). Resolve the repo path first (find_workspace) if you don't have it. ${cronHelp}`,
+    {
+      title: z.string().describe("Short title for each dispatched run (the board-lane label)."),
+      workspace: z.string().describe("Absolute path of the EXISTING repo/dir the prompt runs in."),
+      prompt: z.string().describe(`The brief handed to the pipeline on each run — write it as a complete standalone task, since it runs unattended with no further clarification from ${config.ownerName}.`),
+      cron: z.string().describe(`The cron schedule. ${cronHelp}`),
+      enabled: z.boolean().default(true).describe("Whether it starts active (default true)."),
+      effort: z.enum(["low", "medium", "high", "max"]).optional().describe("Optional implementor effort for each run; omit to let the planner decide."),
+    },
+    async (args) => {
+      if (!existsSync(args.workspace)) {
+        return { content: [{ type: "text", text: `Workspace "${args.workspace}" does not exist on disk. Confirm the exact absolute path with ${config.ownerName} and retry.` }], isError: true };
+      }
+      const r = scheduler.create({ title: args.title, workspace: args.workspace, prompt: args.prompt, cron: args.cron, enabled: args.enabled, effort: args.effort });
+      if (!r.ok || !r.schedule) return { content: [{ type: "text", text: `Could not create the scheduled task: ${r.error}` }], isError: true };
+      const next = r.schedule.nextRunAt ? new Date(r.schedule.nextRunAt).toLocaleString() : "—";
+      return { content: [{ type: "text", text: `Created scheduled task "${r.schedule.title}" (${r.schedule.cron}) in ${r.schedule.workspace}. Next run: ${next}.` }] };
+    },
+  );
+
+  const listScheduledTasks = tool(
+    "list_scheduled_tasks",
+    "List all recurring/scheduled tasks with their schedule, whether they're enabled, and the next run time — so you can report on or reference one before editing it.",
+    {},
+    async () => {
+      const list = scheduler.list();
+      if (!list.length) return { content: [{ type: "text", text: "No scheduled tasks." }] };
+      const text = list
+        .map((s) => `- ${s.id} ${s.enabled ? "[on]" : "[off]"} "${s.title}" (${s.cron}) @ ${s.workspace}${s.nextRunAt ? ` — next ${new Date(s.nextRunAt).toLocaleString()}` : ""}`)
+        .join("\n");
+      return { content: [{ type: "text", text }] };
+    },
+  );
+
+  const updateScheduledTask = tool(
+    "update_scheduled_task",
+    `Edit an existing scheduled task — change its prompt, schedule (cron), target repo, effort, or enable/disable it. Pass only the fields you want to change (get the id from list_scheduled_tasks). ${cronHelp}`,
+    {
+      id: z.string().describe("The scheduled task id (from list_scheduled_tasks)."),
+      title: z.string().optional(),
+      workspace: z.string().optional(),
+      prompt: z.string().optional(),
+      cron: z.string().optional().describe(cronHelp),
+      enabled: z.boolean().optional(),
+      effort: z.enum(["low", "medium", "high", "max"]).optional(),
+    },
+    async (args) => {
+      const { id, ...patch } = args;
+      if (patch.workspace && !existsSync(patch.workspace)) {
+        return { content: [{ type: "text", text: `Workspace "${patch.workspace}" does not exist on disk.` }], isError: true };
+      }
+      const r = scheduler.update(id, patch);
+      if (!r.ok || !r.schedule) return { content: [{ type: "text", text: `Could not update: ${r.error}` }], isError: true };
+      const next = r.schedule.nextRunAt ? new Date(r.schedule.nextRunAt).toLocaleString() : "—";
+      return { content: [{ type: "text", text: `Updated "${r.schedule.title}" (${r.schedule.cron}), ${r.schedule.enabled ? "enabled" : "disabled"}. Next run: ${next}.` }] };
+    },
+  );
+
+  const deleteScheduledTask = tool(
+    "delete_scheduled_task",
+    "Delete a scheduled task permanently (get its id from list_scheduled_tasks). This stops all future runs; tasks it already dispatched are unaffected.",
+    { id: z.string() },
+    async (args) => {
+      const r = scheduler.remove(args.id);
+      return { content: [{ type: "text", text: r.ok ? `Deleted scheduled task ${args.id}.` : `Could not delete: ${r.error}` }], isError: !r.ok };
+    },
+  );
+
   return createSdkMcpServer({
     name: DIRECTOR_SERVER,
     version: "0.1.0",
-    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, readFindings],
+    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, readFindings, createScheduledTask, listScheduledTasks, updateScheduledTask, deleteScheduledTask],
   });
 }

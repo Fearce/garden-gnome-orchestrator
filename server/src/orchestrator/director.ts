@@ -7,6 +7,7 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { AgentEvent, DirectorMessage, ImageAttachment } from "../types.js";
 import type { ThreadManager } from "./threadManager.js";
+import type { Scheduler } from "./scheduler.js";
 import type { Account } from "../accounts/account.js";
 import { untilReset } from "../accounts/accountManager.js";
 import { config, fallbackModelFor } from "../config.js";
@@ -45,6 +46,7 @@ export class Director {
     private readonly api: ThreadManager,
     private readonly db: Db,
     private readonly hub: EventHub,
+    private readonly scheduler: Scheduler,
   ) {}
 
   handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice"): void {
@@ -95,6 +97,13 @@ export class Director {
    * what was sent; the long-lived Sonnet session is left completely untouched.
    */
   async dispatchDirect(text: string, workspace?: string, images?: ImageAttachment[]): Promise<void> {
+    // Skip-director sends a one-off prompt straight to the pipeline — but a request to CREATE a recurring
+    // schedule needs the director, which owns the scheduling tools. So even with skip-director on, route a
+    // scheduling ask to the director instead of dispatching it as a normal task (owner requirement).
+    if (looksLikeScheduleRequest(text)) {
+      this.handleUserMessage(text, workspace, images);
+      return;
+    }
     const refs = (images ?? []).map((img) =>
       this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
     );
@@ -142,7 +151,7 @@ export class Director {
     const director = createDirectorServer(this.api, () => this.pendingImages, (threadId) => {
       this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId);
       this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
-    });
+    }, this.scheduler);
     const memory = createMemoryServer(this.api.memory);
     const cfg = directorConfig({ director, memory }, this.api.directorName());
     const acct = account ?? this.api.accounts.select().account;
@@ -316,6 +325,24 @@ export class Director {
  *  director must talk like a person and get a spoken go-ahead before dispatching. */
 function voiceNote(): string {
   return `[VOICE — ${config.ownerName} spoke this aloud and your reply will be read out by TTS in a live back-and-forth conversation. Answer like you're talking: brief plain sentences, no markdown, no lists, no code, no file paths. Talk the idea through with them and get a spoken go-ahead before dispatching a task; a "yeah"/"sure"/"go ahead" means dispatch now without re-asking. Skip this only when they explicitly say to dispatch immediately.]`;
+}
+
+/** Whether a skip-director message is asking to set up a RECURRING/scheduled task (as opposed to a
+ *  one-off). Deliberately conservative — it keys on explicit scheduling language ("schedule", "cron",
+ *  "recurring", or "every/each <time-unit>", or a bare "daily/hourly/weekly/…") so an ordinary task like
+ *  "fix every bug" never trips it. When it matches under skip-director, the message is handed to the
+ *  director (which owns the create_scheduled_task tool) rather than dispatched straight. */
+export function looksLikeScheduleRequest(text: string): boolean {
+  const t = text.toLowerCase();
+  const unit = "(?:morning|night|evening|day|hour|week|month|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|min(?:ute)?s?|hours?|days?|weeks?)";
+  return (
+    /\bsched(?:ul)?e[ds]?\b/.test(t) ||
+    /\bcron\b/.test(t) ||
+    /\brecurr(?:ing|ence)\b/.test(t) ||
+    /\bperiodically\b/.test(t) ||
+    /\b(?:daily|hourly|weekly|nightly|monthly)\b/.test(t) ||
+    new RegExp(`\\b(?:every|each)\\s+(?:\\d+\\s+)?${unit}`).test(t)
+  );
 }
 
 /** A board-lane title from a raw skip-director message: first non-empty line, trimmed to a short label. */

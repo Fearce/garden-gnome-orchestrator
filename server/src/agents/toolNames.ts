@@ -32,6 +32,10 @@ export const T = {
   inject: `mcp__${DIRECTOR_SERVER}__inject`,
   interruptThread: `mcp__${DIRECTOR_SERVER}__interrupt_thread`,
   readFindingsAll: `mcp__${DIRECTOR_SERVER}__read_findings`,
+  createScheduledTask: `mcp__${DIRECTOR_SERVER}__create_scheduled_task`,
+  listScheduledTasks: `mcp__${DIRECTOR_SERVER}__list_scheduled_tasks`,
+  updateScheduledTask: `mcp__${DIRECTOR_SERVER}__update_scheduled_task`,
+  deleteScheduledTask: `mcp__${DIRECTOR_SERVER}__delete_scheduled_task`,
 } as const;
 
 export const BUS_TOOLS = [T.postFinding, T.postDeliverable, T.readFindings, T.notifyThread, T.busAskUser];
@@ -52,4 +56,8 @@ export const DIRECTOR_TOOLS = [
   T.inject,
   T.interruptThread,
   T.readFindingsAll,
+  T.createScheduledTask,
+  T.listScheduledTasks,
+  T.updateScheduledTask,
+  T.deleteScheduledTask,
 ];

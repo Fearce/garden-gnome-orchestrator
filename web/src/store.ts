@@ -9,6 +9,7 @@ import type {
   ChatRoomSummary,
   ClientCommand,
   DirectorItem,
+  Effort,
   DirectorMessage,
   FeedItem,
   Finding,
@@ -20,6 +21,7 @@ import type {
   OrchestratorSettings,
   Question,
   Role,
+  ScheduledTask,
   ServerEvent,
   SettingsPatch,
   Thread,
@@ -119,6 +121,10 @@ interface State {
   // dismissible banner. Null when none/dismissed; only the most recent is held (a new one replaces an open
   // banner). `level` drives the banner's tone (warn = amber alert, info = neutral).
   notice: { level: "info" | "warn"; title: string; message: string } | null;
+  // Recurring/scheduled tasks (server-authoritative, broadcast over WS). Managed from the Scheduled Tasks
+  // view; `boardView` toggles the center pane between the live task board and that view.
+  schedules: ScheduledTask[];
+  boardView: "tasks" | "schedules";
 
   select: (id: string | null) => void;
   // Search the whole director conversation (across every task) for a substring, or clear the search.
@@ -164,6 +170,13 @@ interface State {
   postChat: (room: string, body: string) => void;
   // Dismiss the current notice banner.
   clearNotice: () => void;
+  // Scheduled tasks: switch the center pane, and CRUD the recurring dispatches (server is authoritative —
+  // each mutation is optimism-free and reconciled by the `schedules` broadcast).
+  setBoardView: (v: "tasks" | "schedules") => void;
+  createSchedule: (input: { title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null }) => void;
+  updateSchedule: (id: string, patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null }) => void;
+  deleteSchedule: (id: string) => void;
+  runSchedule: (id: string) => void;
   // Flag that a fresh web build is available (set by version.ts when the served bundle hash changes).
   setUpdateReady: (v: boolean) => void;
   // Record the latest git-update poll result (set by update.ts).
@@ -399,6 +412,8 @@ export const useStore = create<State>((set) => ({
   nameOverrides: {},
   officeRoom: null,
   notice: null,
+  schedules: [],
+  boardView: "tasks",
 
   select: (id) => {
     set({ selectedThreadId: id });
@@ -521,6 +536,11 @@ export const useStore = create<State>((set) => ({
     if (text) sendCommand({ type: "chat.post", room, body: text });
   },
   clearNotice: () => set({ notice: null }),
+  setBoardView: (v) => set({ boardView: v }),
+  createSchedule: (input) => sendCommand({ type: "schedule.create", ...input }),
+  updateSchedule: (id, patch) => sendCommand({ type: "schedule.update", id, patch }),
+  deleteSchedule: (id) => sendCommand({ type: "schedule.delete", id }),
+  runSchedule: (id) => sendCommand({ type: "schedule.run", id }),
   setUpdateReady: (v) => set({ updateReady: v }),
   setGitUpdate: (v) => set({ gitUpdate: v }),
   applyGitUpdate: async () => {
@@ -650,7 +670,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}) });
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
@@ -674,6 +694,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "accounts":
       useStore.setState({ accounts: ev.accounts });
+      break;
+    case "schedules":
+      useStore.setState({ schedules: ev.schedules });
       break;
     case "chat.message":
       useStore.setState((s) => {

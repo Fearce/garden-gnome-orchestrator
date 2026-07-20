@@ -108,6 +108,25 @@ CREATE TABLE IF NOT EXISTS kv (
   value TEXT NOT NULL
 );
 
+-- Recurring dispatches: one row per schedule. Each fire creates a normal thread via the standard
+-- pipeline (so it uses whatever provider/model is active), then next_run_at is recomputed from the
+-- cron string. No FK: last_thread_id is a soft jump-target link that's allowed to dangle if the task
+-- it points at is purged.
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+  id             TEXT PRIMARY KEY,
+  title          TEXT NOT NULL,
+  workspace      TEXT NOT NULL,
+  prompt         TEXT NOT NULL,
+  cron           TEXT NOT NULL,
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  effort         TEXT,
+  last_run_at    INTEGER,
+  next_run_at    INTEGER,
+  last_thread_id TEXT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+);
+
 -- The office: cross-agent chat. A row is one message in a room ('general' or 'repo:<normalized>').
 -- thread_id is nullable (room-level system notices), with NO FK so a row survives its task's purge —
 -- the conversation is the durable record of a collaboration, kept even after the tasks close.

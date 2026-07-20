@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
-import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "./runner.js";
+import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 import { parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
 
 export interface CodexRunConfig {
@@ -258,6 +258,8 @@ export class CodexAgentRun implements AgentRunLike {
   // (5h/weekly limit hit), which the pipeline uses to fail the task OVER to the Claude backend.
   rateLimited = false;
   rateLimitInfo: RateLimitInfo | undefined;
+  transientApiError = false;
+  transientApiErrorMessage: string | undefined;
   capped = false;
 
   private child: ChildProcess | undefined;
@@ -602,13 +604,17 @@ export class CodexAgentRun implements AgentRunLike {
         this.sawTerminal = true;
         const msg = ev.error?.message ?? this.lastErrorMsg ?? "Codex turn failed.";
         if (RATE_LIMIT_RE.test(msg)) this.markCapped();
+        else this.markTransientApiError(msg);
         this.pendingTerminalResult = { subtype: "error", isError: true, result: msg };
         break;
       }
       case "error":
         // Transient transport errors ("Reconnecting…") — not fatal on their own; remember the text so a
         // turn that dies without turn.failed still surfaces a reason.
-        if (ev.message) this.lastErrorMsg = ev.message.slice(0, 500);
+        if (ev.message) {
+          this.lastErrorMsg = ev.message.slice(0, 500);
+          this.markTransientApiError(ev.message);
+        }
         break;
       case "item.started":
         this.handleItem(ev.item, "started");
@@ -673,6 +679,13 @@ export class CodexAgentRun implements AgentRunLike {
   private markCapped(): void {
     this.capped = true;
     this.rateLimitInfo = { status: "rejected" };
+  }
+
+  private markTransientApiError(value: unknown): void {
+    const info = transientApiErrorInfo(value);
+    if (!info || this.transientApiError) return;
+    this.transientApiError = true;
+    this.transientApiErrorMessage = info.message;
   }
 
   /** Emit the per-turn result event (mirrors AgentRun's `result` SDK message) and cache it. */
@@ -741,6 +754,7 @@ export class CodexAgentRun implements AgentRunLike {
       // The 5h/weekly cap often kills the turn instantly (429 on stderr, no turn.failed event) — the
       // "dies in ~2s" symptom. Flag it here too so the provider failover fires instead of parking.
       if (RATE_LIMIT_RE.test(msg)) this.markCapped();
+      else this.markTransientApiError(msg);
       this.finishTurn({ subtype: "error", isError: true, result: msg });
     } else if (this.pendingTerminalResult) {
       // Only publish completion once we know no buffered steering is chaining another turn. This keeps

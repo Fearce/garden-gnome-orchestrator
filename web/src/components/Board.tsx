@@ -20,6 +20,7 @@ import { closesInDays, freezeTooltip, isCapParked, isClosable, isSuccessfulClose
 import { Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
+import { ScheduledTasks } from "./ScheduledTasks.js";
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -98,6 +99,7 @@ function orderByManual(active: Thread[], order: string[]): Thread[] {
 
 export function Board() {
   const threads = useStore((s) => s.threads);
+  const boardView = useStore((s) => s.boardView);
   const showCompleted = useStore((s) => s.showCompleted);
   const dndEnabled = useStore((s) => s.taskDragAndDrop);
   const taskSort = useStore((s) => s.taskSort);
@@ -192,53 +194,90 @@ export function Board() {
     </div>
   );
 
+  const schedulesView = boardView === "schedules";
   return (
     <main className={"board" + (frozen ? " frozen" : "")}>
       <div className="board-head">
-        <h2>Tasks</h2>
-        <div className="board-head-right">
-          <span className="faint mono" style={{ fontSize: 11 }}>
-            {list.length} total
-            {hiddenCompleted > 0 ? ` · ${hiddenCompleted} completed hidden` : ""}
-          </span>
-          {/* Always available — under DnD a pick re-seeds the manual order (applySort) instead of being hidden. */}
-          <SortMenu onPick={applySort} />
-        </div>
+        <BoardTabs />
+        {!schedulesView ? (
+          <div className="board-head-right">
+            <span className="faint mono" style={{ fontSize: 11 }}>
+              {list.length} total
+              {hiddenCompleted > 0 ? ` · ${hiddenCompleted} completed hidden` : ""}
+            </span>
+            {/* Always available — under DnD a pick re-seeds the manual order (applySort) instead of being hidden. */}
+            <SortMenu onPick={applySort} />
+          </div>
+        ) : null}
       </div>
-      {list.length === 0 ? (
-        <div className="empty">
-          <div className="big">No tasks running</div>
-          <div className="faint">Dispatch one from the Director on the left.</div>
-        </div>
+      {schedulesView ? (
+        <ScheduledTasks />
       ) : (
         <>
-          {dndEnabled ? (
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setActiveId(null)}>
-              <SortableContext items={pageItems.map((t) => t.id)} strategy={rectSortingStrategy}>
-                {lanes}
-              </SortableContext>
-              <DragOverlay>{activeThread ? <div className="card-drag-overlay"><Card thread={activeThread} draggableCard /></div> : null}</DragOverlay>
-            </DndContext>
-          ) : (
-            lanes
-          )}
-          {pageCount > 1 ? (
-            <div className="pager">
-              <button className="btn ghost sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={cur === 0}>
-                ‹ Prev
-              </button>
-              <span className="pager-info mono">
-                {cur * PER_PAGE + 1}–{Math.min((cur + 1) * PER_PAGE, list.length)} of {list.length} · page {cur + 1}/{pageCount}
-              </span>
-              <button className="btn ghost sm" onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={cur >= pageCount - 1}>
-                Next ›
-              </button>
+          {list.length === 0 ? (
+            <div className="empty">
+              <div className="big">No tasks running</div>
+              <div className="faint">Dispatch one from the Director on the left.</div>
             </div>
-          ) : null}
+          ) : (
+            <>
+              {dndEnabled ? (
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setActiveId(null)}>
+                  <SortableContext items={pageItems.map((t) => t.id)} strategy={rectSortingStrategy}>
+                    {lanes}
+                  </SortableContext>
+                  <DragOverlay>{activeThread ? <div className="card-drag-overlay"><Card thread={activeThread} draggableCard /></div> : null}</DragOverlay>
+                </DndContext>
+              ) : (
+                lanes
+              )}
+              {pageCount > 1 ? (
+                <div className="pager">
+                  <button className="btn ghost sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={cur === 0}>
+                    ‹ Prev
+                  </button>
+                  <span className="pager-info mono">
+                    {cur * PER_PAGE + 1}–{Math.min((cur + 1) * PER_PAGE, list.length)} of {list.length} · page {cur + 1}/{pageCount}
+                  </span>
+                  <button className="btn ghost sm" onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={cur >= pageCount - 1}>
+                    Next ›
+                  </button>
+                </div>
+              ) : null}
+            </>
+          )}
+          <ClosedSection threads={closed} />
         </>
       )}
-      <ClosedSection threads={closed} />
     </main>
+  );
+}
+
+/** The board's view switcher: the active view is a heading, the other a button. "Tasks" ⇄ "Scheduled
+ *  Tasks" per the owner's spec — click the inactive label to switch panes. */
+function BoardTabs() {
+  const boardView = useStore((s) => s.boardView);
+  const setBoardView = useStore((s) => s.setBoardView);
+  const schedules = useStore((s) => s.schedules.length);
+  const tasksActive = boardView === "tasks";
+  return (
+    <div className="board-tabs">
+      {tasksActive ? (
+        <h2>Tasks</h2>
+      ) : (
+        <button className="board-tab" onClick={() => setBoardView("tasks")} title="Back to the task board">
+          Tasks
+        </button>
+      )}
+      {tasksActive ? (
+        <button className="board-tab" onClick={() => setBoardView("schedules")} title="View and manage scheduled tasks">
+          Scheduled Tasks
+          {schedules > 0 ? <span className="board-tab-count">{schedules}</span> : null}
+        </button>
+      ) : (
+        <h2>Scheduled Tasks</h2>
+      )}
+    </div>
   );
 }
 

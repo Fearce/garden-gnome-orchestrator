@@ -59,6 +59,9 @@ export interface AgentRunLike {
   lastResult: ResultEvent | undefined;
   rateLimited: boolean;
   rateLimitInfo: RateLimitInfo | undefined;
+  /** The run ended on a retryable provider/transport failure (5xx, overload, timeout), not a usage cap. */
+  transientApiError: boolean;
+  transientApiErrorMessage: string | undefined;
   start(firstMessage: UserContent): this;
   onEvent(cb: (e: AgentEvent) => void): () => void;
   onEnd(cb: () => void): void;
@@ -156,6 +159,8 @@ export class AgentRun implements AgentRunLike {
   /** Set when this run's account was cap-rejected (5h/weekly) — the signal to fail over. */
   rateLimited = false;
   rateLimitInfo: RateLimitInfo | undefined;
+  transientApiError = false;
+  transientApiErrorMessage: string | undefined;
 
   private readonly input = new InputQueue();
   private q: Query | undefined;
@@ -276,13 +281,30 @@ export class AgentRun implements AgentRunLike {
     this.emit({ type: "rate_limit", info });
   }
 
+  private flagTransientApiError(value: unknown): void {
+    const info = transientApiErrorInfo(value);
+    if (!info || this.transientApiError) return;
+    this.transientApiError = true;
+    this.transientApiErrorMessage = info.message;
+  }
+
   private async consume(): Promise<void> {
     try {
       for await (const message of this.q as Query) {
         this.handle(message);
       }
     } catch (err) {
-      this.emit({ type: "error", message: errMessage(err) });
+      const message = errMessage(err);
+      this.flagTransientApiError(message);
+      this.emit({ type: "error", message });
+      // Transport/provider failures can throw before the SDK emits its normal result message. Synthesize
+      // one so the orchestration layer can apply its bounded retry/failover policy instead of seeing an
+      // ambiguous undefined result and parking the task.
+      if (this.transientApiError && !this.lastResult) {
+        const evt: ResultEvent = { type: "result", subtype: "error_during_execution", isError: true, result: message };
+        this.lastResult = evt;
+        this.emit(evt);
+      }
     } finally {
       this.finished = true;
       this.emitter.emit("end");
@@ -302,6 +324,7 @@ export class AgentRun implements AgentRunLike {
         const blocks: any[] = m.message?.content ?? [];
         for (const b of blocks) {
           if (b?.type === "text" && b.text) {
+            this.flagTransientApiError(b.text);
             // A cap can also surface as a plain assistant TEXT block the CLI injects
             // ("You've hit your session limit · resets 7pm") with no rate_limit_event and no
             // message-level error. Flag the cap and SWALLOW the text so the failover path runs
@@ -329,6 +352,7 @@ export class AgentRun implements AgentRunLike {
         // failover path still fires. (Not "overloaded": that's transient server load the SDK retries,
         // and switching accounts wouldn't help.)
         if (m.error === "rate_limit") this.flagCapFromSignal({ status: "rejected" });
+        else if (m.error) this.flagTransientApiError({ error: m.error, message: blocks.map((b) => b?.text ?? "").join(" ") });
         break;
       }
       case "stream_event": {
@@ -377,6 +401,7 @@ export class AgentRun implements AgentRunLike {
         // rather than a rate_limit_event / assistant error. Flag BEFORE emitting so the awaiting
         // failover path (which reads agent.rateLimited the moment result() resolves) sees it.
         if (evt.isError && resultLooksRateLimited(m)) this.flagCapFromSignal({ status: "rejected" });
+        if (evt.isError) this.flagTransientApiError(m);
         this.emit(evt);
         break;
       }
@@ -389,6 +414,43 @@ export class AgentRun implements AgentRunLike {
 function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+export interface TransientApiErrorInfo {
+  status?: number;
+  message: string;
+}
+
+const TRANSIENT_API_ERROR_RE =
+  /(?:(?:api\s*(?:error|status)?|http(?:\s+status)?)\s*[:=]?\s*(?:500|502|503|504|520|522|524|529)\b|overload(?:ed|_error)?|internal server error|service unavailable|bad gateway|gateway timeout|upstream (?:error|failure)|temporar(?:y|ily) unavailable|connection (?:reset|closed)|ECONNRESET|ETIMEDOUT|fetch failed|socket hang up)/i;
+
+/** Classify retryable provider/transport failures without conflating them with quota/auth/client errors. */
+export function transientApiErrorInfo(value: unknown): TransientApiErrorInfo | undefined {
+  const obj = value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+  const rawStatus = obj?.api_error_status ?? obj?.status ?? obj?.statusCode;
+  const status = typeof rawStatus === "number" ? rawStatus : typeof rawStatus === "string" ? Number(rawStatus) : undefined;
+  const stringify = (x: unknown): string | undefined => {
+    if (typeof x === "string") return x;
+    if (x == null) return undefined;
+    try {
+      return JSON.stringify(x);
+    } catch {
+      return String(x);
+    }
+  };
+  const parts = [
+    typeof value === "string" ? value : undefined,
+    stringify(obj?.message),
+    stringify(obj?.error),
+    stringify(obj?.result),
+    Array.isArray(obj?.errors) ? obj.errors.join(" ") : undefined,
+  ].filter((x): x is string => typeof x === "string" && !!x.trim());
+  const message = parts.join(" ").trim() || (status ? `API error ${status}` : "");
+  // 429 belongs to the existing usage-cap path. Other 4xx responses generally need operator action,
+  // not retries. Retry server-side 5xx errors and known transient transport wording.
+  if (status != null && status >= 500 && status <= 599) return { status, message };
+  if (TRANSIENT_API_ERROR_RE.test(message)) return { status: Number.isFinite(status) ? status : undefined, message };
+  return undefined;
 }
 
 const RATE_LIMIT_RESULT_RE =

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
-import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "./runner.js";
+import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 
 export interface GrokRunConfig {
   /** The Grok model to run, e.g. `grok-4.5`. */
@@ -149,6 +149,8 @@ export class GrokAgentRun implements AgentRunLike {
   // backend.
   rateLimited = false;
   rateLimitInfo: RateLimitInfo | undefined;
+  transientApiError = false;
+  transientApiErrorMessage: string | undefined;
   capped = false;
   // True once a wedged `--resume` self-healed to a fresh start. Read by the thread manager after the run
   // ends so it can stop attempting resume for this thread (resume keeps producing nothing → go fresh).
@@ -446,6 +448,7 @@ export class GrokAgentRun implements AgentRunLike {
         this.sawTerminal = true;
         const msg = ev.message ?? this.lastErrorMsg ?? "Grok turn failed.";
         if (RATE_LIMIT_RE.test(msg)) this.markCapped();
+        else this.markTransientApiError(msg);
         this.pendingTerminalResult = { subtype: "error", isError: true, result: msg };
         break;
       }
@@ -483,6 +486,13 @@ export class GrokAgentRun implements AgentRunLike {
   private markCapped(): void {
     this.capped = true;
     this.rateLimitInfo = { status: "rejected" };
+  }
+
+  private markTransientApiError(value: unknown): void {
+    const info = transientApiErrorInfo(value);
+    if (!info || this.transientApiError) return;
+    this.transientApiError = true;
+    this.transientApiErrorMessage = info.message;
   }
 
   private finishTurn(partial: { subtype: string; isError: boolean; result?: string; numTurns?: number; costUsd?: number; structuredOutput?: unknown }): void {
@@ -568,6 +578,7 @@ export class GrokAgentRun implements AgentRunLike {
     if (!this.sawTerminal) {
       const msg = this.lastErrorMsg ?? `Grok CLI exited with code ${code ?? "unknown"} before finishing the turn.`;
       if (RATE_LIMIT_RE.test(msg)) this.markCapped();
+      else this.markTransientApiError(msg);
       this.finishTurn({ subtype: "error", isError: true, result: msg });
     } else if (this.pendingTerminalResult) {
       this.finishTurn(this.pendingTerminalResult);

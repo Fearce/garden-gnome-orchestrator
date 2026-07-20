@@ -63,6 +63,27 @@ export interface Thread {
   updatedAt: number;
 }
 
+/**
+ * A recurring dispatch: a prompt run against a target repo on a cron schedule. Each fire creates a
+ * normal task (Thread) via the standard pipeline — so it uses whichever providers/models are active,
+ * exactly like a hand-dispatched task. Editable from the Scheduled Tasks view and via the director's
+ * scheduling tools. Persisted in the `scheduled_tasks` table; mirrored in web/src/types.ts.
+ */
+export interface ScheduledTask {
+  id: string;
+  title: string; // board-lane title used for each dispatched run
+  workspace: string; // target repo (absolute path) the prompt runs in
+  prompt: string; // the brief handed to the pipeline on each fire
+  cron: string; // 5-field cron expression (server-local time)
+  enabled: boolean; // off → the schedule is kept but never fires
+  effort?: Effort | null; // optional implementor effort override for each run; null = the planner decides
+  lastRunAt?: number | null; // epoch ms of the last fire, or null if it hasn't run yet
+  nextRunAt?: number | null; // epoch ms of the next fire while enabled, else null
+  lastThreadId?: string | null; // the task id created by the most recent fire (jump target in the UI)
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface AgentRun {
   id: string;
   threadId: string;

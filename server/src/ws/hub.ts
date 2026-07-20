@@ -4,6 +4,7 @@ import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { Director } from "../orchestrator/director.js";
+import type { Scheduler } from "../orchestrator/scheduler.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
 import { readCodexUsage } from "../agents/codexUsage.js";
 import { readGrokUsage } from "../agents/grokUsage.js";
@@ -17,6 +18,7 @@ export interface WsContext {
   manager: ThreadManager;
   director: Director;
   accounts: AccountManager;
+  scheduler: Scheduler;
 }
 
 const STREAMING_EVENTS = new Set(["agent.delta", "agent.thinking", "director.delta"]);
@@ -56,6 +58,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     chat: ctx.db.listRecentChat(SNAPSHOT_CHAT),
     chatRooms: ctx.db.listProjectRooms(),
     nameOverrides: ctx.manager.officeNameOverrides(),
+    schedules: ctx.scheduler.list(),
   };
 }
 
@@ -191,6 +194,18 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     }
     case "chat.post":
       ctx.manager.directorChatPost(cmd.room, cmd.body);
+      break;
+    case "schedule.create":
+      ctx.scheduler.create({ title: cmd.title, workspace: cmd.workspace, prompt: cmd.prompt, cron: cmd.cron, enabled: cmd.enabled, effort: cmd.effort ?? null });
+      break;
+    case "schedule.update":
+      ctx.scheduler.update(cmd.id, cmd.patch);
+      break;
+    case "schedule.delete":
+      ctx.scheduler.remove(cmd.id);
+      break;
+    case "schedule.run":
+      await ctx.scheduler.runNow(cmd.id);
       break;
     case "snapshot.request":
       send(socket, buildHello(ctx));
