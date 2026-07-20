@@ -129,14 +129,21 @@ export function sevColor(sev: string): string {
   }
 }
 
-export function ago(ts: number): string {
-  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+/** Compact "time since `ts`" measured from an explicit `nowMs`, so a ticking clock — not a fresh
+ *  `Date.now()` per call — drives the cadence and every card on a board reads the same instant:
+ *  "45s", "12m", "3h", "2d". */
+export function since(nowMs: number, ts: number): string {
+  const s = Math.max(0, Math.floor((nowMs - ts) / 1000));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
+}
+
+export function ago(ts: number): string {
+  return since(Date.now(), ts);
 }
 
 export function clock(ts: number): string {

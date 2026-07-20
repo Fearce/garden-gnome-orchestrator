@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { elapsed, formatDuration, runActive } from "./format.js";
+import { elapsed, formatDuration, runActive, since } from "./format.js";
 import type { AgentRunState } from "../types.js";
 
 /** A `Date.now()` that re-renders every second while `active`, so running clocks tick.
@@ -12,6 +12,32 @@ export function useNow(active: boolean): number {
     return () => clearInterval(t);
   }, [active]);
   return now;
+}
+
+/** A `Date.now()` that re-renders on a coarse cadence (default 30s), for slow-moving displays like a
+ *  card's age that show minute/hour/day granularity — an idle board of these would waste a per-second
+ *  interval per card, so they creep instead of tick. */
+export function useCoarseNow(periodMs = 30_000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), periodMs);
+    return () => clearInterval(t);
+  }, [periodMs]);
+  return now;
+}
+
+/** How long since the task last changed (its `updatedAt`) — the card's staleness at a glance, distinct
+ *  from Elapsed (which times the whole run/lifetime). A live task's frequent updatedAt bumps keep this
+ *  near zero; a parked task's age creeps up on the coarse tick, so you can tell a task touched minutes
+ *  ago from one untouched for days. */
+export function TaskAge({ updatedAt, className }: { updatedAt: number; className?: string }) {
+  const now = useCoarseNow();
+  const label = since(now, updatedAt);
+  return (
+    <span className={className} title={`Last updated ${label} ago`}>
+      Age {label}
+    </span>
+  );
 }
 
 /** Elapsed time for a span: a live ticking clock while `running`, otherwise the final

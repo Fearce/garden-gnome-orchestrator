@@ -17,7 +17,7 @@ import { useStore, type TaskSort } from "../store.js";
 import type { AgentRun, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
 import { closesInDays, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
-import { Elapsed, RoleElapsed } from "../lib/timing.js";
+import { Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
 
@@ -618,6 +618,7 @@ const Card = memo(function Card({
             running={threadRunning(thread.state)}
             title="Time since the task was dispatched"
           />
+          <TaskAge className="task-age" updatedAt={thread.updatedAt} />
           {findCount > 0 ? <span className="findcount">⚑ {findCount}</span> : null}
         </span>
       </div>
