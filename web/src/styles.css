@@ -757,9 +757,13 @@ button { font-family: inherit; cursor: pointer; }
 .stepper button:hover:not(:disabled) { background: var(--bg-3); color: var(--text); }
 .stepper button:disabled { color: var(--text-faint); opacity: 0.4; cursor: not-allowed; }
 .stepper-val {
-  width: 42px; height: 28px; text-align: center; font-size: 13px; color: var(--text); background: transparent;
+  width: 46px; height: 28px; text-align: center; font-size: 13px; color: var(--text); background: transparent;
   border: none; border-left: 1px solid var(--line); border-right: 1px solid var(--line); padding: 0 6px; outline: none;
+  -moz-appearance: textfield; appearance: textfield;
 }
+/* The stepper has its own −/+ buttons, so drop the native number-input spinners —
+   they steal width inside the field and clip a 3-digit value (100 → "10"). */
+.stepper-val::-webkit-outer-spin-button, .stepper-val::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .stepper-val:focus { background: var(--bg); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 62%, transparent); }
 
 /* free-text setting control (e.g. the director name) — a fixed-width field in the row's control slot */
