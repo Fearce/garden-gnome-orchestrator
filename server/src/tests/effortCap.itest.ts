@@ -11,6 +11,7 @@
 
 import { clampEffort } from "../agents/roles.js";
 import { codexEffortsForModel, resolveCodexEffort } from "../types.js";
+import { clientCommandSchema } from "../ws/protocol.js";
 
 let passed = 0;
 let failed = 0;
@@ -37,6 +38,9 @@ eq("GPT-5.6 snapshots expose Max", codexEffortsForModel("gpt-5.6-terra-2026-07-0
 eq("GPT-5.3 Codex stops at Extra High", codexEffortsForModel("gpt-5.3-codex").at(-1), "xhigh");
 eq("legacy Codex safely lowers a stale Max setting", resolveCodexEffort("gpt-5.3-codex", "max"), "xhigh");
 eq("GPT-5.6 keeps Max", resolveCodexEffort("gpt-5.6-sol", "max"), "max");
+
+console.log("\nCodex settings protocol");
+eq("WebSocket settings accepts Codex Max", clientCommandSchema.safeParse({ type: "settings.set", settings: { codexEffort: "max" } }).success, true);
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);
 if (failed) {

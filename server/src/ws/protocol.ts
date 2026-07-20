@@ -174,7 +174,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         fastUsagePolling: z.boolean(),
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
-        codexEffort: z.enum(["low", "medium", "high", "xhigh"]),
+        // GPT-5.6 accepts the newer `max` tier; ThreadManager still normalizes it to the selected
+        // model's supported range before a Codex CLI run starts.
+        codexEffort: z.enum(["low", "medium", "high", "xhigh", "max"]),
         codexWeeklySafetyPct: z.number().int().min(1).max(100),
         grokEnabled: z.boolean(),
         grokModel: z.string().min(1).max(64),
