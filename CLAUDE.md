@@ -35,6 +35,11 @@ misrouting a real task to the reader is not. The card shows a **READ** badge. Se
   `server/`, serving the built `web/dist` + WS/REST API.
 - Typecheck: `npm run typecheck`. Data: `server/data/orchestrator.sqlite`. Crash stacks:
   `server/data/crash.log` (written by the process guards in `server/src/crashLog.ts`).
+- **Build/typecheck suddenly fails with `Cannot find module '@anthropic-ai/claude-agent-sdk'` (a wall of
+  TS2307s) or `'tsc' is not recognized`?** Not your diff — a concurrent/interrupted `npm install` left
+  `server/node_modules` PARTIAL (common here: many agents share one checkout). Fix: `npm install --prefix
+  server` (~7s; the pure-JS SDK + `.bin` shims re-add with no EBUSY even while prod runs), then re-run
+  typecheck before assuming your code broke. This also silently blocks QA (its build fails the same way).
 - Serves `http://127.0.0.1:4317` and `https://127.0.0.1:4319` (same routes; the TLS port
   exists so the HTTPS Dashboard Deck can iframe it without mixed-content blocking).
   LAN access is auth-gated via `server/.env` (`AUTH_PASSWORD` / Google). Local/LAN only.
