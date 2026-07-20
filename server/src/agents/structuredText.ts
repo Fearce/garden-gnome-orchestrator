@@ -171,3 +171,207 @@ export function jsonContractInstruction(schema: JsonSchemaLike): string {
     "read back into the pipeline, so it must be valid JSON and it must be the last thing in your message.",
   ].join("\n");
 }
+
+// ── Feed humanization ─────────────────────────────────────────────────────────
+// CLI structured roles (Grok `--json-schema`, Codex fenced JSON) stream machine JSON into the
+// assistant transcript. Grok multi-turn QA is especially bad: one complete `{pass,summary}` object
+// *per model turn*, concatenated into a single feed message that looks like a wall of raw JSON.
+// These helpers rewrite that for the owner-facing feed while the pipeline still parses the raw text.
+
+/** One human line (or short multi-line block) for a single structured object. Used for live progress
+ *  deltas (`isLast: false` → bullet status) and for the final flush (`isLast: true` → Pass/Fail etc.). */
+export function formatStructuredObject(
+  obj: Record<string, unknown>,
+  opts: { isLast?: boolean } = {},
+): string | null {
+  const isLast = opts.isLast ?? true;
+
+  // QA verdict shape — boolean pass + summary (issues optional).
+  if (typeof obj.pass === "boolean" && typeof obj.summary === "string") {
+    const issues = Array.isArray(obj.issues)
+      ? (obj.issues as unknown[]).filter(
+          (i): i is Record<string, unknown> => !!i && typeof i === "object" && !Array.isArray(i) && typeof (i as { description?: unknown }).description === "string",
+        )
+      : [];
+    // Intermediate Grok turns are almost always pass:false + empty issues — status ticks, not real fails.
+    if (!isLast) return `• ${obj.summary}`;
+    if (obj.pass) {
+      const lines = [`**Pass** — ${obj.summary}`];
+      if (issues.length) {
+        lines.push("");
+        for (const i of issues) lines.push(formatIssueLine(i));
+      }
+      return lines.join("\n");
+    }
+    if (issues.length === 0) return `**Status** — ${obj.summary}`;
+    const lines = [`**Fail** — ${obj.summary}`, ""];
+    for (const i of issues) lines.push(formatIssueLine(i));
+    return lines.join("\n");
+  }
+
+  // Reader disposition.
+  if (typeof obj.answered === "boolean" || typeof obj.escalated === "boolean") {
+    if (obj.escalated) {
+      const reason = typeof obj.reason === "string" && obj.reason.trim() ? obj.reason.trim() : "needs full pipeline";
+      return isLast ? `**Escalated** — ${reason}` : `• Escalating: ${reason}`;
+    }
+    if (obj.answered) return isLast ? "**Answered** — lookup complete (see findings)." : "• Answering lookup…";
+    return isLast ? "**Reader** — no answer posted." : null;
+  }
+
+  // Plan / research / generic summary-bearing objects.
+  if (typeof obj.summary === "string") {
+    const summary = obj.summary;
+    if (!isLast) return `• ${summary}`;
+    const hasSteps = Array.isArray(obj.steps) && (obj.steps as unknown[]).length > 0;
+    const hasFacts = Array.isArray(obj.facts) && (obj.facts as unknown[]).length > 0;
+    const hasMemories = Array.isArray(obj.memories) && (obj.memories as unknown[]).length > 0;
+    const hasWarnings = Array.isArray(obj.warnings) && (obj.warnings as unknown[]).length > 0;
+    if (!hasSteps && !hasFacts && !hasMemories && !hasWarnings && obj.nextAgent === undefined && obj.effort === undefined) {
+      return summary;
+    }
+    const lines: string[] = [summary];
+    if (hasSteps) {
+      lines.push("", "Steps:");
+      (obj.steps as unknown[]).forEach((raw, i) => {
+        if (!raw || typeof raw !== "object") return;
+        const s = raw as Record<string, unknown>;
+        const title = typeof s.title === "string" ? s.title : `Step ${i + 1}`;
+        const detail = typeof s.detail === "string" ? ` — ${s.detail}` : "";
+        const files = Array.isArray(s.files) && s.files.length ? ` [${(s.files as unknown[]).map(String).join(", ")}]` : "";
+        lines.push(`${i + 1}. ${title}${detail}${files}`);
+      });
+    }
+    if (hasFacts) {
+      lines.push("", "Key facts:");
+      for (const raw of obj.facts as unknown[]) {
+        if (!raw || typeof raw !== "object") continue;
+        const f = raw as Record<string, unknown>;
+        if (typeof f.claim !== "string") continue;
+        lines.push(`- ${f.claim}${typeof f.source === "string" && f.source ? ` (${f.source})` : ""}`);
+      }
+    }
+    if (hasMemories) {
+      lines.push("", "Relevant memory:");
+      for (const raw of obj.memories as unknown[]) {
+        if (!raw || typeof raw !== "object") continue;
+        const m = raw as Record<string, unknown>;
+        if (typeof m.name !== "string") continue;
+        lines.push(`- ${m.name}${typeof m.gist === "string" && m.gist ? ` — ${m.gist}` : ""}`);
+      }
+    }
+    if (hasWarnings) {
+      lines.push("", "Warnings: " + (obj.warnings as unknown[]).map(String).join("; "));
+    }
+    if (typeof obj.nextAgent === "string") lines.push("", `Next: ${obj.nextAgent}`);
+    if (typeof obj.effort === "string") lines.push(`Effort: ${obj.effort}`);
+    if (Array.isArray(obj.risks) && obj.risks.length) lines.push(`Risks: ${(obj.risks as unknown[]).map(String).join("; ")}`);
+    if (Array.isArray(obj.openQuestions) && obj.openQuestions.length) {
+      lines.push(`Open questions: ${(obj.openQuestions as unknown[]).map(String).join("; ")}`);
+    }
+    return lines.join("\n");
+  }
+
+  return null;
+}
+
+function formatIssueLine(i: Record<string, unknown>): string {
+  const sev = typeof i.severity === "string" ? i.severity : "issue";
+  const loc = typeof i.location === "string" && i.location ? ` (${i.location})` : "";
+  return `- **${sev}**: ${String(i.description)}${loc}`;
+}
+
+/**
+ * Rewrite a CLI structured-role transcript for the owner-facing feed: keep any human prose, replace
+ * raw JSON objects with short markdown (progress bullets + a final Pass/Fail or plan/research block).
+ * Returns the original text unchanged when no JSON objects are present.
+ */
+export function formatStructuredRoleFeed(text: string): string {
+  if (!text?.trim()) return text;
+  const objects = extractJsonObjects(text);
+  if (!objects.length) return text;
+
+  const blocks: string[] = [];
+  let lastProgress: string | undefined;
+  for (let i = 0; i < objects.length; i++) {
+    const isLast = i === objects.length - 1;
+    const formatted = formatStructuredObject(objects[i]!, { isLast });
+    if (!formatted) continue;
+    // Collapse consecutive identical intermediate status lines (Grok sometimes re-emits the same tick).
+    if (!isLast) {
+      if (formatted === lastProgress) continue;
+      lastProgress = formatted;
+    }
+    blocks.push(formatted);
+  }
+
+  const prose = stripJsonish(text);
+  if (prose && !isJsonLeftover(prose)) {
+    return prose + (blocks.length ? "\n\n" + blocks.join("\n") : "");
+  }
+  return blocks.length ? blocks.join("\n") : text;
+}
+
+/**
+ * Live-stream helper: given the full accumulated text buffer and how many objects have already been
+ * surfaced as progress deltas, return any newly completed objects as short bullet lines (never the
+ * final Pass/Fail — that lands on flush via `formatStructuredRoleFeed`).
+ */
+export function takeStructuredProgressLines(
+  text: string,
+  alreadyEmitted: number,
+): { nextIndex: number; lines: string[] } {
+  const objects = extractJsonObjects(text);
+  if (objects.length <= alreadyEmitted) return { nextIndex: alreadyEmitted, lines: [] };
+  const lines: string[] = [];
+  let last = "";
+  for (let i = alreadyEmitted; i < objects.length; i++) {
+    // Never treat a still-streaming object as final — always progress bullets while the turn is open.
+    const line = formatStructuredObject(objects[i]!, { isLast: false });
+    if (!line || line === last) continue;
+    last = line;
+    lines.push(line);
+  }
+  return { nextIndex: objects.length, lines };
+}
+
+/** Remove fenced ```json blocks and bare balanced `{…}` objects, leaving surrounding prose. */
+function stripJsonish(text: string): string {
+  // Drop fenced blocks first so their braces don't also get counted as bare objects.
+  let s = text.replace(/```(?:json)?\s*[\s\S]*?```/gi, "\n");
+  const spans: Array<{ start: number; end: number }> = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0 && start >= 0) spans.push({ start, end: i + 1 });
+      }
+    }
+  }
+  for (let i = spans.length - 1; i >= 0; i--) {
+    const sp = spans[i]!;
+    s = s.slice(0, sp.start) + "\n" + s.slice(sp.end);
+  }
+  return s.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/** True when leftover text after stripping JSON is just punctuation/whitespace noise, not real prose. */
+function isJsonLeftover(s: string): boolean {
+  // Only commas, braces residue, quotes, backticks, ellipses-ish — nothing wordy.
+  return !/[A-Za-z0-9]{3,}/.test(s);
+}

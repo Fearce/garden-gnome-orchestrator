@@ -11,7 +11,16 @@
  * Exits non-zero if any assertion fails. Pure logic — no processes, no accounts, no network.
  */
 
-import { extractJsonObject, extractJsonObjects, validateAgainstSchema, parseStructuredText, jsonContractInstruction } from "../agents/structuredText.js";
+import {
+  extractJsonObject,
+  extractJsonObjects,
+  validateAgainstSchema,
+  parseStructuredText,
+  jsonContractInstruction,
+  formatStructuredRoleFeed,
+  formatStructuredObject,
+  takeStructuredProgressLines,
+} from "../agents/structuredText.js";
 import { PLAN_SCHEMA, RESEARCH_SCHEMA, QA_SCHEMA } from "../agents/roles.js";
 
 let passed = 0;
@@ -155,6 +164,54 @@ console.log("\njsonContractInstruction");
   const instr = jsonContractInstruction(PLAN_SCHEMA);
   check("embeds the schema so the agent knows the exact shape", instr.includes("summary") && instr.includes("json-schema"));
   check("tells the agent to end with a fenced json block", /```json/.test(instr) && /last thing/i.test(instr));
+}
+
+console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
+{
+  // Exact multi-turn shape Grok QA dumps into the task feed (prod: "looks like grok cant succesfully post…").
+  const grokWall =
+    '{ "pass": false, "summary": "Inspecting office/team-chat Grok fix vs current diffs." }\n' +
+    '{ "pass": false, "summary": "Reading officeBridge + grokRunner harvest logic." }\n' +
+    '{ "pass": true, "summary": "Office-bridge fix for Grok team chat is complete, tested, and ready to ship." }';
+  const human = formatStructuredRoleFeed(grokWall);
+  check("does not leave raw JSON braces in the feed", !human.includes('"pass"') && !human.includes("{ "));
+  check("shows intermediate status as bullets", human.includes("• Inspecting") && human.includes("• Reading"));
+  check("shows the final pass as markdown Pass", /\*\*Pass\*\*/.test(human) && human.includes("Office-bridge fix"));
+  // Pipeline parse of the RAW text must still recover the final verdict — feed humanization is display-only.
+  const stillParsed = parseStructuredText(grokWall, QA_SCHEMA);
+  check("raw multi-object text still parses for the pipeline", stillParsed.value?.pass === true);
+
+  const failWithIssues =
+    '{"pass":false,"summary":"Not shippable yet.","issues":[{"severity":"blocker","description":"missing test","location":"foo.ts"}]}';
+  const failHuman = formatStructuredRoleFeed(failWithIssues);
+  check("formats a failing verdict with severity + location", /\*\*Fail\*\*/.test(failHuman) && failHuman.includes("blocker") && failHuman.includes("foo.ts"));
+
+  // Codex style: prose narration + a final fenced JSON block.
+  const codexMix =
+    "I verified the Accounts menu wiring and the live switch path.\n\n```json\n" +
+    '{"pass":true,"summary":"Accounts provider switch works end-to-end.","issues":[]}\n```';
+  const mixHuman = formatStructuredRoleFeed(codexMix);
+  check("keeps Codex prose ahead of the formatted verdict", mixHuman.startsWith("I verified the Accounts"));
+  check("replaces the fenced JSON with a Pass line", /\*\*Pass\*\*/.test(mixHuman) && !mixHuman.includes("```") && !mixHuman.includes('"pass"'));
+
+  // Pure prose (Claude-style) is left alone.
+  const prose = "Passed.\n\nThe plan-voice feature does exactly what the brief asked.";
+  check("leaves pure prose unchanged", formatStructuredRoleFeed(prose) === prose);
+
+  // Live progress deltas: first object only, then the rest.
+  const partial = '{ "pass": false, "summary": "Starting QA." }';
+  const p1 = takeStructuredProgressLines(partial, 0);
+  check("progress helper emits the first complete object as a bullet", p1.lines.length === 1 && p1.lines[0]!.startsWith("• Starting"));
+  const more = partial + '{ "pass": false, "summary": "Still checking." }';
+  const p2 = takeStructuredProgressLines(more, p1.nextIndex);
+  check("progress helper only emits newly completed objects", p2.lines.length === 1 && p2.lines[0]!.includes("Still checking"));
+  check("progress helper advances the index", p2.nextIndex === 2);
+
+  const planObj = formatStructuredObject(
+    { summary: "Ship the fix", steps: [{ title: "Patch runner", detail: "humanize feed" }], nextAgent: "implementor" },
+    { isLast: true },
+  );
+  check("formats a plan with steps", !!planObj && planObj.includes("Ship the fix") && planObj.includes("1. Patch runner") && planObj.includes("Next: implementor"));
 }
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);

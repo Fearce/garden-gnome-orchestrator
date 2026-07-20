@@ -8,7 +8,7 @@ import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo } from "../types
 import { withAgentToolPath } from "./env.js";
 import { extractOfficeChat } from "./officeBridge.js";
 import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
-import { parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
+import { formatStructuredRoleFeed, parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
 
 export interface CodexRunConfig {
   /** The Codex model to run, e.g. `codex-mini-latest`. */
@@ -626,8 +626,10 @@ export class CodexAgentRun implements AgentRunLike {
             }
           }
           if (visible) {
+            // Keep the raw text for structured-output parsing; humanize only what the feed shows.
             this.lastAgentText = visible;
-            this.emit({ type: "text", text: visible });
+            const display = this.cfg.outputSchema ? formatStructuredRoleFeed(visible) : visible;
+            if (display.trim()) this.emit({ type: "text", text: display });
           }
         }
         break;

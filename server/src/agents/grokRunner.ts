@@ -9,7 +9,13 @@ import { config } from "../config.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { endsWithOpenOfficeMarker, extractOfficeChat } from "./officeBridge.js";
-import { parseStructuredText, validateAgainstSchema, type JsonSchemaLike } from "./structuredText.js";
+import {
+  formatStructuredRoleFeed,
+  parseStructuredText,
+  takeStructuredProgressLines,
+  validateAgainstSchema,
+  type JsonSchemaLike,
+} from "./structuredText.js";
 import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 
 export interface GrokRunConfig {
@@ -183,6 +189,9 @@ export class GrokAgentRun implements AgentRunLike {
   lastStructuredError: string | undefined;
   /** How many times this run has already re-prompted for a schema-valid structured result. */
   private structuredRetries = 0;
+  /** How many complete JSON objects from textBuf have already been surfaced as live progress deltas
+   *  (structured roles only). Prevents re-emitting the same status tick on every chunk. */
+  private structuredProgressEmitted = 0;
   private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number; costUsd?: number; structuredOutput?: unknown } | undefined;
   private readonly pendingSends: string[] = [];
   private promptFile: string | undefined;
@@ -304,6 +313,7 @@ export class GrokAgentRun implements AgentRunLike {
     this.stdoutBuf = "";
     this.textBuf = "";
     this.streamInText = false;
+    this.structuredProgressEmitted = 0;
     this.maxTurnsHit = false;
     this.endStructuredOutput = undefined;
     this.lastStructuredError = undefined;
@@ -451,10 +461,14 @@ export class GrokAgentRun implements AgentRunLike {
       case "text":
         // Stream the chunk live into the feed AND accumulate it — the whole message is persisted as one
         // `text` block on close (office-bridge lines are stripped there before it reaches the transcript).
+        // Structured roles (`--json-schema`) stream one machine JSON object per model turn; dumping those
+        // raw into the feed is unreadable (Grok QA especially), so we buffer and surface human progress
+        // lines instead, then flush a fully humanized transcript on close.
         if (ev.data) {
           this.streamInText = true;
           this.textBuf += ev.data;
-          this.emit({ type: "text_delta", text: ev.data });
+          if (this.cfg.outputSchema) this.emitStructuredProgress();
+          else this.emit({ type: "text_delta", text: ev.data });
         }
         break;
       case "thought":
@@ -594,8 +608,24 @@ export class GrokAgentRun implements AgentRunLike {
     this.harvestOfficePosts({ openEnded });
     const visible = this.textBuf;
     this.textBuf = "";
-    if (visible.trim()) this.emit({ type: "text", text: visible });
-    return this.resolveStructuredOutput(visible);
+    this.structuredProgressEmitted = 0;
+    // Parse structured output from the RAW buffer first (humanization must not break the pipeline).
+    const structured = this.resolveStructuredOutput(visible);
+    if (visible.trim()) {
+      const display = this.cfg.outputSchema ? formatStructuredRoleFeed(visible) : visible;
+      if (display.trim()) this.emit({ type: "text", text: display });
+    }
+    return structured;
+  }
+
+  /** Structured-role live progress: as complete JSON objects land in textBuf, emit short bullet lines
+   *  (• summary…) instead of raw `{ "pass": … }` chunks the owner can't read on the board/draft. */
+  private emitStructuredProgress(): void {
+    const { nextIndex, lines } = takeStructuredProgressLines(this.textBuf, this.structuredProgressEmitted);
+    this.structuredProgressEmitted = nextIndex;
+    if (!lines.length) return;
+    // Join with newlines so the draft accumulates a readable checklist rather than a single blob.
+    this.emit({ type: "text_delta", text: lines.join("\n") + "\n" });
   }
 
   /** Prefer `end.structuredOutput` (CLI-validated under `--json-schema`). Fall back to the same text
