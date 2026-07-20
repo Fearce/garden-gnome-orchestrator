@@ -8,9 +8,21 @@ import type { Scheduler } from "../orchestrator/scheduler.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
 import { readCodexUsage } from "../agents/codexUsage.js";
 import { readGrokUsage } from "../agents/grokUsage.js";
+import { formatStructuredRoleFeed } from "../agents/structuredText.js";
 import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./protocol.js";
 import { isAuthed } from "../auth.js";
 import { CHAT_PAGE_SIZE } from "../types.js";
+import type { Message } from "../types.js";
+
+/** Owner-facing rewrite for CLI structured-role walls (Grok multi-turn QA especially). Idempotent
+ *  on already-humanized prose so new runs and pre-fix raw messages share one display path. */
+function humanizeFeedMessages(messages: Message[]): Message[] {
+  return messages.map((m) => {
+    if (m.kind !== "text" || !m.content) return m;
+    const content = formatStructuredRoleFeed(m.content);
+    return content === m.content ? m : { ...m, content };
+  });
+}
 
 export interface WsContext {
   db: Db;
@@ -141,7 +153,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       send(socket, {
         type: "thread.history",
         threadId: cmd.threadId,
-        messages: ctx.db.listMessages(cmd.threadId),
+        // Humanize raw Grok/Codex structured JSON walls at the display boundary so tasks that
+        // finished before write-time formatting still open clean in the feed.
+        messages: humanizeFeedMessages(ctx.db.listMessages(cmd.threadId)),
         findings: ctx.db.listFindings(cmd.threadId),
         brief: thread?.brief ?? "",
       });

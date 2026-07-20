@@ -193,8 +193,12 @@ export function formatStructuredObject(
           (i): i is Record<string, unknown> => !!i && typeof i === "object" && !Array.isArray(i) && typeof (i as { description?: unknown }).description === "string",
         )
       : [];
-    // Intermediate Grok turns are almost always pass:false + empty issues — status ticks, not real fails.
-    if (!isLast) return `• ${obj.summary}`;
+    // Intermediate Grok turns: pass:false (+ empty issues) are status ticks; pass:true are draft
+    // finals the model re-emits many times before the real end event — never surface those mid-stream.
+    if (!isLast) {
+      if (obj.pass) return null;
+      return `• ${obj.summary}`;
+    }
     if (obj.pass) {
       const lines = [`**Pass** — ${obj.summary}`];
       if (issues.length) {
@@ -281,29 +285,46 @@ function formatIssueLine(i: Record<string, unknown>): string {
   return `- **${sev}**: ${String(i.description)}${loc}`;
 }
 
+/** Max intermediate status bullets kept in a feed rewrite. Grok multi-turn QA can emit dozens of
+ *  near-duplicate ticks; the owner only needs a short checklist ahead of the final Pass/Fail. */
+const MAX_FEED_PROGRESS = 8;
+
 /**
  * Rewrite a CLI structured-role transcript for the owner-facing feed: keep any human prose, replace
  * raw JSON objects with short markdown (progress bullets + a final Pass/Fail or plan/research block).
  * Returns the original text unchanged when no JSON objects are present.
+ *
+ * Safe to call on already-humanized text (no JSON → identity) and on historical messages that were
+ * persisted as raw multi-object walls before write-time humanization existed.
  */
 export function formatStructuredRoleFeed(text: string): string {
   if (!text?.trim()) return text;
   const objects = extractJsonObjects(text);
   if (!objects.length) return text;
 
-  const blocks: string[] = [];
+  const progress: string[] = [];
   let lastProgress: string | undefined;
+  let finalBlock: string | undefined;
   for (let i = 0; i < objects.length; i++) {
     const isLast = i === objects.length - 1;
     const formatted = formatStructuredObject(objects[i]!, { isLast });
     if (!formatted) continue;
-    // Collapse consecutive identical intermediate status lines (Grok sometimes re-emits the same tick).
     if (!isLast) {
+      // Collapse consecutive identical intermediate status lines (Grok sometimes re-emits the same tick).
       if (formatted === lastProgress) continue;
       lastProgress = formatted;
+      progress.push(formatted);
+      continue;
     }
-    blocks.push(formatted);
+    finalBlock = formatted;
   }
+
+  // Keep the most recent progress ticks when Grok was chatty — older ones are usually "Starting QA".
+  const capped =
+    progress.length > MAX_FEED_PROGRESS
+      ? [`• …${progress.length - MAX_FEED_PROGRESS} earlier checks`, ...progress.slice(-MAX_FEED_PROGRESS)]
+      : progress;
+  const blocks = finalBlock ? [...capped, finalBlock] : capped;
 
   const prose = stripJsonish(text);
   if (prose && !isJsonLeftover(prose)) {
@@ -315,7 +336,8 @@ export function formatStructuredRoleFeed(text: string): string {
 /**
  * Live-stream helper: given the full accumulated text buffer and how many objects have already been
  * surfaced as progress deltas, return any newly completed objects as short bullet lines (never the
- * final Pass/Fail — that lands on flush via `formatStructuredRoleFeed`).
+ * final Pass/Fail — that lands on flush via `formatStructuredRoleFeed`). Intermediate `pass:true`
+ * drafts are skipped (same as the flush path).
  */
 export function takeStructuredProgressLines(
   text: string,

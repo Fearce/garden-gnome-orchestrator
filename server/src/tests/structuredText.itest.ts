@@ -207,6 +207,36 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
   check("progress helper only emits newly completed objects", p2.lines.length === 1 && p2.lines[0]!.includes("Still checking"));
   check("progress helper advances the index", p2.nextIndex === 2);
 
+  // Intermediate pass:true drafts (Grok re-emits a near-final verdict many times) must NOT become bullets.
+  const draftPass = more + '{ "pass": true, "summary": "Almost done, shipping soon." }';
+  const p3 = takeStructuredProgressLines(draftPass, p2.nextIndex);
+  check("progress helper skips intermediate pass:true drafts", p3.lines.length === 0 && p3.nextIndex === 3);
+
+  // Prod shape: two real status ticks, then ~40 near-identical pass:true re-drafts, then a final Pass
+  // with a nit (thread 5c03fc4f — "looks like grok cant succesfully post…").
+  let longWall =
+    '{ "pass": false, "summary": "Inspecting office/team-chat Grok fix vs current diffs." }\n' +
+    '{ "pass": false, "summary": "Reading officeBridge + grokRunner harvest logic." }\n';
+  for (let i = 0; i < 40; i++) {
+    longWall += `{ "pass": true, "summary": "Grok team-chat fix draft ${i}." }\n`;
+  }
+  longWall +=
+    '{ "pass": true, "summary": "Grok team-chat OFFICE bridge fix verified on master.", "issues": [{"severity":"nit","description":"Stale comment.","location":"threadManager.ts"}] }';
+  const longHuman = formatStructuredRoleFeed(longWall);
+  check("long Grok wall: no raw JSON left", !longHuman.includes('"pass"') && !longHuman.includes("{ "));
+  check("long Grok wall: only real status ticks as bullets (not 40 draft Passes)", (longHuman.match(/^• /gm) ?? []).length === 2);
+  check("long Grok wall: single final Pass markdown", (longHuman.match(/\*\*Pass\*\*/g) ?? []).length === 1);
+  check("long Grok wall: surfaces final issues", longHuman.includes("nit") && longHuman.includes("threadManager.ts"));
+  check("long Grok wall: already-humanized text is stable", formatStructuredRoleFeed(longHuman) === longHuman);
+
+  // Cap: many distinct pass:false ticks keep only the last N (+ ellipsis marker).
+  let manyTicks = "";
+  for (let i = 0; i < 12; i++) manyTicks += `{ "pass": false, "summary": "Check step ${i}." }\n`;
+  manyTicks += '{ "pass": true, "summary": "Done." }';
+  const capped = formatStructuredRoleFeed(manyTicks);
+  check("caps long progress lists with an ellipsis marker", capped.includes("…") && capped.includes("earlier checks"));
+  check("caps progress to a short checklist + final Pass", (capped.match(/^• /gm) ?? []).length <= 9 && /\*\*Pass\*\*/.test(capped));
+
   const planObj = formatStructuredObject(
     { summary: "Ship the fix", steps: [{ title: "Patch runner", detail: "humanize feed" }], nextAgent: "implementor" },
     { isLast: true },
