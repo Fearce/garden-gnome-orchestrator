@@ -9,6 +9,7 @@ import { config } from "../config.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { extractOfficeChat } from "./officeBridge.js";
+import { parseStructuredText, validateAgainstSchema, type JsonSchemaLike } from "./structuredText.js";
 import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 
 export interface GrokRunConfig {
@@ -23,10 +24,10 @@ export interface GrokRunConfig {
    *  events, the runner retries ONCE as a fresh turn with this prompt — the prior working-tree edits
    *  already live on disk, so the fresh session re-reads them and continues. Omit to disable self-heal. */
   freshFallback?: string;
-  /** When set, the turn is constrained to JSON matching this schema (`--json-schema`) and the parsed
-   *  object is surfaced as the result's `structuredOutput` — lets a role that needs structured output
-   *  (planner/QA) run on the Grok CLI, which has no SDK structured-output channel of its own. */
-  outputSchema?: Record<string, unknown>;
+  /** When set, the turn is constrained to JSON matching this schema (`--json-schema`). The Grok CLI
+   *  puts the validated object on the `end` event as `structuredOutput`; we also fall back to parsing
+   *  the streamed text so a multi-turn role (planner/QA) still yields a pipeline-usable result. */
+  outputSchema?: JsonSchemaLike;
   /** Grok has no office MCP tools. A standalone `OFFICE[team|office]: ...` line in its assistant message
    *  is intercepted here and posted through the orchestrator's real office chat backend. */
   onOfficeChat?: (scope: ChatScope, body: string) => void;
@@ -53,12 +54,17 @@ interface GrokEvent {
   message?: string;
   num_turns?: number;
   total_cost_usd?: number;
+  /** Present on `end` when the turn was started with `--json-schema` — the CLI's already-validated object. */
+  structuredOutput?: unknown;
 }
 
 // Matches SuperGrok's plan usage-cap wording and the generic 429/quota errors the CLI can surface. Grok
 // exposes no rate-limit windows, so a rejected turn is the ONLY cap signal — err broad here.
 const RATE_LIMIT_RE =
   /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient|usage[ _]limit|reached your (?:usage|plan|limit)|limit reached|out of (?:capacity|credits)|capacity)/i;
+/** Max in-session re-prompts when a structured role (planner/QA) finishes without a schema-valid object. */
+const MAX_STRUCTURED_RETRIES = 2;
+
 export interface GrokAuthInfo {
   signedIn: boolean;
   email: string | null;
@@ -167,6 +173,12 @@ export class GrokAgentRun implements AgentRunLike {
   private sawTerminal = false; // an `end` (or error) event seen for the current turn
   private textBuf = ""; // accumulated `text` chunks for the current turn — emitted as one message on close
   private maxTurnsHit = false;
+  /** CLI-native structured output from the latest `end` event (preferred over re-parsing streamed text). */
+  private endStructuredOutput: unknown | undefined;
+  /** Last structured-parse failure message when a schema was requested but neither end nor text yielded a value. */
+  lastStructuredError: string | undefined;
+  /** How many times this run has already re-prompted for a schema-valid structured result. */
+  private structuredRetries = 0;
   private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number; costUsd?: number; structuredOutput?: unknown } | undefined;
   private readonly pendingSends: string[] = [];
   private promptFile: string | undefined;
@@ -286,6 +298,8 @@ export class GrokAgentRun implements AgentRunLike {
     this.stdoutBuf = "";
     this.textBuf = "";
     this.maxTurnsHit = false;
+    this.endStructuredOutput = undefined;
+    this.lastStructuredError = undefined;
     // Reset the cap flags per turn: a cap on one turn must not mislabel a later chained turn (a queued
     // pendingSends follow-up, or an interrupt-then-resume) on the same run object as capped.
     this.capped = false;
@@ -454,6 +468,10 @@ export class GrokAgentRun implements AgentRunLike {
         } else if (ev.sessionId && this.sessionId !== ev.sessionId) {
           this.sessionId = ev.sessionId;
         }
+        // Prefer the CLI's already-validated object. Multi-turn structured roles stream one JSON object
+        // *per model turn* as `text`, so concatenating textBuf and JSON.parse fails; `end.structuredOutput`
+        // is the final schema-matched verdict and is what makes planner/QA work on Grok.
+        if (ev.structuredOutput !== undefined) this.endStructuredOutput = ev.structuredOutput;
         // A cap can also close a turn via `end` with a limit stopReason rather than an `error` event.
         const stop = ev.stopReason ?? "";
         if (RATE_LIMIT_RE.test(stop)) this.markCapped();
@@ -504,11 +522,10 @@ export class GrokAgentRun implements AgentRunLike {
   }
 
   /** Flush the turn's accumulated assistant text: strip + post any OFFICE[...] bridge lines, emit the rest
-   *  as one persisted `text` block, and (when a schema was requested) parse it into structuredOutput. */
+   *  as one persisted `text` block, and resolve structuredOutput for schema-constrained roles. */
   private flushText(): unknown {
     const raw = this.textBuf;
     this.textBuf = "";
-    if (!raw.trim()) return undefined;
     const { visible, posts } = extractOfficeChat(raw);
     for (const post of posts) {
       try {
@@ -517,13 +534,29 @@ export class GrokAgentRun implements AgentRunLike {
         /* best-effort side channel; never fail the turn because office chat failed */
       }
     }
-    if (visible) this.emit({ type: "text", text: visible });
+    if (visible.trim()) this.emit({ type: "text", text: visible });
+    return this.resolveStructuredOutput(visible);
+  }
+
+  /** Prefer `end.structuredOutput` (CLI-validated under `--json-schema`). Fall back to the same text
+   *  recovery Codex uses — last fenced/balanced object that shape-checks — because multi-turn Grok
+   *  concatenates one JSON object per model turn into textBuf, so a naive JSON.parse of the whole
+   *  buffer always fails even when the final verdict is valid. */
+  private resolveStructuredOutput(visibleText: string): unknown {
     if (!this.cfg.outputSchema) return undefined;
-    try {
-      return JSON.parse(visible) as unknown;
-    } catch {
-      return undefined; // model didn't return clean JSON — let the caller handle the missing structuredOutput
+    if (this.endStructuredOutput !== undefined) {
+      const err = validateAgainstSchema(this.endStructuredOutput, this.cfg.outputSchema);
+      if (!err) return this.endStructuredOutput;
+      // Rare: CLI handed us something that doesn't match our schema (schema drift). Fall through to text.
+      this.lastStructuredError = err;
     }
+    const parsed = parseStructuredText(visibleText, this.cfg.outputSchema);
+    if (parsed.value) {
+      this.lastStructuredError = undefined;
+      return parsed.value;
+    }
+    this.lastStructuredError = parsed.error ?? this.lastStructuredError;
+    return undefined;
   }
 
   private onTurnClose(code: number | null): void {
@@ -566,6 +599,20 @@ export class GrokAgentRun implements AgentRunLike {
       void this.runTurn(this.cfg.freshFallback, undefined);
       return;
     }
+    // Structured role (planner/QA) finished a successful turn but yielded no schema-valid object —
+    // re-prompt in-session rather than handing the pipeline an empty structuredOutput (which parks as
+    // "QA could not complete"). Cap retries so a stubborn model can't loop forever.
+    if (this.shouldRetryStructured(structured)) {
+      this.structuredRetries++;
+      this.lastResult = undefined;
+      this.pendingTerminalResult = undefined;
+      this.emit({
+        type: "text",
+        text: `⚠️ Structured output missing or invalid — re-prompting for a schema-valid JSON result (attempt ${this.structuredRetries}/${MAX_STRUCTURED_RETRIES}).`,
+      });
+      void this.runTurn(this.structuredRetryPrompt(), this.sessionId);
+      return;
+    }
     // The process exited without a terminal event AND it wasn't an intentional interrupt — synthesize a
     // failure so a waiting result()/nextResult() resolves instead of hanging.
     if (!this.sawTerminal) {
@@ -580,5 +627,25 @@ export class GrokAgentRun implements AgentRunLike {
       this.finished = true;
       this.emitter.emit("end");
     }
+  }
+
+  private shouldRetryStructured(structured: unknown): boolean {
+    if (!this.cfg.outputSchema || !this.sessionId) return false;
+    if (structured !== undefined) return false;
+    if (!this.pendingTerminalResult || this.pendingTerminalResult.isError) return false;
+    return this.structuredRetries < MAX_STRUCTURED_RETRIES;
+  }
+
+  private structuredRetryPrompt(): string {
+    const detail =
+      this.lastStructuredError ??
+      "No JSON object matching the required schema was found in your reply.";
+    return [
+      "Your previous reply could not be accepted as this role's structured result.",
+      detail,
+      "",
+      "Respond with ONLY a single JSON object that matches the required schema — no prose before or after it,",
+      "no intermediate status objects, no markdown fences if you can avoid them. Required fields must be present.",
+    ].join("\n");
   }
 }

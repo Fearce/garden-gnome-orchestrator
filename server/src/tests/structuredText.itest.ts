@@ -11,7 +11,7 @@
  * Exits non-zero if any assertion fails. Pure logic — no processes, no accounts, no network.
  */
 
-import { extractJsonObject, validateAgainstSchema, parseStructuredText, jsonContractInstruction } from "../agents/structuredText.js";
+import { extractJsonObject, extractJsonObjects, validateAgainstSchema, parseStructuredText, jsonContractInstruction } from "../agents/structuredText.js";
 import { PLAN_SCHEMA, RESEARCH_SCHEMA, QA_SCHEMA } from "../agents/roles.js";
 
 let passed = 0;
@@ -105,6 +105,49 @@ console.log("\nparseStructuredText — end to end");
 
   const badShape = parseStructuredText("```json\n{\"summary\": \"forgot the pass field\"}\n```", QA_SCHEMA);
   check("returns a schema-mismatch error nudge naming the missing field", !badShape.value && !!badShape.error && /pass/.test(badShape.error!));
+
+  // Grok multi-turn structured roles stream one complete JSON object per model turn into a single text
+  // buffer — a naive JSON.parse of the concatenation fails, and the LAST object is the real verdict.
+  const grokMulti =
+    '{ "pass": false, "summary": "Starting QA.", "issues": [] }' +
+    '{ "pass": false, "summary": "Still checking.", "issues": [] }' +
+    '{"pass":true,"summary":"Ship it.","issues":[]}';
+  check(
+    "Grok multi-object stream: extractJsonObjects finds every complete object",
+    extractJsonObjects(grokMulti).length === 3,
+  );
+  const grokParsed = parseStructuredText(grokMulti, QA_SCHEMA);
+  check(
+    "Grok multi-object stream: parseStructuredText takes the LAST schema-valid object (final pass)",
+    grokParsed.value?.pass === true && grokParsed.value?.summary === "Ship it." && !grokParsed.error,
+  );
+  // Final object truncated mid-string (stream cut off) — brace counter skips it; prior complete valid
+  // object must still win so the pipeline gets a verdict instead of "QA could not complete".
+  const truncated = grokMulti + '{"pass":true,"summary":"Ship it. Typecheck (server+web), server build, and unit tests (sched';
+  const truncParsed = parseStructuredText(truncated, QA_SCHEMA);
+  check(
+    "Grok multi-object stream with truncated tail still yields last complete valid verdict",
+    truncParsed.value?.pass === true && truncParsed.value?.summary === "Ship it." && !truncParsed.error,
+  );
+
+  // Exact text Grok QA produced on thread ad31128e (prod failure: "QA could not complete" despite a
+  // successful Grok run). Old path: JSON.parse of the whole buffer → throw → structuredOutput missing.
+  const realGrokQa =
+    '{ "pass": false, "summary": "Starting QA: inspecting git changes and the Grok-related fix against the brief.", "issues": [] }' +
+    '{ "pass": false, "summary": "Root-cause fix looks right (prompt-file collision). Running tests, typecheck, and checking for other concurrent-Grok races.", "issues": [] }' +
+    '{"pass":true,"summary":"Ship it. The bug matches a real concurrent prompt-file race.","issues":[]}';
+  let oldParseThrew = false;
+  try {
+    JSON.parse(realGrokQa);
+  } catch {
+    oldParseThrew = true;
+  }
+  check("real Grok QA payload: naive JSON.parse fails (the historical bug)", oldParseThrew);
+  const realParsed = parseStructuredText(realGrokQa, QA_SCHEMA);
+  check(
+    "real Grok QA payload: parseStructuredText recovers the final pass verdict",
+    realParsed.value?.pass === true && typeof realParsed.value?.summary === "string" && !realParsed.error,
+  );
 }
 
 console.log("\njsonContractInstruction");

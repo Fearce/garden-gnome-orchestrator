@@ -10,6 +10,7 @@ import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRun
 import { noteGrokCap, readGrokUsage, grokUsageCapped } from "../agents/grokUsage.js";
 import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, uniq } from "../agents/modelCatalog.js";
 import { clampEffort, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
+import { jsonContractInstruction } from "../agents/structuredText.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createGitReadServer } from "../bus/gitReadServer.js";
@@ -231,10 +232,9 @@ const AUTO_RESUME_DELAY_MS = 4_000;
 // auto-resumes those tasks once an account frees up — so a cap wave doesn't leave the owner to
 // hand-resume every task. A normal "needs your review" park carries no such prefix and is left alone.
 const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
-// Substring of the cap-park message that marks a park needing a CLAUDE window specifically (a QA-stage
-// cap — QA always runs on Claude, so Codex headroom can't unblock it). The supervisor keys off this to
-// avoid resuming such a task on Codex headroom alone, which would relaunch the implementor only for QA
-// to instantly re-cap in a 2-minute burn loop. Persisted in the error text so it survives a restart.
+// Historical substring still written into QA-stage cap-park messages (kept for log/search continuity).
+// runRole can now fail QA over to Codex/Grok, so resumeCapParked no longer treats this as Claude-only —
+// any free backend unparks. Persisted in the error text so it survives a restart.
 const CAP_PARK_QA_MARK = "(QA runs on Claude)";
 // Don't re-ping the external webhook about auto-resuming the SAME task more often than this — a task
 // that keeps re-capping every interval would otherwise flood the channel. The in-app log isn't throttled.
@@ -364,10 +364,10 @@ export class ThreadManager implements OrchestratorApi {
   private readonly checkedIn = new Set<string>();
   // Threads whose current run gave up to 'review' because every account was capped (no failover
   // headroom). Set the instant the give-up happens, read+cleared when the task settles so the review
-  // message carries the CAP_PARK marker the supervisor keys off. The value records WHICH stage capped:
-  // a QA park needs a Claude window specifically (QA always runs on Claude), while an implementor park
-  // can resume on either backend — the supervisor gates on that difference. In-memory only — the durable
-  // signal is the persisted error text (prefix + QA marker), so a restart still finds cap-parked tasks.
+  // message carries the CAP_PARK marker the supervisor keys off. The value records WHICH stage capped
+  // (used for the park message wording); any free backend can unpark either kind now that runRole
+  // fails QA over to Codex/Grok. In-memory only — the durable signal is the persisted error text
+  // (prefix + optional historical QA marker), so a restart still finds cap-parked tasks.
   private readonly capParked = new Map<string, "qa" | "implementor">();
   // Last time we externally announced auto-resuming a given thread — throttles the webhook ping so a
   // task stuck in a re-cap loop doesn't spam the channel each interval (see CAP_RESUME_NOTIFY_COOLDOWN_MS).
@@ -463,10 +463,10 @@ export class ThreadManager implements OrchestratorApi {
    *  through the same failed→runPipeline path the boot auto-resume uses (full resume-aware pipeline, QA
    *  included), clearing the marker so a later non-cap park isn't misread. */
   private resumeCapParked(): void {
-    // Headroom on ANY backend can unpark work: a Claude window freeing up resumes anything, while a CLI
-    // backend (Codex or Grok) freeing up (enabled + authed + under its caps) resumes implementor-phase
-    // parks — the provider gate then routes the relaunch to it. QA-phase parks (CAP_PARK_QA_MARK) still
-    // wait for a Claude window specifically, since QA never runs on a CLI backend.
+    // Headroom on ANY backend can unpark work. Claude free → resume anything. CLI free (Codex/Grok
+    // enabled+authed+under caps) → also resume QA-phase parks: runRole fails planner/researcher/QA over
+    // to a ready CLI when Claude is still capped (see the Claude→CLI handoff in runRole). Older parks
+    // that still carry CAP_PARK_QA_MARK in their error text are therefore unblocked by CLI headroom too.
     const claudeFree = this.accounts.hasHeadroom();
     const cliFree = this.codexImplementorReady() || this.grokImplementorReady();
     if (!claudeFree && !cliFree) return;
@@ -478,7 +478,6 @@ export class ThreadManager implements OrchestratorApi {
       .sort((a, b) => a.updatedAt - b.updatedAt); // oldest-parked first — fairest, and bounded by free slots
     for (const t of parked) {
       if (slots <= 0) break;
-      if (!claudeFree && (t.error ?? "").includes(CAP_PARK_QA_MARK)) continue; // QA park — a CLI can't run QA
       slots--;
       this.hub.log("info", `An account freed up — auto-resuming rate-limit-parked "${t.title.slice(0, 48)}".`);
       const now = Date.now();
@@ -1597,26 +1596,36 @@ export class ThreadManager implements OrchestratorApi {
     else this.setState(threadId, "review", humanReason);
   }
 
-  /** Review message for a cap-park — doubles as the supervisor's marker (CAP_PARK_PREFIX, plus
-   *  CAP_PARK_QA_MARK for a Claude-only QA park) and tells the owner it'll resume itself, naming when
+  /** Review message for a cap-park — doubles as the supervisor's marker (CAP_PARK_PREFIX, plus the
+   *  historical CAP_PARK_QA_MARK for QA-stage parks) and tells the owner it'll resume itself, naming when
    *  the soonest account frees up if we know it. Scoped honestly: it only claims "every account" when
-   *  Codex was genuinely unavailable too — an implementor park with Codex enabled means the Claude→Codex
-   *  failover already found Codex capped/unauthed, and a QA park is Claude-specific by design. */
+   *  CLI backends were genuinely unavailable too (Claude→Codex/Grok failover already tried them). */
   private capParkMessage(need: "qa" | "implementor"): string {
     const now = Date.now();
     const codexOn = this.settings().codexEnabled;
+    const grokOn = this.settings().grokEnabled;
+    const cliOn = codexOn || grokOn;
     const resets = [this.accounts.soonestResetAt()];
-    if (need === "implementor" && codexOn) {
-      const u = readCodexUsage();
-      resets.push(u?.fiveHourReset ?? null, u?.sevenDayReset ?? null);
+    if (cliOn) {
+      if (codexOn) {
+        const u = readCodexUsage();
+        resets.push(u?.fiveHourReset ?? null, u?.sevenDayReset ?? null);
+      }
+      if (grokOn) {
+        const u = readGrokUsage();
+        resets.push(u?.sevenDayReset ?? null);
+      }
     }
     const future = resets.filter((r): r is number => r != null && r > now);
     const when = future.length ? ` Soonest account resets ${untilReset(Math.min(...future), now)}.` : "";
+    const cliLabel = codexOn && grokOn ? "Codex and Grok" : codexOn ? "Codex" : grokOn ? "Grok" : "";
     const scope =
       need === "qa"
-        ? `every Claude subscription was rate-limited during QA ${CAP_PARK_QA_MARK}`
-        : codexOn
-          ? "every account — Claude subscriptions and Codex — was rate-limited mid-task"
+        ? cliOn
+          ? `every backend — Claude subscriptions and ${cliLabel} — was rate-limited during QA ${CAP_PARK_QA_MARK}`
+          : `every Claude subscription was rate-limited during QA ${CAP_PARK_QA_MARK}`
+        : cliOn
+          ? `every account — Claude subscriptions and ${cliLabel} — was rate-limited mid-task`
           : "every Claude subscription was rate-limited mid-task";
     return `${CAP_PARK_PREFIX} — ${scope}.${when} It will resume automatically when one frees up (no manual Resume needed).`;
   }
@@ -3793,12 +3802,6 @@ export class ThreadManager implements OrchestratorApi {
     return m;
   }
 
-  /** True for CLI implementor backends (Codex, Grok) that have no office MCP and reply via the
-   *  `OFFICE[team|office]:` text bridge instead of `chat_post`. */
-  private isCliOfficeBridge(accountId: string): boolean {
-    return accountId === "openai-codex" || accountId === "xai-grok";
-  }
-
   /** Push a team-room message into peer implementors working the same repo, so they actually see it
    *  instead of having to poll chat_read. Targets `this.live` (implementors) only — the same handle
    *  finding routing uses — so a one-shot planner/QA's structured output is never disrupted; those
@@ -3816,14 +3819,13 @@ export class ThreadManager implements OrchestratorApi {
       if (tid === m.threadId) continue; // never echo back to the sender
       const t = this.db.getThread(tid);
       if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
-      // CLI backends (Codex/Grok) have no chat_post — tell them to reply via the OFFICE text bridge.
-      live.run.send(this.isCliOfficeBridge(live.accountId) ? this.cliTeamChatPush(m, who) : text, { priority: "next" });
+      live.run.send(live.accountId === "openai-codex" ? this.codexTeamChatPush(m, who) : text, { priority: "next" });
       pinged++;
     }
     return pinged;
   }
 
-  private cliTeamChatPush(m: ChatMessage, who: string): string {
+  private codexTeamChatPush(m: ChatMessage, who: string): string {
     return (
       `[Office - ${who} (${m.role}) posted to your team room]: ${m.body}\n` +
       `(A teammate working in this same repo sent this. If it touches your work or asks something, reply with a standalone ` +
@@ -3876,14 +3878,14 @@ export class ThreadManager implements OrchestratorApi {
         const t = this.db.getThread(tid);
         if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
       }
-      live.run.send(this.isCliOfficeBridge(live.accountId) ? this.cliDirectorChatPush(text, general) : push, { priority: "now" });
+      live.run.send(live.accountId === "openai-codex" ? this.codexDirectorChatPush(text, general) : push, { priority: "now" });
       pinged++;
     }
     this.hub.log("info", `Director posted to ${general ? "the office" : `team ${workspace}`} — pinged ${pinged} live agent(s).`);
     return m;
   }
 
-  private cliDirectorChatPush(text: string, general: boolean): string {
+  private codexDirectorChatPush(text: string, general: boolean): string {
     const marker = general ? "OFFICE[office]" : "OFFICE[team]";
     const where = general ? "the office" : "your team room";
     return (
@@ -4009,15 +4011,15 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** A concrete heads-up folded into a fresh implementor kickoff when teammates already share its repo
-   *  — names them and tells it to coordinate. `withTools` is false for CLI backends (Codex/Grok — no
-   *  office MCP), where the runner exposes a text marker bridge instead. */
+   *  — names them and tells it to coordinate. `withTools` is false for the Codex backend (no office
+   *  MCP), where the runner exposes a text marker bridge instead. */
   private peerNote(thread: Thread, withTools: boolean): string | undefined {
     const peers = this.repoPeers(thread);
     if (!peers.length) return undefined;
     const list = peers.map((p) => `• ${p.role} on "${p.title}"`).join("\n");
     const how = withTools
       ? "Use the office chat to coordinate: call `office_look`, then `chat_post(scope:\"team\")` to claim the files/areas you'll touch and `chat_read` what they've claimed before editing."
-      : "Coordinate through the CLI office bridge: include a standalone `OFFICE[team]: <short message>` line in your assistant response to claim the files/areas you'll touch, answer teammate messages the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks.";
+      : "Coordinate through the Codex office bridge: include a standalone `OFFICE[team]: <short message>` line in your assistant response to claim the files/areas you'll touch, answer teammate messages the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks.";
     return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\nYou share this workspace, so you can step on each other's changes. ${how} Commit only your own hunks.`;
   }
 
@@ -4355,14 +4357,21 @@ function cliRoleKickoff(
         : role === "researcher"
           ? "Research external sources only; do not edit the repository."
           : "Remain read-only.";
+  // Grok streams one status JSON object per model turn into a single text buffer; tell it explicitly
+  // that ONLY the final object is read, and prefer a trailing fenced block so multi-turn drafts don't
+  // poison the parse (the runner still recovers the last schema-valid object either way).
+  const schemaBlock = schema
+    ? [
+        jsonContractInstruction(schema),
+        "Do NOT emit intermediate status JSON objects mid-work — only the final schema-matching object at the end counts.",
+      ].join("\n\n")
+    : "";
   const prelude = [
     `[Temporary provider fallback: run the ${role} role on ${provider}.]`,
     system,
     safety,
     "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the core role directly; do not invent tool calls.",
-    schema
-      ? `Your final response MUST be only one JSON object matching this exact JSON Schema (no prose outside it):\n${JSON.stringify(schema)}`
-      : "",
+    schemaBlock,
   ]
     .filter(Boolean)
     .join("\n\n");
