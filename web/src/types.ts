@@ -325,6 +325,10 @@ export interface OrchestratorSettings {
   // Per-(subscription × role) model picks. See ModelOverrides. modelDefaults/claudeModels/codexModels
   // are read-only (server-derived): the built-in per-role defaults and the pickable model lists.
   modelOverrides: ModelOverrides;
+  // Per-Claude-account MAX reasoning-effort cap ({accountId → effort}). The director/planner picks the
+  // per-task effort; this caps it per sub (absent/`max` = uncapped). Codex/Grok caps live in codexEffort/
+  // grokEffort. Writable via settings.set.
+  accountEffortCaps: Record<string, Effort>;
   modelDefaults: Partial<Record<Role, string>>;
   claudeModels: string[];
   codexModels: string[];

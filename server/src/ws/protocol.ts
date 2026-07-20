@@ -194,6 +194,11 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         modelOverrides: z
           .record(z.string().max(64), z.partialRecord(z.enum(["director", "planner", "researcher", "implementor", "qa"]), z.string().max(100)))
           .refine((m) => Object.keys(m).length <= 64, { message: "too many subscription entries" }),
+        // Per-Claude-account MAX effort cap: {accountId → effort}. Same 64-entry bound as the model map;
+        // the server sanitizes (drops unknown tiers + `max`, which means uncapped) before persisting.
+        accountEffortCaps: z
+          .record(z.string().max(64), z.enum(["low", "medium", "high", "xhigh", "max"]))
+          .refine((m) => Object.keys(m).length <= 64, { message: "too many effort-cap entries" }),
       })
       .partial(),
   }),

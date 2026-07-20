@@ -1,8 +1,8 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CODEX_EFFORTS, CODEX_SUB_ID, MODEL_ROLES, type Role } from "../types.js";
-import { codexModelOptions } from "../lib/models.js";
+import { CODEX_EFFORTS, CODEX_SUB_ID, EFFORTS, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, type CodexEffort, type Effort, type GrokEffort, type Role } from "../types.js";
+import { codexModelOptions, grokModelOptions } from "../lib/models.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 
 /** The gear-icon panel: everything that isn't a per-task agent toggle (those live in the topbar).
@@ -385,15 +385,17 @@ function SubRoleModels({
   subId,
   models,
   defaultLabelFor,
+  roles = MODEL_ROLES,
 }: {
   subId: string;
   models: string[];
   defaultLabelFor: (role: Role) => string;
+  roles?: readonly Role[];
 }) {
   const [open, setOpen] = useState(false);
   const { overrides, setModel } = useModelOverrides();
   const sub = overrides[subId] ?? {};
-  const count = Object.keys(sub).length;
+  const count = roles.filter((r) => sub[r]).length;
   return (
     <div className="sub-field">
       <button className={"sub-disclosure" + (open ? " open" : "")} onClick={() => setOpen((o) => !o)}>
@@ -401,7 +403,7 @@ function SubRoleModels({
       </button>
       {open && (
         <div className="sub-models">
-          {MODEL_ROLES.map((role) => (
+          {roles.map((role) => (
             <div className="sub-model-row" key={role}>
               <span className="sub-model-label">{role}</span>
               <ModelSelect
@@ -432,10 +434,52 @@ function AccountModels({ accountId }: { accountId: string }) {
   return <SubRoleModels subId={accountId} models={models} defaultLabelFor={(role) => defaults[role] ?? "—"} />;
 }
 
-/** The implementor backends. Each Claude account (Anthropic subscription) is an independently
- *  toggleable card — disabling one holds it out of the dispatch/failover rotation; Claude always
- *  powers the planner/researcher/QA. Codex (OpenAI), when enabled with a valid key, takes over
- *  implementing tasks. The server enforces all of this as a hard gate — these aren't just UI state. */
+/** The MAX reasoning-effort cap for one Claude account. `max` means uncapped, so it's dropped from the
+ *  persisted map (kept lean). xhigh is only offered when the ENABLE_XHIGH opt-in is on. */
+function AccountEffort({ accountId }: { accountId: string }) {
+  const caps = useStore((s) => s.settings.accountEffortCaps);
+  const xhighEnabled = useStore((s) => s.settings.xhighEnabled);
+  const setSettings = useStore((s) => s.setSettings);
+  const value = caps[accountId] ?? "max";
+  const options = EFFORTS.filter((e) => e !== "xhigh" || xhighEnabled);
+  const onChange = (v: string) => {
+    const next: Record<string, Effort> = { ...caps };
+    if (v === "max") delete next[accountId];
+    else next[accountId] = v as Effort;
+    setSettings({ accountEffortCaps: next });
+  };
+  return <EffortCapField value={value} options={options} onChange={onChange} />;
+}
+
+/** Roles a CLI backend (Codex/Grok) can run. Director is excluded — it drives the console via MCP
+ *  dispatch/memory tools no CLI adapter provides, so it always runs on Claude. */
+const CLI_ROLES: readonly Role[] = MODEL_ROLES.filter((r) => r !== "director");
+
+/** A per-subscription MAX reasoning-effort cap. The director/planner still picks the per-task effort;
+ *  this only bounds it, so a tiny task stays cheap while nothing on this sub exceeds the chosen tier. */
+function EffortCapField({ value, options, onChange }: { value: string; options: readonly string[]; onChange: (v: string) => void }) {
+  return (
+    <div className="sub-field">
+      <label className="sub-label">Max reasoning effort</label>
+      <div className="sub-segment">
+        <div className="segment">
+          {options.map((v) => (
+            <button key={v} className={value === v ? "on" : ""} onClick={() => onChange(v)}>
+              {v}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="sub-msg dim">The director picks each task's effort up to this cap — tiny tasks still run low.</div>
+    </div>
+  );
+}
+
+/** The implementor + role backends. Each Claude account (Anthropic subscription) is an independently
+ *  toggleable card — disabling one holds it out of the dispatch/failover rotation. Codex (OpenAI) and Grok
+ *  (xAI), when enabled with valid auth, join the rotation: they implement tasks, and any role (planner/
+ *  researcher/QA) fails over to them when every Claude sub is maxed. The server enforces all of this as a
+ *  hard gate — these aren't just UI state. */
 function SubscriptionsSection() {
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
@@ -451,6 +495,7 @@ function SubscriptionsSection() {
   // Codex auth is usable via EITHER a ChatGPT-plan `codex login` (preferred — no API billing) or a key.
   const codexHasAuth = settings.codexChatgptLogin || settings.hasOpenaiKey;
   const codexActive = settings.codexEnabled && codexHasAuth;
+  const grokActive = settings.grokEnabled && settings.grokSignedIn;
   const enabledAccounts = accounts.filter((a) => a.enabled).length;
   const draftValid = /^sk-\S{8,}$/.test(keyDraft.trim());
   const draftBad = keyDraft.trim().length > 0 && !keyDraft.trim().startsWith("sk-");
@@ -490,7 +535,7 @@ function SubscriptionsSection() {
         meta={
           settings.codexEnabled
             ? codexHasAuth
-              ? `Implementing tasks via the Codex CLI${settings.codexChatgptLogin ? " · ChatGPT plan login" : ""} · model ${settings.codexModel} · ${settings.codexEffort} effort`
+              ? `Implementing tasks via the Codex CLI${settings.codexChatgptLogin ? " · ChatGPT plan login" : ""} · model ${settings.codexModel} · ${settings.codexEffort} max effort`
               : "Enabled but no usable auth — sign in with `codex login` or add a key below before tasks can route here."
             : "Off — enable to implement tasks with the Codex CLI instead of Claude."
         }
@@ -546,6 +591,38 @@ function SubscriptionsSection() {
         <CodexModels />
         <CodexEffortField />
       </SubCard>
+
+      <SubCard
+        name="Grok (SuperGrok)"
+        vendor="xAI"
+        on={settings.grokEnabled}
+        active={grokActive}
+        activeLabel="in rotation"
+        toggleDisabled={!settings.grokEnabled && !settings.grokSignedIn}
+        toggleTitle={!settings.grokSignedIn ? "Sign in with `grok login` first" : undefined}
+        onToggle={(v) => setSettings({ grokEnabled: v })}
+        meta={
+          settings.grokEnabled
+            ? settings.grokSignedIn
+              ? `In the rotation via the Grok CLI${settings.grokAccount ? ` · ${settings.grokAccount}` : ""} · model ${settings.grokModel} · ${settings.grokEffort} max effort`
+              : "Enabled but not signed in — run `grok login` before tasks can route here."
+            : "Off — enable to add Grok to the implementor + role-failover rotation."
+        }
+      >
+        {settings.grokSignedIn ? (
+          <div className="sub-msg ok">
+            Signed in via <code>grok login</code>
+            {settings.grokAccount ? ` as ${settings.grokAccount}` : ""}.
+          </div>
+        ) : (
+          <div className="sub-msg dim">
+            Run <code>grok login</code> in a terminal to authenticate the Grok CLI, then enable it here.
+          </div>
+        )}
+
+        <GrokModels />
+        <EffortCapField value={settings.grokEffort} options={GROK_EFFORTS} onChange={(v) => setSettings({ grokEffort: v as GrokEffort })} />
+      </SubCard>
     </div>
   );
 }
@@ -592,6 +669,7 @@ function AccountCard({
       </div>
       <div className="sub-card-meta">{meta}</div>
       {acct.enabled && <AccountModels accountId={acct.id} />}
+      {acct.enabled && <AccountEffort accountId={acct.id} />}
     </div>
   );
 }
@@ -605,32 +683,29 @@ function CodexModels() {
   const options = codexModelOptions(liveModels);
   return (
     <>
-      <SubRoleModels subId={CODEX_SUB_ID} models={options} defaultLabelFor={() => "Codex default"} />
+      <SubRoleModels subId={CODEX_SUB_ID} models={options} defaultLabelFor={() => "Codex default"} roles={CLI_ROLES} />
       <div className="sub-msg dim">Models your key can access appear automatically — or pick Custom to type any id. Unset roles use Codex's default model.</div>
     </>
   );
 }
 
-/** Codex reasoning effort is independent from the planner's per-task effort suggestion: this is a
- *  backend setting passed directly to the Codex CLI as model_reasoning_effort for every Codex turn. */
+/** The Grok per-role model grid — mirrors the Codex one, over the Grok models the CLI can access. */
+function GrokModels() {
+  const liveModels = useStore((s) => s.settings.grokModels);
+  const options = grokModelOptions(liveModels);
+  return (
+    <>
+      <SubRoleModels subId={GROK_SUB_ID} models={options} defaultLabelFor={() => "Grok default"} roles={CLI_ROLES} />
+      <div className="sub-msg dim">Unset roles use Grok's default model.</div>
+    </>
+  );
+}
+
+/** The Codex reasoning-effort CAP: the director/planner picks each task's effort, clamped to this max. */
 function CodexEffortField() {
   const effort = useStore((s) => s.settings.codexEffort);
   const setSettings = useStore((s) => s.setSettings);
-  return (
-    <div className="sub-field">
-      <label className="sub-label">Reasoning effort</label>
-      <div className="sub-segment">
-        <div className="segment">
-          {CODEX_EFFORTS.map((value) => (
-            <button key={value} className={effort === value ? "on" : ""} onClick={() => setSettings({ codexEffort: value })}>
-              {value}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="sub-msg dim">Applied to Codex CLI runs with model_reasoning_effort.</div>
-    </div>
-  );
+  return <EffortCapField value={effort} options={CODEX_EFFORTS} onChange={(v) => setSettings({ codexEffort: v as CodexEffort })} />;
 }
 
 function SubCard({

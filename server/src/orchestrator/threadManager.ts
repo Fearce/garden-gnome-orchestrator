@@ -9,7 +9,7 @@ import { codexUsageCapped, readCodexUsage } from "../agents/codexUsage.js";
 import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRunner.js";
 import { noteGrokCap } from "../agents/grokUsage.js";
 import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, uniq } from "../agents/modelCatalog.js";
-import { implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
+import { clampEffort, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createGitReadServer } from "../bus/gitReadServer.js";
@@ -65,6 +65,19 @@ function sanitizeModelOverrides(input: ModelOverrides): ModelOverrides {
       if (typeof v === "string" && v.trim()) clean[role] = v.trim().slice(0, 100);
     }
     if (Object.keys(clean).length) out[subId] = clean;
+    if (Object.keys(out).length >= MAX_MODEL_SUB_ENTRIES) break;
+  }
+  return out;
+}
+
+/** Validate an incoming per-account effort-cap map: keep only known effort tiers, drop everything else,
+ *  and cap the entry count. Bounds a client-supplied blob (account ids + tiers both originate client-side)
+ *  before it's persisted. A missing/`max` entry means uncapped, so those are dropped to keep the map lean. */
+function sanitizeAccountEffortCaps(input: Record<string, Effort>): Record<string, Effort> {
+  const out: Record<string, Effort> = {};
+  for (const [id, eff] of Object.entries(input ?? {})) {
+    if (typeof id !== "string" || id.length > 64) continue;
+    if (typeof eff === "string" && EFFORTS.includes(eff) && eff !== "max") out[id] = eff;
     if (Object.keys(out).length >= MAX_MODEL_SUB_ENTRIES) break;
   }
   return out;
@@ -921,6 +934,7 @@ export class ThreadManager implements OrchestratorApi {
       maxRecentRepos: this.settingNum("setting_max_recent_repos", 5, 1, 20),
       recentRepos: this.recentRepos(),
       modelOverrides: this.modelOverrides(),
+      accountEffortCaps: this.accountEffortCaps(),
       modelDefaults: { ...config.models },
       claudeModels: this.pickableClaudeModels(),
       codexModels: this.pickableCodexModels(),
@@ -943,9 +957,12 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
-  /** The Claude model a given subscription runs a role on: the sub's own override, else the global
-   *  "default" override, else the built-in config.models default. Used at dispatch so a change applies
-   *  to the next run. `subId` is the AccountDTO.id the role will run on. */
+  /** The Claude model a given subscription runs a role on: the sub's own per-role override, else the
+   *  global "default" override, else the built-in config.models default. The Settings "Agent models"
+   *  section that used to edit the default layer is gone (model selection now lives in the per-subscription
+   *  cards), but the composer's quick implementor/director model picker still writes that default layer
+   *  (Director.tsx), so it stays a live fallback. Used at dispatch so a change applies to the next run.
+   *  `subId` is the AccountDTO.id the role will run on. */
   modelFor(subId: string, role: Role): string {
     const ov = this.modelOverrides();
     const model = ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim() || config.models[role];
@@ -1061,6 +1078,33 @@ export class ThreadManager implements OrchestratorApi {
     return GROK_EFFORTS.includes(v as GrokEffort) ? (v as GrokEffort) : "high";
   }
 
+  /** Per-Claude-account MAX reasoning-effort caps ({accountId → effort}), parsed from kv. The
+   *  director/planner still chooses the per-task effort; this only caps it so a heavy tier never runs on a
+   *  sub the operator wants kept cheap. A corrupt/absent value degrades to an empty map (uncapped). */
+  private accountEffortCaps(): Record<string, Effort> {
+    const raw = this.db.kvGet("setting_account_effort_caps");
+    if (!raw) return {};
+    try {
+      const v = JSON.parse(raw) as unknown;
+      if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+      const out: Record<string, Effort> = {};
+      for (const [id, eff] of Object.entries(v as Record<string, unknown>)) {
+        if (typeof eff === "string" && EFFORTS.includes(eff as Effort)) out[id] = eff as Effort;
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  }
+
+  /** The effort cap for one Claude account — the operator-set max, else `max` (uncapped). xhigh is coerced
+   *  to high while the ENABLE_XHIGH opt-in is off, mirroring resolveEffort so a cap can't smuggle in a tier
+   *  this machine can't send. */
+  private accountMaxEffort(accountId: string): Effort {
+    const cap = this.accountEffortCaps()[accountId] ?? "max";
+    return cap === "xhigh" && !config.enableXhigh ? "high" : cap;
+  }
+
   /** The composer's implementor-effort pick for skip-director dispatches. "auto" (default) leaves the
    *  planner's per-task pick in charge; a concrete tier is snapshotted onto the thread at dispatch and
    *  beats the plan. A stored `xhigh` degrades to `high` while the ENABLE_XHIGH opt-in is off, mirroring
@@ -1111,6 +1155,7 @@ export class ThreadManager implements OrchestratorApi {
       this.setModelOverride(GROK_SUB_ID, "implementor", patch.grokModel.trim());
     }
     if (patch.modelOverrides !== undefined) this.db.kvSet("setting_model_overrides", JSON.stringify(sanitizeModelOverrides(patch.modelOverrides)));
+    if (patch.accountEffortCaps !== undefined) this.db.kvSet("setting_account_effort_caps", JSON.stringify(sanitizeAccountEffortCaps(patch.accountEffortCaps)));
     // Write-only key: store the trimmed value, or clear it (empty string) so settings() falls back to
     // the env key (if any). The raw key is never returned to clients — only hasOpenaiKey/last4 are.
     if (patch.openaiApiKey !== undefined) {
@@ -1844,13 +1889,30 @@ export class ThreadManager implements OrchestratorApi {
         continue; // bounded: the latched pool makes modelFor resolve the fallback next pass, which has no fallback of its own
       }
       const next = this.failoverAccount(acct.id);
-      // QA is the only runRole role whose cap settles the task to 'review' (a planner/researcher cap
-      // degrades to no-plan/no-research and proceeds). Flag it so that settle tags it for the supervisor.
-      if (!next) {
-        if (role === "qa") this.capParked.set(thread.id, "qa");
-        return res;
-      }
-      if (accountFailovers >= MAX_ACCOUNT_FAILOVERS) {
+      // Claude exhausted for this run — no other account has headroom, or the per-run failover budget is
+      // spent. Before parking, keep planner/researcher/QA alive by continuing on a ready CLI backend
+      // (Codex/Grok) — this is the "don't lose researcher/QA when the Claude subs are maxed" path. The
+      // reader can't fail over (it relies on harness-enforced read-only tools + post_finding the CLI
+      // adapters lack). A planner/researcher cap otherwise degrades to no-plan/no-research; QA otherwise
+      // parks the task to 'review' (capParked flags it for the supervisor).
+      if (!next || accountFailovers >= MAX_ACCOUNT_FAILOVERS) {
+        const cli = role === "reader" ? undefined : this.nextReadyImplementor("claude", unavailableProviders);
+        if (cli) {
+          this.postFinding({
+            threadId: thread.id,
+            fromRole: role,
+            summary: `All Claude subscriptions are usage-capped — switched ${role} to ${providerLabel(cli)}`,
+            detail: `Every enabled Claude account hit its usage limit, so the ${role} stage is continuing on ${providerLabel(cli)} rather than parking the task.`,
+            severity: "warning",
+          });
+          this.notifyExternal(`↪ ${role} — all Claude subs maxed; continuing "${thread.title}" on ${providerLabel(cli)}.`);
+          provider = cli;
+          transientFailures = 0;
+          accountFailovers = 0;
+          resume = undefined;
+          message = prependUserContent(kickoff, `[Claude usage-limit handoff]\nEvery Claude subscription is capped. Continue this ${role} stage on ${providerLabel(cli)} and complete it fully.`);
+          continue;
+        }
         if (role === "qa") this.capParked.set(thread.id, "qa");
         return res;
       }
@@ -2017,7 +2079,9 @@ export class ThreadManager implements OrchestratorApi {
     let startKickoff = kickoff;
     if (provider === "codex") {
       const model = this.codexModel();
-      const effort = this.codexEffort();
+      // The director/planner picks the per-task effort; the Codex subscription's setting is its MAX cap, so
+      // a tiny task still runs cheap while nothing exceeds what the operator allowed for this backend.
+      const effort = clampEffort(plannerEffort, this.codexEffort()) as CodexEffort;
       accountId = "openai-codex";
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `codex:${model}`, effort });
       runId = run.id;
@@ -2046,7 +2110,8 @@ export class ThreadManager implements OrchestratorApi {
       agent = codexAgent;
     } else if (provider === "grok") {
       const model = this.grokModel();
-      const effort = this.grokEffort();
+      // Same as Codex: the per-task effort is capped at the Grok subscription's configured maximum.
+      const effort = clampEffort(plannerEffort, this.grokEffort()) as GrokEffort;
       accountId = "xai-grok";
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `grok:${model}`, effort });
       runId = run.id;
@@ -2070,9 +2135,10 @@ export class ThreadManager implements OrchestratorApi {
       grokAgent.onEnd(() => { if (grokAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
       agent = grokAgent;
     } else {
-      const effort = plannerEffort;
       const acct = opts?.account ?? this.dispatchAccount();
       accountId = acct.id;
+      // The per-task effort is capped at this Claude account's configured maximum (default: uncapped).
+      const effort = clampEffort(plannerEffort, this.accountMaxEffort(acct.id));
       // Model resolved from the subscription this implementor runs on (per-sub override → default → built-in).
       const model = this.modelFor(acct.id, "implementor");
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: acct.label, effort });

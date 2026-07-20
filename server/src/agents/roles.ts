@@ -1,6 +1,6 @@
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.js";
-import type { Effort } from "../types.js";
+import { EFFORTS, type Effort } from "../types.js";
 import type { AgentRunConfig } from "./runner.js";
 import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, GIT_SERVER, MEMORY_SERVER, OFFICE_SERVER, OFFICE_TOOLS, READER_TOOLS, T } from "./toolNames.js";
 import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_PROMPT, READER_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
@@ -114,6 +114,14 @@ export function resolveEffort(effort?: Effort): Effort {
   const requested = effort ?? "high";
   if (requested === "xhigh" && !config.enableXhigh) return "high";
   return requested;
+}
+
+/** Cap a per-task effort at a subscription's configured maximum — the director/planner still picks the
+ *  effort per task (so a tiny task stays cheap), but never exceeds `cap`. Returns the lower of the two on
+ *  the shared low→max ordinal, so a Codex/Grok cap (which tops out below Claude's `max`) also bounds a
+ *  Claude-tier request down into that backend's valid range. */
+export function clampEffort(effort: Effort, cap: Effort): Effort {
+  return EFFORTS.indexOf(effort) <= EFFORTS.indexOf(cap) ? effort : cap;
 }
 
 export function directorConfig(

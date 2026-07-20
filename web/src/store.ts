@@ -309,6 +309,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   maxRecentRepos: 5,
   recentRepos: [],
   modelOverrides: {},
+  accountEffortCaps: {},
   modelDefaults: {},
   claudeModels: [],
   codexModels: [],

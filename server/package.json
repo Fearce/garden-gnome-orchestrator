@@ -13,6 +13,7 @@
     "test:token-freeze": "tsx src/tests/tokenFreezeResume.itest.ts",
     "test:reader": "tsx src/tests/reader.itest.ts",
     "test:structured": "tsx src/tests/structuredText.itest.ts",
+    "test:effort": "tsx src/tests/effortCap.itest.ts",
     "test:cron": "tsx src/tests/cron.test.ts",
     "test:scheduler": "tsx src/tests/scheduler.test.ts",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts"

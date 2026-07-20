@@ -377,6 +377,10 @@ export interface OrchestratorSettings {
   recentRepos: string[]; // recently-dispatched repo paths, most-recent first (capped at maxRecentRepos)
   // ---- Per-(subscription × role) model selection ----
   modelOverrides: ModelOverrides; // operator-picked models: {subId → {role → modelId}} (writable via settings.set)
+  // Per-Claude-account MAX reasoning-effort cap ({accountId → effort}). The director/planner still picks
+  // the per-task effort; this only caps it so a heavy tier never runs on a sub the operator wants cheap.
+  // Absent/`max` = uncapped. Codex/Grok caps live in codexEffort/grokEffort. Writable via settings.set.
+  accountEffortCaps: Record<string, Effort>;
   modelDefaults: Partial<Record<Role, string>>; // read-only: the built-in per-role defaults (config.models)
   claudeModels: string[]; // read-only: pickable Claude model ids (live ∪ curated ∪ selected), most-capable first
   codexModels: string[]; // read-only: pickable Codex/OpenAI model ids (live ∪ curated ∪ selected)
