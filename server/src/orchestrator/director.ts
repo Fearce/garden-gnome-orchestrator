@@ -335,14 +335,22 @@ function voiceNote(): string {
 export function looksLikeScheduleRequest(text: string): boolean {
   const t = text.toLowerCase();
   const unit = "(?:morning|night|evening|day|hour|week|month|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|min(?:ute)?s?|hours?|days?|weeks?)";
-  return (
+  // Unambiguous scheduling language — any one of these is enough on its own.
+  const strong =
     /\bsched(?:ul)?e[ds]?\b/.test(t) ||
     /\bcron\b/.test(t) ||
     /\brecurr(?:ing|ence)\b/.test(t) ||
     /\bperiodically\b/.test(t) ||
-    /\b(?:daily|hourly|weekly|nightly|monthly)\b/.test(t) ||
-    new RegExp(`\\b(?:every|each)\\s+(?:\\d+\\s+)?${unit}`).test(t)
-  );
+    new RegExp(`\\b(?:every|each)\\s+(?:\\d+\\s+)?${unit}`).test(t);
+  if (strong) return true;
+  // A bare frequency adverb ("weekly", "daily", …) is ambiguous: a scheduling cue in "run this weekly",
+  // but a plain adjective in "add a Weekly token safety %". Treat it as a schedule request only when it
+  // co-occurs with an action verb or a clock time — otherwise a feature ABOUT a weekly/daily thing would
+  // wrongly override skip-director and get routed to the director.
+  const frequency = /\b(?:daily|hourly|weekly|nightly|monthly)\b/.test(t);
+  const actionVerb = /\b(?:run|remind|send|check|notify|ping|trigger|dispatch|execute|fetch|scrape|sync|back\s?up|kick\s?off)\b/.test(t);
+  const clockTime = /\b(?:\d{1,2}\s*(?:am|pm)|[01]?\d:[0-5]\d|noon|midnight)\b/.test(t);
+  return frequency && (actionVerb || clockTime);
 }
 
 /** A board-lane title from a raw skip-director message: first non-empty line, trimmed to a short label. */
