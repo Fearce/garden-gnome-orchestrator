@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
@@ -125,6 +126,25 @@ function extractOfficeChat(text: string): { visible: string; posts: Array<{ scop
   return { visible: visible.join("\n").trim(), posts };
 }
 
+/** Stage one Grok prompt at a process-wide unique path. GrokAgentRun instances execute concurrently, so
+ * an instance-local counter is not enough: every new run starts at turn 1 and would otherwise overwrite
+ * every other run's `p<pid>-1.txt` before the CLI opens it. `wx` makes the uniqueness guarantee atomic
+ * even in the vanishingly unlikely event of a UUID collision. Exported for the concurrency regression. */
+export async function stageGrokPrompt(prompt: string): Promise<string | undefined> {
+  const dir = join(tmpdir(), "gg-grok-prompts");
+  await mkdir(dir, { recursive: true }).catch(() => {});
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const path = join(dir, `p${process.pid}-${randomUUID()}.txt`);
+    try {
+      await writeFile(path, prompt, { encoding: "utf8", flag: "wx" });
+      return path;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") return undefined;
+    }
+  }
+  return undefined;
+}
+
 /**
  * One running xAI Grok implementor. Mirrors AgentRun's public surface (AgentRunLike) so the thread
  * manager drives it identically, but the engine is the batch-oriented `grok` CLI (SuperGrok subscription)
@@ -172,7 +192,6 @@ export class GrokAgentRun implements AgentRunLike {
   private turnWatchdog: NodeJS.Timeout | undefined;
   private sawFirstEvent = false;
   private isResumeTurn = false;
-  private promptCounter = 0;
 
   constructor(private readonly cfg: GrokRunConfig) {
     this.emitter.setMaxListeners(50);
@@ -362,16 +381,9 @@ export class GrokAgentRun implements AgentRunLike {
   /** Write this turn's prompt to a temp file and return its path (null on failure). */
   private async writePrompt(prompt: string): Promise<string | undefined> {
     void this.cleanupPrompt();
-    const dir = join(tmpdir(), "gg-grok-prompts");
-    await mkdir(dir, { recursive: true }).catch(() => {});
-    const p = join(dir, `p${process.pid}-${++this.promptCounter}.txt`);
-    try {
-      await writeFile(p, prompt, "utf8");
-      this.promptFile = p;
-      return p;
-    } catch {
-      return undefined;
-    }
+    const path = await stageGrokPrompt(prompt);
+    this.promptFile = path;
+    return path;
   }
 
   /** Delete the temp prompt file from the last turn (fire-and-forget; a missing file is fine). */
