@@ -70,7 +70,11 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   POST http://127.0.0.1:3939/api/restart   body {"id":"claude-orchestrator"}
   ```
   Shorthand: `.\launchers\script-hub.ps1 restart claude-orchestrator` (from your process-manager
-  root) — issue it directly.
+  root) — issue it directly. **Siblings mid-edit in this shared checkout?** `npm run build` compiles
+  the DIRTY working tree, so a plain rebuild sweeps their uncommitted, un-QA'd server code into `dist`
+  and live. Deploy your fix WITHOUT theirs by building `dist` from committed HEAD only — recipe in
+  project memory `shared-checkout-concurrent-edits` (git-archive HEAD → temp tree → junction
+  node_modules → `tsc --outDir <real dist>` → restart; then grep-verify your symbol in / their symbol out).
 - **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
   runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.
