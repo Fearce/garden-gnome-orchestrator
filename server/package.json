@@ -20,7 +20,8 @@
     "test:schedule-detect": "tsx src/tests/scheduleDetect.test.ts",
     "test:scheduler": "tsx src/tests/scheduler.test.ts",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",
-    "test:office-bridge": "tsx src/tests/officeBridge.test.ts"
+    "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
+    "probe:office-chat": "node scripts/probe-office-chat.cjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.177",
