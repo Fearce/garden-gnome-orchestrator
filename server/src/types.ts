@@ -357,6 +357,7 @@ export interface OrchestratorSettings {
   codexEnabled: boolean; // OpenAI Codex: when on (with a valid key), it becomes the implementor backend
   codexModel: string; // the resolved Codex implementor model (mirrors modelOverrides.codex.implementor; kept for the top-bar chip + back-compat)
   codexEffort: CodexEffort; // Codex CLI reasoning effort, applied via model_reasoning_effort
+  codexWeeklySafetyPct: number; // 1-100 soft weekly ceiling; 100 preserves hard-cap-only behavior
   hasOpenaiKey: boolean; // read-only indicator — an OpenAI key is stored (the raw key is never broadcast)
   openaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
   codexChatgptLogin: boolean; // read-only — a ChatGPT-plan `codex login` is available; preferred over the key

@@ -244,6 +244,7 @@ export interface AccountDTO {
   resetsAt?: number | null;
   active: boolean;
   enabled: boolean; // operator toggle — disabled accounts are held out of dispatch/failover
+  weeklySafetyPct: number; // 1-100 soft weekly-utilization ceiling; 100 preserves hard-cap-only behavior
   holdUntil?: number | null; // 5h window idle (stagger hold-off) — the next window starts at this epoch ms
   // Model-scoped pool caps (Fable's separately-gated allowance): dispatch resolves `fallback` in place
   // of `model` on this sub until `resetsAt`. The account's normal windows are unaffected.
@@ -304,6 +305,7 @@ export interface OrchestratorSettings {
   codexEnabled: boolean;
   codexModel: string;
   codexEffort: CodexEffort;
+  codexWeeklySafetyPct: number;
   hasOpenaiKey: boolean; // read-only: a key is stored (raw key never reaches the client)
   openaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
   codexChatgptLogin: boolean; // read-only: a ChatGPT-plan `codex login` is available (preferred over a key)
@@ -529,6 +531,7 @@ export type ClientCommand =
   | { type: "settings.set"; settings: SettingsPatch }
   | { type: "codex.test"; apiKey?: string }
   | { type: "account.set"; id: string; enabled: boolean }
+  | { type: "account.setSafety"; id: string; weeklySafetyPct: number }
   | { type: "thread.changes"; threadId: string }
   | { type: "thread.git"; threadId: string }
   | { type: "thread.gitSummary"; threadId: string }

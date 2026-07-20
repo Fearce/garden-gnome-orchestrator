@@ -451,6 +451,22 @@ function AccountEffort({ accountId }: { accountId: string }) {
   return <EffortCapField value={value} options={options} onChange={onChange} />;
 }
 
+/** The soft weekly-safety ceiling for one Claude account. At/above this utilization the sub
+ * sheds new tasks to a fresher one through transparent failover. */
+function AccountWeeklySafety({ accountId, value }: { accountId: string; value: number }) {
+  const setAccountWeeklySafety = useStore((s) => s.setAccountWeeklySafety);
+  return (
+    <SubStepperField
+      label="Weekly safety %"
+      hint="Switch subs when weekly usage exceeds this threshold. Won't freeze tasks."
+      value={value}
+      min={1}
+      max={100}
+      onChange={(v) => setAccountWeeklySafety(accountId, v)}
+    />
+  );
+}
+
 /** Roles a CLI backend (Codex/Grok) can run. Director is excluded — it drives the console via MCP
  *  dispatch/memory tools no CLI adapter provides, so it always runs on Claude. */
 const CLI_ROLES: readonly Role[] = MODEL_ROLES.filter((r) => r !== "director");
@@ -590,6 +606,7 @@ function SubscriptionsSection() {
 
         <CodexModels />
         <CodexEffortField />
+        <CodexWeeklySafety />
       </SubCard>
 
       <SubCard
@@ -670,6 +687,7 @@ function AccountCard({
       <div className="sub-card-meta">{meta}</div>
       {acct.enabled && <AccountModels accountId={acct.id} />}
       {acct.enabled && <AccountEffort accountId={acct.id} />}
+      {acct.enabled && <AccountWeeklySafety accountId={acct.id} value={acct.weeklySafetyPct} />}
     </div>
   );
 }
@@ -706,6 +724,22 @@ function CodexEffortField() {
   const effort = useStore((s) => s.settings.codexEffort);
   const setSettings = useStore((s) => s.setSettings);
   return <EffortCapField value={effort} options={CODEX_EFFORTS} onChange={(v) => setSettings({ codexEffort: v as CodexEffort })} />;
+}
+
+/** The soft weekly-safety ceiling for the Codex backend. */
+function CodexWeeklySafety() {
+  const value = useStore((s) => s.settings.codexWeeklySafetyPct);
+  const setSettings = useStore((s) => s.setSettings);
+  return (
+    <SubStepperField
+      label="Weekly safety %"
+      hint="Switch backends when Codex's weekly usage exceeds this threshold. Won't freeze tasks."
+      value={value}
+      min={1}
+      max={100}
+      onChange={(v) => setSettings({ codexWeeklySafetyPct: v })}
+    />
+  );
 }
 
 function SubCard({
@@ -886,6 +920,85 @@ function NumberRow({
         </div>
       }
     />
+  );
+}
+
+/** Numeric stepper laid out for a subscription card, matching the other per-sub fields. */
+function SubStepperField({
+  label,
+  hint,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (v: number) => void;
+}) {
+  const clamp = (n: number) => Math.min(max, Math.max(min, n));
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    if (!draft.trim()) {
+      setDraft(String(value));
+      return;
+    }
+    const n = Number(draft);
+    if (!Number.isFinite(n)) {
+      setDraft(String(value));
+      return;
+    }
+    const next = clamp(Math.round(n));
+    setDraft(String(next));
+    if (next !== value) onChange(next);
+  };
+
+  const step = (delta: number) => {
+    const next = clamp(value + delta);
+    setDraft(String(next));
+    if (next !== value) onChange(next);
+  };
+
+  return (
+    <div className="sub-field">
+      <label className="sub-label">{label}</label>
+      <div className="stepper">
+        <button aria-label={`Decrease ${label}`} disabled={value <= min} onClick={() => step(-1)}>
+          −
+        </button>
+        <input
+          type="number"
+          className="stepper-val mono"
+          aria-label={label}
+          inputMode="numeric"
+          min={min}
+          max={max}
+          step={1}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value.replace(/\D/g, ""))}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setDraft(String(value));
+            }
+          }}
+        />
+        <button aria-label={`Increase ${label}`} disabled={value >= max} onClick={() => step(1)}>
+          +
+        </button>
+      </div>
+      <div className="sub-msg dim">{hint}</div>
+    </div>
   );
 }
 

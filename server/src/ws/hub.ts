@@ -164,6 +164,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     case "account.set":
       ctx.manager.setAccountEnabled(cmd.id, cmd.enabled);
       break;
+    case "account.setSafety":
+      ctx.manager.setAccountWeeklySafety(cmd.id, cmd.weeklySafetyPct);
+      break;
     case "thread.changes": {
       const changes = await ctx.manager.getChanges(cmd.threadId);
       send(socket, { type: "thread.changes", threadId: cmd.threadId, diff: changes.diff, log: changes.log });

@@ -147,6 +147,7 @@ interface State {
   setSettings: (patch: SettingsPatch) => void;
   testCodex: (apiKey?: string) => void;
   setAccountEnabled: (id: string, enabled: boolean) => void;
+  setAccountWeeklySafety: (id: string, weeklySafetyPct: number) => void;
   setShowCompleted: (v: boolean) => void;
   setVerbosity: (v: Verbosity) => void;
   setTaskSort: (v: TaskSort) => void;
@@ -292,6 +293,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   codexEnabled: false,
   codexModel: "gpt-5.5",
   codexEffort: "high",
+  codexWeeklySafetyPct: 100,
   hasOpenaiKey: false,
   openaiKeyLast4: null,
   codexChatgptLogin: false,
@@ -469,6 +471,11 @@ export const useStore = create<State>((set) => ({
     // a refused toggle — e.g. trying to disable the last enabled account).
     set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, enabled } : a)) }));
     sendCommand({ type: "account.set", id, enabled });
+  },
+  setAccountWeeklySafety: (id, weeklySafetyPct) => {
+    // Optimistic: the server broadcast confirms the validated value.
+    set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, weeklySafetyPct } : a)) }));
+    sendCommand({ type: "account.setSafety", id, weeklySafetyPct });
   },
   setShowCompleted: (v) =>
     set((s) => {

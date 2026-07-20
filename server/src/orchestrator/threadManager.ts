@@ -1,5 +1,5 @@
 import type { AccountDispatchPreview, AccountManager } from "../accounts/accountManager.js";
-import { untilReset } from "../accounts/accountManager.js";
+import { preferUnderWeeklySafety, untilReset } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
@@ -108,6 +108,7 @@ interface ProviderCandidate {
   fiveHour: number | null;
   sevenDay: number | null;
   sevenDayReset: number | null;
+  weeklySafetyPct: number; // 1-100 soft weekly ceiling; at/above it this backend is de-preferred
 }
 
 /** A settings.set patch: the writable subset of OrchestratorSettings plus the write-only raw key. The
@@ -408,6 +409,7 @@ export class ThreadManager implements OrchestratorApi {
     );
     this.markInterrupted();
     this.applyAccountEnabled();
+    this.applyAccountWeeklySafety();
     this.loadCodexCap();
     this.loadGrokCap();
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
@@ -917,6 +919,7 @@ export class ThreadManager implements OrchestratorApi {
       codexEnabled: this.settingBool("setting_codex_enabled", false),
       codexModel: this.codexModel(),
       codexEffort: this.codexEffort(),
+      codexWeeklySafetyPct: this.settingNum("setting_codex_weekly_safety", 100, 1, 100),
       hasOpenaiKey: !!key,
       openaiKeyLast4: key && key.length >= 4 ? key.slice(-4) : null,
       codexChatgptLogin: chatgptLoginAvailable(),
@@ -1141,6 +1144,7 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.fastUsagePolling !== undefined) this.db.kvSet("setting_fast_usage_polling", patch.fastUsagePolling ? "1" : "0");
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
     if (patch.codexEffort !== undefined && CODEX_EFFORTS.includes(patch.codexEffort)) this.db.kvSet("setting_codex_effort", patch.codexEffort);
+    if (patch.codexWeeklySafetyPct !== undefined) this.db.kvSet("setting_codex_weekly_safety", String(patch.codexWeeklySafetyPct));
     // Legacy free-text codex model field: mirror it into the matrix (codex.implementor) so the two stay
     // coherent regardless of which UI wrote it, and keep the legacy kv as a migration fallback.
     if (patch.codexModel !== undefined && patch.codexModel.trim()) {
@@ -1291,6 +1295,7 @@ export class ThreadManager implements OrchestratorApi {
       fiveHour: null,
       sevenDay: null,
       sevenDayReset: null,
+      weeklySafetyPct: 100,
     };
   }
 
@@ -1316,6 +1321,7 @@ export class ThreadManager implements OrchestratorApi {
       fiveHour: u?.fiveHour ?? null,
       sevenDay: u?.sevenDay ?? null,
       sevenDayReset: u?.sevenDayReset ?? null,
+      weeklySafetyPct: this.settings().codexWeeklySafetyPct,
     };
   }
 
@@ -1325,7 +1331,10 @@ export class ThreadManager implements OrchestratorApi {
    *  least the Claude candidate, so this never sees an empty list. Reused by nextReadyImplementor. */
   private preferredImplementorProvider(candidates: ProviderCandidate[]): ImplementorProvider {
     const withHeadroom = candidates.filter((c) => c.hasHeadroom);
-    const pool = withHeadroom.length ? withHeadroom : candidates;
+    const base = withHeadroom.length ? withHeadroom : candidates;
+    // Prefer a backend still under its weekly safety limit, but fall through to the full set when every
+    // backend is over so dispatch never freezes.
+    const pool = preferUnderWeeklySafety(base);
     return pool.reduce((best, c) => (providerPriority(best, c) <= 0 ? best : c)).provider;
   }
 
@@ -1372,6 +1381,23 @@ export class ThreadManager implements OrchestratorApi {
   setAccountEnabled(id: string, enabled: boolean): boolean {
     const applied = this.accounts.setEnabled(id, enabled);
     if (applied) this.db.kvSet(`account_enabled_${id}`, enabled ? "1" : "0");
+    this.hub.publish({ type: "accounts", accounts: this.accounts.dto() });
+    return applied;
+  }
+
+  /** Restore each Claude account's persisted weekly-safety ceiling into the live AccountManager on boot. */
+  private applyAccountWeeklySafety(): void {
+    for (const a of config.accounts) {
+      const v = this.db.kvGet(`account_weekly_safety_${a.id}`);
+      if (v != null) this.accounts.applyWeeklySafetyPct(a.id, Number(v));
+    }
+  }
+
+  /** Set a Claude account's soft weekly-safety ceiling (1-100; 100 preserves the old behavior), persisting
+   *  it. Crossing the ceiling sheds new dispatches to a fresher account without freezing tasks. */
+  setAccountWeeklySafety(id: string, pct: number): boolean {
+    const applied = this.accounts.setWeeklySafetyPct(id, pct);
+    if (applied) this.db.kvSet(`account_weekly_safety_${id}`, String(this.accounts.dto().find((a) => a.id === id)?.weeklySafetyPct ?? pct));
     this.hub.publish({ type: "accounts", accounts: this.accounts.dto() });
     return applied;
   }
@@ -4324,6 +4350,7 @@ function providerCandidateFromClaude(c: AccountDispatchPreview): ProviderCandida
     fiveHour: c.fiveHour,
     sevenDay: c.sevenDay,
     sevenDayReset: c.sevenDayReset,
+    weeklySafetyPct: c.weeklySafetyPct,
   };
 }
 

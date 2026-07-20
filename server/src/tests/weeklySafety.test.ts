@@ -1,0 +1,57 @@
+// Unit test for the per-subscription weekly-safety ceiling (pure logic — no accounts, no DB, no network).
+// Run: npx tsx src/tests/weeklySafety.test.ts   (or `npm run test:weekly-safety`)
+//
+// `preferUnderWeeklySafety` is the soft filter select()/selectFailover() apply: keep candidates under
+// their own weekly ceiling, but fall through to ALL when none qualify (never freeze a dispatch).
+
+import { preferUnderWeeklySafety } from "../accounts/accountManager.js";
+
+let failures = 0;
+function check(name: string, cond: boolean): void {
+  if (cond) {
+    console.log(`  ✓ ${name}`);
+  } else {
+    failures++;
+    console.error(`  ✗ ${name}`);
+  }
+}
+
+type Cand = { id: string; sevenDay: number | null; weeklySafetyPct: number };
+const a = (id: string, sevenDay: number | null, weeklySafetyPct = 100): Cand => ({ id, sevenDay, weeklySafetyPct });
+const ids = (cs: Cand[]) => cs.map((c) => c.id).join(",");
+
+console.log("weekly-safety: preferUnderWeeklySafety");
+
+// Default ceiling (100) → nothing is ever over it (utilization can't reach 100 and be < 100), so all pass.
+check("default 100 keeps everyone", ids(preferUnderWeeklySafety([a("A", 95), a("B", 40)])) === "A,B");
+
+// A sub at/above its ceiling is dropped in favor of one under its own ceiling.
+check("A over 90 → only B", ids(preferUnderWeeklySafety([a("A", 92, 90), a("B", 40, 90)])) === "B");
+check("exactly at ceiling counts as over", ids(preferUnderWeeklySafety([a("A", 90, 90), a("B", 40, 90)])) === "B");
+check("just under ceiling stays", ids(preferUnderWeeklySafety([a("A", 89, 90), a("B", 40, 90)])) === "A,B");
+
+// Independent per-sub ceilings: each is judged against its OWN threshold.
+check("per-sub ceilings independent", ids(preferUnderWeeklySafety([a("A", 85, 80), a("B", 85, 90)])) === "B");
+
+// ALL over their ceilings → fall through to the full set (no freeze), order preserved.
+check("all over → fall through to all", ids(preferUnderWeeklySafety([a("A", 95, 90), a("B", 92, 90)])) === "A,B");
+
+// Null usage (pre-ping) treated as 0 → always under any ceiling.
+check("null usage is under any ceiling", ids(preferUnderWeeklySafety([a("A", null, 50), a("B", 60, 50)])) === "A");
+
+// Empty input → empty output (caller falls back to base).
+check("empty stays empty", preferUnderWeeklySafety([] as Cand[]).length === 0);
+
+// Same helper drives the provider-level ceiling (Claude/Codex/Grok backends). Claude & Grok carry a 100
+// (off) ceiling there; only Codex sets a real one. Grok's usage is null → always under.
+console.log("weekly-safety: provider-level backends");
+const p = (id: string, sevenDay: number | null, weeklySafetyPct = 100) => a(id, sevenDay, weeklySafetyPct);
+check("codex over its ceiling → claude/grok preferred", ids(preferUnderWeeklySafety([p("claude", 40), p("codex", 88, 85), p("grok", null)])) === "claude,grok");
+check("codex under its ceiling → all kept", ids(preferUnderWeeklySafety([p("claude", 40), p("codex", 80, 85), p("grok", null)])) === "claude,codex,grok");
+check("everyone over → fall through (no freeze)", ids(preferUnderWeeklySafety([p("claude", 95, 90), p("codex", 92, 85)])) === "claude,codex");
+
+if (failures) {
+  console.error(`\n${failures} weekly-safety check(s) FAILED`);
+  process.exit(1);
+}
+console.log("\nAll weekly-safety checks passed.");

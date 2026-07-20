@@ -30,6 +30,7 @@ export interface AccountDTO {
   resetsAt?: number | null;
   active: boolean; // last/preferred account for dispatch
   enabled: boolean; // operator toggle — a disabled account is held out of dispatch/failover
+  weeklySafetyPct: number; // 1-100 soft weekly-utilization ceiling; 100 preserves hard-cap-only behavior
   holdUntil?: number | null; // 5h window idle (stagger hold-off) — the next window starts at this epoch ms
   // Model-scoped pool caps (Fable's separately-gated allowance): dispatch resolves `fallback` in place
   // of `model` on this sub until `resetsAt`. The account's normal windows are unaffected.
@@ -171,6 +172,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
         codexEffort: z.enum(["low", "medium", "high", "xhigh"]),
+        codexWeeklySafetyPct: z.number().int().min(1).max(100),
         grokEnabled: z.boolean(),
         grokModel: z.string().min(1).max(64),
         grokEffort: z.enum(["low", "medium", "high"]),
@@ -206,6 +208,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("codex.test"), apiKey: z.string().max(300).optional() }),
   // Toggle a Claude account in/out of the dispatch+failover rotation (per-account subscription switch).
   z.object({ type: z.literal("account.set"), id: z.string(), enabled: z.boolean() }),
+  // Set a Claude account soft weekly-safety ceiling; this only changes routing preference.
+  z.object({ type: z.literal("account.setSafety"), id: z.string(), weeklySafetyPct: z.number().int().min(1).max(100) }),
   z.object({ type: z.literal("thread.changes"), threadId: z.string() }),
   z.object({ type: z.literal("thread.git"), threadId: z.string() }),
   z.object({ type: z.literal("thread.gitSummary"), threadId: z.string() }),

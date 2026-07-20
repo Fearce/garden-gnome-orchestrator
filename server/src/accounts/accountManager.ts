@@ -20,6 +20,7 @@ interface AccountState {
   rateLimitWindow: string | null;
   rateLimitResetAt: number | null;
   enabled: boolean; // operator toggle — a disabled account is held out of dispatch/failover rotation
+  weeklySafetyPct: number; // 1-100 soft cap: at/above this weekly utilization, route to another sub first (100 = off)
   lastPick: number; // monotonic selection sequence — round-robin tiebreak
   holdUntil: number | null; // stagger hold-off: the 5h window is idle and its start ping waits for this slot
   extWakeAt: number | null; // last time a hold-release ping found the window ALREADY started by someone else
@@ -55,6 +56,7 @@ export interface AccountDispatchPreview {
   sevenDay: number | null;
   fiveHourReset: number | null;
   sevenDayReset: number | null;
+  weeklySafetyPct: number;
 }
 
 // At/above this on the tightest window, treat the account as effectively capped.
@@ -88,6 +90,22 @@ const BOOT_TRUST_MS = 30 * 60 * 1000;
 const MODEL_LIMIT_FALLBACK_MS = 5 * 60 * 60 * 1000;
 
 const tightest = (s: AccountState): number => Math.max(s.fiveHour ?? 0, s.sevenDay ?? 0);
+// A soft, operator-set per-sub weekly ceiling: below its `weeklySafetyPct` the account is preferred for
+// dispatch; at/above it the account is skipped IN FAVOR of a sub still under its own ceiling.
+const underWeeklySafety = (s: { sevenDay: number | null; weeklySafetyPct: number }): boolean =>
+  (s.sevenDay ?? 0) < s.weeklySafetyPct;
+
+/**
+ * Apply the soft weekly-safety ceiling to a candidate set: keep only accounts still under their own
+ * `weeklySafetyPct`, but — unlike the hard cap — never freeze. When EVERY candidate is over its ceiling
+ * (or the set is empty) the full set is returned so dispatch falls through to it rather than parking the
+ * task. Exported for unit tests; used by both `select()` (via selectionPool) and `selectFailover()`.
+ */
+export function preferUnderWeeklySafety<T extends { sevenDay: number | null; weeklySafetyPct: number }>(candidates: T[]): T[] {
+  const under = candidates.filter(underWeeklySafety);
+  return under.length ? under : candidates;
+}
+
 const weeklyHeadroom = (s: AccountState): number => 100 - (s.sevenDay ?? 0);
 const fiveHeadroom = (s: AccountState): number => 100 - (s.fiveHour ?? 0);
 const hasBurnData = (s: AccountState): boolean => s.fiveHour != null || s.sevenDay != null;
@@ -164,6 +182,7 @@ export class AccountManager {
         rateLimitWindow: null,
         rateLimitResetAt: null,
         enabled: true,
+        weeklySafetyPct: 100,
         lastPick: 0,
         holdUntil: null,
         extWakeAt: null,
@@ -478,6 +497,26 @@ export class AccountManager {
     if (st) st.enabled = enabled;
   }
 
+  /** Set an account's soft weekly-safety ceiling (1-100; 100 = off). Clamped to range; returns whether it
+   *  changed. Persistence lives in the caller (ThreadManager kv); this is the live state select() reads. */
+  setWeeklySafetyPct(accountId: string, pct: number): boolean {
+    const st = this.states.get(accountId);
+    if (!st) return false;
+    const next = clampSafetyPct(pct);
+    if (st.weeklySafetyPct === next) return false;
+    st.weeklySafetyPct = next;
+    st.updatedAt = Date.now();
+    this.publish();
+    return true;
+  }
+
+  /** Apply a persisted weekly-safety ceiling on boot WITHOUT a publish (the initial dto() broadcast carries
+   *  it). An out-of-range value is clamped; an unknown account id is ignored. */
+  applyWeeklySafetyPct(accountId: string, pct: number): void {
+    const st = this.states.get(accountId);
+    if (st) st.weeklySafetyPct = clampSafetyPct(pct);
+  }
+
   private enabledCount(): number {
     let n = 0;
     for (const s of this.states.values()) if (s.enabled) n++;
@@ -617,6 +656,7 @@ export class AccountManager {
       sevenDay: chosen.sevenDay,
       fiveHourReset: chosen.fiveHourReset,
       sevenDayReset: chosen.sevenDayReset,
+      weeklySafetyPct: chosen.weeklySafetyPct,
     };
   }
 
@@ -634,9 +674,12 @@ export class AccountManager {
       return !limited && tightest(s) < HARD_LIMIT;
     });
     if (!candidates.length) return null;
+    // Honor the soft weekly ceiling here too: fail over to a sub still under its ceiling when one exists,
+    // else use whichever capped-out candidate has the most headroom rather than stranding the task.
+    const pool = preferUnderWeeklySafety(candidates);
     // Same perishable-first order: the reserve account we fail over to is the next-soonest-resetting one.
-    candidates.sort(bySelectionPriority);
-    const chosen = candidates[0]!;
+    pool.sort(bySelectionPriority);
+    const chosen = pool[0]!;
     chosen.lastPick = ++this.selSeq;
     this.preferredId = chosen.account.id;
     this.releaseHold(chosen); // dispatch traffic starts the held window anyway — refresh the read now
@@ -744,6 +787,7 @@ export class AccountManager {
       resetsAt: s.rateLimitResetAt,
       active: s.account.id === this.preferredId,
       enabled: s.enabled,
+      weeklySafetyPct: s.weeklySafetyPct,
       holdUntil: s.holdUntil,
       modelLimits: [...s.modelLimits]
         .filter(([, r]) => r > now)
@@ -767,12 +811,23 @@ export class AccountManager {
       const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
       return !limited && tightest(s) < HARD_LIMIT;
     });
-    return { usable, pool: usable.length ? [...usable] : [...base] };
+    // Soft weekly ceiling: prefer usable subs still under their own `weeklySafetyPct`, so an account that
+    // crosses its ceiling sheds new work onto a fresher one WITHOUT freezing (falls through to all usable
+    // when every one is over its ceiling — see preferUnderWeeklySafety).
+    const preferred = preferUnderWeeklySafety(usable);
+    return { usable, pool: preferred.length ? [...preferred] : [...base] };
   }
 }
 
 function fmt(n: number | null | undefined): string {
   return n == null ? "—" : `${Math.round(n)}%`;
+}
+
+/** Clamp a weekly-safety ceiling to the valid 1-100 integer range (100 = off). Guards a bad WS payload
+ *  or stale kv value from disabling an account entirely (0 would make it always over-ceiling). */
+function clampSafetyPct(pct: number): number {
+  if (!Number.isFinite(pct)) return 100;
+  return Math.min(100, Math.max(1, Math.round(pct)));
 }
 
 /** The still-live model-pool latches as a persistable record, dropping expired entries. */
