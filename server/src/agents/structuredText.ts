@@ -219,8 +219,20 @@ export function splitVerdictSummary(summary: string): { headline: string; body?:
   if (!s) return { headline: summary.trim() || "" };
 
   // First sentence as headline when there's a real rest-of-essay after it.
-  const m = /^(.{12,180}?[.!?…])(?:\s+)([\s\S]{20,})$/s.exec(s);
-  if (m) return { headline: m[1]!.trim(), body: m[2]!.trim() };
+  // Allow short punchy openers ("Ship it.", "Looks good.") when body is long enough —
+  // Grok often leads with those then dumps the investigation.
+  const m = /^(.{1,180}?[.!?…])(?:\s+)([\s\S]{40,})$/s.exec(s);
+  if (m) {
+    const head = m[1]!.trim();
+    const body = m[2]!.trim();
+    // Tiny openers ("OK.", "Yes.") make a weak card headline — promote the next sentence.
+    // Keep punchy ones like "Ship it." / "Looks good." as the headline.
+    if (head.length < 6) {
+      const m2 = /^(.{6,180}?[.!?…])(?:\s+)([\s\S]{20,})$/s.exec(s);
+      if (m2) return { headline: m2[1]!.trim(), body: m2[2]!.trim() };
+    }
+    return { headline: head, body };
+  }
 
   // Single long clause with no sentence break — soft-cut at a natural pause.
   if (s.length > 200) {
@@ -397,11 +409,17 @@ export function formatStructuredRoleFeed(text: string): string {
         ? [finalBlock]
         : capped;
 
+  // Brace-balanced fragments inside already-human prose (e.g. restart body `{"id":"claude-orchestrator"}`
+  // in an issue description) are NOT role-output walls. Treating them as such used to stripJsonish
+  // the narrative and skip compactHumanizedQaChecklist — so **Issues** never applied and second
+  // pass was non-identity (prod: nightly Fail messages mentioning hub restart JSON).
+  if (!blocks.length) return compactHumanizedQaChecklist(text);
+
   const prose = stripJsonish(text);
   if (prose && !isJsonLeftover(prose)) {
-    return prose + (blocks.length ? "\n\n" + blocks.join("\n") : "");
+    return prose + "\n\n" + blocks.join("\n");
   }
-  return blocks.length ? blocks.join("\n") : text;
+  return blocks.join("\n");
 }
 
 /**

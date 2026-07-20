@@ -271,6 +271,10 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
   );
   check("splitVerdictSummary returns a short headline", !!split.headline && split.headline.length < 120 && /fixed/i.test(split.headline));
   check("splitVerdictSummary keeps the rest as body", !!split.body && /Typecheck/i.test(split.body));
+  const shipIt = splitVerdictSummary(
+    "Ship it. The bug matches a real concurrent prompt-file race: each run overwrote the same prompt file so every CLI read the same kickoff. The fix stages unique prompt paths.",
+  );
+  check("splitVerdictSummary keeps short 'Ship it.' openers as headline", shipIt.headline === "Ship it." && !!shipIt.body && /concurrent/i.test(shipIt.body));
 
   // Second pass: a previously-humanized wall that still kept long draft-fail bullets (prod: Grok usage QA).
   const bloatedHuman =
@@ -285,6 +289,29 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
   check("keeps short status ticks when compacting", compacted.includes("- Starting QA") && compacted.includes("- Working tree clean"));
   check("adds **Issues** when compacting legacy issue bullets", compacted.includes("**Issues**") && compacted.includes("- **blocker**"));
   check("compacted humanized text is stable on a second pass", formatStructuredRoleFeed(compacted) === compacted);
+
+  // Already-humanized Fail that embeds a restart-body JSON fragment in an issue description
+  // (prod: nightly "process lags dist" Fail mentioning POST /api/restart {"id":"claude-orchestrator"}).
+  // extractJsonObjects used to treat that fragment as a role wall, stripJsonish the narrative, and
+  // skip compact — so **Issues** never applied and the second pass was non-identity.
+  const withIncidentalJson =
+    "- Starting QA for the nightly quality sweep.\n" +
+    "- Health now flags possible stale process vs dist.\n\n" +
+    "**Fail** — Nightly quality sweep: service/tests/UI OK, but live :4317 process lags dist by ~112s so HEAD server fixes are not loaded. No missing deliverables. Fail until atomic restart and health recheck.\n\n" +
+    "Issues:\n" +
+    '- **major**: Live process lags dist. Atomic restart POST http://127.0.0.1:3939/api/restart {"id":"claude-orchestrator"}, then recheck health. (server/dist vs :4317 listener)\n' +
+    "- **minor**: 3 threads in review with bare QA could not complete. (orchestrator.sqlite)";
+  const incidentalFixed = formatStructuredRoleFeed(withIncidentalJson);
+  check(
+    "incidental JSON in issue text does not strip the narrative",
+    incidentalFixed.includes("claude-orchestrator") && incidentalFixed.includes("**Fail**") && incidentalFixed.includes("- Starting QA"),
+  );
+  check("incidental JSON path still promotes Issues: to **Issues**", incidentalFixed.includes("**Issues**") && !/^Issues:\s*$/m.test(incidentalFixed));
+  check("incidental JSON path is stable on a second pass", formatStructuredRoleFeed(incidentalFixed) === incidentalFixed);
+  check(
+    "incidental JSON path still splits the essay Fail headline",
+    /\*\*Fail\*\* — Nightly quality sweep:/.test(incidentalFixed) && incidentalFixed.includes("No missing deliverables"),
+  );
 
   // Cap: many distinct short pass:false ticks keep the FIRST N (+ trailing "more checks" marker).
   let manyTicks = "";
