@@ -2,7 +2,7 @@
 // Run: npx tsx src/tests/officeBridge.test.ts
 
 import assert from "node:assert/strict";
-import { extractOfficeChat, MAX_OFFICE_BODY } from "../agents/officeBridge.js";
+import { endsWithOpenOfficeMarker, extractOfficeChat, MAX_OFFICE_BODY } from "../agents/officeBridge.js";
 
 // Canonical standalone line (Codex agent_message shape).
 {
@@ -146,6 +146,63 @@ import { extractOfficeChat, MAX_OFFICE_BODY } from "../agents/officeBridge.js";
   const twice = extractOfficeChat(once.visible);
   assert.deepEqual(twice.posts, []);
   assert.equal(twice.visible, once.visible);
+}
+
+// REAL prod failure (Fen/claude-orchestrator, 2026-07-20): Grok streams tokens and interleaves
+// thought events mid-answer. Mid-segment harvest with openEnded bodies posted truncated fragments
+// ("claimi") and junk ("\n"). Closed-ended harvest must leave incomplete markers unposted.
+{
+  const partial = extractOfficeChat("OFFICE[team]: claimi", { openEnded: false });
+  assert.deepEqual(partial.posts, [], `mid-stream partial must not post: ${JSON.stringify(partial.posts)}`);
+  assert.match(partial.visible, /OFFICE\[team\]:\s*claimi/);
+
+  // More tokens arrive — still no hard terminator.
+  const stillOpen = extractOfficeChat(partial.visible + "ng officeBridge.ts", { openEnded: false });
+  assert.deepEqual(stillOpen.posts, []);
+  assert.match(stillOpen.visible, /claiming officeBridge\.ts/);
+
+  // Newline completes the claim — now it posts.
+  const done = extractOfficeChat(stillOpen.visible + "\nContinuing the fix.", { openEnded: false });
+  assert.equal(done.posts.length, 1);
+  assert.equal(done.posts[0]!.body, "claiming officeBridge.ts");
+  assert.match(done.visible, /Continuing the fix/);
+  assert.ok(!done.visible.includes("OFFICE["));
+}
+
+// Final flush may accept open-ended bodies (message ends without a trailing newline).
+{
+  const fin = extractOfficeChat("OFFICE[team]: claiming officeBridge.ts for the team-chat fix", { openEnded: true });
+  assert.equal(fin.posts.length, 1);
+  assert.match(fin.posts[0]!.body, /claiming officeBridge/);
+}
+
+// Junk bodies (literal \n escape, punctuation-only) never post, even when terminated.
+{
+  const junk = extractOfficeChat("Before.\nOFFICE[team]: \\n\nAfter.", { openEnded: true });
+  assert.deepEqual(junk.posts, []);
+  assert.ok(!junk.visible.includes("OFFICE["));
+  assert.match(junk.visible, /Before/);
+  assert.match(junk.visible, /After/);
+}
+
+// endsWithOpenOfficeMarker drives whether Grok appends a segment-separator newline.
+{
+  assert.equal(endsWithOpenOfficeMarker("OFFICE[team]: claimi"), true);
+  assert.equal(endsWithOpenOfficeMarker("OFFICE[team]: claiming foo.ts\n"), false);
+  assert.equal(endsWithOpenOfficeMarker("Just narration, no marker."), false);
+  assert.equal(endsWithOpenOfficeMarker("Done.\nOFFICE[team]: claiming a\nMore text."), false);
+}
+
+// Mid-segment: complete claim + incomplete second marker — post the first, keep the second.
+{
+  const mixed = extractOfficeChat(
+    "OFFICE[team]: claiming A\nmid\nOFFICE[team]: claimi",
+    { openEnded: false },
+  );
+  assert.equal(mixed.posts.length, 1);
+  assert.equal(mixed.posts[0]!.body, "claiming A");
+  assert.match(mixed.visible, /OFFICE\[team\]:\s*claimi/);
+  assert.match(mixed.visible, /mid/);
 }
 
 console.log("All officeBridge extraction checks passed.");

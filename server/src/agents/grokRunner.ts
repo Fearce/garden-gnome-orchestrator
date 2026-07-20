@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
-import { extractOfficeChat } from "./officeBridge.js";
+import { endsWithOpenOfficeMarker, extractOfficeChat } from "./officeBridge.js";
 import { parseStructuredText, validateAgainstSchema, type JsonSchemaLike } from "./structuredText.js";
 import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 
@@ -507,20 +507,27 @@ export class GrokAgentRun implements AgentRunLike {
     }
   }
 
-  /** Close the current assistant-text segment: post any OFFICE bridge lines immediately, strip them from
-   *  the buffer, and ensure a newline so the next model turn can't concatenate onto a claim body. */
+  /** Close the current assistant-text segment: post any *complete* OFFICE bridge lines immediately,
+   *  leave incomplete markers in the buffer (Grok interleaves thought/text mid-answer, so harvesting
+   *  open-ended bodies here produced truncated team posts like "claimi"), and insert a newline only
+   *  when no open marker remains — so a later turn can't glue onto a finished claim body. */
   private endTextSegment(): void {
     if (!this.streamInText) return;
     this.streamInText = false;
-    this.harvestOfficePosts();
-    if (this.textBuf && !this.textBuf.endsWith("\n")) this.textBuf += "\n";
+    this.harvestOfficePosts({ openEnded: false });
+    // Don't append `\n` while an OFFICE marker is still open — that would falsely complete it on the
+    // next harvest. Segment separation only applies once the claim body is done.
+    if (this.textBuf && !this.textBuf.endsWith("\n") && !endsWithOpenOfficeMarker(this.textBuf)) {
+      this.textBuf += "\n";
+    }
   }
 
   /** Strip + post OFFICE[...] markers from textBuf in place. Safe to call repeatedly — already-posted
-   *  markers are gone from the buffer, so a later flush won't double-post. */
-  private harvestOfficePosts(): void {
+   *  markers are gone from the buffer, so a later flush won't double-post. Incomplete open markers are
+   *  left in place when `openEnded` is false (mid-segment). */
+  private harvestOfficePosts(opts?: { openEnded?: boolean }): void {
     if (!this.textBuf) return;
-    const { visible, posts } = extractOfficeChat(this.textBuf);
+    const { visible, posts } = extractOfficeChat(this.textBuf, opts);
     for (const post of posts) {
       try {
         this.cfg.onOfficeChat?.(post.scope, post.body);
@@ -562,10 +569,14 @@ export class GrokAgentRun implements AgentRunLike {
 
   /** Flush the turn's accumulated assistant text: strip + post any remaining OFFICE[...] bridge lines
    *  (segment harvest during the stream usually already did this), emit the rest as one persisted `text`
-   *  block, and resolve structuredOutput for schema-constrained roles. */
+   *  block, and resolve structuredOutput for schema-constrained roles.
+   *
+   *  Open-ended bodies are only accepted on a clean CLI `end` — a mid-stream kill/interrupt would
+   *  otherwise post truncated fragments (prod: Fen "claimi" after a server bounce). */
   private flushText(): unknown {
     this.streamInText = false;
-    this.harvestOfficePosts();
+    const openEnded = this.sawTerminal && !this.interrupting;
+    this.harvestOfficePosts({ openEnded });
     const visible = this.textBuf;
     this.textBuf = "";
     if (visible.trim()) this.emit({ type: "text", text: visible });
