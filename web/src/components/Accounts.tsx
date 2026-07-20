@@ -178,10 +178,18 @@ function CodexChip({
   );
 }
 
+/** Compact absolute credit reading for the monthly SuperGrok meter (e.g. "864/15k"). */
+function fmtCredits(used: number, limit: number): string {
+  const fmt = (n: number): string =>
+    n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(Math.round(n));
+  return `${fmt(used)}/${fmt(limit)}`;
+}
+
 /**
  * Top-bar chip for the xAI Grok backend. Shows signed-in SuperGrok identity, state (implementing /
  * ready / capped / needs auth / off), and live meters: weekly used-% (CLI log / winpty) + monthly
- * credits (HTTP billing). Before the first reading lands it shows model·effort (or a soft error).
+ * credits (HTTP billing — absolute units on the value, not just a near-empty %). Before the first
+ * reading lands it shows model·effort (or a soft error) so the chip never looks blank when configured.
  */
 function GrokChip({
   enabled,
@@ -210,7 +218,16 @@ function GrokChip({
       : usage?.sevenDay != null && usage.sevenDay >= 100 && (usage.sevenDayReset == null || usage.sevenDayReset > now)
         ? usage.sevenDayReset
         : null;
-  const capped = capReset !== null || (usage?.sevenDay != null && usage.sevenDay >= 100 && usage.sevenDayReset == null);
+  const monthlyExhausted =
+    usage?.monthlyUsed != null &&
+    usage.monthlyLimit != null &&
+    usage.monthlyLimit > 0 &&
+    usage.monthlyUsed >= usage.monthlyLimit &&
+    (usage.monthlyReset == null || usage.monthlyReset > now);
+  const capped =
+    capReset !== null ||
+    monthlyExhausted ||
+    (usage?.sevenDay != null && usage.sevenDay >= 100 && usage.sevenDayReset == null);
   const state = !enabled ? "off" : !hasAuth ? "noauth" : capped ? "capped" : live ? "implementing" : "ready";
   const tag =
     state === "implementing" ? "implementing" : state === "ready" ? "ready" : state === "capped" ? "capped" : state === "noauth" ? "no auth" : "off";
@@ -220,6 +237,10 @@ function GrokChip({
   const monthlyPct =
     usage?.monthlyUsed != null && usage.monthlyLimit != null && usage.monthlyLimit > 0
       ? Math.min(100, Math.max(0, (100 * usage.monthlyUsed) / usage.monthlyLimit))
+      : null;
+  const creditLabel =
+    usage?.monthlyUsed != null && usage.monthlyLimit != null && usage.monthlyLimit > 0
+      ? fmtCredits(usage.monthlyUsed, usage.monthlyLimit)
       : null;
   const hasMeter = usage != null && (usage.sevenDay != null || monthlyPct != null);
   const stale = !!usage?.stale;
@@ -240,7 +261,13 @@ function GrokChip({
       : state === "ready"
         ? `Grok${plan ? ` (${plan})` : ""} enabled${who} · model ${model} · ${effort} effort${meterNote}${monthlyNote}${prefNote}`
         : state === "capped"
-          ? `Grok hit its usage limit — routing implementors elsewhere${capReset != null ? `; retrying in ${countdown(capReset, now)}` : ""}`
+          ? `Grok hit its usage limit — routing implementors elsewhere${
+              capReset != null
+                ? `; retrying in ${countdown(capReset, now)}`
+                : monthlyExhausted && usage?.monthlyReset != null
+                  ? `; monthly credits refill in ${countdown(usage.monthlyReset, now)}`
+                  : ""
+            }`
           : state === "noauth"
             ? "Grok is enabled but not signed in — run `grok login` (or `grok login --device-auth`) on the host"
             : `Grok${plan ? ` (${plan})` : ""} configured but off · model ${model} · ${effort} effort`;
@@ -280,6 +307,7 @@ function GrokChip({
               stale={stale}
               reset={usage!.monthlyReset}
               now={now}
+              valueLabel={creditLabel}
               detail={
                 usage!.monthlyUsed != null && usage!.monthlyLimit != null
                   ? `${usage!.monthlyUsed}/${usage!.monthlyLimit} credits`
@@ -289,12 +317,23 @@ function GrokChip({
           ) : null}
         </div>
       ) : (
-        <div className="codex-model" title={usage?.error ? `usage unavailable: ${usage.error}` : `${model} · ${effort} effort${who}`}>
+        <div
+          className="codex-model"
+          title={
+            usage?.error
+              ? `usage unavailable: ${usage.error}`
+              : hasAuth
+                ? `Polling SuperGrok weekly + monthly usage… · ${model} · ${effort}${who}`
+                : `${model} · ${effort} effort${who}`
+          }
+        >
           {state === "capped" && usage?.capUntil
             ? `retry in ${countdown(usage.capUntil, now)}`
             : usage?.error
               ? usage.error
-              : `${model} · ${effort}`}
+              : hasAuth
+                ? "polling usage…"
+                : `${model} · ${effort}`}
         </div>
       )}
     </div>
@@ -369,6 +408,7 @@ function Meter({
   now,
   hold,
   detail,
+  valueLabel,
 }: {
   k: string;
   pct: number | null;
@@ -380,6 +420,8 @@ function Meter({
   hold?: number | null;
   /** Optional absolute reading (e.g. "616/15000 credits") appended to the hover tip. */
   detail?: string | null;
+  /** Override the right-hand value text (e.g. "864/15k" for SuperGrok monthly credits). */
+  valueLabel?: string | null;
 }) {
   const win = k === "5h" ? "5-hour" : k === "mo" ? "monthly" : "weekly";
   // Stagger hold-off: the 5h window rolled over and its restart ping deliberately waits for this
@@ -401,16 +443,16 @@ function Meter({
     : left
       ? `${usageTip} · ${resetTip}`
       : usageTip;
+  const shown = valueLabel
+    ? `${stale ? "~" : ""}${valueLabel}`
+    : `${pct != null && stale ? "~" : ""}${label(pct)}`;
   return (
-    <div className="meter" title={tip}>
+    <div className={"meter" + (valueLabel ? " meter-wide-v" : "")} title={tip}>
       <span className="meter-k">{k}</span>
       <div className="meter-track">
         <div className={"meter-fill " + kind + (stale ? " stale" : "")} style={{ width: `${clamp(pct)}%` }} />
       </div>
-      <span className="meter-v">
-        {pct != null && stale ? "~" : ""}
-        {label(pct)}
-      </span>
+      <span className="meter-v">{shown}</span>
       <span className="meter-r">{holding ? `idle ${countdown(hold, now)}` : left ? `${resetEstimated ? "~" : ""}${left}` : ""}</span>
     </div>
   );

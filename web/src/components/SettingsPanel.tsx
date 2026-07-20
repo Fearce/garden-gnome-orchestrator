@@ -512,6 +512,7 @@ function SubscriptionsSection() {
   const codexHasAuth = settings.codexChatgptLogin || settings.hasOpenaiKey;
   const codexActive = settings.codexEnabled && codexHasAuth;
   const grokActive = settings.grokEnabled && settings.grokSignedIn;
+  const grokUsage = useStore((s) => s.grokUsage);
   const enabledAccounts = accounts.filter((a) => a.enabled).length;
   const draftValid = /^sk-\S{8,}$/.test(keyDraft.trim());
   const draftBad = keyDraft.trim().length > 0 && !keyDraft.trim().startsWith("sk-");
@@ -618,24 +619,21 @@ function SubscriptionsSection() {
         toggleDisabled={!settings.grokEnabled && !settings.grokSignedIn}
         toggleTitle={!settings.grokSignedIn ? "Sign in with `grok login` first" : undefined}
         onToggle={(v) => setSettings({ grokEnabled: v })}
-        meta={
-          settings.grokEnabled
-            ? settings.grokSignedIn
-              ? `In the rotation via the Grok CLI${settings.grokAccount ? ` · ${settings.grokAccount}` : ""} · model ${settings.grokModel} · ${settings.grokEffort} max effort`
-              : "Enabled but not signed in — run `grok login` before tasks can route here."
-            : "Off — enable to add Grok to the implementor + role-failover rotation."
-        }
+        meta={grokSettingsMeta(settings, grokUsage)}
       >
         {settings.grokSignedIn ? (
           <div className="sub-msg ok">
             Signed in via <code>grok login</code>
-            {settings.grokAccount ? ` as ${settings.grokAccount}` : ""}.
+            {settings.grokAccount ? ` as ${settings.grokAccount}` : ""}
+            {grokUsage?.plan ? ` · ${grokUsage.plan}` : ""}.
           </div>
         ) : (
           <div className="sub-msg dim">
             Run <code>grok login</code> in a terminal to authenticate the Grok CLI, then enable it here.
           </div>
         )}
+
+        {settings.grokSignedIn ? <GrokUsageReadout usage={grokUsage} /> : null}
 
         {settings.grokEnabled && settings.grokSignedIn ? (
           <ToggleRow
@@ -753,7 +751,7 @@ function CodexWeeklySafety() {
   );
 }
 
-/** The soft weekly-safety ceiling for the Grok backend, backed by the live `/usage show` scrape. */
+/** The soft weekly-safety ceiling for the Grok backend, backed by the live SuperGrok weekly meter. */
 function GrokWeeklySafety() {
   const value = useStore((s) => s.settings.grokWeeklySafetyPct);
   const setSettings = useStore((s) => s.setSettings);
@@ -766,6 +764,52 @@ function GrokWeeklySafety() {
       max={100}
       onChange={(v) => setSettings({ grokWeeklySafetyPct: v })}
     />
+  );
+}
+
+/** One-line SuperGrok usage for the Settings card meta (mirrors Claude account cards' weekly · 5h line). */
+function grokSettingsMeta(
+  settings: { grokEnabled: boolean; grokSignedIn: boolean; grokAccount?: string | null; grokModel: string; grokEffort: string },
+  usage: import("../types.js").GrokUsageDTO | null,
+): string {
+  if (!settings.grokEnabled) return "Off — enable to add Grok to the implementor + role-failover rotation.";
+  if (!settings.grokSignedIn) return "Enabled but not signed in — run `grok login` before tasks can route here.";
+  const who = settings.grokAccount ? ` · ${settings.grokAccount}` : "";
+  const weekly = usage?.sevenDay != null ? `weekly ${Math.round(usage.sevenDay)}%` : "weekly —";
+  const monthly =
+    usage?.monthlyUsed != null && usage.monthlyLimit != null && usage.monthlyLimit > 0
+      ? `monthly ${usage.monthlyUsed}/${usage.monthlyLimit} credits`
+      : "monthly —";
+  const plan = usage?.plan ? ` · ${usage.plan}` : "";
+  const err = usage?.error && usage.sevenDay == null && usage.monthlyUsed == null ? ` · usage: ${usage.error}` : "";
+  return `In rotation${who}${plan} · ${weekly} · ${monthly} · model ${settings.grokModel} · ${settings.grokEffort} max effort${err}`;
+}
+
+/** Live SuperGrok meters inside the Settings → Grok card so usage is visible without scanning the top bar. */
+function GrokUsageReadout({ usage }: { usage: import("../types.js").GrokUsageDTO | null }) {
+  if (!usage) {
+    return <div className="sub-msg dim">Waiting for SuperGrok usage ping…</div>;
+  }
+  const weekly = usage.sevenDay != null ? `${Math.round(usage.sevenDay)}% used` : "—";
+  const monthly =
+    usage.monthlyUsed != null && usage.monthlyLimit != null && usage.monthlyLimit > 0
+      ? `${usage.monthlyUsed}/${usage.monthlyLimit} credits (${Math.round((100 * usage.monthlyUsed) / usage.monthlyLimit)}%)`
+      : "—";
+  if (usage.sevenDay == null && usage.monthlyUsed == null) {
+    return (
+      <div className={"sub-msg" + (usage.error ? " bad" : " dim")}>
+        {usage.error ? `Usage unavailable: ${usage.error}` : "Polling SuperGrok weekly + monthly usage…"}
+      </div>
+    );
+  }
+  return (
+    <div className="sub-msg ok" title={usage.stale ? "Last known reading — refresh pending" : "Live SuperGrok usage"}>
+      Usage{usage.stale ? " (stale)" : ""}: weekly {weekly}
+      {usage.sevenDayReset != null ? ` · resets ${new Date(usage.sevenDayReset).toLocaleString()}` : ""}
+      {" · "}
+      monthly {monthly}
+      {usage.monthlyReset != null ? ` · period ends ${new Date(usage.monthlyReset).toLocaleDateString()}` : ""}.
+    </div>
   );
 }
 
