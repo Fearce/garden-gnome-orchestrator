@@ -182,6 +182,12 @@ export class GrokAgentRun implements AgentRunLike {
    *  model-turn segment: we harvest OFFICE posts then and insert a newline so the next turn can't glue
    *  onto a claim body (the prod failure mode where "claiming foo" + "Implementing bar" became one post). */
   private streamInText = false;
+  /** Accumulated `thought` chunks for the current reasoning burst. Grok's streaming-json emits no tool
+   *  events, so reasoning is the only narrative of a long agentic run — we persist each burst as a durable
+   *  `thinking` message (not just an ephemeral thinking_delta) so the transcript survives reload. */
+  private thoughtBuf = "";
+  /** True while the latest stream events are `thought` chunks; a `text`/tool/end event closes the burst. */
+  private streamInThought = false;
   private maxTurnsHit = false;
   /** CLI-native structured output from the latest `end` event (preferred over re-parsing streamed text). */
   private endStructuredOutput: unknown | undefined;
@@ -313,6 +319,8 @@ export class GrokAgentRun implements AgentRunLike {
     this.stdoutBuf = "";
     this.textBuf = "";
     this.streamInText = false;
+    this.thoughtBuf = "";
+    this.streamInThought = false;
     this.structuredProgressEmitted = 0;
     this.maxTurnsHit = false;
     this.endStructuredOutput = undefined;
@@ -465,6 +473,8 @@ export class GrokAgentRun implements AgentRunLike {
         // raw into the feed is unreadable (Grok QA especially), so we buffer and surface human progress
         // lines instead, then flush a fully humanized transcript on close.
         if (ev.data) {
+          // A text chunk ends the current reasoning burst — commit it as a durable `thinking` message.
+          this.endThoughtSegment();
           this.streamInText = true;
           this.textBuf += ev.data;
           if (this.cfg.outputSchema) this.emitStructuredProgress();
@@ -476,14 +486,20 @@ export class GrokAgentRun implements AgentRunLike {
         // see claims mid-run (not only when the whole CLI process exits), and separate segments with a
         // newline so a later turn can't glue onto the claim body.
         this.endTextSegment();
-        if (ev.data) this.emit({ type: "thinking_delta", text: ev.data });
+        if (ev.data) {
+          this.streamInThought = true;
+          this.thoughtBuf += ev.data;
+          this.emit({ type: "thinking_delta", text: ev.data });
+        }
         break;
       case "max_turns_reached":
         this.endTextSegment();
+        this.endThoughtSegment();
         this.maxTurnsHit = true;
         break;
       case "error": {
         this.endTextSegment();
+        this.endThoughtSegment();
         this.sawTerminal = true;
         const msg = ev.message ?? this.lastErrorMsg ?? "Grok turn failed.";
         if (RATE_LIMIT_RE.test(msg)) this.markCapped();
@@ -493,6 +509,7 @@ export class GrokAgentRun implements AgentRunLike {
       }
       case "end": {
         this.endTextSegment();
+        this.endThoughtSegment();
         this.sawTerminal = true;
         if (ev.sessionId) {
           const first = !this.sessionId;
@@ -522,10 +539,23 @@ export class GrokAgentRun implements AgentRunLike {
         break;
       }
       default:
-        // Unknown event types (future tool/status markers) also bound a text segment.
+        // Unknown event types (future tool/status markers) also bound a text/reasoning segment.
         this.endTextSegment();
+        this.endThoughtSegment();
         break;
     }
+  }
+
+  /** Commit the current reasoning burst as a durable `thinking` message. Reasoning is Grok's only
+   *  visible narrative (its CLI emits no tool events), so persisting each burst — rather than dropping
+   *  the ephemeral thinking_delta stream — is what keeps a long agentic run's transcript from being
+   *  empty on reload. Called at every text/tool/end boundary and on turn close. */
+  private endThoughtSegment(): void {
+    if (!this.streamInThought) return;
+    this.streamInThought = false;
+    const text = this.thoughtBuf.trim();
+    this.thoughtBuf = "";
+    if (text) this.emit({ type: "thinking", text });
   }
 
   /** Close the current assistant-text segment: post any *complete* OFFICE bridge lines immediately,
@@ -603,6 +633,9 @@ export class GrokAgentRun implements AgentRunLike {
    *  Open-ended bodies are only accepted on a clean CLI `end` — a mid-stream kill/interrupt would
    *  otherwise post truncated fragments (prod: Fen "claimi" after a server bounce). */
   private flushText(): unknown {
+    // Commit any reasoning burst that was still open when the stream ended (e.g. a watchdog kill mid-thought
+    // with no terminal event) so the last narration isn't lost.
+    this.endThoughtSegment();
     this.streamInText = false;
     const openEnded = this.sawTerminal && !this.interrupting;
     this.harvestOfficePosts({ openEnded });

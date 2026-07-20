@@ -133,7 +133,7 @@ export interface Finding {
   createdAt: number;
 }
 
-export type MessageKind = "text" | "tool" | "result" | "system";
+export type MessageKind = "text" | "tool" | "result" | "system" | "thinking";
 
 // ---- The office: cross-agent chat rooms ----
 
@@ -432,6 +432,10 @@ export type AgentEvent =
   | { type: "text_delta"; text: string }
   | { type: "text"; text: string }
   | { type: "thinking_delta"; text: string }
+  // A completed reasoning segment persisted durably (kind: "thinking"). Grok's streaming-json exposes
+  // no tool events, so reasoning is the only narrative of a long agentic run — emitting it durably (not
+  // just as ephemeral thinking_delta) is what keeps a Grok transcript from looking empty after reload.
+  | { type: "thinking"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; content: unknown; isError: boolean }
   | { type: "permission_request"; requestId: string; toolName: string; input: unknown }

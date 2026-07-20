@@ -4197,6 +4197,11 @@ export class ThreadManager implements OrchestratorApi {
           this.hub.publish({ type: "agent.text", threadId, runId, role, text: e.text, messageId: m.id });
           break;
         }
+        case "thinking": {
+          const m = this.db.addMessage({ threadId, runId, role, kind: "thinking", content: e.text });
+          this.hub.publish({ type: "agent.reasoning", threadId, runId, role, text: e.text, messageId: m.id });
+          break;
+        }
         case "tool_use": {
           const m = this.db.addMessage({ threadId, runId, role, kind: "tool", content: `${e.name} ${safeJson(e.input)}` });
           this.hub.publish({ type: "agent.tool", threadId, runId, role, name: e.name, input: e.input, id: e.id, messageId: m.id });

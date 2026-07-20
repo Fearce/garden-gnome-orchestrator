@@ -71,6 +71,9 @@ interface State {
   directorSearch: { query: string; results: DirectorMessage[]; searching: boolean } | null;
   threadFeeds: Record<string, FeedItem[]>;
   threadDrafts: Record<string, ThreadDraft | undefined>;
+  // Live reasoning stream (agent.thinking deltas) awaiting its durable agent.reasoning commit — kept
+  // separate from threadDrafts (the response-text draft) so reasoning and answer stream independently.
+  thinkingDrafts: Record<string, ThreadDraft | undefined>;
   selectedThreadId: string | null;
   approvalMode: boolean;
   // Server-authoritative pipeline settings (broadcast over WS); the panel edits these via setSettings.
@@ -391,6 +394,7 @@ export const useStore = create<State>((set) => ({
   directorSearch: null,
   threadFeeds: {},
   threadDrafts: {},
+  thinkingDrafts: {},
   selectedThreadId: null,
   approvalMode: false,
   settings: DEFAULT_SETTINGS,
@@ -599,7 +603,7 @@ async function waitForServer(timeoutMs = 90_000): Promise<void> {
 /** Which agent RUN a feed item belongs to. Keyed by runId (stable on the item) so retention
  *  never depends on run-arrival timing; a tool_result is grouped with its own run's items. */
 export function feedBucket(f: FeedItem): string {
-  if (f.kind === "text" || f.kind === "tool" || f.kind === "tool_result") return f.runId;
+  if (f.kind === "text" || f.kind === "thinking" || f.kind === "tool" || f.kind === "tool_result") return f.runId;
   if (f.kind === "finding") return f.finding.fromRunId ?? "other";
   return "other";
 }
@@ -607,7 +611,7 @@ export function feedBucket(f: FeedItem): string {
 /** The stable DB message-row id of a feed item, if it has one. Live-streamed items and the
  *  same message re-delivered by thread.history share this id, so it's how we dedup the two. */
 export function feedMessageId(f: FeedItem): string | undefined {
-  if (f.kind === "text" || f.kind === "tool" || f.kind === "system") return f.id;
+  if (f.kind === "text" || f.kind === "thinking" || f.kind === "tool" || f.kind === "system") return f.id;
   if (f.kind === "tool_result") return f.messageId;
   return undefined;
 }
@@ -796,6 +800,7 @@ function applyEvent(ev: ServerEvent): void {
           threads: drop(s.threads),
           threadFeeds: drop(s.threadFeeds),
           threadDrafts: drop(s.threadDrafts),
+          thinkingDrafts: drop(s.thinkingDrafts),
           pendingPlans: drop(s.pendingPlans),
           threadChanges: drop(s.threadChanges),
           gitSummaries: drop(s.gitSummaries),
@@ -829,6 +834,7 @@ function applyEvent(ev: ServerEvent): void {
           questions: s.questions.filter((q) => q.threadId !== ev.threadId),
           threadFeeds: drop(s.threadFeeds),
           threadDrafts: drop(s.threadDrafts),
+          thinkingDrafts: drop(s.thinkingDrafts),
           pendingPlans: drop(s.pendingPlans),
           threadChanges: drop(s.threadChanges),
           gitSummaries: drop(s.gitSummaries),
@@ -916,6 +922,23 @@ function applyEvent(ev: ServerEvent): void {
       pushFeed(ev.threadId, { kind: "tool_result", at: Date.now(), runId: ev.runId, id: ev.id, messageId: ev.messageId, isError: ev.isError, preview: ev.preview });
       break;
     case "agent.thinking":
+      // Live reasoning stream — accumulate into a per-thread draft (like agent.delta) so a long-thinking
+      // Grok run shows activity instead of a blank feed. Committed + cleared by agent.reasoning.
+      useStore.setState((s) => ({
+        thinkingDrafts: {
+          ...s.thinkingDrafts,
+          [ev.threadId]: {
+            runId: ev.runId,
+            role: ev.role,
+            text: (s.thinkingDrafts[ev.threadId]?.runId === ev.runId ? s.thinkingDrafts[ev.threadId]!.text : "") + ev.text,
+          },
+        },
+      }));
+      break;
+    case "agent.reasoning":
+      // A completed reasoning burst persisted server-side — clear the live draft and pin it durably.
+      useStore.setState((s) => ({ thinkingDrafts: { ...s.thinkingDrafts, [ev.threadId]: undefined } }));
+      pushFeed(ev.threadId, { kind: "thinking", at: Date.now(), role: ev.role, runId: ev.runId, id: ev.messageId, text: ev.text });
       break;
     case "finding":
       useStore.setState((s) => ({ findings: [...s.findings, ev.finding] }));
@@ -990,6 +1013,8 @@ function messageToFeed(m: Message): FeedItem | null {
   switch (m.kind) {
     case "text":
       return { kind: "text", at: m.createdAt, role, runId: m.runId ?? "", id: m.id, text: m.content };
+    case "thinking":
+      return { kind: "thinking", at: m.createdAt, role, runId: m.runId ?? "", id: m.id, text: m.content };
     case "tool":
       return { kind: "tool", at: m.createdAt, role, runId: m.runId ?? "", id: m.id, name: m.content, input: undefined };
     case "result":

@@ -90,6 +90,9 @@ export type ServerEvent =
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
   | { type: "agent.text"; threadId: string; runId: string; role: Role; text: string; messageId: string }
   | { type: "agent.thinking"; threadId: string; runId: string; role: Role; text: string }
+  // A completed reasoning segment persisted as a durable message (kind "thinking"). Mirrors the
+  // delta→text pair: `agent.thinking` is the live stream, `agent.reasoning` is the committed block.
+  | { type: "agent.reasoning"; threadId: string; runId: string; role: Role; text: string; messageId: string }
   | { type: "agent.tool"; threadId: string; runId: string; role: Role; name: string; input: unknown; id: string; messageId: string }
   | { type: "agent.tool_result"; threadId: string; runId: string; id: string; isError: boolean; preview: string; messageId: string }
   | { type: "finding"; finding: Finding }

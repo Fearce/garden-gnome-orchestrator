@@ -146,7 +146,7 @@ export interface Message {
   threadId: string;
   runId?: string | null;
   role: Role | "user";
-  kind: "text" | "tool" | "result" | "system";
+  kind: "text" | "tool" | "result" | "system" | "thinking";
   content: string;
   attachments?: AttachmentRef[];
   createdAt: number;
@@ -501,6 +501,7 @@ export type ServerEvent =
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
   | { type: "agent.text"; threadId: string; runId: string; role: Role; text: string; messageId: string }
   | { type: "agent.thinking"; threadId: string; runId: string; role: Role; text: string }
+  | { type: "agent.reasoning"; threadId: string; runId: string; role: Role; text: string; messageId: string }
   | { type: "agent.tool"; threadId: string; runId: string; role: Role; name: string; input: unknown; id: string; messageId: string }
   | { type: "agent.tool_result"; threadId: string; runId: string; id: string; isError: boolean; preview: string; messageId: string }
   | { type: "finding"; finding: Finding }
@@ -562,6 +563,7 @@ export type ClientCommand =
 // `messageId` is the DB row id used for the same dedup.
 export type FeedItem =
   | { kind: "text"; at: number; role: Role; runId: string; id?: string; text: string }
+  | { kind: "thinking"; at: number; role: Role; runId: string; id?: string; text: string }
   | { kind: "tool"; at: number; role: Role; runId: string; id?: string; name: string; input: unknown }
   | { kind: "tool_result"; at: number; runId: string; id: string; messageId?: string; isError: boolean; preview: string }
   | { kind: "finding"; at: number; finding: Finding }

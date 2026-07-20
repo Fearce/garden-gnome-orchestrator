@@ -17,6 +17,7 @@
     "test:cron": "tsx src/tests/cron.test.ts",
     "test:weekly-safety": "tsx src/tests/weeklySafety.test.ts",
     "test:grok-runner": "tsx src/tests/grokRunner.test.ts",
+    "test:grok-reasoning": "tsx src/tests/grokReasoning.test.ts",
     "test:schedule-detect": "tsx src/tests/scheduleDetect.test.ts",
     "test:scheduler": "tsx src/tests/scheduler.test.ts",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",

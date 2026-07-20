@@ -162,7 +162,7 @@ function pipelinePath(runs: AgentRun[]): Role[] {
 
 /** Which agent a feed row belongs to, for the per-agent filter (tool_result resolves via its run). */
 function itemRoleOf(f: FeedItem, runRole: Record<string, Role>): Role | null {
-  if (f.kind === "text" || f.kind === "tool") return f.role;
+  if (f.kind === "text" || f.kind === "thinking" || f.kind === "tool") return f.role;
   if (f.kind === "tool_result") return runRole[f.runId] ?? null;
   if (f.kind === "finding") return f.finding.fromRole ?? null;
   if (f.kind === "system") return f.role ?? null;
@@ -192,6 +192,7 @@ export function ThreadDetail() {
   const runs = useStore((s) => s.runs);
   const feeds = useStore((s) => s.threadFeeds);
   const drafts = useStore((s) => s.threadDrafts);
+  const thinkingDrafts = useStore((s) => s.thinkingDrafts);
   const inject = useStore((s) => s.inject);
   const interrupt = useStore((s) => s.interrupt);
   const resume = useStore((s) => s.resume);
@@ -226,6 +227,10 @@ export function ThreadDetail() {
   const thread = id ? threads[id] : undefined;
   const feed = id ? feeds[id] ?? [] : [];
   const draft = id ? drafts[id] : undefined;
+  // Only a burst with real content renders — a whitespace-only reasoning burst never fires the durable
+  // agent.reasoning that clears the draft, so gate on trimmed text to avoid a stray 💭 bubble.
+  const thinkingDraftRaw = id ? thinkingDrafts[id] : undefined;
+  const thinkingDraft = thinkingDraftRaw?.text.trim() ? thinkingDraftRaw : undefined;
 
   // Deliverables (findings tagged kind 'deliverable') render in their own section, not the feed —
   // so split them out here: `deliverables` feeds the section, `feedItems` is the feed minus them.
@@ -295,7 +300,7 @@ export function ThreadDetail() {
   const visible = useMemo(
     () =>
       feedItems.filter((f) => {
-        if (!showTools && (f.kind === "tool" || f.kind === "tool_result")) return false;
+        if (!showTools && (f.kind === "tool" || f.kind === "tool_result" || f.kind === "thinking")) return false;
         if (roleFilter === "all") return true;
         return itemRoleOf(f, runRole) === roleFilter;
       }),
@@ -327,7 +332,7 @@ export function ThreadDetail() {
   // isn't yanked down when a live agent appends below.
   useEffect(() => {
     if (stickRef.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [visible.length, draft]);
+  }, [visible.length, draft, thinkingDraft]);
   // Switching filter: jump to the start of a specific agent (read top-down), or to live for "all".
   useEffect(() => {
     const el = scrollRef.current;
@@ -629,7 +634,7 @@ export function ThreadDetail() {
           <button
             className={"fchip tools-toggle" + (showTools ? "" : " off")}
             onClick={() => setShowTools(!showTools)}
-            title={showTools ? "Hide tool calls — show just the prose/findings" : "Show tool calls"}
+            title={showTools ? "Hide tools & reasoning — show just the prose/findings" : "Show tools & reasoning"}
           >
             ⛏ tools
           </button>
@@ -639,13 +644,13 @@ export function ThreadDetail() {
       <Deliverables items={deliverables} />
 
       <div className="feed" ref={scrollRef} onScroll={onFeedScroll}>
-        {visible.length === 0 && !draft && (
+        {visible.length === 0 && !draft && !(showTools && thinkingDraft) && (
           <div className="faint" style={{ fontSize: 13 }}>
             {feedItems.length === 0
               ? "Planner and researcher are warming up. Their findings and the implementor's work will stream here."
               : roleFilter === "all"
                 ? "Nothing to show."
-                : `No ${roleFilter} output${showTools ? "" : " (tool calls hidden)"} yet.`}
+                : `No ${roleFilter} output${showTools ? "" : " (tools & reasoning hidden)"} yet.`}
           </div>
         )}
         {hiddenAbove > 0 && (
@@ -674,6 +679,16 @@ export function ThreadDetail() {
         {windowed.map((f) => (
           <FeedRow key={feedKey(f)} item={f} nameFor={nameFor} modelFor={modelFor} />
         ))}
+        {showTools && thinkingDraft && (roleFilter === "all" || thinkingDraft.role === roleFilter) && (
+          <div className="fi thinking draft" style={roleVar(thinkingDraft.role)}>
+            <div className="head">
+              <span className="role-tag dim">
+                <RoleLabel role={thinkingDraft.role} name={nameFor(thinkingDraft.role)} model={modelFor(thinkingDraft.role)} />
+              </span>
+            </div>
+            <Markdown className="body" text={"💭 " + thinkingDraft.text} />
+          </div>
+        )}
         {draft && (roleFilter === "all" || draft.role === roleFilter) && (
           <div className="fi draft" style={roleVar(draft.role)}>
             <div className="head">
@@ -792,6 +807,18 @@ const FeedRow = memo(function FeedRow({
             <span className="ts">{clock(item.at)}</span>
           </div>
           <Markdown className="body" text={item.text} />
+        </div>
+      );
+    case "thinking":
+      return (
+        <div className="fi thinking" style={roleVar(item.role)}>
+          <div className="head">
+            <span className="role-tag dim">
+              <RoleLabel role={item.role} name={nameFor(item.role)} model={modelFor(item.role)} />
+            </span>
+            <span className="ts">{clock(item.at)}</span>
+          </div>
+          <Markdown className="body" text={"💭 " + item.text} />
         </div>
       );
     case "tool":
