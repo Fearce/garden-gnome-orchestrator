@@ -12,7 +12,8 @@
     "serve:server": "npm run serve --prefix server",
     "build": "npm run build --prefix web && npm run build --prefix server",
     "start": "npm run start --prefix server",
-    "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix web"
+    "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix web",
+    "health": "npm run health --prefix server"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
