@@ -90,6 +90,7 @@ export function Accounts() {
           account={settings.grokAccount ?? grokUsage?.email ?? null}
           model={settings.grokModel}
           effort={settings.grokEffort}
+          preferred={settings.grokPreferred}
           live={grokLive}
           usage={grokUsage}
           now={now}
@@ -178,9 +179,10 @@ function CodexChip({
 }
 
 /**
- * Top-bar chip for the xAI Grok backend. SuperGrok exposes no usage windows, so — unlike the Codex chip —
- * there are no meters: it shows the signed-in account + the current state (implementing now / ready / needs
- * auth / off), and when a turn was recently usage-capped, a countdown to the retry. An honest surface.
+ * Top-bar chip for the xAI Grok backend. Shows the signed-in account, the current state (implementing now /
+ * ready / needs auth / off), and — once the first `/usage show` scrape lands — the real SuperGrok weekly
+ * meter + reset countdown (xAI's API forbids reading it, so the server scrapes the CLI's own view). Before
+ * the first scrape it shows the model·effort line instead.
  */
 function GrokChip({
   enabled,
@@ -188,6 +190,7 @@ function GrokChip({
   account,
   model,
   effort,
+  preferred,
   live,
   usage,
   now,
@@ -197,39 +200,68 @@ function GrokChip({
   account: string | null;
   model: string;
   effort: GrokEffort;
+  preferred: boolean;
   live: boolean;
   usage: GrokUsageDTO | null;
   now: number;
 }) {
-  const capped = usage?.capUntil != null && usage.capUntil > now;
+  const capReset =
+    usage?.capUntil != null && usage.capUntil > now
+      ? usage.capUntil
+      : usage?.sevenDay != null && usage.sevenDay >= 100 && (usage.sevenDayReset == null || usage.sevenDayReset > now)
+        ? usage.sevenDayReset
+        : null;
+  const capped = capReset !== null || (usage?.sevenDay != null && usage.sevenDay >= 100 && usage.sevenDayReset == null);
   const state = !enabled ? "off" : !hasAuth ? "noauth" : capped ? "capped" : live ? "implementing" : "ready";
   const tag =
     state === "implementing" ? "implementing" : state === "ready" ? "ready" : state === "capped" ? "capped" : state === "noauth" ? "no auth" : "off";
   const tagCls = state === "noauth" || state === "capped" ? "acct-tag" : state === "off" ? "acct-tag dim" : "acct-tag ok";
   const who = account ? ` · ${account}` : "";
+  // The weekly meter comes from scraping the CLI's own `/usage show` (xAI's API forbids OAuth clients from
+  // reading it, but the CLI renders it). Until the first scrape lands, sevenDay is null and we show the
+  // model·effort line instead of a meter.
+  const hasMeter = usage != null && usage.sevenDay != null;
+  const stale = !!usage?.stale;
+  const prefNote = preferred
+    ? " · preferred for the implementor"
+    : " · auto-ranked with Claude/Codex by soonest weekly reset (enable “Prefer Grok” in Settings to always use it)";
   const title =
     state === "implementing"
-      ? `Grok is implementing a task now${who} · model ${model} · ${effort} effort`
+      ? `Grok is implementing a task now${who} · model ${model} · ${effort} effort${prefNote}`
       : state === "ready"
-        ? `Grok (SuperGrok) enabled${who} · model ${model} · ${effort} effort · implements dispatched tasks`
+        ? `Grok (SuperGrok) enabled${who} · model ${model} · ${effort} effort${prefNote}`
         : state === "capped"
-          ? `Grok hit its usage limit — routing implementors elsewhere; retrying in ${countdown(usage!.capUntil, now)}`
+          ? `Grok hit its usage limit — routing implementors elsewhere${capReset != null ? `; retrying in ${countdown(capReset, now)}` : ""}`
           : state === "noauth"
             ? "Grok is enabled but not signed in — run `grok login` (or `grok login --device-auth`) on the host"
             : `Grok (SuperGrok) configured but off · model ${model} · ${effort} effort`;
   return (
     <div
-      className={"acct grok" + (state === "implementing" ? " active" : "") + (state === "off" ? " is-off" : "") + (state === "capped" ? " limited" : "")}
+      className={
+        "acct grok" + (state === "implementing" ? " active" : "") + (state === "off" ? " is-off" : "") + (state === "capped" ? " limited" : "") + (stale ? " stale" : "")
+      }
       title={title}
     >
       <div className="acct-head">
         <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
         <span className="acct-label">Grok</span>
         <span className={tagCls}>{tag}</span>
+        {stale ? <span className="acct-tag dim">stale</span> : null}
+        {preferred && (state === "ready" || state === "implementing") ? (
+          <span className="acct-tag ok" title="Preferred for the implementor — Grok runs it whenever it's enabled and not capped">
+            preferred
+          </span>
+        ) : null}
       </div>
-      <div className="codex-model" title={`${model} · ${effort} effort${who}`}>
-        {state === "capped" ? `retry in ${countdown(usage!.capUntil, now)}` : `${model} · ${effort}`}
-      </div>
+      {hasMeter ? (
+        <div className="acct-meters">
+          <Meter k="7d" pct={usage!.sevenDay} kind="week" stale={stale} reset={usage!.sevenDayReset} now={now} />
+        </div>
+      ) : (
+        <div className="codex-model" title={`${model} · ${effort} effort${who}`}>
+          {state === "capped" ? `retry in ${countdown(usage!.capUntil, now)}` : `${model} · ${effort}`}
+        </div>
+      )}
     </div>
   );
 }

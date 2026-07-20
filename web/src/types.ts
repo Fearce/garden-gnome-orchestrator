@@ -244,7 +244,7 @@ export interface AccountDTO {
   resetsAt?: number | null;
   active: boolean;
   enabled: boolean; // operator toggle — disabled accounts are held out of dispatch/failover
-  weeklySafetyPct: number; // 1-100 soft weekly-utilization ceiling; 100 preserves hard-cap-only behavior
+  weeklySafetyPct: number; // 1-100 soft weekly-utilization ceiling; at/above it new tasks route to another sub (100 = off)
   holdUntil?: number | null; // 5h window idle (stagger hold-off) — the next window starts at this epoch ms
   // Model-scoped pool caps (Fable's separately-gated allowance): dispatch resolves `fallback` in place
   // of `model` on this sub until `resetsAt`. The account's normal windows are unaffected.
@@ -274,7 +274,10 @@ export interface GrokUsageDTO {
   signedIn: boolean;
   email: string | null;
   tier: number | null;
+  sevenDay: number | null; // weekly used-percent scraped from `grok /usage show`, else null
+  sevenDayReset: number | null; // epoch ms the weekly window resets, else null
   capUntil: number | null; // epoch ms a usage-cap rejection is latched until, else null
+  stale?: boolean; // the weekly scrape hasn't refreshed recently
   updatedAt: number;
 }
 
@@ -305,13 +308,15 @@ export interface OrchestratorSettings {
   codexEnabled: boolean;
   codexModel: string;
   codexEffort: CodexEffort;
-  codexWeeklySafetyPct: number;
+  codexWeeklySafetyPct: number; // 1-100 soft weekly ceiling (100 = off): above it, tasks route off Codex to another backend
   hasOpenaiKey: boolean; // read-only: a key is stored (raw key never reaches the client)
   openaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
   codexChatgptLogin: boolean; // read-only: a ChatGPT-plan `codex login` is available (preferred over a key)
   grokEnabled: boolean; // xAI Grok (SuperGrok): when on (with a `grok login`), it joins the implementor backends
   grokModel: string;
   grokEffort: GrokEffort;
+  grokWeeklySafetyPct: number; // 1-100 soft weekly ceiling (100 = off): above it, tasks route off Grok
+  grokPreferred: boolean; // on (default off) → enabled+uncapped Grok wins instead of normal soonest-weekly-reset ranking; auto-falls-back on cap
   grokSignedIn: boolean; // read-only: a `grok login` (auth.json) is present, so Grok can authenticate
   grokAccount?: string | null; // read-only: the signed-in Grok account email
   // Composer state persisted server-side (survives across the HTTP/HTTPS surfaces, which don't share

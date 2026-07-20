@@ -30,7 +30,7 @@ export interface AccountDTO {
   resetsAt?: number | null;
   active: boolean; // last/preferred account for dispatch
   enabled: boolean; // operator toggle — a disabled account is held out of dispatch/failover
-  weeklySafetyPct: number; // 1-100 soft weekly-utilization ceiling; 100 preserves hard-cap-only behavior
+  weeklySafetyPct: number; // 1-100 soft weekly-utilization ceiling; at/above it new tasks route to another sub (100 = off)
   holdUntil?: number | null; // 5h window idle (stagger hold-off) — the next window starts at this epoch ms
   // Model-scoped pool caps (Fable's separately-gated allowance): dispatch resolves `fallback` in place
   // of `model` on this sub until `resetsAt`. The account's normal windows are unaffected.
@@ -176,6 +176,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         grokEnabled: z.boolean(),
         grokModel: z.string().min(1).max(64),
         grokEffort: z.enum(["low", "medium", "high"]),
+        grokWeeklySafetyPct: z.number().int().min(1).max(100),
+        grokPreferred: z.boolean(),
         // Write-only: the raw OpenAI key is accepted here and stored server-side, never echoed back.
         // An empty string clears it. The broadcast OrchestratorSettings carries only hasOpenaiKey/last4.
         openaiApiKey: z.string().max(300),
@@ -208,7 +210,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("codex.test"), apiKey: z.string().max(300).optional() }),
   // Toggle a Claude account in/out of the dispatch+failover rotation (per-account subscription switch).
   z.object({ type: z.literal("account.set"), id: z.string(), enabled: z.boolean() }),
-  // Set a Claude account soft weekly-safety ceiling; this only changes routing preference.
+  // Set a Claude account's soft weekly-safety ceiling (1-100; 100 = off): above it, new tasks route to another sub.
   z.object({ type: z.literal("account.setSafety"), id: z.string(), weeklySafetyPct: z.number().int().min(1).max(100) }),
   z.object({ type: z.literal("thread.changes"), threadId: z.string() }),
   z.object({ type: z.literal("thread.git"), threadId: z.string() }),

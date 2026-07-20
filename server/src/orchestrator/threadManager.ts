@@ -7,7 +7,7 @@ import { AgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runn
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { codexUsageCapped, readCodexUsage } from "../agents/codexUsage.js";
 import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRunner.js";
-import { noteGrokCap } from "../agents/grokUsage.js";
+import { noteGrokCap, readGrokUsage, grokUsageCapped } from "../agents/grokUsage.js";
 import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, uniq } from "../agents/modelCatalog.js";
 import { clampEffort, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
@@ -108,7 +108,7 @@ interface ProviderCandidate {
   fiveHour: number | null;
   sevenDay: number | null;
   sevenDayReset: number | null;
-  weeklySafetyPct: number; // 1-100 soft weekly ceiling; at/above it this backend is de-preferred
+  weeklySafetyPct: number; // 1-100 soft weekly ceiling; at/above it this backend is de-preferred (100 = off)
 }
 
 /** A settings.set patch: the writable subset of OrchestratorSettings plus the write-only raw key. The
@@ -211,8 +211,8 @@ const MODEL_FALLBACK_CONTINUE_MSG =
 // after which Codex is tried again (a failing turn simply re-arms the latch). kv key persists it across boots.
 const CODEX_CAP_COOLDOWN_MS = 60 * 60_000;
 const CODEX_CAP_KV_KEY = "codex_cap_until";
-// Grok exposes no usage windows, so a cap is only knowable from a rejected turn — with no reset epoch to
-// read, the latch is a fixed cooldown (config.grok.capCooldownMs), after which Grok is retried. kv-persisted.
+// Grok's weekly scrape normally supplies the reset epoch; before it lands, a rejected turn falls back to
+// a fixed cooldown (config.grok.capCooldownMs). kv-persisted.
 const GROK_CAP_KV_KEY = "grok_cap_until";
 const PROVIDER_HARD_LIMIT = 98;
 // After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
@@ -926,6 +926,8 @@ export class ThreadManager implements OrchestratorApi {
       grokEnabled: this.settingBool("setting_grok_enabled", false),
       grokModel: this.grokModel(),
       grokEffort: this.grokEffort(),
+      grokWeeklySafetyPct: this.settingNum("setting_grok_weekly_safety", 100, 1, 100),
+      grokPreferred: this.settingBool("setting_grok_preferred", false),
       grokSignedIn: grokAuth.signedIn,
       grokAccount: grokAuth.email,
       skipDirector: this.settingBool("setting_skip_director", false),
@@ -1152,6 +1154,8 @@ export class ThreadManager implements OrchestratorApi {
       this.setModelOverride(CODEX_SUB_ID, "implementor", patch.codexModel.trim());
     }
     if (patch.grokEnabled !== undefined) this.db.kvSet("setting_grok_enabled", patch.grokEnabled ? "1" : "0");
+    if (patch.grokWeeklySafetyPct !== undefined) this.db.kvSet("setting_grok_weekly_safety", String(patch.grokWeeklySafetyPct));
+    if (patch.grokPreferred !== undefined) this.db.kvSet("setting_grok_preferred", patch.grokPreferred ? "1" : "0");
     if (patch.grokEffort !== undefined && GROK_EFFORTS.includes(patch.grokEffort)) this.db.kvSet("setting_grok_effort", patch.grokEffort);
     // Legacy free-text grok model field mirrors into the matrix (grok.implementor), same as codex.
     if (patch.grokModel !== undefined && patch.grokModel.trim()) {
@@ -1254,11 +1258,15 @@ export class ThreadManager implements OrchestratorApi {
     } else if (v) this.db.kvSet(GROK_CAP_KV_KEY, ""); // stale/expired — clear it
   }
 
-  /** Latch Grok as usage-capped after a rejected turn, routing implementors to another backend. Grok
-   *  exposes no reset epoch, so the latch is a fixed cooldown that self-expires; a still-capped retry
-   *  simply re-arms it. Mirrors the chip's countdown via noteGrokCap. */
+  /** Latch Grok as usage-capped after a rejected turn, routing implementors to another backend. The live
+   *  weekly scrape normally supplies the true reset; before it lands, a fixed cooldown keeps the latch
+   *  self-expiring. Mirrors the chip's countdown via noteGrokCap. */
   private noteGrokCap(): void {
-    const until = Date.now() + config.grok.capCooldownMs;
+    const now = Date.now();
+    // Prefer the real weekly reset from the live `/usage show` scrape; fall back to a fixed cooldown when
+    // no scrape has landed yet (so the latch always self-expires rather than sticking forever).
+    const reset = readGrokUsage().sevenDayReset;
+    const until = reset != null && reset > now ? reset : now + config.grok.capCooldownMs;
     if (this.grokCapUntil && this.grokCapUntil >= until) return; // already latched at least this long
     this.grokCapUntil = until;
     this.db.kvSet(GROK_CAP_KV_KEY, String(until));
@@ -1275,7 +1283,9 @@ export class ThreadManager implements OrchestratorApi {
       this.db.kvSet(GROK_CAP_KV_KEY, "");
       noteGrokCap(null);
     }
-    return false;
+    // Also honor the scraped weekly window: if `/usage show` shows 100% used (not yet reset), Grok is
+    // capped even without a live-run rejection.
+    return grokUsageCapped(now);
   }
 
   private claudeProviderCandidate(): ProviderCandidate {
@@ -1283,19 +1293,22 @@ export class ThreadManager implements OrchestratorApi {
     return providerCandidateFromClaude(c);
   }
 
-  /** Grok's dispatch candidate. It has no usage windows, so it's treated as always having headroom while
-   *  its cap latch is clear — the null windows sort it LAST among headroom-having providers in
-   *  providerPriority (a windowed backend with real headroom is preferred while it has room; Grok is the
-   *  resilient bottom rung). A blind flip onto a secretly-capped Grok is bounded — the run is rejected and
-   *  flips back or parks. */
+  /** Grok's dispatch candidate. The weekly used-% + reset come from the live `/usage show` scrape
+   *  (grokUsagePing), so Grok competes in provider routing by soonest weekly reset exactly like
+   *  Claude/Codex — no longer a null-window last-resort. Headroom = not cap-latched and not near the weekly
+   *  hard limit. When no scrape has landed yet the windows are null (treated as headroom, sorts last) until
+   *  the first reading fills in. */
   private grokProviderCandidate(): ProviderCandidate {
+    const now = Date.now();
+    const u = readGrokUsage();
+    const nearLimit = u.sevenDay != null && u.sevenDay >= PROVIDER_HARD_LIMIT && (u.sevenDayReset == null || u.sevenDayReset > now);
     return {
       provider: "grok",
-      hasHeadroom: !this.grokCapActive(),
+      hasHeadroom: !this.grokCapActive() && !nearLimit,
       fiveHour: null,
-      sevenDay: null,
-      sevenDayReset: null,
-      weeklySafetyPct: 100,
+      sevenDay: u.sevenDay,
+      sevenDayReset: u.sevenDayReset,
+      weeklySafetyPct: this.settings().grokWeeklySafetyPct,
     };
   }
 
@@ -1328,13 +1341,21 @@ export class ThreadManager implements OrchestratorApi {
   /** Pick the best implementor backend from N candidates: prefer any WITH headroom, and within a headroom
    *  class break ties by providerPriority (soonest weekly reset, then most headroom). Grok's null windows
    *  sort it last among headroom-havers, making it the resilient fallback. The caller always passes at
-   *  least the Claude candidate, so this never sees an empty list. Reused by nextReadyImplementor. */
+   *  least the Claude candidate, so this never sees an empty list. Reused by nextReadyImplementor.
+   *
+   *  Exception — "Prefer Grok": when the operator opts in (grokPreferred) and a Grok candidate still has
+   *  headroom, it takes the implementor outright instead of participating in soonest-reset ranking.
+   *  Cap-detection still handles fallback to another provider. */
   private preferredImplementorProvider(candidates: ProviderCandidate[]): ImplementorProvider {
     const withHeadroom = candidates.filter((c) => c.hasHeadroom);
     const base = withHeadroom.length ? withHeadroom : candidates;
-    // Prefer a backend still under its weekly safety limit, but fall through to the full set when every
-    // backend is over so dispatch never freezes.
+    // Soft weekly ceiling (per-backend): a backend whose weekly usage crossed its safety % is de-preferred in
+    // favor of one still under its own ceiling — but never dropped entirely (falls through when all are over,
+    // so this can't freeze a dispatch). Claude carries the selected account's own ceiling; Codex and Grok
+    // carry their backend ceilings.
     const pool = preferUnderWeeklySafety(base);
+    // The explicit preference intentionally overrides a soft safety ceiling, but never a hard usage cap.
+    if (this.settings().grokPreferred && base.some((c) => c.provider === "grok" && c.hasHeadroom)) return "grok";
     return pool.reduce((best, c) => (providerPriority(best, c) <= 0 ? best : c)).provider;
   }
 
@@ -1393,8 +1414,9 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
-  /** Set a Claude account's soft weekly-safety ceiling (1-100; 100 preserves the old behavior), persisting
-   *  it. Crossing the ceiling sheds new dispatches to a fresher account without freezing tasks. */
+  /** Set a Claude account's soft weekly-safety ceiling (1-100; 100 = off), persisting it. Above this weekly
+   *  utilization the sub sheds new dispatches to a fresher one — no freeze. Re-broadcasts the strip so a
+   *  no-op change still reconciles every client. */
   setAccountWeeklySafety(id: string, pct: number): boolean {
     const applied = this.accounts.setWeeklySafetyPct(id, pct);
     if (applied) this.db.kvSet(`account_weekly_safety_${id}`, String(this.accounts.dto().find((a) => a.id === id)?.weeklySafetyPct ?? pct));

@@ -42,12 +42,13 @@ check("null usage is under any ceiling", ids(preferUnderWeeklySafety([a("A", nul
 // Empty input → empty output (caller falls back to base).
 check("empty stays empty", preferUnderWeeklySafety([] as Cand[]).length === 0);
 
-// Same helper drives the provider-level ceiling (Claude/Codex/Grok backends). Claude & Grok carry a 100
-// (off) ceiling there; only Codex sets a real one. Grok's usage is null → always under.
+// Same helper drives the provider-level ceiling (Claude/Codex/Grok backends). Codex and Grok each carry
+// their configured backend ceiling; Grok's usage comes from its live `/usage show` scrape.
 console.log("weekly-safety: provider-level backends");
 const p = (id: string, sevenDay: number | null, weeklySafetyPct = 100) => a(id, sevenDay, weeklySafetyPct);
-check("codex over its ceiling → claude/grok preferred", ids(preferUnderWeeklySafety([p("claude", 40), p("codex", 88, 85), p("grok", null)])) === "claude,grok");
-check("codex under its ceiling → all kept", ids(preferUnderWeeklySafety([p("claude", 40), p("codex", 80, 85), p("grok", null)])) === "claude,codex,grok");
+check("codex over its ceiling → claude/grok preferred", ids(preferUnderWeeklySafety([p("claude", 40), p("codex", 88, 85), p("grok", 20, 90)])) === "claude,grok");
+check("grok over its ceiling → claude/codex preferred", ids(preferUnderWeeklySafety([p("claude", 40), p("codex", 80, 85), p("grok", 92, 90)])) === "claude,codex");
+check("both backends under their ceilings → all kept", ids(preferUnderWeeklySafety([p("claude", 40), p("codex", 80, 85), p("grok", 70, 90)])) === "claude,codex,grok");
 check("everyone over → fall through (no freeze)", ids(preferUnderWeeklySafety([p("claude", 95, 90), p("codex", 92, 85)])) === "claude,codex");
 
 if (failures) {

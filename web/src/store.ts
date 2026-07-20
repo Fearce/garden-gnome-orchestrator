@@ -300,6 +300,8 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   grokEnabled: false,
   grokModel: "grok-4.5",
   grokEffort: "high",
+  grokWeeklySafetyPct: 100,
+  grokPreferred: false,
   grokSignedIn: false,
   grokAccount: null,
   skipDirector: false,
@@ -473,7 +475,7 @@ export const useStore = create<State>((set) => ({
     sendCommand({ type: "account.set", id, enabled });
   },
   setAccountWeeklySafety: (id, weeklySafetyPct) => {
-    // Optimistic: the server broadcast confirms the validated value.
+    // Optimistic: reflect the new ceiling locally; the server's `accounts` broadcast confirms the clamped value.
     set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, weeklySafetyPct } : a)) }));
     sendCommand({ type: "account.setSafety", id, weeklySafetyPct });
   },

@@ -451,8 +451,8 @@ function AccountEffort({ accountId }: { accountId: string }) {
   return <EffortCapField value={value} options={options} onChange={onChange} />;
 }
 
-/** The soft weekly-safety ceiling for one Claude account. At/above this utilization the sub
- * sheds new tasks to a fresher one through transparent failover. */
+/** The soft WEEKLY-safety ceiling for one Claude account. At/above this weekly utilization the sub sheds new
+ *  tasks to a fresher one — a transparent failover, never a freeze. 100 = off (hard-cap-only, unchanged). */
 function AccountWeeklySafety({ accountId, value }: { accountId: string; value: number }) {
   const setAccountWeeklySafety = useStore((s) => s.setAccountWeeklySafety);
   return (
@@ -637,8 +637,18 @@ function SubscriptionsSection() {
           </div>
         )}
 
+        {settings.grokEnabled && settings.grokSignedIn ? (
+          <ToggleRow
+            label="Prefer Grok for the implementor"
+            hint="By default Grok auto-competes for the implementor by soonest weekly reset (scraped live from `grok /usage show`), like Claude/Codex. On → ALWAYS prefer Grok whenever it's enabled and not capped (use the sub you pay for regardless of reset); it still auto-falls-back to Claude/Codex when a Grok turn is usage-rejected or its weekly window is exhausted."
+            on={settings.grokPreferred}
+            onChange={(v) => setSettings({ grokPreferred: v })}
+          />
+        ) : null}
+
         <GrokModels />
         <EffortCapField value={settings.grokEffort} options={GROK_EFFORTS} onChange={(v) => setSettings({ grokEffort: v as GrokEffort })} />
+        <GrokWeeklySafety />
       </SubCard>
     </div>
   );
@@ -726,7 +736,8 @@ function CodexEffortField() {
   return <EffortCapField value={effort} options={CODEX_EFFORTS} onChange={(v) => setSettings({ codexEffort: v as CodexEffort })} />;
 }
 
-/** The soft weekly-safety ceiling for the Codex backend. */
+/** The soft WEEKLY-safety ceiling for the Codex backend. At/above this Codex weekly utilization, new tasks
+ *  route to another backend instead of Codex — a transparent failover, never a freeze. 100 = off. */
 function CodexWeeklySafety() {
   const value = useStore((s) => s.settings.codexWeeklySafetyPct);
   const setSettings = useStore((s) => s.setSettings);
@@ -738,6 +749,22 @@ function CodexWeeklySafety() {
       min={1}
       max={100}
       onChange={(v) => setSettings({ codexWeeklySafetyPct: v })}
+    />
+  );
+}
+
+/** The soft weekly-safety ceiling for the Grok backend, backed by the live `/usage show` scrape. */
+function GrokWeeklySafety() {
+  const value = useStore((s) => s.settings.grokWeeklySafetyPct);
+  const setSettings = useStore((s) => s.setSettings);
+  return (
+    <SubStepperField
+      label="Weekly safety %"
+      hint="Switch backends when SuperGrok's weekly usage reaches this threshold. Won't freeze tasks. Prefer Grok overrides this soft ceiling."
+      value={value}
+      min={1}
+      max={100}
+      onChange={(v) => setSettings({ grokWeeklySafetyPct: v })}
     />
   );
 }
@@ -923,7 +950,9 @@ function NumberRow({
   );
 }
 
-/** Numeric stepper laid out for a subscription card, matching the other per-sub fields. */
+/** A numeric stepper laid out for a subscription card (label above control, like EffortCapField) rather
+ *  than NumberRow's label-left/control-right settings row. Keeps a local draft so typing is smooth, and
+ *  clamps + commits to [min, max] on blur / Enter (Escape reverts). */
 function SubStepperField({
   label,
   hint,
@@ -966,7 +995,6 @@ function SubStepperField({
     setDraft(String(next));
     if (next !== value) onChange(next);
   };
-
   return (
     <div className="sub-field">
       <label className="sub-label">{label}</label>

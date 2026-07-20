@@ -357,13 +357,20 @@ export interface OrchestratorSettings {
   codexEnabled: boolean; // OpenAI Codex: when on (with a valid key), it becomes the implementor backend
   codexModel: string; // the resolved Codex implementor model (mirrors modelOverrides.codex.implementor; kept for the top-bar chip + back-compat)
   codexEffort: CodexEffort; // Codex CLI reasoning effort, applied via model_reasoning_effort
-  codexWeeklySafetyPct: number; // 1-100 soft weekly ceiling; 100 preserves hard-cap-only behavior
+  codexWeeklySafetyPct: number; // 1-100 soft weekly ceiling (default 100 = off): at/above this Codex weekly utilization, new tasks route to another backend
   hasOpenaiKey: boolean; // read-only indicator — an OpenAI key is stored (the raw key is never broadcast)
   openaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
   codexChatgptLogin: boolean; // read-only — a ChatGPT-plan `codex login` is available; preferred over the key
   grokEnabled: boolean; // xAI Grok (SuperGrok): when on (with a `grok login`), it joins the implementor backends
   grokModel: string; // the resolved Grok implementor model (mirrors modelOverrides.grok.implementor; kept for the chip + back-compat)
   grokEffort: GrokEffort; // Grok CLI reasoning effort, applied via --reasoning-effort
+  grokWeeklySafetyPct: number; // 1-100 soft weekly ceiling (default 100 = off): above it, new tasks route to another backend
+  // The orchestrator scrapes SuperGrok's real weekly limit + reset from the CLI's `/usage show`
+  // (grokUsagePing), so by default Grok auto-competes in provider routing by soonest weekly reset exactly
+  // like Claude/Codex. grokPreferred is an OVERRIDE: on (default off) → an enabled + uncapped Grok is
+  // ALWAYS preferred for the implementor regardless of reset or soft safety % ("use the sub I pay for"); it still
+  // auto-falls-back to Claude/Codex when a Grok turn is usage-rejected or its weekly window is exhausted.
+  grokPreferred: boolean;
   grokSignedIn: boolean; // read-only — a `grok login` (auth.json) is present, so Grok can authenticate
   grokAccount?: string | null; // read-only — the signed-in Grok account email, for the Subscriptions panel
   // ---- Composer state, persisted server-side (not localStorage) so it survives across the HTTP and

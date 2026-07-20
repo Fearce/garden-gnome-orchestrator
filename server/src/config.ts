@@ -204,10 +204,21 @@ export const config = {
     // longest single silent command a Grok implementor runs). Set either to 0 to disable.
     firstEventMs: numEnv(process.env.GROK_FIRST_EVENT_MS, 60_000),
     inactivityMs: numEnv(process.env.GROK_INACTIVITY_MS, 1_800_000),
-    // SuperGrok exposes no rate-limit windows (unlike Claude/Codex), so a usage cap is only knowable when
-    // a turn is rejected. That rejection latches a cap for this cooldown (no reset epoch is available), after
-    // which Grok is retried; a still-capped turn simply re-arms the latch. Override GROK_CAP_COOLDOWN_MS.
+    // A live-run rejection still latches a cap for this cooldown as a fallback — but the usage scrape
+    // (below) also supplies the real weekly reset, so the cap normally clears at the true reset epoch.
     capCooldownMs: numEnv(process.env.GROK_CAP_COOLDOWN_MS, 60 * 60_000),
+    // ---- Live weekly-usage scrape (the real meter Kevin sees at grok.com / `grok` → /usage) ----
+    // xAI's API forbids OAuth-token clients from reading SuperGrok's rate limit, but the CLI's own
+    // `/usage show` renders it ("Weekly limit: N% · Next reset: <Mon Day, HH:MM>"). grokUsagePing drives
+    // the CLI through a PTY, scrapes those two values, and feeds them as the weekly meter + reset — so the
+    // chip shows a real gauge and provider routing can auto-rank Grok by soonest reset like Claude/Codex.
+    // winpty (bundled with Git for Windows) allocates the pseudo-console the headless TUI needs.
+    winpty: process.env.GROK_WINPTY || resolve("C:\\", "Program Files", "Git", "usr", "bin", "winpty.exe"),
+    // How often to re-scrape. The weekly window moves slowly, so a slow cadence is plenty; each scrape
+    // spawns a short-lived grok TUI (~15s). GROK_USAGE_POLL_MS overrides; set to 0 to disable the scrape.
+    usagePollMs: numEnv(process.env.GROK_USAGE_POLL_MS, 15 * 60_000),
+    // Hard timeout for one scrape (spawn → parse → kill), so a wedged TUI can never pile up.
+    usageScrapeTimeoutMs: numEnv(process.env.GROK_USAGE_SCRAPE_TIMEOUT_MS, 25_000),
   },
   // When every Claude account is rate-limited mid-task, the task parks in 'review' with a cap marker
   // instead of stranding the owner to hand-resume it. A supervisor re-checks this often and resumes
