@@ -66,7 +66,12 @@ button { font-family: inherit; cursor: pointer; }
 /* ---- layout ---- */
 .app {
   display: grid;
-  grid-template-rows: 52px minmax(0, 1fr);
+  /* minmax(0, 1fr) on the column: an implicit auto column sizes to max-content, and with
+     overflow:hidden the right edge of the topbar (Grok chip + meters) clips off-screen at
+     ~1280px when personal+vota+Codex+Grok are all shown — same failure mode mobile already fixed.
+     Top row is auto (not fixed 52px) so a wrapped accounts strip on medium desktops can grow the bar. */
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -82,10 +87,32 @@ button { font-family: inherit; cursor: pointer; }
 
 .topbar {
   display: flex; align-items: center; gap: 16px;
+  min-height: 52px;
   padding: 0 18px; border-bottom: 1px solid var(--line);
   background: linear-gradient(to bottom, var(--bg-1), var(--bg));
   /* Above the board so office chat bubbles rising over the gnomes paint over it, not under it. */
   position: relative; z-index: 10;
+  /* As a grid child, default min-width:auto would force the track wider than the viewport. */
+  min-width: 0;
+}
+
+/* Medium desktop (common 1280–1500px): four subscription chips don't fit beside brand + office +
+   controls. Wrap the accounts strip onto a full-width second row so Grok's 7d/mo meters stay on
+   screen instead of clipped under .app overflow:hidden. Wider viewports keep the single-row layout. */
+@media (max-width: 1500px) and (min-width: 769px) {
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  .accounts {
+    order: 20;
+    flex: 1 1 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+  }
 }
 .brand { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
 .build-tag {
@@ -111,11 +138,23 @@ button { font-family: inherit; cursor: pointer; }
 .stat b { color: var(--text-dim); font-weight: 600; }
 
 /* ---- account burn strip ---- */
-.accounts { display: flex; align-items: stretch; gap: 8px; }
+/* min-width:0 + overflow-x:auto so four chips (personal+vota+Codex+Grok) stay reachable on desktop
+   instead of clipping under .app's overflow:hidden. Chips themselves do not shrink (flex: 0 0 auto). */
+.accounts {
+  display: flex; align-items: stretch; gap: 8px;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
 .acct {
   display: flex; flex-direction: column; gap: 3px; justify-content: center;
   padding: 4px 9px; border-radius: var(--r-sm); border: 1px solid var(--line);
   background: var(--bg-2); min-width: 168px;
+  flex: 0 0 auto;
 }
 .acct.active { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 8%, var(--bg-2)); }
 .acct.limited { border-color: oklch(0.68 0.2 25 / 0.55); }
