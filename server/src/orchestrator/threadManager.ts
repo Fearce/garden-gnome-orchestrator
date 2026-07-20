@@ -1343,9 +1343,9 @@ export class ThreadManager implements OrchestratorApi {
    *  sort it last among headroom-havers, making it the resilient fallback. The caller always passes at
    *  least the Claude candidate, so this never sees an empty list. Reused by nextReadyImplementor.
    *
-   *  Exception — "Prefer Grok": when the operator opts in (grokPreferred) and a Grok candidate still has
-   *  headroom, it takes the implementor outright instead of participating in soonest-reset ranking.
-   *  Cap-detection still handles fallback to another provider. */
+   *  Exception — "Prefer Grok": when the operator opts in (grokPreferred) and Grok remains below its
+   *  weekly safety ceiling, it takes the implementor outright instead of participating in reset ranking.
+   *  Safety and hard-cap detection still handle fallback to another provider. */
   private preferredImplementorProvider(candidates: ProviderCandidate[]): ImplementorProvider {
     const withHeadroom = candidates.filter((c) => c.hasHeadroom);
     const base = withHeadroom.length ? withHeadroom : candidates;
@@ -1354,8 +1354,8 @@ export class ThreadManager implements OrchestratorApi {
     // so this can't freeze a dispatch). Claude carries the selected account's own ceiling; Codex and Grok
     // carry their backend ceilings.
     const pool = preferUnderWeeklySafety(base);
-    // The explicit preference intentionally overrides a soft safety ceiling, but never a hard usage cap.
-    if (this.settings().grokPreferred && base.some((c) => c.provider === "grok" && c.hasHeadroom)) return "grok";
+    // Preference is applied only AFTER the safety filter: it cannot re-add an over-threshold Grok candidate.
+    if (this.settings().grokPreferred && pool.some((c) => c.provider === "grok" && c.hasHeadroom)) return "grok";
     return pool.reduce((best, c) => (providerPriority(best, c) <= 0 ? best : c)).provider;
   }
 

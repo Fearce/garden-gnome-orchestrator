@@ -640,7 +640,7 @@ function SubscriptionsSection() {
         {settings.grokEnabled && settings.grokSignedIn ? (
           <ToggleRow
             label="Prefer Grok for the implementor"
-            hint="By default Grok auto-competes for the implementor by soonest weekly reset (scraped live from `grok /usage show`), like Claude/Codex. On → ALWAYS prefer Grok whenever it's enabled and not capped (use the sub you pay for regardless of reset); it still auto-falls-back to Claude/Codex when a Grok turn is usage-rejected or its weekly window is exhausted."
+            hint="By default Grok auto-competes for the implementor by soonest weekly reset (scraped live from `grok /usage show`), like Claude/Codex. On → prefer Grok while it remains below its weekly safety threshold; it still auto-falls-back to Claude/Codex at the safety threshold or plan cap."
             on={settings.grokPreferred}
             onChange={(v) => setSettings({ grokPreferred: v })}
           />
@@ -760,7 +760,7 @@ function GrokWeeklySafety() {
   return (
     <SubStepperField
       label="Weekly safety %"
-      hint="Switch backends when SuperGrok's weekly usage reaches this threshold. Won't freeze tasks. Prefer Grok overrides this soft ceiling."
+      hint="Switch backends when SuperGrok's weekly usage reaches this threshold. Won't freeze tasks, even when Prefer Grok is on."
       value={value}
       min={1}
       max={100}

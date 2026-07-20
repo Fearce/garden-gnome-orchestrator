@@ -224,7 +224,7 @@ function GrokChip({
   const stale = !!usage?.stale;
   const prefNote = preferred
     ? " · preferred for the implementor"
-    : " · auto-ranked with Claude/Codex by soonest weekly reset (enable “Prefer Grok” in Settings to always use it)";
+    : " · auto-ranked with Claude/Codex by soonest weekly reset (Prefer Grok still honors its safety threshold)";
   const title =
     state === "implementing"
       ? `Grok is implementing a task now${who} · model ${model} · ${effort} effort${prefNote}`
