@@ -178,6 +178,35 @@ export function jsonContractInstruction(schema: JsonSchemaLike): string {
 // *per model turn*, concatenated into a single feed message that looks like a wall of raw JSON.
 // These helpers rewrite that for the owner-facing feed while the pipeline still parses the raw text.
 
+/**
+ * Max length for an intermediate QA status bullet. Grok multi-turn QA often re-emits near-final
+ * Fail/Pass narratives as pass:false objects before the real end event — those read as a wall of
+ * long bullets. Real status ticks are short ("Starting QA", "Reading X").
+ */
+const QA_STATUS_TICK_MAX_CHARS = 120;
+
+/** True when a QA object is a short mid-stream status tick (not a draft Pass/Fail verdict). */
+export function isQaStatusTick(obj: Record<string, unknown>): boolean {
+  if (typeof obj.pass !== "boolean" || typeof obj.summary !== "string") return false;
+  // Draft Pass finals are re-emitted many times — never a progress bullet.
+  if (obj.pass) return false;
+  const issues = Array.isArray(obj.issues) ? obj.issues : [];
+  // Non-empty issues ⇒ draft Fail, not a status tick.
+  if (issues.length > 0) return false;
+  const summary = obj.summary.trim();
+  if (!summary) return false;
+  if (summary.length > QA_STATUS_TICK_MAX_CHARS) return false;
+  return true;
+}
+
+function qaIssues(obj: Record<string, unknown>): Record<string, unknown>[] {
+  if (!Array.isArray(obj.issues)) return [];
+  return (obj.issues as unknown[]).filter(
+    (i): i is Record<string, unknown> =>
+      !!i && typeof i === "object" && !Array.isArray(i) && typeof (i as { description?: unknown }).description === "string",
+  );
+}
+
 /** One human line (or short multi-line block) for a single structured object. Used for live progress
  *  deltas (`isLast: false` → bullet status) and for the final flush (`isLast: true` → Pass/Fail etc.). */
 export function formatStructuredObject(
@@ -188,28 +217,24 @@ export function formatStructuredObject(
 
   // QA verdict shape — boolean pass + summary (issues optional).
   if (typeof obj.pass === "boolean" && typeof obj.summary === "string") {
-    const issues = Array.isArray(obj.issues)
-      ? (obj.issues as unknown[]).filter(
-          (i): i is Record<string, unknown> => !!i && typeof i === "object" && !Array.isArray(i) && typeof (i as { description?: unknown }).description === "string",
-        )
-      : [];
-    // Intermediate Grok turns: pass:false (+ empty issues) are status ticks; pass:true are draft
-    // finals the model re-emits many times before the real end event — never surface those mid-stream.
+    const issues = qaIssues(obj);
+    // Intermediate: only short empty-issues status ticks. Draft Pass/Fail re-emits are skipped so the
+    // feed doesn't become a wall of near-identical long bullets (prod: Grok usage QA).
     // Use markdown `- ` (not unicode •) so the feed Markdown renderer actually builds a list.
     if (!isLast) {
-      if (obj.pass) return null;
-      return `- ${obj.summary}`;
+      if (!isQaStatusTick(obj)) return null;
+      return `- ${obj.summary.trim()}`;
     }
     if (obj.pass) {
-      const lines = [`**Pass** — ${obj.summary}`];
+      const lines = [`**Pass** — ${obj.summary.trim()}`];
       if (issues.length) {
-        lines.push("");
+        lines.push("", "Issues:");
         for (const i of issues) lines.push(formatIssueLine(i));
       }
       return lines.join("\n");
     }
-    if (issues.length === 0) return `**Status** — ${obj.summary}`;
-    const lines = [`**Fail** — ${obj.summary}`, ""];
+    if (issues.length === 0) return `**Status** — ${obj.summary.trim()}`;
+    const lines = [`**Fail** — ${obj.summary.trim()}`, "", "Issues:"];
     for (const i of issues) lines.push(formatIssueLine(i));
     return lines.join("\n");
   }
@@ -293,15 +318,16 @@ const MAX_FEED_PROGRESS = 8;
 /**
  * Rewrite a CLI structured-role transcript for the owner-facing feed: keep any human prose, replace
  * raw JSON objects with short markdown (progress bullets + a final Pass/Fail or plan/research block).
- * Returns the original text unchanged when no JSON objects are present.
+ * Returns the original text unchanged when no JSON objects are present (after optionally compacting
+ * an already-humanized but bloated QA checklist from an earlier formatter).
  *
- * Safe to call on already-humanized text (no JSON → identity) and on historical messages that were
- * persisted as raw multi-object walls before write-time humanization existed.
+ * Safe to call on already-humanized text and on historical messages that were persisted as raw
+ * multi-object walls before write-time humanization existed.
  */
 export function formatStructuredRoleFeed(text: string): string {
   if (!text?.trim()) return text;
   const objects = extractJsonObjects(text);
-  if (!objects.length) return text;
+  if (!objects.length) return compactHumanizedQaChecklist(text);
 
   const progress: string[] = [];
   let lastProgress: string | undefined;
@@ -320,10 +346,11 @@ export function formatStructuredRoleFeed(text: string): string {
     finalBlock = formatted;
   }
 
-  // Keep the most recent progress ticks when Grok was chatty — older ones are usually "Starting QA".
+  // Prefer EARLY status ticks ("Starting QA", "Reading…") — late ticks are often near-final
+  // rephrases that survived the draft filter. When still over the cap, keep the first N + a tail count.
   const capped =
     progress.length > MAX_FEED_PROGRESS
-      ? [`- …${progress.length - MAX_FEED_PROGRESS} earlier checks`, ...progress.slice(-MAX_FEED_PROGRESS)]
+      ? [...progress.slice(0, MAX_FEED_PROGRESS), `- …${progress.length - MAX_FEED_PROGRESS} more checks`]
       : progress;
   // Blank line before the final Pass/Fail so the Markdown renderer splits checklist vs verdict
   // (adjacent non-blank lines would otherwise glue into one paragraph).
@@ -363,6 +390,82 @@ export function takeStructuredProgressLines(
     lines.push(line);
   }
   return { nextIndex: objects.length, lines };
+}
+
+/**
+ * Second-pass cleanup for messages already written by an earlier humanizer that still looked like a
+ * wall: long mid-stream draft-fail bullets were kept as checklist items. Drop progress bullets that
+ * would fail `isQaStatusTick` (by length), re-cap early ticks, ensure a blank line before Pass/Fail,
+ * and label an Issues: section when issue bullets follow the verdict. Identity when nothing changes.
+ */
+function compactHumanizedQaChecklist(text: string): string {
+  if (!/\*\*(?:Pass|Fail|Status)\*\*/.test(text)) return text;
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const verdictIdx = lines.findIndex((l) => /^\*\*(?:Pass|Fail|Status)\*\*/.test(l.trim()));
+  if (verdictIdx < 0) return text;
+
+  const before = lines.slice(0, verdictIdx);
+  const after = lines.slice(verdictIdx);
+
+  const progress: string[] = [];
+  let last = "";
+  for (const line of before) {
+    const t = line.trim();
+    if (!t) continue;
+    // Accept both markdown `-`/`*` and legacy unicode • progress bullets.
+    const m = /^[-*+•]\s+(.*)$/.exec(t);
+    if (!m) continue;
+    const body = (m[1] ?? "").trim();
+    if (!body || body.length > QA_STATUS_TICK_MAX_CHARS) continue;
+    const bullet = `- ${body}`;
+    if (bullet === last) continue;
+    last = bullet;
+    progress.push(bullet);
+  }
+
+  const capped =
+    progress.length > MAX_FEED_PROGRESS
+      ? [...progress.slice(0, MAX_FEED_PROGRESS), `- …${progress.length - MAX_FEED_PROGRESS} more checks`]
+      : progress;
+
+  // Rebuild the verdict block: keep Pass/Fail line, blank line, Issues: header, issue bullets.
+  let verdictLine = "";
+  const issueLines: string[] = [];
+  const trailing: string[] = [];
+  for (const line of after) {
+    const t = line.trim();
+    if (!t) continue;
+    if (!verdictLine && /^\*\*(?:Pass|Fail|Status)\*\*/.test(t)) {
+      verdictLine = t;
+      continue;
+    }
+    if (/^Issues:\s*$/i.test(t)) continue;
+    const issue = /^[-*+•]\s+(\*\*[^*]+\*\*:.*)$/.exec(t);
+    if (issue) {
+      issueLines.push(`- ${issue[1]}`);
+      continue;
+    }
+    trailing.push(t);
+  }
+
+  const verdictParts: string[] = [];
+  if (verdictLine) verdictParts.push(verdictLine);
+  if (issueLines.length) {
+    // Blank line before Issues: so Markdown keeps the verdict as its own paragraph.
+    verdictParts.push("", "Issues:", ...issueLines);
+  }
+  if (trailing.length) verdictParts.push(...trailing);
+
+  const blocks =
+    capped.length && verdictParts.length
+      ? [...capped, "", ...verdictParts]
+      : verdictParts.length
+        ? verdictParts
+        : capped;
+  const next = blocks.join("\n");
+  // Normalize comparison — ignore trailing whitespace / final newline drift.
+  const norm = (s: string) => s.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n+$/, "").trimEnd();
+  return norm(next) === norm(text) ? text : next;
 }
 
 /** Remove fenced ```json blocks and bare balanced `{…}` objects, leaving surrounding prose. */

@@ -19,6 +19,7 @@ import {
   jsonContractInstruction,
   formatStructuredRoleFeed,
   formatStructuredObject,
+  isQaStatusTick,
   takeStructuredProgressLines,
 } from "../agents/structuredText.js";
 import { PLAN_SCHEMA, RESEARCH_SCHEMA, QA_SCHEMA } from "../agents/roles.js";
@@ -186,6 +187,7 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
     '{"pass":false,"summary":"Not shippable yet.","issues":[{"severity":"blocker","description":"missing test","location":"foo.ts"}]}';
   const failHuman = formatStructuredRoleFeed(failWithIssues);
   check("formats a failing verdict with severity + location", /\*\*Fail\*\*/.test(failHuman) && failHuman.includes("blocker") && failHuman.includes("foo.ts"));
+  check("labels the issues list under Fail", failHuman.includes("Issues:") && failHuman.includes("- **blocker**"));
 
   // Codex style: prose narration + a final fenced JSON block.
   const codexMix =
@@ -213,6 +215,33 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
   const p3 = takeStructuredProgressLines(draftPass, p2.nextIndex);
   check("progress helper skips intermediate pass:true drafts", p3.lines.length === 0 && p3.nextIndex === 3);
 
+  // Long pass:false draft-fail narratives (prod: Grok usage QA) must not become progress bullets either.
+  const draftFail =
+    '{ "pass": false, "summary": "Starting QA." }\n' +
+    '{ "pass": false, "summary": "Backend SuperGrok meters work and Settings shows weekly usage, but the top-bar Grok chip is clipped off-screen at ~1280px so usage still is not visible — fail." }\n' +
+    '{ "pass": false, "summary": "Not shippable yet.", "issues": [{"severity":"blocker","description":"chip clipped","location":"styles.css"}] }\n' +
+    '{ "pass": false, "summary": "SuperGrok usage plumbing is real but the chip is clipped — fail.", "issues": [{"severity":"blocker","description":"chip clipped off-screen at 1280px","location":"web/src/styles.css"}] }';
+  const draftFailHuman = formatStructuredRoleFeed(draftFail);
+  check("skips long intermediate pass:false draft-fail narratives", !draftFailHuman.includes("not visible") && draftFailHuman.includes("**Fail**"));
+  check(
+    "skips intermediate pass:false that already carry issues (only short Starting tick remains)",
+    /^-\s+Starting QA\.\s*$/m.test(draftFailHuman) && !draftFailHuman.includes("Not shippable yet."),
+  );
+  check("draft-fail wall shows only short status + final Fail", /^-\s+Starting/m.test(draftFailHuman) && /\*\*Fail\*\*/.test(draftFailHuman));
+  check("draft-fail wall has a single Issues section", (draftFailHuman.match(/^Issues:/gm) ?? []).length === 1);
+  check("isQaStatusTick accepts short empty-issues ticks", isQaStatusTick({ pass: false, summary: "Starting QA.", issues: [] }));
+  check("isQaStatusTick rejects pass:true drafts", !isQaStatusTick({ pass: true, summary: "Ship it." }));
+  check("isQaStatusTick rejects long draft-fail summaries", !isQaStatusTick({
+    pass: false,
+    summary: "Backend SuperGrok meters work and Settings shows weekly usage, but the top-bar Grok chip is clipped off-screen at ~1280px so usage still is not visible — fail.",
+    issues: [],
+  }));
+  check("isQaStatusTick rejects objects with issues", !isQaStatusTick({
+    pass: false,
+    summary: "Not ready.",
+    issues: [{ severity: "blocker", description: "x" }],
+  }));
+
   // Prod shape: two real status ticks, then ~40 near-identical pass:true re-drafts, then a final Pass
   // with a nit (thread 5c03fc4f — "looks like grok cant succesfully post…").
   let longWall =
@@ -227,16 +256,31 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
   check("long Grok wall: no raw JSON left", !longHuman.includes('"pass"') && !longHuman.includes("{ "));
   check("long Grok wall: only real status ticks as bullets (not 40 draft Passes)", (longHuman.match(/^- /gm) ?? []).length === 3); // 2 progress + 1 issue
   check("long Grok wall: single final Pass markdown", (longHuman.match(/\*\*Pass\*\*/g) ?? []).length === 1);
-  check("long Grok wall: surfaces final issues", longHuman.includes("nit") && longHuman.includes("threadManager.ts"));
+  check("long Grok wall: surfaces final issues", longHuman.includes("nit") && longHuman.includes("threadManager.ts") && longHuman.includes("Issues:"));
   check("long Grok wall: already-humanized text is stable", formatStructuredRoleFeed(longHuman) === longHuman);
 
-  // Cap: many distinct pass:false ticks keep only the last N (+ ellipsis marker).
+  // Second pass: a previously-humanized wall that still kept long draft-fail bullets (prod: Grok usage QA).
+  const bloatedHuman =
+    "- Starting QA: inspect git changes.\n" +
+    "- Working tree clean; inspecting next.\n" +
+    "- Backend SuperGrok meters work and Settings shows weekly/monthly usage, but the top-bar Grok chip is clipped off-screen at ~1280px so usage still is not visible — fail.\n" +
+    "- Backend + Settings usage work, but the Grok chip is clipped off-screen at common desktop widths — matching the user complaint.\n\n" +
+    "**Fail** — SuperGrok usage plumbing is real but the chip is clipped.\n\n" +
+    "- **blocker**: Top-bar Grok chip clipped off-screen at 1280px. (web/src/styles.css)";
+  const compacted = formatStructuredRoleFeed(bloatedHuman);
+  check("compacts already-humanized bloated QA checklists", !compacted.includes("1280px so usage") && compacted.includes("**Fail**"));
+  check("keeps short status ticks when compacting", compacted.includes("- Starting QA") && compacted.includes("- Working tree clean"));
+  check("adds Issues: when compacting legacy issue bullets", compacted.includes("Issues:") && compacted.includes("- **blocker**"));
+  check("compacted humanized text is stable on a second pass", formatStructuredRoleFeed(compacted) === compacted);
+
+  // Cap: many distinct short pass:false ticks keep the FIRST N (+ trailing "more checks" marker).
   let manyTicks = "";
   for (let i = 0; i < 12; i++) manyTicks += `{ "pass": false, "summary": "Check step ${i}." }\n`;
   manyTicks += '{ "pass": true, "summary": "Done." }';
   const capped = formatStructuredRoleFeed(manyTicks);
-  check("caps long progress lists with an ellipsis marker", capped.includes("…") && capped.includes("earlier checks"));
+  check("caps long progress lists with an ellipsis marker", capped.includes("…") && capped.includes("more checks"));
   check("caps progress to a short checklist + final Pass", (capped.match(/^- /gm) ?? []).length <= 9 && /\*\*Pass\*\*/.test(capped));
+  check("cap prefers early status ticks (Starting-style), not the last ones", capped.includes("Check step 0.") && !capped.includes("Check step 11."));
 
   const planObj = formatStructuredObject(
     { summary: "Ship the fix", steps: [{ title: "Patch runner", detail: "humanize feed" }], nextAgent: "implementor" },
