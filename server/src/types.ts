@@ -26,8 +26,21 @@ export type ThreadState =
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
-export type CodexEffort = "low" | "medium" | "high" | "xhigh";
-export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
+export type CodexEffort = "low" | "medium" | "high" | "xhigh" | "max";
+/** All known Codex effort values. GPT-5.6 is the first supported family with `max`; earlier Codex
+ * models stop at `xhigh`, so callers must use `codexEffortsForModel` before spawning a run. */
+export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max"];
+const CODEX_PRE_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
+
+/** GPT-5.6 and its snapshots support the newer `max` reasoning effort. */
+export function codexEffortsForModel(model: string): readonly CodexEffort[] {
+  return /^gpt-5\.6(?:[-.]|$)/i.test(model.trim()) ? CODEX_EFFORTS : CODEX_PRE_MAX_EFFORTS;
+}
+
+/** Never send `max` to a Codex model that only accepts up to `xhigh`. */
+export function resolveCodexEffort(model: string, effort: CodexEffort): CodexEffort {
+  return codexEffortsForModel(model).includes(effort) ? effort : "xhigh";
+}
 export type GrokEffort = "low" | "medium" | "high";
 export const GROK_EFFORTS: GrokEffort[] = ["low", "medium", "high"];
 

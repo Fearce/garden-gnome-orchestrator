@@ -7,8 +7,16 @@ export type ThreadLane = "read";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
-export type CodexEffort = "low" | "medium" | "high" | "xhigh";
-export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
+export type CodexEffort = "low" | "medium" | "high" | "xhigh" | "max";
+/** All known Codex effort values. GPT-5.6 is the first supported family with `max`; earlier Codex
+ * models stop at `xhigh`, so render the model-specific subset with `codexEffortsForModel`. */
+export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max"];
+const CODEX_PRE_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
+
+/** Mirrors server/src/types.ts. GPT-5.6 aliases and snapshots accept `max`. */
+export function codexEffortsForModel(model: string): readonly CodexEffort[] {
+  return /^gpt-5\.6(?:[-.]|$)/i.test(model.trim()) ? CODEX_EFFORTS : CODEX_PRE_MAX_EFFORTS;
+}
 export type GrokEffort = "low" | "medium" | "high";
 export const GROK_EFFORTS: GrokEffort[] = ["low", "medium", "high"];
 

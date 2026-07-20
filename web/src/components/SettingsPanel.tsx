@@ -1,8 +1,9 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CODEX_EFFORTS, CODEX_SUB_ID, EFFORTS, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, type CodexEffort, type Effort, type GrokEffort, type Role } from "../types.js";
+import { CODEX_SUB_ID, EFFORTS, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, codexEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role } from "../types.js";
 import { codexModelOptions, grokModelOptions } from "../lib/models.js";
+import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 
 /** The gear-icon panel: everything that isn't a per-task agent toggle (those live in the topbar).
@@ -481,7 +482,7 @@ function EffortCapField({ value, options, onChange }: { value: string; options: 
         <div className="segment">
           {options.map((v) => (
             <button key={v} className={value === v ? "on" : ""} onClick={() => onChange(v)}>
-              {v}
+              {effortLabel(v as Effort)}
             </button>
           ))}
         </div>
@@ -552,7 +553,7 @@ function SubscriptionsSection() {
         meta={
           settings.codexEnabled
             ? codexHasAuth
-              ? `Implementing tasks via the Codex CLI${settings.codexChatgptLogin ? " · ChatGPT plan login" : ""} · model ${settings.codexModel} · ${settings.codexEffort} max effort`
+              ? `Implementing tasks via the Codex CLI${settings.codexChatgptLogin ? " · ChatGPT plan login" : ""} · model ${settings.codexModel} · ${effortLabel(settings.codexEffort)} max effort`
               : "Enabled but no usable auth — sign in with `codex login` or add a key below before tasks can route here."
             : "Off — enable to implement tasks with the Codex CLI instead of Claude."
         }
@@ -730,8 +731,17 @@ function GrokModels() {
 /** The Codex reasoning-effort CAP: the director/planner picks each task's effort, clamped to this max. */
 function CodexEffortField() {
   const effort = useStore((s) => s.settings.codexEffort);
+  const model = useStore((s) => s.settings.codexModel);
   const setSettings = useStore((s) => s.setSettings);
-  return <EffortCapField value={effort} options={CODEX_EFFORTS} onChange={(v) => setSettings({ codexEffort: v as CodexEffort })} />;
+  const options = codexEffortsForModel(model);
+  return (
+    <>
+      <EffortCapField value={effort} options={options} onChange={(v) => setSettings({ codexEffort: v as CodexEffort })} />
+      <div className="sub-msg dim">
+        {options.includes("max") ? "GPT-5.6 supports Max." : "This model supports up to Extra High. Choose a GPT-5.6 model to enable Max."}
+      </div>
+    </>
+  );
 }
 
 /** The soft WEEKLY-safety ceiling for the Codex backend. At/above this Codex weekly utilization, new tasks

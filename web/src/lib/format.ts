@@ -212,7 +212,7 @@ function titleWord(s: string): string {
 
 /** A raw effort tier as a display word: "high" → "High", "xhigh" → "X-High", "max" → "Max". */
 export function effortLabel(effort: Effort): string {
-  return effort === "xhigh" ? "X-High" : titleWord(effort);
+  return effort === "xhigh" ? "Extra High" : titleWord(effort);
 }
 
 /** Turn a raw model id into the short display name shown next to an agent — "claude-opus-4-8" →

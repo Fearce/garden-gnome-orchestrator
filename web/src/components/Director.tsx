@@ -6,9 +6,9 @@ import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
-import { CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, type CodexEffort, type DirectorItem, type DirectorMessage, type Effort, type OrchestratorSettings, type Role } from "../types.js";
+import { CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, codexEffortsForModel, type CodexEffort, type DirectorItem, type DirectorMessage, type Effort, type OrchestratorSettings, type Role } from "../types.js";
 import { codexModelOptions } from "../lib/models.js";
-import { modelLabel } from "../lib/format.js";
+import { effortLabel, modelLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 
 // The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
@@ -364,6 +364,7 @@ function ComposerEffortPickers() {
   const effort = useStore((s) => s.settings.skipDirectorEffort);
   const codexEffort = useStore((s) => s.settings.codexEffort);
   const codexEnabled = useStore((s) => s.settings.codexEnabled);
+  const codexModel = useStore((s) => s.settings.codexModel);
   const xhighEnabled = useStore((s) => s.settings.xhighEnabled);
   const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
   const setSettings = useStore((s) => s.setSettings);
@@ -371,7 +372,10 @@ function ComposerEffortPickers() {
   const claudeTitle = `How hard the Claude implementor works on tasks dispatched directly. Auto = ${
     plannerEnabled ? "the planner's per-task pick" : "the built-in default (high) — the planner is off"
   }; a concrete tier overrides it.`;
-  const codexTitle = "Codex CLI reasoning effort (model_reasoning_effort) — the same global setting as Settings → Subscriptions, applied to every Codex run.";
+  const codexTiers = codexEffortsForModel(codexModel);
+  const codexTitle = codexTiers.includes("max")
+    ? "Codex CLI reasoning effort (model_reasoning_effort). GPT-5.6 supports Max; this global cap applies to every Codex run."
+    : "Codex CLI reasoning effort (model_reasoning_effort). This model supports up to Extra High; pick GPT-5.6 to enable Max.";
 
   return (
     <div className="composer-model-row" aria-label="Implementor effort">
@@ -408,9 +412,9 @@ function ComposerEffortPickers() {
             title={codexTitle}
             onChange={(e) => setSettings({ codexEffort: e.target.value as CodexEffort })}
           >
-            {CODEX_EFFORTS.map((t) => (
+            {codexTiers.map((t) => (
               <option key={t} value={t}>
-                {t}
+                {effortLabel(t)}
               </option>
             ))}
           </select>

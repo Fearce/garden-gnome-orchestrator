@@ -47,7 +47,7 @@ import type {
   Role,
   Thread,
 } from "../types.js";
-import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, normalizeWorkspace, repoRoom } from "../types.js";
+import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, normalizeWorkspace, repoRoom, resolveCodexEffort } from "../types.js";
 
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
@@ -1058,11 +1058,12 @@ export class ThreadManager implements OrchestratorApi {
     );
   }
 
-  /** The Codex CLI reasoning-effort override. `max` is a Claude-only tier, so Codex exposes the
-   *  Responses-compatible range this CLI accepts: low/medium/high/xhigh. */
-  private codexEffort(): CodexEffort {
+  /** The Codex CLI reasoning-effort override, normalized to the selected model's accepted range.
+   * GPT-5.6 accepts `max`; earlier Codex models cap at `xhigh`. */
+  private codexEffort(model = this.codexModel()): CodexEffort {
     const v = this.db.kvGet("setting_codex_effort")?.trim();
-    return CODEX_EFFORTS.includes(v as CodexEffort) ? (v as CodexEffort) : "high";
+    const requested = CODEX_EFFORTS.includes(v as CodexEffort) ? (v as CodexEffort) : "high";
+    return resolveCodexEffort(model, requested);
   }
 
   /** The selected Grok implementor model. Resolution: the model-overrides matrix (grok.implementor), then
@@ -1881,7 +1882,7 @@ export class ThreadManager implements OrchestratorApi {
     while (!this.cancelled(thread.id)) {
       const model = provider === "codex" ? this.codexModel() : provider === "grok" ? this.grokModel() : this.modelFor(acct.id, role);
       const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : acct.label;
-      const effort = provider === "codex" ? this.codexEffort() : provider === "grok" ? this.grokEffort() : undefined;
+      const effort = provider === "codex" ? this.codexEffort(model) : provider === "grok" ? this.grokEffort() : undefined;
       const run = this.db.createRun({ threadId: thread.id, role, model, account: accountLabel, effort });
       this.emitRun(run.id);
       const cfg = makeCfg({ token: provider === "claude" ? acct.token : undefined, resume: provider === "claude" ? resume : undefined, runId: run.id });
@@ -1894,7 +1895,7 @@ export class ThreadManager implements OrchestratorApi {
         if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Codex");
         agent = new CodexAgentRun({
           model,
-          effort: this.codexEffort(),
+          effort: this.codexEffort(model),
           cwd: thread.workspace,
           apiKey: this.openaiApiKey() ?? "",
           resume,
@@ -2211,7 +2212,7 @@ export class ThreadManager implements OrchestratorApi {
       const model = this.codexModel();
       // The director/planner picks the per-task effort; the Codex subscription's setting is its MAX cap, so
       // a tiny task still runs cheap while nothing exceeds what the operator allowed for this backend.
-      const effort = clampEffort(plannerEffort, this.codexEffort()) as CodexEffort;
+      const effort = clampEffort(plannerEffort, this.codexEffort(model)) as CodexEffort;
       accountId = "openai-codex";
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `codex:${model}`, effort });
       runId = run.id;
