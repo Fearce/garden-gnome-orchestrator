@@ -1,10 +1,10 @@
 // Unit test for the per-subscription weekly-safety ceiling (pure logic — no accounts, no DB, no network).
 // Run: npx tsx src/tests/weeklySafety.test.ts   (or `npm run test:weekly-safety`)
 //
-// `preferUnderWeeklySafety` is the soft filter select()/selectFailover() apply: keep candidates under
-// their own weekly ceiling, but fall through to ALL when none qualify (never freeze a dispatch).
+// `weeklySafetyPool` is the soft filter select()/selectFailover() apply: keep candidates under their
+// own weekly ceiling, but fall through to ALL when none qualify (never freeze a dispatch).
 
-import { preferUnderWeeklySafety } from "../accounts/accountManager.js";
+import { bySafetyHeadroom, preferUnderWeeklySafety, weeklySafetyPool } from "../accounts/accountManager.js";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -33,8 +33,18 @@ check("just under ceiling stays", ids(preferUnderWeeklySafety([a("A", 89, 90), a
 // Independent per-sub ceilings: each is judged against its OWN threshold.
 check("per-sub ceilings independent", ids(preferUnderWeeklySafety([a("A", 85, 80), a("B", 85, 90)])) === "B");
 
-// ALL over their ceilings → fall through to the full set (no freeze), order preserved.
-check("all over → fall through to all", ids(preferUnderWeeklySafety([a("A", 95, 90), a("B", 92, 90)])) === "A,B");
+// ALL over their ceilings → fall through to the full set and explicitly signal the most-headroom fallback.
+const allOver = [a("A", 95, 90), a("B", 92, 90)];
+check("all over → fall through to all", ids(weeklySafetyPool(allOver).candidates) === "A,B");
+check("all over signals the headroom fallback", weeklySafetyPool(allOver).allOver);
+const someUnder = [a("A", 95, 90), a("B", 80, 90)];
+check("some under does not signal the fallback", !weeklySafetyPool(someUnder).allOver);
+const headroomOrder = [
+  { ...a("A", 95, 90), fiveHour: 20 },
+  { ...a("B", 92, 90), fiveHour: 80 },
+  { ...a("C", 92, 90), fiveHour: 40 },
+].sort(bySafetyHeadroom);
+check("all-over fallback chooses most weekly, then 5h, headroom", ids(headroomOrder) === "C,B,A");
 
 // Null usage (pre-ping) treated as 0 → always under any ceiling.
 check("null usage is under any ceiling", ids(preferUnderWeeklySafety([a("A", null, 50), a("B", 60, 50)])) === "A");

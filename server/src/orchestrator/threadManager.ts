@@ -1,5 +1,5 @@
 import type { AccountDispatchPreview, AccountManager } from "../accounts/accountManager.js";
-import { preferUnderWeeklySafety, untilReset } from "../accounts/accountManager.js";
+import { bySafetyHeadroom, untilReset, weeklySafetyPool } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
@@ -1353,10 +1353,12 @@ export class ThreadManager implements OrchestratorApi {
     // favor of one still under its own ceiling — but never dropped entirely (falls through when all are over,
     // so this can't freeze a dispatch). Claude carries the selected account's own ceiling; Codex and Grok
     // carry their backend ceilings.
-    const pool = preferUnderWeeklySafety(base);
+    const safety = weeklySafetyPool(base);
+    const pool = safety.candidates;
     // Preference is applied only AFTER the safety filter: it cannot re-add an over-threshold Grok candidate.
     if (this.settings().grokPreferred && pool.some((c) => c.provider === "grok" && c.hasHeadroom)) return "grok";
-    return pool.reduce((best, c) => (providerPriority(best, c) <= 0 ? best : c)).provider;
+    const priority = safety.allOver ? providerSafetyFallbackPriority : providerPriority;
+    return pool.reduce((best, c) => (priority(best, c) <= 0 ? best : c)).provider;
   }
 
   /** The best implementor backend OTHER than `exclude` that can take over RIGHT NOW (has headroom), or
@@ -4382,6 +4384,12 @@ function providerPriority(x: ProviderCandidate, y: ProviderCandidate): number {
     providerHeadroom(y.sevenDay) - providerHeadroom(x.sevenDay) ||
     providerHeadroom(y.fiveHour) - providerHeadroom(x.fiveHour)
   );
+}
+
+/** All providers over their soft ceilings is explicitly a no-freeze condition: keep routing, choosing
+ *  the backend with the most weekly (then 5h) headroom instead of the normal soonest-reset winner. */
+function providerSafetyFallbackPriority(x: ProviderCandidate, y: ProviderCandidate): number {
+  return bySafetyHeadroom(x, y) || providerPriority(x, y);
 }
 
 function providerWeeklyResetAt(c: ProviderCandidate): number {

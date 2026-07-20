@@ -99,11 +99,30 @@ const underWeeklySafety = (s: { sevenDay: number | null; weeklySafetyPct: number
  * Apply the soft weekly-safety ceiling to a candidate set: keep only accounts still under their own
  * `weeklySafetyPct`, but — unlike the hard cap — never freeze. When EVERY candidate is over its ceiling
  * (or the set is empty) the full set is returned so dispatch falls through to it rather than parking the
- * task. Exported for unit tests; used by both `select()` (via selectionPool) and `selectFailover()`.
+ * task. Exported for simple callers/tests; selectors use `weeklySafetyPool` for the same candidates plus
+ * the explicit all-over signal that activates their most-headroom fallback.
  */
 export function preferUnderWeeklySafety<T extends { sevenDay: number | null; weeklySafetyPct: number }>(candidates: T[]): T[] {
+  return weeklySafetyPool(candidates).candidates;
+}
+
+/** The same safety filter plus the one bit selectors need to choose their explicit most-headroom
+ *  no-freeze fallback. Keeping that state explicit avoids inferring it from array identity. */
+export function weeklySafetyPool<T extends { sevenDay: number | null; weeklySafetyPct: number }>(
+  candidates: T[],
+): { candidates: T[]; allOver: boolean } {
   const under = candidates.filter(underWeeklySafety);
-  return under.length ? under : candidates;
+  return under.length ? { candidates: under, allOver: false } : { candidates, allOver: candidates.length > 0 };
+}
+
+/** Comparator for the explicit no-freeze fallback when every candidate is over its safety ceiling.
+ *  More weekly headroom wins; the 5h window breaks ties. Callers retain their normal policy after it. */
+export function bySafetyHeadroom(
+  x: { fiveHour: number | null; sevenDay: number | null },
+  y: { fiveHour: number | null; sevenDay: number | null },
+): number {
+  const headroom = (pct: number | null): number => 100 - (pct ?? 0);
+  return headroom(y.sevenDay) - headroom(x.sevenDay) || headroom(y.fiveHour) - headroom(x.fiveHour);
 }
 
 const weeklyHeadroom = (s: AccountState): number => 100 - (s.sevenDay ?? 0);
@@ -127,6 +146,12 @@ const bySelectionPriority = (x: AccountState, y: AccountState): number =>
   weeklyHeadroom(y) - weeklyHeadroom(x) ||
   fiveHeadroom(y) - fiveHeadroom(x) ||
   x.lastPick - y.lastPick;
+
+/** Once every usable sub has crossed its soft ceiling, spend the sub with the most remaining weekly
+ *  headroom first. The normal soonest-reset policy is only a tiebreak here: the safety fallback is
+ *  specifically about retaining as much allowance as possible while still refusing to freeze. */
+const bySafetyFallbackPriority = (x: AccountState, y: AccountState): number =>
+  bySafetyHeadroom(x, y) || bySelectionPriority(x, y);
 
 /**
  * Tracks each subscription's 5h/weekly burn and routes dispatches to spend the
@@ -625,9 +650,9 @@ export class AccountManager {
       return { account: only, reason: "single account" };
     }
     const now = Date.now();
-    const { usable, pool } = this.selectionPool(now);
+    const { usable, pool, allOverSafety } = this.selectionPool(now);
     // Burn the account whose weekly window resets soonest first (see bySelectionPriority).
-    pool.sort(bySelectionPriority);
+    pool.sort(allOverSafety ? bySafetyFallbackPriority : bySelectionPriority);
     const chosen = pool[0]!;
     chosen.lastPick = ++this.selSeq;
     this.preferredId = chosen.account.id;
@@ -646,8 +671,8 @@ export class AccountManager {
    *  active account marker before a dispatch is actually committed. */
   dispatchPreview(): AccountDispatchPreview {
     const now = Date.now();
-    const { usable, pool } = this.selectionPool(now);
-    pool.sort(bySelectionPriority);
+    const { usable, pool, allOverSafety } = this.selectionPool(now);
+    pool.sort(allOverSafety ? bySafetyFallbackPriority : bySelectionPriority);
     const chosen = pool[0]!;
     return {
       account: chosen.account,
@@ -676,9 +701,10 @@ export class AccountManager {
     if (!candidates.length) return null;
     // Honor the soft weekly ceiling here too: fail over to a sub still under its ceiling when one exists,
     // else use whichever capped-out candidate has the most headroom rather than stranding the task.
-    const pool = preferUnderWeeklySafety(candidates);
+    const safety = weeklySafetyPool(candidates);
+    const pool = safety.candidates;
     // Same perishable-first order: the reserve account we fail over to is the next-soonest-resetting one.
-    pool.sort(bySelectionPriority);
+    pool.sort(safety.allOver ? bySafetyFallbackPriority : bySelectionPriority);
     const chosen = pool[0]!;
     chosen.lastPick = ++this.selSeq;
     this.preferredId = chosen.account.id;
@@ -801,7 +827,7 @@ export class AccountManager {
     this.hub.publish({ type: "accounts", accounts: this.dto() });
   }
 
-  private selectionPool(now: number): { usable: AccountState[]; pool: AccountState[] } {
+  private selectionPool(now: number): { usable: AccountState[]; pool: AccountState[]; allOverSafety: boolean } {
     const all = [...this.states.values()];
     // Operator-disabled accounts are held out of the rotation. Safety net: if every account is
     // disabled, ignore the toggles rather than strand the pipeline (planner/researcher/QA need Claude).
@@ -813,9 +839,13 @@ export class AccountManager {
     });
     // Soft weekly ceiling: prefer usable subs still under their own `weeklySafetyPct`, so an account that
     // crosses its ceiling sheds new work onto a fresher one WITHOUT freezing (falls through to all usable
-    // when every one is over its ceiling — see preferUnderWeeklySafety).
-    const preferred = preferUnderWeeklySafety(usable);
-    return { usable, pool: preferred.length ? [...preferred] : [...base] };
+    // when every one is over its ceiling — see weeklySafetyPool).
+    const safety = weeklySafetyPool(usable);
+    return {
+      usable,
+      pool: safety.candidates.length ? [...safety.candidates] : [...base],
+      allOverSafety: safety.allOver,
+    };
   }
 }
 
