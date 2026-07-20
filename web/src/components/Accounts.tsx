@@ -179,10 +179,9 @@ function CodexChip({
 }
 
 /**
- * Top-bar chip for the xAI Grok backend. Shows the signed-in account, the current state (implementing now /
- * ready / needs auth / off), and — once the first `/usage show` scrape lands — the real SuperGrok weekly
- * meter + reset countdown (xAI's API forbids reading it, so the server scrapes the CLI's own view). Before
- * the first scrape it shows the model·effort line instead.
+ * Top-bar chip for the xAI Grok backend. Shows signed-in SuperGrok identity, state (implementing /
+ * ready / capped / needs auth / off), and live meters: weekly used-% (CLI log / winpty) + monthly
+ * credits (HTTP billing). Before the first reading lands it shows model·effort (or a soft error).
  */
 function GrokChip({
   enabled,
@@ -217,24 +216,34 @@ function GrokChip({
     state === "implementing" ? "implementing" : state === "ready" ? "ready" : state === "capped" ? "capped" : state === "noauth" ? "no auth" : "off";
   const tagCls = state === "noauth" || state === "capped" ? "acct-tag" : state === "off" ? "acct-tag dim" : "acct-tag ok";
   const who = account ? ` · ${account}` : "";
-  // The weekly meter comes from scraping the CLI's own `/usage show` (xAI's API forbids OAuth clients from
-  // reading it, but the CLI renders it). Until the first scrape lands, sevenDay is null and we show the
-  // model·effort line instead of a meter.
-  const hasMeter = usage != null && usage.sevenDay != null;
+  const plan = usage?.plan ?? (usage?.tier === 1 ? "SuperGrok" : null);
+  const monthlyPct =
+    usage?.monthlyUsed != null && usage.monthlyLimit != null && usage.monthlyLimit > 0
+      ? Math.min(100, Math.max(0, (100 * usage.monthlyUsed) / usage.monthlyLimit))
+      : null;
+  const hasMeter = usage != null && (usage.sevenDay != null || monthlyPct != null);
   const stale = !!usage?.stale;
   const prefNote = preferred
     ? " · preferred for the implementor"
     : " · auto-ranked with Claude/Codex by soonest weekly reset (Prefer Grok still honors its safety threshold)";
+  const meterNote =
+    usage?.sevenDay != null
+      ? ` · weekly ${Math.round(usage.sevenDay)}%${usage.sevenDayReset != null && usage.sevenDayReset > now ? ` (resets ${countdown(usage.sevenDayReset, now)})` : ""}`
+      : "";
+  const monthlyNote =
+    monthlyPct != null && usage?.monthlyUsed != null && usage.monthlyLimit != null
+      ? ` · monthly ${usage.monthlyUsed}/${usage.monthlyLimit} credits (${Math.round(monthlyPct)}%)`
+      : "";
   const title =
     state === "implementing"
-      ? `Grok is implementing a task now${who} · model ${model} · ${effort} effort${prefNote}`
+      ? `Grok is implementing a task now${who}${plan ? ` · ${plan}` : ""} · model ${model} · ${effort} effort${meterNote}${monthlyNote}${prefNote}`
       : state === "ready"
-        ? `Grok (SuperGrok) enabled${who} · model ${model} · ${effort} effort${prefNote}`
+        ? `Grok${plan ? ` (${plan})` : ""} enabled${who} · model ${model} · ${effort} effort${meterNote}${monthlyNote}${prefNote}`
         : state === "capped"
           ? `Grok hit its usage limit — routing implementors elsewhere${capReset != null ? `; retrying in ${countdown(capReset, now)}` : ""}`
           : state === "noauth"
             ? "Grok is enabled but not signed in — run `grok login` (or `grok login --device-auth`) on the host"
-            : `Grok (SuperGrok) configured but off · model ${model} · ${effort} effort`;
+            : `Grok${plan ? ` (${plan})` : ""} configured but off · model ${model} · ${effort} effort`;
   return (
     <div
       className={
@@ -246,6 +255,11 @@ function GrokChip({
         <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
         <span className="acct-label">Grok</span>
         <span className={tagCls}>{tag}</span>
+        {plan ? (
+          <span className="acct-tag ok" title={`${plan} subscription`}>
+            {plan}
+          </span>
+        ) : null}
         {stale ? <span className="acct-tag dim">stale</span> : null}
         {preferred && (state === "ready" || state === "implementing") ? (
           <span className="acct-tag ok" title="Preferred for the implementor — Grok runs it whenever it's enabled and not capped">
@@ -255,11 +269,32 @@ function GrokChip({
       </div>
       {hasMeter ? (
         <div className="acct-meters">
-          <Meter k="7d" pct={usage!.sevenDay} kind="week" stale={stale} reset={usage!.sevenDayReset} now={now} />
+          {usage!.sevenDay != null ? (
+            <Meter k="7d" pct={usage!.sevenDay} kind="week" stale={stale} reset={usage!.sevenDayReset} now={now} />
+          ) : null}
+          {monthlyPct != null ? (
+            <Meter
+              k="mo"
+              pct={monthlyPct}
+              kind="week"
+              stale={stale}
+              reset={usage!.monthlyReset}
+              now={now}
+              detail={
+                usage!.monthlyUsed != null && usage!.monthlyLimit != null
+                  ? `${usage!.monthlyUsed}/${usage!.monthlyLimit} credits`
+                  : null
+              }
+            />
+          ) : null}
         </div>
       ) : (
-        <div className="codex-model" title={`${model} · ${effort} effort${who}`}>
-          {state === "capped" ? `retry in ${countdown(usage!.capUntil, now)}` : `${model} · ${effort}`}
+        <div className="codex-model" title={usage?.error ? `usage unavailable: ${usage.error}` : `${model} · ${effort} effort${who}`}>
+          {state === "capped" && usage?.capUntil
+            ? `retry in ${countdown(usage.capUntil, now)}`
+            : usage?.error
+              ? usage.error
+              : `${model} · ${effort}`}
         </div>
       )}
     </div>
@@ -333,6 +368,7 @@ function Meter({
   resetEstimated,
   now,
   hold,
+  detail,
 }: {
   k: string;
   pct: number | null;
@@ -342,8 +378,10 @@ function Meter({
   resetEstimated?: boolean;
   now: number;
   hold?: number | null;
+  /** Optional absolute reading (e.g. "616/15000 credits") appended to the hover tip. */
+  detail?: string | null;
 }) {
-  const win = k === "5h" ? "5-hour" : "weekly";
+  const win = k === "5h" ? "5-hour" : k === "mo" ? "monthly" : "weekly";
   // Stagger hold-off: the 5h window rolled over and its restart ping deliberately waits for this
   // account's slot, so the subs reset alternately. The window is idle at 0% — fully usable; a real
   // dispatch starts it immediately.
@@ -352,7 +390,11 @@ function Meter({
   // went stale, so keep counting down as long as it's still in the future. The `reset <= now` guard
   // already drops a window that has actually rolled over (its new reset is unknown until the next run).
   const left = reset == null || reset <= now ? "" : countdown(reset, now);
-  const usageTip = pct == null ? `${win} usage: —` : `${win} usage: ${stale ? "~" : ""}${label(pct)}${stale ? " (last known)" : ""}`;
+  const detailNote = detail ? ` · ${detail}` : "";
+  const usageTip =
+    pct == null
+      ? `${win} usage: —${detailNote}`
+      : `${win} usage: ${stale ? "~" : ""}${label(pct)}${stale ? " (last known)" : ""}${detailNote}`;
   const resetTip = resetEstimated ? `estimated reset in ${left} (Codex omitted the 5-hour window)` : `resets in ${left}`;
   const tip = holding
     ? `${usageTip} · window idle — starts in ${countdown(hold, now)} (staggered so 5h resets spread out across subscriptions; a dispatch starts it right away)`

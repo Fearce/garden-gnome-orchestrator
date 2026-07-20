@@ -1,25 +1,40 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, openSync, readSync, statSync, closeSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { EventHub } from "../events.js";
-import { noteGrokUsageScrape, parseGrokUsage, readGrokUsage, type GrokUsageDTO } from "./grokUsage.js";
+import {
+  noteGrokMonthly,
+  noteGrokUsageError,
+  noteGrokUsageScrape,
+  parseGrokBillingHttp,
+  parseGrokCreditsLog,
+  parseGrokUsage,
+  readGrokAccessTokenRaw,
+  readGrokUsage,
+  type GrokUsageDTO,
+} from "./grokUsage.js";
 
 /**
- * Keep the Grok chip + routing fed with the REAL weekly usage. xAI's API forbids OAuth-token clients from
- * reading SuperGrok's rate limit, but the CLI's own `/usage show` renders it. This monitor drives the CLI
- * through a pseudo-console (winpty — the headless orchestrator has no real TTY) on a slow timer, scrapes
- * "Weekly limit: N%" + "Next reset: <Mon Day, HH:MM>", and feeds them as the weekly meter + reset epoch.
- * A fresh identity read (auth.json) is broadcast even without a scrape, so the chip shows the signed-in
- * account immediately and the meter fills in on the first scrape.
+ * Keep the Grok chip + routing fed with REAL SuperGrok usage.
  *
- * Robustness: every scrape is a short-lived spawn with a hard timeout; failures keep the last reading
- * rather than blanking it. The scrape is Windows-only (winpty); on other platforms — or with the scrape
- * disabled/winpty missing — the chip still shows identity + the live-run cap latch, just no weekly gauge.
+ * Three sources, cheapest first:
+ *  1. CLI unified.jsonl — the CLI already logs `creditUsagePercent` + weekly period end on every TUI
+ *     boot (and our own winpty scrape). Free, no network, no PTY.
+ *  2. HTTP `GET https://cli-chat-proxy.grok.com/v1/billing` with the OAuth access token — monthly
+ *     credit used/limit. Verified live against SuperGrok; no model turn.
+ *  3. winpty TUI scrape of `/usage show` — weekly meter when the log is cold (Windows only).
+ *
+ * Failures keep the last reading rather than blanking it. Identity (auth.json) is always re-read so
+ * the chip shows the signed-in account even before the first meter lands.
  */
 
 const SCRAPE_READY_RE = /Weekly limit:/i;
+// How often to re-drive the expensive winpty TUI scrape when the log hasn't produced a weekly meter.
+const WINPTY_MIN_INTERVAL_MS = 10 * 60_000;
+// Tail at most this many bytes of the CLI log per poll (the file grows without bound).
+const LOG_TAIL_BYTES = 512 * 1024;
 
 /** Strip ANSI CSI + OSC escapes and NULs from a raw TUI capture so the plain "Weekly limit: N%" text
  *  survives for the parser. */
@@ -31,7 +46,7 @@ function stripAnsi(s: string): string {
     .replace(/\x00/g, "");
 }
 
-/** Whether the usage scrape can run at all: Windows, enabled, and both the CLI + winpty present. */
+/** Whether the winpty TUI scrape can run: Windows, enabled, and both the CLI + winpty present. */
 export function grokUsageScrapeAvailable(): boolean {
   return (
     process.platform === "win32" &&
@@ -39,6 +54,67 @@ export function grokUsageScrapeAvailable(): boolean {
     existsSync(config.grok.bin) &&
     existsSync(config.grok.winpty)
   );
+}
+
+/** Tail-read the CLI unified log and extract the latest SuperGrok weekly creditUsagePercent. Returns
+ *  null when the log is missing/empty or has no billing line yet. Never throws. */
+export function readGrokCreditsFromLog(): { sevenDay: number; sevenDayReset: number | null; plan: string | null } | null {
+  const logPath = join(config.grok.home, "logs", "unified.jsonl");
+  if (!existsSync(logPath)) return null;
+  try {
+    const size = statSync(logPath).size;
+    if (size <= 0) return null;
+    const start = Math.max(0, size - LOG_TAIL_BYTES);
+    const len = size - start;
+    const fd = openSync(logPath, "r");
+    try {
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, start);
+      // Drop a partial first line when we started mid-file.
+      const text = buf.toString("utf8");
+      const cut = start > 0 ? text.indexOf("\n") + 1 : 0;
+      return parseGrokCreditsLog(cut > 0 ? text.slice(cut) : text);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** HTTP monthly-credits ping. Uses the OAuth access token from auth.json. Returns null on any failure. */
+export async function pingGrokBillingHttp(timeoutMs = 12_000): Promise<{
+  monthlyUsed: number;
+  monthlyLimit: number;
+  monthlyReset: number | null;
+} | null> {
+  const token = readGrokAccessTokenRaw();
+  if (!token) return null;
+  const url = config.grok.billingUrl;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "User-Agent": "garden-gnome-orchestrator/grok-usage",
+      },
+      signal: ac.signal,
+    });
+    if (!res.ok) {
+      noteGrokUsageError(`billing HTTP ${res.status}`);
+      return null;
+    }
+    const body: unknown = await res.json();
+    return parseGrokBillingHttp(body);
+  } catch (e) {
+    noteGrokUsageError(e instanceof Error ? e.message : "billing HTTP failed");
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Run one `/usage show` scrape through winpty and return the parsed weekly meter, or null on any failure
@@ -109,7 +185,8 @@ export function scrapeGrokUsage(timeoutMs = config.grok.usageScrapeTimeoutMs): P
 
 export function startGrokUsageMonitor(hub: EventHub, opts: { configured: () => boolean }): void {
   let lastSig = "";
-  let scraping = false;
+  let pinging = false;
+  let lastWinptyAt = 0;
 
   const push = (): void => {
     const usage: GrokUsageDTO | null = opts.configured() ? readGrokUsage() : null;
@@ -122,25 +199,46 @@ export function startGrokUsageMonitor(hub: EventHub, opts: { configured: () => b
     hub.publish({ type: "grok.usage", usage });
   };
 
-  const scrape = async (): Promise<void> => {
-    if (scraping || !opts.configured() || !grokUsageScrapeAvailable()) return;
-    scraping = true;
+  const ping = async (): Promise<void> => {
+    if (pinging || !opts.configured()) return;
+    pinging = true;
     try {
-      const r = await scrapeGrokUsage();
-      if (r) {
-        noteGrokUsageScrape(r.sevenDay, r.sevenDayReset);
-        push();
+      // 1) Free weekly meter from the CLI log (any recent TUI/session, including our own scrapes).
+      const fromLog = readGrokCreditsFromLog();
+      if (fromLog) {
+        noteGrokUsageScrape(fromLog.sevenDay, fromLog.sevenDayReset, { plan: fromLog.plan, source: "log" });
       }
+
+      // 2) HTTP monthly credits (OAuth token — no model turn).
+      const monthly = await pingGrokBillingHttp();
+      if (monthly) {
+        noteGrokMonthly(monthly.monthlyUsed, monthly.monthlyLimit, monthly.monthlyReset);
+      }
+
+      // 3) winpty fallback for weekly only when the log is cold and enough time has passed.
+      const haveWeekly = readGrokUsage().sevenDay != null;
+      const winptyDue = Date.now() - lastWinptyAt >= WINPTY_MIN_INTERVAL_MS;
+      if (!haveWeekly && winptyDue && grokUsageScrapeAvailable()) {
+        lastWinptyAt = Date.now();
+        const r = await scrapeGrokUsage();
+        if (r) {
+          noteGrokUsageScrape(r.sevenDay, r.sevenDayReset, { source: "winpty" });
+        } else if (!fromLog && !monthly) {
+          noteGrokUsageError("usage scrape failed — retrying");
+        }
+      }
+
+      push();
     } finally {
-      scraping = false;
+      pinging = false;
     }
   };
 
-  push(); // fill identity on boot
-  void scrape().catch((e) => logCrash("grokUsage.scrape.initial", e));
-  // Re-read identity/cap frequently (cheap, local), scrape the weekly meter on the slow cadence.
+  push(); // fill identity + any disk-cached meters on boot
+  void ping().catch((e) => logCrash("grokUsage.ping.initial", e));
+  // Re-read identity/cap frequently (cheap, local); poll meters on the configured cadence.
   setInterval(push, 15_000).unref();
   if (config.grok.usagePollMs > 0) {
-    setInterval(() => void scrape().catch((e) => logCrash("grokUsage.scrape.periodic", e)), config.grok.usagePollMs).unref();
+    setInterval(() => void ping().catch((e) => logCrash("grokUsage.ping.periodic", e)), config.grok.usagePollMs).unref();
   }
 }

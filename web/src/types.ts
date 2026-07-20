@@ -267,17 +267,21 @@ export interface CodexUsageDTO {
   wakeAt?: number | null; // 5h window idle — a cheap wake turn is scheduled at this epoch ms (stagger slot)
 }
 
-/** Grok (SuperGrok) "usage" — mirrors the server's GrokUsageDTO. Unlike Claude/Codex the Grok CLI exposes
- *  no rolling rate-limit windows, so there are no meters: just the signed-in identity and the countdown to
- *  a latched usage-cap retry (an honest surface, not a faked meter). */
+/** Grok (SuperGrok) usage — mirrors the server's GrokUsageDTO. Weekly used-% comes from the CLI log /
+ *  winpty scrape; monthly credits from the OAuth HTTP billing endpoint. */
 export interface GrokUsageDTO {
   signedIn: boolean;
   email: string | null;
   tier: number | null;
-  sevenDay: number | null; // weekly used-percent scraped from `grok /usage show`, else null
+  plan: string | null; // e.g. "SuperGrok"
+  sevenDay: number | null; // weekly used-percent (0-100), else null
   sevenDayReset: number | null; // epoch ms the weekly window resets, else null
+  monthlyUsed: number | null; // monthly credit units used, else null
+  monthlyLimit: number | null; // monthly credit unit cap, else null
+  monthlyReset: number | null; // epoch ms the monthly billing period ends, else null
   capUntil: number | null; // epoch ms a usage-cap rejection is latched until, else null
-  stale?: boolean; // the weekly scrape hasn't refreshed recently
+  stale?: boolean; // the reading hasn't refreshed recently
+  error?: string | null; // soft failure when meters are missing
   updatedAt: number;
 }
 

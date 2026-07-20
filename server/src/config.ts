@@ -207,18 +207,19 @@ export const config = {
     // A live-run rejection still latches a cap for this cooldown as a fallback — but the usage scrape
     // (below) also supplies the real weekly reset, so the cap normally clears at the true reset epoch.
     capCooldownMs: numEnv(process.env.GROK_CAP_COOLDOWN_MS, 60 * 60_000),
-    // ---- Live weekly-usage scrape (the real meter Kevin sees at grok.com / `grok` → /usage) ----
-    // xAI's API forbids OAuth-token clients from reading SuperGrok's rate limit, but the CLI's own
-    // `/usage show` renders it ("Weekly limit: N% · Next reset: <Mon Day, HH:MM>"). grokUsagePing drives
-    // the CLI through a PTY, scrapes those two values, and feeds them as the weekly meter + reset — so the
-    // chip shows a real gauge and provider routing can auto-rank Grok by soonest reset like Claude/Codex.
-    // winpty (bundled with Git for Windows) allocates the pseudo-console the headless TUI needs.
+    // ---- Live SuperGrok usage (chip + provider routing) ----
+    // Three sources, cheapest first (see grokUsagePing): (1) CLI unified.jsonl weekly creditUsagePercent,
+    // (2) HTTP GET billingUrl with the OAuth token for monthly credits, (3) winpty TUI `/usage show` as a
+    // Windows-only weekly fallback when the log is cold. The chip shows weekly + monthly gauges; routing
+    // ranks Grok by soonest weekly reset like Claude/Codex.
     winpty: process.env.GROK_WINPTY || resolve("C:\\", "Program Files", "Git", "usr", "bin", "winpty.exe"),
-    // How often to re-scrape. The weekly window moves slowly, so a slow cadence is plenty; each scrape
-    // spawns a short-lived grok TUI (~15s). GROK_USAGE_POLL_MS overrides; set to 0 to disable the scrape.
-    usagePollMs: numEnv(process.env.GROK_USAGE_POLL_MS, 15 * 60_000),
-    // Hard timeout for one scrape (spawn → parse → kill), so a wedged TUI can never pile up.
-    usageScrapeTimeoutMs: numEnv(process.env.GROK_USAGE_SCRAPE_TIMEOUT_MS, 25_000),
+    // OAuth-authed monthly credits endpoint (verified live against SuperGrok; no model turn).
+    billingUrl: process.env.GROK_BILLING_URL?.trim() || "https://cli-chat-proxy.grok.com/v1/billing",
+    // How often to re-poll log + HTTP. Both are cheap; default 60s so the chip stays live. The expensive
+    // winpty fallback is separately rate-limited inside the monitor (~10 min). Set 0 to disable polling.
+    usagePollMs: numEnv(process.env.GROK_USAGE_POLL_MS, 60_000),
+    // Hard timeout for one winpty scrape (spawn → parse → kill), so a wedged TUI can never pile up.
+    usageScrapeTimeoutMs: numEnv(process.env.GROK_USAGE_SCRAPE_TIMEOUT_MS, 30_000),
   },
   // When every Claude account is rate-limited mid-task, the task parks in 'review' with a cap marker
   // instead of stranding the owner to hand-resume it. A supervisor re-checks this often and resumes

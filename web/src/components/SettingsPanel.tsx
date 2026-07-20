@@ -640,7 +640,7 @@ function SubscriptionsSection() {
         {settings.grokEnabled && settings.grokSignedIn ? (
           <ToggleRow
             label="Prefer Grok for the implementor"
-            hint="By default Grok auto-competes for the implementor by soonest weekly reset (scraped live from `grok /usage show`), like Claude/Codex. On → prefer Grok while it remains below its weekly safety threshold; it still auto-falls-back to Claude/Codex at the safety threshold or plan cap."
+            hint="By default Grok auto-competes for the implementor by soonest weekly reset (live SuperGrok weekly % from the CLI log / billing), like Claude/Codex. On → prefer Grok while it remains below its weekly safety threshold; it still auto-falls-back to Claude/Codex at the safety threshold or plan cap."
             on={settings.grokPreferred}
             onChange={(v) => setSettings({ grokPreferred: v })}
           />

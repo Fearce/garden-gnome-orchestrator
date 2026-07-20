@@ -1292,18 +1292,25 @@ export class ThreadManager implements OrchestratorApi {
     return providerCandidateFromClaude(c);
   }
 
-  /** Grok's dispatch candidate. The weekly used-% + reset come from the live `/usage show` scrape
-   *  (grokUsagePing), so Grok competes in provider routing by soonest weekly reset exactly like
-   *  Claude/Codex — no longer a null-window last-resort. Headroom = not cap-latched and not near the weekly
-   *  hard limit. When no scrape has landed yet the windows are null (treated as headroom, sorts last) until
-   *  the first reading fills in. */
+  /** Grok's dispatch candidate. Weekly used-% + reset come from the CLI log / winpty scrape; monthly
+   *  credits from the HTTP billing ping (see grokUsagePing). Grok competes by soonest weekly reset like
+   *  Claude/Codex. Headroom = not cap-latched, not near the weekly hard limit, and not monthly-exhausted.
+   *  When no reading has landed yet the windows are null (treated as headroom, sorts last) until the first
+   *  ping fills in. */
   private grokProviderCandidate(): ProviderCandidate {
     const now = Date.now();
     const u = readGrokUsage();
-    const nearLimit = u.sevenDay != null && u.sevenDay >= PROVIDER_HARD_LIMIT && (u.sevenDayReset == null || u.sevenDayReset > now);
+    const nearWeekly =
+      u.sevenDay != null && u.sevenDay >= PROVIDER_HARD_LIMIT && (u.sevenDayReset == null || u.sevenDayReset > now);
+    const monthlyExhausted =
+      u.monthlyUsed != null &&
+      u.monthlyLimit != null &&
+      u.monthlyLimit > 0 &&
+      u.monthlyUsed >= u.monthlyLimit &&
+      (u.monthlyReset == null || u.monthlyReset > now);
     return {
       provider: "grok",
-      hasHeadroom: !this.grokCapActive() && !nearLimit,
+      hasHeadroom: !this.grokCapActive() && !nearWeekly && !monthlyExhausted,
       fiveHour: null,
       sevenDay: u.sevenDay,
       sevenDayReset: u.sevenDayReset,
@@ -1853,6 +1860,9 @@ export class ThreadManager implements OrchestratorApi {
           apiKey: this.openaiApiKey() ?? "",
           resume,
           outputSchema: cfg.outputFormat?.schema,
+          onOfficeChat: (scope, body) => {
+            this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
+          },
         });
       } else if (provider === "grok") {
         accountId = "xai-grok";
@@ -1863,6 +1873,9 @@ export class ThreadManager implements OrchestratorApi {
           cwd: thread.workspace,
           resume,
           outputSchema: cfg.outputFormat?.schema,
+          onOfficeChat: (scope, body) => {
+            this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
+          },
         });
       } else {
         agent = new AgentRun(cfg);
@@ -3802,6 +3815,12 @@ export class ThreadManager implements OrchestratorApi {
     return m;
   }
 
+  /** True for CLI implementor backends (Codex, Grok) that have no office MCP and reply via the
+   *  `OFFICE[team|office]:` text bridge instead of `chat_post`. */
+  private isCliOfficeBridge(accountId: string): boolean {
+    return accountId === "openai-codex" || accountId === "xai-grok";
+  }
+
   /** Push a team-room message into peer implementors working the same repo, so they actually see it
    *  instead of having to poll chat_read. Targets `this.live` (implementors) only — the same handle
    *  finding routing uses — so a one-shot planner/QA's structured output is never disrupted; those
@@ -3819,13 +3838,14 @@ export class ThreadManager implements OrchestratorApi {
       if (tid === m.threadId) continue; // never echo back to the sender
       const t = this.db.getThread(tid);
       if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
-      live.run.send(live.accountId === "openai-codex" ? this.codexTeamChatPush(m, who) : text, { priority: "next" });
+      // CLI backends (Codex/Grok) have no chat_post — tell them to reply via the OFFICE text bridge.
+      live.run.send(this.isCliOfficeBridge(live.accountId) ? this.cliTeamChatPush(m, who) : text, { priority: "next" });
       pinged++;
     }
     return pinged;
   }
 
-  private codexTeamChatPush(m: ChatMessage, who: string): string {
+  private cliTeamChatPush(m: ChatMessage, who: string): string {
     return (
       `[Office - ${who} (${m.role}) posted to your team room]: ${m.body}\n` +
       `(A teammate working in this same repo sent this. If it touches your work or asks something, reply with a standalone ` +
@@ -3878,14 +3898,14 @@ export class ThreadManager implements OrchestratorApi {
         const t = this.db.getThread(tid);
         if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
       }
-      live.run.send(live.accountId === "openai-codex" ? this.codexDirectorChatPush(text, general) : push, { priority: "now" });
+      live.run.send(this.isCliOfficeBridge(live.accountId) ? this.cliDirectorChatPush(text, general) : push, { priority: "now" });
       pinged++;
     }
     this.hub.log("info", `Director posted to ${general ? "the office" : `team ${workspace}`} — pinged ${pinged} live agent(s).`);
     return m;
   }
 
-  private codexDirectorChatPush(text: string, general: boolean): string {
+  private cliDirectorChatPush(text: string, general: boolean): string {
     const marker = general ? "OFFICE[office]" : "OFFICE[team]";
     const where = general ? "the office" : "your team room";
     return (
@@ -4011,15 +4031,15 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** A concrete heads-up folded into a fresh implementor kickoff when teammates already share its repo
-   *  — names them and tells it to coordinate. `withTools` is false for the Codex backend (no office
-   *  MCP), where the runner exposes a text marker bridge instead. */
+   *  — names them and tells it to coordinate. `withTools` is false for CLI backends (Codex/Grok — no
+   *  office MCP), where the runner exposes a text marker bridge instead. */
   private peerNote(thread: Thread, withTools: boolean): string | undefined {
     const peers = this.repoPeers(thread);
     if (!peers.length) return undefined;
     const list = peers.map((p) => `• ${p.role} on "${p.title}"`).join("\n");
     const how = withTools
       ? "Use the office chat to coordinate: call `office_look`, then `chat_post(scope:\"team\")` to claim the files/areas you'll touch and `chat_read` what they've claimed before editing."
-      : "Coordinate through the Codex office bridge: include a standalone `OFFICE[team]: <short message>` line in your assistant response to claim the files/areas you'll touch, answer teammate messages the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks.";
+      : "Coordinate through the CLI office bridge: include a standalone `OFFICE[team]: <short message>` line in your assistant response to claim the files/areas you'll touch, answer teammate messages the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks.";
     return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\nYou share this workspace, so you can step on each other's changes. ${how} Commit only your own hunks.`;
   }
 

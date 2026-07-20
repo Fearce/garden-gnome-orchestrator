@@ -120,9 +120,8 @@ async function main(): Promise<void> {
     runModel: () => manager.settings().codexModel,
   });
 
-  // Grok usage: no rate-limit windows to read (SuperGrok exposes none), so this just re-reads the local
-  // ~/.grok/auth.json identity + the cap-latch countdown on a cheap timer and broadcasts `grok.usage` when
-  // it changes, keeping the top-bar chip live without any model turn or network call.
+  // Grok usage: log tail (weekly SuperGrok %) + HTTP billing (monthly credits) + winpty `/usage show`
+  // fallback. Broadcasts `grok.usage` whenever identity/meters change so the top-bar chip stays live.
   startGrokUsageMonitor(hub, {
     configured: () => {
       const s = manager.settings();
