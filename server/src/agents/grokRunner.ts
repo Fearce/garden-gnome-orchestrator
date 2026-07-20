@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
+import { extractOfficeChat } from "./officeBridge.js";
 import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 
 export interface GrokRunConfig {
@@ -58,10 +59,6 @@ interface GrokEvent {
 // exposes no rate-limit windows, so a rejected turn is the ONLY cap signal — err broad here.
 const RATE_LIMIT_RE =
   /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient|usage[ _]limit|reached your (?:usage|plan|limit)|limit reached|out of (?:capacity|credits)|capacity)/i;
-// A standalone `OFFICE[team|office]: <msg>` line an implementor emits (Grok has no office MCP tools), the
-// same text-bridge Codex uses — intercepted, stripped from the visible text, and posted to the office.
-const OFFICE_CHAT_LINE_RE = /^\s*OFFICE\[(team|office)\]\s*:\s*(.+?)\s*$/i;
-
 export interface GrokAuthInfo {
   signedIn: boolean;
   email: string | null;
@@ -108,22 +105,6 @@ export function readGrokAuth(): GrokAuthInfo {
 export function grokAuthAvailable(): boolean {
   if (readGrokAuth().signedIn) return true;
   return !!process.env.XAI_API_KEY?.trim();
-}
-
-function extractOfficeChat(text: string): { visible: string; posts: Array<{ scope: ChatScope; body: string }> } {
-  const posts: Array<{ scope: ChatScope; body: string }> = [];
-  const visible: string[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    const m = OFFICE_CHAT_LINE_RE.exec(line);
-    if (!m) {
-      visible.push(line);
-      continue;
-    }
-    const body = m[2]?.trim();
-    if (!body) continue;
-    posts.push({ scope: m[1]?.toLowerCase() === "office" ? "general" : "project", body: body.slice(0, 500) });
-  }
-  return { visible: visible.join("\n").trim(), posts };
 }
 
 /** Stage one Grok prompt at a process-wide unique path. GrokAgentRun instances execute concurrently, so

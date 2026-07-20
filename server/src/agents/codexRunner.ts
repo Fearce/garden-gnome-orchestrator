@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
+import { extractOfficeChat } from "./officeBridge.js";
 import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 import { parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
 
@@ -108,7 +109,6 @@ interface CodexEvent {
 // 5h/weekly limit is hit ("usage limit reached", "reached your usage limit", "usage_limit_reached").
 const RATE_LIMIT_RE =
   /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient_quota|usage[ _]limit|reached your (?:usage|plan)|limit reached)/i;
-const OFFICE_CHAT_LINE_RE = /^\s*OFFICE\[(team|office)\]\s*:\s*(.+?)\s*$/i;
 
 export interface CodexTestResult {
   ok: boolean;
@@ -128,22 +128,6 @@ function readAuthJson(file: string): CodexAuthFile | undefined {
   } catch {
     return undefined;
   }
-}
-
-function extractOfficeChat(text: string): { visible: string; posts: Array<{ scope: ChatScope; body: string }> } {
-  const posts: Array<{ scope: ChatScope; body: string }> = [];
-  const visible: string[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    const m = OFFICE_CHAT_LINE_RE.exec(line);
-    if (!m) {
-      visible.push(line);
-      continue;
-    }
-    const body = m[2]?.trim();
-    if (!body) continue;
-    posts.push({ scope: m[1]?.toLowerCase() === "office" ? "general" : "project", body: body.slice(0, 500) });
-  }
-  return { visible: visible.join("\n").trim(), posts };
 }
 
 /** The operator's personal `codex login` auth.json IF it's a usable ChatGPT-subscription login
