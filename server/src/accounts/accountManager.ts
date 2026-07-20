@@ -81,6 +81,12 @@ const EXT_WAKE_TOLERANCE_MS = 120_000;
 // and a hold would blind us (and dispatch decisions) to the burn the outside consumer keeps adding.
 // After it lapses, one probing hold re-tests whether the outside consumer is still there.
 const EXT_WAKE_TTL_MS = 24 * 3_600_000;
+// The re-test after the TTL lapses is a SHORT probe, not a full stagger placement: a sub we've seen an
+// outside consumer on (a second orchestrator / background service on the same subscription) must not be
+// parked "idle" — and blind to that consumer's live burn — for the hours until its stagger slot. Probe
+// ~90s after rollover instead, then either confirm the consumer (skip holds again) or find it gone and
+// resume normal staggering. Comfortably above MIN_HOLD_MS so it registers as a real hold.
+const EXT_WAKE_PROBE_MS = 90_000;
 // Persisted usage older than this isn't trusted to skip the boot ping (the operator's own interactive
 // sessions may have burned the account while we were down) — unless a persisted holdUntil proves the
 // account was deliberately idle.
@@ -123,6 +129,37 @@ export function bySafetyHeadroom(
 ): number {
   const headroom = (pct: number | null): number => 100 - (pct ?? 0);
   return headroom(y.sevenDay) - headroom(x.sevenDay) || headroom(y.fiveHour) - headroom(x.fiveHour);
+}
+
+/**
+ * Where an idle 5h window's restart is placed. A sub we've NEVER seen an outside consumer on gets the
+ * full stagger `slot` (spread its reset out from the others). A sub with LAPSED ext-wake history gets a
+ * short probe instead — re-testing within ~90s whether a second orchestrator/background service is still
+ * draining the shared subscription, rather than showing it "idle" (and treating it as 0%-utilized for
+ * dispatch) for the hours until its slot. Only meaningful while staggering is active.
+ */
+export function holdStartAt(staggered: boolean, extWakeAt: number | null, now: number, slot: number): number {
+  return staggered && extWakeAt != null ? now + EXT_WAKE_PROBE_MS : slot;
+}
+
+/**
+ * The account's new `extWakeAt` after an `expectIdle` ping (a scheduled probe or a dispatch hold-release).
+ * Set it to `now` when the window was already running well before our ping — an outside consumer woke the
+ * held account. On a SCHEDULED PROBE that instead finds the window fresh, clear it: our own ping started
+ * it, so the outside consumer is gone and normal staggering should resume. A dispatch release is
+ * inconclusive (our own run may have started the window), so it leaves the mark untouched.
+ */
+export function extWakeAfterProbe(opts: {
+  fiveHourReset: number | null;
+  sentAt: number;
+  now: number;
+  prev: number | null;
+  scheduledProbe: boolean;
+}): number | null {
+  const { fiveHourReset, sentAt, now, prev, scheduledProbe } = opts;
+  if (fiveHourReset == null) return prev;
+  if (fiveHourReset - WINDOW_MS < sentAt - EXT_WAKE_TOLERANCE_MS) return now;
+  return scheduledProbe ? null : prev;
 }
 
 const weeklyHeadroom = (s: AccountState): number => 100 - (s.sevenDay ?? 0);
@@ -305,7 +342,10 @@ export class AccountManager {
       const st = this.states.get(a.id)!;
       st.fiveHour = 0;
       st.fiveHourReset = null;
-      this.armHold(a, restoredHold ?? (this.stagger?.nextStart(a.id, Date.now()) ?? Date.now()));
+      // A known-shared sub (ext-wake history) short-probes even if a far hold was persisted — don't
+      // restore hours of blind "idle" across a restart while an outside consumer drains it.
+      const slot = restoredHold ?? (this.stagger?.nextStart(a.id, Date.now()) ?? Date.now());
+      this.armHold(a, holdStartAt(true, st.extWakeAt, Date.now(), slot));
     }
     this.publish();
     this.onUsage?.();
@@ -334,7 +374,7 @@ export class AccountManager {
    *  from the raw headers. `expectIdle` marks a ping we believed would START the window (a hold
    *  release): finding the window already running then proves an outside consumer woke the account
    *  during the hold. */
-  private async pingOne(a: Account, expectIdle = false): Promise<PingUsage | null> {
+  private async pingOne(a: Account, expectIdle = false, scheduledProbe = false): Promise<PingUsage | null> {
     const sentAt = Date.now();
     const r = await pingUsage(a.token);
     const st = this.states.get(a.id);
@@ -355,8 +395,10 @@ export class AccountManager {
       return null;
     }
     const u = r.usage;
-    if (expectIdle && u.fiveHourReset != null && u.fiveHourReset - WINDOW_MS < sentAt - EXT_WAKE_TOLERANCE_MS) {
-      st.extWakeAt = now; // window started well before this ping — someone else woke the held account
+    if (expectIdle) {
+      // Window already running well before this ping → an outside consumer woke the held account; a
+      // scheduled probe that finds it fresh instead clears the mark (the consumer is gone).
+      st.extWakeAt = extWakeAfterProbe({ fiveHourReset: u.fiveHourReset, sentAt, now, prev: st.extWakeAt, scheduledProbe });
     }
     st.fiveHour = u.fiveHour;
     st.sevenDay = u.sevenDay;
@@ -436,7 +478,8 @@ export class AccountManager {
       this.resetPing(a);
       return;
     }
-    const startAt = this.staggered() ? this.stagger!.nextStart(a.id, resetAt) : resetAt;
+    const slot = this.staggered() ? this.stagger!.nextStart(a.id, resetAt) : resetAt;
+    const startAt = holdStartAt(this.staggered(), st?.extWakeAt ?? null, Date.now(), slot);
     if (startAt - Date.now() < MIN_HOLD_MS) {
       this.resetPing(a);
       return;
@@ -469,7 +512,7 @@ export class AccountManager {
     this.armTimer(a, Math.max(startAt - Date.now(), MIN_RESET_DELAY_MS), () => {
       const s = this.states.get(a.id);
       if (s) s.holdUntil = null;
-      this.resetPing(a, true);
+      this.resetPing(a, true, true); // scheduled probe: may clear extWakeAt if the outside consumer is gone
     });
   }
 
@@ -485,8 +528,8 @@ export class AccountManager {
   }
 
   /** One-shot ping + publish (reset edges, hold releases). pingOne re-schedules the next event itself. */
-  private resetPing(a: Account, expectIdle = false): void {
-    void this.pingOne(a, expectIdle)
+  private resetPing(a: Account, expectIdle = false, scheduledProbe = false): void {
+    void this.pingOne(a, expectIdle, scheduledProbe)
       .then(() => {
         this.publish();
         this.onUsage?.();
