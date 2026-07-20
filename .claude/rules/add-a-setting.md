@@ -43,7 +43,10 @@ Conventions that bite:
 
 Verify: `npm run typecheck && npm run build`, then browser-test the round-trip
 on a throwaway instance (recipe: project memory `browser-test-throwaway-instance`
-— alt ports, EMPTY temp DB, auth blanked; kill it by PORT owner via
-`Get-NetTCPConnection -LocalPort 4327` → `Stop-Process`, NOT `pkill -f node`,
-which silently no-ops in Git Bash on Windows and could match prod). Server
+— alt ports, EMPTY temp DB; from PowerShell set a KNOWN `$env:AUTH_PASSWORD` and
+log Playwright in via `POST /api/login` — `$env:X=""` does NOT blank auth (Windows
+drops empty-value env vars, so dotenv reloads `.env`'s real password; the memory
+has the fix). Kill it by PORT owner via `Get-NetTCPConnection -LocalPort 4327` →
+`Stop-Process`, NOT `pkill -f node`, which silently no-ops in Git Bash on Windows
+and could match prod). Server
 change ⇒ deploy yourself via the atomic hub restart (see CLAUDE.md).
