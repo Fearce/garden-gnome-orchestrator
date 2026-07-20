@@ -326,6 +326,9 @@ export interface StageOutputs {
   approved?: boolean; // the plan cleared the approval gate — don't re-prompt on resume
   kickoff?: string | null; // the composed brief the implementor was handed (record of what it got)
   readerDone?: boolean; // the read-lane reader stage ran (answered or escalated) — don't re-run/double-post on resume
+  qaRoundsUsed?: number; // QA rounds already spent in the current implementor→QA episode — persisted so a
+  // server restart / cap-resume CONTINUES the maxQaRounds budget instead of resetting it to 1 (which let a
+  // bouncing server re-run a fresh full QA pass on every resume and drain the backend). Reset by retry (blob nulled).
 }
 
 /**

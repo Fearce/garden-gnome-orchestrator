@@ -22,6 +22,7 @@
     "test:scheduler": "tsx src/tests/scheduler.test.ts",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
+    "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
     "health": "node scripts/nightly-health.cjs"
   },

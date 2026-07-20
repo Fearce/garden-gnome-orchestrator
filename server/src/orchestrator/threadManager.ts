@@ -2848,6 +2848,25 @@ export class ThreadManager implements OrchestratorApi {
   ): Promise<void> {
     this.autoResumes.set(thread.id, 0);
     this.capParked.delete(thread.id); // fresh run — drop any stale cap flag from a prior attempt
+    // Durable QA-round budget. `round` used to be a fresh local counter, so EVERY re-entry (a server
+    // restart's auto-resume, or a cap-resume) started the loop at round 1 and ran a full fresh QA pass —
+    // with a frequently-bouncing server that's an unbounded implementor↔QA loop that drained a whole Grok
+    // subscription. Resume from the persisted count instead: a mid-episode resume continues the SAME
+    // budget (and, being round > 1, warm-resumes the prior QA session rather than re-reading everything).
+    // Fresh dispatch = 0; a retry nulls stage_outputs, so it resets too.
+    const priorRounds = pipe.qaEnabled ? this.db.getThreadStageOutputs(thread.id).qaRoundsUsed ?? 0 : 0;
+    if (pipe.qaEnabled && priorRounds >= pipe.maxQaRounds) {
+      // A prior episode already spent the full QA budget and an interrupt re-entered before it could park.
+      // Don't re-run the implementor + a fresh QA pass on the (already usage-heavy) backend — park it.
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "qa",
+        summary: `QA still not satisfied after ${pipe.maxQaRounds} rounds — needs your review`,
+        severity: "warning",
+      });
+      this.settleReview(thread.id, `QA still not satisfied after ${pipe.maxQaRounds} rounds — needs your review.`);
+      return;
+    }
     const start = await this.startResumedImplementor(thread, kickoff, resumeSession, {
       effort,
       resumeNudge: pipe.qaEnabled
@@ -2893,13 +2912,16 @@ export class ThreadManager implements OrchestratorApi {
       return;
     }
 
-    for (let round = 1; round <= pipe.maxQaRounds; round++) {
+    for (let round = priorRounds + 1; round <= pipe.maxQaRounds; round++) {
       if (this.cancelled(thread.id)) return;
       if (!res || res.isError) {
         this.settleReview(thread.id, "Implementor ended without completing — needs your review.");
         return;
       }
       this.setState(thread.id, "qa");
+      // Spend the round from the DURABLE budget BEFORE running QA, so a QA run killed by a restart still
+      // counts — otherwise a bouncing server could relaunch the same round's fresh QA pass indefinitely.
+      this.db.updateThreadStageOutputs(thread.id, { qaRoundsUsed: round });
       // Fully end the implementor BEFORE QA so only one agent is ever active in the pipeline slot.
       // Flipping to "qa" first means any inject/resume landing during the stop routes to the QA gate
       // (checked ahead of the this.live branch in injectThread/resumeThread) instead of waking the
