@@ -207,6 +207,51 @@ function qaIssues(obj: Record<string, unknown>): Record<string, unknown>[] {
   );
 }
 
+/**
+ * Split a long Grok/Codex QA summary into a short scannable headline + optional body. Grok often
+ * dumps the whole investigation narrative into `summary`, which made `**Pass** — …` a wall of text
+ * in the task feed (prod: weekly-safety QA, usage-chip QA).
+ */
+export function splitVerdictSummary(summary: string): { headline: string; body?: string } {
+  let s = summary.trim().replace(/[ \t]+/g, " ");
+  // Model often repeats the label: "Pass. Prior blocker is fixed…" / "FAIL — chip clipped…".
+  s = s.replace(/^(?:pass|fail|status)\b\s*[.:—–-]\s*/i, "");
+  if (!s) return { headline: summary.trim() || "" };
+
+  // First sentence as headline when there's a real rest-of-essay after it.
+  const m = /^(.{12,180}?[.!?…])(?:\s+)([\s\S]{20,})$/s.exec(s);
+  if (m) return { headline: m[1]!.trim(), body: m[2]!.trim() };
+
+  // Single long clause with no sentence break — soft-cut at a natural pause.
+  if (s.length > 200) {
+    const cut = s.slice(0, 180);
+    const at = Math.max(cut.lastIndexOf("; "), cut.lastIndexOf(", "), cut.lastIndexOf(" — "), cut.lastIndexOf(" - "));
+    if (at > 60) {
+      return {
+        headline: s.slice(0, at).trim().replace(/[;,—–-]+$/, "") + "…",
+        body: s.slice(at).replace(/^[\s;,—–-]+/, ""),
+      };
+    }
+  }
+  return { headline: s };
+}
+
+/** Final Pass/Fail/Status block: short headline, optional body, optional **Issues** list. */
+function formatQaVerdict(
+  kind: "Pass" | "Fail" | "Status",
+  summary: string,
+  issues: Record<string, unknown>[],
+): string {
+  const { headline, body } = splitVerdictSummary(summary);
+  const lines = [`**${kind}** — ${headline}`];
+  if (body) lines.push("", body);
+  if (issues.length) {
+    lines.push("", "**Issues**");
+    for (const i of issues) lines.push(formatIssueLine(i));
+  }
+  return lines.join("\n");
+}
+
 /** One human line (or short multi-line block) for a single structured object. Used for live progress
  *  deltas (`isLast: false` → bullet status) and for the final flush (`isLast: true` → Pass/Fail etc.). */
 export function formatStructuredObject(
@@ -225,18 +270,9 @@ export function formatStructuredObject(
       if (!isQaStatusTick(obj)) return null;
       return `- ${obj.summary.trim()}`;
     }
-    if (obj.pass) {
-      const lines = [`**Pass** — ${obj.summary.trim()}`];
-      if (issues.length) {
-        lines.push("", "Issues:");
-        for (const i of issues) lines.push(formatIssueLine(i));
-      }
-      return lines.join("\n");
-    }
-    if (issues.length === 0) return `**Status** — ${obj.summary.trim()}`;
-    const lines = [`**Fail** — ${obj.summary.trim()}`, "", "Issues:"];
-    for (const i of issues) lines.push(formatIssueLine(i));
-    return lines.join("\n");
+    if (obj.pass) return formatQaVerdict("Pass", obj.summary, issues);
+    if (issues.length === 0) return formatQaVerdict("Status", obj.summary, []);
+    return formatQaVerdict("Fail", obj.summary, issues);
   }
 
   // Reader disposition.
@@ -428,7 +464,7 @@ function compactHumanizedQaChecklist(text: string): string {
       ? [...progress.slice(0, MAX_FEED_PROGRESS), `- …${progress.length - MAX_FEED_PROGRESS} more checks`]
       : progress;
 
-  // Rebuild the verdict block: keep Pass/Fail line, blank line, Issues: header, issue bullets.
+  // Rebuild the verdict block: Pass/Fail headline (+ body), **Issues**, issue bullets.
   let verdictLine = "";
   const issueLines: string[] = [];
   const trailing: string[] = [];
@@ -439,7 +475,8 @@ function compactHumanizedQaChecklist(text: string): string {
       verdictLine = t;
       continue;
     }
-    if (/^Issues:\s*$/i.test(t)) continue;
+    // Accept both plain "Issues:" (older humanizer) and bold "**Issues**".
+    if (/^(?:\*\*)?Issues:?\*\*\s*$/i.test(t) || /^Issues:\s*$/i.test(t)) continue;
     const issue = /^[-*+•]\s+(\*\*[^*]+\*\*:.*)$/.exec(t);
     if (issue) {
       issueLines.push(`- ${issue[1]}`);
@@ -448,13 +485,33 @@ function compactHumanizedQaChecklist(text: string): string {
     trailing.push(t);
   }
 
+  // Re-split an essay-length `**Pass** — whole investigation…` into headline + body (history load).
+  let bodyFromSplit: string | undefined;
+  if (verdictLine) {
+    const vm = /^\*\*(Pass|Fail|Status)\*\*\s*[—–-]\s*([\s\S]+)$/.exec(verdictLine);
+    if (vm) {
+      const { headline, body } = splitVerdictSummary(vm[2]!);
+      verdictLine = `**${vm[1]}** — ${headline}`;
+      bodyFromSplit = body;
+    }
+  }
+
   const verdictParts: string[] = [];
   if (verdictLine) verdictParts.push(verdictLine);
-  if (issueLines.length) {
-    // Blank line before Issues: so Markdown keeps the verdict as its own paragraph.
-    verdictParts.push("", "Issues:", ...issueLines);
+  if (bodyFromSplit) verdictParts.push("", bodyFromSplit);
+  // Trailing prose that isn't issues (e.g. already-split body from a prior pass) stays after the
+  // headline; skip when we just produced the same body via re-split so the second pass is identity.
+  const trailingKeep = trailing.filter((t) => !bodyFromSplit || t !== bodyFromSplit);
+  if (trailingKeep.length) {
+    // Avoid duplicating a body that already starts the trailing block after our split.
+    if (!(bodyFromSplit && trailingKeep[0] === bodyFromSplit)) {
+      verdictParts.push(...(bodyFromSplit || verdictLine ? ["", ...trailingKeep] : trailingKeep));
+    }
   }
-  if (trailing.length) verdictParts.push(...trailing);
+  if (issueLines.length) {
+    // Blank line before **Issues** so Markdown keeps the verdict as its own paragraph.
+    verdictParts.push("", "**Issues**", ...issueLines);
+  }
 
   const blocks =
     capped.length && verdictParts.length

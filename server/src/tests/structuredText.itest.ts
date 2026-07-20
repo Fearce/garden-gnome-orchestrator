@@ -20,6 +20,7 @@ import {
   formatStructuredRoleFeed,
   formatStructuredObject,
   isQaStatusTick,
+  splitVerdictSummary,
   takeStructuredProgressLines,
 } from "../agents/structuredText.js";
 import { PLAN_SCHEMA, RESEARCH_SCHEMA, QA_SCHEMA } from "../agents/roles.js";
@@ -187,7 +188,7 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
     '{"pass":false,"summary":"Not shippable yet.","issues":[{"severity":"blocker","description":"missing test","location":"foo.ts"}]}';
   const failHuman = formatStructuredRoleFeed(failWithIssues);
   check("formats a failing verdict with severity + location", /\*\*Fail\*\*/.test(failHuman) && failHuman.includes("blocker") && failHuman.includes("foo.ts"));
-  check("labels the issues list under Fail", failHuman.includes("Issues:") && failHuman.includes("- **blocker**"));
+  check("labels the issues list under Fail", failHuman.includes("**Issues**") && failHuman.includes("- **blocker**"));
 
   // Codex style: prose narration + a final fenced JSON block.
   const codexMix =
@@ -228,7 +229,7 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
     /^-\s+Starting QA\.\s*$/m.test(draftFailHuman) && !draftFailHuman.includes("Not shippable yet."),
   );
   check("draft-fail wall shows only short status + final Fail", /^-\s+Starting/m.test(draftFailHuman) && /\*\*Fail\*\*/.test(draftFailHuman));
-  check("draft-fail wall has a single Issues section", (draftFailHuman.match(/^Issues:/gm) ?? []).length === 1);
+  check("draft-fail wall has a single Issues section", (draftFailHuman.match(/^\*\*Issues\*\*/gm) ?? []).length === 1);
   check("isQaStatusTick accepts short empty-issues ticks", isQaStatusTick({ pass: false, summary: "Starting QA.", issues: [] }));
   check("isQaStatusTick rejects pass:true drafts", !isQaStatusTick({ pass: true, summary: "Ship it." }));
   check("isQaStatusTick rejects long draft-fail summaries", !isQaStatusTick({
@@ -256,8 +257,20 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
   check("long Grok wall: no raw JSON left", !longHuman.includes('"pass"') && !longHuman.includes("{ "));
   check("long Grok wall: only real status ticks as bullets (not 40 draft Passes)", (longHuman.match(/^- /gm) ?? []).length === 3); // 2 progress + 1 issue
   check("long Grok wall: single final Pass markdown", (longHuman.match(/\*\*Pass\*\*/g) ?? []).length === 1);
-  check("long Grok wall: surfaces final issues", longHuman.includes("nit") && longHuman.includes("threadManager.ts") && longHuman.includes("Issues:"));
+  check("long Grok wall: surfaces final issues", longHuman.includes("nit") && longHuman.includes("threadManager.ts") && longHuman.includes("**Issues**"));
   check("long Grok wall: already-humanized text is stable", formatStructuredRoleFeed(longHuman) === longHuman);
+
+  // Essay-length summary → short **Pass** headline + body (prod: weekly-safety / usage-chip QA).
+  const essay =
+    '{ "pass": true, "summary": "Pass. Prior blocker is fixed: the Grok chip no longer clips under .app overflow at 1280px. Typecheck and the headless accounts-visibility script both pass." }';
+  const essayHuman = formatStructuredRoleFeed(essay);
+  check("splits essay Pass summary into headline + body", /\*\*Pass\*\* — Prior blocker is fixed/.test(essayHuman) && essayHuman.includes("Typecheck"));
+  check("strips repeated Pass. label from essay summary", !/\*\*Pass\*\* — Pass\b/i.test(essayHuman));
+  const split = splitVerdictSummary(
+    "Pass. Prior blocker is fixed: the Grok chip no longer clips. Typecheck and the headless accounts-visibility script both pass.",
+  );
+  check("splitVerdictSummary returns a short headline", !!split.headline && split.headline.length < 120 && /fixed/i.test(split.headline));
+  check("splitVerdictSummary keeps the rest as body", !!split.body && /Typecheck/i.test(split.body));
 
   // Second pass: a previously-humanized wall that still kept long draft-fail bullets (prod: Grok usage QA).
   const bloatedHuman =
@@ -270,7 +283,7 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
   const compacted = formatStructuredRoleFeed(bloatedHuman);
   check("compacts already-humanized bloated QA checklists", !compacted.includes("1280px so usage") && compacted.includes("**Fail**"));
   check("keeps short status ticks when compacting", compacted.includes("- Starting QA") && compacted.includes("- Working tree clean"));
-  check("adds Issues: when compacting legacy issue bullets", compacted.includes("Issues:") && compacted.includes("- **blocker**"));
+  check("adds **Issues** when compacting legacy issue bullets", compacted.includes("**Issues**") && compacted.includes("- **blocker**"));
   check("compacted humanized text is stable on a second pass", formatStructuredRoleFeed(compacted) === compacted);
 
   // Cap: many distinct short pass:false ticks keep the FIRST N (+ trailing "more checks" marker).
