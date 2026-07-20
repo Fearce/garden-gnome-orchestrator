@@ -232,10 +232,10 @@ const AUTO_RESUME_DELAY_MS = 4_000;
 // auto-resumes those tasks once an account frees up — so a cap wave doesn't leave the owner to
 // hand-resume every task. A normal "needs your review" park carries no such prefix and is left alone.
 const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
-// Historical substring still written into QA-stage cap-park messages (kept for log/search continuity).
-// runRole can now fail QA over to Codex/Grok, so resumeCapParked no longer treats this as Claude-only —
-// any free backend unparks. Persisted in the error text so it survives a restart.
-const CAP_PARK_QA_MARK = "(QA runs on Claude)";
+// Marker written into QA-stage cap-park messages so logs/search can still find them. Historical parks
+// may still carry the older "(QA runs on Claude)" wording — resumeCapParked no longer gates on either
+// string (runRole fails QA over to Codex/Grok, so any free backend unparks).
+const CAP_PARK_QA_MARK = "(QA stage)";
 // Don't re-ping the external webhook about auto-resuming the SAME task more often than this — a task
 // that keeps re-capping every interval would otherwise flood the channel. The in-app log isn't throttled.
 const CAP_RESUME_NOTIFY_COOLDOWN_MS = 30 * 60_000;
@@ -1435,7 +1435,7 @@ export class ThreadManager implements OrchestratorApi {
   /** Resolve which backend implements tasks right now from the subscription toggles, or an error
    *  explaining why none can. Claude is always in the pool; Codex and Grok are opt-in and, when enabled +
    *  authed + uncapped, compete with Claude under the same soonest-weekly-reset policy instead of overriding
-   *  it (Grok has no windows, so it sorts last — the resilient fallback). Planner/researcher/QA are Claude. */
+   *  it. Planner/researcher/QA start on Claude and fail over to a ready CLI when Claude is exhausted. */
   private resolveImplementorProvider(): { provider?: ImplementorProvider; error?: string } {
     const s = this.settings();
     const candidates: ProviderCandidate[] = [this.claudeProviderCandidate()];
@@ -1811,25 +1811,37 @@ export class ThreadManager implements OrchestratorApi {
     return run.account?.startsWith("codex:") ? "codex" : run.account?.startsWith("grok:") ? "grok" : "claude";
   }
 
-  /** The most recent QA run's SDK session id, so fix-rounds 2..N can resume it. DB-sourced (like
-   *  latestImplementorSession) so it survives a restart and reflects whichever account QA ended on. */
+  /** The most recent QA run that has a session id (any backend), so fix-rounds 2..N can resume it. */
+  private latestQaRun(threadId: string): { sessionId: string; provider: ImplementorProvider } | undefined {
+    const run = this.db
+      .listRuns(threadId)
+      .filter((r) => r.role === "qa" && r.sessionId)
+      .sort((a, b) => b.startedAt - a.startedAt)[0];
+    if (!run?.sessionId) return undefined;
+    const provider: ImplementorProvider = run.account?.startsWith("codex:")
+      ? "codex"
+      : run.account?.startsWith("grok:")
+        ? "grok"
+        : "claude";
+    return { sessionId: run.sessionId, provider };
+  }
+
+  /** The most recent QA run's session id (any backend). Prefer `latestQaRun` when the provider matters. */
   private latestQaSession(threadId: string): string | undefined {
-    return (
-      this.db
-        .listRuns(threadId)
-        .filter((r) => r.role === "qa" && r.sessionId)
-        .sort((a, b) => b.startedAt - a.startedAt)[0]?.sessionId ?? undefined
-    );
+    return this.latestQaRun(threadId)?.sessionId;
   }
 
   /** Run a one-shot role to a result. Usage caps switch Claude accounts as before. Transient provider
-   *  failures retry three times, then planner/researcher/QA can continue on an enabled CLI backend. */
+   *  failures retry three times, then planner/researcher/QA can continue on an enabled CLI backend.
+   *  `opts.preferredProvider` starts the role on a CLI backend (e.g. warm-resuming a prior Grok QA
+   *  session — session ids are not portable across providers). */
   private async runRole(
     thread: Thread,
     role: "planner" | "researcher" | "qa" | "reader",
     kickoff: string | unknown[],
     makeCfg: (ctx: { token: string | undefined; resume?: string; runId: string }) => AgentRunConfig,
     initialResume?: string,
+    opts?: { preferredProvider?: ImplementorProvider },
   ): Promise<ResultEvent | undefined> {
     let acct = this.dispatchAccount();
     let resume: string | undefined = initialResume;
@@ -1838,6 +1850,33 @@ export class ThreadManager implements OrchestratorApi {
     let accountFailovers = 0;
     let transientFailures = 0;
     const unavailableProviders = new Set<ImplementorProvider>();
+
+    // Start on a preferred CLI when asked (warm QA resume) and it's still ready. Session ids are
+    // provider-specific — never resume a Grok/Codex id on Claude or vice versa.
+    const pref = opts?.preferredProvider;
+    if (pref && pref !== "claude" && role !== "reader") {
+      const ready = pref === "codex" ? this.codexImplementorReady() : this.grokImplementorReady();
+      if (ready) {
+        provider = pref;
+      } else {
+        resume = undefined; // can't resume a CLI session on another backend
+      }
+    } else if (role !== "reader" && !this.accounts.hasHeadroom()) {
+      // Claude is already exhausted — skip the doomed first attempt and go straight to a ready CLI.
+      // (Reader can't fail over: it needs harness-enforced read-only tools + post_finding.)
+      const cli = this.nextReadyImplementor("claude", unavailableProviders);
+      if (cli) {
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: role,
+          summary: `All Claude subscriptions are usage-capped — running ${role} on ${providerLabel(cli)}`,
+          detail: `Every enabled Claude account is at its usage limit, so the ${role} stage is starting on ${providerLabel(cli)} rather than burning a rejected Claude turn first.`,
+          severity: "warning",
+        });
+        provider = cli;
+        resume = undefined;
+      }
+    }
 
     while (!this.cancelled(thread.id)) {
       const model = provider === "codex" ? this.codexModel() : provider === "grok" ? this.grokModel() : this.modelFor(acct.id, role);
@@ -2094,12 +2133,30 @@ export class ThreadManager implements OrchestratorApi {
 
   private async runQA(thread: Thread, opts: { round: number }): Promise<QaOutput | undefined> {
     // Fix-rounds 2..N resume the SAME QA session — a warm cache read of the diff/files/tests it
-    // already ingested — instead of a fresh Opus session that re-reads everything from scratch. QA
-    // still re-runs `git diff` and the checks itself (independent verification preserved); it just
-    // doesn't re-pay to reconstruct context it holds. Round 1, or a cold/missing prior session, is fresh.
-    const prior = opts.round > 1 ? this.latestQaSession(thread.id) : undefined;
-    const ageMs = prior ? sessionAgeMs(prior) : null;
-    const resume = prior && (config.resumeFullSession || (ageMs != null && ageMs < config.resumeWarmMinutes * 60_000)) ? prior : undefined;
+    // already ingested — instead of a fresh session that re-reads everything from scratch. QA still
+    // re-runs `git diff` and the checks itself (independent verification preserved); it just doesn't
+    // re-pay to reconstruct context it holds. Round 1, or a cold/missing prior session, is fresh.
+    // Session ids are provider-specific: a Grok QA id must resume on Grok (never Claude), and the
+    // reverse. Claude sessions use transcript-mtime warm/cold; CLI sessions resume when that backend
+    // is still ready (no local Claude transcript to age-check).
+    const prior = opts.round > 1 ? this.latestQaRun(thread.id) : undefined;
+    let resume: string | undefined;
+    let preferredProvider: ImplementorProvider | undefined;
+    if (prior) {
+      if (prior.provider === "claude") {
+        const ageMs = sessionAgeMs(prior.sessionId);
+        if (config.resumeFullSession || (ageMs != null && ageMs < config.resumeWarmMinutes * 60_000)) {
+          resume = prior.sessionId;
+          preferredProvider = "claude";
+        }
+      } else {
+        const ready = prior.provider === "codex" ? this.codexImplementorReady() : this.grokImplementorReady();
+        if (ready) {
+          resume = prior.sessionId;
+          preferredProvider = prior.provider;
+        }
+      }
+    }
     // A fresh QA session gets a scope hint (plan summary + touched files) so it starts from the real
     // change surface instead of spending Opus turns rediscovering it; resumed QA already knows it.
     const plan = resume ? undefined : (this.db.getThreadStageOutputs(thread.id).plan ?? undefined);
@@ -2123,6 +2180,7 @@ export class ThreadManager implements OrchestratorApi {
         return cfg;
       },
       resume,
+      preferredProvider && preferredProvider !== "claude" ? { preferredProvider } : undefined,
     );
     return res?.structuredOutput as QaOutput | undefined;
   }
@@ -2856,8 +2914,21 @@ export class ThreadManager implements OrchestratorApi {
       if (this.cancelled(thread.id)) return;
 
       if (!qa) {
-        this.postFinding({ threadId: thread.id, fromRole: "qa", summary: "QA could not complete — needs your review", severity: "warning" });
-        this.settleReview(thread.id, "QA could not complete — needs your review.");
+        // Prefer the latest QA run's error (e.g. Grok structured-output miss after retries) so the park
+        // message is diagnosable rather than a bare "could not complete".
+        const lastQa = this.db
+          .listRuns(thread.id)
+          .filter((r) => r.role === "qa")
+          .sort((a, b) => b.startedAt - a.startedAt)[0];
+        const detail = lastQa?.error?.trim() || undefined;
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "qa",
+          summary: "QA could not complete — needs your review",
+          detail,
+          severity: "warning",
+        });
+        this.settleReview(thread.id, detail ? `QA could not complete — ${detail}` : "QA could not complete — needs your review.");
         return;
       }
       if (qa.pass) {
@@ -4095,16 +4166,30 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private wireRun(agent: AgentRunLike, threadId: string, runId: string, role: Role, accountId: string): void {
+    let leftStarting = false;
+    const markRunning = (sessionId?: string) => {
+      if (leftStarting && !sessionId) return;
+      leftStarting = true;
+      this.db.updateRun(runId, {
+        state: "running",
+        ...(sessionId ? { sessionId } : {}),
+      });
+      this.emitRun(runId);
+    };
     const off = agent.onEvent((e: AgentEvent) => {
       switch (e.type) {
         case "init":
-          this.db.updateRun(runId, { sessionId: e.sessionId, state: "running" });
-          this.emitRun(runId);
+          // sessionId may be absent on the first Grok stream event (CLI only reports it on `end`); a later
+          // init with the real id still updates the row. Always promote out of "starting".
+          markRunning(e.sessionId);
           break;
         case "text_delta":
+          // CLI backends can stream for minutes before emitting `init` — don't leave the chip on "starting".
+          markRunning();
           this.hub.publish({ type: "agent.delta", threadId, runId, role, text: e.text });
           break;
         case "thinking_delta":
+          markRunning();
           this.hub.publish({ type: "agent.thinking", threadId, runId, role, text: e.text });
           break;
         case "text": {
@@ -4386,11 +4471,19 @@ function cliRoleKickoff(
         "Do NOT emit intermediate status JSON objects mid-work — only the final schema-matching object at the end counts.",
       ].join("\n\n")
     : "";
+  const noMcp =
+    role === "qa"
+      ? [
+          "The orchestrator-specific bus/office MCP tools (post_finding, post_deliverable, read_findings, office_look, chat_post, chat_read) are UNAVAILABLE on this fallback.",
+          "Complete the core QA review directly: inspect git, run checks/browser tests yourself, and emit the final schema JSON.",
+          "For deliverables: check the git diff / new files yourself — do not call read_findings. Do not invent tool calls.",
+        ].join(" ")
+      : "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the core role directly; do not invent tool calls.";
   const prelude = [
     `[Temporary provider fallback: run the ${role} role on ${provider}.]`,
     system,
     safety,
-    "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the core role directly; do not invent tool calls.",
+    noMcp,
     schemaBlock,
   ]
     .filter(Boolean)

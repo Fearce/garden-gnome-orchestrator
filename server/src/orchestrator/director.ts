@@ -186,7 +186,9 @@ export class Director {
       if (this.run !== run) return; // superseded by a failover switch — don't touch the new run's state
       switch (e.type) {
         case "init":
-          this.sessionId = e.sessionId;
+          // sessionId is optional on the event (Grok may emit an early session-less init); only
+          // overwrite when the CLI supplies a real id.
+          if (e.sessionId) this.sessionId = e.sessionId;
           break;
         case "text_delta":
           this.hub.publish({ type: "director.delta", text: e.text });

@@ -189,6 +189,8 @@ export class GrokAgentRun implements AgentRunLike {
   private turnWatchdog: NodeJS.Timeout | undefined;
   private sawFirstEvent = false;
   private isResumeTurn = false;
+  /** True once we've emitted an `init` for this process (first stream event and/or final session id). */
+  private emittedInit = false;
 
   constructor(private readonly cfg: GrokRunConfig) {
     this.emitter.setMaxListeners(50);
@@ -441,6 +443,10 @@ export class GrokAgentRun implements AgentRunLike {
   }
 
   private handleEvent(ev: GrokEvent): void {
+    // Grok only puts sessionId on the final `end` event. Emit an early `init` on the first stream
+    // event so the run leaves "starting" during multi-minute tool loops (QA often thinks for minutes
+    // before any assistant text). A later init with the real id overwrites when `end` arrives.
+    this.emitInitIfNeeded(ev.sessionId);
     switch (ev.type) {
       case "text":
         // Stream the chunk live into the feed AND accumulate it — the whole message is persisted as one
@@ -474,12 +480,13 @@ export class GrokAgentRun implements AgentRunLike {
       case "end": {
         this.endTextSegment();
         this.sawTerminal = true;
-        if (ev.sessionId && !this.sessionId) {
+        if (ev.sessionId) {
+          const first = !this.sessionId;
           this.sessionId = ev.sessionId;
+          // Always surface the durable id (first init may have been session-less).
           this.emit({ type: "init", sessionId: ev.sessionId });
-          if (this.interrupting) this.killChild();
-        } else if (ev.sessionId && this.sessionId !== ev.sessionId) {
-          this.sessionId = ev.sessionId;
+          this.emittedInit = true;
+          if (first && this.interrupting) this.killChild();
         }
         // Prefer the CLI's already-validated object. Multi-turn structured roles stream one JSON object
         // *per model turn* as `text`, so concatenating textBuf and JSON.parse fails; `end.structuredOutput`
@@ -550,6 +557,14 @@ export class GrokAgentRun implements AgentRunLike {
     if (!info || this.transientApiError) return;
     this.transientApiError = true;
     this.transientApiErrorMessage = info.message;
+  }
+
+  /** Promote the run out of "starting" on first stream event. sessionId is often still unknown until `end`. */
+  private emitInitIfNeeded(sessionId?: string): void {
+    if (sessionId) this.sessionId = sessionId;
+    if (this.emittedInit) return;
+    this.emittedInit = true;
+    this.emit({ type: "init", sessionId: this.sessionId });
   }
 
   private finishTurn(partial: { subtype: string; isError: boolean; result?: string; numTurns?: number; costUsd?: number; structuredOutput?: unknown }): void {
@@ -657,6 +672,22 @@ export class GrokAgentRun implements AgentRunLike {
       });
       void this.runTurn(this.structuredRetryPrompt(), this.sessionId);
       return;
+    }
+    // Retries exhausted (or no session to resume): a "success" without structuredOutput still can't
+    // feed the pipeline — surface it as an error with the parse reason so runRole can failover/park
+    // with a diagnosable message instead of a silent "QA could not complete".
+    if (
+      this.cfg.outputSchema &&
+      structured === undefined &&
+      this.pendingTerminalResult &&
+      !this.pendingTerminalResult.isError
+    ) {
+      this.pendingTerminalResult = {
+        ...this.pendingTerminalResult,
+        subtype: "error",
+        isError: true,
+        result: `Grok finished without schema-valid structured output: ${this.lastStructuredError ?? "no JSON object matched the required schema."}`,
+      };
     }
     // The process exited without a terminal event AND it wasn't an intentional interrupt — synthesize a
     // failure so a waiting result()/nextResult() resolves instead of hanging.

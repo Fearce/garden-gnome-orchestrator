@@ -352,8 +352,9 @@ export interface OrchestratorSettings {
   // ---- Fast usage polling: opt-in tighter cadence for the account usage ping ----
   fastUsagePolling: boolean; // off (default) → 10-min ping; on → poll every ~30s so the strip tracks the live burn within ~1-2%
   // ---- Subscriptions: which provider backs the implementor (hard routing gate at dispatch) ----
-  // Claude is the default implementor and always powers planner/researcher/QA; individual Claude
-  // accounts are toggled via the AccountDTO.enabled flag (account.set), not a setting here.
+  // Claude is the default backend. Planner/researcher/QA start on Claude and fail over to an enabled
+  // Codex/Grok CLI when every Claude sub is capped (structured-output adapters recover the role result).
+  // Individual Claude accounts are toggled via AccountDTO.enabled (account.set), not a setting here.
   codexEnabled: boolean; // OpenAI Codex: when on (with a valid key), it becomes the implementor backend
   codexModel: string; // the resolved Codex implementor model (mirrors modelOverrides.codex.implementor; kept for the top-bar chip + back-compat)
   codexEffort: CodexEffort; // Codex CLI reasoning effort, applied via model_reasoning_effort
@@ -424,7 +425,10 @@ export interface RateLimitInfo {
 // ---- Normalized agent stream events (decoupled from SDK message shapes) ----
 
 export type AgentEvent =
-  | { type: "init"; sessionId: string }
+  // sessionId is optional: Grok only reports it on the final `end` event, but we still emit `init` on the
+  // first stream event so the run leaves "starting" during a multi-minute tool loop. A later `init` with
+  // the real id overwrites when the CLI supplies it.
+  | { type: "init"; sessionId?: string }
   | { type: "text_delta"; text: string }
   | { type: "text"; text: string }
   | { type: "thinking_delta"; text: string }
