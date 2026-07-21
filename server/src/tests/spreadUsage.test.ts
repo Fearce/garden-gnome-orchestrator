@@ -4,8 +4,11 @@
 // `bySpreadUsage` is the order select()/selectFailover()/dispatchPreview() apply when the operator's
 // "Spread usage" toggle is on: always target the sub with the lowest weekly usage (most weekly headroom)
 // to balance burn across subscriptions, breaking ties by 5h headroom then least-recently-picked.
+// This file ALSO exercises `providerSpreadUsage` — the cross-backend order `preferredImplementorProvider`
+// applies with the same toggle on, so the dispatch balances across Claude/Codex/Grok, not just Claude subs.
 
 import { bySpreadUsage } from "../accounts/accountManager.js";
+import { providerSpreadUsage, type ProviderCandidate } from "../orchestrator/threadManager.js";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -42,6 +45,30 @@ check("equal usage → least-recently-picked wins", ids([a("A", 40, 20, 9), a("B
 
 // Null usage (pre-ping) counts as 0 — treated as the emptiest sub, so it's targeted first.
 check("null weekly usage counts as 0 (targeted first)", ids([a("A", 50), a("B", null)].sort(bySpreadUsage)) === "B,A");
+
+// Cross-provider (Claude / Codex / Grok) balancing — `preferredImplementorProvider` flips to this order
+// when the toggle is on, so the whole dispatch targets the platform with the lowest weekly usage, not
+// just the lowest-usage Claude sub. It picks the winner via reduce(min under the comparator).
+console.log("\nspread-usage: providerSpreadUsage (cross-backend)");
+
+type PC = ProviderCandidate;
+const pc = (provider: PC["provider"], sevenDay: number | null, fiveHour: number | null = 0, sevenDayReset: number | null = null): PC => ({
+  provider,
+  hasHeadroom: true,
+  fiveHour,
+  sevenDay,
+  sevenDayReset,
+  weeklySafetyPct: 100,
+});
+// reduce(min) mirrors preferredImplementorProvider's winner selection.
+const winner = (cs: PC[]): string => cs.reduce((best, c) => (providerSpreadUsage(best, c) <= 0 ? best : c)).provider;
+
+check("lowest weekly usage provider wins", winner([pc("claude", 70), pc("codex", 25), pc("grok", 50)]) === "codex");
+check("Grok as emptiest platform is targeted", winner([pc("claude", 60), pc("codex", 55), pc("grok", 10)]) === "grok");
+check("weekly usage beats a sooner reset", winner([pc("claude", 20, 0, 1000), pc("codex", 80, 0, 10)]) === "claude");
+check("equal weekly → lower 5h wins", winner([pc("claude", 40, 90), pc("codex", 40, 15)]) === "codex");
+// A provider with no reading yet (null weekly) counts as 0% — the emptiest, so spread targets it first.
+check("null-usage provider counts as emptiest", winner([pc("claude", 45), pc("grok", null)]) === "grok");
 
 if (failures) {
   console.error(`\n${failures} spread-usage check(s) FAILED`);

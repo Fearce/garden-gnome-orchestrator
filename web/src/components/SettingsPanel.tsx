@@ -105,7 +105,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           />
           <ToggleRow
             label="Spread usage"
-            hint="On: every dispatch targets the Claude subscription with the lowest weekly usage, so burn evens out across all your subs. Off (default): burn the sub whose weekly window resets soonest first, holding the others in reserve."
+            hint="On: every dispatch targets the provider with the lowest weekly usage — across all enabled platforms (Claude subscriptions, Codex, Grok) and, within Claude, across your subs — so burn evens out everywhere. Off (default): burn the provider/sub whose weekly window resets soonest first, holding the others in reserve."
             on={settings.spreadUsage}
             onChange={(v) => setSettings({ spreadUsage: v })}
           />

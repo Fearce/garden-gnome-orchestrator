@@ -103,7 +103,7 @@ interface LiveImplementor {
   accountId: string;
 }
 
-interface ProviderCandidate {
+export interface ProviderCandidate {
   provider: ImplementorProvider;
   hasHeadroom: boolean;
   fiveHour: number | null;
@@ -1352,13 +1352,18 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Pick the best implementor backend from N candidates: prefer any WITH headroom, and within a headroom
-   *  class break ties by providerPriority (soonest weekly reset, then most headroom). Grok's null windows
-   *  sort it last among headroom-havers, making it the resilient fallback. The caller always passes at
-   *  least the Claude candidate, so this never sees an empty list. Reused by nextReadyImplementor.
+   *  class break ties by providerPriority (soonest weekly reset, then most headroom) — see the "Spread
+   *  usage" exception below, which flips that to lowest-weekly-usage. Grok's null windows sort it last among
+   *  headroom-havers, making it the resilient fallback. The caller always passes at least the Claude
+   *  candidate, so this never sees an empty list. Reused by nextReadyImplementor.
    *
    *  Exception — "Prefer Grok": when the operator opts in (grokPreferred) and Grok remains below its
    *  weekly safety ceiling, it takes the implementor outright instead of participating in reset ranking.
-   *  Safety and hard-cap detection still handle fallback to another provider. */
+   *  Safety and hard-cap detection still handle fallback to another provider.
+   *
+   *  "Spread usage": when the operator opts in (spreadUsage), the tie-break flips from soonest-reset to
+   *  LOWEST weekly usage — the backend with the most weekly headroom takes the implementor — so burn
+   *  evens out across all platforms. "Prefer Grok" still overrides it; the safety fallback still supersedes. */
   private preferredImplementorProvider(candidates: ProviderCandidate[]): ImplementorProvider {
     const withHeadroom = candidates.filter((c) => c.hasHeadroom);
     const base = withHeadroom.length ? withHeadroom : candidates;
@@ -1369,8 +1374,15 @@ export class ThreadManager implements OrchestratorApi {
     const safety = weeklySafetyPool(base);
     const pool = safety.candidates;
     // Preference is applied only AFTER the safety filter: it cannot re-add an over-threshold Grok candidate.
+    // "Prefer Grok" is a more specific explicit override, so it still wins over the spread-usage balancer.
     if (this.settings().grokPreferred && pool.some((c) => c.provider === "grok" && c.hasHeadroom)) return "grok";
-    const priority = safety.allOver ? providerSafetyFallbackPriority : providerPriority;
+    // Spread usage: balance across ALL backends by lowest weekly usage. The all-over-safety no-freeze
+    // fallback (most headroom) supersedes both it and the default soonest-reset order.
+    const priority = safety.allOver
+      ? providerSafetyFallbackPriority
+      : this.settings().spreadUsage
+        ? providerSpreadUsage
+        : providerPriority;
     return pool.reduce((best, c) => (priority(best, c) <= 0 ? best : c)).provider;
   }
 
@@ -1441,8 +1453,9 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Resolve which backend implements tasks right now from the subscription toggles, or an error
    *  explaining why none can. Claude is always in the pool; Codex and Grok are opt-in and, when enabled +
-   *  authed + uncapped, compete with Claude under the same soonest-weekly-reset policy instead of overriding
-   *  it. Planner/researcher/QA start on Claude and fail over to a ready CLI when Claude is exhausted. */
+   *  authed + uncapped, compete with Claude under the same weekly-reset (or, with Spread usage on,
+   *  lowest-weekly-usage) policy instead of overriding it. Planner/researcher/QA start on Claude and fail
+   *  over to a ready CLI when Claude is exhausted. */
   private resolveImplementorProvider(): { provider?: ImplementorProvider; error?: string } {
     const s = this.settings();
     const candidates: ProviderCandidate[] = [this.claudeProviderCandidate()];
@@ -4553,6 +4566,18 @@ function providerPriority(x: ProviderCandidate, y: ProviderCandidate): number {
  *  the backend with the most weekly (then 5h) headroom instead of the normal soonest-reset winner. */
 function providerSafetyFallbackPriority(x: ProviderCandidate, y: ProviderCandidate): number {
   return bySafetyHeadroom(x, y) || providerPriority(x, y);
+}
+
+/** "Spread usage" order across backends — target the provider (Claude / Codex / Grok) with the LOWEST
+ *  weekly usage (most weekly headroom) so burn evens out across ALL platforms, not the default
+ *  soonest-reset winner. 5h headroom then soonest reset break ties. Mirrors AccountManager.bySpreadUsage,
+ *  which balances the Claude subs INSIDE the Claude candidate the same way. Exported for unit tests. */
+export function providerSpreadUsage(x: ProviderCandidate, y: ProviderCandidate): number {
+  return (
+    providerHeadroom(y.sevenDay) - providerHeadroom(x.sevenDay) ||
+    providerHeadroom(y.fiveHour) - providerHeadroom(x.fiveHour) ||
+    providerWeeklyResetAt(x) - providerWeeklyResetAt(y)
+  );
 }
 
 function providerWeeklyResetAt(c: ProviderCandidate): number {

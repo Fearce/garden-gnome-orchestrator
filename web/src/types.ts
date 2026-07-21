@@ -315,8 +315,9 @@ export interface OrchestratorSettings {
   // Fast usage polling: opt-in tighter cadence for the account usage ping. Off (default) = 10-min
   // ping; on = ~30s so the top-bar usage strip tracks the live burn within ~1-2% of Claude's own UI.
   fastUsagePolling: boolean;
-  // Spread usage: off (default) = burn the soonest-resetting Claude sub first; on = always dispatch to
-  // the sub with the lowest weekly usage, balancing burn evenly across all subscriptions.
+  // Spread usage: off (default) = burn the soonest-resetting provider/sub first; on = always dispatch to
+  // the provider (Claude sub, Codex, or Grok) with the lowest weekly usage, balancing burn evenly across
+  // every enabled platform.
   spreadUsage: boolean;
   // Subscriptions: which provider backs the implementor (server-authoritative hard gate). Claude is the
   // default backend; individual Claude accounts toggle via AccountDTO.enabled (account.set), not here.
