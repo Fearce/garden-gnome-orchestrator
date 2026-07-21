@@ -37,6 +37,12 @@ Conventions that bite:
 - Settings are read LIVE at use time (`this.settings().x`), never snapshotted at
   dispatch — so a toggle applies to tasks already in flight. Match that unless
   you have a reason not to (then snapshot onto the thread row, like effort).
+- If the setting drives a **separate live service** (e.g. `AccountManager`, the usage
+  ping interval) rather than just being read in `settings()`, it needs THREE touches,
+  not one: a `setX()` on that service, an inline apply in `setSettings()` right after
+  the `kvSet`, AND a **boot-apply** next to `applyAccountEnabled()` in the constructor.
+  Miss the boot-apply and the toggle works after a click but silently reverts to
+  default on every restart. `fastUsagePolling` / `spreadUsage` are the reference.
 - kv key is `setting_` + snake_case of the field name. Keep them aligned.
 - The default appears in three places (settingBool arg, web DEFAULT_SETTINGS,
   the panel hint text) — keep all three telling the same story.
