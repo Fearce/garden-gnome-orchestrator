@@ -293,6 +293,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   autoResumeOnTokenReset: false,
   autoResumeThresholdPercent: 80,
   fastUsagePolling: false,
+  spreadUsage: false,
   codexEnabled: false,
   codexModel: "gpt-5.5",
   codexEffort: "high",

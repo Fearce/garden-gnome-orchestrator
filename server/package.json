@@ -16,6 +16,7 @@
     "test:effort": "tsx src/tests/effortCap.itest.ts",
     "test:cron": "tsx src/tests/cron.test.ts",
     "test:weekly-safety": "tsx src/tests/weeklySafety.test.ts",
+    "test:spread-usage": "tsx src/tests/spreadUsage.test.ts",
     "test:ext-wake": "tsx src/tests/extWakeProbe.test.ts",
     "test:grok-runner": "tsx src/tests/grokRunner.test.ts",
     "test:grok-reasoning": "tsx src/tests/grokReasoning.test.ts",

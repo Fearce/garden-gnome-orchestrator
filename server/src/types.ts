@@ -367,6 +367,7 @@ export interface OrchestratorSettings {
   autoResumeThresholdPercent: number; // % of the token window at which the resume is armed — clamped 50–95, default 80
   // ---- Fast usage polling: opt-in tighter cadence for the account usage ping ----
   fastUsagePolling: boolean; // off (default) → 10-min ping; on → poll every ~30s so the strip tracks the live burn within ~1-2%
+  spreadUsage: boolean; // off (default) → burn the soonest-resetting Claude sub first; on → always dispatch to the sub with the lowest weekly usage, balancing burn across all subs
   // ---- Subscriptions: which provider backs the implementor (hard routing gate at dispatch) ----
   // Claude is the default backend. Planner/researcher/QA start on Claude and fail over to an enabled
   // Codex/Grok CLI when every Claude sub is capped (structured-output adapters recover the role result).

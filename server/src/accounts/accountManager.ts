@@ -190,6 +190,18 @@ const bySelectionPriority = (x: AccountState, y: AccountState): number =>
 const bySafetyFallbackPriority = (x: AccountState, y: AccountState): number =>
   bySafetyHeadroom(x, y) || bySelectionPriority(x, y);
 
+/** "Spread usage" order — always target the sub with the LOWEST weekly usage (most weekly headroom)
+ *  so burn evens out across subscriptions, instead of the default perishable-first concentration.
+ *  5h headroom then least-recently-picked break ties, keeping the balance stable when usages match.
+ *  Exported (structural shape) for unit tests. */
+export function bySpreadUsage(
+  x: { fiveHour: number | null; sevenDay: number | null; lastPick: number },
+  y: { fiveHour: number | null; sevenDay: number | null; lastPick: number },
+): number {
+  const head = (pct: number | null): number => 100 - (pct ?? 0);
+  return head(y.sevenDay) - head(x.sevenDay) || head(y.fiveHour) - head(x.fiveHour) || x.lastPick - y.lastPick;
+}
+
 /**
  * Tracks each subscription's 5h/weekly burn and routes dispatches to spend the
  * "perishable" weekly allowance first — the sub whose weekly window resets soonest
@@ -216,6 +228,9 @@ export class AccountManager {
   private readonly resetTimers = new Map<string, NodeJS.Timeout>();
   private preferredId: string | undefined;
   private selSeq = 0;
+  // When on, selection targets the sub with the lowest weekly usage to balance burn across all subs,
+  // overriding the default perishable-first order. Operator toggle ("Spread usage"), applied on boot.
+  private spreadUsage = false;
   private readonly persist?: AccountUsagePersistence;
   private readonly stagger?: ResetStagger;
   // Fired right after every usage publish (periodic ping + reset ping), so a consumer can react to a
@@ -585,6 +600,20 @@ export class AccountManager {
     if (st) st.weeklySafetyPct = clampSafetyPct(pct);
   }
 
+  /** Enable/disable "spread usage" balancing. On: select() targets the sub with the lowest weekly usage
+   *  to even out burn across subscriptions, instead of the default soonest-reset-first order. Global (not
+   *  per-account); persistence lives in the caller (ThreadManager kv). */
+  setSpreadUsage(on: boolean): void {
+    this.spreadUsage = on;
+  }
+
+  /** The primary selection comparator: spread-usage balancing when the operator toggle is on, else the
+   *  default perishable-first order. The all-over-safety fallback (most headroom) supersedes both. */
+  private primaryOrder(allOverSafety: boolean): (x: AccountState, y: AccountState) => number {
+    if (allOverSafety) return bySafetyFallbackPriority;
+    return this.spreadUsage ? bySpreadUsage : bySelectionPriority;
+  }
+
   private enabledCount(): number {
     let n = 0;
     for (const s of this.states.values()) if (s.enabled) n++;
@@ -694,8 +723,9 @@ export class AccountManager {
     }
     const now = Date.now();
     const { usable, pool, allOverSafety } = this.selectionPool(now);
-    // Burn the account whose weekly window resets soonest first (see bySelectionPriority).
-    pool.sort(allOverSafety ? bySafetyFallbackPriority : bySelectionPriority);
+    // Burn the account whose weekly window resets soonest first (see bySelectionPriority) — or, when
+    // "spread usage" is on, the one with the lowest weekly usage (see bySpreadUsage).
+    pool.sort(this.primaryOrder(allOverSafety));
     const chosen = pool[0]!;
     chosen.lastPick = ++this.selSeq;
     this.preferredId = chosen.account.id;
@@ -703,9 +733,11 @@ export class AccountManager {
     this.publish();
     const reason = !usable.length
       ? "all accounts near limit — using the one resetting soonest"
-      : pool.some(hasBurnData)
-        ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} · resets ${untilReset(chosen.sevenDayReset, now)} — soonest weekly reset`
-        : "round-robin (no burn data yet)";
+      : !pool.some(hasBurnData)
+        ? "round-robin (no burn data yet)"
+        : this.spreadUsage
+          ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} — spread: lowest weekly usage`
+          : `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} · resets ${untilReset(chosen.sevenDayReset, now)} — soonest weekly reset`;
     return { account: chosen.account, reason };
   }
 
@@ -715,7 +747,7 @@ export class AccountManager {
   dispatchPreview(): AccountDispatchPreview {
     const now = Date.now();
     const { usable, pool, allOverSafety } = this.selectionPool(now);
-    pool.sort(allOverSafety ? bySafetyFallbackPriority : bySelectionPriority);
+    pool.sort(this.primaryOrder(allOverSafety));
     const chosen = pool[0]!;
     return {
       account: chosen.account,
@@ -746,8 +778,9 @@ export class AccountManager {
     // else use whichever capped-out candidate has the most headroom rather than stranding the task.
     const safety = weeklySafetyPool(candidates);
     const pool = safety.candidates;
-    // Same perishable-first order: the reserve account we fail over to is the next-soonest-resetting one.
-    pool.sort(safety.allOver ? bySafetyFallbackPriority : bySelectionPriority);
+    // Same order select() uses: soonest-resetting reserve by default, or lowest weekly usage when
+    // "spread usage" is on — so failover balances the same way normal dispatch does.
+    pool.sort(this.primaryOrder(safety.allOver));
     const chosen = pool[0]!;
     chosen.lastPick = ++this.selSeq;
     this.preferredId = chosen.account.id;

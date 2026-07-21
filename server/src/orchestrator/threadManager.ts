@@ -410,6 +410,7 @@ export class ThreadManager implements OrchestratorApi {
     this.markInterrupted();
     this.applyAccountEnabled();
     this.applyAccountWeeklySafety();
+    this.accounts.setSpreadUsage(this.settingBool("setting_spread_usage", false));
     this.loadCodexCap();
     this.loadGrokCap();
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
@@ -915,6 +916,7 @@ export class ThreadManager implements OrchestratorApi {
       autoResumeOnTokenReset: this.settingBool("setting_auto_resume_on_token_reset", false),
       autoResumeThresholdPercent: this.settingNum("setting_auto_resume_threshold_percent", 80, 50, 95),
       fastUsagePolling: this.settingBool("setting_fast_usage_polling", false),
+      spreadUsage: this.settingBool("setting_spread_usage", false),
       codexEnabled: this.settingBool("setting_codex_enabled", false),
       codexModel: this.codexModel(),
       codexEffort: this.codexEffort(),
@@ -1144,6 +1146,10 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.autoResumeOnTokenReset !== undefined) this.db.kvSet("setting_auto_resume_on_token_reset", patch.autoResumeOnTokenReset ? "1" : "0");
     if (patch.autoResumeThresholdPercent !== undefined) this.db.kvSet("setting_auto_resume_threshold_percent", String(patch.autoResumeThresholdPercent));
     if (patch.fastUsagePolling !== undefined) this.db.kvSet("setting_fast_usage_polling", patch.fastUsagePolling ? "1" : "0");
+    if (patch.spreadUsage !== undefined) {
+      this.db.kvSet("setting_spread_usage", patch.spreadUsage ? "1" : "0");
+      this.accounts.setSpreadUsage(patch.spreadUsage);
+    }
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
     if (patch.codexEffort !== undefined && CODEX_EFFORTS.includes(patch.codexEffort)) this.db.kvSet("setting_codex_effort", patch.codexEffort);
     if (patch.codexWeeklySafetyPct !== undefined) this.db.kvSet("setting_codex_weekly_safety", String(patch.codexWeeklySafetyPct));

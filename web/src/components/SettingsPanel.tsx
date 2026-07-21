@@ -103,6 +103,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             on={settings.fastUsagePolling}
             onChange={(v) => setSettings({ fastUsagePolling: v })}
           />
+          <ToggleRow
+            label="Spread usage"
+            hint="On: every dispatch targets the Claude subscription with the lowest weekly usage, so burn evens out across all your subs. Off (default): burn the sub whose weekly window resets soonest first, holding the others in reserve."
+            on={settings.spreadUsage}
+            onChange={(v) => setSettings({ spreadUsage: v })}
+          />
         </Group>
 
         <Group label="Director">
