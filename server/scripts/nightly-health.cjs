@@ -7,7 +7,9 @@
 //
 // What a resume-after-orchestrator-bounce agent needs in one command:
 //   • /api/health up?
-//   • dist mtime vs :4317 listener start (stale build shadowing)?
+//   • dist mtime vs :4317 listener start (stale build shadowing) — but only a
+//     warning when server/src ALSO changed after start; a scripts/docs-only
+//     rebuild bumps dist mtimes without any runtime drift, so it's informational.
 //   • reliability symbols still present in dist (office/Grok QA path)?
 //   • git dirty files (concurrent teammate WIP — leave alone unless yours)
 //   • thread/run health from SQLite (caps, parks, stuck runs)
@@ -72,6 +74,35 @@ function winListener(port) {
   }
 }
 
+/**
+ * Newest mtime among compiled sources under server/src. Used to tell a real
+ * stale-build (server/src changed after the process started) apart from a
+ * benign scripts/docs-only rebuild (dist mtimes bump on any `npm run build`
+ * even when no runtime code changed). Returns null if src is unreadable.
+ */
+function newestSrcMtimeMs() {
+  const srcDir = path.join(SERVER, "src");
+  let newest = 0;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.isFile() && /\.(ts|tsx|mts|cts)$/.test(e.name)) {
+        const m = fs.statSync(full).mtimeMs;
+        if (m > newest) newest = m;
+      }
+    }
+  };
+  walk(srcDir);
+  return newest || null;
+}
+
 function processStartMs(pid) {
   if (!pid) return null;
   try {
@@ -130,9 +161,16 @@ async function main() {
       const distMs = fs.statSync(sampleDist).mtimeMs;
       ok(`dist/agents/grokRunner.js mtime ${new Date(distMs).toISOString()}`);
       if (startMs && distMs > startMs + 2000) {
-        warn(
-          "dist is NEWER than the running process start — server may still be on a stale build (someone needs a restart; if resume note said bounce already happened, re-check)",
-        );
+        const srcMs = newestSrcMtimeMs();
+        if (srcMs && srcMs > startMs + 2000) {
+          warn(
+            "dist is NEWER than the running process start AND server/src changed after start — likely a real stale build (someone needs a restart; if resume note said bounce already happened, re-check)",
+          );
+        } else {
+          ok(
+            `dist rebuilt after process start but no server/src change since (newest src ${srcMs ? new Date(srcMs).toISOString() : "unknown"}) — scripts/docs-only rebuild, no runtime drift, no restart needed`,
+          );
+        }
       } else if (startMs && startMs >= distMs - 5000) {
         ok("process started at/after dist mtime (fresh build likely loaded)");
       }
