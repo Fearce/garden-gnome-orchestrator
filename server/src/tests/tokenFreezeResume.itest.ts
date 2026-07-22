@@ -93,6 +93,7 @@ class StubAccounts {
   setPingInterval(_ms: number): void {}
   applyEnabled(_id: string, _enabled: boolean): void {}
   applyWeeklySafetyPct(_id: string, _pct: number): void {}
+  setSpreadUsage(_on: boolean): void {}
 }
 
 // ---- a ThreadManager wired to the real DB + a stub usage signal ------------------------------------
