@@ -5,14 +5,53 @@
  *
  * Usage (repo root or web/):
  *   node web/scripts/check-accounts-visible.cjs
- *   ORCH_URL=http://127.0.0.1:4317 ORCH_PASSWORD=REDACTED-PASSWORD node web/scripts/check-accounts-visible.cjs
+ *   ORCH_URL=http://127.0.0.1:4317 ORCH_PASSWORD=<your-pw> node web/scripts/check-accounts-visible.cjs
+ *
+ * The login password defaults to AUTH_PASSWORD from server/.env; override with ORCH_PASSWORD.
+ * Playwright is resolved from a local/global install (or PLAYWRIGHT_PATH).
  *
  * Exit 0 = pass; non-zero = print failing geometry and exit 1.
  */
-const { chromium } = require("C:/Users/theke/AppData/Roaming/npm/node_modules/playwright");
+const fs = require("fs");
+const path = require("path");
 
+function loadChromium() {
+  const candidates = [process.env.PLAYWRIGHT_PATH, "playwright", "playwright-core"].filter(Boolean);
+  for (const mod of candidates) {
+    try {
+      return require(mod).chromium;
+    } catch {
+      /* try next */
+    }
+  }
+  try {
+    const root = require("child_process").execSync("npm root -g").toString().trim();
+    return require(path.join(root, "playwright")).chromium;
+  } catch {
+    throw new Error(
+      "Playwright not found. Install it (`npm i -g playwright`) or set PLAYWRIGHT_PATH to its module dir.",
+    );
+  }
+}
+
+function resolvePassword() {
+  if (process.env.ORCH_PASSWORD) return process.env.ORCH_PASSWORD;
+  try {
+    const envPath = path.resolve(__dirname, "../../server/.env");
+    const line = fs
+      .readFileSync(envPath, "utf8")
+      .split(/\r?\n/)
+      .find((l) => /^AUTH_PASSWORD=/.test(l));
+    if (line) return line.slice("AUTH_PASSWORD=".length).trim();
+  } catch {
+    /* no .env — leave blank, the login will simply fail with a clear HTTP code */
+  }
+  return "";
+}
+
+const chromium = loadChromium();
 const BASE = process.env.ORCH_URL || "http://127.0.0.1:4317";
-const PASSWORD = process.env.ORCH_PASSWORD || "REDACTED-PASSWORD";
+const PASSWORD = resolvePassword();
 const WIDTHS = (process.env.ORCH_WIDTHS || "1280,1440,1600")
   .split(",")
   .map((s) => parseInt(s.trim(), 10))

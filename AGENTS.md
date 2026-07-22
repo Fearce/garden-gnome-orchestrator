@@ -1,17 +1,20 @@
 # Codex-orchestrator
 
 ## 🔑 BROWSER-TEST LOGIN — READ THIS FIRST (agents: stop rediscovering it)
-The web app at `:4317`/`:4319` is password-gated. **The password is `REDACTED-PASSWORD`.** Don't go
-spelunking through `server/.env` or the auth code — just use it. To authenticate a Playwright
-(or curl) session, POST it to `/api/login` to mint the session cookie, then reuse that context:
+The web app at `:4317`/`:4319` is password-gated. **The password is the `AUTH_PASSWORD` line in
+`server/.env`** — read that one line (`grep AUTH_PASSWORD server/.env`) instead of spelunking the
+auth code. To authenticate a Playwright (or curl) session, POST it to `/api/login` to mint the
+session cookie, then reuse that context:
 ```js
 // Playwright: get the authed cookie, then navigate.
-await page.request.post("http://127.0.0.1:4317/api/login", { data: { password: "REDACTED-PASSWORD" } });
+const pw = process.env.AUTH_PASSWORD; // or read it out of server/.env
+await page.request.post("http://127.0.0.1:4317/api/login", { data: { password: pw } });
 await page.goto("http://127.0.0.1:4317/");   // now past the login gate
 ```
 ```bash
 # curl: save the cookie jar, then hit authed routes with it.
-curl -s -c /tmp/cj.txt -X POST http://127.0.0.1:4317/api/login -H 'content-type: application/json' -d '{"password":"REDACTED-PASSWORD"}'
+PW=$(grep -E '^AUTH_PASSWORD=' server/.env | cut -d= -f2-)
+curl -s -c /tmp/cj.txt -X POST http://127.0.0.1:4317/api/login -H 'content-type: application/json' -d "{\"password\":\"$PW\"}"
 curl -s -b /tmp/cj.txt http://127.0.0.1:4317/api/threads
 ```
 (Google sign-in also works, but the password is simplest for headless agents. Local/LAN only.)

@@ -23,6 +23,7 @@ server/data/
 # agent scratch probes (throwaway e2e / db dumps; deliverable detector also ignores _*)
 server/src/tests/_*
 server/src/tests/_*.png
+server/scripts/_*
 server/_*.cjs
 server/_*.ts
 server/_*.py

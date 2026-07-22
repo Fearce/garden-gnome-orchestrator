@@ -37,7 +37,7 @@ expect("frequency + noon", "daily at noon", true);
 console.log("schedule-detect: feature requests that merely mention a frequency → false");
 // The exact message that regressed: skip-director was on, but "Weekly" rerouted it to the director.
 expect(
-  "the Kevin regression",
+  "the weekly-reroute regression",
   "Can you add a 'Weekly token safety %' to each subscription in our settings panel? So I can be like 'never go above 90% of my personal claude sub' for instance. It shouldnt freeze tasks, it'll just use another sub.",
   false,
 );

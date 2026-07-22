@@ -1,6 +1,6 @@
 # Should we add a DeepSeek backend to the orchestrator?
 
-*A decision brief for Kevin — July 2026. Written by an implementor worker after reading the actual backend code and checking current DeepSeek/Claude pricing + benchmarks.*
+*A decision brief — July 2026. Written by an implementor worker after reading the actual backend code and checking current DeepSeek/Claude pricing + benchmarks.*
 
 ---
 
