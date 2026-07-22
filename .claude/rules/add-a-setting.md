@@ -43,6 +43,9 @@ Conventions that bite:
   the `kvSet`, AND a **boot-apply** next to `applyAccountEnabled()` in the constructor.
   Miss the boot-apply and the toggle works after a click but silently reverts to
   default on every restart. `fastUsagePolling` / `spreadUsage` are the reference.
+  The boot-apply `setX()` is also called by the two test harnesses' `StubAccounts`
+  fake — add the no-op method there too (`qaRoundBudget.itest.ts` +
+  `tokenFreezeResume.itest.ts`), or both gates crash at ThreadManager construction.
 - kv key is `setting_` + snake_case of the field name. Keep them aligned.
 - The default appears in three places (settingBool arg, web DEFAULT_SETTINGS,
   the panel hint text) — keep all three telling the same story.
