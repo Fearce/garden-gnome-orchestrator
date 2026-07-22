@@ -1,13 +1,19 @@
 # GG Orchestrator
 
-*Garden Gnome Orchestrator* — a single director's console for running Claude Code agents the way you already
-work by hand: a Sonnet **director** enriches a raw prompt, pulls in relevant
-memories, and asks the clarifying questions you'd otherwise forget to answer,
-then dispatches the task to a self-assembling agent pipeline — a **planner**
-reads the repo and plans, an optional **researcher** gathers external context, an
-**Opus 4.8 implementor** does the work in the right repo, and a **QA** agent
-reviews it. Fire many tasks at once, watch them as concurrent lanes, feed a
-running agent new information mid-flight, and resume a task that died partway.
+*Garden Gnome Orchestrator* — a single director's console for running coding
+agents the way you already work by hand: a Sonnet **director** enriches a raw
+prompt, pulls in relevant memories, and asks the clarifying questions you'd
+otherwise forget to answer, then dispatches the task to a self-assembling agent
+pipeline — a **planner** reads the repo and plans, an optional **researcher**
+gathers external context, an **implementor** does the work in the right repo, and
+a **QA** agent reviews it. Fire many tasks at once, watch them as concurrent
+lanes, feed a running agent new information mid-flight, and resume a task that
+died partway.
+
+The implementor runs on **Claude Opus 4.8** by default, or — when you enable the
+subscription in Settings — on the **OpenAI Codex** or **xAI Grok** agentic CLI
+instead, all authing off a flat-fee subscription with no per-token API billing
+(see [Runtime model](#runtime-model--zero-metered-api-credits)).
 
 > A local cockpit for directing coding agents — not a hosted service or a
 > finance/background "agent" bot.
@@ -37,11 +43,20 @@ pipeline — there's no fixed sequence; each agent decides what happens next:
 - **Researcher — optional, external-only.** Web search, library/API docs, GitHub
   issues, changelogs, plus your global memory. It does **not** read the codebase
   (that's the planner's job) — it enriches the build, then hands to the implementor.
-- **Implementor (Opus 4.8).** Does the work in the repo, fully autonomous. It
-  always hands off to QA — it can't declare itself done.
+- **Implementor.** Does the work in the repo, fully autonomous. It always hands
+  off to QA — it can't declare itself done. Runs on **Claude Opus 4.8** by
+  default, or on the **Codex** / **Grok** backend when you enable that
+  subscription (the director, planner, researcher, and QA stay Claude).
 - **QA.** Reviews and tests against the brief; it's the **only** agent that can
   mark a task **done**, or bounce it back to the implementor with concrete fixes
   (looping until it passes or runs out of rounds).
+
+**Read lane.** A pure read-only lookup ("read HANDOFF.md and report it", "which
+model does role X use") skips the whole pipeline: the director dispatches it with
+`dispatch_read`, which runs **one** cheap read-only Sonnet **reader** that answers
+by posting a finding — no planner, no implementor, no QA. Anything needing an edit
+or verification escalates back to the full pipeline instead of half-answering. The
+card shows a **READ** badge.
 
 The director's `dispatch` just hands over the brief — the chain assembles itself.
 Each completed stage is **persisted**, so a task that dies mid-pipeline (crash,
@@ -49,23 +64,57 @@ restart, timeout) can be **resumed** from where it failed: finished stages are
 reused and the implementor picks up its prior session. You can also inject new
 context into a live task, or interrupt + resume it, at any point.
 
+## In the console
+
+Beyond the pipeline, the board gives you:
+
+- **Deliverables** — agents surface any owner-facing file they produce (a report,
+  CSV, diagram, exported data) as a card in the right panel you can preview inline,
+  download, or copy the path of.
+- **The office** — concurrent tasks on the same repo see each other and coordinate
+  in a shared per-repo chat room, so two agents don't clobber the same files.
+- **Scheduled tasks** — dispatch a brief on a recurring schedule (a nightly health
+  sweep, a periodic check) instead of firing it by hand.
+- **Diff review & injection** — review a task's `git diff` in a modal without
+  leaving the console, and paste/drop **images** into any prompt for the agents to
+  see via vision.
+- **Anywhere access** — password or Google sign-in gates the LAN listener, with
+  opt-in browser + webhook notifications when a task needs you or finishes.
+
 ## Runtime model — zero metered API credits
 
-Agents run through the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`),
-which drives the bundled Claude Code binary and **inherits your Claude Max
-subscription auth** — no `ANTHROPIC_API_KEY`, no per-token API billing. Local
-runs use your logged-in CLI credentials automatically; running as a background
-service uses a `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`.
+Every backend authenticates off a flat-fee subscription, never a metered API key
+— no `ANTHROPIC_API_KEY`, no `OPENAI_API_KEY`, no per-token billing:
 
-> Note: from 2026-06-15, subscription Agent SDK usage draws from a separate
-> monthly "Agent SDK credit" pool (still your subscription, not API billing).
+- **Claude** (the director, planner, researcher, QA, and the default implementor)
+  runs through the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`), which
+  drives the bundled Claude Code binary and **inherits your Claude Max
+  subscription auth**. Local runs use your logged-in CLI credentials
+  automatically; running as a background service uses a `CLAUDE_CODE_OAUTH_TOKEN`
+  from `claude setup-token`.
 
-Codex agents authenticate the same zero-API-billing way: a ChatGPT-plan
-`codex login` seeded into the isolated `server/data/codex-home/auth.json`
-(see the `codex` block in `server/src/config.ts`). If any other tool on your
-machine points its own Codex runs at the same `codex-home`, note that they
-share this one login — logging it out, rotating it, or moving `CODEX_HOME_DIR`
-affects those consumers too, so update their config in the same change.
+  > From 2026-06-15, subscription Agent SDK usage draws from a separate monthly
+  > "Agent SDK credit" pool (still your subscription, not API billing).
+
+- **Codex** (optional implementor backend) runs the OpenAI Codex CLI, authed by a
+  ChatGPT-plan `codex login` seeded into the isolated `server/data/codex-home/auth.json`
+  (see the `codex` block in `server/src/config.ts`).
+- **Grok** (optional implementor backend) runs the xAI Grok CLI, authed by a
+  flat-fee SuperGrok `grok login` (OAuth, `~/.grok/auth.json`).
+
+Enable Codex or Grok per-machine from the **Subscriptions** panel in Settings;
+until then every role runs on Claude. Because the CLI backends share one login
+each, note that any *other* tool on your machine pointed at the same
+`codex-home` / `~/.grok` shares it — logging out, rotating a token, or moving
+`CODEX_HOME_DIR` affects those consumers too, so update their config in the same
+change.
+
+**Multi-subscription load balancing.** Configure two or more Claude
+subscriptions (`ACCOUNT_<n>_TOKEN`) and each dispatch routes to burn the
+"perishable" weekly allowance first — the sub whose weekly window resets soonest —
+holding the long-runway one in reserve until it caps, then failing over
+mid-task without losing work. Live 5h + weekly utilization for every sub shows in
+the top-bar burn strip.
 
 ## Layout
 
