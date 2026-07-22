@@ -25,6 +25,7 @@
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
     "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",
+    "test:gates": "node scripts/run-gates.cjs",
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
     "probe:task-runs": "node scripts/probe-task-runs.cjs",
     "probe:accounts": "node scripts/probe-accounts.cjs",

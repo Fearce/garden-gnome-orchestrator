@@ -13,6 +13,18 @@ vs `dist` mtime, greps live reliability symbols, lists dirty git paths,
 and summarizes SQLite parks/caps/stuck runs. Exit 1 = hard fail; dirty
 tree alone does **not** fail.
 
+## Second command — run the gate suite (health does NOT)
+```
+npm run typecheck && npm run test:gates --prefix server
+```
+`health` greps dist symbols but never RUNS the unit gates, so a green
+health can sit on top of crash-broken gates (a feature landing without
+updating a test stub is the classic cause — this is how the missing
+`StubAccounts.setSpreadUsage` slipped past a "13/13 green" claim). `test:gates`
+(`scripts/run-gates.cjs`) runs all 12 FREE gates in ~9s and exits non-zero on
+any failure; it excludes `reader`/`structured`/`effort` (those spawn real
+`claude` subprocesses and burn quota). Don't hand-run gates one by one.
+
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already
   completed — only verify live `dist` + health.
@@ -21,8 +33,7 @@ tree alone does **not** fail.
   only your files.
 - **Do not re-apply** a teammate's already-pushed fix. Check
   `git log -5 --oneline` + office claims before editing the same files.
-- Prefer unit gates already wired: `npm run test:office-bridge`,
-  `test:grok-runner`, `test:weekly-safety`, `typecheck` (batch at end).
+- Run `test:gates` (above) once at the end, not each gate separately.
 
 ## If the sweep finds a real bug
 Fix it in its own conventional commit, pathspec-stage, push (not vota).
