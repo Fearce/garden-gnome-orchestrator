@@ -8,8 +8,9 @@
 // What a resume-after-orchestrator-bounce agent needs in one command:
 //   • /api/health up?
 //   • dist mtime vs :4317 listener start (stale build shadowing) — but only a
-//     warning when server/src ALSO changed after start; a scripts/docs-only
-//     rebuild bumps dist mtimes without any runtime drift, so it's informational.
+//     warning when RUNTIME server/src ALSO changed after start; a docs/scripts/
+//     test-only rebuild bumps dist mtimes without any runtime drift, so it's
+//     informational (tests are excluded — see newestSrcMtimeMs).
 //   • reliability symbols still present in dist (office/Grok QA path)?
 //   • git dirty files (concurrent teammate WIP — leave alone unless yours)
 //   • thread/run health from SQLite (caps, parks, stuck runs)
@@ -75,10 +76,14 @@ function winListener(port) {
 }
 
 /**
- * Newest mtime among compiled sources under server/src. Used to tell a real
- * stale-build (server/src changed after the process started) apart from a
- * benign scripts/docs-only rebuild (dist mtimes bump on any `npm run build`
- * even when no runtime code changed). Returns null if src is unreadable.
+ * Newest mtime among compiled RUNTIME sources under server/src. Used to tell a
+ * real stale-build (runtime server/src changed after the process started) apart
+ * from a benign rebuild (dist mtimes bump on any `npm run build` even when no
+ * runtime code changed). Tests (`src/tests/`, `*.test.ts`, `*.itest.ts`) are
+ * excluded: they never affect the running server, but a test-only edit after
+ * boot (e.g. a StubAccounts fake following a feature) would otherwise trip the
+ * "real stale build" warning as a false positive every nightly sweep. Returns
+ * null if src is unreadable.
  */
 function newestSrcMtimeMs() {
   const srcDir = path.join(SERVER, "src");
@@ -92,8 +97,10 @@ function newestSrcMtimeMs() {
     }
     for (const e of entries) {
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) walk(full);
-      else if (e.isFile() && /\.(ts|tsx|mts|cts)$/.test(e.name)) {
+      if (e.isDirectory()) {
+        if (e.name === "tests") continue;
+        walk(full);
+      } else if (e.isFile() && /\.(ts|tsx|mts|cts)$/.test(e.name) && !/\.(test|itest)\.(ts|tsx|mts|cts)$/.test(e.name)) {
         const m = fs.statSync(full).mtimeMs;
         if (m > newest) newest = m;
       }
