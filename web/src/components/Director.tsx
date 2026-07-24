@@ -44,6 +44,10 @@ export function Director() {
   const [ws, setWs] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [searchText, setSearchText] = useState("");
+  // Mobile only: the search bar is collapsed behind a header icon so the transcript gets that row back
+  // (the "so much up top" complaint). Desktop CSS keeps it always visible regardless of this flag.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const directorSearch = useStore((s) => s.directorSearch);
   const searchDirector = useStore((s) => s.searchDirector);
   const clearDirectorSearch = useStore((s) => s.clearDirectorSearch);
@@ -153,16 +157,39 @@ export function Director() {
               </span>
             </div>
           </div>
-          <AgentToggles />
+          <div className="rail-head-actions">
+            <AgentToggles />
+            {/* Mobile-only search affordance — collapses the full-width search row into one tap. */}
+            <button
+              type="button"
+              className={"rail-search-toggle" + (searchOpen || searchText ? " on" : "")}
+              aria-label={searchOpen ? "Hide director search" : "Search director messages"}
+              aria-expanded={searchOpen || !!searchText}
+              title="Search director messages across all tasks"
+              onClick={() => {
+                setSearchOpen((o) => {
+                  const next = !o;
+                  if (next) requestAnimationFrame(() => searchInputRef.current?.focus());
+                  return next;
+                });
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.2-3.2" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="rail-search">
+      <div className={"rail-search" + (searchOpen || searchText ? " open" : "")}>
         <svg className="rail-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="11" cy="11" r="7" />
           <path d="m20 20-3.2-3.2" />
         </svg>
         <input
+          ref={searchInputRef}
           className="rail-search-input"
           type="search"
           value={searchText}
@@ -170,11 +197,14 @@ export function Director() {
           aria-label="Search director messages across all tasks"
           onChange={(e) => setSearchText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Escape") setSearchText("");
+            if (e.key === "Escape") {
+              setSearchText("");
+              setSearchOpen(false);
+            }
           }}
         />
         {searchText && (
-          <button className="rail-search-clear" type="button" aria-label="Clear search" title="Clear search" onClick={() => setSearchText("")}>
+          <button className="rail-search-clear" type="button" aria-label="Clear search" title="Clear search" onClick={() => { setSearchText(""); searchInputRef.current?.focus(); }}>
             ×
           </button>
         )}

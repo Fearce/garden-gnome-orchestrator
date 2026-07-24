@@ -360,8 +360,12 @@ button { font-family: inherit; cursor: pointer; }
 .rail-head { padding: 13px 16px 10px; border-bottom: 1px solid var(--line); }
 .rail-head h2 { margin: 0; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); font-weight: 600; }
 .rail-head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px 14px; flex-wrap: wrap; }
-.rail-head .who { display: flex; align-items: center; gap: 8px; }
-.rail-head-title { display: flex; flex-direction: column; gap: 1px; }
+.rail-head .who { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rail-head-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rail-head-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* The header search icon is a mobile-only affordance (the full search bar collapses behind it there);
+   on desktop the bar under the header is always visible, so this toggle stays hidden. */
+.rail-search-toggle { display: none; }
 .rail-head .who .role-tag { color: var(--role-director); }
 .transcript { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 
@@ -1582,18 +1586,20 @@ body.dl-resizing { user-select: none; }
   .app { grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); }
 
   /* topbar wraps to two rows: brand + controls, then a full-width
-     horizontally-scrollable accounts strip that never widens the viewport. */
-  .topbar { flex-wrap: wrap; gap: 10px; row-gap: 8px; padding: 9px 12px; }
-  .brand-logo { height: 30px; }
+     horizontally-scrollable accounts strip that never widens the viewport. Padding kept tight so the
+     bar (plus the account strip below it) doesn't eat a third of a phone screen before any content. */
+  .topbar { flex-wrap: wrap; gap: 8px; row-gap: 6px; padding: 6px 12px; }
+  .brand-logo { height: 28px; }
   .wordmark .sub { display: none; }
   .stat { display: none; }
   .conn { font-size: 0; gap: 0; }            /* drop the "live" label, keep the dot */
   .accounts {
     order: 5; flex-basis: 100%; flex-wrap: nowrap;
     overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch;
-    padding-bottom: 2px;
+    padding-bottom: 1px;
   }
-  .acct { flex: 0 0 auto; min-width: 154px; }
+  /* Slimmer chips: the burn strip is a reference row on mobile, not the focus — trim its vertical band. */
+  .acct { flex: 0 0 auto; min-width: 150px; padding: 3px 8px; gap: 2px; }
 
   /* tappable topbar controls */
   .gate { height: 44px; padding: 0 13px; }
@@ -1605,8 +1611,30 @@ body.dl-resizing { user-select: none; }
      .office element as the flexible spacer that right-aligns the conn/bell cluster, but drop the strip;
      per-task chatroom access remains on the board cards. */
   .office-strip { display: none; }
-  .agent-toggle { height: 40px; }
   .settings-btn { width: 40px; height: 40px; }
+
+  /* Director header — collapse the name row + pipeline gates + search onto ONE tight line so the
+     transcript starts near the top instead of ~230px down (the "can barely read 2 lines" complaint).
+     The gates and search icon hold their size; the name truncates to absorb any squeeze. */
+  .rail-head { padding: 8px 12px; }
+  .rail-head-row { flex-wrap: nowrap; gap: 8px; }
+  .rail-head .who { flex: 1 1 auto; }
+  .rail-head-title h2,
+  .rail-head-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rail-head-actions { flex: 0 0 auto; gap: 6px; }
+  .agent-toggles { flex-wrap: nowrap; gap: 4px; }
+  .agent-toggle { height: 34px; padding: 0 8px; gap: 4px; }
+
+  /* Search collapses behind the header icon; its full-width row only appears once opened, giving the
+     transcript that row back by default. */
+  .rail-search-toggle {
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 36px; height: 34px; border-radius: var(--r-sm);
+    border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint); cursor: pointer;
+  }
+  .rail-search-toggle.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, var(--line)); }
+  .rail-search { display: none; }
+  .rail-search.open { display: flex; }
   /* The gear popover centers as a sheet on mobile instead of anchoring under a wrapped topbar. */
   .settings-scrim { display: flex; align-items: flex-start; justify-content: center; }
   .settings-pop { position: static; top: auto; right: auto; margin-top: 12px; width: calc(100vw - 24px); }
