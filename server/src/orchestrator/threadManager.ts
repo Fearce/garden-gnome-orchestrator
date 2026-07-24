@@ -3,12 +3,13 @@ import { bySafetyHeadroom, untilReset, weeklySafetyPool } from "../accounts/acco
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import { AgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runner.js";
+import { AgentRun, ZaiAgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { codexUsageCapped, readCodexUsage } from "../agents/codexUsage.js";
 import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRunner.js";
 import { noteGrokCap, readGrokUsage, grokUsageCapped } from "../agents/grokUsage.js";
-import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, uniq } from "../agents/modelCatalog.js";
+import { noteZaiCap, readZaiUsage, zaiUsageCapped } from "../agents/zaiUsage.js";
+import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, CURATED_ZAI_MODELS, uniq } from "../agents/modelCatalog.js";
 import { clampEffort, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
 import { jsonContractInstruction } from "../agents/structuredText.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
@@ -47,7 +48,7 @@ import type {
   Role,
   Thread,
 } from "../types.js";
-import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, normalizeWorkspace, repoRoom, resolveCodexEffort } from "../types.js";
+import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, normalizeWorkspace, repoRoom, resolveCodexEffort, ZAI_SUB_ID } from "../types.js";
 
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
@@ -122,13 +123,16 @@ export type SettingsPatch = Partial<
     | "codexChatgptLogin"
     | "grokSignedIn"
     | "grokAccount"
+    | "zaiKeyPresent"
+    | "zaiKeyLast4"
     | "xhighEnabled"
     | "modelDefaults"
     | "claudeModels"
     | "codexModels"
     | "grokModels"
+    | "zaiModels"
   >
-> & { openaiApiKey?: string };
+> & { openaiApiKey?: string; zaiApiKey?: string };
 
 /** The slice of operator settings the implementor→QA stage needs, captured at pipeline start. */
 interface PipeOpts {
@@ -215,6 +219,10 @@ const CODEX_CAP_KV_KEY = "codex_cap_until";
 // Grok's weekly scrape normally supplies the reset epoch; before it lands, a rejected turn falls back to
 // a fixed cooldown (config.grok.capCooldownMs). kv-persisted.
 const GROK_CAP_KV_KEY = "grok_cap_until";
+// z.ai's quota scrape supplies the true 5h/weekly reset; before it lands, a rejected turn falls back to a
+// fixed cooldown (config.zai.capCooldownMs). kv-persisted so a restart's auto-resume wave doesn't slam a
+// still-capped z.ai.
+const ZAI_CAP_KV_KEY = "zai_cap_until";
 const PROVIDER_HARD_LIMIT = 98;
 // After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
 // doesn't need a manual Resume click. Human-gated phases (a pending question/approval, paused, or
@@ -392,6 +400,10 @@ export class ThreadManager implements OrchestratorApi {
   // Grok run is rejected; a fixed cooldown (no reset epoch is exposed). Persisted so a restart's auto-resume
   // wave doesn't slam a still-capped Grok. Undefined = Grok not latched-capped.
   private grokCapUntil: number | undefined;
+  // Epoch ms until which z.ai is treated as usage-capped (route implementors elsewhere). Set when a live
+  // z.ai run is rejected; the real 5h/weekly reset from the quota scrape is preferred, else a cooldown.
+  // Persisted so a restart's auto-resume wave doesn't slam a still-capped z.ai. Undefined = not latched.
+  private zaiCapUntil: number | undefined;
   // Owns the live pickable-model lists (Settings dropdowns). Rebroadcasts settings when a list changes.
   private readonly modelCatalog: ModelCatalog;
 
@@ -413,6 +425,7 @@ export class ThreadManager implements OrchestratorApi {
     this.accounts.setSpreadUsage(this.settingBool("setting_spread_usage", false));
     this.loadCodexCap();
     this.loadGrokCap();
+    this.loadZaiCap();
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
@@ -469,7 +482,7 @@ export class ThreadManager implements OrchestratorApi {
     // to a ready CLI when Claude is still capped (see the Claude→CLI handoff in runRole). Older parks
     // that still carry CAP_PARK_QA_MARK in their error text are therefore unblocked by CLI headroom too.
     const claudeFree = this.accounts.hasHeadroom();
-    const cliFree = this.codexImplementorReady() || this.grokImplementorReady();
+    const cliFree = this.codexImplementorReady() || this.grokImplementorReady() || this.zaiImplementorReady();
     if (!claudeFree && !cliFree) return;
     let slots = this.settings().maxConcurrent - this.activePipelines.size;
     if (slots <= 0) return;
@@ -769,7 +782,16 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private providerForRun(agent: AgentRunLike): ImplementorProvider {
-    return agent instanceof CodexAgentRun ? "codex" : agent instanceof GrokAgentRun ? "grok" : "claude";
+    // ZaiAgentRun extends AgentRun, so it must be checked before the "claude" fallback (Codex/Grok are
+    // separate classes). z.ai is AgentRun-based but not a Claude account — this identity is what routes
+    // its cap through the provider-flip path instead of a Claude-account failover.
+    return agent instanceof CodexAgentRun
+      ? "codex"
+      : agent instanceof GrokAgentRun
+        ? "grok"
+        : agent instanceof ZaiAgentRun
+          ? "zai"
+          : "claude";
   }
 
   private track(threadId: string, agent: AgentRunLike): void {
@@ -931,6 +953,14 @@ export class ThreadManager implements OrchestratorApi {
       grokPreferred: this.settingBool("setting_grok_preferred", false),
       grokSignedIn: grokAuth.signedIn,
       grokAccount: grokAuth.email,
+      zaiEnabled: this.settingBool("setting_zai_enabled", false),
+      zaiModel: this.zaiModel(),
+      zaiEffort: this.zaiEffort(),
+      zaiWeeklySafetyPct: this.settingNum("setting_zai_weekly_safety", 100, 1, 100),
+      zaiPreferred: this.settingBool("setting_zai_preferred", false),
+      zaiKeyPresent: !!this.zaiApiKey(),
+      zaiKeyLast4: this.zaiKeyLast4(),
+      zaiModels: this.pickableZaiModels(),
       skipDirector: this.settingBool("setting_skip_director", false),
       showComposerPickers: this.settingBool("setting_show_composer_pickers", false),
       showAgentModel: this.settingBool("setting_show_agent_model", true),
@@ -1016,6 +1046,13 @@ export class ThreadManager implements OrchestratorApi {
     return uniq([...CURATED_GROK_MODELS, ...this.modelCatalog.grokModels(), ...selected]);
   }
 
+  /** Pickable z.ai (GLM) model ids for the Settings dropdown: curated GLM models plus the current pick.
+   *  z.ai has no live models endpoint we fetch — the plan's GLM ids are a fixed known set. */
+  private pickableZaiModels(): string[] {
+    const selected = [this.zaiModel(), this.modelOverrides()[ZAI_SUB_ID]?.implementor].filter((x): x is string => !!x);
+    return uniq([...CURATED_ZAI_MODELS, ...selected]);
+  }
+
   /** The persisted recent-repo paths (most-recent first), trimmed to the configured cap. Stored as a
    *  JSON array in kv; a corrupt/absent value degrades to an empty list rather than throwing. */
   private recentRepos(): string[] {
@@ -1083,6 +1120,36 @@ export class ThreadManager implements OrchestratorApi {
   private grokEffort(): GrokEffort {
     const v = this.db.kvGet("setting_grok_effort")?.trim();
     return GROK_EFFORTS.includes(v as GrokEffort) ? (v as GrokEffort) : "high";
+  }
+
+  /** The selected z.ai (GLM) implementor model. Resolution mirrors codex/grok: the model-overrides matrix
+   *  (zai.implementor), then the legacy `setting_zai_model` kv, then the built-in default. Never inherits a
+   *  Claude/Codex/Grok default — those model ids aren't valid GLM ids for z.ai. */
+  private zaiModel(): string {
+    return (
+      this.modelOverrides()[ZAI_SUB_ID]?.implementor?.trim() ||
+      this.db.kvGet("setting_zai_model")?.trim() ||
+      config.zai.defaultModel
+    );
+  }
+
+  /** The z.ai reasoning-effort CAP (low/medium/high; default high) — the per-task effort is clamped to it. */
+  private zaiEffort(): GrokEffort {
+    const v = this.db.kvGet("setting_zai_effort")?.trim();
+    return GROK_EFFORTS.includes(v as GrokEffort) ? (v as GrokEffort) : "high";
+  }
+
+  /** The z.ai API key: the kv-stored UI value if present, else the server/.env fallback. NEVER broadcast —
+   *  only its presence + last 4 chars leave the server (settings()). Public for the out-of-band consumer
+   *  (the z.ai usage ping polls the quota endpoint with it); it must never cross the WS. */
+  zaiApiKey(): string | undefined {
+    return this.db.kvGet("zai_api_key")?.trim() || config.zai.apiKey;
+  }
+
+  /** Last 4 chars of the stored z.ai key for the masked settings field (null when no key / too short). */
+  private zaiKeyLast4(): string | null {
+    const k = this.zaiApiKey();
+    return k && k.length >= 4 ? k.slice(-4) : null;
   }
 
   /** Per-Claude-account MAX reasoning-effort caps ({accountId → effort}), parsed from kv. The
@@ -1168,6 +1235,18 @@ export class ThreadManager implements OrchestratorApi {
       this.db.kvSet("setting_grok_model", patch.grokModel.trim());
       this.setModelOverride(GROK_SUB_ID, "implementor", patch.grokModel.trim());
     }
+    if (patch.zaiEnabled !== undefined) this.db.kvSet("setting_zai_enabled", patch.zaiEnabled ? "1" : "0");
+    if (patch.zaiWeeklySafetyPct !== undefined) this.db.kvSet("setting_zai_weekly_safety", String(patch.zaiWeeklySafetyPct));
+    if (patch.zaiPreferred !== undefined) this.db.kvSet("setting_zai_preferred", patch.zaiPreferred ? "1" : "0");
+    if (patch.zaiEffort !== undefined && GROK_EFFORTS.includes(patch.zaiEffort)) this.db.kvSet("setting_zai_effort", patch.zaiEffort);
+    // Legacy free-text z.ai model field mirrors into the matrix (zai.implementor), same as codex/grok.
+    if (patch.zaiModel !== undefined && patch.zaiModel.trim()) {
+      this.db.kvSet("setting_zai_model", patch.zaiModel.trim());
+      this.setModelOverride(ZAI_SUB_ID, "implementor", patch.zaiModel.trim());
+    }
+    // Write-only z.ai key: store the trimmed value, or clear it (empty string) so settings() falls back to
+    // the env key. The raw key is never returned to clients — only zaiKeyPresent/last4 are.
+    if (patch.zaiApiKey !== undefined) this.db.kvSet("zai_api_key", patch.zaiApiKey.trim());
     if (patch.modelOverrides !== undefined) this.db.kvSet("setting_model_overrides", JSON.stringify(sanitizeModelOverrides(patch.modelOverrides)));
     if (patch.accountEffortCaps !== undefined) this.db.kvSet("setting_account_effort_caps", JSON.stringify(sanitizeAccountEffortCaps(patch.accountEffortCaps)));
     // Write-only key: store the trimmed value, or clear it (empty string) so settings() falls back to
@@ -1294,6 +1373,46 @@ export class ThreadManager implements OrchestratorApi {
     return grokUsageCapped(now);
   }
 
+  /** Restore the persisted z.ai usage-cap latch on boot (mirrors loadGrokCap). */
+  private loadZaiCap(): void {
+    const v = this.db.kvGet(ZAI_CAP_KV_KEY);
+    const until = v ? Number(v) : NaN;
+    if (Number.isFinite(until) && until > Date.now()) {
+      this.zaiCapUntil = until;
+      noteZaiCap(until);
+    } else if (v) this.db.kvSet(ZAI_CAP_KV_KEY, ""); // stale/expired — clear it
+  }
+
+  /** Latch z.ai as usage-capped after a rejected turn, routing implementors to another backend. The live
+   *  quota scrape normally supplies the true 5h/weekly reset; before it lands, a fixed cooldown keeps the
+   *  latch self-expiring. Mirrors the chip's countdown via noteZaiCap. */
+  private noteZaiCap(): void {
+    const now = Date.now();
+    const u = readZaiUsage();
+    // Prefer the soonest real reset from the quota scrape (5h or weekly, whichever is nearer and in the
+    // future); fall back to a fixed cooldown so the latch always self-expires rather than sticking forever.
+    const resets = [u.fiveHourReset, u.sevenDayReset].filter((r): r is number => r != null && r > now);
+    const until = resets.length ? Math.min(...resets) : now + config.zai.capCooldownMs;
+    if (this.zaiCapUntil && this.zaiCapUntil >= until) return; // already latched at least this long
+    this.zaiCapUntil = until;
+    this.db.kvSet(ZAI_CAP_KV_KEY, String(until));
+    noteZaiCap(until);
+    this.hub.log("warn", `z.ai hit its usage cap — routing implementors elsewhere until ${new Date(until).toLocaleString()}.`);
+  }
+
+  /** Whether z.ai should be treated as usage-capped right now. Clears an expired latch as a side effect. */
+  private zaiCapActive(): boolean {
+    const now = Date.now();
+    if (this.zaiCapUntil != null) {
+      if (now < this.zaiCapUntil) return true;
+      this.zaiCapUntil = undefined;
+      this.db.kvSet(ZAI_CAP_KV_KEY, "");
+      noteZaiCap(null);
+    }
+    // Also honor the scraped windows: either window at 100% (not yet reset) caps z.ai even without a rejection.
+    return zaiUsageCapped(now);
+  }
+
   private claudeProviderCandidate(): ProviderCandidate {
     const c = this.accounts.dispatchPreview();
     return providerCandidateFromClaude(c);
@@ -1332,6 +1451,35 @@ export class ThreadManager implements OrchestratorApi {
     if (!this.settings().grokEnabled) return false;
     if (!grokAuthAvailable()) return false;
     return !this.grokCapActive();
+  }
+
+  /** z.ai's dispatch candidate. 5-hour + weekly used-% and resets come from the GLM Coding Plan's quota
+   *  endpoint (see zaiUsagePing). z.ai competes by soonest weekly reset like Claude/Codex/Grok. Headroom =
+   *  not cap-latched and neither window at/over the hard limit. Null windows (no reading yet) count as
+   *  headroom (sorts last) until the first poll fills in. */
+  private zaiProviderCandidate(): ProviderCandidate {
+    const now = Date.now();
+    const u = readZaiUsage();
+    const near = (pct: number | null, reset: number | null): boolean =>
+      pct != null && pct >= PROVIDER_HARD_LIMIT && (reset == null || reset > now);
+    return {
+      provider: "zai",
+      hasHeadroom: !this.zaiCapActive() && !near(u.fiveHour, u.fiveHourReset) && !near(u.sevenDay, u.sevenDayReset),
+      fiveHour: u.fiveHour,
+      sevenDay: u.sevenDay,
+      sevenDayReset: u.sevenDayReset,
+      weeklySafetyPct: this.settings().zaiWeeklySafetyPct,
+    };
+  }
+
+  /** Whether the z.ai backend could take an implementor RIGHT NOW — enabled, a key is present, not
+   *  usage-capped, and with window headroom. Used by the failover ladder + cap supervisor so "every
+   *  account is rate-limited" is only ever claimed when z.ai genuinely can't step in either. */
+  private zaiImplementorReady(): boolean {
+    if (!this.settings().zaiEnabled) return false;
+    if (!this.zaiApiKey()) return false;
+    if (this.zaiCapActive()) return false;
+    return this.zaiProviderCandidate().hasHeadroom;
   }
 
   private codexProviderCandidate(): ProviderCandidate {
@@ -1376,6 +1524,8 @@ export class ThreadManager implements OrchestratorApi {
     // Preference is applied only AFTER the safety filter: it cannot re-add an over-threshold Grok candidate.
     // "Prefer Grok" is a more specific explicit override, so it still wins over the spread-usage balancer.
     if (this.settings().grokPreferred && pool.some((c) => c.provider === "grok" && c.hasHeadroom)) return "grok";
+    // Same explicit-override treatment for "Prefer z.ai" (applied after Grok's, so Grok wins if both are on).
+    if (this.settings().zaiPreferred && pool.some((c) => c.provider === "zai" && c.hasHeadroom)) return "zai";
     // Spread usage: balance across ALL backends by lowest weekly usage. The all-over-safety no-freeze
     // fallback (most headroom) supersedes both it and the default soonest-reset order.
     const priority = safety.allOver
@@ -1397,6 +1547,7 @@ export class ThreadManager implements OrchestratorApi {
     }
     if (exclude !== "codex" && !unavailable.has("codex") && this.codexImplementorReady()) cands.push(this.codexProviderCandidate());
     if (exclude !== "grok" && !unavailable.has("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate());
+    if (exclude !== "zai" && !unavailable.has("zai") && this.zaiImplementorReady()) cands.push(this.zaiProviderCandidate());
     if (!cands.length) return undefined;
     return this.preferredImplementorProvider(cands);
   }
@@ -1479,6 +1630,15 @@ export class ThreadManager implements OrchestratorApi {
       }
       if (this.grokCapActive()) this.hub.log("info", "Grok is usage-capped — excluding it from this dispatch until it frees up.");
       else candidates.push(this.grokProviderCandidate());
+    }
+
+    // z.ai: usable auth is an API key (kv-stored UI value or ZAI_API_KEY). Same cap-exclusion policy.
+    if (s.zaiEnabled) {
+      if (!this.zaiApiKey()) {
+        return { error: "z.ai is enabled but has no API key: add your z.ai key under Settings → Subscriptions (or set ZAI_API_KEY in server/.env), or turn z.ai off to use Claude." };
+      }
+      if (this.zaiCapActive()) this.hub.log("info", "z.ai is usage-capped — excluding it from this dispatch until its window resets.");
+      else candidates.push(this.zaiProviderCandidate());
     }
 
     const provider = this.preferredImplementorProvider(candidates);
@@ -1631,7 +1791,8 @@ export class ThreadManager implements OrchestratorApi {
     const now = Date.now();
     const codexOn = this.settings().codexEnabled;
     const grokOn = this.settings().grokEnabled;
-    const cliOn = codexOn || grokOn;
+    const zaiOn = this.settings().zaiEnabled;
+    const cliOn = codexOn || grokOn || zaiOn;
     const resets = [this.accounts.soonestResetAt()];
     if (cliOn) {
       if (codexOn) {
@@ -1642,10 +1803,15 @@ export class ThreadManager implements OrchestratorApi {
         const u = readGrokUsage();
         resets.push(u?.sevenDayReset ?? null);
       }
+      if (zaiOn) {
+        const u = readZaiUsage();
+        resets.push(u.fiveHourReset, u.sevenDayReset);
+      }
     }
     const future = resets.filter((r): r is number => r != null && r > now);
     const when = future.length ? ` Soonest account resets ${untilReset(Math.min(...future), now)}.` : "";
-    const cliLabel = codexOn && grokOn ? "Codex and Grok" : codexOn ? "Codex" : grokOn ? "Grok" : "";
+    const cliParts = [codexOn ? "Codex" : null, grokOn ? "Grok" : null, zaiOn ? "z.ai" : null].filter((x): x is string => !!x);
+    const cliLabel = cliParts.length > 1 ? `${cliParts.slice(0, -1).join(", ")} and ${cliParts[cliParts.length - 1]}` : cliParts[0] ?? "";
     const scope =
       need === "qa"
         ? cliOn
@@ -1828,7 +1994,13 @@ export class ThreadManager implements OrchestratorApi {
       .filter((r) => r.role === "implementor" && r.sessionId)
       .sort((a, b) => b.startedAt - a.startedAt)[0];
     if (!run) return undefined;
-    return run.account?.startsWith("codex:") ? "codex" : run.account?.startsWith("grok:") ? "grok" : "claude";
+    return run.account?.startsWith("codex:")
+      ? "codex"
+      : run.account?.startsWith("grok:")
+        ? "grok"
+        : run.account?.startsWith("zai:")
+          ? "zai"
+          : "claude";
   }
 
   /** The most recent QA run that has a session id (any backend), so fix-rounds 2..N can resume it. */
@@ -1842,7 +2014,9 @@ export class ThreadManager implements OrchestratorApi {
       ? "codex"
       : run.account?.startsWith("grok:")
         ? "grok"
-        : "claude";
+        : run.account?.startsWith("zai:")
+          ? "zai"
+          : "claude";
     return { sessionId: run.sessionId, provider };
   }
 
@@ -1875,7 +2049,7 @@ export class ThreadManager implements OrchestratorApi {
     // provider-specific — never resume a Grok/Codex id on Claude or vice versa.
     const pref = opts?.preferredProvider;
     if (pref && pref !== "claude" && role !== "reader") {
-      const ready = pref === "codex" ? this.codexImplementorReady() : this.grokImplementorReady();
+      const ready = pref === "codex" ? this.codexImplementorReady() : pref === "grok" ? this.grokImplementorReady() : this.zaiImplementorReady();
       if (ready) {
         provider = pref;
       } else {
@@ -1899,9 +2073,9 @@ export class ThreadManager implements OrchestratorApi {
     }
 
     while (!this.cancelled(thread.id)) {
-      const model = provider === "codex" ? this.codexModel() : provider === "grok" ? this.grokModel() : this.modelFor(acct.id, role);
-      const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : acct.label;
-      const effort = provider === "codex" ? this.codexEffort(model) : provider === "grok" ? this.grokEffort() : undefined;
+      const model = provider === "codex" ? this.codexModel() : provider === "grok" ? this.grokModel() : provider === "zai" ? this.zaiModel() : this.modelFor(acct.id, role);
+      const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : provider === "zai" ? `zai:${model}` : acct.label;
+      const effort = provider === "codex" ? this.codexEffort(model) : provider === "grok" ? this.grokEffort() : provider === "zai" ? this.zaiEffort() : undefined;
       const run = this.db.createRun({ threadId: thread.id, role, model, account: accountLabel, effort });
       this.emitRun(run.id);
       const cfg = makeCfg({ token: provider === "claude" ? acct.token : undefined, resume: provider === "claude" ? resume : undefined, runId: run.id });
@@ -1936,6 +2110,15 @@ export class ThreadManager implements OrchestratorApi {
             this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
           },
         });
+      } else if (provider === "zai") {
+        // z.ai runs the Claude SDK path against its Anthropic-compatible endpoint, so it keeps the bus/office
+        // MCP servers and structured output already built into `cfg` by makeCfg — just point it at z.ai. A
+        // z.ai session id resumes only on z.ai (same endpoint), so carry the resume through here.
+        accountId = "zai";
+        cfg.baseUrl = config.zai.baseUrl;
+        cfg.authToken = this.zaiApiKey();
+        if (resume) cfg.resume = resume;
+        agent = new ZaiAgentRun(cfg);
       } else {
         agent = new AgentRun(cfg);
       }
@@ -1994,10 +2177,14 @@ export class ThreadManager implements OrchestratorApi {
       }
 
       if (provider !== "claude") {
-        const capped = (agent instanceof CodexAgentRun || agent instanceof GrokAgentRun) && agent.capped;
+        // z.ai (AgentRun) signals a cap via rateLimited; the CLI backends via `.capped`.
+        const capped =
+          ((agent instanceof CodexAgentRun || agent instanceof GrokAgentRun) && agent.capped) ||
+          (agent instanceof ZaiAgentRun && agent.rateLimited);
         if (!capped) return res;
         if (provider === "codex") this.noteCodexCap();
-        else this.noteGrokCap();
+        else if (provider === "grok") this.noteGrokCap();
+        else if (provider === "zai") this.noteZaiCap();
         unavailableProviders.add(provider);
         const next = this.nextReadyImplementor(provider, unavailableProviders);
         if (!next) return res;
@@ -2170,7 +2357,12 @@ export class ThreadManager implements OrchestratorApi {
           preferredProvider = "claude";
         }
       } else {
-        const ready = prior.provider === "codex" ? this.codexImplementorReady() : this.grokImplementorReady();
+        const ready =
+          prior.provider === "codex"
+            ? this.codexImplementorReady()
+            : prior.provider === "grok"
+              ? this.grokImplementorReady()
+              : this.zaiImplementorReady();
         if (ready) {
           resume = prior.sessionId;
           preferredProvider = prior.provider;
@@ -2284,6 +2476,28 @@ export class ThreadManager implements OrchestratorApi {
       // every later turn on this thread starts fresh directly instead of re-attempting a wedging resume.
       grokAgent.onEnd(() => { if (grokAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
       agent = grokAgent;
+    } else if (provider === "zai") {
+      // z.ai reuses the Claude SDK path (ZaiAgentRun) against its Anthropic-compatible endpoint, so — unlike
+      // Codex/Grok — it gets the in-process bus + office MCP servers (post_finding/ask_user/deliverables,
+      // real chat_post) and the standard implementor system prompt. The per-task effort is capped at the
+      // z.ai subscription's configured maximum, like the other backends.
+      const model = this.zaiModel();
+      const effort = clampEffort(plannerEffort, this.zaiEffort());
+      accountId = "zai";
+      const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `zai:${model}`, effort });
+      runId = run.id;
+      this.emitRun(run.id);
+      const bus = createBusServer(this, { threadId: thread.id, role: "implementor", getRunId: () => run.id });
+      const office = createOfficeServer(this, { threadId: thread.id, role: "implementor", workspace: thread.workspace, title: thread.title, getRunId: () => run.id });
+      const cfg = implementorConfig(thread.workspace, { bus, office }, { resume: opts?.resume, effort });
+      cfg.model = model;
+      cfg.baseUrl = config.zai.baseUrl;
+      cfg.authToken = this.zaiApiKey();
+      if (!opts?.resume) {
+        const note = this.peerNote(thread, true);
+        if (note) startKickoff = `${kickoff}\n\n${note}`;
+      }
+      agent = new ZaiAgentRun(cfg);
     } else {
       const acct = opts?.account ?? this.dispatchAccount();
       accountId = acct.id;
@@ -2472,6 +2686,13 @@ export class ThreadManager implements OrchestratorApi {
       }
 
       if (!current.rateLimited) return res;
+      // z.ai is AgentRun-based but a single-key subscription, not a Claude account — there's no sibling
+      // account to fail over to. Latch its cap and return an error result so awaitImplementorCompletion's
+      // provider-flip continues the task on another backend (mirrors the CLI cap handling).
+      if (current instanceof ZaiAgentRun) {
+        this.noteZaiCap();
+        return res?.isError ? res : { type: "result", subtype: "error_during_execution", isError: true, result: "z.ai usage cap" };
+      }
       // A Fable-pool rejection with normal-window headroom relaunches on the SAME account — modelFor
       // resolves the fallback model now that classifyCap latched the pool limit (see modelCapFallback).
       // acctById is null for the Codex pseudo-account, so a Codex cap can never take this branch. The
@@ -2630,15 +2851,14 @@ export class ThreadManager implements OrchestratorApi {
     // working-tree edits persist, so the next backend picks up on top of them. Guarded by the provider
     // flip → switches at most once per cap; the recursive await then handles the new backend's own
     // turn-limit/stall/account-failover from there.
-    if (
-      res?.isError &&
-      !this.cancelled(thread.id) &&
-      (current instanceof CodexAgentRun || current instanceof GrokAgentRun) &&
-      current.capped
-    ) {
+    const cliCapped = (current instanceof CodexAgentRun || current instanceof GrokAgentRun) && current.capped;
+    // z.ai is AgentRun-based, so its cap surfaces as `rateLimited` (not a CLI `.capped`) — same flip.
+    const zaiCapped = current instanceof ZaiAgentRun && current.rateLimited;
+    if (res?.isError && !this.cancelled(thread.id) && (cliCapped || zaiCapped)) {
       const from = this.implementorProvider.get(thread.id) ?? "claude";
       if (from === "codex") this.noteCodexCap();
       else if (from === "grok") this.noteGrokCap();
+      else if (from === "zai") this.noteZaiCap();
       const next = this.nextReadyImplementor(from) ?? "claude";
       this.implementorProvider.set(thread.id, next);
       // Fully end the capped CLI run BEFORE anything else — postFinding routes a warning to this.live's
@@ -4540,7 +4760,7 @@ function cliRoleKickoff(
 
 /** Human label for an implementor backend, for the failover findings/notices. */
 function providerLabel(p: ImplementorProvider): string {
-  return p === "codex" ? "Codex" : p === "grok" ? "Grok" : "Claude";
+  return p === "codex" ? "Codex" : p === "grok" ? "Grok" : p === "zai" ? "z.ai" : "Claude";
 }
 
 function providerCandidateFromClaude(c: AccountDispatchPreview): ProviderCandidate {

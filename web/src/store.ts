@@ -4,6 +4,7 @@ import type {
   AccountDTO,
   CodexUsageDTO,
   GrokUsageDTO,
+  ZaiUsageDTO,
   AgentRun,
   ChatMessage,
   ChatRoomSummary,
@@ -57,6 +58,7 @@ interface State {
   accounts: AccountDTO[];
   codexUsage: CodexUsageDTO | null;
   grokUsage: GrokUsageDTO | null;
+  zaiUsage: ZaiUsageDTO | null;
   threads: Record<string, Thread>;
   runs: Record<string, AgentRun>;
   findings: Finding[];
@@ -308,6 +310,14 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   grokPreferred: false,
   grokSignedIn: false,
   grokAccount: null,
+  zaiEnabled: false,
+  zaiModel: "glm-4.6",
+  zaiEffort: "high",
+  zaiWeeklySafetyPct: 100,
+  zaiPreferred: false,
+  zaiKeyPresent: false,
+  zaiKeyLast4: null,
+  zaiModels: [],
   skipDirector: false,
   showComposerPickers: false,
   showAgentModel: true,
@@ -385,6 +395,7 @@ export const useStore = create<State>((set) => ({
   accounts: [],
   codexUsage: null,
   grokUsage: null,
+  zaiUsage: null,
   threads: {},
   runs: {},
   findings: [],
@@ -685,7 +696,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}) });
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
@@ -706,6 +717,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "codex.usage":
       useStore.setState({ codexUsage: ev.usage });
+      break;
+    case "zai.usage":
+      useStore.setState({ zaiUsage: ev.usage });
       break;
     case "accounts":
       useStore.setState({ accounts: ev.accounts });

@@ -293,6 +293,21 @@ export interface GrokUsageDTO {
   updatedAt: number;
 }
 
+/** z.ai (GLM Coding Plan) usage — mirrors the server's ZaiUsageDTO. 5-hour + weekly used-% and resets come
+ *  from the plan's real quota endpoint; `plan` is the tier (lite/pro/max). */
+export interface ZaiUsageDTO {
+  configured: boolean; // an API key is available (env or kv)
+  plan: string | null; // plan tier: "lite" | "pro" | "max"
+  fiveHour: number | null; // 5-hour window used-percent (0-100), else null
+  fiveHourReset: number | null; // epoch ms the 5-hour window resets, else null
+  sevenDay: number | null; // weekly window used-percent (0-100), else null
+  sevenDayReset: number | null; // epoch ms the weekly window resets, else null
+  capUntil: number | null; // epoch ms a usage-cap rejection is latched until, else null
+  stale?: boolean;
+  error?: string | null;
+  updatedAt: number;
+}
+
 /** Operator-tunable pipeline settings — server-authoritative (persisted in the DB kv table, broadcast
  *  to every client). Mirrors the server's OrchestratorSettings. */
 export interface OrchestratorSettings {
@@ -335,6 +350,15 @@ export interface OrchestratorSettings {
   grokPreferred: boolean; // on (default off) → enabled+uncapped Grok wins instead of normal soonest-weekly-reset ranking; auto-falls-back on cap
   grokSignedIn: boolean; // read-only: a `grok login` (auth.json) is present, so Grok can authenticate
   grokAccount?: string | null; // read-only: the signed-in Grok account email
+  // Zhipu z.ai (GLM Coding Plan): when on (with an API key) it joins the implementor backends. Runs on the
+  // Claude Agent SDK via z.ai's Anthropic-compatible endpoint, so it keeps the bus/office MCP tools.
+  zaiEnabled: boolean;
+  zaiModel: string;
+  zaiEffort: GrokEffort; // z.ai reasoning-effort cap (low/medium/high)
+  zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (100 = off): above it, tasks route off z.ai
+  zaiPreferred: boolean; // on (default off) → enabled+uncapped z.ai wins instead of soonest-weekly-reset ranking; auto-falls-back on cap
+  zaiKeyPresent: boolean; // read-only: an API key is stored (raw key never reaches the client)
+  zaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
   // Composer state persisted server-side (survives across the HTTP/HTTPS surfaces, which don't share
   // localStorage): the skip-director mode, the recent-repo chip cap, and the recent-repo list itself.
   skipDirector: boolean;
@@ -356,6 +380,7 @@ export interface OrchestratorSettings {
   claudeModels: string[];
   codexModels: string[];
   grokModels: string[]; // read-only: pickable Grok model ids
+  zaiModels: string[]; // read-only: pickable z.ai GLM model ids
 }
 
 /** The five agent roles a model can be picked for. Mirrors the server's MODEL_ROLES. */
@@ -369,8 +394,9 @@ export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
 export const DEFAULT_SUB_ID = "default";
 export const CODEX_SUB_ID = "codex";
 export const GROK_SUB_ID = "grok";
+export const ZAI_SUB_ID = "zai";
 
-/** A settings.set patch: writable fields plus the write-only raw OpenAI key (never read back). */
+/** A settings.set patch: writable fields plus the write-only raw keys (never read back). */
 export type SettingsPatch = Partial<
   Omit<
     OrchestratorSettings,
@@ -379,13 +405,16 @@ export type SettingsPatch = Partial<
     | "codexChatgptLogin"
     | "grokSignedIn"
     | "grokAccount"
+    | "zaiKeyPresent"
+    | "zaiKeyLast4"
     | "xhighEnabled"
     | "modelDefaults"
     | "claudeModels"
     | "codexModels"
     | "grokModels"
+    | "zaiModels"
   >
-> & { openaiApiKey?: string };
+> & { openaiApiKey?: string; zaiApiKey?: string };
 
 /** Flagship Codex models suggested when the live list hasn't loaded yet (most-capable first). */
 export const CODEX_MODELS = [
@@ -402,6 +431,9 @@ export const CODEX_MODELS = [
 
 /** Grok models suggested when the live list hasn't loaded yet. */
 export const GROK_MODELS = ["grok-4.5"] as const;
+
+/** z.ai (GLM) models suggested for the picker — the plan's fixed GLM id set (most-capable first curated). */
+export const ZAI_MODELS = ["glm-4.6", "glm-4.7", "glm-5.2", "glm-5-turbo"] as const;
 
 // ---- the real-git "Changes" surface (mirrors server/src/gitService.ts) ----
 
@@ -480,6 +512,7 @@ export type ServerEvent =
       accounts: AccountDTO[];
       codexUsage: CodexUsageDTO | null;
       grokUsage: GrokUsageDTO | null;
+      zaiUsage: ZaiUsageDTO | null;
       approvalMode: boolean;
       settings: OrchestratorSettings;
       chat: ChatMessage[];
@@ -491,6 +524,7 @@ export type ServerEvent =
   | { type: "schedules"; schedules: ScheduledTask[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
+  | { type: "zai.usage"; usage: ZaiUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
   | { type: "chat.history"; room: string; messages: ChatMessage[]; hasMore: boolean }
   | { type: "chat.name"; threadId: string; role: Role; name: string }

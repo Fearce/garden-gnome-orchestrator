@@ -116,9 +116,11 @@ Read the run trail to tell causes apart:
   windows still free ⇒ the run resumes on the SAME account with `config.fableFallbackModel` (default
   `claude-opus-4-8`, env `FABLE_FALLBACK_MODEL`), the pool cap is latched per (sub, model) until its
   reset (5h self-expiry when unknown), `modelFor` resolves the fallback for every role meanwhile, and
-  the account chip shows a "Fable → Opus" tag. If EVERY sub is capped, an implementor fails over to the CODEX backend
-  when it's enabled+authed with headroom (fresh seed — a Claude session can't resume on the codex CLI;
-  the reverse codex→Claude flip already existed). Only when no backend can continue does the task park
+  the account chip shows a "Fable → Opus" tag. If EVERY sub is capped, an implementor fails over to the CODEX,
+  Grok, or z.ai backend when one is enabled+authed with headroom (fresh seed for the CLI backends — a Claude session
+  can't resume on the codex CLI; the reverse flip back to Claude already existed). z.ai (GLM Coding Plan) is
+  Anthropic-compatible, so it reuses the AgentRun path via an env base-URL/token swap, not a custom runner —
+  the `ZaiAgentRun` marker class is what routes its cap through the provider-flip. Only when no backend can continue does the task park
   in `review` with the marker `⏳ Auto-resume pending` in its `error` — a supervisor (`resumeCapParked`,
   every `CAP_RETRY_MS`/120s) auto-resumes it the moment a Claude sub OR Codex frees up; a QA-stage park
   (message carries "(QA runs on Claude)") waits for a Claude window specifically. A plain "needs your

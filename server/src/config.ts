@@ -221,6 +221,37 @@ export const config = {
     // Hard timeout for one winpty scrape (spawn → parse → kill), so a wedged TUI can never pile up.
     usageScrapeTimeoutMs: numEnv(process.env.GROK_USAGE_SCRAPE_TIMEOUT_MS, 30_000),
   },
+  // ---- Zhipu z.ai GLM Coding Plan (fourth, optional implementor backend) ----
+  // Unlike Codex/Grok, z.ai exposes an ANTHROPIC-COMPATIBLE endpoint, so the implementor reuses the Claude
+  // Agent SDK path (AgentRun) with ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN pointed at z.ai — keeping the
+  // in-process MCP bus/office tools, deliverables, resume and images for free (see .claude/rules/
+  // model-backend-economics.md). It's a flat subscription (Lite/Pro/Max) with REAL 5-hour + weekly quota
+  // windows (usageUrl below), so it competes in provider routing by soonest weekly reset like Claude/Codex/Grok.
+  zai: {
+    // The API key (`<id>.<secret>` from z.ai). The UI can store one in the kv table (setting key
+    // `zai_api_key`, write-only); this env value is the fallback when none is stored there. Never
+    // broadcast — only its presence + last 4 chars leave the server (settings()).
+    apiKey: process.env.ZAI_API_KEY?.trim() || undefined,
+    // Anthropic-compatible base URL. The Claude Agent SDK / CLI honor ANTHROPIC_BASE_URL, so pointing it
+    // here (with the key as ANTHROPIC_AUTH_TOKEN) is the entire backend wiring.
+    baseUrl: process.env.ZAI_BASE_URL?.trim() || "https://api.z.ai/api/anthropic",
+    // First-boot default + the GLM models the Subscriptions selector suggests. Free-text (any id the key
+    // can access is accepted). glm-4.6 is the proven, quota-efficient coding-plan default; the newer
+    // glm-4.7 / glm-5.2 / glm-5-turbo are offered as pickable alternatives. Override with ZAI_MODEL.
+    defaultModel: process.env.ZAI_MODEL?.trim() || "glm-4.6",
+    models: ["glm-4.6", "glm-4.7", "glm-5.2", "glm-5-turbo"] as const,
+    // z.ai's real usage/quota endpoint (Bearer key, no model turn): returns the 5-hour + weekly windows
+    // (used-% + reset) and the plan tier — see zaiUsagePing. This is what feeds the chip + routing.
+    usageUrl: process.env.ZAI_USAGE_URL?.trim() || "https://api.z.ai/api/monitor/usage/quota/limit",
+    // How often to re-poll the quota endpoint (cheap HTTP GET). Default 60s so the chip stays live. 0 disables.
+    usagePollMs: numEnv(process.env.ZAI_USAGE_POLL_MS, 60_000),
+    // A live-run cap rejection latches for this cooldown as a fallback; the quota scrape normally supplies
+    // the true 5h/weekly reset, so the latch clears at the real reset epoch when known.
+    capCooldownMs: numEnv(process.env.ZAI_CAP_COOLDOWN_MS, 60 * 60_000),
+    // z.ai recommends a long per-request timeout for agentic coding turns (its docs use 3,000,000ms).
+    // Applied as API_TIMEOUT_MS in the run env only for a z.ai run.
+    timeoutMs: numEnv(process.env.ZAI_TIMEOUT_MS, 3_000_000),
+  },
   // When every Claude account is rate-limited mid-task, the task parks in 'review' with a cap marker
   // instead of stranding the owner to hand-resume it. A supervisor re-checks this often and resumes
   // each parked task the moment any account regains headroom (a window reset / a freed sub). Set

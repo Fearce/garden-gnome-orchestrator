@@ -186,6 +186,9 @@ button { font-family: inherit; cursor: pointer; }
 /* Grok chip needs room for the SuperGrok badge + weekly % + monthly absolute credits. */
 .acct.grok { min-width: 188px; gap: 4px; }
 .acct.grok.is-off { opacity: 0.55; }
+/* z.ai chip meters the plan's 5h + weekly windows (like a Claude/Codex chip) plus a plan-tier badge. */
+.acct.zai { min-width: 168px; gap: 4px; }
+.acct.zai.is-off { opacity: 0.55; }
 .acct-tag.ok { color: var(--ok); }
 .codex-model { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-dim); letter-spacing: 0.02em; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Token freeze on the top bar: when EVERY subscription is rate-limited (some task is cap-parked), EACH

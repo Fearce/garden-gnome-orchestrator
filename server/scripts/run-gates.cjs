@@ -20,6 +20,7 @@ const GATES = [
   "test:scheduler",
   "test:api-errors",
   "test:office-bridge",
+  "test:zai-usage",
   "test:token-freeze",
   "test:qa-budget",
 ];

@@ -391,6 +391,17 @@ export interface OrchestratorSettings {
   grokPreferred: boolean;
   grokSignedIn: boolean; // read-only — a `grok login` (auth.json) is present, so Grok can authenticate
   grokAccount?: string | null; // read-only — the signed-in Grok account email, for the Subscriptions panel
+  // Zhipu z.ai (GLM Coding Plan): when on (with an API key), it joins the implementor backends. Unlike
+  // Codex/Grok it runs on the Claude Agent SDK path via z.ai's Anthropic-compatible endpoint, so it keeps
+  // the in-process bus/office MCP tools and can also take failover for planner/researcher/QA.
+  zaiEnabled: boolean;
+  zaiModel: string; // the resolved z.ai GLM implementor model (mirrors modelOverrides.zai.implementor; kept for the chip + back-compat)
+  zaiEffort: GrokEffort; // z.ai reasoning effort cap (low/medium/high), applied to the SDK run like the other backends
+  zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (default 100 = off): at/above this z.ai weekly utilization, new tasks route to another backend
+  zaiPreferred: boolean; // on (default off) → an enabled + uncapped z.ai is preferred for the implementor instead of soonest-weekly-reset ranking; still auto-falls-back on cap/safety
+  zaiKeyPresent: boolean; // read-only — an API key is stored (env or kv); the raw key is never broadcast
+  zaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
+  zaiModels: string[]; // read-only: pickable z.ai GLM model ids (curated ∪ selected)
   // ---- Composer state, persisted server-side (not localStorage) so it survives across the HTTP and
   //      HTTPS surfaces the console is served on — the two origins don't share localStorage. ----
   skipDirector: boolean; // composer's skip-director mode — persists so "on" stays on next time it opens
@@ -414,7 +425,7 @@ export interface OrchestratorSettings {
 }
 
 /** The implementor backend chosen at dispatch by the subscription toggles. */
-export type ImplementorProvider = "claude" | "codex" | "grok";
+export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
 
 /** The five agent roles a model can be picked for. Mirrored in web/src/types.ts. */
 export const MODEL_ROLES: Role[] = ["director", "planner", "researcher", "implementor", "qa"];
@@ -430,6 +441,7 @@ export const MODEL_ROLES: Role[] = ["director", "planner", "researcher", "implem
 export const DEFAULT_SUB_ID = "default";
 export const CODEX_SUB_ID = "codex";
 export const GROK_SUB_ID = "grok";
+export const ZAI_SUB_ID = "zai";
 export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
 
 export interface RateLimitInfo {

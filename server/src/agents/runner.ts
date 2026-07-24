@@ -39,6 +39,11 @@ export interface AgentRunConfig {
   forkSession?: boolean;
   /** Per-run subscription token — lets concurrent agents run on different accounts. */
   oauthToken?: string;
+  /** Alternate Anthropic-compatible endpoint (z.ai GLM). When set with `authToken`, the run is routed
+   *  there via ANTHROPIC_BASE_URL instead of the Claude subscription — see buildEnv. */
+  baseUrl?: string;
+  /** Bearer auth token for `baseUrl` (the z.ai API key), sent as ANTHROPIC_AUTH_TOKEN. */
+  authToken?: string;
 }
 
 export type SendOpts = { shouldQuery?: boolean; priority?: "now" | "next" | "later" };
@@ -79,12 +84,27 @@ export interface AgentRunLike {
  * Build the child-process env. The cardinal rule: never let ANTHROPIC_API_KEY
  * through, so agents authenticate via the Max subscription only. A long stream
  * close timeout keeps a human-blocked MCP tool (e.g. ask_user) from aborting.
+ *
+ * When `baseUrl` + `authToken` are given (a z.ai GLM run), the request is routed to that
+ * Anthropic-compatible endpoint via ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN instead of the Claude
+ * subscription — the subscription OAuth token is dropped so the run bills the alternate provider only.
  */
-function buildEnv(token?: string): Record<string, string | undefined> {
+function buildEnv(opts: { oauthToken?: string; baseUrl?: string; authToken?: string }): Record<string, string | undefined> {
   const env = withAgentToolPath();
   delete env.ANTHROPIC_API_KEY;
+  // Clear any inherited endpoint override so a stray env var can't redirect a normal Claude run; the
+  // z.ai branch below sets them deliberately for its own run only.
+  delete env.ANTHROPIC_BASE_URL;
+  delete env.ANTHROPIC_AUTH_TOKEN;
   env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT ?? "1800000";
-  const oauth = token ?? config.oauthToken;
+  if (opts.baseUrl && opts.authToken) {
+    delete env.CLAUDE_CODE_OAUTH_TOKEN; // don't leak a Claude sub token to the alternate provider
+    env.ANTHROPIC_BASE_URL = opts.baseUrl;
+    env.ANTHROPIC_AUTH_TOKEN = opts.authToken;
+    env.API_TIMEOUT_MS = env.API_TIMEOUT_MS ?? String(config.zai.timeoutMs);
+    return env;
+  }
+  const oauth = opts.oauthToken ?? config.oauthToken;
   if (oauth) env.CLAUDE_CODE_OAUTH_TOKEN = oauth;
   return env;
 }
@@ -176,7 +196,7 @@ export class AgentRun implements AgentRunLike {
       permissionMode: this.cfg.permissionMode ?? "default",
       includePartialMessages: this.cfg.includePartialMessages ?? true,
       settingSources: this.cfg.settingSources ?? [],
-      env: buildEnv(this.cfg.oauthToken),
+      env: buildEnv({ oauthToken: this.cfg.oauthToken, baseUrl: this.cfg.baseUrl, authToken: this.cfg.authToken }),
     };
     if (this.cfg.systemPrompt !== undefined) options.systemPrompt = this.cfg.systemPrompt;
     if (this.cfg.allowedTools) options.allowedTools = this.cfg.allowedTools;
@@ -410,6 +430,15 @@ export class AgentRun implements AgentRunLike {
     }
   }
 }
+
+/**
+ * A z.ai (Zhipu GLM) implementor run. Behaviorally identical to AgentRun — it just carries `baseUrl` +
+ * `authToken` in its config so buildEnv routes it to z.ai's Anthropic-compatible endpoint. The nominal
+ * subclass exists purely so the thread manager can identify a z.ai run via `instanceof` (providerForRun,
+ * the cap-failover flip): z.ai is AgentRun-based but is NOT a Claude account, so its usage cap must be
+ * handled like a CLI backend's (fail over to another provider) rather than as a Claude-account failover.
+ */
+export class ZaiAgentRun extends AgentRun {}
 
 function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;

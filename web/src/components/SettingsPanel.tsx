@@ -1,8 +1,8 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CODEX_SUB_ID, EFFORTS, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, codexEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role } from "../types.js";
-import { codexModelOptions, grokModelOptions } from "../lib/models.js";
+import { CODEX_SUB_ID, EFFORTS, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, codexEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role } from "../types.js";
+import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
 import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 
@@ -520,6 +520,10 @@ function SubscriptionsSection() {
   const codexActive = settings.codexEnabled && codexHasAuth;
   const grokActive = settings.grokEnabled && settings.grokSignedIn;
   const grokUsage = useStore((s) => s.grokUsage);
+  const zaiActive = settings.zaiEnabled && settings.zaiKeyPresent;
+  const zaiUsage = useStore((s) => s.zaiUsage);
+  const [zaiKeyDraft, setZaiKeyDraft] = useState("");
+  const [zaiReveal, setZaiReveal] = useState(false);
   const enabledAccounts = accounts.filter((a) => a.enabled).length;
   const draftValid = /^sk-\S{8,}$/.test(keyDraft.trim());
   const draftBad = keyDraft.trim().length > 0 && !keyDraft.trim().startsWith("sk-");
@@ -655,6 +659,95 @@ function SubscriptionsSection() {
         <EffortCapField value={settings.grokEffort} options={GROK_EFFORTS} onChange={(v) => setSettings({ grokEffort: v as GrokEffort })} />
         <GrokWeeklySafety />
       </SubCard>
+
+      <SubCard
+        name="z.ai (GLM Coding Plan)"
+        vendor="Zhipu"
+        on={settings.zaiEnabled}
+        active={zaiActive}
+        activeLabel="in rotation"
+        toggleDisabled={!settings.zaiEnabled && !settings.zaiKeyPresent}
+        toggleTitle={!settings.zaiKeyPresent ? "Add a z.ai API key first" : undefined}
+        onToggle={(v) => setSettings({ zaiEnabled: v })}
+        meta={zaiSettingsMeta(settings, zaiUsage)}
+      >
+        <div className="sub-msg dim">
+          Runs GLM models through z.ai's Anthropic-compatible endpoint on the Claude Agent SDK — so it keeps the in-app tools
+          (findings, deliverables, office chat) and can also take failover for the planner/researcher/QA when every Claude sub is capped.
+        </div>
+
+        <div className="sub-field">
+          <label className="sub-label">z.ai API key</label>
+          <div className="key-input">
+            <input
+              type={zaiReveal ? "text" : "password"}
+              value={zaiKeyDraft}
+              spellCheck={false}
+              autoComplete="off"
+              placeholder={settings.zaiKeyPresent ? `••••••••${settings.zaiKeyLast4 ?? ""}` : "your z.ai API key"}
+              onChange={(e) => setZaiKeyDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && zaiKeyDraft.trim()) {
+                  setSettings({ zaiApiKey: zaiKeyDraft.trim() });
+                  setZaiKeyDraft("");
+                  setZaiReveal(false);
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="key-eye"
+              aria-label={zaiReveal ? "Hide key" : "Reveal key"}
+              title={zaiReveal ? "Hide" : "Reveal"}
+              onClick={() => setZaiReveal((r) => !r)}
+            >
+              {zaiReveal ? <EyeOff /> : <Eye />}
+            </button>
+          </div>
+          <div className="sub-actions">
+            <button
+              className="sub-btn primary"
+              disabled={!zaiKeyDraft.trim()}
+              onClick={() => {
+                setSettings({ zaiApiKey: zaiKeyDraft.trim() });
+                setZaiKeyDraft("");
+                setZaiReveal(false);
+              }}
+            >
+              {settings.zaiKeyPresent ? "Replace key" : "Save key"}
+            </button>
+            {settings.zaiKeyPresent && (
+              <button
+                className="sub-btn ghost"
+                onClick={() => {
+                  setSettings({ zaiApiKey: "" });
+                  setZaiKeyDraft("");
+                }}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          {settings.zaiKeyPresent && !zaiKeyDraft.trim() && (
+            <div className="sub-msg dim">Key stored (••••{settings.zaiKeyLast4 ?? ""}).</div>
+          )}
+        </div>
+
+        {settings.zaiKeyPresent ? <ZaiUsageReadout usage={zaiUsage} /> : null}
+
+        {settings.zaiEnabled && settings.zaiKeyPresent ? (
+          <ToggleRow
+            label="Prefer z.ai for the implementor"
+            hint="By default z.ai auto-competes for the implementor by soonest weekly reset (live GLM Coding Plan usage), like Claude/Codex/Grok. On → prefer z.ai while it stays below its weekly safety threshold; it still auto-falls-back to Claude at the safety threshold or plan cap."
+            on={settings.zaiPreferred}
+            onChange={(v) => setSettings({ zaiPreferred: v })}
+          />
+        ) : null}
+
+        <ZaiModels />
+        <EffortCapField value={settings.zaiEffort} options={GROK_EFFORTS} onChange={(v) => setSettings({ zaiEffort: v as GrokEffort })} />
+        <ZaiWeeklySafety />
+      </SubCard>
     </div>
   );
 }
@@ -731,6 +824,73 @@ function GrokModels() {
       <SubRoleModels subId={GROK_SUB_ID} models={options} defaultLabelFor={() => "Grok default"} roles={CLI_ROLES} />
       <div className="sub-msg dim">Unset roles use Grok's default model.</div>
     </>
+  );
+}
+
+/** The z.ai per-role model grid — mirrors the Codex/Grok one, over the curated GLM model set. */
+function ZaiModels() {
+  const liveModels = useStore((s) => s.settings.zaiModels);
+  const options = zaiModelOptions(liveModels);
+  return (
+    <>
+      <SubRoleModels subId={ZAI_SUB_ID} models={options} defaultLabelFor={() => "z.ai default"} roles={CLI_ROLES} />
+      <div className="sub-msg dim">Unset roles use z.ai's default model.</div>
+    </>
+  );
+}
+
+/** The soft weekly-safety ceiling for the z.ai backend, backed by the live GLM Coding Plan weekly meter. */
+function ZaiWeeklySafety() {
+  const value = useStore((s) => s.settings.zaiWeeklySafetyPct);
+  const setSettings = useStore((s) => s.setSettings);
+  return (
+    <SubStepperField
+      label="Weekly safety %"
+      hint="Switch backends when z.ai's weekly usage reaches this threshold. Won't freeze tasks, even when Prefer z.ai is on."
+      value={value}
+      min={1}
+      max={100}
+      onChange={(v) => setSettings({ zaiWeeklySafetyPct: v })}
+    />
+  );
+}
+
+/** One-line z.ai usage for the Settings card meta (mirrors the Grok/Claude cards' weekly · 5h line). */
+function zaiSettingsMeta(
+  settings: { zaiEnabled: boolean; zaiKeyPresent: boolean; zaiModel: string; zaiEffort: string },
+  usage: import("../types.js").ZaiUsageDTO | null,
+): string {
+  if (!settings.zaiEnabled) return "Off — enable to add z.ai to the implementor + role-failover rotation.";
+  if (!settings.zaiKeyPresent) return "Enabled but no API key — add your z.ai key before tasks can route here.";
+  const plan = usage?.plan ? ` · ${usage.plan}` : "";
+  const weekly = usage?.sevenDay != null ? `weekly ${Math.round(usage.sevenDay)}%` : "weekly —";
+  const fiveHour = usage?.fiveHour != null ? `5h ${Math.round(usage.fiveHour)}%` : "5h —";
+  const err = usage?.error && usage.sevenDay == null && usage.fiveHour == null ? ` · usage: ${usage.error}` : "";
+  return `In rotation${plan} · ${weekly} · ${fiveHour} · model ${settings.zaiModel} · ${settings.zaiEffort} max effort${err}`;
+}
+
+/** Live z.ai meters inside the Settings → z.ai card so usage is visible without scanning the top bar. */
+function ZaiUsageReadout({ usage }: { usage: import("../types.js").ZaiUsageDTO | null }) {
+  if (!usage) {
+    return <div className="sub-msg dim">Waiting for z.ai usage ping…</div>;
+  }
+  if (usage.fiveHour == null && usage.sevenDay == null) {
+    return (
+      <div className={"sub-msg" + (usage.error ? " bad" : " dim")}>
+        {usage.error ? `Usage unavailable: ${usage.error}` : "Polling z.ai quota…"}
+      </div>
+    );
+  }
+  const weekly = usage.sevenDay != null ? `${Math.round(usage.sevenDay)}% used` : "—";
+  const fiveHour = usage.fiveHour != null ? `${Math.round(usage.fiveHour)}% used` : "—";
+  return (
+    <div className="sub-msg ok" title={usage.stale ? "Last known reading — refresh pending" : "Live z.ai usage"}>
+      Usage{usage.stale ? " (stale)" : ""}: 5h {fiveHour}
+      {usage.fiveHourReset != null ? ` · resets ${new Date(usage.fiveHourReset).toLocaleString()}` : ""}
+      {" · "}
+      weekly {weekly}
+      {usage.sevenDayReset != null ? ` · resets ${new Date(usage.sevenDayReset).toLocaleString()}` : ""}.
+    </div>
   );
 }
 

@@ -33,6 +33,10 @@ export const CURATED_CODEX_MODELS = [...config.codex.models];
 /** Curated Grok fallback, mirroring config.grok.models. */
 export const CURATED_GROK_MODELS = [...config.grok.models];
 
+/** Curated z.ai (GLM) fallback, mirroring config.zai.models. z.ai has no live models endpoint we fetch —
+ *  the plan's GLM ids are a fixed known set, so this curated list (∪ the selected model) is the picker. */
+export const CURATED_ZAI_MODELS = [...config.zai.models];
+
 /** Dedup preserving first-seen order, dropping blanks. */
 export function uniq(ids: (string | undefined | null)[]): string[] {
   const out: string[] = [];

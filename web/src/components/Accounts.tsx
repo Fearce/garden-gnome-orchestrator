@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store.js";
 import { effortLabel, isCapParked, modelLabel } from "../lib/format.js";
-import type { AccountDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO } from "../types.js";
+import type { AccountDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO, ZaiUsageDTO } from "../types.js";
 
 const clamp = (pct: number | null): number => (pct == null ? 0 : Math.min(100, Math.max(0, pct)));
 const label = (pct: number | null): string => (pct == null ? "—" : `${Math.round(pct)}%`);
@@ -29,6 +29,7 @@ export function Accounts() {
   const settings = useStore((s) => s.settings);
   const codexUsage = useStore((s) => s.codexUsage);
   const grokUsage = useStore((s) => s.grokUsage);
+  const zaiUsage = useStore((s) => s.zaiUsage);
   // A Grok implementor is live when some implementor run on the Grok backend is still going — the server
   // stamps the account label "grok:<model>". starting/running/idle all count as "implementing now".
   const grokLive = useStore((s) =>
@@ -44,19 +45,28 @@ export function Accounts() {
       (r) => r.role === "implementor" && (r.account ?? "").startsWith("codex:") && (r.state === "starting" || r.state === "running" || r.state === "idle"),
     ),
   );
+  // A z.ai implementor is live when some implementor run on the z.ai backend is still going — the server
+  // stamps the account label "zai:<model>". starting/running/idle all count as "implementing now".
+  const zaiLive = useStore((s) =>
+    Object.values(s.runs).some(
+      (r) => r.role === "implementor" && (r.account ?? "").startsWith("zai:") && (r.state === "starting" || r.state === "running" || r.state === "idle"),
+    ),
+  );
   // Global token freeze: at least one task is cap-parked, which the server only does when EVERY account
   // was rate-limited (no failover headroom). Derived from real thread state — not cosmetic — so the
   // strip frosts over exactly while the orchestrator is genuinely stalled on rate limits. Subscribe to
   // the derived boolean so the strip only re-renders when the freeze flips, not on every thread upsert.
   const frozen = useStore((s) => Object.values(s.threads).some((t) => isCapParked(t)));
-  const now = useNow(accounts.length > 0 || !!codexUsage || !!grokUsage);
+  const now = useNow(accounts.length > 0 || !!codexUsage || !!grokUsage || !!zaiUsage);
   const multi = accounts.length > 1;
   // Show the Codex chip once Codex is configured at all (enabled, a ChatGPT login, or a key stored) so
   // the top bar reflects it as a subscription alongside the Claude accounts.
   const showCodex = settings.codexEnabled || settings.hasOpenaiKey || settings.codexChatgptLogin;
   // Show the Grok chip once Grok is configured — enabled, or a `grok login` is present.
   const showGrok = settings.grokEnabled || settings.grokSignedIn;
-  if (!accounts.length && !showCodex && !showGrok) return null;
+  // Show the z.ai chip once z.ai is configured — enabled, or an API key is stored.
+  const showZai = settings.zaiEnabled || settings.zaiKeyPresent;
+  if (!accounts.length && !showCodex && !showGrok && !showZai) return null;
   return (
     <div
       className={"accounts" + (frozen ? " frozen" : "")}
@@ -96,6 +106,117 @@ export function Accounts() {
           now={now}
         />
       ) : null}
+      {showZai ? (
+        <ZaiChip
+          enabled={settings.zaiEnabled}
+          hasAuth={settings.zaiKeyPresent}
+          model={settings.zaiModel}
+          effort={settings.zaiEffort}
+          preferred={settings.zaiPreferred}
+          live={zaiLive}
+          usage={zaiUsage}
+          now={now}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Top-bar chip for the Zhipu z.ai (GLM Coding Plan) backend. Shows the plan's 5-hour + weekly usage meters
+ * (from the real quota endpoint), the plan tier (lite/pro/max), the model, and the state — implementing now
+ * / ready / capped / needs key / off. Before the first reading lands it shows model·effort so the chip is
+ * never blank when configured.
+ */
+function ZaiChip({
+  enabled,
+  hasAuth,
+  model,
+  effort,
+  preferred,
+  live,
+  usage,
+  now,
+}: {
+  enabled: boolean;
+  hasAuth: boolean;
+  model: string;
+  effort: GrokEffort;
+  preferred: boolean;
+  live: boolean;
+  usage: ZaiUsageDTO | null;
+  now: number;
+}) {
+  const capReset =
+    usage?.capUntil != null && usage.capUntil > now
+      ? usage.capUntil
+      : usage?.sevenDay != null && usage.sevenDay >= 100 && (usage.sevenDayReset == null || usage.sevenDayReset > now)
+        ? usage.sevenDayReset
+        : usage?.fiveHour != null && usage.fiveHour >= 100 && (usage.fiveHourReset == null || usage.fiveHourReset > now)
+          ? usage.fiveHourReset
+          : null;
+  const capped = capReset !== null;
+  const state = !enabled ? "off" : !hasAuth ? "noauth" : capped ? "capped" : live ? "implementing" : "ready";
+  const tag =
+    state === "implementing" ? "implementing" : state === "ready" ? "ready" : state === "capped" ? "capped" : state === "noauth" ? "no key" : "off";
+  const tagCls = state === "noauth" || state === "capped" ? "acct-tag" : state === "off" ? "acct-tag dim" : "acct-tag ok";
+  const plan = usage?.plan ? usage.plan.replace(/^\w/, (c) => c.toUpperCase()) : null;
+  const showMeters = !!usage && (usage.fiveHour != null || usage.sevenDay != null);
+  const stale = !!usage?.stale;
+  const prefNote = preferred
+    ? " · preferred for the implementor"
+    : " · auto-ranked with Claude/Codex/Grok by soonest weekly reset";
+  const title =
+    state === "implementing"
+      ? `z.ai is implementing a task now · GLM Coding Plan${plan ? ` (${plan})` : ""} · model ${model} · ${effort} effort${prefNote}`
+      : state === "ready"
+        ? `z.ai (GLM Coding Plan${plan ? ` · ${plan}` : ""}) enabled · model ${model} · ${effort} effort · implements dispatched tasks${prefNote}`
+        : state === "capped"
+          ? `z.ai hit its usage limit — routing implementors elsewhere${capReset != null ? `; retrying in ${countdown(capReset, now)}` : ""}`
+          : state === "noauth"
+            ? "z.ai is enabled but has no API key — add one in Settings → Subscriptions"
+            : `z.ai (GLM) configured but off · model ${model} · ${effort} effort`;
+  return (
+    <div
+      className={
+        "acct zai" + (state === "implementing" ? " active" : "") + (state === "off" ? " is-off" : "") + (state === "capped" ? " limited" : "") + (stale ? " stale" : "")
+      }
+      title={title}
+    >
+      <div className="acct-head">
+        <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
+        <span className="acct-label">z.ai</span>
+        <span className={tagCls}>{tag}</span>
+        {plan ? (
+          <span className="acct-tag ok" title={`${plan} plan`}>
+            {plan}
+          </span>
+        ) : null}
+        {preferred && (state === "ready" || state === "implementing") ? (
+          <span className="acct-tag ok" title="Preferred for the implementor — z.ai runs it whenever it's enabled and not capped">
+            preferred
+          </span>
+        ) : null}
+      </div>
+      {showMeters ? (
+        <div className="acct-meters">
+          <Meter k="5h" pct={usage!.fiveHour} kind="five" stale={stale} reset={usage!.fiveHourReset} now={now} />
+          <Meter k="7d" pct={usage!.sevenDay} kind="week" stale={stale} reset={usage!.sevenDayReset} now={now} />
+        </div>
+      ) : (
+        <div
+          className="codex-model"
+          title={usage?.error ? `usage unavailable: ${usage.error}` : hasAuth ? `Polling z.ai quota… · ${model} · ${effort}` : `${model} · ${effort} effort`}
+        >
+          {state === "capped" && capReset != null
+            ? `retry in ${countdown(capReset, now)}`
+            : usage?.error
+              ? usage.error
+              : hasAuth
+                ? "polling usage…"
+                : `${model} · ${effort}`}
+        </div>
+      )}
     </div>
   );
 }

@@ -11,8 +11,8 @@ lanes, feed a running agent new information mid-flight, and resume a task that
 died partway.
 
 The implementor runs on **Claude Opus 4.8** by default, or — when you enable the
-subscription in Settings — on the **OpenAI Codex** or **xAI Grok** agentic CLI
-instead, all authing off a flat-fee subscription with no per-token API billing
+subscription in Settings — on the **OpenAI Codex**, **xAI Grok**, or **Zhipu z.ai
+(GLM)** backend instead, all authing off a flat-fee subscription with no per-token API billing
 (see [Runtime model](#runtime-model--zero-metered-api-credits)).
 
 > A local cockpit for directing coding agents — not a hosted service or a
@@ -45,8 +45,9 @@ pipeline — there's no fixed sequence; each agent decides what happens next:
   (that's the planner's job) — it enriches the build, then hands to the implementor.
 - **Implementor.** Does the work in the repo, fully autonomous. It always hands
   off to QA — it can't declare itself done. Runs on **Claude Opus 4.8** by
-  default, or on the **Codex** / **Grok** backend when you enable that
-  subscription (the director, planner, researcher, and QA stay Claude).
+  default, or on the **Codex** / **Grok** / **z.ai (GLM)** backend when you enable
+  that subscription (the director, planner, researcher, and QA stay Claude —
+  though a z.ai run can also take failover for those when every Claude sub is capped).
 - **QA.** Reviews and tests against the brief; it's the **only** agent that can
   mark a task **done**, or bounce it back to the implementor with concrete fixes
   (looping until it passes or runs out of rounds).
@@ -101,8 +102,14 @@ Every backend authenticates off a flat-fee subscription, never a metered API key
   (see the `codex` block in `server/src/config.ts`).
 - **Grok** (optional implementor backend) runs the xAI Grok CLI, authed by a
   flat-fee SuperGrok `grok login` (OAuth, `~/.grok/auth.json`).
+- **z.ai** (optional implementor backend) runs Zhipu's **GLM Coding Plan** through
+  its **Anthropic-compatible endpoint** — so, unlike Codex/Grok, it reuses the
+  Claude Agent SDK path (a base-URL + `ANTHROPIC_AUTH_TOKEN` swap) and keeps the
+  in-app bus/office tools, deliverables, and resume. Authed by a z.ai API key
+  (Settings → Subscriptions, or `ZAI_API_KEY`); its real 5-hour + weekly quota
+  windows feed the usage chip and routing (see the `zai` block in `server/src/config.ts`).
 
-Enable Codex or Grok per-machine from the **Subscriptions** panel in Settings;
+Enable Codex, Grok, or z.ai per-machine from the **Subscriptions** panel in Settings;
 until then every role runs on Claude. Because the CLI backends share one login
 each, note that any *other* tool on your machine pointed at the same
 `codex-home` / `~/.grok` shares it — logging out, rotating a token, or moving

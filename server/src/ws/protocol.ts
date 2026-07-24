@@ -2,6 +2,7 @@ import { z } from "zod";
 import { CODEX_EFFORTS } from "../types.js";
 import type { CodexUsageDTO } from "../agents/codexUsage.js";
 import type { GrokUsageDTO } from "../agents/grokUsage.js";
+import type { ZaiUsageDTO } from "../agents/zaiUsage.js";
 import type { GitFileDiff, GitStatus, GitSummary } from "../gitService.js";
 import type {
   AgentRun,
@@ -42,6 +43,7 @@ export interface AccountDTO {
 
 export type { CodexUsageDTO } from "../agents/codexUsage.js";
 export type { GrokUsageDTO } from "../agents/grokUsage.js";
+export type { ZaiUsageDTO } from "../agents/zaiUsage.js";
 
 export type ServerEvent =
   | {
@@ -54,6 +56,7 @@ export type ServerEvent =
       accounts: AccountDTO[];
       codexUsage: CodexUsageDTO | null;
       grokUsage: GrokUsageDTO | null;
+      zaiUsage: ZaiUsageDTO | null;
       approvalMode: boolean;
       settings: OrchestratorSettings;
       chat: ChatMessage[];
@@ -66,6 +69,7 @@ export type ServerEvent =
   | { type: "schedules"; schedules: ScheduledTask[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
+  | { type: "zai.usage"; usage: ZaiUsageDTO | null }
   | { type: "chat.message"; message: ChatMessage }
   // One page of a room's history (newest, or — when the request carried a `before` cursor — the page just
   // older than it). The client merges by id, so both cases fold in the same way; `hasMore` says whether
@@ -185,6 +189,15 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         grokEffort: z.enum(["low", "medium", "high"]),
         grokWeeklySafetyPct: z.number().int().min(1).max(100),
         grokPreferred: z.boolean(),
+        // Zhipu z.ai (GLM Coding Plan) backend.
+        zaiEnabled: z.boolean(),
+        zaiModel: z.string().min(1).max(64),
+        zaiEffort: z.enum(["low", "medium", "high"]),
+        zaiWeeklySafetyPct: z.number().int().min(1).max(100),
+        zaiPreferred: z.boolean(),
+        // Write-only: the raw z.ai API key is accepted here and stored server-side, never echoed back.
+        // An empty string clears it (falls back to ZAI_API_KEY). The broadcast carries only zaiKeyPresent/last4.
+        zaiApiKey: z.string().max(300),
         // Write-only: the raw OpenAI key is accepted here and stored server-side, never echoed back.
         // An empty string clears it. The broadcast OrchestratorSettings carries only hasOpenaiKey/last4.
         openaiApiKey: z.string().max(300),

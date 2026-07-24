@@ -13,6 +13,7 @@ import { AccountManager, type PersistedAccountUsage } from "./accounts/accountMa
 import { ResetStagger } from "./accounts/resetStagger.js";
 import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
 import { startGrokUsageMonitor } from "./agents/grokUsagePing.js";
+import { startZaiUsageMonitor } from "./agents/zaiUsagePing.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
@@ -126,6 +127,16 @@ async function main(): Promise<void> {
     configured: () => {
       const s = manager.settings();
       return s.grokEnabled || s.grokSignedIn;
+    },
+  });
+
+  // z.ai usage: a cheap HTTP GET to the GLM Coding Plan's quota endpoint (5h + weekly windows + plan tier),
+  // no model turn. Broadcasts `zai.usage` whenever the meters change so the top-bar chip stays live.
+  startZaiUsageMonitor(hub, {
+    apiKey: () => manager.zaiApiKey(),
+    configured: () => {
+      const s = manager.settings();
+      return s.zaiEnabled || s.zaiKeyPresent;
     },
   });
 
