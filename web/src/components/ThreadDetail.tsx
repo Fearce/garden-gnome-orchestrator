@@ -775,8 +775,8 @@ export function ThreadDetail() {
           >
             Interrupt &amp; inject
           </button>
-          <div style={{ flex: 1 }} />
-          <span className="faint mono" style={{ fontSize: 10 }}>
+          <div className="inject-row-spacer" style={{ flex: 1 }} />
+          <span className="faint mono inject-id" style={{ fontSize: 10 }}>
             {id.slice(0, 8)}
           </span>
         </div>

@@ -1652,9 +1652,15 @@ body.dl-resizing { user-select: none; }
     .detail { height: 100dvh; }
   }
   .inject-bar { padding-bottom: calc(11px + env(safe-area-inset-bottom)); }
-  /* The inject + approval action rows are nowrap flex rows whose buttons (Queue · Inject ·
-     Interrupt & inject, Approve · Reject) overflow the narrowest phones — let them wrap. */
-  .inject-bar .row, .approval .row { flex-wrap: wrap; }
+  /* Approve · Reject can still overflow the narrowest phones — let that row wrap. */
+  .approval .row { flex-wrap: wrap; }
+  /* Keep the whole inject action row on ONE line: Attach · Queue · Inject · Interrupt & inject
+     fit inline (tighter button padding + gap) so nothing drops to a second row and eats vertical
+     space. The trailing thread-id chip is a desktop-only reference (still copyable via the header's
+     "Copy reference"), so drop it and its spacer here rather than let it wrap below the buttons. */
+  .inject-bar .row { flex-wrap: nowrap; gap: 6px; }
+  .inject-bar .row .btn.sm { padding: 0 10px; }
+  .inject-bar .row .inject-row-spacer, .inject-bar .row .inject-id { display: none; }
 
   /* Sticky header so the close control stays reachable while the feed scrolls,
      and clears the notch / browser chrome via the safe-area inset. */
