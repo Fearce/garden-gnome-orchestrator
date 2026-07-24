@@ -834,6 +834,22 @@ export class ThreadManager implements OrchestratorApi {
     return this.db.getThread(id);
   }
 
+  /** A one-line snapshot of what the pipeline is DOING right now — the live agent runs plus the running
+   *  thread titles. Registered as a crash-context provider so a crash record shows the in-flight work
+   *  (invaluable for telling "died while idle" from "died mid-heavy-task"). Cheap + never throws. */
+  describeActiveWork(): string {
+    let runs = 0;
+    for (const set of this.activeRuns.values()) runs += set.size;
+    const active = this.db
+      .listThreads()
+      .filter((t) => AUTO_RESUME_STATES.has(t.state))
+      .map((t) => `${t.id.slice(0, 8)}[${t.state}]"${(t.title ?? "").slice(0, 40)}"`);
+    return (
+      `${runs} live agent run(s) across ${this.activeRuns.size} thread(s); ` +
+      `${active.length} in-flight${active.length ? ": " + active.join(", ") : ""}`
+    );
+  }
+
   // ---- questions (clarify / blockers) ----
 
   askUser(input: AskUserInput): Promise<string> {
@@ -1830,6 +1846,11 @@ export class ThreadManager implements OrchestratorApi {
     // review" (misleading, and it would re-fire every time a re-capping task re-parks).
     else if (state === "review" && !(t.error ?? "").startsWith(CAP_PARK_PREFIX)) this.notifyExternal(`⚠ needs your review: "${t.title}"`);
     else if (state === "failed") this.notifyExternal(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`);
+    // Truly-terminal states never resume under the same in-memory identity, so drop the per-thread
+    // bookkeeping that must outlive the pipeline LOOP (so a parked task can still resume) but has no
+    // reason to outlive the process. Deliberately EXCLUDES 'failed' (a transient state the pipeline
+    // re-enters on cap/token/boot resume) and the parked states (review/paused stay resumable).
+    if (state === "done" || state === "cancelled") this.dropTerminalBookkeeping(threadId);
   }
 
   /** Voice mode: speak a task-tailored completion line through the gateway. completionAnnouncement
@@ -4024,6 +4045,7 @@ export class ThreadManager implements OrchestratorApi {
     this.liveRole.delete(threadId);
     this.directorNotes.delete(threadId);
     this.stopping.delete(threadId);
+    this.dropTerminalBookkeeping(threadId); // closed is terminal — closeThread settles via db, not setState
     const updated = this.db.closeThread(threadId);
     if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
     this.hub.log("info", `Closed task ${threadId.slice(0, 8)} (was ${thread.state}).`);
@@ -4080,6 +4102,23 @@ export class ThreadManager implements OrchestratorApi {
     this.implementorProvider.delete(threadId);
     this.codexResumeWedged.delete(threadId);
     this.stopping.delete(threadId);
+  }
+
+  /** Drop the per-thread bookkeeping that has to survive the pipeline LOOP — so a PARKED task can still
+   *  resume — but has no reason to outlive a TRULY-terminal state (done / cancelled / closed / dismissed).
+   *  These three structures are keyed by thread id and were previously cleared ONLY on retryThread, so
+   *  every finished task leaked one entry each (a session-id string, a throttle epoch, ~4 check-in keys)
+   *  for the whole process lifetime — a slow but genuinely unbounded climb toward an OOM on a long-running
+   *  server. Called from every terminal exit (setState done/cancelled, closeThread, dismissThread). Must
+   *  NEVER run on 'failed' (the pipeline re-enters it on cap/token/boot resume) or on a review/paused park
+   *  (still resumable) — those keep the session cache warm. Reading the session elsewhere always falls back
+   *  to latestImplementorSession(db), so dropping the cache here never loses a resumable session. */
+  private dropTerminalBookkeeping(threadId: string): void {
+    this.capResumeNotifiedAt.delete(threadId);
+    this.lastImplementorSession.delete(threadId);
+    for (const role of ["planner", "researcher", "implementor", "qa"] as Role[]) {
+      this.checkedIn.delete(`${threadId}:${role}`);
+    }
   }
 
   /** Restore a closed task back to the state it was closed from, returning it to the main board. */
@@ -4150,6 +4189,7 @@ export class ThreadManager implements OrchestratorApi {
     this.pendingResumeMsgs.delete(threadId);
     this.liveRole.delete(threadId);
     this.directorNotes.delete(threadId);
+    this.dropTerminalBookkeeping(threadId); // the row is about to be deleted — drop its bookkeeping too
     const pendingApproval = this.pendingApprovals.get(threadId);
     if (pendingApproval) {
       this.pendingApprovals.delete(threadId);

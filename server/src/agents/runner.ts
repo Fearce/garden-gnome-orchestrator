@@ -11,6 +11,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { EventEmitter } from "node:events";
 import { config } from "../config.js";
+import { logCrash } from "../crashLog.js";
 import type { AgentEvent, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 
@@ -114,6 +115,11 @@ function buildEnv(opts: { oauthToken?: string; baseUrl?: string; authToken?: str
  * message to a waiting iterator immediately, or buffers it; close() ends the
  * stream. This is what lets us inject follow-up messages into a live agent.
  */
+// Safety valve: injected messages buffer here only while the SDK generator isn't pulling — normally near
+// zero. If it ever climbs this high the consumer has stalled (the run effectively ended); drop the oldest
+// so a stuck iterator can't accumulate an unbounded object graph and drift the process toward OOM.
+const MAX_INPUT_QUEUE = 1000;
+
 class InputQueue implements AsyncIterable<SDKUserMessage> {
   private buffer: SDKUserMessage[] = [];
   private waiters: ((r: IteratorResult<SDKUserMessage>) => void)[] = [];
@@ -122,8 +128,15 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   push(msg: SDKUserMessage): void {
     if (this.closed) return;
     const waiter = this.waiters.shift();
-    if (waiter) waiter({ value: msg, done: false });
-    else this.buffer.push(msg);
+    if (waiter) {
+      waiter({ value: msg, done: false });
+      return;
+    }
+    this.buffer.push(msg);
+    if (this.buffer.length > MAX_INPUT_QUEUE) {
+      logCrash("inputQueue.overflow", `dropping oldest of ${this.buffer.length} buffered input messages (consumer stalled)`);
+      this.buffer.shift();
+    }
   }
 
   close(): void {
