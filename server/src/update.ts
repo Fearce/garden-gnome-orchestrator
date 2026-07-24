@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { config } from "./config.js";
+import { SUPERVISED_RESTART_CODE } from "./crashLog.js";
 
 // Self-update from git: the orchestrator periodically `git fetch`es its own checkout and reports how
 // many commits the tracked upstream is ahead, so the console can surface a quiet "update available"
@@ -260,6 +261,14 @@ function scheduleRestart(): void {
   }, 800);
 }
 
+// Under the process supervisor (server/scripts/supervise.cjs, the `serve` path) there is no script-hub —
+// a self-restart is a clean exit with the agreed code, which the supervisor treats as a requested restart
+// and respawns onto the freshly-built source without counting a crash. Fires after the apply response has
+// flushed, mirroring scheduleRestart.
+function scheduleSupervisedRestart(): void {
+  setTimeout(() => process.exit(SUPERVISED_RESTART_CODE), 800);
+}
+
 /** Pull the latest upstream, install changed package sets, rebuild, and (if server code changed) restart. User-initiated only. */
 export async function applyUpdate(): Promise<ApplyResult> {
   const res: ApplyResult = {
@@ -325,11 +334,15 @@ export async function applyUpdate(): Promise<ApplyResult> {
     res.ok = true;
     cache = await gitStatusAt(); // behind should now be 0
 
-    // Backend code changed → the running process must restart to load it. Prefer the hub's atomic
-    // restart; if no hub is reachable, the web is already rebuilt, so report that the server side needs
-    // a manual restart rather than silently leaving stale backend code running.
+    // Backend code changed → the running process must restart to load it. Under the supervisor, exit with
+    // the restart code and let it respawn; otherwise prefer the hub's atomic restart; if neither owns this
+    // process, the web is already rebuilt, so report that the server side needs a manual restart rather
+    // than silently leaving stale backend code running.
     if (res.serverChanged) {
-      if (await hubReachable()) {
+      if (process.env.ORCH_SUPERVISED === "1") {
+        res.restarting = true;
+        scheduleSupervisedRestart();
+      } else if (await hubReachable()) {
         res.restarting = true;
         scheduleRestart();
       } else {
