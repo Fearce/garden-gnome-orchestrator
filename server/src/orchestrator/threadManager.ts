@@ -2125,6 +2125,18 @@ export class ThreadManager implements OrchestratorApi {
       },
     );
     if (this.cancelled(thread.id)) return;
+    await this.finalizeReader(thread, res);
+  }
+
+  /** Disposition of a completed read-lane run — factored out of runReader so the three terminal paths are
+   *  exercisable without spawning the reader agent (see reader.itest.ts §C):
+   *    - errored/no-result → parked in 'review' (stays visible; never auto-closed);
+   *    - escalated         → parked in 'review' with a warning finding for re-dispatch (never auto-closed);
+   *    - answered read-only → 'done' AND then auto-closed (the answer already landed as a finding, so
+   *      leaving the card open on the board is pure bookkeeping noise the owner would close by hand).
+   *  readerDone is persisted FIRST so a restart between here and the state change can't re-enter runReader
+   *  and post a second answer. */
+  async finalizeReader(thread: Thread, res: ResultEvent | undefined): Promise<void> {
     // Sticky across resume — set BEFORE any settle so a restart between here and the state change can't
     // re-enter runReader and post a second answer.
     this.db.updateThreadStageOutputs(thread.id, { readerDone: true });
@@ -2146,9 +2158,15 @@ export class ThreadManager implements OrchestratorApi {
       this.settleReview(thread.id, `Reader escalated to the full pipeline${out.reason ? `: ${out.reason}` : ""} — re-dispatch with the normal \`dispatch\`.`);
       return;
     }
-    // Answered read-only. The answer already landed as a finding; record the disposition and finish.
+    // Answered read-only. The answer already landed as a finding, so record the disposition, settle 'done'
+    // (which fires the owner completion notification), THEN auto-close so the card moves straight to the
+    // closed tray — identical to a manual close, with no lingering "needs attention" affordance. Only this
+    // clean-answer path auto-closes: an escalation or an error settled to 'review' above and returned, so
+    // both stay visible for action. Closing AFTER 'done' (not instead of it) leaves closed_prev_state='done',
+    // so the closed card still shows the finished-correctly checkmark and the answer finding stays readable.
     this.postFinding({ threadId: thread.id, fromRole: "reader", summary: "Reader answered the lookup read-only — no QA (read lane).", severity: "info" });
     this.setState(thread.id, "done");
+    await this.closeThread(thread.id);
   }
 
   private async runQA(thread: Thread, opts: { round: number }): Promise<QaOutput | undefined> {
