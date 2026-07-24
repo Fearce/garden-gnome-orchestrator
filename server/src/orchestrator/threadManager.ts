@@ -492,6 +492,10 @@ export class ThreadManager implements OrchestratorApi {
       .sort((a, b) => a.updatedAt - b.updatedAt); // oldest-parked first — fairest, and bounded by free slots
     for (const t of parked) {
       if (slots <= 0) break;
+      // Honor the per-repo cap too (the global cap is the `slots` gate above). resumeThread reserves the
+      // slot synchronously, so activeCountForRepo already counts tasks resumed earlier in THIS pass — a
+      // repo at its cap is left parked for a later supervisor tick rather than reviving two at once.
+      if (this.repoAtCapacity(t.workspace)) continue;
       slots--;
       this.hub.log("info", `An account freed up — auto-resuming rate-limit-parked "${t.title.slice(0, 48)}".`);
       const now = Date.now();
@@ -624,7 +628,22 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.log("info", `Token window reset — ${stuck.length} task(s) waiting${slots <= 0 ? ", but no free slots" : ", none stuck"}.`);
       return;
     }
-    const resuming = stuck.slice(0, slots);
+    // Select up to `slots` tasks (global cap), skipping any whose repo is already at its per-repo cap.
+    // This loop chooses BEFORE starting any, so a `pending` tally counts the tasks picked this batch that
+    // activePipelines won't reflect until resumeThread runs — otherwise two same-repo tasks would both pass.
+    const pending = new Map<string, number>();
+    const resuming: typeof stuck = [];
+    for (const t of stuck) {
+      if (resuming.length >= slots) break;
+      if (this.repoAtCapacityWith(t.workspace, pending)) continue;
+      resuming.push(t);
+      const key = normalizeWorkspace(t.workspace);
+      pending.set(key, (pending.get(key) ?? 0) + 1);
+    }
+    if (resuming.length === 0) {
+      this.hub.log("info", `Token window reset — ${stuck.length} task(s) waiting, but all are at their per-repo cap.`);
+      return;
+    }
     const n = resuming.length;
     this.hub.log("info", `Token window reset. Resuming ${n} paused/parked task${n === 1 ? "" : "s"}.`);
     this.hub.publish({
@@ -928,10 +947,12 @@ export class ThreadManager implements OrchestratorApi {
       plannerEnabled: this.settingBool("setting_planner_enabled", true),
       researcherEnabled: this.settingBool("setting_researcher_enabled", true),
       qaEnabled: this.settingBool("setting_qa_enabled", true),
+      differentProviderQa: this.settingBool("setting_different_provider_qa", false),
       autoPush: this.settingBool("setting_auto_push", true),
       directorName: this.directorName(),
       maxQaRounds: this.settingNum("setting_max_qa_rounds", config.maxQaRounds, 1, 12),
       maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
+      maxConcurrentPerRepo: this.settingNum("setting_max_concurrent_per_repo", 0, 0, 20),
       selfImproveEnabled: this.settingBool("setting_self_improve_enabled", false),
       tokenLimitEnabled: this.settingBool("setting_token_limit_enabled", false),
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
@@ -1201,10 +1222,12 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.plannerEnabled !== undefined) this.db.kvSet("setting_planner_enabled", patch.plannerEnabled ? "1" : "0");
     if (patch.researcherEnabled !== undefined) this.db.kvSet("setting_researcher_enabled", patch.researcherEnabled ? "1" : "0");
     if (patch.qaEnabled !== undefined) this.db.kvSet("setting_qa_enabled", patch.qaEnabled ? "1" : "0");
+    if (patch.differentProviderQa !== undefined) this.db.kvSet("setting_different_provider_qa", patch.differentProviderQa ? "1" : "0");
     if (patch.autoPush !== undefined) this.db.kvSet("setting_auto_push", patch.autoPush ? "1" : "0");
     if (patch.directorName !== undefined) this.db.kvSet("setting_director_name", patch.directorName.trim().slice(0, 40));
     if (patch.maxQaRounds !== undefined) this.db.kvSet("setting_max_qa_rounds", String(patch.maxQaRounds));
     if (patch.maxConcurrent !== undefined) this.db.kvSet("setting_max_concurrent", String(patch.maxConcurrent));
+    if (patch.maxConcurrentPerRepo !== undefined) this.db.kvSet("setting_max_concurrent_per_repo", String(patch.maxConcurrentPerRepo));
     if (patch.selfImproveEnabled !== undefined) this.db.kvSet("setting_self_improve_enabled", patch.selfImproveEnabled ? "1" : "0");
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
@@ -1657,13 +1680,56 @@ export class ThreadManager implements OrchestratorApi {
   /** Start a freshly-dispatched task's pipeline now, or hold it in 'queued' if we're at the
    *  concurrency cap. Queued tasks start (FIFO) the moment a running pipeline settles. */
   private enqueueOrRun(threadId: string): void {
-    if (this.activePipelines.size >= this.settings().maxConcurrent) {
+    const globalFull = this.activePipelines.size >= this.settings().maxConcurrent;
+    const thread = this.db.getThread(threadId);
+    const repoFull = !!thread && this.repoAtCapacity(thread.workspace);
+    if (globalFull || repoFull) {
       if (!this.dispatchQueue.includes(threadId)) this.dispatchQueue.push(threadId);
       this.setState(threadId, "queued");
-      this.hub.log("info", `Task ${threadId.slice(0, 8)} queued — ${this.activePipelines.size} pipeline(s) at the concurrency cap.`);
+      const reason =
+        repoFull && !globalFull
+          ? `${this.activeCountForRepo(thread!.workspace)} task(s) already running in this repo (per-repo cap ${this.repoConcurrencyLimit()})`
+          : `${this.activePipelines.size} pipeline(s) at the concurrency cap`;
+      this.hub.log("info", `Task ${threadId.slice(0, 8)} queued — ${reason}.`);
       return;
     }
     this.startPipeline(threadId);
+  }
+
+  /** The operator's per-repo concurrency cap (0 = unlimited). Read live like the global cap so a change
+   *  applies to the next pump without a restart. */
+  private repoConcurrencyLimit(): number {
+    return this.settingNum("setting_max_concurrent_per_repo", 0, 0, 20);
+  }
+
+  /** How many currently-running pipelines target the same repo as `workspace` (matched by normalized
+   *  path, so "C:\\Repo\\" and "c:/repo" count as one repo). */
+  private activeCountForRepo(workspace: string): number {
+    const key = normalizeWorkspace(workspace);
+    let n = 0;
+    for (const id of this.activePipelines) {
+      const t = this.db.getThread(id);
+      if (t && normalizeWorkspace(t.workspace) === key) n++;
+    }
+    return n;
+  }
+
+  /** Whether starting another pipeline for `workspace` would exceed the per-repo cap. Always false when
+   *  the cap is 0 (unlimited) — the global maxConcurrent is then the only gate. */
+  private repoAtCapacity(workspace: string): boolean {
+    const limit = this.repoConcurrencyLimit();
+    return limit > 0 && this.activeCountForRepo(workspace) >= limit;
+  }
+
+  /** Per-repo capacity check for a batch that SELECTS tasks before starting any of them (the token-reset
+   *  resume): `pending` maps normalized workspace → count already chosen this pass, standing in for tasks
+   *  not yet reflected in activePipelines. Use `repoAtCapacity` instead when each task is started inside
+   *  the loop (a synchronous slot reserve means activeCountForRepo already sees the earlier ones). */
+  private repoAtCapacityWith(workspace: string, pending: Map<string, number>): boolean {
+    const limit = this.repoConcurrencyLimit();
+    if (limit <= 0) return false;
+    const key = normalizeWorkspace(workspace);
+    return this.activeCountForRepo(workspace) + (pending.get(key) ?? 0) >= limit;
   }
 
   /** Named seam for the two queue call sites. runPipeline itself reserves the concurrency slot (at its
@@ -1676,9 +1742,23 @@ export class ThreadManager implements OrchestratorApi {
    *  entries no longer in 'queued' — cancelled/dismissed while waiting. */
   private pumpQueue(): void {
     const cap = this.settings().maxConcurrent;
-    while (this.dispatchQueue.length && this.activePipelines.size < cap) {
-      const id = this.dispatchQueue.shift()!;
-      if (this.db.getThread(id)?.state !== "queued") continue;
+    // Scan the FIFO queue rather than only peeling the head: a task blocked by its repo's per-repo cap
+    // must NOT block a queued task for a DIFFERENT (free) repo behind it. startPipeline adds to
+    // activePipelines synchronously (runPipeline reserves the slot before its first await), so both the
+    // global count and the per-repo count reflect each just-started task on the next iteration.
+    let i = 0;
+    while (i < this.dispatchQueue.length && this.activePipelines.size < cap) {
+      const id = this.dispatchQueue[i]!;
+      const t = this.db.getThread(id);
+      if (!t || t.state !== "queued") {
+        this.dispatchQueue.splice(i, 1); // stale entry (cancelled/dismissed while waiting) — drop it
+        continue;
+      }
+      if (this.repoAtCapacity(t.workspace)) {
+        i++; // this repo is at its cap — leave the task queued and try the next one
+        continue;
+      }
+      this.dispatchQueue.splice(i, 1);
       this.startPipeline(id);
     }
   }
@@ -2022,7 +2102,7 @@ export class ThreadManager implements OrchestratorApi {
     kickoff: string | unknown[],
     makeCfg: (ctx: { token: string | undefined; resume?: string; runId: string }) => AgentRunConfig,
     initialResume?: string,
-    opts?: { preferredProvider?: ImplementorProvider },
+    opts?: { preferredProvider?: ImplementorProvider; forcedProvider?: ImplementorProvider },
   ): Promise<ResultEvent | undefined> {
     let acct = this.dispatchAccount();
     let resume: string | undefined = initialResume;
@@ -2032,10 +2112,16 @@ export class ThreadManager implements OrchestratorApi {
     let transientFailures = 0;
     const unavailableProviders = new Set<ImplementorProvider>();
 
-    // Start on a preferred CLI when asked (warm QA resume) and it's still ready. Session ids are
-    // provider-specific — never resume a Grok/Codex id on Claude or vice versa.
+    // Different-provider QA (or any caller that pins the backend): run this role on the chosen provider
+    // outright, not just on the natural default. The caller resolved a ready backend, so we don't
+    // pre-empt to a CLI on Claude exhaustion here — the standard mid-run failover below still applies if
+    // the forced backend gets capped. `initialResume` is trusted to match the forced provider (the caller
+    // drops it when the prior session was on a different backend).
+    const forced = opts?.forcedProvider;
     const pref = opts?.preferredProvider;
-    if (pref && pref !== "claude" && role !== "reader") {
+    if (forced && role !== "reader") {
+      provider = forced;
+    } else if (pref && pref !== "claude" && role !== "reader") {
       const ready = pref === "codex" ? this.codexImplementorReady() : pref === "grok" ? this.grokImplementorReady() : this.zaiImplementorReady();
       if (ready) {
         provider = pref;
@@ -2333,10 +2419,20 @@ export class ThreadManager implements OrchestratorApi {
     // Session ids are provider-specific: a Grok QA id must resume on Grok (never Claude), and the
     // reverse. Claude sessions use transcript-mtime warm/cold; CLI sessions resume when that backend
     // is still ready (no local Claude transcript to age-check).
+    // "Different-provider QA": pin QA to a backend OTHER than the one that implemented this task, so the
+    // review is genuinely independent (e.g. GPT checks Claude's work). Resolved once per round from the
+    // implementor's provider + the currently-ready backends; undefined when only one provider is
+    // available, in which case QA falls back to its normal (Claude-default) routing.
+    const forcedQaProvider = this.settings().differentProviderQa ? this.pickDifferentQaProvider(thread.id) : undefined;
+    this.noteDifferentProviderQa(thread, forcedQaProvider);
+
     const prior = opts.round > 1 ? this.latestQaRun(thread.id) : undefined;
     let resume: string | undefined;
     let preferredProvider: ImplementorProvider | undefined;
-    if (prior) {
+    // A warm resume of the previous QA session is only valid on the SAME backend it ran on — and, when a
+    // QA provider is pinned, that backend must also equal the pinned one (else we'd try to resume a
+    // foreign session on the forced provider). A mismatch simply starts fresh on the target backend.
+    if (prior && (!forcedQaProvider || prior.provider === forcedQaProvider)) {
       if (prior.provider === "claude") {
         const ageMs = sessionAgeMs(prior.sessionId);
         if (config.resumeFullSession || (ageMs != null && ageMs < config.resumeWarmMinutes * 60_000)) {
@@ -2379,9 +2475,57 @@ export class ThreadManager implements OrchestratorApi {
         return cfg;
       },
       resume,
-      preferredProvider && preferredProvider !== "claude" ? { preferredProvider } : undefined,
+      forcedQaProvider
+        ? { forcedProvider: forcedQaProvider }
+        : preferredProvider && preferredProvider !== "claude"
+          ? { preferredProvider }
+          : undefined,
     );
     return res?.structuredOutput as QaOutput | undefined;
+  }
+
+  /** For the "different-provider QA" setting: pick an enabled + ready implementor backend OTHER than the
+   *  one that implemented this task, so QA is an independent cross-provider review. Preference favors the
+   *  strongest reviewer that keeps the in-app tools — Claude, then z.ai (Anthropic-SDK path, so it keeps
+   *  the bus/office MCP tools), then Codex, then Grok. Returns undefined when no different backend is
+   *  available (only one provider enabled, or the others are capped); the caller then runs normal QA. */
+  private pickDifferentQaProvider(threadId: string): ImplementorProvider | undefined {
+    const impProvider = this.priorImplementorProvider(threadId) ?? "claude";
+    const ready: Record<ImplementorProvider, boolean> = {
+      claude: this.accounts.hasHeadroom(),
+      zai: this.zaiImplementorReady(),
+      codex: this.codexImplementorReady(),
+      grok: this.grokImplementorReady(),
+    };
+    const order: ImplementorProvider[] = ["claude", "zai", "codex", "grok"];
+    for (const p of order) if (p !== impProvider && ready[p]) return p;
+    return undefined;
+  }
+
+  /** Announce how different-provider QA resolved: which backend is reviewing which — or, when the toggle
+   *  is on but no other backend is available, that QA fell back to the normal one. Called each round; only
+   *  posts a finding when the reviewer provider CHANGES from the previous QA round's (the provider is
+   *  re-picked from live readiness each round, so it can hop mid-task), so it neither spams every round nor
+   *  goes silently stale after a hop. Silent for the default single-provider setup (setting off). */
+  private noteDifferentProviderQa(thread: Thread, qaProvider: ImplementorProvider | undefined): void {
+    if (!this.settings().differentProviderQa) return;
+    const impProvider = this.priorImplementorProvider(thread.id) ?? "claude";
+    const prevQaProvider = this.latestQaRun(thread.id)?.provider; // undefined on round 1 (no QA run yet)
+    if (qaProvider) {
+      if (prevQaProvider === qaProvider) return; // same reviewer as last round — already announced
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "qa",
+        summary: `Different-provider QA: ${providerLabel(qaProvider)} is reviewing the ${providerLabel(impProvider)} implementation`,
+        severity: "info",
+      });
+    } else if (!prevQaProvider) {
+      // Toggle on but no different backend ready — log once (first round), not every round.
+      this.hub.log(
+        "info",
+        `Different-provider QA is on for ${thread.id.slice(0, 8)} but no backend other than ${providerLabel(impProvider)} is enabled/ready — running QA on the default backend.`,
+      );
+    }
   }
 
   /** Start the implementor (stays live for QA fix-rounds + injects). Returns the handle.

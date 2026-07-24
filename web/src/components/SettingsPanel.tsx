@@ -51,6 +51,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             max={12}
             onChange={(v) => setSettings({ maxQaRounds: v })}
           />
+          <ToggleRow
+            label="Different-provider QA"
+            hint="On: QA is reviewed by a DIFFERENT enabled provider than the one that implemented the task — so, e.g., GPT (Codex) reviews Claude's work and vice-versa — for an independent cross-provider check. Needs a second backend enabled (Codex/Grok/z.ai); with only one provider it quietly falls back to normal QA. Off by default."
+            on={settings.differentProviderQa}
+            onChange={(v) => setSettings({ differentProviderQa: v })}
+          />
           <NumberRow
             label="Max concurrent tasks"
             hint="Pipelines allowed to run at once. Dispatches beyond this wait in a queued lane and start as slots free."
@@ -58,6 +64,14 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             min={1}
             max={20}
             onChange={(v) => setSettings({ maxConcurrent: v })}
+          />
+          <NumberRow
+            label="Max concurrent tasks per repo"
+            hint="How many tasks may run at once in a single repo. 0 = unlimited (only the global cap applies). Set to 1 to serialize a repo: a second task for the same repo waits until the first fully finishes, while tasks in other repos keep running."
+            value={settings.maxConcurrentPerRepo}
+            min={0}
+            max={20}
+            onChange={(v) => setSettings({ maxConcurrentPerRepo: v })}
           />
           <ToggleRow
             label="Self-improve after tasks"

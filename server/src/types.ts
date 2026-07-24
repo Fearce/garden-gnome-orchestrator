@@ -353,11 +353,13 @@ export interface OrchestratorSettings {
   plannerEnabled: boolean; // off → skip the planner; the implementor runs straight from the brief
   researcherEnabled: boolean; // off → never run the researcher even if the planner routes to it
   qaEnabled: boolean; // off → skip the QA loop; the implementor's output is final
+  differentProviderQa: boolean; // off (default) → QA runs on the default backend (Claude). on → QA is routed to a DIFFERENT enabled provider than the one that implemented the task (e.g. GPT/Codex reviews Claude's work, and vice-versa), for an independent cross-provider review. Falls back to normal QA when no other provider is enabled+ready.
   autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
   directorName: string; // the director persona's display name, set by the operator (default "ChangeNameInSettings")
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
   selfImproveEnabled: boolean; // off (default) → opt-in; on → after a task completes, the implementor runs one extra round building the tools/skills/memories that would have made the task easier
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
+  maxConcurrentPerRepo: number; // max pipelines running at once for a SINGLE repo (normalized workspace); 0 (default) = unlimited. Additional tasks for a repo already at its per-repo cap wait in 'queued' until one of that repo's tasks finishes — tasks in OTHER repos are unaffected (they still run up to maxConcurrent).
   // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----
   tokenLimitEnabled: boolean; // off (default) → never auto-stop; on → stop running agents at the threshold
   tokenLimitPercent: number; // % of the token (rate-limit) window that trips the stop — clamped 50–99, default 80

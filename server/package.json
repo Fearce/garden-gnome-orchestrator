@@ -26,6 +26,7 @@
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
     "test:zai-usage": "tsx src/tests/zaiUsage.test.ts",
     "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",
+    "test:per-repo": "tsx src/tests/perRepoConcurrency.itest.ts",
     "test:gates": "node scripts/run-gates.cjs",
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
     "probe:task-runs": "node scripts/probe-task-runs.cjs",

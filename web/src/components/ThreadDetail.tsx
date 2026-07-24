@@ -13,6 +13,28 @@ function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
 }
 
+/** Copy a portable reference to this task — its id + title — so it can be pasted into another agent's
+ *  prompt ("we just did XYZ in task <id>, do it here too"). The full id is copied (never the 8-char
+ *  short form) so the reference resolves unambiguously against the DB / task-probe tools. */
+function CopyRefButton({ threadId, title }: { threadId: string; title: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = () => {
+    void navigator.clipboard?.writeText(`task ${threadId} — "${title}"`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1400);
+  };
+  return (
+    <button
+      className="btn ghost sm"
+      onClick={onCopy}
+      type="button"
+      title="Copy a reference to this task (id + title) so you can mention it to another agent"
+    >
+      {copied ? "Copied" : "Copy reference"}
+    </button>
+  );
+}
+
 const roleVar = (role: Role): CSSProperties => ({ "--role": roleColor(role) } as CSSProperties);
 
 function RoleLabel({ role, name, model }: { role: Role; name?: string; model?: string }) {
@@ -546,6 +568,7 @@ export function ThreadDetail() {
               >
                 Diff
               </button>
+              <CopyRefButton threadId={thread.id} title={thread.title} />
               {chatRoom && (
                 <button
                   className="btn ghost sm"

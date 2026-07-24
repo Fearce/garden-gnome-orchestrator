@@ -314,10 +314,12 @@ export interface OrchestratorSettings {
   plannerEnabled: boolean;
   researcherEnabled: boolean;
   qaEnabled: boolean;
+  differentProviderQa: boolean; // off (default) → QA runs on the default backend. on → QA is routed to a DIFFERENT enabled provider than the implementor (cross-provider review); falls back to normal QA when no other provider is enabled+ready.
   autoPush: boolean;
   directorName: string; // the director persona's display name, operator-set (default "ChangeNameInSettings")
   maxQaRounds: number;
   maxConcurrent: number;
+  maxConcurrentPerRepo: number; // max pipelines running at once for a single repo; 0 (default) = unlimited (only the global maxConcurrent applies)
   selfImproveEnabled: boolean; // opt-in (off by default): completed tasks get one extra implementor round that builds the tools/skills/memories the session showed were missing
   // Token-usage safety limit: opt-in auto-stop when live utilization reaches the threshold. Disabled by
   // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.

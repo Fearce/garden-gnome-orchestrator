@@ -23,6 +23,7 @@ const GATES = [
   "test:zai-usage",
   "test:token-freeze",
   "test:qa-budget",
+  "test:per-repo",
 ];
 
 // npm is a .cmd on Windows; Node blocks spawning .cmd/.bat without a shell, so
