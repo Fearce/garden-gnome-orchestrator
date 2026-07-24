@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../config.js";
+import { logCrash } from "../crashLog.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { extractOfficeChat } from "./officeBridge.js";
@@ -109,6 +110,10 @@ interface CodexEvent {
 // 5h/weekly limit is hit ("usage limit reached", "reached your usage limit", "usage_limit_reached").
 const RATE_LIMIT_RE =
   /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient_quota|usage[ _]limit|reached your (?:usage|plan)|limit reached)/i;
+// Hard ceiling on the partial-line stdout buffer. A well-behaved Codex CLI emits one newline-terminated
+// JSON event at a time, so this only trips on a runaway newline-less blob — at which point we drop it
+// rather than let it grow the heap unbounded (16 MB is far above any real single event).
+const MAX_STDOUT_BUF = 16 * 1024 * 1024;
 
 export interface CodexTestResult {
   ok: boolean;
@@ -568,6 +573,12 @@ export class CodexAgentRun implements AgentRunLike {
       this.sawFirstEvent = true;
       this.armWatchdog(); // each event pushes the no-output deadline out
       this.handleEvent(ev);
+    }
+    // The buffer only holds a partial trailing line between chunks. If it grows past a sane bound the CLI is
+    // emitting a pathological newline-less blob — cap it so a single run can't balloon the heap toward OOM.
+    if (this.stdoutBuf.length > MAX_STDOUT_BUF) {
+      logCrash("codex.stdoutOverflow", `dropped ${this.stdoutBuf.length} bytes of newline-less stdout`);
+      this.stdoutBuf = "";
     }
   }
 

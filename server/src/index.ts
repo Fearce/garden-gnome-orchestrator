@@ -5,7 +5,7 @@ import fastifyStatic from "@fastify/static";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, basename, extname, relative } from "node:path";
 import { config } from "./config.js";
-import { installCrashGuards } from "./crashLog.js";
+import { installCrashGuards, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
 import { Db } from "./db/db.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
@@ -91,6 +91,10 @@ async function main(): Promise<void> {
     },
   });
   const manager = new ThreadManager(db, hub, memory, accounts);
+  // Crash records should show what the pipeline was DOING when it died, and a slow memory climb should be
+  // visible in the log BEFORE an OOM abort — the two things missing when crashes vanished without a trace.
+  registerCrashContext("active-work", () => manager.describeActiveWork());
+  startMemoryMonitor();
   // Recurring dispatches: fires a schedule's prompt through the normal pipeline on its cron cadence.
   // Standalone (depends only on manager.dispatch), so scheduled runs use whatever provider/model is
   // active, exactly like a hand-dispatched task. The director can also create/edit schedules via its tools.
