@@ -264,13 +264,45 @@ async function main() {
       if (caps?.c) warn(`${caps.c} run(s) hit weekly limit in last 24h (failover expected)`);
       else ok("no weekly-limit errors in last 24h");
 
-      const parks = db
-        .prepare(
-          `SELECT count(*) c FROM threads
-           WHERE state='review' AND error LIKE 'QA could not complete%'`,
-        )
-        .get();
-      if (parks?.c) warn(`${parks.c} thread(s) parked on bare/diagnosable QA-could-not-complete`);
+      // Review-state parks, classified by marker so a sweep can tell an actionable
+      // stuck park from a by-design human-review one (counts alone can't):
+      //   • "⏳ Auto-resume pending" → the cap supervisor (resumeCapParked, every
+      //     ~capRetryMs/2m) SHOULD unpark it once any backend frees up. One sitting
+      //     for hours means a persistent full cap wave OR a wedged supervisor —
+      //     worth a human glance, so warn past a 2h threshold.
+      //   • "QA could not complete" → a diagnosable QA park (kept as a warn).
+      //   • anything else → a plain "needs your review" human park, left for the
+      //     owner by design — informational, never a warn.
+      const reviewRows = db.prepare("SELECT error, updated_at FROM threads WHERE state='review'").all();
+      const STALE_PARK_MS = 2 * 3600 * 1000;
+      let autoResume = 0;
+      let staleAutoResume = 0;
+      let qaCouldNot = 0;
+      let humanReview = 0;
+      let oldestAutoResumeH = 0;
+      for (const r of reviewRows) {
+        const err = r.error || "";
+        if (err.includes("⏳ Auto-resume pending")) {
+          autoResume++;
+          const ageMs = Date.now() - r.updated_at;
+          if (ageMs > STALE_PARK_MS) staleAutoResume++;
+          const ageH = ageMs / 3600000;
+          if (ageH > oldestAutoResumeH) oldestAutoResumeH = ageH;
+        } else if (/QA could not complete/i.test(err)) {
+          qaCouldNot++;
+        } else {
+          humanReview++;
+        }
+      }
+      if (staleAutoResume) {
+        warn(
+          `${staleAutoResume} of ${autoResume} auto-resume-pending park(s) have sat >2h (oldest ${oldestAutoResumeH.toFixed(1)}h) — supervisor should unpark within ~2m of a backend freeing up; a persistent one means every backend is still capped OR resumeCapParked is wedged (check the cap supervisor)`,
+        );
+      } else if (autoResume) {
+        ok(`${autoResume} auto-resume-pending park(s) (oldest ${oldestAutoResumeH.toFixed(1)}h) — within normal supervisor window`);
+      }
+      if (qaCouldNot) warn(`${qaCouldNot} thread(s) parked on bare/diagnosable QA-could-not-complete`);
+      if (humanReview) ok(`${humanReview} plain human-review park(s) — awaiting owner by design, not stuck`);
 
       const junkChat = db
         .prepare(
