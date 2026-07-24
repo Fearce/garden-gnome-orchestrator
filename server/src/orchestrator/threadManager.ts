@@ -2368,7 +2368,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private async runPlanner(thread: Thread): Promise<PlanOutput | undefined> {
-    const res = await this.runRole(thread, "planner", this.kickoffContent(thread.id, thread.brief), ({ token, resume, runId }) => {
+    const res = await this.runRole(thread, "planner", this.kickoffContent(thread.id, this.withOfficeNote(thread, "planner", thread.brief)), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "planner", getRunId: () => runId });
       const office = createOfficeServer(this, { threadId: thread.id, role: "planner", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
       const cfg = plannerConfig(thread.workspace, { bus, office });
@@ -2380,7 +2380,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private async runResearcher(thread: Thread, plan: PlanOutput | undefined): Promise<ResearchOutput | undefined> {
-    const res = await this.runRole(thread, "researcher", this.kickoffContent(thread.id, researcherKickoff(thread, plan)), ({ token, resume, runId }) => {
+    const res = await this.runRole(thread, "researcher", this.kickoffContent(thread.id, this.withOfficeNote(thread, "researcher", researcherKickoff(thread, plan))), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "researcher", getRunId: () => runId });
       const memory = createMemoryServer(this.memory);
       const office = createOfficeServer(this, { threadId: thread.id, role: "researcher", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
@@ -2402,7 +2402,7 @@ export class ThreadManager implements OrchestratorApi {
     const res = await this.runRole(
       thread,
       "reader",
-      this.kickoffContent(thread.id, readerKickoff(thread, directorNote)),
+      this.kickoffContent(thread.id, this.withOfficeNote(thread, "reader", readerKickoff(thread, directorNote))),
       ({ token, resume, runId }) => {
         const bus = createBusServer(this, { threadId: thread.id, role: "reader", getRunId: () => runId });
         const office = createOfficeServer(this, { threadId: thread.id, role: "reader", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
@@ -2512,7 +2512,7 @@ export class ThreadManager implements OrchestratorApi {
       thread,
       "qa",
       // On resume the QA session already holds the pasted images; only wrap them for a fresh start.
-      resume ? kickoff : this.kickoffContent(thread.id, kickoff),
+      resume ? kickoff : this.kickoffContent(thread.id, this.withOfficeNote(thread, "qa", kickoff)),
       ({ token, resume: r, runId }) => {
         const bus = createBusServer(this, { threadId: thread.id, role: "qa", getRunId: () => runId });
         const office = createOfficeServer(this, { threadId: thread.id, role: "qa", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
@@ -2610,7 +2610,7 @@ export class ThreadManager implements OrchestratorApi {
       // Codex implementor runs without post_finding/ask_user/read_findings (and no office chat) — a
       // documented degradation. The QA loop still reviews its output, and the doctrine makes it commit.
       // A fresh start still gets the doctrine + (toolless) peer heads-up so it knows to avoid collisions.
-      if (!opts?.resume) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, kickoff, this.peerNote(thread, false)].filter(Boolean).join("\n\n");
+      if (!opts?.resume) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, this.withOfficeNote(thread, "implementor", kickoff, false)].filter(Boolean).join("\n\n");
       // freshFallback lets the runner self-heal a wedged `exec resume` (hangs at 0% CPU on an interrupted
       // gpt-5 session) by restarting fresh — so it must carry the SAME doctrine + task a fresh start gets.
       const codexAgent = new CodexAgentRun({
@@ -2639,7 +2639,7 @@ export class ThreadManager implements OrchestratorApi {
       // Like Codex, the Grok CLI is a separate process with no in-process bus MCP tools (no
       // post_finding/ask_user) and no per-tool feed events — a documented degradation. The doctrine makes
       // it commit; the QA loop still reviews the real diff. A fresh start gets the doctrine + peer heads-up.
-      if (!opts?.resume) startKickoff = [GROK_IMPLEMENTOR_DOCTRINE, kickoff, this.peerNote(thread, false)].filter(Boolean).join("\n\n");
+      if (!opts?.resume) startKickoff = [GROK_IMPLEMENTOR_DOCTRINE, this.withOfficeNote(thread, "implementor", kickoff, false)].filter(Boolean).join("\n\n");
       const grokAgent = new GrokAgentRun({
         model,
         effort,
@@ -2671,10 +2671,7 @@ export class ThreadManager implements OrchestratorApi {
       cfg.model = model;
       cfg.baseUrl = config.zai.baseUrl;
       cfg.authToken = this.zaiApiKey();
-      if (!opts?.resume) {
-        const note = this.peerNote(thread, true);
-        if (note) startKickoff = `${kickoff}\n\n${note}`;
-      }
+      if (!opts?.resume) startKickoff = this.withOfficeNote(thread, "implementor", kickoff, true);
       agent = new ZaiAgentRun(cfg);
     } else {
       const acct = opts?.account ?? this.dispatchAccount();
@@ -2692,11 +2689,9 @@ export class ThreadManager implements OrchestratorApi {
       cfg.model = model;
       cfg.oauthToken = acct.token;
       // On a fresh start, fold in a heads-up naming any teammates already live in this repo so the
-      // implementor coordinates from turn one (a resumed session already saw the office context).
-      if (!opts?.resume) {
-        const note = this.peerNote(thread, true);
-        if (note) startKickoff = `${kickoff}\n\n${note}`;
-      }
+      // implementor coordinates from turn one (a resumed session already saw the office context). When
+      // it's alone in the repo, withOfficeNote returns the kickoff untouched — no office overhead.
+      if (!opts?.resume) startKickoff = this.withOfficeNote(thread, "implementor", kickoff, true);
       agent = new AgentRun(cfg);
     }
     this.wireRun(agent, thread.id, runId, "implementor", accountId);
@@ -2781,10 +2776,10 @@ export class ThreadManager implements OrchestratorApi {
       // the original task — otherwise the fresh session re-runs the original task WITHOUT the requested
       // fixes, QA keeps bouncing it, and the task eventually fails. The prior edits live in the working
       // tree, so the fresh session re-reads them and applies the feedback on top.
-      const freshKickoff = [doctrine, baseKickoff, this.peerNote(thread, false), continuation].filter(Boolean).join("\n\n");
+      const freshKickoff = [doctrine, this.withOfficeNote(thread, "implementor", baseKickoff, false), continuation].filter(Boolean).join("\n\n");
       // CLI resume already wedged for this thread → don't pay the 60s watchdog + self-heal spam again;
-      // start fresh directly. (startImplementor with no `resume` re-prepends doctrine + peerNote, so pass
-      // just task + continuation here to avoid duplicating them.)
+      // start fresh directly. (startImplementor with no `resume` re-prepends doctrine + office note, so
+      // pass just task + continuation here to avoid duplicating them.)
       if (this.codexResumeWedged.has(thread.id)) {
         this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: ${label} resume previously wedged — starting a fresh session directly.`);
         const freshText = [baseKickoff, continuation].filter(Boolean).join("\n\n");
@@ -4500,22 +4495,28 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Called when an agent starts: if 2+ distinct tasks are now live in the same repo, they form a
-   *  project room. Announce each not-yet-announced participant once (durably, via chatThreadInRoom)
-   *  so every current member is recorded in the room — that's what surfaces the "Chatroom" button on
-   *  their tasks and the standing huddle in the office strip. */
+   *  project room. Announce each not-yet-grouped participant once (durably, via chatThreadInRoom) so
+   *  every current member is recorded in the room — that's what surfaces the "Chatroom" button on their
+   *  tasks and the standing huddle in the office strip. It's also the office ON-switch: a task that
+   *  started ALONE carried no office context, so as each member is first grouped we (a) backfill its
+   *  general-office check-in (a solo worker stayed quiet) and (b) wake every already-running implementor
+   *  incumbent with a "so-and-so joined" push so they start coordinating without polling — including the
+   *  2nd, 3rd, … joiner, each announced exactly once. A member is a fresh "joiner" only the first time it
+   *  enters the room; `chatThreadInRoom` is the durable dedup, so a bounce/auto-resume (every member
+   *  already in the room) re-announces nobody and re-pings nobody. */
   private ensureGroup(threadId: string): void {
     const t = this.db.getThread(threadId);
     if (!t) return;
     const myNorm = normalizeWorkspace(t.workspace);
-    const distinct = new Set(
-      this.liveAgentThreads()
-        .filter((l) => normalizeWorkspace(l.workspace) === myNorm)
-        .map((l) => l.threadId),
-    );
+    const live = this.liveAgentThreads().filter((l) => normalizeWorkspace(l.workspace) === myNorm);
+    const roleByThread = new Map(live.map((l) => [l.threadId, l.role] as const));
+    const distinct = new Set(live.map((l) => l.threadId));
     if (distinct.size < 2) return;
     const room = repoRoom(t.workspace);
+    // Members entering the room for the first time this call — the tasks the office is switching ON for.
+    const joiners: Thread[] = [];
     for (const tid of distinct) {
-      if (this.db.chatThreadInRoom(room, tid)) continue;
+      if (this.db.chatThreadInRoom(room, tid)) continue; // already grouped before (durable) — office already on for it
       const peer = this.db.getThread(tid);
       if (!peer) continue;
       const m = this.db.addChatMessage({
@@ -4528,22 +4529,60 @@ export class ThreadManager implements OrchestratorApi {
         body: `🤝 "${peer.title}" joined — ${distinct.size} agents are now working in ${t.workspace}. Coordinate here so you don't edit the same files.`,
       });
       this.hub.publish({ type: "chat.message", message: m });
+      // A newly-grouped member may have started solo (silent, no office note): backfill its general check-in.
+      this.officeCheckIn(tid, roleByThread.get(tid) ?? "implementor");
+      joiners.push(peer);
+    }
+    if (!joiners.length) return;
+    // Wake every already-running implementor in the repo about the new joiner(s). The thread that just
+    // went live (`threadId`) is skipped: its own fresh kickoff already carried the office note naming the
+    // peers, and it isn't started yet at this point (ensureGroup runs before `agent.start`), so pushing
+    // into it would be a pre-start send. Each remaining recipient is told only about the OTHER new joiners
+    // (not itself). Deduped by room-entry above, so a given joiner triggers this exactly once.
+    for (const inc of distinct) {
+      if (inc === threadId) continue;
+      if (!this.live.has(inc)) continue; // only a live implementor; a one-shot planner/QA is never interrupted
+      const news = joiners.filter((j) => j.id !== inc);
+      if (news.length) this.pushOfficeActivation(inc, news);
     }
   }
 
-  /** Enforce "no invisible workers": the first time a role goes live for a task, post a short check-in
-   *  to the general office so every active agent is visible in the chat, not just the gnome strip. The
-   *  orchestrator posts it (not the LLM) so it's guaranteed — agents can't forget to show up. Deduped
-   *  per (thread, role) so resume/failover relaunches don't repeat it — but the name-uniqueness pass
-   *  runs UNCONDITIONALLY (before the dedupe) so a resume/fix-round re-go-live still resolves any name
-   *  collision with a coworker that's now live. */
+  /** Wake a running implementor now that teammate(s) have joined its repo: push the office-coordination
+   *  instructions straight into its live session so it stops working blind. Only a live IMPLEMENTOR is
+   *  pinged (this is called from `ensureGroup` guarded on `this.live`, the same targeting
+   *  `deliverChatToPeers` uses) — a one-shot planner/QA's structured output is never disrupted; a short
+   *  read-only phase reads the room itself and its next (implementor) phase gets the office note in its
+   *  kickoff. CLI backends get the `OFFICE[team]:` text-bridge phrasing; Claude/z.ai get the MCP-tool one. */
+  private pushOfficeActivation(tid: string, joiners: Thread[]): void {
+    const live = this.live.get(tid);
+    if (!live || !joiners.length) return;
+    const cli = this.isCliOfficeBridge(live.accountId);
+    const many = joiners.length > 1;
+    const who = joiners.map((j) => `"${j.title}"`).join(", ");
+    const workspace = joiners[0]?.workspace ?? "";
+    const intro = `🤝 [Office — ${many ? "teammates" : "a teammate"} just joined this repo] ${who} ${many ? "are" : "is"} now working in ${workspace}, so you're no longer alone.`;
+    const how = cli
+      ? "Coordinate through the CLI office bridge from now on: write a standalone `OFFICE[team]: <short message>` line to claim the files/areas you'll touch, answer any teammate `OFFICE`/office message the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks."
+      : "Office coordination is now ON: call `office_look` to see who's here and their names, `chat_read(scope:\"team\")` what they've posted, and `chat_post(scope:\"team\")` to claim the files/areas you're about to change before you edit — then re-check `git diff` before committing so you only commit your own hunks. Their team messages arrive straight in your session; answer with `chat_post(scope:\"team\")` and adjust.";
+    live.run.send(`${intro} ${how}`, { priority: "next" });
+  }
+
+  /** Post a task's check-in to the general office — but only once it's actually collaborating (2+ agents
+   *  share its repo). A task working ALONE stays silent: it's already visible on the gnome strip, and
+   *  announcing to an empty office is exactly the noise this feature removes. When a second task joins,
+   *  `ensureGroup` backfills this check-in so the now-collaborating pair both show up. Deduped per
+   *  (thread, role) so resume/failover relaunches don't repeat it. The name-uniqueness pass runs
+   *  UNCONDITIONALLY (even for a solo task) so gnome names stay collision-free the moment a peer appears. */
   private officeCheckIn(threadId: string, role: Role): void {
     this.ensureLiveNamesUnique();
     const key = `${threadId}:${role}`;
     if (this.checkedIn.has(key)) return;
-    this.checkedIn.add(key);
     const t = this.db.getThread(threadId);
     if (!t) return;
+    // Solo in the repo → stay quiet, and DON'T mark checked-in, so the backfill from ensureGroup can
+    // still post it the moment a teammate joins.
+    if (!this.repoPeers(t).length) return;
+    this.checkedIn.add(key);
     const name = this.officeName(threadId, role);
     const leaf = t.workspace.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || t.workspace;
     const m = this.db.addChatMessage({
@@ -4560,17 +4599,34 @@ export class ThreadManager implements OrchestratorApi {
     this.hub.publish({ type: "chat.message", message: m });
   }
 
-  /** A concrete heads-up folded into a fresh implementor kickoff when teammates already share its repo
-   *  — names them and tells it to coordinate. `withTools` is false for CLI backends (Codex/Grok — no
-   *  office MCP), where the runner exposes a text marker bridge instead. */
-  private peerNote(thread: Thread, withTools: boolean): string | undefined {
+  /** The office coordination note folded into a role's kickoff ONLY when another agent already shares
+   *  this repo — the single reason a task hears about the office at all. A task alone in its repo gets
+   *  `undefined` (no note, no wasted office tool round-trips); the moment a peer is present it's named and
+   *  the agent is told to coordinate. `withTools` is false for CLI backends (Codex/Grok — no office MCP),
+   *  which use the `OFFICE[team]:` text bridge instead. Editing roles (implementor) get the stronger
+   *  "claim files / commit only your own hunks" framing; read-only roles just coordinate + share. */
+  private officeNote(thread: Thread, role: Role, withTools: boolean): string | undefined {
     const peers = this.repoPeers(thread);
     if (!peers.length) return undefined;
     const list = peers.map((p) => `• ${p.role} on "${p.title}"`).join("\n");
-    const how = withTools
-      ? "Use the office chat to coordinate: call `office_look`, then `chat_post(scope:\"team\")` to claim the files/areas you'll touch and `chat_read` what they've claimed before editing."
-      : "Coordinate through the CLI office bridge: include a standalone `OFFICE[team]: <short message>` line in your assistant response to claim the files/areas you'll touch, answer teammate messages the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks.";
-    return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\nYou share this workspace, so you can step on each other's changes. ${how} Commit only your own hunks.`;
+    const edits = role === "implementor";
+    const how = !withTools
+      ? "Coordinate through the CLI office bridge: include a standalone `OFFICE[team]: <short message>` line in your assistant response to claim the files/areas you'll touch, answer teammate messages the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks."
+      : edits
+        ? "Use the office chat to coordinate: call `office_look`, then `chat_post(scope:\"team\")` to claim the files/areas you'll touch and `chat_read` what they've claimed before editing. Commit only your own hunks."
+        : "Coordinate via the office chat: `office_look` to see who's here (address people by name), `chat_read(scope:\"team\")` what they've said, and `chat_post(scope:\"team\")` what you're examining or find that affects them.";
+    const risk = edits
+      ? "You share this workspace, so you can step on each other's changes."
+      : "You share this workspace.";
+    return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\n${risk} ${how}`;
+  }
+
+  /** Append the office note to a kickoff when — and only when — a teammate already shares the repo.
+   *  Returns `text` unchanged for a solo task, so the caller's kickoff carries zero office overhead
+   *  until collaboration actually begins. */
+  private withOfficeNote(thread: Thread, role: Role, text: string, withTools = true): string {
+    const note = this.officeNote(thread, role, withTools);
+    return note ? `${text}\n\n${note}` : text;
   }
 
   // ---- run event wiring ----

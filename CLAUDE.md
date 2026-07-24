@@ -143,6 +143,16 @@ Concurrent tasks on the same repo would otherwise edit the same files blind. Eve
 they coordinate through the runner's `OFFICE[team|office]: ...` text bridge. Grouping key =
 `normalizeWorkspace` (mirrored in server + web types).
 
+**Office is OFF while a task is alone in its repo** — no kickoff office note, no general check-in (wasted
+tokens/noise for a lone worker). It switches ON for BOTH sides the moment a 2nd task joins: the newcomer's
+kickoff carries the office note (`officeNote`, peer-gated, injected for every role), and `ensureGroup`
+backfills the incumbent's general check-in AND pushes a "so-and-so joined" message into every already-running
+implementor incumbent (`pushOfficeActivation`, via `this.live` only — never a one-shot planner/QA
+mid-structured-output; the 3rd/4th joiner wakes the earlier ones too, each announced once).
+The office MCP tools stay allowlisted throughout so a mid-run join can coordinate immediately (the SDK can't
+add tools mid-query). Dedup is durable via `chatThreadInRoom`, so a restart/auto-resume never re-pings.
+Gate: `test:office-gating`.
+
 ## Deliverables (agent-produced files)
 A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the
 right panel. It's a `findings` row with `kind='deliverable'`, a `path` (absolute or workspace-relative)
