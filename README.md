@@ -148,6 +148,43 @@ Cross-platform: runs on macOS, Linux, and Windows. Paths shown Unix-style;
 `server/.env` (`DEFAULT_WORKSPACE`, `WORKSPACE_SEARCH_ROOTS`) defaults to your home dir
 when unset, so no config is needed to start.
 
+### Linux / first-run extra steps
+
+On a fresh Linux setup (and any machine running **npm 12+**) two extra steps were
+needed that macOS/Windows didn't hit:
+
+1. **Install the repo-root dev dep.** `npm run install:all` only installs `server/`
+   and `web/`, not the root — where `concurrently` (used by `npm run dev` / `serve`)
+   lives. Without it you get `concurrently: not found`. Run a plain install at the root:
+
+   ```bash
+   npm install            # at the repo root — adds concurrently
+   ```
+
+2. **Compile the `better-sqlite3` native binary.** It's a native (C++) addon, and
+   **npm 12 blocks packages' install/build scripts by default** (a new allowlist), so
+   its `node-gyp rebuild` never runs and the server crashes at boot with
+   *"Could not locate the bindings file … better_sqlite3.node"*. Approve its build
+   script once, then rebuild:
+
+   ```bash
+   cd server
+   npm install-scripts approve better-sqlite3   # allowlist its build step (npm 12+)
+   npm rebuild better-sqlite3                    # compile against your Node version
+   ```
+
+   Verify: `ls node_modules/better-sqlite3/build/Release/better_sqlite3.node` should exist.
+
+   Notes:
+   - On **older npm** the build script isn't blocked, so `npm run install:all` compiles
+     `better-sqlite3` automatically and neither step above is needed — this is why other
+     OSes / setups "just worked".
+   - `npm install-scripts ls` lists everything currently blocked. Other blocked scripts
+     (`esbuild`, `tree-sitter-*`, …) are **not** required to boot the orchestrator — the
+     web build (Vite/esbuild) works without them. Approve + rebuild any additional one the
+     same way only if a feature later reports a missing binding.
+   - Re-run both steps whenever you delete and reinstall `node_modules`.
+
 ### Configuration & personal rules — `server/.env`
 
 All per-machine and personal settings live in **`server/.env`**, which is
