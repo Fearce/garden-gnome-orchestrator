@@ -347,7 +347,6 @@ export interface OrchestratorSettings {
   grokModel: string;
   grokEffort: GrokEffort;
   grokWeeklySafetyPct: number; // 1-100 soft weekly ceiling (100 = off): above it, tasks route off Grok
-  grokPreferred: boolean; // on (default off) → enabled+uncapped Grok wins instead of normal soonest-weekly-reset ranking; auto-falls-back on cap
   grokSignedIn: boolean; // read-only: a `grok login` (auth.json) is present, so Grok can authenticate
   grokAccount?: string | null; // read-only: the signed-in Grok account email
   // Zhipu z.ai (GLM Coding Plan): when on (with an API key) it joins the implementor backends. Runs on the
@@ -356,7 +355,6 @@ export interface OrchestratorSettings {
   zaiModel: string;
   zaiEffort: GrokEffort; // z.ai reasoning-effort cap (low/medium/high)
   zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (100 = off): above it, tasks route off z.ai
-  zaiPreferred: boolean; // on (default off) → enabled+uncapped z.ai wins instead of soonest-weekly-reset ranking; auto-falls-back on cap
   zaiKeyPresent: boolean; // read-only: an API key is stored (raw key never reaches the client)
   zaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
   // Composer state persisted server-side (survives across the HTTP/HTTPS surfaces, which don't share

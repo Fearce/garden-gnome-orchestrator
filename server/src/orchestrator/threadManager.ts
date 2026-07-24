@@ -950,14 +950,12 @@ export class ThreadManager implements OrchestratorApi {
       grokModel: this.grokModel(),
       grokEffort: this.grokEffort(),
       grokWeeklySafetyPct: this.settingNum("setting_grok_weekly_safety", 100, 1, 100),
-      grokPreferred: this.settingBool("setting_grok_preferred", false),
       grokSignedIn: grokAuth.signedIn,
       grokAccount: grokAuth.email,
       zaiEnabled: this.settingBool("setting_zai_enabled", false),
       zaiModel: this.zaiModel(),
       zaiEffort: this.zaiEffort(),
       zaiWeeklySafetyPct: this.settingNum("setting_zai_weekly_safety", 100, 1, 100),
-      zaiPreferred: this.settingBool("setting_zai_preferred", false),
       zaiKeyPresent: !!this.zaiApiKey(),
       zaiKeyLast4: this.zaiKeyLast4(),
       zaiModels: this.pickableZaiModels(),
@@ -1228,7 +1226,6 @@ export class ThreadManager implements OrchestratorApi {
     }
     if (patch.grokEnabled !== undefined) this.db.kvSet("setting_grok_enabled", patch.grokEnabled ? "1" : "0");
     if (patch.grokWeeklySafetyPct !== undefined) this.db.kvSet("setting_grok_weekly_safety", String(patch.grokWeeklySafetyPct));
-    if (patch.grokPreferred !== undefined) this.db.kvSet("setting_grok_preferred", patch.grokPreferred ? "1" : "0");
     if (patch.grokEffort !== undefined && GROK_EFFORTS.includes(patch.grokEffort)) this.db.kvSet("setting_grok_effort", patch.grokEffort);
     // Legacy free-text grok model field mirrors into the matrix (grok.implementor), same as codex.
     if (patch.grokModel !== undefined && patch.grokModel.trim()) {
@@ -1237,7 +1234,6 @@ export class ThreadManager implements OrchestratorApi {
     }
     if (patch.zaiEnabled !== undefined) this.db.kvSet("setting_zai_enabled", patch.zaiEnabled ? "1" : "0");
     if (patch.zaiWeeklySafetyPct !== undefined) this.db.kvSet("setting_zai_weekly_safety", String(patch.zaiWeeklySafetyPct));
-    if (patch.zaiPreferred !== undefined) this.db.kvSet("setting_zai_preferred", patch.zaiPreferred ? "1" : "0");
     if (patch.zaiEffort !== undefined && GROK_EFFORTS.includes(patch.zaiEffort)) this.db.kvSet("setting_zai_effort", patch.zaiEffort);
     // Legacy free-text z.ai model field mirrors into the matrix (zai.implementor), same as codex/grok.
     if (patch.zaiModel !== undefined && patch.zaiModel.trim()) {
@@ -1505,27 +1501,18 @@ export class ThreadManager implements OrchestratorApi {
    *  headroom-havers, making it the resilient fallback. The caller always passes at least the Claude
    *  candidate, so this never sees an empty list. Reused by nextReadyImplementor.
    *
-   *  Exception — "Prefer Grok": when the operator opts in (grokPreferred) and Grok remains below its
-   *  weekly safety ceiling, it takes the implementor outright instead of participating in reset ranking.
-   *  Safety and hard-cap detection still handle fallback to another provider.
-   *
    *  "Spread usage": when the operator opts in (spreadUsage), the tie-break flips from soonest-reset to
    *  LOWEST weekly usage — the backend with the most weekly headroom takes the implementor — so burn
-   *  evens out across all platforms. "Prefer Grok" still overrides it; the safety fallback still supersedes. */
+   *  evens out across all platforms; the safety fallback still supersedes. */
   private preferredImplementorProvider(candidates: ProviderCandidate[]): ImplementorProvider {
     const withHeadroom = candidates.filter((c) => c.hasHeadroom);
     const base = withHeadroom.length ? withHeadroom : candidates;
     // Soft weekly ceiling (per-backend): a backend whose weekly usage crossed its safety % is de-preferred in
     // favor of one still under its own ceiling — but never dropped entirely (falls through when all are over,
-    // so this can't freeze a dispatch). Claude carries the selected account's own ceiling; Codex and Grok
+    // so this can't freeze a dispatch). Claude carries the selected account's own ceiling; Codex/Grok/z.ai
     // carry their backend ceilings.
     const safety = weeklySafetyPool(base);
     const pool = safety.candidates;
-    // Preference is applied only AFTER the safety filter: it cannot re-add an over-threshold Grok candidate.
-    // "Prefer Grok" is a more specific explicit override, so it still wins over the spread-usage balancer.
-    if (this.settings().grokPreferred && pool.some((c) => c.provider === "grok" && c.hasHeadroom)) return "grok";
-    // Same explicit-override treatment for "Prefer z.ai" (applied after Grok's, so Grok wins if both are on).
-    if (this.settings().zaiPreferred && pool.some((c) => c.provider === "zai" && c.hasHeadroom)) return "zai";
     // Spread usage: balance across ALL backends by lowest weekly usage. The all-over-safety no-freeze
     // fallback (most headroom) supersedes both it and the default soonest-reset order.
     const priority = safety.allOver

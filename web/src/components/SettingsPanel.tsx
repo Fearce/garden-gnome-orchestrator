@@ -646,15 +646,6 @@ function SubscriptionsSection() {
 
         {settings.grokSignedIn ? <GrokUsageReadout usage={grokUsage} /> : null}
 
-        {settings.grokEnabled && settings.grokSignedIn ? (
-          <ToggleRow
-            label="Prefer Grok for the implementor"
-            hint="By default Grok auto-competes for the implementor by soonest weekly reset (live SuperGrok weekly % from the CLI log / billing), like Claude/Codex. On → prefer Grok while it remains below its weekly safety threshold; it still auto-falls-back to Claude/Codex at the safety threshold or plan cap."
-            on={settings.grokPreferred}
-            onChange={(v) => setSettings({ grokPreferred: v })}
-          />
-        ) : null}
-
         <GrokModels />
         <EffortCapField value={settings.grokEffort} options={GROK_EFFORTS} onChange={(v) => setSettings({ grokEffort: v as GrokEffort })} />
         <GrokWeeklySafety />
@@ -734,15 +725,6 @@ function SubscriptionsSection() {
         </div>
 
         {settings.zaiKeyPresent ? <ZaiUsageReadout usage={zaiUsage} /> : null}
-
-        {settings.zaiEnabled && settings.zaiKeyPresent ? (
-          <ToggleRow
-            label="Prefer z.ai for the implementor"
-            hint="By default z.ai auto-competes for the implementor by soonest weekly reset (live GLM Coding Plan usage), like Claude/Codex/Grok. On → prefer z.ai while it stays below its weekly safety threshold; it still auto-falls-back to Claude at the safety threshold or plan cap."
-            on={settings.zaiPreferred}
-            onChange={(v) => setSettings({ zaiPreferred: v })}
-          />
-        ) : null}
 
         <ZaiModels />
         <EffortCapField value={settings.zaiEffort} options={GROK_EFFORTS} onChange={(v) => setSettings({ zaiEffort: v as GrokEffort })} />
@@ -846,7 +828,7 @@ function ZaiWeeklySafety() {
   return (
     <SubStepperField
       label="Weekly safety %"
-      hint="Switch backends when z.ai's weekly usage reaches this threshold. Won't freeze tasks, even when Prefer z.ai is on."
+      hint="Switch backends when z.ai's weekly usage reaches this threshold. Won't freeze tasks."
       value={value}
       min={1}
       max={100}
@@ -934,7 +916,7 @@ function GrokWeeklySafety() {
   return (
     <SubStepperField
       label="Weekly safety %"
-      hint="Switch backends when SuperGrok's weekly usage reaches this threshold. Won't freeze tasks, even when Prefer Grok is on."
+      hint="Switch backends when SuperGrok's weekly usage reaches this threshold. Won't freeze tasks."
       value={value}
       min={1}
       max={100}

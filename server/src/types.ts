@@ -384,11 +384,8 @@ export interface OrchestratorSettings {
   grokEffort: GrokEffort; // Grok CLI reasoning effort, applied via --reasoning-effort
   grokWeeklySafetyPct: number; // 1-100 soft weekly ceiling (default 100 = off): above it, new tasks route to another backend
   // The orchestrator scrapes SuperGrok's real weekly limit + reset from the CLI's `/usage show`
-  // (grokUsagePing), so by default Grok auto-competes in provider routing by soonest weekly reset exactly
-  // like Claude/Codex. grokPreferred is an OVERRIDE: on (default off) → an enabled + uncapped Grok is
-  // ALWAYS preferred for the implementor regardless of reset or soft safety % ("use the sub I pay for"); it still
-  // auto-falls-back to Claude/Codex when a Grok turn is usage-rejected or its weekly window is exhausted.
-  grokPreferred: boolean;
+  // (grokUsagePing), so Grok auto-competes in provider routing by soonest weekly reset exactly like
+  // Claude/Codex, auto-falling-back when a Grok turn is usage-rejected or its weekly window is exhausted.
   grokSignedIn: boolean; // read-only — a `grok login` (auth.json) is present, so Grok can authenticate
   grokAccount?: string | null; // read-only — the signed-in Grok account email, for the Subscriptions panel
   // Zhipu z.ai (GLM Coding Plan): when on (with an API key), it joins the implementor backends. Unlike
@@ -398,7 +395,6 @@ export interface OrchestratorSettings {
   zaiModel: string; // the resolved z.ai GLM implementor model (mirrors modelOverrides.zai.implementor; kept for the chip + back-compat)
   zaiEffort: GrokEffort; // z.ai reasoning effort cap (low/medium/high), applied to the SDK run like the other backends
   zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (default 100 = off): at/above this z.ai weekly utilization, new tasks route to another backend
-  zaiPreferred: boolean; // on (default off) → an enabled + uncapped z.ai is preferred for the implementor instead of soonest-weekly-reset ranking; still auto-falls-back on cap/safety
   zaiKeyPresent: boolean; // read-only — an API key is stored (env or kv); the raw key is never broadcast
   zaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
   zaiModels: string[]; // read-only: pickable z.ai GLM model ids (curated ∪ selected)

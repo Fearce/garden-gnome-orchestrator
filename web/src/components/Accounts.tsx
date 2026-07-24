@@ -100,7 +100,6 @@ export function Accounts() {
           account={settings.grokAccount ?? grokUsage?.email ?? null}
           model={settings.grokModel}
           effort={settings.grokEffort}
-          preferred={settings.grokPreferred}
           live={grokLive}
           usage={grokUsage}
           now={now}
@@ -112,7 +111,6 @@ export function Accounts() {
           hasAuth={settings.zaiKeyPresent}
           model={settings.zaiModel}
           effort={settings.zaiEffort}
-          preferred={settings.zaiPreferred}
           live={zaiLive}
           usage={zaiUsage}
           now={now}
@@ -133,7 +131,6 @@ function ZaiChip({
   hasAuth,
   model,
   effort,
-  preferred,
   live,
   usage,
   now,
@@ -142,7 +139,6 @@ function ZaiChip({
   hasAuth: boolean;
   model: string;
   effort: GrokEffort;
-  preferred: boolean;
   live: boolean;
   usage: ZaiUsageDTO | null;
   now: number;
@@ -163,9 +159,7 @@ function ZaiChip({
   const plan = usage?.plan ? usage.plan.replace(/^\w/, (c) => c.toUpperCase()) : null;
   const showMeters = !!usage && (usage.fiveHour != null || usage.sevenDay != null);
   const stale = !!usage?.stale;
-  const prefNote = preferred
-    ? " · preferred for the implementor"
-    : " · auto-ranked with Claude/Codex/Grok by soonest weekly reset";
+  const prefNote = " · auto-ranked with Claude/Codex/Grok by soonest weekly reset";
   const title =
     state === "implementing"
       ? `z.ai is implementing a task now · GLM Coding Plan${plan ? ` (${plan})` : ""} · model ${model} · ${effort} effort${prefNote}`
@@ -190,11 +184,6 @@ function ZaiChip({
         {plan ? (
           <span className="acct-tag ok" title={`${plan} plan`}>
             {plan}
-          </span>
-        ) : null}
-        {preferred && (state === "ready" || state === "implementing") ? (
-          <span className="acct-tag ok" title="Preferred for the implementor — z.ai runs it whenever it's enabled and not capped">
-            preferred
           </span>
         ) : null}
       </div>
@@ -318,7 +307,6 @@ function GrokChip({
   account,
   model,
   effort,
-  preferred,
   live,
   usage,
   now,
@@ -328,7 +316,6 @@ function GrokChip({
   account: string | null;
   model: string;
   effort: GrokEffort;
-  preferred: boolean;
   live: boolean;
   usage: GrokUsageDTO | null;
   now: number;
@@ -365,9 +352,7 @@ function GrokChip({
       : null;
   const hasMeter = usage != null && (usage.sevenDay != null || monthlyPct != null);
   const stale = !!usage?.stale;
-  const prefNote = preferred
-    ? " · preferred for the implementor"
-    : " · auto-ranked with Claude/Codex by soonest weekly reset (Prefer Grok still honors its safety threshold)";
+  const prefNote = " · auto-ranked with Claude/Codex by soonest weekly reset";
   const meterNote =
     usage?.sevenDay != null
       ? ` · weekly ${Math.round(usage.sevenDay)}%${usage.sevenDayReset != null && usage.sevenDayReset > now ? ` (resets ${countdown(usage.sevenDayReset, now)})` : ""}`
@@ -409,11 +394,6 @@ function GrokChip({
           </span>
         ) : null}
         {stale ? <span className="acct-tag dim">stale</span> : null}
-        {preferred && (state === "ready" || state === "implementing") ? (
-          <span className="acct-tag ok" title="Preferred for the implementor — Grok runs it whenever it's enabled and not capped">
-            preferred
-          </span>
-        ) : null}
       </div>
       {hasMeter ? (
         <div className="acct-meters">

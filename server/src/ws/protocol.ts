@@ -188,13 +188,11 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         grokModel: z.string().min(1).max(64),
         grokEffort: z.enum(["low", "medium", "high"]),
         grokWeeklySafetyPct: z.number().int().min(1).max(100),
-        grokPreferred: z.boolean(),
         // Zhipu z.ai (GLM Coding Plan) backend.
         zaiEnabled: z.boolean(),
         zaiModel: z.string().min(1).max(64),
         zaiEffort: z.enum(["low", "medium", "high"]),
         zaiWeeklySafetyPct: z.number().int().min(1).max(100),
-        zaiPreferred: z.boolean(),
         // Write-only: the raw z.ai API key is accepted here and stored server-side, never echoed back.
         // An empty string clears it (falls back to ZAI_API_KEY). The broadcast carries only zaiKeyPresent/last4.
         zaiApiKey: z.string().max(300),
