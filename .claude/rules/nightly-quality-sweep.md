@@ -21,7 +21,7 @@ npm run typecheck && npm run test:gates --prefix server
 health can sit on top of crash-broken gates (a feature landing without
 updating a test stub is the classic cause — this is how the missing
 `StubAccounts.setSpreadUsage` slipped past a "13/13 green" claim). `test:gates`
-(`scripts/run-gates.cjs`) runs all 12 FREE gates in ~9s and exits non-zero on
+(`scripts/run-gates.cjs`) runs all 17 FREE gates in ~22s and exits non-zero on
 any failure; it excludes `reader`/`structured`/`effort` (those spawn real
 `claude` subprocesses and burn quota). Don't hand-run gates one by one.
 
