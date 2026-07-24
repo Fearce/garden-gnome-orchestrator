@@ -33,10 +33,13 @@ never-capped backend is worth adding ONLY as the bottom rung of that failover la
 (anti-park), gated by a spend cap — not as a day-to-day implementor (that's $0 already and
 more reliable on Claude; a ~2-3pt SWE-bench gap understates long-horizon reliability risk).
 
-**If you do build a new backend — the seam and the shortcut:**
-- A new backend is a third `AgentRunLike` impl (`runner.ts`) + a `provider` branch in
-  `resolveImplementorProvider`/`preferredImplementorProvider` + the 6-file settings toggle
-  (see `add-a-setting.md`). Both `AgentRun` (Claude SDK) and `CodexAgentRun` already model this.
+**If you do build a new backend — the seam and the shortcut** (full touch-point
+checklist — every routing/cap/failover site to mirror — in `add-an-implementor-backend.md`;
+read it once you've decided to build, so you don't rediscover the seam by grep):
+- A new backend is a `provider` branch across the threadManager seam + a runner (a custom
+  `AgentRunLike`, OR — for an Anthropic-compatible endpoint — the reused `AgentRun` marked by a
+  nominal `class XAgentRun extends AgentRun {}`) + the 6-file settings toggle (`add-a-setting.md`).
+  `AgentRun` (Claude SDK), `CodexAgentRun` (custom CLI), and `ZaiAgentRun` (reuse) all model this.
 - **Don't write a codex-style custom runner** for any provider that exposes an
   **Anthropic-compatible endpoint** (e.g. DeepSeek's `https://api.deepseek.com/anthropic`).
   The Claude Agent SDK honors `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`, so you reuse
