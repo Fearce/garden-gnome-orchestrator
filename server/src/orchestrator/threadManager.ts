@@ -1966,6 +1966,14 @@ export class ThreadManager implements OrchestratorApi {
       // runs in `finally`.
       if (thread.lane === "read") {
         if (!saved.readerDone) await this.runReader(thread, directorNote);
+        // Self-heal the sub-millisecond window where a restart landed after readerDone was persisted but
+        // before finalizeReader settled the disposition: the reader's outcome is lost, but a read task
+        // only ever sits in 'queued' pre-settle, so re-entering here still 'queued' means we're wedged.
+        // The answer finding (if it answered) already persisted; park in review (safe for all three
+        // outcomes) rather than leave the task stuck in 'queued' forever.
+        else if (thread.state === "queued") {
+          this.settleReview(thread.id, "Reader completed but its disposition was lost to a restart — re-dispatch to re-run it.");
+        }
         return;
       }
 
