@@ -26,7 +26,7 @@ started.
 | Build & test health | ✅ **GO** — install → typecheck → build → 18/18 gates, all exit 0 |
 | Costs/Projects settings gating | ⚠️ **CLAIM DOES NOT HOLD FOR THIS REPO** — see §2 |
 | Port completeness | ⚠️ **NO-GO for "feature parity"** — **0 of 5** PORT areas on `master`; all 5 staged on unmerged `port/*` branches; see §3 |
-| Feature branches ship gated? | ❌ **NO** — Costs and Projects are staged **ungated**; see §3.4 |
+| Feature branches ship gated? | ✅ **RESOLVED 2026-07-25** — both branches now gate their surface, default OFF, verified in a browser; see §3.4 |
 | Push safety (`upstream` is writable) | ⚠️ **ACTION REQUIRED** — see §1.3 |
 
 **What this means practically:** you can move *into* this repo tomorrow and it will build, run and pass its
@@ -34,10 +34,12 @@ gates. You cannot yet expect the Costs dashboard, the Projects/Run Hub layer, di
 director-wedge watchdog to be there — all five are staged on review branches but none has merged. Land the
 port branches first, or accept a temporarily thinner console.
 
-**The one thing not to miss:** the two staged feature branches ship Costs and Projects **without** the
-settings gates, so merging them as-is puts both surfaces on by default (§3.4). That is a 7-file
-cherry-pick away from being right, but only if someone catches it before the merge — which is exactly what
-this report is for.
+**The one thing not to miss — now fixed.** As first written, this report's headline was that the two staged
+feature branches shipped Costs and Projects **without** the settings gates, so merging them would have put
+both surfaces on by default (§3.4). That has since been closed: each branch carries the half of `8164ea2`
+that gates the surface it actually ships, both default OFF, both verified in a real browser. §3.4 records
+the commits and the evidence. It is left in the report rather than deleted because the *class* of gap —
+a design decision that lives in a commit the port list never saw — is the thing to keep watching for.
 
 ---
 
@@ -225,9 +227,9 @@ snapshot as of writing). Staged ≠ landed.
 | §4.4 | Director wake-on-completion | **STAGED** — `port/director-wake` @ `ce5b034`, 2 commits (`00f1ec4`, `ce5b034`); adds `directorWake.ts`, `directorWake.itest.ts`, the `test:director-wake` gate, the SettingsPanel toggle | branch, unmerged | No — quality-of-life |
 | §4.3 | Crash-resilience remainder: **director-wedge recovery** (`a3e9e93`), **Claude-runner watchdog**, `verify-instance.cjs`, `why-ended.cjs`, `update-doctor.cjs`, `check-orphaned-tests.cjs`, `restartResumeRecovery.itest.ts`, `runnerWatchdog.itest.ts` | **STAGED** — `port/crash-resilience` @ `6cff8ee`, 9 commits (includes `225823e` recover restart-interrupted tasks stuck in 'failed') | branch, unmerged | **Yes — highest-value gap** |
 | §4.6 | Self-update / one-click restart button + "changes ready" prompt | **STAGED, IN PROGRESS** — `port/self-update-restart` @ `9a77d8e`, 1 commit, still being cherry-picked at time of writing | branch, unmerged | No |
-| §4.1 | Live token-cost dashboard + metrics (`liveMetrics.ts`, `metricsBroadcast.ts`, `tokenReport.ts`, `TokenDashboard.tsx`) + `agent_runs` token columns + new `director_runs` table | **STAGED** — `port/token-metrics-dashboard` @ `5fc585e`, 5 commits | branch, unmerged | No — observability. **But ships UNGATED, see §3.4** |
-| §4.2 | Run Hub + Projects layer (`runHub/launcher.ts`, `projects.ts`, `recipe.ts`, `Projects.tsx`, `LaunchButton.tsx`) + `project_meta` table | **STAGED** — `port/run-hub-projects` @ `c0e7a67`, 8 commits (incl. a `styles.css` rebuild onto the upstream base — the worst §5 conflict file) | branch, unmerged | No — productivity layer. **But ships UNGATED + a dead recipe, see §3.4** |
-| §4.1/§4.2 | **The `costsEnabled`/`projectsEnabled` gates (`8164ea2`)** | **NOT STAGED — absent from both feature branches** | `legacy/master` only | **YES — see §3.4** |
+| §4.1 | Live token-cost dashboard + metrics (`liveMetrics.ts`, `metricsBroadcast.ts`, `tokenReport.ts`, `TokenDashboard.tsx`) + `agent_runs` token columns + new `director_runs` table | **STAGED** — `port/token-metrics-dashboard` @ `783ea5f`, 6 commits | branch, unmerged | No — observability. Now gated (`783ea5f`, default OFF) — §3.4 |
+| §4.2 | Run Hub + Projects layer (`runHub/launcher.ts`, `projects.ts`, `recipe.ts`, `Projects.tsx`, `LaunchButton.tsx`) + `project_meta` table | **STAGED** — `port/run-hub-projects` @ `f9e3724`, 10 commits (incl. a `styles.css` rebuild onto the upstream base — the worst §5 conflict file) | branch, unmerged | No — productivity layer. Now gated (`56980aa`, default OFF); dead recipe removed (`f9e3724`) — §3.4 |
+| §4.1/§4.2 | **The `costsEnabled`/`projectsEnabled` gates (`8164ea2`)** | ✅ **STAGED — split across both feature branches** (`783ea5f` / `56980aa`), default OFF, browser-verified | on the branches | **No longer — resolved, see §3.4** |
 | §4.5 | Token-limit pause + its tests | **STAGED** — `port/token-limit-pause` @ `73f3f7e`, 3 commits | branch, unmerged | No — the behavior is already upstream (§3.1); this adds the fork's pause UI + tests |
 | §4.6 | Supporting core wiring — the 9 conflict files (§5 of the inventory) | **REWORK, untouched** | needs 3-way merge | Coupled to §4.1/§4.2 |
 | §4.7 | Fork rule docs paired with ported features (`add-a-live-pane.md`, `ab-token-measurement.md`, `run-hub-recipe.md`) | **NOT STARTED** (the wake rule rides on `port/director-wake`) | `legacy/master` | No |
@@ -253,10 +255,13 @@ already upstream and on `master` (see §3.1). Only the fork's extra test and the
 | Fork process docs (`HANDOFF.md`, `DEV.md`, `DEV-ISOLATION.md`, `UPSTREAM-MIGRATION-HANDOFF.md`, `TOKEN_*.md`) | Absent from `master` |
 | Fork's own office edits (superseded by upstream `0dc9ae9`) | Upstream version is what's on `master` — as intended |
 
-### 3.4 ⚠️ The staged feature branches ship Costs and Projects **ungated**
+### 3.4 ✅ RESOLVED — the staged feature branches shipped Costs and Projects **ungated**
 
-Found while re-checking the branch list at the end of this audit, and it is the single most actionable item
-in this report. **Neither feature branch carries the gate:**
+> **Status: closed 2026-07-25, before the cutover.** Both branches now carry the gate and both were driven
+> in a headless browser to prove it. The original finding is kept below unedited; the resolution follows it.
+
+Found while re-checking the branch list at the end of this audit, and it was the single most actionable item
+in this report. **Neither feature branch carried the gate:**
 
 ```bash
 git grep -c -E 'costsEnabled|projectsEnabled' port/token-metrics-dashboard -- server/src web/src  # → nothing
@@ -282,6 +287,71 @@ not on the port list they worked from.
 `.orchestrator/run.json` = `{"kind":"url", "url":"http://dev.orchestrator.localhost/", "disruptive":true}`.
 That host only resolves through the Caddy proxy in `infra/caddy` — explicitly **DROPPED** (§3.3). Merged
 as-is it is a dead Run button. Drop the recipe from the port or re-author it (§6.9).
+
+#### Resolution (2026-07-25)
+
+`8164ea2` was **split across the two branches it gates** rather than cherry-picked whole onto each. Each
+branch ships only one of the two surfaces, so taking the whole commit would have left the other branch
+referencing a setting for a component it does not contain. Merging both reproduces `8164ea2` in full;
+because they add sibling rows to the same new "Features" settings group, expect a small additive union
+conflict there at merge time and keep both rows.
+
+| Branch | Gate commit | Covers | Tip after this work |
+|---|---|---|---|
+| `port/token-metrics-dashboard` | `783ea5f` *feat(settings): gate the Costs surface behind a toggle (default OFF)* — 7 files, +21/−2 | `costsEnabled` | `783ea5f` |
+| `port/run-hub-projects` | `56980aa` *feat(settings): gate the Projects surface behind a toggle; fix the launch recipe* — 9 files, +30/−7 | `projectsEnabled` | `f9e3724` (see below) |
+
+Both follow the `add-a-setting.md` fan-out: `settingBool("setting_<x>_enabled", false)` + a `kvSet` write in
+`threadManager.ts`, the field in `server/src/types.ts` and `ws/protocol.ts`, mirrored in `web/src/types.ts`
+and `store.ts`, a `ToggleRow` under a new **Features** group in `SettingsPanel.tsx`, and **two** guards in
+`App.tsx` — one on the nav button, one on the view swap (`enabled && activeView === …`), so disabling the
+toggle while the surface is open falls back to the board instead of blanking it.
+
+**Verified per branch** — not just typechecked. Each branch was built in an isolated detached worktree
+(own `node_modules`, outside the main checkout) and driven headlessly against a throwaway instance on
+`:4517` with an isolated `DATA_DIR`, never prod:
+
+| Check | `port/token-metrics-dashboard` | `port/run-hub-projects` |
+|---|---|---|
+| `npm run typecheck` | clean | clean |
+| `npm run build` | pass | pass |
+| `npm run test:gates` | **21/21** | **20/20** |
+| Browser E2E (10 assertions) | **10/10** | **10/10** |
+
+The E2E asserts, per surface: nav button absent on a fresh DB; board rendered; surface absent; the toggle
+reads `aria-checked="false"`; flipping it on makes the nav button appear; the surface renders when opened;
+flipping it back off while the surface is the active view falls back to the board; the nav button hides
+again; and the default still holds after a reload (i.e. it is the server-side `settingBool` default, not
+just client state).
+
+**The dead Run recipe was removed, not re-pointed** — `f9e3724` *fix(runhub): drop the orchestrator's own
+launch recipe — it bound the prod port*. An intermediate fix in `56980aa` had re-authored the recipe as a
+`web` recipe on the Vite dev port `:4318` with `start: npm run dev`. That cured the dead Caddy host but not
+the underlying problem, and still broke the hard rule in `run-hub-recipe.md`:
+
+- root `npm run dev` is `concurrently npm:dev:server npm:dev:web`, and `dev:server` **listens on `:4317`** —
+  the production port. With prod up under keepAlive the launch either `EADDRINUSE`s or fights the live server.
+- even when `:4318` is already up and `start` never fires, `web/vite.config.ts` proxies `/api` → `127.0.0.1:4317`
+  and `/ws` → `ws://127.0.0.1:4317`, so the console that Run button opens is driving **production**.
+
+The orchestrator is launched by the process manager, not by its own Run button, so no recipe is the honest
+answer. Confirmed the removal leaves **no** button rather than falling through to a re-derived one: for this
+workspace `readRecipeFile`, `autoDetectRecipe` and `resolveRecipe` all return `null` — auto-detect finds no
+root-level vite config (it lives in `web/`), no package `homepage`, and no exe under a root build dir.
+`run-hub-recipe.md`'s hard rule now records the indirect-bind and dev-proxy traps so it is not re-authored.
+
+**Unrelated gate hazard found while verifying — read before you re-run the suite tomorrow.** `test:scheduler`
+fails on **every** branch, `master` included, between **02:45 and 02:59 local**. `scheduler.test.ts` creates
+a task with cron `0 3 * * *`, updates it to `*/15 * * * *`, and asserts `nextRunAt` changed — inside that
+window both expressions resolve to the same instant (today 03:00:00), so it correctly does not change.
+Measured with the scheduler's own `nextRun()`: collides at 02:45/02:50/02:59, not at 02:44/03:00/03:01. It is
+a deterministic 15-minute-per-day window, not a flake and not a merge defect — every green gate count in this
+report was recorded outside it. **Fixed on `master` as `786f669`** *fix(test): make the scheduler re-anchor
+check time-independent*, in its own commit rather than on a port branch (patching one branch would have
+diverged it from the other five on merge eve; they inherit the fix when they land). The assertion now checks
+that `nextRunAt` equals `nextRun("*/15 * * * *", nextRunAt - 1)` instead of merely differing from the previous
+value — time-independent, and a stronger property: it proves re-anchoring to the **new** cron rather than just
+that a number moved.
 
 ---
 
@@ -342,11 +412,13 @@ Notes:
    on `master` (commands in §1.4). Do not start the move mid-cherry-pick.
 2. **Harden push safety** (§1.3) — `git remote set-url --push upstream no-push://blocked`. One command,
    removes the sharpest footgun. Do this first; it costs nothing and protects everything after.
-3. **Cherry-pick `legacy 8164ea2` onto `port/token-metrics-dashboard` and `port/run-hub-projects`
-   BEFORE merging either** (§3.4). This is the highest-consequence item in the list: merge them without it
-   and both surfaces ship default-ON, silently undoing a deliberate design decision. Verify after:
-   `git grep -c -E 'costsEnabled|projectsEnabled' <branch> -- server/src web/src` must be non-zero, and
-   `App.tsx` must read `costsEnabled && activeView === "dashboard"` / `projectsEnabled && activeView === "projects"`.
+3. ~~**Cherry-pick `legacy 8164ea2` onto `port/token-metrics-dashboard` and `port/run-hub-projects`
+   BEFORE merging either**~~ — ✅ **DONE 2026-07-25** (§3.4). Split across the two branches (`783ea5f`,
+   `56980aa`), default OFF, full gates green on each (21/21 and 20/20) and a 10/10 browser E2E on each. Nothing to do here before the
+   merge except keep **both** "Features" toggle rows when the two branches conflict additively in
+   `SettingsPanel.tsx`. Re-check with
+   `git grep -c -E 'costsEnabled|projectsEnabled' <branch> -- server/src web/src` (non-zero) and
+   `App.tsx` reading `costsEnabled && activeView === "dashboard"` / `projectsEnabled && activeView === "projects"`.
 4. **Review and merge `port/crash-resilience`** — the director-wedge watchdog + Claude-runner watchdog are
    the one genuine capability regression versus the fork (§3.2). Everything else can follow later; this one
    determines whether a wedged run self-heals or hangs until you notice.
@@ -363,20 +435,23 @@ Notes:
 
 ### During / after the move
 
-7. **Keep the legacy repo intact and read-only until the ports are finished.** The `8164ea2` gates — and
-   anything else the port branches turn out to have missed — exist *only* in
-   `C:\Users\Mikkel\projects\claude-orchastrator`. Do not delete, archive or rewrite it until every port
-   has landed here and been verified. Losing it loses them.
-8. **Verify the gate for real once §4.1/§4.2 merge** (§2.4): toggle each setting off, reload, and confirm
-   the nav button and pane are gone; then decide whether the UI-only depth (§2.2) is what you want, or
-   whether the metrics timer and `/api/runhub/*` routes should be gated server-side too.
-9. **Fix the Run Hub recipe rather than merging the legacy one.** `port/run-hub-projects` (commit
-   `ff62ab0`) brings `.orchestrator/run.json` = `{"kind":"url", "url":"http://dev.orchestrator.localhost/"}`,
-   which only resolves through the Caddy proxy in `infra/caddy` — explicitly **DROPPED** (§3.3), so as
-   merged it is a dead Run button. The recipe rule also forbids pointing a recipe at the production port
-   `:4317`. Either drop the file from the port (no recipe is better than a dead button) or re-author it
-   once you have decided whether Caddy comes along. This repo has **no** `run.json` today, which is the
-   correct state until then.
+7. **Keep the legacy repo intact and read-only until the ports are finished.** The `8164ea2` gates have
+   since been brought across (§3.4), but that is precisely the point: they were found *after*
+   PORT-INVENTORY was written, by reading the legacy history. Anything else the port branches turn out to
+   have missed still exists *only* in `C:\Users\Mikkel\projects\claude-orchastrator`. Do not delete,
+   archive or rewrite it until every port has landed here and been verified. Losing it loses them.
+8. **Verify the gate for real once §4.1/§4.2 merge** (§2.4). Already done *per branch* — toggle off →
+   reload → nav button and pane gone, 10/10 assertions on each (§3.4) — so what remains is to re-run it
+   once on the **merged** result, since the two toggles first coexist only after both land. Still open, and
+   unchanged by this work: whether the UI-only depth (§2.2) is what you want, or whether the metrics timer
+   and the `/api/runhub/*` routes should be gated server-side too.
+9. ~~**Fix the Run Hub recipe rather than merging the legacy one.**~~ — ✅ **DONE 2026-07-25.** The
+   `.orchestrator/run.json` that `ff62ab0` brought onto `port/run-hub-projects` (pointing at the dropped
+   Caddy host `http://dev.orchestrator.localhost/`) has been **removed** on that branch, not re-pointed
+   (`f9e3724`). Re-pointing it at the Vite dev port was tried and rejected: `npm run dev` boots `dev:server`
+   on `:4317` and Vite proxies `/api`/`/ws` to `:4317`, so any such recipe binds or drives production —
+   see §3.4. `master` and the port branch now both carry **no** `run.json`, which is the correct state.
+   Don't re-author one on merge day; the orchestrator is launched by the process manager.
 10. **Review `port/self-update-restart` separately** — 2 commits (`9a77d8e` one-click restart button +
     "changes ready" prompt, `00c5df5` always give feedback + actually restart a hub-less instance),
     touching `server/src/update.ts`, the self-update path. A half-ported self-update is worse than none.
@@ -388,9 +463,13 @@ Notes:
 
 11. Root `package-lock.json` (§1.4) — being gitignored during this session; confirm the `.gitignore` line
     landed rather than the file being committed.
-12. Add a test for the `costsEnabled`/`projectsEnabled` toggles when they port — there is none today
-    (§2.2). A settings gate with no gate test is exactly the thing that silently regresses, and §3.4 is
-    the proof: the gate was dropped on the way into this repo and nothing failed to catch it.
+12. Add a **committed** test for the `costsEnabled`/`projectsEnabled` toggles — there is still none
+    (§2.2). The §3.4 verification was a throwaway browser harness against a temp instance; it proved the
+    gates work today and was then deleted, so it guards nothing going forward. A settings gate with no
+    gate test is exactly the thing that silently regresses, and §3.4 is the proof: the gate was dropped on
+    the way into this repo and nothing failed to catch it. The cheap version is a unit gate asserting
+    `settingBool("setting_costs_enabled"/"setting_projects_enabled", false)` defaults OFF and round-trips
+    through `updateSettings`; the UI guard itself is only worth an E2E once both branches have merged.
 
 ---
 
@@ -406,15 +485,31 @@ git for-each-ref --format='%(refname:short) %(objectname:short)' refs/heads   # 
 git ls-tree -r --name-only master | grep -Ei 'cost|metric|project|runhub'     # empty => §4.1/§4.2 still pending
 git grep -n -E 'wedge' master -- server/src/orchestrator/director.ts          # empty => §4.3 still pending
 
-# §3.4 — the gate check. Non-zero on BOTH before either branch merges, else the surfaces land default-ON:
+# §3.4 — the gate check. Non-zero on BOTH before either branch merges, else the surfaces land default-ON.
+# As of 2026-07-25 both return 7 files each; a ZERO here means the gate got lost again.
 git grep -c -E 'costsEnabled|projectsEnabled' port/token-metrics-dashboard -- server/src web/src
 git grep -c -E 'costsEnabled|projectsEnabled' port/run-hub-projects       -- server/src web/src
 
-npm run typecheck && npm run build && npm run test:gates --prefix server      # expect 18/18
+# §3.4 — and the recipe must stay gone (any output here is a regression):
+git ls-tree -r --name-only port/run-hub-projects -- .orchestrator
+
+npm run typecheck && npm run build && npm run test:gates --prefix server      # expect 18/18 on master
 ```
+
+> Gate counts on the port branches are **higher than 18** and differ per branch — each ported feature
+> registers its own gates (`port/token-metrics-dashboard` 21, `port/run-hub-projects` 20). 18 is `master`'s
+> number. And do not read a `test:scheduler` failure between **02:45 and 02:59**
+> local as a regression on an unmerged branch: that is the cron collision fixed on `master` by `786f669`,
+> which the branches only inherit when they land (§3.4).
 
 ---
 
 *Produced by the pre-move readiness check, 2026-07-25. Every claim above was verified against the pinned
 `master` tree or a captured command log; where something could not be verified, this report says so rather
 than assuming.*
+
+*Updated 2026-07-25, same night: §3.4 closed — the Costs/Projects gates now ship on both feature branches
+(default OFF, browser-verified), the dead Run Hub recipe was removed rather than re-pointed, and the
+`test:scheduler` cron collision found while verifying was fixed on `master`. Checklist items 3 and 9 are
+done; items 8 and 12 are narrowed but still open. Everything else in this report stands as originally
+written.*
