@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { Db } from "../db/db.js";
 import { EventHub } from "../events.js";
 import { Scheduler } from "../orchestrator/scheduler.js";
+import { nextRun } from "../orchestrator/cron.js";
 import type { DispatchInput } from "../orchestrator/api.js";
 import type { ServerEvent } from "../ws/protocol.js";
 
@@ -57,11 +58,17 @@ async function main(): Promise<void> {
   check("list still has exactly 1 after rejects", scheduler.list().length === 1);
 
   console.log("scheduler: update");
-  const beforeNext = db.getScheduledTask(id)!.nextRunAt;
   const upd = scheduler.update(id, { cron: "*/15 * * * *", prompt: "audit deps v2" });
   check("update ok", upd.ok);
   check("update changed the prompt", db.getScheduledTask(id)!.prompt === "audit deps v2");
-  check("cron change re-anchors nextRunAt", db.getScheduledTask(id)!.nextRunAt !== beforeNext);
+  // Assert the stored nextRunAt is what the NEW expression predicts, rather than merely that it
+  // DIFFERS from the old one. The differs-form was a 15-minute-a-day time bomb: run it between
+  // 02:45 and 03:00 and both "0 3 * * *" and "*/15 * * * *" resolve to 03:00, so a perfectly
+  // correct re-anchor left the value unchanged and the check failed — on every branch, master
+  // included. Comparing against nextRun() is also the stronger assertion: it proves the schedule
+  // was re-anchored to the new expression, not just that some number moved.
+  const afterNext = db.getScheduledTask(id)!.nextRunAt;
+  check("cron change re-anchors nextRunAt to the new expression", afterNext != null && afterNext === nextRun("*/15 * * * *", afterNext - 1));
   check("update rejects bad cron (keeps old)", !scheduler.update(id, { cron: "99 * * * *" }).ok && db.getScheduledTask(id)!.cron === "*/15 * * * *");
 
   console.log("scheduler: enable/disable");
