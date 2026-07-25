@@ -100,7 +100,7 @@ Read the run trail to tell causes apart:
   another sub with headroom. A cap on a **Fable** model is first classified (`classifyCap`: fresh Haiku
   usage ping — Fable's allowance is its OWN gated pool, separate from the 5h/weekly windows): normal
   windows still free ⇒ the run resumes on the SAME account with `config.fableFallbackModel` (default
-  `Codex-opus-4-8`, env `FABLE_FALLBACK_MODEL`), the pool cap is latched per (sub, model) until its
+  `claude-opus-4-8`, env `FABLE_FALLBACK_MODEL`), the pool cap is latched per (sub, model) until its
   reset (5h self-expiry when unknown), `modelFor` resolves the fallback for every role meanwhile, and
   the account chip shows a "Fable → Opus" tag. If EVERY sub is capped, an implementor fails over to the CODEX backend
   when it's enabled+authed with headroom (fresh seed — a Codex session can't resume on the codex CLI;
