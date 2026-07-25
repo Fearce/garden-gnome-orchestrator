@@ -27,8 +27,12 @@ They look identical from inside the agent — "the brief said recover, so I reco
   anywhere-in-file match, for non-markdown artifacts or a value rather than a section.
 
 ## HEALTHY means the work finished — not that the answer was "yes"
-Stop working, but do **not** report a bare "all fine". Read the artifact's own verdict
-section before you write your summary: a report can be complete, committed, and still say
+Stop working, but do **not** report a bare "all fine". On exit 0 the script now PRINTS this
+for you (markdown artifacts): the `Verdict` section body plus every still-open line
+(`ACTION REQUIRED` / `NO-GO` / `CONDITIONAL GO` / `⚠` / "decision only … can make", matched
+case-sensitively so lowercase prose about code conditionals doesn't drown them). Read that
+digest instead of re-grepping by hand, and carry each item plus where it lives into your
+hand-off: a report can be complete, committed, and still say
 **CONDITIONAL GO** with an open decision only the owner can make. Surface that conditional
 and where it lives (e.g. MIGRATION-READINESS.md §0 Verdict, §1.3 push safety, §6 "the
 decision only Mikkel can make") — an overnight watchdog that says "healthy" and hides a
