@@ -424,6 +424,7 @@ export class AgentRun implements AgentRunLike {
           subtype: m.subtype,
           isError: Boolean(m.is_error),
           result: m.result,
+          errors: Array.isArray(m.errors) ? m.errors.filter((e: unknown) => typeof e === "string") : undefined,
           structuredOutput: m.structured_output,
           costUsd: m.total_cost_usd,
           numTurns: m.num_turns,

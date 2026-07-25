@@ -473,6 +473,10 @@ export type AgentEvent =
       subtype: string;
       isError: boolean;
       result?: string;
+      // An SDK *error* result carries no `result` text at all — its diagnostic lives here (the CLI
+      // backends, which build their own results, use `result` instead). Without this the only thing
+      // left to persist for a failed Claude run is the subtype.
+      errors?: string[];
       structuredOutput?: unknown;
       costUsd?: number;
       numTurns?: number;

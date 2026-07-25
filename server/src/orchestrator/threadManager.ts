@@ -21,6 +21,7 @@ import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
+import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import { config, fallbackModelFor } from "../config.js";
 import { execFile } from "node:child_process";
@@ -3105,6 +3106,15 @@ export class ThreadManager implements OrchestratorApi {
     return !!res && res.isError && LIMIT_SUBTYPES.has(res.subtype);
   }
 
+  /** The owner-facing park reason for an implementor that ended on an error result instead of finishing.
+   *  Lifting the run's own failure text — as the QA park below does — is what makes the console say WHY
+   *  the task stopped; without it every involuntary end reads identically. `tail` is the generic ask used
+   *  when the result carried no reason at all (a run that vanished with no result to read). */
+  private implementorParkReason(res: ResultEvent | undefined, tail: string): string {
+    const why = res?.isError ? runErrorText(res) : undefined;
+    return `Implementor ended without completing — ${why ?? tail}`;
+  }
+
   /** Whether the implementor's most recent text message reads as a genuine completion rather than a
    *  mid-thought cutoff. Used as a secondary guard so that even on a turn-limit stop we DON'T auto-resume
    *  when the agent clearly signalled it was done — and (deliberately strict) we DO resume on anything
@@ -3320,7 +3330,7 @@ export class ThreadManager implements OrchestratorApi {
         if (this.cancelled(thread.id)) return;
         this.setState(thread.id, "done");
       } else {
-        this.settleReview(thread.id, "Implementor ended without completing — needs your review (QA is disabled for this task).");
+        this.settleReview(thread.id, this.implementorParkReason(res, "needs your review (QA is disabled for this task)."));
       }
       return;
     }
@@ -3328,7 +3338,7 @@ export class ThreadManager implements OrchestratorApi {
     for (let round = priorRounds + 1; round <= pipe.maxQaRounds; round++) {
       if (this.cancelled(thread.id)) return;
       if (!res || res.isError) {
-        this.settleReview(thread.id, "Implementor ended without completing — needs your review.");
+        this.settleReview(thread.id, this.implementorParkReason(res, "needs your review."));
         return;
       }
       this.setState(thread.id, "qa");
@@ -4640,7 +4650,7 @@ export class ThreadManager implements OrchestratorApi {
     this.db.updateRun(runId, {
       state: res?.isError ? "error" : "done",
       // Persist the failure reason so a dead run is diagnosable instead of a silent error row.
-      error: res?.isError ? (res.result ?? "Run failed.").slice(0, 2000) : null,
+      error: res?.isError ? runErrorText(res) : null,
       endedAt: Date.now(),
       costUsd: res?.costUsd ?? null,
       numTurns: res?.numTurns ?? null,
@@ -4659,7 +4669,7 @@ export class ThreadManager implements OrchestratorApi {
     const state: AgentRunState = res ? (res.isError ? "error" : "done") : "interrupted";
     this.db.updateRun(runId, {
       state,
-      error: res?.isError ? (res.result ?? "Run failed.").slice(0, 2000) : run.error ?? null,
+      error: res?.isError ? runErrorText(res) : run.error ?? null,
       endedAt: Date.now(),
       costUsd: res?.costUsd ?? run.costUsd ?? null,
       numTurns: res?.numTurns ?? run.numTurns ?? null,
@@ -4733,7 +4743,7 @@ export class ThreadManager implements OrchestratorApi {
           this.emitRun(runId);
           break;
         case "error":
-          this.db.updateRun(runId, { state: "error", error: e.message });
+          this.db.updateRun(runId, { state: "error", error: e.message.slice(0, MAX_RUN_ERROR_LEN) });
           this.emitRun(runId);
           this.hub.log("error", `${role} on ${threadId.slice(0, 8)}: ${e.message}`);
           break;
