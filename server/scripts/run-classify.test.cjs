@@ -48,6 +48,10 @@ is("real", { error: "fatal: unable to access repo: exit status 429" });
 is("transient", { error: "API Error: 500 Internal server error. This is a server-side issue, usually temporary" });
 is("transient", { error: "upstream connection reset" });
 is("transient", { error: "Overloaded" });
+// An unreachable API is the provider's fault, not the work's — production retries these too
+// (TRANSIENT_API_ERROR_RE in agents/runner.ts); keep both lists saying the same thing.
+is("transient", { error: "API Error: Unable to connect to API (ConnectionRefused)" });
+is("transient", { error: "API Error: Unable to connect to API (FailedToOpenSocket)" });
 
 // Involuntary cutoffs — EVERY backend's wording, or a cutoff raises a REAL-failure alarm for exactly the
 // class this probe exists to defuse. runError.ts writes the first two, grokRunner.ts the third.

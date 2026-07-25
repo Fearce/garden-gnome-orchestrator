@@ -6,6 +6,11 @@ const transient = [
   "API Error: 500 Internal server error.",
   "HTTP 503 Service Unavailable",
   "upstream connection reset",
+  // The API being unreachable is the same bounded retry-then-hand-off case as a 5xx. These are the exact
+  // strings production recorded; both used to fail the run outright instead of retrying or switching provider.
+  "API Error: Unable to connect to API (ConnectionRefused)",
+  "API Error: Unable to connect to API (FailedToOpenSocket)",
+  "connect ECONNREFUSED 127.0.0.1:443",
   { api_error_status: 502, result: "bad gateway" },
   { error: { type: "overloaded_error", message: "Overloaded" } },
 ];
@@ -20,6 +25,8 @@ const terminal = [
   "401 Unauthorized",
   "validation failed",
   "processed 500 records successfully",
+  // Prose about connecting something is not a transport failure — the unreachable-API patterns must stay tight.
+  "the user refused to connect the tool to this workspace",
   { status: 429, message: "quota exceeded" },
 ];
 
