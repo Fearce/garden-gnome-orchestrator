@@ -17,10 +17,19 @@ const is = (expected, over, why) => assert.equal(classifyRun(run(over)), expecte
   }
 }
 
-// A restart is identified by run state, not text — markInterrupted writes no error on most rows.
+// A restart is the markInterrupted stamp on a row with NO recorded reason. `state='interrupted'` alone must
+// NOT win: finalizeRun also stamps it for a run that ended with no result and preserves the row's existing
+// error, so trusting the state first filed 5 consecutive "failed to launch" rows (a broken install) as benign.
 is("restart", { state: "interrupted" });
-is("restart", { state: "interrupted", error: "Claude Code process exited with code 1073807364" });
+is("restart", { state: "interrupted", error: "Run failed." }, "opaque text is no reason at all");
 is("restart", { error: "interrupted by a server restart" });
+is(
+  "real",
+  { state: "interrupted", error: "Claude Code native binary at C:\\…\\claude.exe exists but failed to launch." },
+  "an interrupted row that says WHY it died died of that, not of the bounce",
+);
+is("real", { state: "interrupted", error: "Claude Code process exited with code 1073807364" }, "external tree-kill");
+is("cap", { state: "interrupted", error: "You've hit your session limit · resets 5:30pm" }, "a preserved cap text still wins");
 
 // Usage caps. The bare, qualifier-less form is a Fable model-pool notice; production catches it via the
 // rate_limit_event rather than this text, and 53 such rows were initially misread as REAL failures.
@@ -29,14 +38,22 @@ is("cap", { error: "You've hit your weekly limit · resets Jul 21, 10pm (Europe/
 is("cap", { model: "claude-fable-5", error: "You've hit your limit · resets Jul 24, 8am (Europe/Copenhagen)" });
 is("cap", { error: "429 Too Many Requests" });
 is("cap", { error: "402 Payment Required" });
+is("cap", { error: "api_error_status=429 rejected" });
+
+// …but a bare number must NOT read as a cap: `429` is also a line number, and filing a crash as a cap hides it.
+is("real", { error: "TypeError: Cannot read properties of undefined at threadManager.ts:429:15" });
+is("real", { error: "fatal: unable to access repo: exit status 429" });
 
 // Transient provider/transport failures — the runner retries these itself (transientApiErrorInfo).
 is("transient", { error: "API Error: 500 Internal server error. This is a server-side issue, usually temporary" });
 is("transient", { error: "upstream connection reset" });
 is("transient", { error: "Overloaded" });
 
-// Involuntary cutoffs, as worded by orchestrator/runError.ts.
+// Involuntary cutoffs — EVERY backend's wording, or a cutoff raises a REAL-failure alarm for exactly the
+// class this probe exists to defuse. runError.ts writes the first two, grokRunner.ts the third.
 is("cutoff", { error: "Stopped at the per-session turn ceiling (error_max_turns) — an involuntary cutoff, not a crash." });
+is("cutoff", { error: "Stopped at the per-session cost ceiling (error_max_budget_usd) — an involuntary cutoff, not a crash." });
+is("cutoff", { model: "grok-4.5", error: "Grok stopped at its turn limit." });
 is("structured", {
   role: "qa",
   error: "Stopped after too many structured-output retries (error_max_structured_output_retries) — …",

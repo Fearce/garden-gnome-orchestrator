@@ -32,17 +32,21 @@ const Database = require("better-sqlite3");
 const SERVER_DIR = path.resolve(__dirname, "..");
 const DB_PATH = path.resolve(SERVER_DIR, "data", "orchestrator.sqlite");
 
-function readEnvNumber(key) {
-  try {
-    const line = fs
-      .readFileSync(path.resolve(SERVER_DIR, ".env"), "utf8")
-      .split(/\r?\n/)
-      .find((l) => l.startsWith(`${key}=`));
-    const n = line ? Number(line.slice(key.length + 1).trim()) : NaN;
-    return Number.isFinite(n) ? n : undefined;
-  } catch {
-    return undefined;
-  }
+/** A numeric override as the server itself would see it: the process env wins over `.env`, matching dotenv. */
+function envNumber(key) {
+  const fromFile = () => {
+    try {
+      const line = fs
+        .readFileSync(path.resolve(SERVER_DIR, ".env"), "utf8")
+        .split(/\r?\n/)
+        .find((l) => l.startsWith(`${key}=`));
+      return line ? line.slice(key.length + 1).trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const n = Number(process.env[key] ?? fromFile());
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 // Per-role turn ceilings, mirroring agents/roles.ts. Only the implementor's is configurable; keep the rest in
@@ -52,19 +56,25 @@ const ROLE_TURN_CEILING = {
   researcher: 40,
   reader: 40,
   qa: 60,
-  implementor: readEnvNumber("IMPLEMENTOR_MAX_TURNS") ?? 100,
+  implementor: envNumber("IMPLEMENTOR_MAX_TURNS") ?? 100,
 };
 
 // These MIRROR the runner's own classifiers (RATE_LIMIT_RESULT_RE / SESSION_LIMIT_TEXT_RE /
-// TRANSIENT_API_ERROR_RE in agents/runner.ts) but are deliberately BROADER: those gate control flow and must
-// not swallow prose that merely mentions a limit, whereas these only label historical rows, where a miss is
-// the expensive direction. The bare "You've hit your limit · resets …" (a Fable model-pool notice the runner
-// catches via the rate_limit_event, not via text) is why the qualifier word here is optional.
+// TRANSIENT_API_ERROR_RE in agents/runner.ts). Only ONE direction is dangerous here: matching too widely
+// files a real failure as an expected outcome and hides it from the sweep, while failing to match merely
+// yields a noisy "real" — so every pattern must be a specific, unambiguous notice, never something that
+// could appear in ordinary crash prose. A bare number is the classic violation (`429` also occurs as a line
+// number in a stack trace), hence the required context around it. The one deliberate widening is the
+// qualifier-less "You've hit your limit · resets …" — a Fable model-pool notice the runner catches via the
+// rate_limit_event rather than text; it still requires that whole CLI phrase, so it can't match prose.
 const CAP_RE =
-  /you'?ve hit your [\w .-]{0,24}limit|session limit|weekly limit|usage limit|hour limit|limit reached|rate.?limit|too many requests|\b429\b|payment required|quota (?:exceeded|reached)/i;
+  /you'?ve hit your [\w .-]{0,24}limit|session limit|weekly limit|usage limit|hour limit|limit reached|rate.?limit|too many requests|(?:http|api)[\w .:=_-]{0,16}429\b|\b429\s+too many|payment required|quota (?:exceeded|reached)/i;
 const TRANSIENT_RE =
   /api\s*(?:error|status)?\s*[:=]?\s*(?:500|502|503|504|520|522|524|529)\b|overload|internal server error|service unavailable|bad gateway|gateway timeout|temporar(?:y|ily) unavailable|connection (?:reset|closed)|ECONNRESET|ETIMEDOUT|fetch failed|socket hang up/i;
-const CUTOFF_RE = /per-session turn ceiling|error_max_turns/i;
+// Covers all three involuntary-cutoff wordings: runError.ts's turn/cost ceilings and grokRunner.ts's own
+// "Grok stopped at its turn limit." — a backend whose cutoff text isn't here raises a REAL-failure alarm for
+// exactly the class this probe exists to defuse.
+const CUTOFF_RE = /per-session (?:turn|cost) ceiling|error_max_turns|error_max_budget_usd|stopped at its turn limit/i;
 const STRUCTURED_RE = /structured-output retries|error_max_structured_output_retries|structured output/i;
 const OPAQUE_RE = /^run failed\.?$/i;
 
@@ -79,23 +89,28 @@ const CLASSES = [
   { key: "restart", label: "killed by a server restart — auto-resumed on boot", human: false },
 ];
 
-/** Which CLASSES key a non-done run belongs to. Takes a raw `agent_runs` row (snake_case). */
+/** Which CLASSES key a non-done run belongs to. Takes a raw `agent_runs` row (snake_case).
+ *
+ *  The recorded reason is consulted BEFORE `state`, because `state='interrupted'` is not only the
+ *  markInterrupted stamp: `finalizeRun` also stamps it whenever a run ended with no result at all, and it
+ *  PRESERVES whatever error the row already had. Trusting the state first filed 5 consecutive
+ *  "native binary … failed to launch" rows — a broken install — as benign auto-resumed restarts. */
 function classifyRun(run) {
-  if (run.state === "interrupted") return "restart";
   const err = String(run.error || "").trim();
   if (/interrupted by a server restart/i.test(err)) return "restart";
   if (CAP_RE.test(err)) return "cap";
   if (TRANSIENT_RE.test(err)) return "transient";
   if (CUTOFF_RE.test(err)) return "cutoff";
   if (STRUCTURED_RE.test(err)) return "structured";
-  // A pre-fix row says only "Run failed.". Its turn count is the one piece of evidence left: at or over the
-  // role's ceiling it was a cutoff, and below it there is genuinely nothing recorded to classify.
-  if (!err || OPAQUE_RE.test(err)) {
-    const ceiling = ROLE_TURN_CEILING[run.role];
-    if (ceiling && run.num_turns != null && run.num_turns >= ceiling) return "cutoff";
-    return "unclassifiable";
-  }
-  return "real";
+  // Any other reason the row actually recorded outranks the state stamp — an interrupted run that says WHY
+  // it died died of that, not of the bounce.
+  if (err && !OPAQUE_RE.test(err)) return "real";
+  if (run.state === "interrupted") return "restart";
+  // An error-state row with no reason: pre-fix rows say only "Run failed.", and the turn count is the one
+  // piece of evidence left — at or over the role's ceiling it was a cutoff, below it there is nothing to go on.
+  const ceiling = ROLE_TURN_CEILING[run.role];
+  if (ceiling > 0 && run.num_turns != null && run.num_turns >= ceiling) return "cutoff";
+  return "unclassifiable";
 }
 
 module.exports = { classifyRun, CLASSES, ROLE_TURN_CEILING };
@@ -150,6 +165,14 @@ function main() {
   const buckets = new Map(CLASSES.map((c) => [c.key, []]));
   for (const r of runs) buckets.get(classifyRun(r)).push(r);
 
+  reportVerdict(buckets);
+  reportNeedsHuman(buckets);
+  reportRecovery(db, buckets);
+  reportBenignByTask(buckets);
+  db.close();
+}
+
+function reportVerdict(buckets) {
   console.log("\n=== verdict ===");
   for (const c of CLASSES) {
     const rows = buckets.get(c.key);
@@ -163,16 +186,18 @@ function main() {
       ? `\n  ⚠ ${needsHuman} run(s) need a human look — detailed below. The rest are handled by design.`
       : "\n  ✓ every non-done run is an expected, handled outcome — nothing to fix.",
   );
+}
 
-  // Detail only the classes a human must read; the benign ones are summarised by task instead, so a long
-  // window doesn't bury the real failures under dozens of expected restart rows.
+// Detail only the classes a human must read; the benign ones are summarised by task instead, so a long window
+// doesn't bury the real failures under dozens of expected restart rows.
+function reportNeedsHuman(buckets) {
   for (const c of CLASSES.filter((x) => x.human)) {
     const rows = buckets.get(c.key);
     if (!rows.length) continue;
     console.log(`\n=== ${c.label} (${rows.length}) ===`);
     for (const r of rows) {
       console.log(
-        `- ${r.role} · ${r.model} · ${iso(r.started_at)} · ${usd(r.cost_usd)} · ${r.num_turns ?? "—"} turns` +
+        `- ${r.role} · ${r.model} · ${r.account ?? "?"} · ${iso(r.started_at)} · ${usd(r.cost_usd)} · ${r.num_turns ?? "—"} turns` +
           `\n    task ${String(r.thread_id).slice(0, 8)} [${r.thread_state ?? "gone"}] ${short(r.title, 60)}` +
           `\n    ${short(r.error) || "(no error text recorded)"}`,
       );
@@ -184,10 +209,6 @@ function main() {
       );
     }
   }
-
-  reportRecovery(db, buckets);
-  reportBenignByTask(buckets);
-  db.close();
 }
 
 // "Handled by design" is a claim about a MECHANISM (failover, retry, boot auto-resume), and the DB can check it
@@ -199,28 +220,48 @@ function main() {
 const OWED_WORK_STATES = new Set(["review", "failed"]);
 
 function reportRecovery(db, buckets) {
-  const hasLaterRun = db.prepare("SELECT 1 FROM agent_runs WHERE thread_id = ? AND started_at > ? LIMIT 1");
+  // `>=` with the id excluded rather than `>`, so a sibling run created in the same millisecond still counts
+  // as a follow-up instead of reading as a stall.
+  const hasLaterRun = db.prepare(
+    "SELECT 1 FROM agent_runs WHERE thread_id = ? AND started_at >= ? AND id != ? LIMIT 1",
+  );
   const stalled = CLASSES.filter((c) => !c.human)
     .flatMap((c) => buckets.get(c.key).map((r) => ({ run: r, cls: c })))
     .filter((c) => OWED_WORK_STATES.has(c.run.thread_state))
-    .filter((c) => !hasLaterRun.get(c.run.thread_id, c.run.started_at));
+    .filter((c) => !hasLaterRun.get(c.run.thread_id, c.run.started_at, c.run.id));
 
   console.log("\n=== recovery check (did the handling mechanism actually run?) ===");
   if (!stalled.length) {
     console.log("  ✓ every task that still owed work ran again after its cap/restart/retry.");
     return;
   }
+  // Most "never ran again" tasks are waiting on a PERSON by design, and the thread's own park text says which.
+  // Only an unexplained one is a finding — flagging the by-design parks with ⚠ too is what trains a reader to
+  // skim the check, which is how the tree-killed row went unnoticed in the first place.
+  const explained = (threadError) => {
+    const e = String(threadError || "");
+    if (e.includes("⏳ Auto-resume pending")) return "cap-supervisor park — resumeCapParked owns it";
+    if (/interrupted by (?:a )?server restart/i.test(e)) return "human-gated park after a restart — Resume continues it";
+    return undefined;
+  };
+  let unexplained = 0;
   for (const s of stalled) {
-    const park = String(s.run.thread_error || "").includes("⏳ Auto-resume pending")
-      ? "cap-supervisor park (normal — resumeCapParked owns it)"
-      : "NOT a cap-supervisor park — nothing is waiting to resume it";
+    const why = explained(s.run.thread_error);
+    if (why) {
+      console.log(`  · by design: task ${String(s.run.thread_id).slice(0, 8)} [${s.run.thread_state}] — ${why}`);
+      continue;
+    }
+    unexplained++;
     console.log(
       `  ⚠ ${s.run.role} · ${s.cls.key} · ${iso(s.run.started_at)} · task ${String(s.run.thread_id).slice(0, 8)} ` +
-        `[${s.run.thread_state}] ${short(s.run.title, 46)}\n      ${park}`,
+        `[${s.run.thread_state}] ${short(s.run.title, 46)}\n      nothing is waiting to resume it and its park text doesn't explain why`,
     );
   }
-  console.log("  ↳ drill in with: npm run probe:task-runs --prefix server -- <id>");
+  if (unexplained) console.log("  ↳ drill in with: npm run probe:task-runs --prefix server -- <id>");
+  else console.log("  ✓ every task that stopped is accounted for by its own park message.");
 }
+
+const BENIGN_TASK_LIST_LIMIT = 15;
 
 function reportBenignByTask(buckets) {
   const benign = CLASSES.filter((c) => !c.human).flatMap((c) => buckets.get(c.key));
@@ -233,8 +274,14 @@ function reportBenignByTask(buckets) {
     e.n++;
     e.cost += r.cost_usd ?? 0;
   }
-  for (const [id, e] of [...byThread.entries()].sort((a, b) => b[1].n - a[1].n)) {
+  // Truncated so a long window can't bury the ⚠ sections above — but SAY what was dropped, since a silent
+  // cap reads as "that was everything".
+  const ranked = [...byThread.entries()].sort((a, b) => b[1].n - a[1].n);
+  for (const [id, e] of ranked.slice(0, BENIGN_TASK_LIST_LIMIT)) {
     console.log(`- ${String(id).slice(0, 8)} [${e.state ?? "gone"}] ${short(e.title, 60)} — ${e.n} run(s), ${usd(e.cost)}`);
+  }
+  if (ranked.length > BENIGN_TASK_LIST_LIMIT) {
+    console.log(`  … +${ranked.length - BENIGN_TASK_LIST_LIMIT} more task(s) with only expected outcomes (not shown)`);
   }
   console.log("  ↳ drill into any one with: npm run probe:task-runs --prefix server -- <id>");
 }

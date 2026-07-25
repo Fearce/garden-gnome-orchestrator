@@ -130,6 +130,37 @@ function processStartMs(pid) {
   }
 }
 
+/** Name WHY each non-done run in the window ended, so a sweep reads reasons instead of raw counts. */
+function reportNonDoneReasons(db, since) {
+  const rows = db
+    .prepare(
+      `SELECT role, state, error, num_turns FROM agent_runs
+       WHERE started_at > ? AND state IN ('error','interrupted')`,
+    )
+    .all(since);
+  if (!rows.length) return;
+
+  const tally = new Map();
+  for (const r of rows) {
+    const key = classifyRun(r);
+    tally.set(key, (tally.get(key) ?? 0) + 1);
+  }
+  const named = RUN_CLASSES.filter((c) => tally.has(c.key));
+  console.log(`  non-done reasons: ${named.map((c) => `${tally.get(c.key)} ${c.key}`).join(", ")}`);
+
+  const unexpected = named.filter((c) => c.human);
+  const count = unexpected.reduce((n, c) => n + tally.get(c.key), 0);
+  if (count) {
+    warn(
+      `${count} of ${rows.length} non-done run(s) are NOT an expected outcome (${unexpected
+        .map((c) => c.key)
+        .join(", ")}) — triage with: npm run probe:run-errors --prefix server`,
+    );
+  } else {
+    ok(`all ${rows.length} non-done run(s) are expected outcomes (cutoff / cap / retry / restart)`);
+  }
+}
+
 async function main() {
   // ---- 1) HTTP health ----
   section(`health ${BASE}`);
@@ -246,31 +277,6 @@ async function main() {
         .all(since);
       console.log("  runs 24h:", Object.fromEntries(runs.map((r) => [r.state, r.c])));
 
-      // Counts alone made a sweep read four benign turn-ceiling cutoffs as four crashes (2026-07-25), the
-      // same trap the review-park classification below exists for. Name the reason instead: the shared
-      // classifier from probe-run-errors.cjs decides, so the two can't drift apart.
-      const nonDone = db
-        .prepare(
-          `SELECT role, state, error, num_turns FROM agent_runs
-           WHERE started_at > ? AND state IN ('error','interrupted')`,
-        )
-        .all(since);
-      if (nonDone.length) {
-        const tally = new Map();
-        for (const r of nonDone) tally.set(classifyRun(r), (tally.get(classifyRun(r)) ?? 0) + 1);
-        const named = RUN_CLASSES.filter((c) => tally.has(c.key));
-        console.log(`  non-done reasons: ${named.map((c) => `${tally.get(c.key)} ${c.key}`).join(", ")}`);
-        const needsHuman = named.filter((c) => c.human).reduce((n, c) => n + tally.get(c.key), 0);
-        if (needsHuman) {
-          warn(
-            `${needsHuman} of ${nonDone.length} non-done run(s) are NOT an expected outcome ` +
-              `(${named.filter((c) => c.human).map((c) => c.key).join(", ")}) — triage with: npm run probe:run-errors --prefix server`,
-          );
-        } else {
-          ok(`all ${nonDone.length} non-done run(s) are expected outcomes (cutoff / cap / retry / restart)`);
-        }
-      }
-
       const stuck = db
         .prepare(
           `SELECT id, role, account, started_at FROM agent_runs
@@ -338,6 +344,12 @@ async function main() {
         .get(since);
       if (junkChat?.c) warn(`${junkChat.c} suspicious short/junk office chat body(ies) in 24h`);
       else ok("no obvious junk office bodies in 24h");
+
+      // The `runs 24h` line above is a COUNT, and counts made a sweep read four benign turn-ceiling cutoffs
+      // as four crashes (2026-07-25) — the same trap the review-park classification above exists for. Name
+      // the reason instead, using probe-run-errors.cjs's classifier so the two can never disagree. Runs LAST
+      // in this block so a throw here can't skip the checks above it.
+      reportNonDoneReasons(db, since);
 
       db.close();
     } catch (e) {
