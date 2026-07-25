@@ -218,11 +218,15 @@ it isn't on the port list — caught in review. It's split across the two branch
 `projectsEnabled`, branch 6 carries `costsEnabled`, and merging both reproduces `8164ea2` in full. Without
 this the Projects button would land in everyone's top bar by default.
 
-**Launch recipe re-authored.** `ff62ab0` points `.orchestrator/run.json` at
+**Launch recipe dropped entirely.** `ff62ab0` points `.orchestrator/run.json` at
 `http://dev.orchestrator.localhost/`, which only resolves through the Caddy proxy in `infra/caddy` —
-dropped per PORT-INVENTORY §4.8. Shipped as-is that's a dead Run button. It is now a plain `web` recipe on
-the Vite dev port (`:4318`, `npm run dev`), still `disruptive`, never the prod `:4317`; the hard rule in
-`run-hub-recipe.md` was updated to match.
+dropped per PORT-INVENTORY §4.8. Shipped as-is that's a dead Run button. I first re-authored it as a `web`
+recipe on the Vite dev port (`56980aa`), which was **also wrong** and Fen caught it (`f9e3724`): root
+`npm run dev` is `concurrently dev:server dev:web` and `dev:server` **listens on the prod port `:4317`**,
+and even with `:4318` already up `vite.config.ts` proxies `/api` and `/ws` straight to `:4317`. Either way
+the button boots or drives production, which is precisely what `run-hub-recipe.md`'s hard rule forbids.
+The recipe is therefore **removed**, per that rule's own closing line: *no recipe is better than a dead
+button*. The rule text was updated with the reasoning so nobody re-authors it a third time.
 
 **Conflicts hit and how they were resolved.**
 - **Skipped the demo commit `2bce56a`** (`ProjectsDemo.tsx`, a mock-data hash-route preview that `b3b4054`
@@ -389,7 +393,7 @@ peer-gating in `threadManager`/`prompts.ts` (the fork's office edits are **not**
 | The fork's office-coordination edits | **Superseded** — upstream's `0dc9ae9` peer-gating is the newer design (PORT-INVENTORY §6). |
 | `mergeUpstream` / `@{push}` update source (`82dca86`, `0219d9d`) | *My addition to the drop list.* Fork-topology workaround for a rewritten history with no common ancestor. This repo is a clean clone with shared history and no writable origin, so it is dead code here. See §3.3. |
 | The Projects **demo** commit (`2bce56a`) | *My addition.* Mock-data preview deleted two commits later by `b3b4054`; picking it added conflicts and no value. |
-| The fork's `.orchestrator/run.json` as authored (`ff62ab0`) | *My addition.* Its `dev.orchestrator.localhost` URL needs the dropped Caddy proxy — a dead Run button here. Re-authored as a `web` recipe on `:4318` rather than dropped outright (§3.5). |
+| The fork's `.orchestrator/run.json` (`ff62ab0`) | *My addition.* Its `dev.orchestrator.localhost` URL needs the dropped Caddy proxy, and every local rewrite reaches the prod `:4317` (see §3.5). Removed: this repo ships no launch recipe for itself. |
 | Fork process docs (`HANDOFF.md`, `DEV.md`, `DEV-ISOLATION.md`, `UPSTREAM-MIGRATION-HANDOFF.md`, `docs/*`) | Fork-history artifacts. Only the rule docs paired with a ported feature came along (`run-hub-recipe`, `notify-on-thread-terminal-state`, `add-a-live-pane`, `ab-token-measurement`, `verify-server-route-or-ui`). |
 | `token_freeze_monitor.cjs`, `TOKEN_FREEZE_FINDINGS.md` | Investigation scratch; the *behaviour* is ported on branch 4 (PORT-INVENTORY §4.5). |
 | Deleting `server/src/git/readonlyGit.ts` / `server/scripts/fix-stuck.cjs` | The fork deleted these; upstream still uses `readonlyGit` for the reader lane's `git_read`. Not replayed. |
@@ -417,6 +421,16 @@ npm run typecheck && npm run build
 npm run test:gates --prefix server       # expect ≥18; each branch adds its own
 node server/scripts/check-orphaned-tests.cjs   # on port/crash-resilience and later
 ```
+
+A green build does **not** prove a cherry-pick port is complete (that's how 61 CSS rules nearly
+shipped missing, §3.5). To check content rather than compilation, without checking anything out:
+
+```bash
+bash ~/Claude/tools/port-audit.sh -b master port/<name>
+```
+
+It reads the branch's own `(cherry picked from …)` trailers and reports any rule or exported symbol
+a picked commit added that the branch lacks. All six branches are clean as delivered.
 
 To drive the UI, use a throwaway instance — **never 4317/4318, never the live DB**:
 
