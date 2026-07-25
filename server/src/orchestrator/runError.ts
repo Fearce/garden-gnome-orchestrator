@@ -20,17 +20,20 @@ const SUBTYPE_REASONS: Record<string, string> = {
 
 export const MAX_RUN_ERROR_LEN = 2000;
 
-/** The failure reason to persist for an errored run: the agent's own words when it produced any (the CLI
- *  backends put them in `result`, the SDK in `errors`), else what the subtype says happened. Never the
- *  opaque "Run failed." unless the result reported no text and no subtype whatsoever. */
+/** The failure reason to persist for an errored run, in order of how much it tells a reader: the agent's own
+ *  words (only the CLI backends produce any, in `result`), then the canned reason for a KNOWN subtype, then
+ *  whatever the SDK reported in `errors`, then the subtype name. Never the opaque "Run failed." unless the
+ *  result carried no text and no subtype at all.
+ *
+ *  The canned reason outranks `errors` because for these subtypes the SDK only restates itself ("Reached
+ *  maximum number of turns (100)") while the canned line also says the cutoff is expected rather than a
+ *  crash — and because the triage classifier keys on this text, so it must not drift with SDK phrasing. */
 export function runErrorText(res: ResultEvent): string {
-  const text = ownWords(res) || SUBTYPE_REASONS[res.subtype] || subtypeFallback(res.subtype);
+  const text = res.result?.trim() || SUBTYPE_REASONS[res.subtype] || sdkErrors(res) || subtypeFallback(res.subtype);
   return text.slice(0, MAX_RUN_ERROR_LEN);
 }
 
-function ownWords(res: ResultEvent): string {
-  const own = res.result?.trim();
-  if (own) return own;
+function sdkErrors(res: ResultEvent): string {
   return (res.errors ?? [])
     .map((e) => e.trim())
     .filter(Boolean)

@@ -71,10 +71,13 @@ const CAP_RE =
   /you'?ve hit your [\w .-]{0,24}limit|session limit|weekly limit|usage limit|hour limit|limit reached|rate.?limit|too many requests|(?:http|api)[\w .:=_-]{0,16}429\b|\b429\s+too many|payment required|quota (?:exceeded|reached)/i;
 const TRANSIENT_RE =
   /api\s*(?:error|status)?\s*[:=]?\s*(?:500|502|503|504|520|522|524|529)\b|overload|internal server error|service unavailable|bad gateway|gateway timeout|temporar(?:y|ily) unavailable|connection (?:reset|closed|refused)|unable to connect to (?:the )?api|failed ?to ?open ?socket|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|socket hang up/i;
-// Covers all three involuntary-cutoff wordings: runError.ts's turn/cost ceilings and grokRunner.ts's own
-// "Grok stopped at its turn limit." — a backend whose cutoff text isn't here raises a REAL-failure alarm for
-// exactly the class this probe exists to defuse.
-const CUTOFF_RE = /per-session (?:turn|cost) ceiling|error_max_turns|error_max_budget_usd|stopped at its turn limit/i;
+// Every wording a turn/cost cutoff can arrive in — a backend whose text isn't here raises a REAL-failure
+// alarm for exactly the class this probe exists to defuse. runError.ts writes the "per-session … ceiling"
+// lines, grokRunner.ts writes "Grok stopped at its turn limit.", and the SDK's own `errors` text ("Reached
+// maximum number of turns (100)") reached rows written in the window before runError.ts started preferring
+// the canned reason — a real 101-turn row in this DB reads exactly that way.
+const CUTOFF_RE =
+  /per-session (?:turn|cost) ceiling|error_max_turns|error_max_budget_usd|stopped at its turn limit|reached maximum number of turns/i;
 const STRUCTURED_RE = /structured-output retries|error_max_structured_output_retries|structured output/i;
 const OPAQUE_RE = /^run failed\.?$/i;
 

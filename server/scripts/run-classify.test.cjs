@@ -58,6 +58,9 @@ is("transient", { error: "API Error: Unable to connect to API (FailedToOpenSocke
 is("cutoff", { error: "Stopped at the per-session turn ceiling (error_max_turns) — an involuntary cutoff, not a crash." });
 is("cutoff", { error: "Stopped at the per-session cost ceiling (error_max_budget_usd) — an involuntary cutoff, not a crash." });
 is("cutoff", { model: "grok-4.5", error: "Grok stopped at its turn limit." });
+// The SDK's own phrasing, as persisted for rows written before runError.ts preferred the canned reason.
+// Missing this made the sweep report a routine 101-turn cutoff as a REAL failure.
+is("cutoff", { error: "Reached maximum number of turns (100)", num_turns: 101 });
 is("structured", {
   role: "qa",
   error: "Stopped after too many structured-output retries (error_max_structured_output_retries) — …",

@@ -26,6 +26,16 @@ const errored = (subtype: string, over: Partial<ResultEvent> = {}): ResultEvent 
   assert.doesNotMatch(runErrorText(errored("error_max_turns")), /resum/i);
 }
 
+// For a KNOWN involuntary cutoff the canned reason beats the SDK's own words, which merely restate the
+// subtype ("Reached maximum number of turns (100)") without saying it is expected rather than a crash. That
+// also keeps the persisted text STABLE: the sweep's classifier keys on it, so it must not drift with SDK
+// phrasing — the first version of this let a cutoff read as a REAL failure in `npm run probe:run-errors`.
+{
+  const text = runErrorText(errored("error_max_turns", { errors: ["Reached maximum number of turns (100)"] }));
+  assert.match(text, /turn ceiling/i);
+  assert.match(text, /not a crash/i);
+}
+
 // Structured-output exhaustion is the other cutoff the roles can actually hit (planner/researcher/qa/reader
 // all run with a json_schema output format).
 {
