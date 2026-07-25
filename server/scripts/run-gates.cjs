@@ -19,6 +19,7 @@ const GATES = [
   "test:schedule-detect",
   "test:scheduler",
   "test:api-errors",
+  "test:injection",
   "test:run-error",
   "test:run-classify",
   "test:crashlog-scan",

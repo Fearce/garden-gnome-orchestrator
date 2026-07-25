@@ -28,7 +28,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
-import { acknowledgedInjection } from "./injection.js";
+import { acknowledgedInjection, injectionSendOptions, structuredAcknowledgedInjection } from "./injection.js";
 import type {
   AgentEvent,
   AgentRunState,
@@ -2358,8 +2358,10 @@ export class ThreadManager implements OrchestratorApi {
       if (!notes?.length) break;
       this.directorNotes.delete(thread.id);
       this.hub.log("info", `Re-planning ${thread.id.slice(0, 8)} with ${notes.length} injected note(s) before the implementor starts.`);
+      // This role is schema-bound, so its `summary` field carries the ACK instead of emitting free-form
+      // text before its plan. Re-emitting that plan is the acknowledgement and the downstream hand-off.
       agent.send(
-        `[New information from the director — revise your plan to account for this, then re-emit your structured plan]\n${notes.join("\n\n")}`,
+        structuredAcknowledgedInjection(`${notes.join("\n\n")}\n\nRevise your plan to account for this, then re-emit your structured plan.`),
         { priority: "now" },
       );
       const next = await agent.nextResult();
@@ -2757,7 +2759,7 @@ export class ThreadManager implements OrchestratorApi {
       resumeSession = undefined;
     }
     if (!resumeSession) {
-      const extras = [restartNote, opts.directorNote && `[New information from the director]\n${opts.directorNote}`].filter(Boolean);
+      const extras = [restartNote, opts.directorNote].filter(Boolean);
       const text = extras.length ? `${baseKickoff}\n\n${extras.join("\n\n")}` : baseKickoff;
       return this.startImplementor(thread, text, { effort: opts.effort, account: opts.account });
     }
@@ -2771,7 +2773,7 @@ export class ThreadManager implements OrchestratorApi {
       const parts = [
         restartNote,
         opts.resumeNudge,
-        opts.directorNote && opts.directorNote !== opts.resumeNudge && `[New information from the director]\n${opts.directorNote}`,
+        opts.directorNote && opts.directorNote !== opts.resumeNudge && opts.directorNote,
       ].filter(Boolean);
       const continuation = parts.join("\n\n");
       // The fresh-start kickoff used both when resume wedges (runner self-heal) AND when we skip resume
@@ -2804,7 +2806,7 @@ export class ThreadManager implements OrchestratorApi {
       const parts = [
         restartNote,
         opts.resumeNudge,
-        opts.directorNote && opts.directorNote !== opts.resumeNudge && `[New information from the director]\n${opts.directorNote}`,
+        opts.directorNote && opts.directorNote !== opts.resumeNudge && opts.directorNote,
       ].filter(Boolean);
       return this.startImplementor(thread, parts.join("\n\n"), { effort: opts.effort, resume: resumeSession, account: opts.account });
     }
@@ -3235,7 +3237,7 @@ export class ThreadManager implements OrchestratorApi {
       parts.push(opts.restartNote, "");
     }
     if (opts?.directorNote) {
-      parts.push(`**New information from the director for this resume:** ${opts.directorNote}`, "");
+      parts.push(opts.directorNote, "");
     }
     if (handoff) {
       parts.push(
@@ -3594,7 +3596,7 @@ export class ThreadManager implements OrchestratorApi {
         // invariant (never a second agent), not this round's verdict, is what this gate must guarantee.
         const blocks = images?.length ? images.map(toImageBlock) : [];
         qa.send(
-          contentWithImages(acknowledgedInjection(message), blocks),
+          contentWithImages(structuredAcknowledgedInjection(message), blocks),
           mode === "interrupt" ? { priority: "now" } : undefined,
         );
       } else {
@@ -3628,7 +3630,7 @@ export class ThreadManager implements OrchestratorApi {
       const blocks = images?.length ? images.map(toImageBlock) : [];
       live.run.send(
         contentWithImages(acknowledgedInjection(message), blocks),
-        mode === "interrupt" ? { priority: "now" } : undefined,
+        injectionSendOptions(live.run, mode),
       );
       const m = this.db.addMessage({
         threadId,
@@ -3811,14 +3813,14 @@ export class ThreadManager implements OrchestratorApi {
     if (thread.state === "qa") {
       if (message?.trim()) {
         const qa = this.liveQa.get(threadId);
-        if (qa) qa.send(acknowledgedInjection(message), { priority: "now" });
+        if (qa) qa.send(structuredAcknowledgedInjection(message), { priority: "now" });
         else this.bufferDirectorNote(threadId, message);
       }
       return { ok: true, state: "qa" };
     }
     const live = this.live.get(threadId);
     if (live) {
-      live.run.send(message ?? "Continue.", { priority: "now" });
+      live.run.send(message?.trim() ? acknowledgedInjection(message) : "Continue.", { priority: "now" });
       this.setState(threadId, "implementing");
       return { ok: true, state: "implementing" };
     }
@@ -3882,7 +3884,7 @@ export class ThreadManager implements OrchestratorApi {
     const resumeNudge = message ? acknowledgedInjection(message) : "Continue where you left off.";
     let start: LiveImplementor | null;
     try {
-      start = await this.startResumedImplementor(thread, baseKickoff, resume, { effort: thread.effortOverride ?? undefined, resumeNudge, directorNote: message ? acknowledgedInjection(message) : undefined, qaFollows: false });
+      start = await this.startResumedImplementor(thread, baseKickoff, resume, { effort: thread.effortOverride ?? undefined, resumeNudge, directorNote: message ? resumeNudge : undefined, qaFollows: false });
     } catch (e) {
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} failed to start: ${String(e)}`);
       start = null;
