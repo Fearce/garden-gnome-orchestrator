@@ -28,6 +28,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
+import { acknowledgedInjection } from "./injection.js";
 import type {
   AgentEvent,
   AgentRunState,
@@ -2048,7 +2049,8 @@ export class ThreadManager implements OrchestratorApi {
       //    implementor instead of being dropped.
       const buffered = this.directorNotes.get(threadId);
       this.directorNotes.delete(threadId);
-      const note = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n") || undefined;
+      const rawNote = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n");
+      const note = rawNote ? acknowledgedInjection(rawNote) : undefined;
       await this.runImplementorQa(thread, kickoff, thread.effortOverride ?? plan?.effort, this.latestImplementorSession(threadId), note, {
         qaEnabled: settings.qaEnabled,
         maxQaRounds: settings.maxQaRounds,
@@ -3411,7 +3413,7 @@ export class ThreadManager implements OrchestratorApi {
       // implementor when IT is the one running again — never alongside QA, never stranded.
       const qaNotes = this.directorNotes.get(thread.id);
       this.directorNotes.delete(thread.id);
-      const noteBlock = qaNotes?.length ? `\n\n[New information from the director]\n${qaNotes.join("\n\n")}` : "";
+      const noteBlock = qaNotes?.length ? `\n\n${acknowledgedInjection(qaNotes.join("\n\n"))}` : "";
       const fixMsg = `${this.officeName(thread.id, "qa")} (your QA reviewer) found issues — fix ALL of these, then they'll re-check:\n${formatQaIssues(qa)}${noteBlock}`;
       // The implementor was fully stopped before QA, so RE-LAUNCH it through the same resume gate the
       // rest of the pipeline uses (warm full-session resume when the cache is fresh — fix-rounds are
@@ -3451,7 +3453,7 @@ export class ThreadManager implements OrchestratorApi {
     while (this.queuedForImplementor.get(thread.id)?.length && !this.cancelled(thread.id) && res && !res.isError) {
       const queued = this.queuedForImplementor.get(thread.id)!;
       this.queuedForImplementor.delete(thread.id);
-      const msg = `[Queued follow-up from ${config.ownerName} — do this too before you finish and hand off]\n${queued.join("\n\n")}`;
+      const msg = acknowledgedInjection(`[Queued follow-up from ${config.ownerName} — do this too before you finish and hand off]\n${queued.join("\n\n")}`);
       // End the just-finished run before relaunching so only one implementor ever holds the slot (the
       // same ordering QA fix-rounds use); the session id survives for the warm resume.
       await this.stopLive(thread.id);
@@ -3592,7 +3594,7 @@ export class ThreadManager implements OrchestratorApi {
         // invariant (never a second agent), not this round's verdict, is what this gate must guarantee.
         const blocks = images?.length ? images.map(toImageBlock) : [];
         qa.send(
-          contentWithImages(`[New information from the director]\n${message}`, blocks),
+          contentWithImages(acknowledgedInjection(message), blocks),
           mode === "interrupt" ? { priority: "now" } : undefined,
         );
       } else {
@@ -3625,7 +3627,7 @@ export class ThreadManager implements OrchestratorApi {
       }
       const blocks = images?.length ? images.map(toImageBlock) : [];
       live.run.send(
-        contentWithImages(`[New information from the director]\n${message}`, blocks),
+        contentWithImages(acknowledgedInjection(message), blocks),
         mode === "interrupt" ? { priority: "now" } : undefined,
       );
       const m = this.db.addMessage({
@@ -3775,7 +3777,7 @@ export class ThreadManager implements OrchestratorApi {
     if (!notes?.length) return;
     this.directorNotes.delete(threadId);
     this.hub.log("info", `Delivering ${notes.length} buffered director note(s) to the now-live implementor on ${threadId.slice(0, 8)}.`);
-    run.send(`[New information from the director]\n${notes.join("\n\n")}`, { priority: "now" });
+    run.send(acknowledgedInjection(notes.join("\n\n")), { priority: "now" });
   }
 
   async interruptThread(threadId: string): Promise<ThreadActionResult> {
@@ -3809,7 +3811,7 @@ export class ThreadManager implements OrchestratorApi {
     if (thread.state === "qa") {
       if (message?.trim()) {
         const qa = this.liveQa.get(threadId);
-        if (qa) qa.send(`[New information from the director]\n${message}`, { priority: "now" });
+        if (qa) qa.send(acknowledgedInjection(message), { priority: "now" });
         else this.bufferDirectorNote(threadId, message);
       }
       return { ok: true, state: "qa" };
@@ -3877,10 +3879,10 @@ export class ThreadManager implements OrchestratorApi {
     }
     const resume = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
     const baseKickoff = this.db.getThreadStageOutputs(thread.id).kickoff ?? thread.brief;
-    const resumeNudge = message ?? "Continue where you left off.";
+    const resumeNudge = message ? acknowledgedInjection(message) : "Continue where you left off.";
     let start: LiveImplementor | null;
     try {
-      start = await this.startResumedImplementor(thread, baseKickoff, resume, { effort: thread.effortOverride ?? undefined, resumeNudge, directorNote: message, qaFollows: false });
+      start = await this.startResumedImplementor(thread, baseKickoff, resume, { effort: thread.effortOverride ?? undefined, resumeNudge, directorNote: message ? acknowledgedInjection(message) : undefined, qaFollows: false });
     } catch (e) {
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} failed to start: ${String(e)}`);
       start = null;
@@ -3905,7 +3907,7 @@ export class ThreadManager implements OrchestratorApi {
     const buffered = this.pendingResumeMsgs.get(thread.id);
     if (buffered?.length) {
       this.pendingResumeMsgs.delete(thread.id);
-      for (const m of buffered) start.run.send(`[New information from the director]\n${m}`, { priority: "next" });
+      for (const m of buffered) start.run.send(acknowledgedInjection(m), { priority: "next" });
     }
     await this.awaitImplementorCompletion(thread, thread.effortOverride ?? undefined, baseKickoff, start.run, start.accountId, false, resumeNudge, false)
       .then(() => {
