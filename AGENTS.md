@@ -58,16 +58,16 @@ How to restart depends on how it's running:
 - Under `npm run dev` (`tsx watch`): editing `server/src` already hot-restarts it — but that
   KILLS in-flight tasks, so use `serve` when real pipelines are running.
 
-**Windows (script-hub production deployment):** runs as script-hub id **`Codex-orchestrator`** with
+**Windows (script-hub production deployment):** runs as script-hub id **`claude-orchestrator`** with
 keepAlive armed. Implementor workers are **child processes of this server** (the Agent SDK spawns the
 `Codex` CLI — `server/src/agents/runner.ts`), so:
 - **Server change?** `npm run build`, then issue the **atomic** hub restart yourself — it runs
   server-side in the hub process (PID outside this server's tree), survives the caller being killed
   mid-restart, and re-arms keepAlive:
   ```
-  POST http://127.0.0.1:3939/api/restart   body {"id":"Codex-orchestrator"}
+  POST http://127.0.0.1:3939/api/restart   body {"id":"claude-orchestrator"}
   ```
-  Shorthand: `.\launchers\script-hub.ps1 restart Codex-orchestrator` (from your process-manager
+  Shorthand: `.\launchers\script-hub.ps1 restart claude-orchestrator` (from your process-manager
   root) — issue it directly.
 - **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
