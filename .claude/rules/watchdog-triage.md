@@ -21,7 +21,10 @@ They look identical from inside the agent — "the brief said recover, so I reco
   Require: artifact exists **and** is substantive **and** is committed. "Committed but edited
   since" means work in flight, not finished work.
 - **Size is not substance.** A 5 KB report with no verdict section is still a stub — gate on
-  required headings (`-k`), not byte count.
+  required headings (`-k`), not byte count. For a `.md` artifact `-k` is heading-anchored: the
+  keyword must sit on a `#`/`##`/`###` line, so a table of contents that merely *lists* "Verdict",
+  or a body that says "could not determine a Verdict", does not pass. `-K` is the loose
+  anywhere-in-file match, for non-markdown artifacts or a value rather than a section.
 
 ## If the verdict is STRANDED
 Recover per the brief, then honor the usual constraints: never `git add -A` (a dirty tree on a
