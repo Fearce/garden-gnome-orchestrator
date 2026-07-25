@@ -26,6 +26,14 @@ They look identical from inside the agent — "the brief said recover, so I reco
   or a body that says "could not determine a Verdict", does not pass. `-K` is the loose
   anywhere-in-file match, for non-markdown artifacts or a value rather than a section.
 
+## HEALTHY means the work finished — not that the answer was "yes"
+Stop working, but do **not** report a bare "all fine". Read the artifact's own verdict
+section before you write your summary: a report can be complete, committed, and still say
+**CONDITIONAL GO** with an open decision only the owner can make. Surface that conditional
+and where it lives (e.g. MIGRATION-READINESS.md §0 Verdict, §1.3 push safety, §6 "the
+decision only Mikkel can make") — an overnight watchdog that says "healthy" and hides a
+blocking human decision costs the owner the morning.
+
 ## If the verdict is STRANDED
 Recover per the brief, then honor the usual constraints: never `git add -A` (a dirty tree on a
 shared checkout is usually a peer's WIP — pathspec only your files), never force-push, never
