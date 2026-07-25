@@ -30,9 +30,10 @@ They look identical from inside the agent — "the brief said recover, so I reco
 Stop working, but do **not** report a bare "all fine". On exit 0 the script now PRINTS this
 for you (markdown artifacts): the `Verdict` section body plus every still-open line
 (`ACTION REQUIRED` / `NO-GO` / `CONDITIONAL GO` / `⚠` / "decision only … can make", matched
-case-sensitively so lowercase prose about code conditionals doesn't drown them). Read that
-digest instead of re-grepping by hand, and carry each item plus where it lives into your
-hand-off: a report can be complete, committed, and still say
+case-sensitively so lowercase prose about code conditionals doesn't drown them). Lines inside the
+already-printed `Verdict` section are not repeated, and each remaining one is tagged with the
+heading it sits under, so the digest already tells you where each item lives. Read it instead of
+re-grepping by hand, and carry each item plus that location into your hand-off: a report can be complete, committed, and still say
 **CONDITIONAL GO** with an open decision only the owner can make. Surface that conditional
 and where it lives (e.g. MIGRATION-READINESS.md §0 Verdict, §1.3 push safety, §6 "the
 decision only Mikkel can make") — an overnight watchdog that says "healthy" and hides a
