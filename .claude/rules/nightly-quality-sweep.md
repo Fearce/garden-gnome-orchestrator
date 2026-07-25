@@ -10,7 +10,8 @@ npm run health --prefix server
 ```
 (`server/scripts/nightly-health.cjs`) — hits `/api/health`, checks `:4317`
 vs `dist` mtime, greps live reliability symbols, lists dirty git paths,
-and summarizes SQLite parks/caps/stuck runs. Exit 1 = hard fail; dirty
+summarizes SQLite parks/caps/stuck runs, and scans `crash.log` for real
+faults vs the benign memory high-water notes. Exit 1 = hard fail; dirty
 tree alone does **not** fail.
 
 ## Second command — run the gate suite (health does NOT)
@@ -21,7 +22,8 @@ npm run typecheck && npm run test:gates --prefix server
 health can sit on top of crash-broken gates (a feature landing without
 updating a test stub is the classic cause — this is how the missing
 `StubAccounts.setSpreadUsage` slipped past a "13/13 green" claim). `test:gates`
-(`scripts/run-gates.cjs`) runs all 20 FREE gates in ~22s and exits non-zero on
+(`scripts/run-gates.cjs`) runs all FREE gates in ~22s (count is whatever's registered — don't
+hardcode it here) and exits non-zero on
 any failure; it excludes `reader`/`structured`/`effort` (those spawn real
 `claude` subprocesses and burn quota). Don't hand-run gates one by one.
 
@@ -37,6 +39,14 @@ task with no later run = something stopped mid-work). `num_turns` at the role's
 ceiling (implementor `implementorMaxTurns`, qa 60, others 40) is a benign cutoff —
 that misread is why this step exists. Same classifier backs health's
 `non-done reasons:` line (gate `test:run-classify`), so they can't disagree.
+
+## Fourth command — backend headroom (the one watch-item)
+```
+npm run probe:accounts --prefix server
+```
+A green sweep still leaves backend subscription headroom as the thing to eyeball: which Claude subs
+have 5h/weekly capacity left and where failover lands. Caps are handled by failover (`probe:run-errors`
+confirms the mechanism ran), but a nearly-exhausted ladder means a task burst can park on caps.
 
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already

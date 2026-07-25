@@ -24,6 +24,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const Database = require("better-sqlite3");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
+const { scanCrashLog } = require("./crashlog-scan.cjs");
 
 const args = process.argv.slice(2);
 function flag(name) {
@@ -354,6 +355,45 @@ async function main() {
       db.close();
     } catch (e) {
       warn(`sqlite probe failed: ${e && e.message ? e.message : e}`);
+    }
+  }
+
+  // ---- 6) Crash log — real faults vs the benign lifecycle notes the guards also write here ----
+  // Until this section, a green `health` said nothing about crash.log content; a sweep had to `tail`
+  // it and eyeball "only memory high-water notes". crashlog-scan.cjs splits faults (an
+  // unhandledRejection/uncaughtException label, or any entry carrying a stack frame) from the
+  // lifecycle notes (high-water, pressure warnings, signals, exit, Node warnings) the same file holds.
+  section("crash log (last 24h)");
+  const crashLogPath = path.join(SERVER, "data", "crash.log");
+  if (!fs.existsSync(crashLogPath)) {
+    ok(`no crash.log yet (clean process — no faults recorded)`);
+  } else {
+    try {
+      const text = fs.readFileSync(crashLogPath, "utf8");
+      const { faults, lifecycle } = scanCrashLog(text, Date.now() - 24 * 3600 * 1000);
+      if (faults.length) {
+        const recent = faults.reduce((a, b) => (a.ts != null && (b.ts == null || b.ts > a.ts) ? b : a));
+        const when = recent.ts != null ? new Date(recent.ts).toISOString() : "undated";
+        warn(
+          `${faults.length} fault entry(ies) in crash.log in last 24h — most recent: ${recent.label} at ${when}; \`tail server/data/crash.log\` for the stack`,
+        );
+      } else {
+        const lcLine =
+          Object.entries(lifecycle)
+            .filter(([, n]) => n)
+            .map(([k, n]) => `${n} ${k}`)
+            .join(", ") || "none";
+        ok(`no fault entries in last 24h (lifecycle notes: ${lcLine})`);
+      }
+      // Memory-pressure warnings predict an OOM without being a crash yet — surface them so a sweep
+      // watches the trend rather than waiting for the first real fault.
+      if (lifecycle["memory pressure"]) {
+        warn(
+          `${lifecycle["memory pressure"]} memory-pressure warning(s) in last 24h — heap approached the V8 ceiling; an OOM was predicted (not a crash yet, but watch it)`,
+        );
+      }
+    } catch (e) {
+      warn(`crash.log scan failed: ${e && e.message ? e.message : e}`);
     }
   }
 

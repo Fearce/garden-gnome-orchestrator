@@ -21,6 +21,7 @@ const GATES = [
   "test:api-errors",
   "test:run-error",
   "test:run-classify",
+  "test:crashlog-scan",
   "test:office-bridge",
   "test:office-gating",
   "test:zai-usage",
