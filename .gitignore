@@ -1,6 +1,10 @@
 # deps
 node_modules/
 */node_modules/
+# Only the per-workspace lockfiles are tracked (server/, web/). The ROOT package.json exists solely for
+# `concurrently`, and `npm install` at the root — a documented first-run step — regenerates a root lockfile
+# that upstream has never tracked, so it would otherwise sit in `git status` forever as stray noise.
+/package-lock.json
 
 # build output
 server/dist/
