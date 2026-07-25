@@ -21,9 +21,22 @@ npm run typecheck && npm run test:gates --prefix server
 health can sit on top of crash-broken gates (a feature landing without
 updating a test stub is the classic cause — this is how the missing
 `StubAccounts.setSpreadUsage` slipped past a "13/13 green" claim). `test:gates`
-(`scripts/run-gates.cjs`) runs all 19 FREE gates in ~22s and exits non-zero on
+(`scripts/run-gates.cjs`) runs all 20 FREE gates in ~22s and exits non-zero on
 any failure; it excludes `reader`/`structured`/`effort` (those spawn real
 `claude` subprocesses and burn quota). Don't hand-run gates one by one.
+
+## Third command — triage the non-done runs (don't read the counts yourself)
+```
+npm run probe:run-errors --prefix server        # add `-- 168` for 7 days
+```
+`health`'s `runs 24h: { error: 10 }` line is a COUNT, and most non-done runs are
+expected: a turn-ceiling cutoff, a cap that failed over, a restart that
+auto-resumed, a retried 5xx. The probe classifies each one, lists only what needs
+a human, and **verifies the mechanism ran** (a cap/restart on a `review`/`failed`
+task with no later run = something stopped mid-work). `num_turns` at the role's
+ceiling (implementor `implementorMaxTurns`, qa 60, others 40) is a benign cutoff —
+that misread is why this step exists. Same classifier backs health's
+`non-done reasons:` line (gate `test:run-classify`), so they can't disagree.
 
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already

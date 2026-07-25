@@ -99,7 +99,10 @@ State + run history live in `server/data/orchestrator.sqlite` (open read-only wi
 there's NO `backend` column — the backend is encoded in `model`, e.g. `grok-4.5`/`gpt-*-sol`/`claude-*`).
 For one task's full trail + per-model cost/turn totals + a QA-loop budget check, run
 `npm run probe:task-runs --prefix server -- <thread-id|title-substring>` (read-only, safe while prod is up).
-For a **subscription/account-chip** question ("why does it say idle / limited / 0% / a wrong %?"), run
+To triage ALL non-done runs in a window instead of one task — which errors are real vs. an expected
+cutoff/cap/retry/restart, and did the handling mechanism actually run — use
+`npm run probe:run-errors --prefix server [-- <hours>]` (its classifier also backs health's `non-done
+reasons:` line). For a **subscription/account-chip** question ("why does it say idle / limited / 0% / a wrong %?"), run
 `npm run probe:accounts --prefix server` — it dumps each account's persisted `account_usage_*` state
 (5h/7d usage + resets, `holdUntil` stagger-hold, `extWakeAt` outside-consumer mark) with plain-English
 reads. "idle" is a stagger hold-off (GG parked its OWN 5h restart and stops pinging), NOT a globally
