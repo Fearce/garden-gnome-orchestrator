@@ -42,6 +42,7 @@
     "probe:task-runs": "node scripts/probe-task-runs.cjs",
     "probe:run-errors": "node scripts/probe-run-errors.cjs",
     "probe:accounts": "node scripts/probe-accounts.cjs",
+    "probe:schedule-detect": "tsx src/tools/probeScheduleDetect.ts",
     "health": "node scripts/nightly-health.cjs",
     "audit:secrets": "node scripts/audit-secrets.cjs"
   },
