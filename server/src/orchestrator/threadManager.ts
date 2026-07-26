@@ -5126,7 +5126,7 @@ function prependUserContent(content: string | unknown[], note: string): string |
 /** Turn a Claude structured-role config into a self-contained CLI kickoff. CLI backends cannot attach
  * the in-process bus MCP servers, but they can perform the role's core repo/web/test work and both expose
  * structured-output adapters. The prompt preserves the original system doctrine and schema contract. */
-function cliRoleKickoff(
+export function cliRoleKickoff(
   cfg: AgentRunConfig,
   content: string | unknown[],
   role: "planner" | "researcher" | "qa" | "reader",
@@ -5139,9 +5139,19 @@ function cliRoleKickoff(
         ? cfg.systemPrompt.append ?? ""
         : "";
   const schema = cfg.outputFormat?.schema;
+  // The SDK enforces ordinary QA's read-only tool policy, but CLI fallbacks receive their role policy
+  // as text. Do not append the generic read-only rule to QA-fixes: it comes *after* QA_FIX_PROMPT and
+  // was causing Codex/Grok to obey the contradiction and leave defects for the implementor.
+  const qaCanEdit =
+    role === "qa" &&
+    !cfg.disallowedTools?.includes("Write") &&
+    !cfg.disallowedTools?.includes("Edit") &&
+    !cfg.disallowedTools?.includes("NotebookEdit");
   const safety =
     role === "qa"
-      ? "You are a reviewer: inspect and run checks, but do not edit the implementation."
+      ? qaCanEdit
+        ? "You are an editing QA reviewer: inspect, fix every in-scope issue you find, verify the fixes, and follow the commit/push policy in your role instructions."
+        : "You are a reviewer: inspect and run checks, but do not edit the implementation."
       : role === "planner"
         ? "Plan only: inspect the repository, but do not edit it."
         : role === "researcher"
