@@ -9,8 +9,8 @@
 //   • /api/health up?
 //   • dist mtime vs :4317 listener start (stale build shadowing) — but only a
 //     warning when RUNTIME server/src ALSO changed after start; a docs/scripts/
-//     test-only rebuild bumps dist mtimes without any runtime drift, so it's
-//     informational (tests are excluded — see newestSrcMtimeMs).
+//     test/probe-only rebuild bumps dist mtimes without any runtime drift, so
+//     it's informational (src/tests + src/tools excluded — see newestSrcMtimeMs).
 //   • reliability symbols still present in dist (office/Grok QA path)?
 //   • git dirty files (concurrent teammate WIP — leave alone unless yours)
 //   • thread/run health from SQLite (caps, parks, stuck runs)
@@ -81,11 +81,12 @@ function winListener(port) {
  * Newest mtime among compiled RUNTIME sources under server/src. Used to tell a
  * real stale-build (runtime server/src changed after the process started) apart
  * from a benign rebuild (dist mtimes bump on any `npm run build` even when no
- * runtime code changed). Tests (`src/tests/`, `*.test.ts`, `*.itest.ts`) are
- * excluded: they never affect the running server, but a test-only edit after
- * boot (e.g. a StubAccounts fake following a feature) would otherwise trip the
- * "real stale build" warning as a false positive every nightly sweep. Returns
- * null if src is unreadable.
+ * runtime code changed). Tests (`src/tests/`, `*.test.ts`, `*.itest.ts`) and
+ * agent tooling (`src/tools/`, the tsx-run probes) are excluded: neither is
+ * loaded by the running server, but an edit to one after boot (a StubAccounts
+ * fake following a feature, a probe added while tuning it) would otherwise trip
+ * the "real stale build" warning as a false positive every nightly sweep.
+ * Returns null if src is unreadable.
  */
 function newestSrcMtimeMs() {
   const srcDir = path.join(SERVER, "src");
@@ -100,7 +101,7 @@ function newestSrcMtimeMs() {
     for (const e of entries) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
-        if (e.name === "tests") continue;
+        if (e.name === "tests" || e.name === "tools") continue;
         walk(full);
       } else if (e.isFile() && /\.(ts|tsx|mts|cts)$/.test(e.name) && !/\.(test|itest)\.(ts|tsx|mts|cts)$/.test(e.name)) {
         const m = fs.statSync(full).mtimeMs;
