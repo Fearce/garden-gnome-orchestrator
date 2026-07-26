@@ -1588,11 +1588,17 @@ body.dl-resizing { user-select: none; }
   /* topbar wraps to two rows: brand + controls, then a full-width
      horizontally-scrollable accounts strip that never widens the viewport. Padding kept tight so the
      bar (plus the account strip below it) doesn't eat a third of a phone screen before any content. */
-  .topbar { flex-wrap: wrap; gap: 8px; row-gap: 6px; padding: 6px 12px; }
-  .brand-logo { height: 28px; }
+  .topbar { flex-wrap: wrap; column-gap: 6px; row-gap: 6px; padding: 6px 12px; }
+  .brand-logo { height: 24px; }
   .wordmark .sub { display: none; }
+  /* The version/sha chip is a desktop dev reference; on a phone it only widens the brand and shoves the
+     control cluster (bell + live dot) onto a second row. Drop it — the version is still in Settings. */
+  .build-tag { display: none; }
   .stat { display: none; }
   .conn { font-size: 0; gap: 0; }            /* drop the "live" label, keep the dot */
+  /* The plan-approval gate collapses to an icon-only square (its "gate" word is the widest topbar
+     control) so brand + settings + gate + bell + live-dot all fit on ONE row instead of wrapping. */
+  .gate > span { display: none; }
   .accounts {
     order: 5; flex-basis: 100%; flex-wrap: nowrap;
     overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch;
@@ -1602,7 +1608,7 @@ body.dl-resizing { user-select: none; }
   .acct { flex: 0 0 auto; min-width: 150px; padding: 3px 8px; gap: 2px; }
 
   /* tappable topbar controls */
-  .gate { height: 44px; padding: 0 13px; }
+  .gate { width: 44px; height: 44px; padding: 0; gap: 0; justify-content: center; }
   .bell { width: 44px; height: 44px; }
   .update-badge { width: 44px; height: 44px; }
   .rail-toggle, .resize-handle { display: none; } /* rail-hide + resize are desktop-only */
@@ -1624,6 +1630,24 @@ body.dl-resizing { user-select: none; }
   .rail-head-actions { flex: 0 0 auto; gap: 6px; }
   .agent-toggles { flex-wrap: nowrap; gap: 4px; }
   .agent-toggle { height: 34px; padding: 0 8px; gap: 4px; }
+
+  /* Recent repos as a single dropdown row (not wrapping chips): a long list otherwise stacked into
+     several rows and ate most of the composer, leaving only ~3 lines of transcript above it. */
+  .recent-repos-select { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .recent-repos-select .recent-repos-label { flex: 0 0 auto; }
+  .repo-select {
+    flex: 1 1 auto; min-width: 0; height: 40px; padding: 0 10px;
+    border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
+    color: var(--text); font-family: var(--font-mono); font-size: 14px; cursor: pointer;
+  }
+  .repo-select:focus { outline: none; border-color: var(--accent); }
+  .repo-select-x {
+    flex: 0 0 auto; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
+    color: var(--text-faint); font-size: 20px; line-height: 1; cursor: pointer;
+  }
+  .repo-select-x:active { background: var(--bg-3); color: var(--text); }
+  .repo-select-x:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* Search collapses behind the header icon; its full-width row only appears once opened, giving the
      transcript that row back by default. */

@@ -18,6 +18,22 @@ import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 // cross-platform (handles / and \ paths):
 const repoLabel = (p: string): string => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
 
+// Tracks the ≤768px mobile breakpoint (mirrors the CSS media query) so a few controls can swap to a
+// space-frugal layout the phone actually has room for — the wrapping recent-repo chips become a single
+// dropdown row. Re-renders on viewport crossings (rotate / resize).
+function useIsMobile(): boolean {
+  const [mobile, setMobile] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const onChange = () => setMobile(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return mobile;
+}
+
 export function Director() {
   const items = useStore((s) => s.director);
   const draft = useStore((s) => s.directorDraft);
@@ -40,6 +56,7 @@ export function Director() {
   const showPickers = useStore((s) => s.settings.showComposerPickers);
   const recentRepos = useStore((s) => s.settings.recentRepos);
   const maxRecentRepos = useStore((s) => s.settings.maxRecentRepos);
+  const isMobile = useIsMobile();
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -233,35 +250,43 @@ export function Director() {
       )}
 
       <div className={"composer" + (att.dragging ? " dragging" : "") + (skip ? " direct" : "")} {...att.dropHandlers}>
-        {recentRepos.length > 1 && (
-          <div className="recent-repos" role="group" aria-label="Recent repositories">
-            <span className="recent-repos-label mono">repos</span>
-            {recentRepos.slice(0, maxRecentRepos).map((p) => {
-              const active = p === ws.trim();
-              return (
-                <span key={p} className={"repo-chip" + (active ? " on" : "")} title={p}>
-                  <button
-                    type="button"
-                    className="repo-chip-pick"
-                    aria-pressed={active}
-                    onClick={() => setWs(p)}
-                  >
-                    {repoLabel(p)}
-                  </button>
-                  <button
-                    type="button"
-                    className="repo-chip-x"
-                    aria-label={`Remove ${p} from recent repos`}
-                    title="Remove from recents"
-                    onClick={() => removeRepo(p)}
-                  >
-                    ×
-                  </button>
-                </span>
-              );
-            })}
-          </div>
-        )}
+        {recentRepos.length > 1 &&
+          (isMobile ? (
+            <RecentReposSelect
+              repos={recentRepos.slice(0, maxRecentRepos)}
+              active={ws.trim()}
+              onPick={setWs}
+              onRemove={removeRepo}
+            />
+          ) : (
+            <div className="recent-repos" role="group" aria-label="Recent repositories">
+              <span className="recent-repos-label mono">repos</span>
+              {recentRepos.slice(0, maxRecentRepos).map((p) => {
+                const active = p === ws.trim();
+                return (
+                  <span key={p} className={"repo-chip" + (active ? " on" : "")} title={p}>
+                    <button
+                      type="button"
+                      className="repo-chip-pick"
+                      aria-pressed={active}
+                      onClick={() => setWs(p)}
+                    >
+                      {repoLabel(p)}
+                    </button>
+                    <button
+                      type="button"
+                      className="repo-chip-x"
+                      aria-label={`Remove ${p} from recent repos`}
+                      title="Remove from recents"
+                      onClick={() => removeRepo(p)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          ))}
         <div className="composer-mode">
           <button
             type="button"
@@ -342,6 +367,55 @@ export function Director() {
       <FolderPicker initialPath={ws} onSelect={setWs} onClose={() => setPickerOpen(false)} />
     )}
     </>
+  );
+}
+
+/** Mobile substitute for the wrapping recent-repo chips: a single dropdown row. The chips flex-wrap into
+ *  several rows on a phone (a long list ate most of the composer's vertical space, pushing the transcript
+ *  off-screen), so on mobile the same list collapses to a native `<select>` plus a remove button that
+ *  drops whichever repo is currently selected. Picking an entry fills the workspace path exactly like a
+ *  chip does. */
+function RecentReposSelect({
+  repos,
+  active,
+  onPick,
+  onRemove,
+}: {
+  repos: string[];
+  active: string;
+  onPick: (p: string) => void;
+  onRemove: (p: string) => void;
+}) {
+  const selected = repos.includes(active) ? active : "";
+  return (
+    <div className="recent-repos-select" role="group" aria-label="Recent repositories">
+      <span className="recent-repos-label mono">repos</span>
+      <select
+        className="repo-select"
+        value={selected}
+        aria-label="Pick a recent repository"
+        onChange={(e) => {
+          if (e.target.value) onPick(e.target.value);
+        }}
+      >
+        <option value="">Recent repos…</option>
+        {repos.map((p) => (
+          <option key={p} value={p}>
+            {repoLabel(p)}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        className="repo-select-x"
+        disabled={!selected}
+        aria-label={selected ? `Remove ${selected} from recent repos` : "Remove selected repo from recents"}
+        title="Remove the selected repo from recents"
+        onClick={() => selected && onRemove(selected)}
+      >
+        ×
+      </button>
+    </div>
   );
 }
 
