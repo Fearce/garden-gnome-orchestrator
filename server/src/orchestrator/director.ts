@@ -135,11 +135,11 @@ export class Director {
     // otherwise be misfiled under the next task by the history backfill's timeline heuristic.
     this.db.linkDirectorMessagesToThread([userMsg.id, note.id], id);
     // Only orchestrator schedules (cron entries) can be created/changed by the director's tools — an
-    // implementor can't. If this reads like a schedule request, say so without overriding the toggle:
-    // the task was still dispatched as asked; turning Skip Director off is how to reach the scheduler.
+    // implementor can't. When the message explicitly asks to schedule a task, say so without overriding
+    // the toggle: it was still dispatched as asked; turning Skip Director off is how to reach the scheduler.
     if (looksLikeScheduleRequest(text)) {
       this.postDirectorNote(
-        `Heads up: that read like a scheduling request, but Skip Director is on so I dispatched it straight to the pipeline as asked. If you actually wanted to set up or change a recurring schedule (which I handle directly, not an implementor), turn Skip Director off and resend.`,
+        `Heads up: you mentioned a scheduled task, but Skip Director is on so I dispatched this straight to the pipeline as asked. If you meant to set up or change a recurring schedule (which I handle directly, not an implementor), turn Skip Director off and resend.`,
       );
     }
     // Without the director there's no one to name the task, so the lane would show only the raw first
@@ -336,30 +336,30 @@ function voiceNote(): string {
   return `[VOICE — ${config.ownerName} spoke this aloud and your reply will be read out by TTS in a live back-and-forth conversation. Answer like you're talking: brief plain sentences, no markdown, no lists, no code, no file paths. Talk the idea through with them and get a spoken go-ahead before dispatching a task; a "yeah"/"sure"/"go ahead" means dispatch now without re-asking. Skip this only when they explicitly say to dispatch immediately.]`;
 }
 
-/** Whether a skip-director message is asking to set up a RECURRING/scheduled task (as opposed to a
- *  one-off). Deliberately conservative — it keys on explicit scheduling language ("schedule", "cron",
- *  "recurring", or "every/each <time-unit>", or a bare "daily/hourly/weekly/…") so an ordinary task like
- *  "fix every bug" never trips it. When it matches under skip-director, the message is handed to the
- *  director (which owns the create_scheduled_task tool) rather than dispatched straight. */
+// Up to three words may sit between the two halves ("schedule a cleanup task").
+const NEAR = "(?:\\s+\\S+){0,3}\\s+";
+const TASK = "(?:tasks?|jobs?)\\b";
+// The three shapes of an explicit ask. Each needs BOTH halves — a lone "schedule"/"cron" or a lone
+// "task" is never enough: "schedule a task", "that scheduled task", "put this task on a schedule".
+const A_SCHEDULED_TASK = new RegExp(`\\b(?:scheduled|cron)\\s+${TASK}`);
+const SCHEDULE_A_TASK = new RegExp(`\\bschedule\\b${NEAR}${TASK}`);
+const TASK_ON_A_SCHEDULE = new RegExp(`\\btasks?\\b${NEAR}schedule\\b`);
+// "…the scheduled tasks panel/list/view" — a feature request ABOUT the scheduler surface, which says
+// both words without asking for anything to be scheduled. This repo IS the orchestrator, so the owner
+// writes those prompts often; treating them as schedule asks is the same nagging in a new costume.
+const ABOUT_THE_SCHEDULER =
+  /\b(?:scheduled|cron)\s+(?:tasks?|jobs?)\s+(?:panel|view|page|tab|list|table|column|row|card|modal|dialog|button|badge|header|section|screen|ui|form|editor|api|endpoint|route|schema|broadcast|component)\b/;
+
+/** Whether a skip-director message is EXPLICITLY asking to set up or change a recurring scheduled task.
+ *  The owner's rule is the bar: it is never a scheduled task unless they said "schedule" (or "cron") AND
+ *  "task" (or "job") as one request. Cadence language on its own describes the WORK, not a cron entry —
+ *  "run this daily", "until a new weekly reset appears", "add a Weekly token safety %" are ordinary tasks
+ *  and used to trip the old frequency-word heuristic. A miss here costs only a reminder note; a false
+ *  positive nags on every task that happens to mention a frequency, so this errs toward silence. */
 export function looksLikeScheduleRequest(text: string): boolean {
   const t = text.toLowerCase();
-  const unit = "(?:morning|night|evening|day|hour|week|month|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|min(?:ute)?s?|hours?|days?|weeks?)";
-  // Unambiguous scheduling language — any one of these is enough on its own.
-  const strong =
-    /\bsched(?:ul)?e[ds]?\b/.test(t) ||
-    /\bcron\b/.test(t) ||
-    /\brecurr(?:ing|ence)\b/.test(t) ||
-    /\bperiodically\b/.test(t) ||
-    new RegExp(`\\b(?:every|each)\\s+(?:\\d+\\s+)?${unit}`).test(t);
-  if (strong) return true;
-  // A bare frequency adverb ("weekly", "daily", …) is ambiguous: a scheduling cue in "run this weekly",
-  // but a plain adjective in "add a Weekly token safety %". Treat it as a schedule request only when it
-  // co-occurs with an action verb or a clock time — otherwise a feature ABOUT a weekly/daily thing would
-  // wrongly override skip-director and get routed to the director.
-  const frequency = /\b(?:daily|hourly|weekly|nightly|monthly)\b/.test(t);
-  const actionVerb = /\b(?:run|remind|send|check|notify|ping|trigger|dispatch|execute|fetch|scrape|sync|back\s?up|kick\s?off)\b/.test(t);
-  const clockTime = /\b(?:\d{1,2}\s*(?:am|pm)|[01]?\d:[0-5]\d|noon|midnight)\b/.test(t);
-  return frequency && (actionVerb || clockTime);
+  if (ABOUT_THE_SCHEDULER.test(t)) return false;
+  return A_SCHEDULED_TASK.test(t) || SCHEDULE_A_TASK.test(t) || TASK_ON_A_SCHEDULE.test(t);
 }
 
 /** A board-lane title from a raw skip-director message: first non-empty line, trimmed to a short label. */

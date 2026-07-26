@@ -75,7 +75,9 @@ Beyond the pipeline, the board gives you:
 - **The office** — concurrent tasks on the same repo see each other and coordinate
   in a shared per-repo chat room, so two agents don't clobber the same files.
 - **Scheduled tasks** — dispatch a brief on a recurring schedule (a nightly health
-  sweep, a periodic check) instead of firing it by hand.
+  sweep, a periodic check) instead of firing it by hand. The director only creates
+  one when you explicitly ask to *schedule a task*; a cadence mentioned inside a
+  normal request ("run it nightly") is just work, and gets dispatched once.
 - **Diff review & injection** — review a task's `git diff` in a modal without
   leaving the console, and paste/drop **images** into any prompt for the agents to
   see via vision.
