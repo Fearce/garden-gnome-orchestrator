@@ -73,7 +73,7 @@ export const RESEARCH_SCHEMA: Record<string, unknown> = {
 export const QA_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["pass", "summary"],
+  required: ["pass", "summary", "changed"],
   properties: {
     pass: { type: "boolean" },
     summary: { type: "string" },
@@ -213,8 +213,8 @@ export function qaConfig(cwd: string, servers: { bus: McpServerConfig; office: M
     model: config.models.qa,
     cwd,
     systemPrompt: applyFixes ? QA_FIX_PROMPT : QA_PROMPT,
-    // The standard QA path is deliberately read-only. The opt-in QA-fixes path is an editing role;
-    // its prompt forbids commits/pushes, leaving ownership of the task's final commit unchanged.
+    // The standard QA path is deliberately read-only. The opt-in QA-fixes path is an editing role
+    // which commits only the fixes it made, so a completed task never leaves QA edits orphaned.
     permissionMode: "bypassPermissions",
     disallowedTools: applyFixes ? ["AskUserQuestion"] : ["Write", "Edit", "NotebookEdit", "AskUserQuestion"],
     mcpServers: { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },

@@ -59,7 +59,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           />
           <ToggleRow
             label="QA also applies fixes"
-            hint="On: QA fixes issues directly instead of sending them back to the implementor. Every QA run that changes files is followed by another QA review (preferably on the original provider) until a reviewer makes no further code changes. Off keeps the existing implementor↔QA handoff."
+            hint="On: QA fixes issues directly instead of sending them back to the implementor. Every QA run that changes files gets another QA review until one makes no further code changes. For true provider alternation, also enable Different-provider QA with another backend ready; otherwise the verifier starts a fresh same-provider session. Off keeps the existing implementor↔QA handoff."
             on={settings.qaAppliesFixes}
             onChange={(v) => setSettings({ qaAppliesFixes: v })}
           />

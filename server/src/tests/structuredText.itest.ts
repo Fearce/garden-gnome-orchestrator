@@ -78,20 +78,21 @@ console.log("\nvalidateAgainstSchema — PLAN_SCHEMA");
 
 console.log("\nvalidateAgainstSchema — QA_SCHEMA");
 {
-  check("accepts a passing verdict", validateAgainstSchema({ pass: true, summary: "all green" }, QA_SCHEMA) === null);
+  check("accepts a passing verdict", validateAgainstSchema({ pass: true, summary: "all green", changed: false }, QA_SCHEMA) === null);
   check("rejects a verdict with a non-boolean pass", validateAgainstSchema({ pass: "yes", summary: "s" }, QA_SCHEMA) !== null);
   check("rejects a verdict missing summary", validateAgainstSchema({ pass: false }, QA_SCHEMA) !== null);
+  check("rejects a verdict missing changed", validateAgainstSchema({ pass: true, summary: "s" }, QA_SCHEMA) !== null);
   check(
     "accepts issues with a valid severity enum",
-    validateAgainstSchema({ pass: false, summary: "s", issues: [{ description: "d", severity: "blocker" }] }, QA_SCHEMA) === null,
+    validateAgainstSchema({ pass: false, summary: "s", changed: false, issues: [{ description: "d", severity: "blocker" }] }, QA_SCHEMA) === null,
   );
   check(
     "rejects an issue with a bad severity enum",
-    validateAgainstSchema({ pass: false, summary: "s", issues: [{ description: "d", severity: "catastrophic" }] }, QA_SCHEMA) !== null,
+    validateAgainstSchema({ pass: false, summary: "s", changed: false, issues: [{ description: "d", severity: "catastrophic" }] }, QA_SCHEMA) !== null,
   );
   check(
     "rejects an issue missing its required description",
-    validateAgainstSchema({ pass: false, summary: "s", issues: [{ severity: "minor" }] }, QA_SCHEMA) !== null,
+    validateAgainstSchema({ pass: false, summary: "s", changed: false, issues: [{ severity: "minor" }] }, QA_SCHEMA) !== null,
   );
 }
 
@@ -107,7 +108,7 @@ console.log("\nvalidateAgainstSchema — RESEARCH_SCHEMA");
 
 console.log("\nparseStructuredText — end to end");
 {
-  const good = "Reviewed the diff.\n\n```json\n{\"pass\": false, \"summary\": \"one blocker\", \"issues\": [{\"description\": \"null deref\", \"severity\": \"blocker\"}]}\n```";
+  const good = "Reviewed the diff.\n\n```json\n{\"pass\": false, \"summary\": \"one blocker\", \"changed\": false, \"issues\": [{\"description\": \"null deref\", \"severity\": \"blocker\"}]}\n```";
   const r = parseStructuredText(good, QA_SCHEMA);
   check("returns the validated value on a good QA reply", r.value?.pass === false && !r.error);
 
@@ -120,9 +121,9 @@ console.log("\nparseStructuredText — end to end");
   // Grok multi-turn structured roles stream one complete JSON object per model turn into a single text
   // buffer — a naive JSON.parse of the concatenation fails, and the LAST object is the real verdict.
   const grokMulti =
-    '{ "pass": false, "summary": "Starting QA.", "issues": [] }' +
-    '{ "pass": false, "summary": "Still checking.", "issues": [] }' +
-    '{"pass":true,"summary":"Ship it.","issues":[]}';
+    '{ "pass": false, "summary": "Starting QA.", "changed": false, "issues": [] }' +
+    '{ "pass": false, "summary": "Still checking.", "changed": false, "issues": [] }' +
+    '{"pass":true,"summary":"Ship it.","changed":false,"issues":[]}';
   check(
     "Grok multi-object stream: extractJsonObjects finds every complete object",
     extractJsonObjects(grokMulti).length === 3,
@@ -144,9 +145,9 @@ console.log("\nparseStructuredText — end to end");
   // Exact text Grok QA produced on thread ad31128e (prod failure: "QA could not complete" despite a
   // successful Grok run). Old path: JSON.parse of the whole buffer → throw → structuredOutput missing.
   const realGrokQa =
-    '{ "pass": false, "summary": "Starting QA: inspecting git changes and the Grok-related fix against the brief.", "issues": [] }' +
-    '{ "pass": false, "summary": "Root-cause fix looks right (prompt-file collision). Running tests, typecheck, and checking for other concurrent-Grok races.", "issues": [] }' +
-    '{"pass":true,"summary":"Ship it. The bug matches a real concurrent prompt-file race.","issues":[]}';
+    '{ "pass": false, "summary": "Starting QA: inspecting git changes and the Grok-related fix against the brief.", "changed": false, "issues": [] }' +
+    '{ "pass": false, "summary": "Root-cause fix looks right (prompt-file collision). Running tests, typecheck, and checking for other concurrent-Grok races.", "changed": false, "issues": [] }' +
+    '{"pass":true,"summary":"Ship it. The bug matches a real concurrent prompt-file race.","changed":false,"issues":[]}';
   let oldParseThrew = false;
   try {
     JSON.parse(realGrokQa);
@@ -172,9 +173,9 @@ console.log("\nformatStructuredRoleFeed — Grok/Codex QA walls of JSON");
 {
   // Exact multi-turn shape Grok QA dumps into the task feed (prod: "looks like grok cant succesfully post…").
   const grokWall =
-    '{ "pass": false, "summary": "Inspecting office/team-chat Grok fix vs current diffs." }\n' +
-    '{ "pass": false, "summary": "Reading officeBridge + grokRunner harvest logic." }\n' +
-    '{ "pass": true, "summary": "Office-bridge fix for Grok team chat is complete, tested, and ready to ship." }';
+    '{ "pass": false, "summary": "Inspecting office/team-chat Grok fix vs current diffs.", "changed": false }\n' +
+    '{ "pass": false, "summary": "Reading officeBridge + grokRunner harvest logic.", "changed": false }\n' +
+    '{ "pass": true, "summary": "Office-bridge fix for Grok team chat is complete, tested, and ready to ship.", "changed": false }';
   const human = formatStructuredRoleFeed(grokWall);
   check("does not leave raw JSON braces in the feed", !human.includes('"pass"') && !human.includes("{ "));
   check("shows intermediate status as markdown list bullets", human.includes("- Inspecting") && human.includes("- Reading"));

@@ -136,12 +136,13 @@ function seedTask(h: Harness): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const runLoop = (h: Harness, id: string, maxQaRounds: number, qaAppliesFixes = false): Promise<void> =>
+const runLoop = (h: Harness, id: string, maxQaRounds: number, qaAppliesFixes = false, autoPush = true): Promise<void> =>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (h.mgr as any).runImplementorQaLoop(h.db.getThread(id)!, "KICKOFF: mock", undefined, undefined, undefined, {
     qaEnabled: true,
     maxQaRounds,
     qaAppliesFixes,
+    autoPush,
   });
 
 async function main(): Promise<void> {
@@ -235,9 +236,17 @@ async function main(): Promise<void> {
       const id = seedTask(h);
       let calls = 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (h.mgr as any).runQA = async (_thread: Thread, opts: { round: number; applyFixes?: boolean }): Promise<{ pass: boolean; summary: string; changed: boolean }> => {
+      const internals = h.mgr as any;
+      // Simulate a single-provider deployment: after QA #1 edits, the verifier must use the same
+      // provider but a FRESH session, never warm-resume the editor's session to approve itself.
+      internals.latestQaRun = () => ({ sessionId: "qa-editor-session", provider: "claude" });
+      internals.qaFixVerifierProvider = () => "claude";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      internals.runQA = async (_thread: Thread, opts: { round: number; applyFixes?: boolean; autoPush?: boolean; forceFresh?: boolean }): Promise<{ pass: boolean; summary: string; changed: boolean }> => {
         h.qaRounds.push(opts.round);
         check("QA-fixes flag reaches the QA runner", opts.applyFixes === true, String(opts.applyFixes));
+        check("QA-fixes runner inherits the task auto-push policy", opts.autoPush === true, String(opts.autoPush));
+        if (calls === 1) check("same-provider verifier forces a fresh QA session", opts.forceFresh === true, String(opts.forceFresh));
         calls++;
         return calls === 1
           ? { pass: true, summary: "fixed one issue", changed: true }
