@@ -34,6 +34,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager, qaFixFreshKickoff } = await import("../orchestrator/threadManager.js");
+const { clientCommandSchema } = await import("../ws/protocol.js");
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
 let passed = 0;
@@ -282,6 +283,27 @@ async function main(): Promise<void> {
       check("fresh verifier kickoff carries the prior-fix handoff", kickoff.includes("previous QA reviewer just edited the working tree"), "handoff missing");
       check("fresh verifier kickoff forwards unresolved issues", kickoff.includes("[blocker] deliverable not surfaced"), "issues missing");
       check("fresh verifier kickoff keeps the deliverables check", kickoff.includes("Deliverables check"), "deliverables block missing");
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test G: the opt-in setting crosses the websocket boundary and persists ----------------------
+  console.log("\nTest G — QA-fixes setting defaults off and persists through the settings contract");
+  {
+    const h = makeHarness();
+    try {
+      check("settings.set accepts qaAppliesFixes=true", clientCommandSchema.safeParse({ type: "settings.set", settings: { qaAppliesFixes: true } }).success);
+      check("settings.set accepts qaAppliesFixes=false", clientCommandSchema.safeParse({ type: "settings.set", settings: { qaAppliesFixes: false } }).success);
+      check("QA-fixes mode defaults off", h.mgr.settings().qaAppliesFixes === false, String(h.mgr.settings().qaAppliesFixes));
+
+      h.mgr.setSettings({ qaAppliesFixes: true });
+      check("enabling QA-fixes persists the kv value", h.db.kvGet("setting_qa_applies_fixes") === "1", String(h.db.kvGet("setting_qa_applies_fixes")));
+      check("enabling QA-fixes is reflected in settings", h.mgr.settings().qaAppliesFixes === true, String(h.mgr.settings().qaAppliesFixes));
+
+      h.mgr.setSettings({ qaAppliesFixes: false });
+      check("disabling QA-fixes persists the kv value", h.db.kvGet("setting_qa_applies_fixes") === "0", String(h.db.kvGet("setting_qa_applies_fixes")));
+      check("disabling QA-fixes is reflected in settings", h.mgr.settings().qaAppliesFixes === false, String(h.mgr.settings().qaAppliesFixes));
     } finally {
       h.dispose();
     }

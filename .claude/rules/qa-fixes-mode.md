@@ -37,5 +37,8 @@ Extend `test:qa-budget` when changing this flow. At minimum prove that an editin
 - forwards the task's auto-push policy; and
 - forces `forceFresh` for a same-provider verifier.
 
+When changing the operator-setting wiring, also assert that `settings.set` accepts both boolean
+values and that a fresh manager defaults to off while `setSettings()` persists both `"1"` and `"0"`.
+
 Also run `test:structured`, `typecheck`, and `build`. For a change to this live pipeline, use an
 isolated `DATA_DIR` harness before spending quota on a real end-to-end task.
