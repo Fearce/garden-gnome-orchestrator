@@ -18,9 +18,10 @@ npm run typecheck && npm run test:gates --prefix server
 `health` greps dist symbols but never RUNS the unit gates, so a green health can sit on top of
 crash-broken gates (a feature landing without updating a test stub — this is how a missing
 `StubAccounts.setSpreadUsage` slipped past a "13/13 green" claim). `test:gates` (`scripts/run-gates.cjs`)
-runs all FREE gates in ~22s (the count is whatever's registered — don't hardcode it here) and exits
-non-zero on any failure; it excludes `reader`/`structured`/`effort` (those spawn real `claude`
-subprocesses and burn quota). Don't hand-run gates one by one.
+runs all FREE gates in ~25s (the count is whatever's registered — don't hardcode it here) and exits
+non-zero on any failure, including the local reader, structured-output, and effort-cap integration
+tests. They use stubs and a throwaway git repo; no `claude` subprocess or account quota is involved.
+Don't hand-run gates one by one.
 
 ## Third command — triage the non-done runs (don't read the counts yourself)
 ```
@@ -47,6 +48,9 @@ near-exhausted ladder means a burst can park on caps.
   WIP (office claims win). Pathspec only your files.
 - **Do not re-apply** a teammate's already-pushed fix — check `git log -5 --oneline` + office claims first.
 - Run `test:gates` once at the end, not each gate separately.
+- **Do not run `npm install --omit=dev` in this shared development checkout.** It removes the server's
+  `tsc`/`tsx` tooling and makes the next build or gate run fail. Use `npm install --prefix server` to
+  restore a partial install; after any dependency update, run both `npm run typecheck` and `npm run build`.
 
 ## If the sweep finds a real bug
 Fix it in its own conventional commit, pathspec-stage, push (not vota). Deploy server changes yourself

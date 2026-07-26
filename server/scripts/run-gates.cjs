@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Runs every FREE test gate (pure unit + stubbed integration) in one shot and
-// exits non-zero if any fails. Deliberately excludes reader/structured/effort:
-// those .itest gates spawn real `claude` subprocesses and burn account quota, so
-// they are not safe for an unattended nightly sweep. Keep this list in sync with
-// package.json test scripts when adding a new FREE gate.
+// exits non-zero if any fails. The reader/structured/effort .itest gates are safe
+// here: they use local config/parser assertions and a throwaway git repo, never a
+// real agent run. Keep this list in sync with package.json test scripts when
+// adding a new FREE gate.
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 
@@ -26,6 +26,9 @@ const GATES = [
   "test:office-bridge",
   "test:office-gating",
   "test:zai-usage",
+  "test:structured",
+  "test:effort",
+  "test:reader",
   "test:token-freeze",
   "test:qa-budget",
   "test:per-repo",
