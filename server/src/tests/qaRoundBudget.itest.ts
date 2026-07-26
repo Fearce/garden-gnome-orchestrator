@@ -33,7 +33,7 @@ import type { Thread } from "../types.js";
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
-const { ThreadManager } = await import("../orchestrator/threadManager.js");
+const { ThreadManager, qaFixFreshKickoff } = await import("../orchestrator/threadManager.js");
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
 let passed = 0;
@@ -256,6 +256,32 @@ async function main(): Promise<void> {
       check("the changed QA pass triggered exactly one verifier QA pass", JSON.stringify(h.qaRounds) === JSON.stringify([1, 2]), JSON.stringify(h.qaRounds));
       check("QA fixes did not re-launch the implementor", h.implementorStarts() === 1, `starts=${h.implementorStarts()}`);
       check("an unchanged passing verifier accepted the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test F: the fresh verifier kickoff still carries the task context ---------------------------
+  // A verifier pass is a fresh session on effectively every route (a different provider cannot resume
+  // the editor's session, and a same-provider verifier is deliberately forced fresh). If it only got
+  // the "a previous reviewer edited the tree" handoff it would review the diff with no brief at all
+  // and could not judge completeness against the requirements.
+  console.log("\nTest F — a fresh QA-fixes verifier kickoff carries the brief, not just the handoff");
+  {
+    const h = makeHarness();
+    try {
+      const thread = h.db.createThread({
+        title: "mock qa-fixes task",
+        workspace: h.workspace,
+        rawPrompt: "do the thing",
+        brief: "BRIEF-SENTINEL: add a toggle and gate the new behavior behind it",
+      });
+      const kickoff = qaFixFreshKickoff(thread, undefined, "fixed a null deref\n- [blocker] deliverable not surfaced", []);
+      check("fresh verifier kickoff names the task", kickoff.includes(thread.title), kickoff.slice(0, 80));
+      check("fresh verifier kickoff carries the brief", kickoff.includes("BRIEF-SENTINEL"), "brief missing");
+      check("fresh verifier kickoff carries the prior-fix handoff", kickoff.includes("previous QA reviewer just edited the working tree"), "handoff missing");
+      check("fresh verifier kickoff forwards unresolved issues", kickoff.includes("[blocker] deliverable not surfaced"), "issues missing");
+      check("fresh verifier kickoff keeps the deliverables check", kickoff.includes("Deliverables check"), "deliverables block missing");
     } finally {
       h.dispose();
     }

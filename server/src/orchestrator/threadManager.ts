@@ -2530,7 +2530,7 @@ export class ThreadManager implements OrchestratorApi {
         ? qaFixRecheckKickoff(opts.priorFixSummary, unsurfaced)
         : qaRecheckKickoff(unsurfaced)
       : opts.priorFixSummary
-        ? qaFixRecheckKickoff(opts.priorFixSummary, unsurfaced)
+        ? qaFixFreshKickoff(thread, plan, opts.priorFixSummary, unsurfaced)
         : qaKickoff(thread, plan, unsurfaced);
     const kickoff = opts.applyFixes ? `${baseKickoff}\n\n${qaFixCommitPolicy(opts.autoPush !== false)}` : baseKickoff;
     const res = await this.runRole(
@@ -3470,7 +3470,11 @@ export class ThreadManager implements OrchestratorApi {
           const editor = this.latestQaRun(thread.id)?.provider;
           qaFixForcedProvider = this.qaFixVerifierProvider(thread.id, editor);
           qaFixForceFresh = qaFixForcedProvider === editor;
-          qaFixSummary = qa.summary;
+          // Carry the issue LIST, not just the prose summary: an editing round can fix most defects
+          // and still report one it could not safely resolve. Handing the verifier only the summary
+          // drops that known-open issue, and a verifier that fails to independently rediscover it
+          // would settle the task `done` with a blocker the previous reviewer had already named.
+          qaFixSummary = formatQaIssues(qa);
           const verifier = qaFixForcedProvider ? providerLabel(qaFixForcedProvider) : "the next available QA provider";
           this.postFinding({
             threadId: thread.id,
@@ -5067,16 +5071,29 @@ function qaRecheckKickoff(unsurfacedArtifacts: string[] = []): string {
 /** Handoff between two editing-QA passes. Unlike qaRecheckKickoff, no implementor was relaunched:
  * the preceding reviewer changed the tree directly, so the next reviewer gets an honest description
  * of the boundary it must independently inspect. */
-function qaFixRecheckKickoff(previousSummary: string, unsurfacedArtifacts: string[] = []): string {
+function qaFixHandoffBlock(previousSummary: string): string[] {
   return [
     "A previous QA reviewer just edited the working tree while fixing issues. Independently inspect the NEW state; do not trust its conclusion.",
-    `Previous review summary: ${previousSummary}`,
+    "Previous review summary (plus any issue it left unresolved — confirm each is genuinely resolved or still open):",
+    previousSummary,
     "- Re-run `git diff` and the relevant build/typecheck/tests (and browser checks for UI work).",
     "- Verify the prior fixes, find and directly fix any remaining defects you can safely resolve, and check for regressions they introduced.",
     "- Return `changed: true` only if THIS QA run modified task files. The task is accepted only when a QA run passes with `changed: false`.",
-    "",
-    deliverablesCheckBlock(unsurfacedArtifacts),
-  ].join("\n");
+  ];
+}
+
+/** The RESUMED form: the session already holds the brief, the plan and the prior diff, so it only
+ * needs the handoff itself. */
+function qaFixRecheckKickoff(previousSummary: string, unsurfacedArtifacts: string[] = []): string {
+  return [...qaFixHandoffBlock(previousSummary), "", deliverablesCheckBlock(unsurfacedArtifacts)].join("\n");
+}
+
+/** The FRESH form. A verifier pass is a fresh session on almost every route — a different provider
+ * cannot resume the editor's session, and a same-provider verifier is deliberately forced fresh — so
+ * it holds none of the task context. Without the full brief/plan kickoff it would review the diff
+ * blind and could not judge completeness against the brief at all. */
+export function qaFixFreshKickoff(thread: Thread, plan: PlanOutput | undefined, previousSummary: string, unsurfacedArtifacts: string[] = []): string {
+  return [qaKickoff(thread, plan, unsurfacedArtifacts), "", "## Prior QA fix handoff", ...qaFixHandoffBlock(previousSummary)].join("\n");
 }
 
 /** Editing QA runs are responsible for preserving their own fixes. This task-specific handoff is what
