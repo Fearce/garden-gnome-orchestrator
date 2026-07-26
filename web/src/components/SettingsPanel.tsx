@@ -57,6 +57,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             on={settings.differentProviderQa}
             onChange={(v) => setSettings({ differentProviderQa: v })}
           />
+          <ToggleRow
+            label="QA also applies fixes"
+            hint="On: QA fixes issues directly instead of sending them back to the implementor. Every QA run that changes files is followed by another QA review (preferably on the original provider) until a reviewer makes no further code changes. Off keeps the existing implementor↔QA handoff."
+            on={settings.qaAppliesFixes}
+            onChange={(v) => setSettings({ qaAppliesFixes: v })}
+          />
           <NumberRow
             label="Max concurrent tasks"
             hint="Pipelines allowed to run at once. Dispatches beyond this wait in a queued lane and start as slots free."

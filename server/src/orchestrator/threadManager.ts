@@ -140,6 +140,8 @@ export type SettingsPatch = Partial<
 interface PipeOpts {
   qaEnabled: boolean;
   maxQaRounds: number;
+  /** Opt-in: QA fixes its own findings, then another QA run verifies every changed tree. */
+  qaAppliesFixes?: boolean;
 }
 
 const MAX_RESULT_PREVIEW = 600;
@@ -966,6 +968,7 @@ export class ThreadManager implements OrchestratorApi {
       researcherEnabled: this.settingBool("setting_researcher_enabled", true),
       qaEnabled: this.settingBool("setting_qa_enabled", true),
       differentProviderQa: this.settingBool("setting_different_provider_qa", false),
+      qaAppliesFixes: this.settingBool("setting_qa_applies_fixes", false),
       autoPush: this.settingBool("setting_auto_push", true),
       directorName: this.directorName(),
       maxQaRounds: this.settingNum("setting_max_qa_rounds", config.maxQaRounds, 1, 12),
@@ -1241,6 +1244,7 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.researcherEnabled !== undefined) this.db.kvSet("setting_researcher_enabled", patch.researcherEnabled ? "1" : "0");
     if (patch.qaEnabled !== undefined) this.db.kvSet("setting_qa_enabled", patch.qaEnabled ? "1" : "0");
     if (patch.differentProviderQa !== undefined) this.db.kvSet("setting_different_provider_qa", patch.differentProviderQa ? "1" : "0");
+    if (patch.qaAppliesFixes !== undefined) this.db.kvSet("setting_qa_applies_fixes", patch.qaAppliesFixes ? "1" : "0");
     if (patch.autoPush !== undefined) this.db.kvSet("setting_auto_push", patch.autoPush ? "1" : "0");
     if (patch.directorName !== undefined) this.db.kvSet("setting_director_name", patch.directorName.trim().slice(0, 40));
     if (patch.maxQaRounds !== undefined) this.db.kvSet("setting_max_qa_rounds", String(patch.maxQaRounds));
@@ -2054,6 +2058,7 @@ export class ThreadManager implements OrchestratorApi {
       await this.runImplementorQa(thread, kickoff, thread.effortOverride ?? plan?.effort, this.latestImplementorSession(threadId), note, {
         qaEnabled: settings.qaEnabled,
         maxQaRounds: settings.maxQaRounds,
+        qaAppliesFixes: settings.qaAppliesFixes,
       });
     } catch (err) {
       if (!this.cancelled(threadId)) this.setState(threadId, "failed", err instanceof Error ? err.message : String(err));
@@ -2463,7 +2468,10 @@ export class ThreadManager implements OrchestratorApi {
     await this.closeThread(thread.id);
   }
 
-  private async runQA(thread: Thread, opts: { round: number }): Promise<QaOutput | undefined> {
+  private async runQA(
+    thread: Thread,
+    opts: { round: number; applyFixes?: boolean; forcedProvider?: ImplementorProvider; priorFixSummary?: string },
+  ): Promise<QaOutput | undefined> {
     // Fix-rounds 2..N resume the SAME QA session — a warm cache read of the diff/files/tests it
     // already ingested — instead of a fresh session that re-reads everything from scratch. QA still
     // re-runs `git diff` and the checks itself (independent verification preserved); it just doesn't
@@ -2475,8 +2483,11 @@ export class ThreadManager implements OrchestratorApi {
     // review is genuinely independent (e.g. GPT checks Claude's work). Resolved once per round from the
     // implementor's provider + the currently-ready backends; undefined when only one provider is
     // available, in which case QA falls back to its normal (Claude-default) routing.
-    const forcedQaProvider = this.settings().differentProviderQa ? this.pickDifferentQaProvider(thread.id) : undefined;
-    this.noteDifferentProviderQa(thread, forcedQaProvider);
+    const forcedQaProvider = opts.forcedProvider ?? (this.settings().differentProviderQa ? this.pickDifferentQaProvider(thread.id) : undefined);
+    // The opt-in QA-fixes verifier may intentionally route back to the original provider. That is a
+    // different policy from the operator's cross-provider toggle, so don't emit a misleading
+    // "different-provider" finding for an explicit verifier choice.
+    if (!opts.forcedProvider) this.noteDifferentProviderQa(thread, forcedQaProvider);
 
     const prior = opts.round > 1 ? this.latestQaRun(thread.id) : undefined;
     let resume: string | undefined;
@@ -2512,7 +2523,13 @@ export class ThreadManager implements OrchestratorApi {
     // deliverables check starts from a concrete list instead of the model's memory. Recomputed each
     // round — a fix-round that emits a forgotten deliverable drops it from the next round's hint.
     const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
-    const kickoff = resume ? qaRecheckKickoff(unsurfaced) : qaKickoff(thread, plan, unsurfaced);
+    const kickoff = resume
+      ? opts.priorFixSummary
+        ? qaFixRecheckKickoff(opts.priorFixSummary, unsurfaced)
+        : qaRecheckKickoff(unsurfaced)
+      : opts.priorFixSummary
+        ? qaFixRecheckKickoff(opts.priorFixSummary, unsurfaced)
+        : qaKickoff(thread, plan, unsurfaced);
     const res = await this.runRole(
       thread,
       "qa",
@@ -2521,7 +2538,7 @@ export class ThreadManager implements OrchestratorApi {
       ({ token, resume: r, runId }) => {
         const bus = createBusServer(this, { threadId: thread.id, role: "qa", getRunId: () => runId });
         const office = createOfficeServer(this, { threadId: thread.id, role: "qa", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
-        const cfg = qaConfig(thread.workspace, { bus, office });
+        const cfg = qaConfig(thread.workspace, { bus, office }, { applyFixes: opts.applyFixes });
         cfg.oauthToken = token;
         if (r) cfg.resume = r;
         return cfg;
@@ -2552,6 +2569,44 @@ export class ThreadManager implements OrchestratorApi {
     const order: ImplementorProvider[] = ["claude", "zai", "codex", "grok"];
     for (const p of order) if (p !== impProvider && ready[p]) return p;
     return undefined;
+  }
+
+  /** Pick a ready QA backend other than `excluded`. Used only by the opt-in QA-fixes loop after a
+   *  reviewer changed files: its changes must be inspected by a different provider when one is
+   *  available. The normal QA routing remains untouched while that setting is off. */
+  private pickReadyQaProviderExcept(excluded: ImplementorProvider): ImplementorProvider | undefined {
+    const ready: Record<ImplementorProvider, boolean> = {
+      claude: this.accounts.hasHeadroom(),
+      zai: this.zaiImplementorReady(),
+      codex: this.codexImplementorReady(),
+      grok: this.grokImplementorReady(),
+    };
+    const order: ImplementorProvider[] = ["claude", "zai", "codex", "grok"];
+    return order.find((provider) => provider !== excluded && ready[provider]);
+  }
+
+  /** The verifier after an editing QA run. Prefer the task's original implementor provider, so the
+   *  implementor's provider gets an independent QA turn without re-launching the implementor session.
+   *  When it was the editor itself, choose another ready backend. Single-provider setups gracefully
+   *  fall back to the same provider — a fresh QA turn is still better than self-accepting an edit. */
+  private qaFixVerifierProvider(threadId: string, editor: ImplementorProvider | undefined): ImplementorProvider | undefined {
+    if (!editor) return undefined;
+    const original = this.priorImplementorProvider(threadId);
+    if (original && original !== editor && this.providerReady(original)) return original;
+    return this.pickReadyQaProviderExcept(editor) ?? editor;
+  }
+
+  private providerReady(provider: ImplementorProvider): boolean {
+    switch (provider) {
+      case "claude":
+        return this.accounts.hasHeadroom();
+      case "zai":
+        return this.zaiImplementorReady();
+      case "codex":
+        return this.codexImplementorReady();
+      case "grok":
+        return this.grokImplementorReady();
+    }
   }
 
   /** Announce how different-provider QA resolved: which backend is reviewing which — or, when the toggle
@@ -3339,6 +3394,10 @@ export class ThreadManager implements OrchestratorApi {
       return;
     }
 
+    // In QA-fixes mode each changed QA pass is handed to an explicit verifier. The legacy path below
+    // deliberately leaves these unset, preserving its existing implementor↔QA behavior exactly.
+    let qaFixForcedProvider: ImplementorProvider | undefined;
+    let qaFixSummary: string | undefined;
     for (let round = priorRounds + 1; round <= pipe.maxQaRounds; round++) {
       if (this.cancelled(thread.id)) return;
       if (!res || res.isError) {
@@ -3356,7 +3415,12 @@ export class ThreadManager implements OrchestratorApi {
       // finalizes the run, so this.live stays empty for the whole QA stage; the session id survives in
       // lastImplementorSession for the fix-round resume.
       await this.stopLive(thread.id);
-      const qa = await this.runQA(thread, { round }).catch((e) => {
+      const qa = await this.runQA(thread, {
+        round,
+        applyFixes: pipe.qaAppliesFixes,
+        forcedProvider: pipe.qaAppliesFixes ? qaFixForcedProvider : undefined,
+        priorFixSummary: pipe.qaAppliesFixes ? qaFixSummary : undefined,
+      }).catch((e) => {
         this.hub.log("warn", `QA failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
         return undefined;
       });
@@ -3380,6 +3444,62 @@ export class ThreadManager implements OrchestratorApi {
         this.settleReview(thread.id, detail ? `QA could not complete — ${detail}` : "QA could not complete — needs your review.");
         return;
       }
+      if (pipe.qaAppliesFixes) {
+        // `changed` is required by the editing-QA prompt. Treat a malformed/legacy omission as changed
+        // rather than accepting potentially unverified edits; it costs one more review and fails safe.
+        const changed = qa.changed !== false;
+        if (changed) {
+          if (round >= pipe.maxQaRounds) {
+            this.postFinding({
+              threadId: thread.id,
+              fromRole: "qa",
+              summary: `QA made changes in round ${round}, but the ${pipe.maxQaRounds}-round limit was reached â€” needs your review`,
+              detail: qa.summary,
+              severity: "warning",
+            });
+            this.settleReview(thread.id, `QA made changes in the final allowed round (${pipe.maxQaRounds}) and needs an independent re-check.`);
+            return;
+          }
+
+          const editor = this.latestQaRun(thread.id)?.provider;
+          qaFixForcedProvider = this.qaFixVerifierProvider(thread.id, editor);
+          qaFixSummary = qa.summary;
+          const verifier = qaFixForcedProvider ? providerLabel(qaFixForcedProvider) : "the next available QA provider";
+          this.postFinding({
+            threadId: thread.id,
+            fromRole: "qa",
+            summary: `QA round ${round} applied fixes: ${qa.summary}`,
+            detail: `The changed tree is being sent to ${verifier} for another QA pass; it will not be accepted until a QA run makes no further code changes.`,
+            severity: "note",
+          });
+          continue;
+        }
+
+        // An unchanged QA run is the acceptance decision. A fail here means it could not safely fix a
+        // real issue, so park instead of silently bouncing it back to the implementor.
+        if (!qa.pass) {
+          this.postFinding({ threadId: thread.id, fromRole: "qa", summary: "QA found unresolved issues without making changes â€” needs your review", detail: qa.summary, severity: "warning" });
+          this.settleReview(thread.id, "QA found unresolved issues it could not safely fix â€” needs your review.");
+          return;
+        }
+        // A user-queued follow-up is still implementor work. Preserve the existing hand-off contract,
+        // then begin a fresh editing-QA cycle for that new work rather than accepting it unreviewed.
+        if (this.queuedForImplementor.get(thread.id)?.length && res && !res.isError && !this.cancelled(thread.id)) {
+          res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
+          if (this.cancelled(thread.id)) return;
+          if (round < pipe.maxQaRounds) {
+            qaFixForcedProvider = undefined;
+            qaFixSummary = undefined;
+            continue;
+          }
+        }
+        this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed without further changes: ${qa.summary}`, severity: "info" });
+        await this.runSelfImprovement(thread, effort, kickoff);
+        if (this.cancelled(thread.id)) return;
+        this.setState(thread.id, "done");
+        return;
+      }
+
       if (qa.pass) {
         // A follow-up queued during QA (routed to queuedForImplementor)? The implementor does it before
         // we call the task done — the Queue button promises delivery at the hand-off, and a QA pass is
@@ -4931,6 +5051,21 @@ function qaRecheckKickoff(unsurfacedArtifacts: string[] = []): string {
     "- Re-run `git diff` to see the NEW state and re-run the project's build/typecheck/tests.",
     "- Confirm each issue you raised is actually resolved, and watch for any regression the fix introduced.",
     "Then return your updated structured verdict (pass + remaining issues). Pass only if you'd ship it.",
+    "",
+    deliverablesCheckBlock(unsurfacedArtifacts),
+  ].join("\n");
+}
+
+/** Handoff between two editing-QA passes. Unlike qaRecheckKickoff, no implementor was relaunched:
+ * the preceding reviewer changed the tree directly, so the next reviewer gets an honest description
+ * of the boundary it must independently inspect. */
+function qaFixRecheckKickoff(previousSummary: string, unsurfacedArtifacts: string[] = []): string {
+  return [
+    "A previous QA reviewer just edited the working tree while fixing issues. Independently inspect the NEW state; do not trust its conclusion.",
+    `Previous review summary: ${previousSummary}`,
+    "- Re-run `git diff` and the relevant build/typecheck/tests (and browser checks for UI work).",
+    "- Verify the prior fixes, find and directly fix any remaining defects you can safely resolve, and check for regressions they introduced.",
+    "- Return `changed: true` only if THIS QA run modified task files. The task is accepted only when a QA run passes with `changed: false`.",
     "",
     deliverablesCheckBlock(unsurfacedArtifacts),
   ].join("\n");

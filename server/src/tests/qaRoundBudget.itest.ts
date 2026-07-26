@@ -72,6 +72,7 @@ interface Harness {
   db: InstanceType<typeof Db>;
   workspace: string;
   qaRounds: number[]; // the `round` value each runQA call saw, in order
+  implementorStarts: () => number;
   dir: string;
   setVerdict(v: { pass: boolean; summary: string }): void;
   dispose(): void;
@@ -88,12 +89,16 @@ function makeHarness(): Harness {
   const mgr = new ThreadManager(db, hub, memory, new StubAccounts() as unknown as AccountManager);
 
   const qaRounds: number[] = [];
+  let implementorStarts = 0;
   let verdict = { pass: false, summary: "not satisfied" };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = mgr as any;
   const fakeStart = { run: { send(): void {} }, accountId: "acct-a", account: { id: "acct-a" } };
-  internals.startResumedImplementor = async (): Promise<typeof fakeStart> => fakeStart;
+  internals.startResumedImplementor = async (): Promise<typeof fakeStart> => {
+    implementorStarts++;
+    return fakeStart;
+  };
   internals.awaitImplementorCompletion = async (): Promise<{ isError: boolean }> => ({ isError: false });
   internals.drainQueuedImplementor = async (_t: Thread, _e: unknown, _k: string, res: unknown): Promise<unknown> => res;
   internals.stopLive = async (): Promise<void> => {};
@@ -109,6 +114,7 @@ function makeHarness(): Harness {
     db,
     workspace,
     qaRounds,
+    implementorStarts: () => implementorStarts,
     dir,
     setVerdict(v) {
       verdict = v;
@@ -130,11 +136,12 @@ function seedTask(h: Harness): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const runLoop = (h: Harness, id: string, maxQaRounds: number): Promise<void> =>
+const runLoop = (h: Harness, id: string, maxQaRounds: number, qaAppliesFixes = false): Promise<void> =>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (h.mgr as any).runImplementorQaLoop(h.db.getThread(id)!, "KICKOFF: mock", undefined, undefined, undefined, {
     qaEnabled: true,
     maxQaRounds,
+    qaAppliesFixes,
   });
 
 async function main(): Promise<void> {
@@ -215,6 +222,31 @@ async function main(): Promise<void> {
       await runLoop(h, id, 7);
       check("QA ran twice then stopped (pass on round 2)", h.qaRounds.length === 2 && h.qaRounds[1] === 2, JSON.stringify(h.qaRounds));
       check("the task reached 'done'", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test E: opt-in QA-fixes mode never bounces changed work through the implementor --------------
+  console.log("\nTest E — QA-fixes mode sends QA edits to another QA pass, not back to the implementor");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      let calls = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).runQA = async (_thread: Thread, opts: { round: number; applyFixes?: boolean }): Promise<{ pass: boolean; summary: string; changed: boolean }> => {
+        h.qaRounds.push(opts.round);
+        check("QA-fixes flag reaches the QA runner", opts.applyFixes === true, String(opts.applyFixes));
+        calls++;
+        return calls === 1
+          ? { pass: true, summary: "fixed one issue", changed: true }
+          : { pass: true, summary: "independently verified", changed: false };
+      };
+      await runLoop(h, id, 4, true);
+      check("the changed QA pass triggered exactly one verifier QA pass", JSON.stringify(h.qaRounds) === JSON.stringify([1, 2]), JSON.stringify(h.qaRounds));
+      check("QA fixes did not re-launch the implementor", h.implementorStarts() === 1, `starts=${h.implementorStarts()}`);
+      check("an unchanged passing verifier accepted the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
     } finally {
       h.dispose();
     }

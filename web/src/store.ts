@@ -286,6 +286,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   researcherEnabled: true,
   qaEnabled: true,
   differentProviderQa: false,
+  qaAppliesFixes: false,
   autoPush: true,
   directorName: "ChangeNameInSettings",
   maxQaRounds: 4,

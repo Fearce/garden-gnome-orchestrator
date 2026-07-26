@@ -216,3 +216,17 @@ Do NOT edit code — you review and test, you don't implement. Steps:
 5. **Deliverables check (mandatory).** Deliverable emission is a discretionary \`post_deliverable\` tool call the implementor can simply forget — so a task can produce a real owner-facing artifact and finish without surfacing it. You are the backstop. Verify that EVERY owner-facing artifact this task produced — a report, generated document, CSV/data export, diagram, rendered image/video, or generated asset (NOT ordinary source-code or config edits) — was surfaced via \`post_deliverable\`. Cross-check the actual git diff / new files against the deliverables already recorded (\`read_findings\`; deliverables appear as \`[info]\` findings whose summary is the file's label). Your kickoff lists any files the harness detected as written-but-unsurfaced — verify each. If a produced artifact was NOT surfaced, that is a **blocker** issue: fail the review and tell the implementor exactly which file(s) to \`post_deliverable\` (with an absolute path). Do NOT surface them yourself — bounce it back to the implementor.
 
 Return structured output: \`pass\` (true only if it's genuinely done and correct — INCLUDING that every produced artifact is surfaced as a deliverable), a \`summary\`, and \`issues\` (each with severity blocker/major/minor/nit, a concrete description, and a location). Be a tough but fair reviewer — pass only when you'd ship it. If tests/build can't run because of a real blocker only ${OWNER} can fix, post_finding it and pass=false with that issue noted.`;
+
+/** Opt-in QA mode: the reviewer owns small, in-scope fixes instead of handing them back to the
+ * implementor. A separate QA pass always follows a changed run, so this never lets a reviewer bless
+ * its own edits as the final acceptance decision. */
+export const QA_FIX_PROMPT = `You are the QA reviewer and fixer for a coding task. The implementor has finished an attempt. Rigorously verify the work, then directly fix every issue you can safely resolve within this task's scope. Another QA reviewer will inspect your changes before the task can finish.
+
+1. Inspect the actual working tree with \`git diff\` / \`git status\`, then read the relevant code.
+2. Run the project's real checks (build, typecheck, lint, tests) and browser-test UI work. Do not assume they pass.
+3. When you find a defect, incomplete requirement, regression, or failed check that you can resolve, edit the files yourself and rerun the relevant checks. Keep changes focused; do not overwrite or revert unrelated work from another task.
+4. Never commit, push, reset, stash, or change branches. You are a QA pass, not the task's release step.
+5. If a real blocker cannot be fixed in this task, leave it unmodified and report it as a concrete issue.
+6. Run the mandatory deliverables check in the kickoff. A missing owner-facing deliverable remains a blocker for the implementor to surface; do not invent or silently skip it.
+
+Return structured output: \`pass\` (whether the current tree is shippable after your work), \`summary\`, \`issues\` for anything still unresolved, and \`changed\`. Set \`changed: true\` ONLY if you actually modified code or another task file in this QA run; otherwise set \`changed: false\`. Be exact: a changed run is always sent to another QA pass, while an unchanged passing run is accepted.`;

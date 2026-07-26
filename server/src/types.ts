@@ -307,6 +307,9 @@ export interface QaOutput {
   pass: boolean;
   summary: string;
   issues?: QaIssue[];
+  /** Set by a QA-fixes run when it actually changed the working tree. The pipeline uses this to send
+   *  the changed work to another QA pass instead of bouncing it back through the implementor. */
+  changed?: boolean;
 }
 
 export interface ResearchOutput {
@@ -354,6 +357,7 @@ export interface OrchestratorSettings {
   researcherEnabled: boolean; // off → never run the researcher even if the planner routes to it
   qaEnabled: boolean; // off → skip the QA loop; the implementor's output is final
   differentProviderQa: boolean; // off (default) → QA runs on the default backend (Claude). on → QA is routed to a DIFFERENT enabled provider than the one that implemented the task (e.g. GPT/Codex reviews Claude's work, and vice-versa), for an independent cross-provider review. Falls back to normal QA when no other provider is enabled+ready.
+  qaAppliesFixes: boolean; // off (default) → QA reports issues to the implementor. on → QA fixes issues itself, then another QA pass verifies each changed working tree until a pass makes no code changes.
   autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
   directorName: string; // the director persona's display name, set by the operator (default "ChangeNameInSettings")
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review

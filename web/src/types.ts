@@ -315,6 +315,7 @@ export interface OrchestratorSettings {
   researcherEnabled: boolean;
   qaEnabled: boolean;
   differentProviderQa: boolean; // off (default) → QA runs on the default backend. on → QA is routed to a DIFFERENT enabled provider than the implementor (cross-provider review); falls back to normal QA when no other provider is enabled+ready.
+  qaAppliesFixes: boolean; // off (default) → QA reports findings back to the implementor. on → QA fixes issues directly, then QA re-checks until a pass makes no code changes.
   autoPush: boolean;
   directorName: string; // the director persona's display name, operator-set (default "ChangeNameInSettings")
   maxQaRounds: number;

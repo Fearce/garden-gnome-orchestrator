@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { EFFORTS, type Effort } from "../types.js";
 import type { AgentRunConfig } from "./runner.js";
 import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, GIT_SERVER, MEMORY_SERVER, OFFICE_SERVER, OFFICE_TOOLS, READER_TOOLS, T } from "./toolNames.js";
-import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_PROMPT, READER_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
+import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_FIX_PROMPT, QA_PROMPT, READER_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
 
 // Only `summary` is required. `nextAgent` is intentionally OPTIONAL: the code already defaults a
 // missing route to the implementor (threadManager: anything but "researcher" ⇒ implementor), and
@@ -77,6 +77,7 @@ export const QA_SCHEMA: Record<string, unknown> = {
   properties: {
     pass: { type: "boolean" },
     summary: { type: "string" },
+    changed: { type: "boolean", description: "True only when this QA run changed code or other task files." },
     issues: {
       type: "array",
       items: {
@@ -206,14 +207,16 @@ export function implementorConfig(
   return cfg;
 }
 
-export function qaConfig(cwd: string, servers: { bus: McpServerConfig; office: McpServerConfig }): AgentRunConfig {
+export function qaConfig(cwd: string, servers: { bus: McpServerConfig; office: McpServerConfig }, opts?: { applyFixes?: boolean }): AgentRunConfig {
+  const applyFixes = opts?.applyFixes === true;
   return {
     model: config.models.qa,
     cwd,
-    systemPrompt: QA_PROMPT,
-    // Needs Bash to run tests/build; cannot edit (it reviews, it doesn't implement).
+    systemPrompt: applyFixes ? QA_FIX_PROMPT : QA_PROMPT,
+    // The standard QA path is deliberately read-only. The opt-in QA-fixes path is an editing role;
+    // its prompt forbids commits/pushes, leaving ownership of the task's final commit unchanged.
     permissionMode: "bypassPermissions",
-    disallowedTools: ["Write", "Edit", "NotebookEdit", "AskUserQuestion"],
+    disallowedTools: applyFixes ? ["AskUserQuestion"] : ["Write", "Edit", "NotebookEdit", "AskUserQuestion"],
     mcpServers: { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },
     settingSources: ["project"],
     outputFormat: { type: "json_schema", schema: QA_SCHEMA },
