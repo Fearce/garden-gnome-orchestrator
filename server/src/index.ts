@@ -501,7 +501,7 @@ async function main(): Promise<void> {
         // (the recurring "I fixed it but my view is still the old one" bug).
         setHeaders: (res, filePath) => {
           const hashedAsset = /[\\/]assets[\\/]/.test(filePath) && !filePath.endsWith(".html");
-          res.setHeader("cache-control", hashedAsset ? "public, max-age=31536000, immutable" : "no-cache");
+          res.header("cache-control", hashedAsset ? "public, max-age=31536000, immutable" : "no-cache");
         },
       });
       app.setNotFoundHandler((req, reply) => {
