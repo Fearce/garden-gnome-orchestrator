@@ -56,6 +56,21 @@ function seedWorkspace(): string {
   return cwd;
 }
 
+/** Best-effort, never fatal: a just-exited `claude` child can still hold the temp cwd on Windows, and
+ *  losing a scratch directory must never cost the run's results (an EBUSY here used to swallow them). */
+async function cleanup(cwd: string): Promise<void> {
+  for (const waitMs of [0, 1500]) {
+    if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
+    try {
+      rmSync(cwd, { recursive: true, force: true });
+      return;
+    } catch {
+      /* the child is still exiting — retry once below */
+    }
+  }
+  console.log(`  (note: could not remove ${cwd} — a CLI child still holds it; delete it later)`);
+}
+
 interface Attempt {
   label: string;
   subtype: string | undefined;
@@ -134,7 +149,7 @@ async function main(): Promise<void> {
       session = attempts[attempts.length - 1]?.session ?? session;
     }
   } finally {
-    rmSync(cwd, { recursive: true, force: true });
+    await cleanup(cwd);
   }
 
   for (const a of attempts) {
