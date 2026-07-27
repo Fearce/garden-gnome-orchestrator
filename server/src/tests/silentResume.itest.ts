@@ -80,8 +80,10 @@ class StubAccounts {
 
 const SUCCESS: ResultEvent = { type: "result", subtype: "success", isError: false, result: "ok" };
 
-/** The one leaf the pipeline can't run here: a spawned agent. Returns a canned result and records stops. */
-function fakeRun(res: ResultEvent = SUCCESS): AgentRunLike {
+/** The one leaf the pipeline can't run here: a spawned agent. Returns a canned result and records stops.
+ *  `beforeResult` fires just before the result resolves — used to simulate the real runner's `onEnd`
+ *  winning the race against the awaited result (it clears `this.live` and finalizes the run row). */
+function fakeRun(res: ResultEvent = SUCCESS, beforeResult?: () => void): AgentRunLike {
   const run = {
     emitter: { on() {}, off() {}, once() {}, emit() {} },
     sessionId: "sess-1",
@@ -103,9 +105,11 @@ function fakeRun(res: ResultEvent = SUCCESS): AgentRunLike {
     endInput() {},
     async stop() {},
     async result() {
+      beforeResult?.();
       return res;
     },
     async nextResult() {
+      beforeResult?.();
       return res;
     },
   };
@@ -174,12 +178,21 @@ function makeHarness(script: ("silent" | "works")[]): Harness {
   };
 }
 
-/** Seed the first (pre-loop) implementor run + drive awaitImplementorCompletion the way the pipeline does. */
-async function drive(h: Harness, firstProduces: boolean): Promise<ResultEvent | undefined> {
+/** Seed the first (pre-loop) implementor run + drive awaitImplementorCompletion the way the pipeline does.
+ *  `endsFirst` reproduces the real ordering hazard: the run's `onEnd` fires BEFORE the awaited result is
+ *  observed, so it has already cleared the live handle and stamped the row `done`/`endedAt`. */
+async function drive(h: Harness, firstProduces: boolean, endsFirst = false): Promise<ResultEvent | undefined> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = h.mgr as any;
   const run = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5", account: "a" });
-  const agent = fakeRun();
+  const onEnd = endsFirst
+    ? () => {
+        if (internals.live.get(h.thread.id)?.runId !== run.id) return; // already replaced by a relaunch
+        internals.live.delete(h.thread.id);
+        h.db.updateRun(run.id, { state: "done", endedAt: Date.now(), numTurns: 0, costUsd: 0 });
+      }
+    : undefined;
+  const agent = fakeRun(SUCCESS, onEnd);
   internals.live.set(h.thread.id, { run: agent, runId: run.id, accountId: "a" });
   if (firstProduces) h.db.addMessage({ threadId: h.thread.id, runId: run.id, role: "implementor", kind: "text", content: "Patched the file." });
   return internals.awaitImplementorCompletion(h.thread, undefined, "kickoff", agent, "a", false, "continue", true);
@@ -236,6 +249,48 @@ console.log("\n=== D. silence all the way through the budget PARKS the task inst
   check("every retry after the first also forced a fresh session", h.asks.every((a) => a.forceFresh));
   check("the hollow success is replaced by a real error", res?.isError === true, JSON.stringify(res));
   check("the error says the session produced nothing", /produced no output/i.test(res?.result ?? ""));
+  h.dispose();
+}
+
+console.log("\n=== E. the stamp survives the run finalizing FIRST (onEnd wins the race) ===");
+{
+  // The real runner's `onEnd` clears `this.live` and finalizes the row as `done` — and for a silent run the
+  // CLI exits immediately, so it frequently lands before the awaited result is observed. Keying the stamp
+  // off `this.live`, or skipping an already-stamped `endedAt`, silently left the misleading `done` row.
+  const h = makeHarness(["works"]);
+  const res = await drive(h, false, true);
+  const row = firstRunRow(h);
+  check("the silent run was still detected and retried", h.asks.length === 1, `${h.asks.length} resume(s)`);
+  check("the already-finalized `done` row is corrected to error", row.state === "error", String(row.state));
+  check("probe:run-errors still classifies it as `silent`", classifyRun(row) === "silent", classifyRun(row));
+  check("the original end time is preserved", row.ended_at != null);
+  check("the retry's finish is still accepted", res?.isError === false);
+  h.dispose();
+}
+
+console.log("\n=== F. a stale 'looks done' message from an EARLIER session can't veto the silent retry ===");
+{
+  // The QA fix-round case: the pre-QA session signed off with "the task is complete", QA found issues, and
+  // the fix-round resume came back empty. `implementorLooksDone` reads that stale sign-off, so vetoing on
+  // it would skip the retry entirely and park a task whose fix round never actually ran.
+  const h = makeHarness(["works"]);
+  const stale = h.db.addMessage({
+    threadId: h.thread.id,
+    role: "implementor",
+    kind: "text",
+    content: "All tests pass — the task is complete.",
+  });
+  // Backdate it so it predates the run we're about to start (same-ms creation would count as this run's
+  // own output and mask the silence the case is about).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (h.db as any).raw.prepare("UPDATE messages SET created_at = ? WHERE id = ?").run(Date.now() - 60_000, stale.id);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = h.mgr as any;
+  check("the stale message really does read as done", internals.implementorLooksDone(h.thread.id) === true);
+  const res = await drive(h, false);
+  check("the silent fix-round was retried anyway", h.asks.length === 1, `${h.asks.length} resume(s)`);
+  check("on a fresh session", h.asks[0]?.forceFresh === true);
+  check("and the working retry is accepted as the finish", res?.isError === false);
   h.dispose();
 }
 

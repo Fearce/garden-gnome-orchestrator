@@ -3037,7 +3037,11 @@ export class ThreadManager implements OrchestratorApi {
     while (
       (this.isTurnLimitStop(res) || this.implementorStalled(thread.id, res) || silent) &&
       !this.cancelled(thread.id) &&
-      !this.implementorLooksDone(thread.id) &&
+      // The "looks done" guard reads the last implementor MESSAGE — but a silent run produced none, so that
+      // message belongs to an EARLIER session and says nothing about this attempt. A QA fix-round resume is
+      // the common case: the pre-QA session signed off with "all tests pass", so vetoing on it would skip
+      // the retry entirely and park a task whose fix round never actually ran.
+      (silent || !this.implementorLooksDone(thread.id)) &&
       (this.autoResumes.get(thread.id) ?? 0) < config.maxAutoResumes
     ) {
       const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
@@ -3238,14 +3242,30 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Record a silent run as the failure it is instead of leaving a `done` row with 0 turns. The run-history
    *  triage (`probe:run-errors`, and the nightly sweep through it) only reads non-done runs, so a `done` row
-   *  would hide this class of failure entirely. `finalizeRun`'s endedAt guard makes this the terminal write. */
+   *  would hide this class of failure entirely.
+   *
+   *  Deliberately order-independent: the run's own `onEnd` (which clears `this.live` and finalizes the row
+   *  as `done`) races the result we just awaited — for a silent run the CLI exits immediately, so it often
+   *  wins. Keying off `this.live` alone, or bailing on an already-stamped `endedAt`, would therefore leave
+   *  the misleading `done` row in place exactly when this matters most. So fall back to the thread's newest
+   *  implementor row and overwrite a terminal state that carries no reason of its own. */
   private markSilentRun(threadId: string): void {
-    const runId = this.live.get(threadId)?.runId;
+    const runId = this.live.get(threadId)?.runId ?? this.latestImplementorRunId(threadId);
     if (!runId) return;
     const run = this.db.getRun(runId);
-    if (!run || run.endedAt != null) return;
-    this.db.updateRun(runId, { state: "error", error: SILENT_RUN_ERROR, endedAt: Date.now() });
+    // A row that already recorded a real failure keeps its own reason — that one says more than "empty".
+    if (!run || run.error) return;
+    this.db.updateRun(runId, { state: "error", error: SILENT_RUN_ERROR, endedAt: run.endedAt ?? Date.now() });
     this.emitRun(runId);
+  }
+
+  /** The thread's most recent implementor run row, by start time — the run whose result just came back
+   *  once `onEnd` has already cleared the live handle. */
+  private latestImplementorRunId(threadId: string): string | undefined {
+    return this.db
+      .listRuns(threadId)
+      .filter((r) => r.role === "implementor")
+      .sort((a, b) => b.startedAt - a.startedAt)[0]?.id;
   }
 
   /** The owner-facing park reason for an implementor that ended on an error result instead of finishing.
