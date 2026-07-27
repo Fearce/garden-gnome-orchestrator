@@ -32,6 +32,13 @@ needing an edit/build/verification/broad investigation gets a "needs full pipeli
 for a normal re-dispatch. Bias toward the full `dispatch` when unsure — misrouting to Opus is safe,
 misrouting a real task to the reader is not. The card shows a **READ** badge. See ARCHITECTURE.md §5.
 
+**Auto-review (`thread.autoReview`).** A task parked in `review` is waiting on Kevin; the detail
+panel's "Auto-review & mark done" button delegates that call to one **reviewer** agent (Opus,
+read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing`, verifies the work,
+`ask_user`s Kevin about anything only he can decide, then settles the task `done` or hands it back to
+`review` with its reasons — an errored/verdict-less run always re-parks, never accepts. So `done`
+now has three sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
+
 ## Run / build
 - Dev (hot reload): `npm run dev` at repo root — tsx-watch server + Vite web.
 - Prod: `npm run build` (web then server) → `npm start` runs `node dist/index.js` from

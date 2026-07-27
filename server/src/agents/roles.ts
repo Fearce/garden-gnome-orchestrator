@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { EFFORTS, type Effort } from "../types.js";
 import type { AgentRunConfig } from "./runner.js";
 import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, GIT_SERVER, MEMORY_SERVER, OFFICE_SERVER, OFFICE_TOOLS, READER_TOOLS, T } from "./toolNames.js";
-import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_FIX_PROMPT, QA_PROMPT, READER_PROMPT, RESEARCHER_PROMPT } from "./prompts.js";
+import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_FIX_PROMPT, QA_PROMPT, READER_PROMPT, RESEARCHER_PROMPT, REVIEWER_PROMPT } from "./prompts.js";
 
 // Only `summary` is required. `nextAgent` is intentionally OPTIONAL: the code already defaults a
 // missing route to the implementor (threadManager: anything but "researcher" ⇒ implementor), and
@@ -105,6 +105,32 @@ export const READER_SCHEMA: Record<string, unknown> = {
     answered: { type: "boolean", description: "You fully answered the question read-only and posted the answer as a finding." },
     escalated: { type: "boolean", description: "The task needs the full pipeline (edits/verification/depth) — you posted a 'needs full pipeline' finding instead of half-answering." },
     reason: { type: "string", description: "When escalated: the one-line reason the full pipeline is needed." },
+  },
+};
+
+// The auto-reviewer's verdict. `accept` is load-bearing control flow — it settles the task 'done' — so
+// it's required alongside the summary the owner reads. `issues` carries the hand-back reasons; QA's issue
+// shape is reused so the console renders both the same way.
+export const REVIEWER_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["accept", "summary"],
+  properties: {
+    accept: { type: "boolean", description: "True only if you would sign this off yourself — the task is genuinely finished and correct." },
+    summary: { type: "string", description: "What you verified and why you accepted or handed it back." },
+    issues: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["description"],
+        properties: {
+          severity: { type: "string", enum: ["blocker", "major", "minor", "nit"] },
+          description: { type: "string" },
+          location: { type: "string" },
+        },
+      },
+    },
   },
 };
 
@@ -220,6 +246,31 @@ export function qaConfig(cwd: string, servers: { bus: McpServerConfig; office: M
     mcpServers: { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },
     settingSources: ["project"],
     outputFormat: { type: "json_schema", schema: QA_SCHEMA },
+    effort: "high",
+    includePartialMessages: true,
+    maxTurns: 60,
+  };
+}
+
+/**
+ * The on-demand auto-reviewer: ONE agent that stands in for the owner's final review of a task parked in
+ * 'review' and either accepts it as done or hands it back with reasons. Shaped like QA — same read-only
+ * posture (Write/Edit hard-blocked under bypassPermissions), Bash kept so it can actually run the repo's
+ * build/tests and browser-drive a UI rather than eyeballing a diff. The one capability QA doesn't need:
+ * it asks the OWNER directly (the bus `ask_user`) for the decisions only they can make, which is the whole
+ * point of delegating the review. The built-in AskUserQuestion stays blocked so those questions land in
+ * the console's own question flow.
+ */
+export function reviewerConfig(cwd: string, servers: { bus: McpServerConfig; office: McpServerConfig }): AgentRunConfig {
+  return {
+    model: config.models.reviewer,
+    cwd,
+    systemPrompt: REVIEWER_PROMPT,
+    permissionMode: "bypassPermissions",
+    disallowedTools: ["Write", "Edit", "NotebookEdit", "MultiEdit", "AskUserQuestion"],
+    mcpServers: { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },
+    settingSources: ["project"],
+    outputFormat: { type: "json_schema", schema: REVIEWER_SCHEMA },
     effort: "high",
     includePartialMessages: true,
     maxTurns: 60,

@@ -2,7 +2,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSPr
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
 import { agentName, MODEL_ROLES, repoRoom } from "../types.js";
-import { clock, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { canAutoReview, clock, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed, RoleElapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
@@ -36,6 +36,29 @@ function CopyRefButton({ threadId, title }: { threadId: string; title: string })
 }
 
 const roleVar = (role: Role): CSSProperties => ({ "--role": roleColor(role) } as CSSProperties);
+
+/** Lucide's gavel — the auto-reviewer's mark, matching the gnome's own prop. */
+function GavelIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ marginRight: 5, verticalAlign: "-2px" }}
+    >
+      <path d="m14.5 12.5-8 8a2.119 2.119 0 1 1-3-3l8-8" />
+      <path d="m16 16 6-6" />
+      <path d="m8 8 6-6" />
+      <path d="m9 7 8 8" />
+      <path d="m21 11-8-8" />
+    </svg>
+  );
+}
 
 function RoleLabel({ role, name, model }: { role: Role; name?: string; model?: string }) {
   return (
@@ -158,13 +181,13 @@ function EditableTitle({ threadId, title }: { threadId: string; title: string })
 // The agent pipelinePath order. `reader` is the read-only lane's single agent — it never coexists
 // with the planner→qa pipeline (a read-lane task runs only the reader), so listing it here just lets
 // a reader task surface its own agent-path row/gnome instead of rendering blank.
-const ROLE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa", "reader"];
+const ROLE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa", "reader", "reviewer"];
 
 // Filter-chip order. Director is first so the DIRECTOR chip renders right after ALL (before
 // PLANNER). It's deliberately absent from ROLE_ORDER, which drives the agent pipelinePath —
 // the director isn't an agent run, just the brief + injected steering. `reader` trails at the end:
 // its chip only appears on a read-lane task (zero reader feed rows on a normal task → no chip).
-const FILTER_ORDER: Role[] = ["director", "planner", "researcher", "implementor", "qa", "reader"];
+const FILTER_ORDER: Role[] = ["director", "planner", "researcher", "implementor", "qa", "reader", "reviewer"];
 
 // Only the most recent N feed rows are rendered; older ones load in batches as you scroll up.
 // A long task can accumulate thousands of tool calls — rendering them all made every keystroke
@@ -221,6 +244,7 @@ export function ThreadDetail() {
   const cancel = useStore((s) => s.cancel);
   const retry = useStore((s) => s.retry);
   const markDone = useStore((s) => s.markDone);
+  const autoReview = useStore((s) => s.autoReview);
   const select = useStore((s) => s.select);
   const approve = useStore((s) => s.approve);
   const loadChanges = useStore((s) => s.loadChanges);
@@ -376,6 +400,9 @@ export function ThreadDetail() {
   // the task the moment an account frees up, so a manual inject/interrupt would fight it. Detection
   // mirrors the server's own cap-park scan (isCapParked), never a plain human-review park.
   const frozen = isCapParked(thread);
+  // The auto-review control is live only on a genuine review park: a frozen task resumes itself (there's
+  // no finished work to judge yet) and a task already being reviewed shows its progress instead.
+  const autoReviewable = canAutoReview(thread);
 
   const threadRuns = Object.values(runs).filter((r) => r.threadId === id);
   const impl = threadRuns.filter((r) => r.role === "implementor").sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -552,6 +579,25 @@ export function ThreadDetail() {
                   title="Start this task over from the beginning — re-runs the whole pipeline from the original brief"
                 >
                   ↻ Retry
+                </button>
+              )}
+              {(thread.state === "review" || thread.state === "reviewing") && (
+                <button
+                  className={"btn review sm" + (frozen ? " frozen-ctl" : "")}
+                  onClick={() => {
+                    if (autoReviewable) autoReview(id);
+                  }}
+                  disabled={!autoReviewable}
+                  title={
+                    thread.state === "reviewing"
+                      ? "A reviewer is going through this task now — it'll be marked done, or handed back with whatever it couldn't accept."
+                      : frozen
+                        ? FROZEN_CONTROL_TOOLTIP
+                        : "Too lazy to review it yourself? An agent reviews the work in your place — it runs the checks, asks you anything only you can decide, then marks the task done or hands it back with reasons."
+                  }
+                >
+                  <GavelIcon />
+                  {thread.state === "reviewing" ? "Auto-reviewing…" : "Auto-review & mark done"}
                 </button>
               )}
               {isDoneable(thread.state) && (

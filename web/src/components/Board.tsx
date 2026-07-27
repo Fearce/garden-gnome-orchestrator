@@ -48,6 +48,7 @@ const STATUS_RANK: Record<ThreadState, number> = {
   qa: 2,
   awaiting_user: 3,
   awaiting_approval: 3,
+  reviewing: 2,
   paused: 4,
   review: 5,
   done: 6,
@@ -492,9 +493,12 @@ function latestRun(runs: AgentRun[], role: Role): AgentRun | undefined {
  *  (one reader, no planner→qa pipeline), so it always shows just the reader pip — before the reader
  *  run exists too, so a read-lane card never falls back to a misleading greyed "Plan" pip. */
 function pipRoles(runs: AgentRun[], lane: Thread["lane"]): Role[] {
-  if (lane === "read") return ["reader"];
+  // The auto-reviewer isn't a pipeline stage — it's the owner handing their own final review to an
+  // agent — so it trails whichever lane ran, and only once it has actually reviewed the task.
+  const reviewed: Role[] = runs.some((r) => r.role === "reviewer") ? ["reviewer"] : [];
+  if (lane === "read") return ["reader", ...reviewed];
   const ran = PIPELINE_ORDER.filter((role) => runs.some((r) => r.role === role));
-  return ran.length ? ran : ["planner"];
+  return ran.length ? [...ran, ...reviewed] : ["planner"];
 }
 
 /** Split a workspace path into its parent and its last segment (the repo folder). The leaf carries

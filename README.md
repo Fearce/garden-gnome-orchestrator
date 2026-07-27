@@ -59,6 +59,14 @@ by posting a finding — no planner, no implementor, no QA. Anything needing an 
 or verification escalates back to the full pipeline instead of half-answering. The
 card shows a **READ** badge.
 
+**Auto-review & mark done.** When a task parks in **review** it's waiting on you —
+and sometimes you don't feel like reading the diff. The button on a parked task
+hands your review to one **reviewer** agent: it inspects the change, runs the
+project's checks, browser-tests any UI, and asks *you* directly (a normal console
+question) about anything only you can decide. Then it either marks the task
+**done** in your place or hands it straight back with the concrete reasons it
+couldn't sign off. It reviews only — it never edits, fixes, or commits.
+
 The director's `dispatch` just hands over the brief — the chain assembles itself.
 Each completed stage is **persisted**, so a task that dies mid-pipeline (crash,
 restart, timeout) can be **resumed** from where it failed: finished stages are

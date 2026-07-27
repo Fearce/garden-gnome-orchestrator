@@ -69,6 +69,7 @@ Model + tool policy per role:
 | Implementor | claude-opus-4-8  | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
 | QA          | claude-opus-4-8  | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); sole role that can mark a task done |
 | Reader      | claude-sonnet-4-6| bypassPermissions | Read/Grep/Glob + `git_read` (allowlisted log/show/status/diff, **no Bash**), bus/office — **no Write/Edit/Bash/web** (§5, the read-only `dispatch_read` lane); answers a lookup, no QA |
+| Reviewer    | claude-opus-4-8  | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests, browser-drives UI), bus incl. **`ask_user`** — **no Write/Edit** (§5, the on-demand auto-review); accepts a parked task as done in the owner's place, or hands it back |
 
 The **reader** is the same harness-level enforcement as QA — under `bypassPermissions` the
 `disallowedTools` denylist is a HARD block, so listing `Write`/`Edit`/`Bash`/`WebFetch`/… there
@@ -120,6 +121,9 @@ identity into a tool), so each agent's bus instance is scoped to its thread.
 intake → enriching → [awaiting_user] → planning → [researching] → [awaiting_approval]
                                                        → implementing ⇄ qa → done | review
                                                   ↕ paused / failed   (Resume re-enters, skipping finished stages)
+
+review ──"Auto-review & mark done"──▶ reviewing ──▶ done            (accepted in your place)
+                                          └────────▶ review          (handed back, with reasons)
 ```
 
 - **Closing a task is a soft move, not a delete.** The ✕ on a card → `thread.close` →
@@ -165,6 +169,24 @@ intake → enriching → [awaiting_user] → planning → [researching] → [awa
   **READ** badge (`lane === "read"`), since no QA ran. Sonnet, not Haiku, is the reader's default
   because misrouting *to* the reader is the unsafe direction — it has no QA behind it — so the lane
   is biased to capability (`config.models.reader`, configurable like every role's model).
+- **Auto-review (`thread.autoReview`) — the owner's own review, delegated.** A task parked in
+  `review` is waiting for *you*. The detail panel's **Auto-review & mark done** button hands that
+  decision to one **reviewer** agent instead (`autoReview` → `runAutoReview`): the thread flips to
+  `reviewing` (it holds a concurrency slot like a manual resume), the reviewer inspects the real diff,
+  runs the project's checks, browser-tests UI, and — the reason the lane exists — calls the bus
+  `ask_user` for anything only you can decide, which parks the thread in `awaiting_user` and restores
+  it to `reviewing` on your answer. Its `ReviewerOutput` verdict is the *only* route out:
+  `accept` → `done` (exactly what Mark done would have produced), anything else → straight back to
+  `review` with the concrete `issues` recorded as a warning finding. **An absent verdict is never an
+  acceptance** — an errored, capped, or turn-ceilinged run re-parks. It is read-only (no Write/Edit,
+  and the prompt forbids mutating git), so it decides but never fixes; work left uncommitted is a
+  reason to hand back. Guards: only a genuine human-review park qualifies — a cap-parked task
+  (`CAP_PARK_PREFIX`) is still mid-flight and resumes itself, so the button is disabled there. While a
+  review is live it owns the slot alone: the `reviewing` gates in `injectThread`/`resumeThread` (the
+  QA gate's twins) forward steering to the reviewer rather than spawning an implementor beside it, and
+  a server restart mid-review restores the `review` park rather than taking the generic `failed` +
+  manual-Resume path. Like the reader it never fails over to a CLI backend (`NO_CLI_FAILOVER`) —
+  Codex/Grok have no `ask_user`/`post_finding`. Gate: `test:auto-review`.
 - **QA fix-rounds resume the QA session.** Round 1 is a fresh QA session seeded with a *scope hint*
   (the plan summary + the files it expected to touch) so QA doesn't burn Opus turns rediscovering the
   change surface. Rounds 2..N **resume that same QA session** (same warm/cold gate as the implementor;

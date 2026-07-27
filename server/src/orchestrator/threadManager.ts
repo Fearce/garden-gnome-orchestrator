@@ -10,7 +10,7 @@ import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRun
 import { noteGrokCap, readGrokUsage, grokUsageCapped } from "../agents/grokUsage.js";
 import { noteZaiCap, readZaiUsage, zaiUsageCapped } from "../agents/zaiUsage.js";
 import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, CURATED_ZAI_MODELS, uniq } from "../agents/modelCatalog.js";
-import { clampEffort, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort } from "../agents/roles.js";
+import { clampEffort, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort, reviewerConfig } from "../agents/roles.js";
 import { jsonContractInstruction } from "../agents/structuredText.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
@@ -47,6 +47,7 @@ import type {
   RateLimitInfo,
   ReaderOutput,
   ResearchOutput,
+  ReviewerOutput,
   Role,
   Thread,
 } from "../types.js";
@@ -291,8 +292,17 @@ const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
   "awaiting_approval",
   "implementing",
   "qa",
+  "reviewing",
   "paused",
 ]);
+// A server restart during an on-demand auto-review: the task was PARKED before the reviewer started, so
+// there is nothing to resume — put it straight back where it came from rather than through the generic
+// 'failed' + manual-Resume path (which would re-enter the implementor pipeline on already-finished work).
+const REVIEW_INTERRUPTED_MSG = "Auto-review was interrupted by a server restart — click “Auto-review & mark done” to run it again.";
+// A re-park message is the reviewer's own prose, and it lands in the thread's `error` — which the board
+// card and the detail header render inline. Cap it so a chatty verdict can't push the whole summary into
+// the header; the full text stays readable as the finding the verdict also posts.
+const MAX_REVIEW_ERROR_LEN = 400;
 // Pipeline phases where a pre-implementor stage owns the task (queued for a slot, planner/researcher
 // running, or the approval gate) and NO implementor is live. An inject that lands here is HELD for that
 // stage — it must never start an implementor alongside the still-running planner, nor jump a queued task
@@ -319,6 +329,14 @@ const CLOSEABLE: ReadonlySet<Thread["state"]> = new Set(["done", "failed", "canc
 // resume settled here with no QA loop) and 'paused' are work the owner can sign off on directly — the
 // pipeline's own only-QA-marks-done rule never applies to these, so without this they'd be stuck.
 const DONEABLE: ReadonlySet<Thread["state"]> = new Set(["review", "paused"]);
+// Structured roles that must NOT fail over to a CLI backend when Claude is capped. Both depend on the
+// in-process MCP tools the Codex/Grok adapters can't provide: the reader on its harness-enforced
+// read-only surface plus post_finding, the auto-reviewer on post_finding AND ask_user (a reviewer that
+// silently loses its only way to ask the owner would decide the task's fate blind). They park instead,
+// which for both is a state the owner can simply retry once a window frees.
+const NO_CLI_FAILOVER: ReadonlySet<Role> = new Set(["reader", "reviewer"]);
+/** The roles `runRole` drives: every non-implementor agent, each one-shot and schema-bound. */
+type StructuredRole = "planner" | "researcher" | "qa" | "reader" | "reviewer";
 
 export class ThreadManager implements OrchestratorApi {
   private readonly live = new Map<string, LiveImplementor>();
@@ -343,6 +361,10 @@ export class ThreadManager implements OrchestratorApi {
   // once the implementor is live.
   private readonly resuming = new Set<string>();
   private readonly pendingResumeMsgs = new Map<string, string[]>();
+  // Threads whose on-demand auto-review is live. The reviewer settles the task itself (done, or back to
+  // 'review'), so this is purely the double-click guard: the button is clickable again the instant the
+  // task re-parks, and two reviewers deciding one task's fate concurrently must never happen.
+  private readonly reviewing = new Set<string>();
   // Images attached to the original dispatch prompt. Every isolated fresh role session must see these
   // in its first SDKUserMessage; keep them separate from later injected images so a resume/inject path
   // cannot replace the dispatch screenshots before the implementor starts.
@@ -371,6 +393,9 @@ export class ThreadManager implements OrchestratorApi {
   // so injectThread's / resumeThread's qa-stage gates can forward steering to it (the next fix-round's
   // re-launched implementor drains anything buffered while QA had no steerable handle).
   private readonly liveQa = new Map<string, AgentRunLike>();
+  // Same idea for the on-demand auto-reviewer: it owns the slot alone while it decides the task's fate,
+  // so an inject/resume must reach IT rather than wake an implementor beside it.
+  private readonly liveReviewer = new Map<string, AgentRunLike>();
   // Concurrency control. activePipelines holds the threads whose pipeline (dispatch OR resume) is
   // currently executing; a fresh dispatch beyond maxConcurrent waits in dispatchQueue (FIFO) in the
   // 'queued' state and starts when a slot frees. Resumes of in-flight work aren't gated — they
@@ -714,6 +739,10 @@ export class ThreadManager implements OrchestratorApi {
     }
     for (const t of this.db.listThreads()) {
       if (!IN_FLIGHT.has(t.state)) continue;
+      if (t.state === "reviewing") {
+        this.db.updateThread(t.id, { state: "review", error: REVIEW_INTERRUPTED_MSG });
+        continue;
+      }
       if (!AUTO_RESUME_STATES.has(t.state)) {
         // Was waiting on a person (question/approval/paused/intake) — leave it for a manual Resume.
         this.db.updateThread(t.id, { state: "failed", error: RESTART_FAILED_MSG });
@@ -2148,7 +2177,7 @@ export class ThreadManager implements OrchestratorApi {
    *  session — session ids are not portable across providers). */
   private async runRole(
     thread: Thread,
-    role: "planner" | "researcher" | "qa" | "reader",
+    role: StructuredRole,
     kickoff: string | unknown[],
     makeCfg: (ctx: { token: string | undefined; resume?: string; runId: string }) => AgentRunConfig,
     initialResume?: string,
@@ -2169,18 +2198,18 @@ export class ThreadManager implements OrchestratorApi {
     // drops it when the prior session was on a different backend).
     const forced = opts?.forcedProvider;
     const pref = opts?.preferredProvider;
-    if (forced && role !== "reader") {
+    if (forced && !NO_CLI_FAILOVER.has(role)) {
       provider = forced;
-    } else if (pref && pref !== "claude" && role !== "reader") {
+    } else if (pref && pref !== "claude" && !NO_CLI_FAILOVER.has(role)) {
       const ready = pref === "codex" ? this.codexImplementorReady() : pref === "grok" ? this.grokImplementorReady() : this.zaiImplementorReady();
       if (ready) {
         provider = pref;
       } else {
         resume = undefined; // can't resume a CLI session on another backend
       }
-    } else if (role !== "reader" && !this.accounts.hasHeadroom()) {
+    } else if (!NO_CLI_FAILOVER.has(role) && !this.accounts.hasHeadroom()) {
       // Claude is already exhausted — skip the doomed first attempt and go straight to a ready CLI.
-      // (Reader can't fail over: it needs harness-enforced read-only tools + post_finding.)
+      // (Reader/reviewer can't fail over: they need the in-process MCP tools — see NO_CLI_FAILOVER.)
       const cli = this.nextReadyImplementor("claude", unavailableProviders);
       if (cli) {
         this.postFinding({
@@ -2256,11 +2285,13 @@ export class ThreadManager implements OrchestratorApi {
       // (Researcher-phase notes flow forward into the implementor's kickoff instead.)
       if (role === "planner") this.liveRole.set(thread.id, agent);
       if (role === "qa") this.liveQa.set(thread.id, agent);
+      if (role === "reviewer") this.liveReviewer.set(thread.id, agent);
       agent.start(startMessage);
       let res = await agent.result();
       if (role === "planner" && res && !res.isError) res = await this.drainDirectorNotes(thread, agent, res);
       if (role === "planner") this.liveRole.delete(thread.id);
       if (role === "qa") this.liveQa.delete(thread.id);
+      if (role === "reviewer") this.liveReviewer.delete(thread.id);
       await agent.stop();
       this.untrack(thread.id, agent);
       this.finishRun(run.id, res, agent);
@@ -2277,9 +2308,9 @@ export class ThreadManager implements OrchestratorApi {
           continue;
         }
         unavailableProviders.add(provider);
-        // The read-only reader depends on harness-enforced MCP/tool restrictions and post_finding, which
-        // the CLI adapters cannot provide. Other structured roles can safely use their schema adapters.
-        const next: ImplementorProvider | undefined = role === "reader" ? undefined : this.nextReadyImplementor(provider, unavailableProviders);
+        // The reader and the auto-reviewer depend on in-process MCP tools the CLI adapters cannot provide
+        // (see NO_CLI_FAILOVER). Other structured roles can safely use their schema adapters.
+        const next: ImplementorProvider | undefined = NO_CLI_FAILOVER.has(role) ? undefined : this.nextReadyImplementor(provider, unavailableProviders);
         if (!next) return res;
         const fromName = providerLabel(provider);
         const toName = providerLabel(next);
@@ -2333,11 +2364,11 @@ export class ThreadManager implements OrchestratorApi {
       // Claude exhausted for this run — no other account has headroom, or the per-run failover budget is
       // spent. Before parking, keep planner/researcher/QA alive by continuing on a ready CLI backend
       // (Codex/Grok) — this is the "don't lose researcher/QA when the Claude subs are maxed" path. The
-      // reader can't fail over (it relies on harness-enforced read-only tools + post_finding the CLI
-      // adapters lack). A planner/researcher cap otherwise degrades to no-plan/no-research; QA otherwise
+      // reader and auto-reviewer can't fail over (see NO_CLI_FAILOVER — they rely on in-process MCP tools
+      // the adapters lack). A planner/researcher cap otherwise degrades to no-plan/no-research; QA otherwise
       // parks the task to 'review' (capParked flags it for the supervisor).
       if (!next || accountFailovers >= MAX_ACCOUNT_FAILOVERS) {
-        const cli = role === "reader" ? undefined : this.nextReadyImplementor("claude", unavailableProviders);
+        const cli = NO_CLI_FAILOVER.has(role) ? undefined : this.nextReadyImplementor("claude", unavailableProviders);
         if (cli) {
           this.postFinding({
             threadId: thread.id,
@@ -3853,6 +3884,33 @@ export class ThreadManager implements OrchestratorApi {
       this.touchThread(threadId);
       return { ok: true, state: "qa" };
     }
+    // Auto-review gate — the QA gate's twin, and load-bearing for the same reason: while the reviewer is
+    // deciding this task's fate it is the only agent in the slot, and falling through would cold-resume an
+    // implementor beside it. Steering goes to the reviewer (a `send`, never an interrupt — a one-shot
+    // structured role tears down into a verdict-less result if interrupted). A note that lands after the
+    // verdict simply doesn't change it; the invariant this gate guarantees is "never a second agent".
+    if (thread?.state === "reviewing") {
+      const reviewer = this.liveReviewer.get(threadId);
+      if (reviewer) {
+        const blocks = images?.length ? images.map(toImageBlock) : [];
+        reviewer.send(contentWithImages(structuredAcknowledgedInjection(message), blocks), mode === "interrupt" ? { priority: "now" } : undefined);
+      } else {
+        // The sub-second window before the reviewer registers its handle (or just after it returned).
+        // Buffer like the QA gate does; runAutoReview drops the buffer when the task settles, so a note
+        // that missed the review can't leak into an unrelated later run of this thread.
+        this.bufferDirectorNote(threadId, message);
+      }
+      const m = this.db.addMessage({
+        threadId,
+        role: "director",
+        kind: "system",
+        content: `↪ injected (forwarded to the auto-reviewer): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+        attachments: injectRefs(),
+      });
+      this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.touchThread(threadId);
+      return { ok: true, state: "reviewing" };
+    }
     const live = this.live.get(threadId);
     if (live) {
       if (mode === "interrupt") {
@@ -4050,6 +4108,17 @@ export class ThreadManager implements OrchestratorApi {
       }
       return { ok: true, state: "qa" };
     }
+    // Auto-review gate — same guarantee as the QA one above: the reviewer owns the slot, so a resume here
+    // must never wake or spawn an implementor beside it. Steering reaches the reviewer; a bare Resume is a
+    // no-op (the review is already running and settles the task itself).
+    if (thread.state === "reviewing") {
+      if (message?.trim()) {
+        const reviewer = this.liveReviewer.get(threadId);
+        if (reviewer) reviewer.send(structuredAcknowledgedInjection(message), { priority: "now" });
+        else this.bufferDirectorNote(threadId, message);
+      }
+      return { ok: true, state: "reviewing" };
+    }
     const live = this.live.get(threadId);
     if (live) {
       live.run.send(message?.trim() ? acknowledgedInjection(message) : "Continue.", { priority: "now" });
@@ -4179,6 +4248,8 @@ export class ThreadManager implements OrchestratorApi {
     this.pendingResumeMsgs.delete(threadId);
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
+    this.liveReviewer.delete(threadId);
+    this.reviewing.delete(threadId);
     this.directorNotes.delete(threadId);
     this.queuedForImplementor.delete(threadId);
     this.implementorProvider.delete(threadId);
@@ -4227,6 +4298,8 @@ export class ThreadManager implements OrchestratorApi {
     this.queuedForImplementor.delete(threadId);
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
+    this.liveReviewer.delete(threadId);
+    this.reviewing.delete(threadId);
     this.capParked.delete(threadId);
     this.implementorProvider.delete(threadId);
     this.codexResumeWedged.delete(threadId);
@@ -4238,7 +4311,7 @@ export class ThreadManager implements OrchestratorApi {
     this.lastImplementorSession.delete(threadId);
     // Re-arm the office check-in dedupe so the retried run's agents re-announce themselves ("no
     // invisible workers") instead of being silenced by the prior attempt's keys.
-    for (const role of ["planner", "researcher", "implementor", "qa"] as Role[]) this.checkedIn.delete(`${threadId}:${role}`);
+    for (const role of ["planner", "researcher", "implementor", "qa", "reviewer"] as Role[]) this.checkedIn.delete(`${threadId}:${role}`);
 
     // Wipe the prior attempt in the DB, then tell clients to drop the now-deleted runs/findings/feed
     // for this thread BEFORE the fresh pipeline starts streaming new ones (else the stale slice
@@ -4320,6 +4393,112 @@ export class ThreadManager implements OrchestratorApi {
     return { ok: true, state: "done" };
   }
 
+  /** "Auto-review & mark done": the owner delegates their OWN final review of a parked task to one agent
+   *  instead of reading the diff themselves. It runs a single reviewer that verifies the work, asks them
+   *  (bus ask_user) about anything only they can decide, and then either accepts the task — the same
+   *  'done' markDone would have produced — or hands it back to 'review' with concrete reasons. Deliberately
+   *  restricted to a genuine human-review park: a cap-parked task is mid-flight (the supervisor will resume
+   *  it), so there is no finished work to judge yet. Returns immediately; the reviewer settles the task. */
+  async autoReview(threadId: string): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (this.reviewing.has(threadId)) return { ok: true, state: "reviewing" };
+    if (thread.state !== "review") {
+      return { ok: false, error: `Only a task parked in review can be auto-reviewed — this one is ${thread.state}.` };
+    }
+    if ((thread.error ?? "").startsWith(CAP_PARK_PREFIX)) {
+      return { ok: false, error: "This task is waiting on a usage limit and resumes itself — its work isn't finished yet, so there's nothing to review." };
+    }
+    if (!existsSync(thread.workspace)) {
+      return { ok: false, error: `Workspace "${thread.workspace}" does not exist — the reviewer can't inspect the work.` };
+    }
+    this.reviewing.add(threadId);
+    // A settled task can still hold a stale live/activeRuns entry from the loop that parked it (the same
+    // teardown markDone does before accepting), so the reviewer is the only agent on this thread.
+    await this.forceStopThreadRuns(threadId);
+    // A review occupies a concurrency slot for its lifetime, exactly like a manual resume.
+    this.activePipelines.add(threadId);
+    this.setState(threadId, "reviewing");
+    this.hub.log("info", `Auto-reviewing task ${threadId.slice(0, 8)} "${thread.title.slice(0, 48)}".`);
+    void this.runAutoReview(thread);
+    return { ok: true, state: "reviewing" };
+  }
+
+  /** Run the auto-reviewer and settle the task on its verdict. Mirrors runReader's shape (one runRole +
+   *  a disposition), and like it never leaves the task in the running state: every exit — verdict, error,
+   *  or a thrown run — puts it back in 'review' or moves it to 'done'. */
+  private async runAutoReview(thread: Thread): Promise<void> {
+    try {
+      const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
+      const plan = this.db.getThreadStageOutputs(thread.id).plan ?? undefined;
+      const kickoff = reviewerKickoff(thread, plan, unsurfaced);
+      const res = await this.runRole(thread, "reviewer", this.kickoffContent(thread.id, this.withOfficeNote(thread, "reviewer", kickoff)), ({ token, resume, runId }) => {
+        const bus = createBusServer(this, { threadId: thread.id, role: "reviewer", getRunId: () => runId });
+        const office = createOfficeServer(this, { threadId: thread.id, role: "reviewer", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
+        const cfg = reviewerConfig(thread.workspace, { bus, office });
+        cfg.oauthToken = token;
+        if (resume) cfg.resume = resume;
+        return cfg;
+      });
+      if (this.cancelled(thread.id)) return;
+      this.finalizeReview(thread, res);
+    } catch (e) {
+      this.hub.log("warn", `Auto-review of ${thread.id.slice(0, 8)} failed: ${String(e)}`);
+      if (!this.cancelled(thread.id) && this.db.getThread(thread.id)?.state === "reviewing") {
+        this.setState(thread.id, "review", `Auto-review failed to run: ${String(e)}`.slice(0, MAX_REVIEW_ERROR_LEN));
+      }
+    } finally {
+      this.reviewing.delete(thread.id);
+      this.liveReviewer.delete(thread.id);
+      // Anything the owner injected into the sub-second window where the reviewer had no steerable handle
+      // was buffered by the inject gate; nothing downstream of a review drains it, so drop it here rather
+      // than let it leak into an unrelated later run of this thread (runPipeline's finally does the same).
+      this.directorNotes.delete(thread.id);
+      this.activePipelines.delete(thread.id);
+      this.pumpQueue();
+    }
+  }
+
+  /** The reviewer's verdict decides the task: accepted → 'done' (identical to the owner clicking Mark
+   *  done); anything else → straight back to 'review', untouched, with the reasons recorded as a finding
+   *  so they're readable without re-opening the run. A run that produced no verdict (errored, capped,
+   *  hit its turn ceiling) also re-parks — an absent decision is never an acceptance. */
+  private finalizeReview(thread: Thread, res: ResultEvent | undefined): void {
+    const out = res?.structuredOutput as ReviewerOutput | undefined;
+    if (!res || res.isError || !out) {
+      const detail = res ? runErrorText(res) : undefined;
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "reviewer",
+        summary: "Auto-review couldn't reach a verdict — the task stays parked for you",
+        detail,
+        severity: "warning",
+      });
+      this.setState(thread.id, "review", `Auto-review couldn't reach a verdict${detail ? ` — ${detail}` : ""} — still needs your review.`.slice(0, MAX_REVIEW_ERROR_LEN));
+      return;
+    }
+    if (!out.accept) {
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "reviewer",
+        summary: `Auto-review handed this back: ${out.summary}`,
+        detail: formatReviewIssues(out),
+        severity: "warning",
+      });
+      this.setState(thread.id, "review", `Auto-review didn't accept it: ${out.summary}`.slice(0, MAX_REVIEW_ERROR_LEN));
+      return;
+    }
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "reviewer",
+      summary: `Auto-review accepted this as finished: ${out.summary}`,
+      detail: formatReviewIssues(out) || undefined,
+      severity: "info",
+    });
+    this.setState(thread.id, "done");
+    this.hub.log("info", `Auto-review accepted task ${thread.id.slice(0, 8)} — marked done.`);
+  }
+
   /** Force-stop any lingering agent run for a thread and drop its in-memory bookkeeping, leaving the
    *  persisted state untouched. A parked task can hold a stale activeRuns/live entry after its loop
    *  settles; clearing it stops anything resurrecting the task or counting it as live. */
@@ -4346,6 +4525,7 @@ export class ThreadManager implements OrchestratorApi {
     // A task settles to 'review' straight out of the QA loop, so a mid-QA account failover can leave a
     // stale liveQa handle behind (the window the QA-inject gate also guards) — drop it so it can't leak.
     this.liveQa.delete(threadId);
+    this.liveReviewer.delete(threadId);
     this.directorNotes.delete(threadId);
     this.queuedForImplementor.delete(threadId);
     this.implementorProvider.delete(threadId);
@@ -4365,7 +4545,7 @@ export class ThreadManager implements OrchestratorApi {
   private dropTerminalBookkeeping(threadId: string): void {
     this.capResumeNotifiedAt.delete(threadId);
     this.lastImplementorSession.delete(threadId);
-    for (const role of ["planner", "researcher", "implementor", "qa"] as Role[]) {
+    for (const role of ["planner", "researcher", "implementor", "qa", "reviewer"] as Role[]) {
       this.checkedIn.delete(`${threadId}:${role}`);
     }
   }
@@ -5230,6 +5410,54 @@ function deliverablesCheckBlock(unsurfacedArtifacts: string[]): string {
   return lines.join("\n");
 }
 
+/** The auto-reviewer's kickoff: the brief it must judge the work against, the reason the task parked
+ *  (the thing the owner would have opened it to look at), and the two rules that make the lane worth
+ *  using — ask the owner rather than guess, and hand back rather than wave through. The full reviewer
+ *  doctrine lives in REVIEWER_PROMPT; this is the per-task hand-off. */
+function reviewerKickoff(thread: Thread, plan: PlanOutput | undefined, unsurfacedArtifacts: string[]): string {
+  const parts: string[] = [
+    `# Review request for task: ${thread.title}`,
+    "",
+    `${config.ownerName} isn't reviewing this one by hand — you are making the accept-or-hand-back call in their place.`,
+    "",
+    "## The brief this task was given",
+    thread.brief,
+    "",
+    "## Why it parked for review",
+    thread.error?.trim() || "(no reason recorded — treat it as a plain hand-off and judge the work on its merits)",
+  ];
+  if (plan) {
+    const files = [...new Set((plan.steps ?? []).flatMap((s) => s.files ?? []))];
+    const hint: string[] = [];
+    if (plan.summary) hint.push(`Planner's intent: ${plan.summary}`);
+    if (files.length) hint.push(`Files the plan expected to touch: ${files.join(", ")}`);
+    if (hint.length) parts.push("", "## Scope hint (verify against the ACTUAL git diff, not just this)", ...hint);
+  }
+  parts.push(
+    "",
+    "Now review it properly: read the real diff and the changed files, run this project's build/typecheck/tests yourself, browser-test any UI, and `read_findings` for what the planner/implementor/QA already reported (including anything they flagged as blocking). Do not edit, fix, or commit anything — you decide, you don't implement.",
+    "",
+    `Call \`ask_user\` for anything that genuinely needs ${config.ownerName} — a product decision, "is this what you meant", whether a known trade-off is acceptable. One bundled, short, preferably multiple-choice ask; that is the whole reason this review came to you instead of them. If no answer comes, hand the task back rather than accepting on a guess.`,
+    "",
+    "Then return your structured verdict. `accept: true` marks this task DONE — only if you would sign it off yourself. Otherwise `accept: false` with concrete `issues`, and it goes back on their desk untouched.",
+  );
+  if (unsurfacedArtifacts.length) {
+    parts.push(
+      "",
+      "## Possibly-unsurfaced deliverables",
+      "The harness flagged these files as written by this task but never surfaced via `post_deliverable` (so the owner has no card to open them from). If any is a genuine owner-facing artifact — a report, export, diagram, generated asset — that's a reason to hand the task back naming it; if they're just source/support files, say so and move on:",
+      ...unsurfacedArtifacts.map((p) => `- ${p}`),
+    );
+  }
+  return parts.join("\n");
+}
+
+/** The reviewer's issue list, rendered for the finding's detail. Empty string when it raised none (an
+ *  acceptance usually does), so the caller can drop the field entirely. */
+function formatReviewIssues(out: ReviewerOutput): string {
+  return (out.issues ?? []).map((i) => `- [${i.severity ?? "issue"}] ${i.description}${i.location ? ` (${i.location})` : ""}`).join("\n");
+}
+
 function formatQaIssues(qa: QaOutput): string {
   const lines = (qa.issues ?? []).map((i) => `- [${i.severity ?? "issue"}] ${i.description}${i.location ? ` (${i.location})` : ""}`);
   return (qa.summary ? `${qa.summary}\n` : "") + (lines.length ? lines.join("\n") : "(see QA summary)");
@@ -5246,7 +5474,7 @@ function prependUserContent(content: string | unknown[], note: string): string |
 export function cliRoleKickoff(
   cfg: AgentRunConfig,
   content: string | unknown[],
-  role: "planner" | "researcher" | "qa" | "reader",
+  role: StructuredRole,
   provider: "Codex" | "Grok",
 ): string | unknown[] {
   const system =

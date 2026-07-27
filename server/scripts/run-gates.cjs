@@ -31,6 +31,7 @@ const GATES = [
   "test:reader",
   "test:token-freeze",
   "test:qa-budget",
+  "test:auto-review",
   "test:silent-resume",
   "test:cli-role-kickoff",
   "test:per-repo",

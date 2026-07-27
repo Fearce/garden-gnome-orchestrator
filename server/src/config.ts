@@ -116,6 +116,10 @@ export const config = {
     // reader is the unsafe direction (it has no QA behind it), so it's biased to capability — a Sonnet
     // reader that occasionally escalates beats a Haiku one that half-answers. Configurable like any role.
     reader: "claude-sonnet-4-6",
+    // The on-demand auto-reviewer (the "auto-review & mark done" button). It stands in for the owner's
+    // own final review and can settle a task 'done', so it gets the strongest model — a cheap reviewer
+    // that waves work through is the exact failure this button must not have.
+    reviewer: "claude-opus-4-8",
   },
   // Fable access is gated by its OWN usage pool, separate from the normal 5h/weekly windows. When a
   // Fable run is rejected while those windows still show headroom, dispatch falls back to this model

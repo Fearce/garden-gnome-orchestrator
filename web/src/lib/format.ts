@@ -21,6 +21,7 @@ export function stateColor(state: ThreadState): string {
     case "researching":
     case "enriching":
     case "qa":
+    case "reviewing":
       return "var(--accent)";
     case "done":
       return "var(--ok)";
@@ -41,6 +42,8 @@ export function stateColor(state: ThreadState): string {
 }
 
 export function stateLabel(state: ThreadState): string {
+  // "reviewing" next to "review" reads as a typo on a badge; name what's actually happening instead.
+  if (state === "reviewing") return "auto-review";
   return state.replace(/_/g, " ");
 }
 
@@ -58,10 +61,18 @@ export function threadRunning(state: ThreadState): boolean {
     case "researching":
     case "implementing":
     case "qa":
+    case "reviewing":
       return true;
     default:
       return false;
   }
+}
+
+/** Whether the owner can hand their review of this task to an agent (the "Auto-review & mark done"
+ *  button). A genuine review park only: a cap-parked task is still mid-flight and resumes itself, so
+ *  there's no finished work to judge. Mirrors the server's own guard in ThreadManager.autoReview. */
+export function canAutoReview(thread: Thread): boolean {
+  return thread.state === "review" && !isCapParked(thread);
 }
 
 /** A task in a terminal state: finished and not resumable into the live pipeline. Mirrors the

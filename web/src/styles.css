@@ -20,6 +20,7 @@
   --role-implementor: oklch(0.8 0.14 72);
   --role-qa: oklch(0.79 0.15 150);
   --role-reader: oklch(0.77 0.13 350); /* soft rose — the read-only reader lane; fills the warm gap between director-violet (300) and implementor-amber (72), distinct from every role and from the darker, far-more-saturated danger/crit red alerts */
+  --role-reviewer: oklch(0.78 0.12 31); /* warm coral — the on-demand auto-reviewer that signs a task off in the owner's place; the last free hue family (between reader-rose 350 and implementor-amber 72), and lighter + far less saturated than the danger red (0.68 0.2 25) so a reviewer never reads as an alert */
 
   --ok: oklch(0.77 0.15 152);
   --warn: oklch(0.82 0.14 92);
@@ -605,6 +606,9 @@ button { font-family: inherit; cursor: pointer; }
 .btn.danger:hover { background: oklch(0.68 0.2 25 / 0.12); }
 .btn.success { color: var(--ok); border-color: color-mix(in oklch, var(--ok) 45%, transparent); background: transparent; }
 .btn.success:hover { background: color-mix(in oklch, var(--ok) 12%, transparent); }
+/* Auto-review: wears the reviewer gnome's own hue, so the control and the agent it summons read as one thing. */
+.btn.review { color: var(--role-reviewer); border-color: color-mix(in oklch, var(--role-reviewer) 45%, transparent); background: transparent; }
+.btn.review:hover { background: color-mix(in oklch, var(--role-reviewer) 12%, transparent); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.sm { padding: 4px 9px; font-size: 12px; }
 .btn.google {

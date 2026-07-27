@@ -30,7 +30,8 @@ const INK = "oklch(0.42 0.02 250)"; // ruled lines on the clipboard's pale paper
  *
  *  planner=clipboard · implementor=open-end wrench · researcher=magnifying glass · qa=bug net ·
  *  director=a furled plan-scroll (the one who only delegates carries the master plan) ·
- *  reader=an open book (the read-only lookup lane). */
+ *  reader=an open book (the read-only lookup lane) · reviewer=a gavel (the one trusted to make the
+ *  owner's own accept-or-hand-back call). */
 function roleProp(role: Role) {
   switch (role) {
     case "planner": // clipboard — pale board with a steel clip, a ticked top line, two ruled rows
@@ -83,6 +84,17 @@ function roleProp(role: Role) {
           <path d="M30.4 25.6 35 24.4 34.4 35.4 29.8 36.6Z" fill={BEARD} stroke={METAL} strokeWidth="1.2" />
           <path d="M30.4 25.6 29.8 36.6" stroke={WOOD} strokeWidth="1.4" />
           <path d="M28 29.4l1.9-.3M28 31.8l1.9-.3M31 28.8l2.4-.35M31 31.2l2.4-.35" stroke={INK} strokeWidth="0.85" strokeLinecap="round" opacity="0.7" />
+        </g>
+      );
+    case "reviewer": // gavel — a turned wooden handle rising out of the mitt into a steel-banded barrel
+      // head, struck across the top; the final call this gnome makes in the owner's place
+      return (
+        <g strokeLinecap="round" strokeLinejoin="round">
+          <path d="M27.8 38.2 31 29.6" stroke={WOOD} strokeWidth="2.8" />
+          <g transform="rotate(20 31 28)">
+            <rect x="27.6" y="25.9" width="6.8" height="4.2" rx="1.2" fill={WOOD} stroke={METAL} strokeWidth="0.9" />
+            <path d="M29.4 25.9v4.2M32.6 25.9v4.2" stroke={METAL} strokeWidth="1" opacity="0.75" />
+          </g>
         </g>
       );
     default:

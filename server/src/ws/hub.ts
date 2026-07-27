@@ -141,6 +141,14 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     case "thread.markDone":
       await ctx.manager.markDone(cmd.threadId);
       break;
+    case "thread.autoReview": {
+      const result = await ctx.manager.autoReview(cmd.threadId);
+      // Every rejection here is a state the operator can see but the button couldn't rule out at click
+      // time (a task that just re-parked on a cap, a workspace that moved) — surface it instead of
+      // leaving a click that visibly did nothing.
+      if (!result.ok && result.error) ctx.hub.log("warn", result.error);
+      break;
+    }
     case "thread.close":
       await ctx.manager.closeThread(cmd.threadId);
       break;

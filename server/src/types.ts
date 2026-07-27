@@ -1,6 +1,6 @@
 // Shared domain types — the contract the whole server builds against.
 
-export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" | "reader";
+export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" | "reader" | "reviewer";
 
 /** Dispatch lane. Absent/null = the normal planner→implementor→QA pipeline; 'read' = the cheap
  *  single-agent read-only reader lane (dispatch_read) — one Sonnet reader answers a lookup and escalates
@@ -19,6 +19,7 @@ export type ThreadState =
   | "qa" // QA reviewing/testing the implementor's work
   | "paused" // implementor interrupted, awaiting resume/inject
   | "review" // done but QA wasn't satisfied — needs the owner
+  | "reviewing" // the owner delegated their review: an auto-reviewer is deciding accept-as-done vs. hand back
   | "done"
   | "failed"
   | "cancelled"
@@ -200,7 +201,7 @@ export function agentKey(threadId: string, role: Role): string {
 
 /** Fixed pipeline order of a task's agents — drives the per-role name offset below so a task's roles map
  *  to CONSECUTIVE (hence distinct) default names. Mirrored in web/src/types.ts. */
-const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4, reader: 5 };
+const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4, reader: 5, reviewer: 6 };
 
 /** Deterministic default office name for one agent (a task's role): the task's base name (hashed from
  *  its id) stepped forward by the role's pipeline rank. Because the five roles occupy consecutive slots
@@ -326,6 +327,15 @@ export interface ReaderOutput {
   answered: boolean; // fully answered read-only and posted the answer as a finding
   escalated: boolean; // needs the full pipeline (edits/verification/depth) — posted a 'needs full pipeline' finding instead of half-answering
   reason?: string; // when escalated: the one-line reason
+}
+
+/** The auto-review verdict — the owner's own accept/hand-back decision, delegated to one agent. It is
+ *  the ONLY thing that decides the outcome: `accept` settles the parked task 'done', anything else hands
+ *  it back to 'review' with `issues` naming what a human still has to look at. */
+export interface ReviewerOutput {
+  accept: boolean; // the work genuinely satisfies the brief and can be accepted as finished
+  summary: string; // what was verified and why it was (or wasn't) accepted
+  issues?: QaIssue[]; // when not accepting: the concrete reasons, so the owner sees the list without re-reviewing
 }
 
 /**

@@ -1,6 +1,6 @@
 // Mirror of the server's protocol + domain types (kept in sync by hand).
 
-export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" | "reader";
+export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" | "reader" | "reviewer";
 
 /** Dispatch lane: undefined/null = the normal pipeline, 'read' = the read-only reader lane (dispatch_read). */
 export type ThreadLane = "read";
@@ -32,6 +32,7 @@ export type ThreadState =
   | "qa"
   | "paused"
   | "review"
+  | "reviewing" // the owner delegated their review: an auto-reviewer is deciding accept-as-done vs. hand back
   | "done"
   | "failed"
   | "cancelled"
@@ -206,7 +207,7 @@ export function agentKey(threadId: string, role: Role): string {
 
 /** Mirror of the server's ROLE_RANK — offsets each role's default name so a task's roles map to
  *  consecutive (distinct) names. */
-const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4, reader: 5 };
+const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4, reader: 5, reviewer: 6 };
 
 export function gnomeName(threadId: string, role: Role): string {
   let h = 0;
@@ -579,6 +580,7 @@ export type ClientCommand =
   | { type: "thread.retry"; threadId: string }
   | { type: "thread.rename"; threadId: string; title: string }
   | { type: "thread.markDone"; threadId: string }
+  | { type: "thread.autoReview"; threadId: string }
   | { type: "thread.close"; threadId: string }
   | { type: "thread.restore"; threadId: string }
   | { type: "thread.dismiss"; threadId: string }
