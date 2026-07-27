@@ -79,6 +79,10 @@ const TRANSIENT_RE =
 const CUTOFF_RE =
   /per-session (?:turn|cost) ceiling|error_max_turns|error_max_budget_usd|stopped at its turn limit|reached maximum number of turns/i;
 const STRUCTURED_RE = /structured-output retries|error_max_structured_output_retries|structured output/i;
+// A resumed session that came back without ever reaching the model (0 turns, $0, no messages). The
+// orchestrator stamps this text itself (SILENT_RUN_ERROR in threadManager.ts) precisely so the row shows up
+// here rather than as a misleading `done` — keep the two in sync.
+const SILENT_RE = /produced no output — the run returned without ever reaching the model/i;
 const OPAQUE_RE = /^run failed\.?$/i;
 
 // Ordered so the verdict reads worst-first; `human` decides whether a class needs anyone's attention.
@@ -87,6 +91,7 @@ const CLASSES = [
   { key: "unclassifiable", label: "opaque legacy row (pre-458566e) — no reason recorded", human: true },
   { key: "structured", label: "structured-output retries exhausted — the agent never matched the schema", human: true },
   { key: "cutoff", label: "turn-ceiling cutoff — involuntary, warm-resumed on the implementor path", human: false },
+  { key: "silent", label: "resumed session returned empty — retried on a fresh session", human: false },
   { key: "cap", label: "usage cap — account/backend failover expected", human: false },
   { key: "transient", label: "transient provider/transport error — retried automatically", human: false },
   { key: "restart", label: "killed by a server restart — auto-resumed on boot", human: false },
@@ -104,6 +109,7 @@ function classifyRun(run) {
   if (CAP_RE.test(err)) return "cap";
   if (TRANSIENT_RE.test(err)) return "transient";
   if (CUTOFF_RE.test(err)) return "cutoff";
+  if (SILENT_RE.test(err)) return "silent";
   if (STRUCTURED_RE.test(err)) return "structured";
   // Any other reason the row actually recorded outranks the state stamp — an interrupted run that says WHY
   // it died died of that, not of the bounce.

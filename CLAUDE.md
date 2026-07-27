@@ -114,7 +114,11 @@ Read the run trail to tell causes apart:
 - run `state='error'` → a real failure, an involuntary **cutoff**, or a **usage cap**. Read the row's
   `error` text: it now names the reason (the SDK's `errors`, else the subtype). "Stopped at the
   per-session turn ceiling" is the deliberate `implementorMaxTurns` ceiling — benign, warm-resumed on
-  the implementor path, and several per long task are expected, NOT failures. A 5h/weekly cap auto-switches account and
+  the implementor path, and several per long task are expected, NOT failures. "Resumed session produced no
+  output" is a resume that came back empty (0 turns, $0, no messages — the CLI loaded the session and exited
+  without reaching the model): also benign on its own, retried on a FRESH session seeded from a compressed
+  handoff, and only if the whole auto-resume budget goes that way does the task park instead of reaching QA.
+  A 5h/weekly cap auto-switches account and
   resumes the SDK session; `runner.ts` flags the cap from a `rate_limit_event`, an assistant
   `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
   another sub with headroom. A cap on a **Fable** model is first classified (`classifyCap`: fresh Haiku

@@ -12,7 +12,7 @@ const is = (expected, over, why) => assert.equal(classifyRun(run(over)), expecte
 // Every key the classifier can return must exist in CLASSES, or the verdict silently drops the bucket.
 {
   const keys = new Set(CLASSES.map((c) => c.key));
-  for (const k of ["real", "unclassifiable", "structured", "cutoff", "cap", "transient", "restart"]) {
+  for (const k of ["real", "unclassifiable", "structured", "silent", "cutoff", "cap", "transient", "restart"]) {
     assert.ok(keys.has(k), `CLASSES is missing "${k}"`);
   }
 }
@@ -67,6 +67,13 @@ is("structured", {
 });
 
 // Legacy opaque rows (pre-458566e): the turn count against the ROLE's ceiling is the only evidence left.
+// A resumed session that came back empty. threadManager.ts stamps this text itself so the row lands here
+// instead of as a `done` 0-turn row the sweep never reads — the two strings must stay identical.
+is("silent", {
+  num_turns: 0,
+  error: "Resumed session produced no output — the run returned without ever reaching the model (0 turns, $0).",
+});
+
 is("cutoff", { error: "Run failed.", num_turns: ROLE_TURN_CEILING.implementor + 1 }, "implementor at its ceiling");
 is("cutoff", { role: "qa", error: "Run failed.", num_turns: ROLE_TURN_CEILING.qa }, "qa at its own lower ceiling");
 is("unclassifiable", { error: "Run failed.", num_turns: 31 }, "below the ceiling — nothing recorded to classify");

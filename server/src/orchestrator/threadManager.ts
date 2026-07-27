@@ -189,6 +189,17 @@ const STALL_NUDGE =
   "restore, test run, server start), WAIT for it to finish IN THIS TURN — block on it, await it, or poll it in " +
   "a loop — then act on the result. Continue now and finish the task completely, or call ask_user if you're " +
   `genuinely blocked on ${config.ownerName}.`;
+// The nudge sent when a resume came back having produced NOTHING. The agent never saw the previous nudge —
+// that session returned without ever reaching the model — so this one has to re-state the whole situation
+// from scratch rather than referring back to it.
+const SILENT_RESUME_NUDGE =
+  "Your previous session ended before the work was finished — it stopped at a turn limit or was cut off, not " +
+  "because the task was complete. Your earlier changes are already in the working tree. Review the current " +
+  "state, then continue from there and finish the task completely.";
+// What a silent run's `agent_runs` row records instead of a misleading `done`. `probe:run-errors` classifies
+// on this exact text (CLASSES key "silent"), so the two must not drift.
+const SILENT_RUN_ERROR =
+  "Resumed session produced no output — the run returned without ever reaching the model (0 turns, $0).";
 // The opt-in post-completion prompt (the "Self-improve after tasks" setting): once a task is done —
 // QA passed, or the implementor finished clean with QA disabled — the implementor gets one extra round
 // with this message so the lessons of the session turn into real tooling instead of evaporating with it.
@@ -2797,7 +2808,16 @@ export class ThreadManager implements OrchestratorApi {
     thread: Thread,
     baseKickoff: string,
     resumeSession: string | undefined,
-    opts: { effort?: Effort; resumeNudge: string; directorNote?: string; qaFollows: boolean; account?: Acct },
+    opts: {
+      effort?: Effort;
+      resumeNudge: string;
+      directorNote?: string;
+      qaFollows: boolean;
+      account?: Acct;
+      /** The prior session must NOT be continued in place (it returned empty) — take the fresh-session path
+       *  for this backend: a compressed handoff seed on Claude/z.ai, a fresh CLI kickoff on Codex/Grok. */
+      forceFresh?: boolean;
+    },
   ): Promise<LiveImplementor | null> {
     if (this.cancelled(thread.id)) return null; // cancelled before we got here
     // Re-derive the restart signal from the thread's PERSISTED error at this single resume chokepoint,
@@ -2843,8 +2863,9 @@ export class ThreadManager implements OrchestratorApi {
       // CLI resume already wedged for this thread → don't pay the 60s watchdog + self-heal spam again;
       // start fresh directly. (startImplementor with no `resume` re-prepends doctrine + office note, so
       // pass just task + continuation here to avoid duplicating them.)
-      if (this.codexResumeWedged.has(thread.id)) {
-        this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: ${label} resume previously wedged — starting a fresh session directly.`);
+      if (opts.forceFresh || this.codexResumeWedged.has(thread.id)) {
+        const why = opts.forceFresh ? "the prior session returned empty" : `${label} resume previously wedged`;
+        this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: ${why} — starting a fresh session directly.`);
         const freshText = [baseKickoff, continuation].filter(Boolean).join("\n\n");
         return this.startImplementor(thread, freshText, { effort: opts.effort, account: opts.account });
       }
@@ -2853,7 +2874,11 @@ export class ThreadManager implements OrchestratorApi {
     }
     const ageMs = sessionAgeMs(resumeSession);
     const warm = ageMs != null && ageMs < config.resumeWarmMinutes * 60_000;
-    if (config.resumeFullSession || warm) {
+    // forceFresh overrides the warm/forced gate: continuing this session in place is what just failed, so
+    // fall through to the compressed seed — a NEW session that still carries the prior one's reasoning.
+    if (opts.forceFresh) {
+      this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: prior session returned empty — reseeding a fresh session from a compressed handoff.`);
+    } else if (config.resumeFullSession || warm) {
       const why = config.resumeFullSession ? "forced" : `cache likely warm (${Math.round((ageMs ?? 0) / 60000)}m < ${config.resumeWarmMinutes}m)`;
       this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: full session resume — ${why}.`);
       // Only append the director note when it adds something beyond the nudge — on a manual resume
@@ -2871,7 +2896,9 @@ export class ThreadManager implements OrchestratorApi {
     // Cold cache: composeResumeKickoff compresses the prior session (Haiku + git) and logs how. This
     // is the only awaited step, so re-check cancellation after it before spending an Opus start.
     const seed = await this.composeResumeKickoff(thread, baseKickoff, resumeSession, {
-      directorNote: opts.directorNote,
+      // A forced reseed never sends the nudge as a live turn (there's no session to send it to), so it has
+      // to travel in the seed — otherwise the fresh session is told nothing about why it's starting over.
+      directorNote: opts.directorNote ?? (opts.forceFresh ? opts.resumeNudge : undefined),
       qaFollows: opts.qaFollows,
       restartNote,
     });
@@ -3002,10 +3029,13 @@ export class ThreadManager implements OrchestratorApi {
     qaFollows = true, // false on a manual resume (no QA loop follows), so nudges/seeds don't promise QA
     unavailableProviders: Set<ImplementorProvider> = new Set(),
   ): Promise<ResultEvent | undefined> {
+    let attemptFrom = this.attemptStart(thread.id);
     let res = await this.awaitImplementorResult(thread, effort, kickoff, run, accountId, useNext, continueMsg);
     let current = run;
+    let silent = this.ranSilently(thread.id, attemptFrom, res);
+    if (silent) this.markSilentRun(thread.id);
     while (
-      (this.isTurnLimitStop(res) || this.implementorStalled(thread.id, res)) &&
+      (this.isTurnLimitStop(res) || this.implementorStalled(thread.id, res) || silent) &&
       !this.cancelled(thread.id) &&
       !this.implementorLooksDone(thread.id) &&
       (this.autoResumes.get(thread.id) ?? 0) < config.maxAutoResumes
@@ -3014,17 +3044,21 @@ export class ThreadManager implements OrchestratorApi {
       if (!session) break; // no session to resume from — fall through to the QA/review handling
       const n = (this.autoResumes.get(thread.id) ?? 0) + 1;
       this.autoResumes.set(thread.id, n);
-      // Two involuntary-park cases share this resume: a turn-ceiling cutoff (error_max_turns) and a
-      // voluntary stall (the agent ended its turn promising to "confirm once it finishes"). Both leave
-      // the task waiting on a wake-up that never comes; the only difference is which nudge we send.
+      // Three involuntary-park cases share this resume: a turn-ceiling cutoff (error_max_turns), a voluntary
+      // stall (the agent ended its turn promising to "confirm once it finishes"), and a silent run (the
+      // session came back without producing anything). All three leave the task waiting on a wake-up that
+      // never comes; they differ only in the nudge, and in whether the dead session may be resumed again.
       const turnLimit = this.isTurnLimitStop(res);
-      this.logAutoResume(thread.id, n, turnLimit ? "turn limit hit" : "ended its turn without finishing");
-      const nudge = turnLimit
-        ? "You haven't finished — you stopped at a turn limit, not because the work is done. Continue exactly " +
-          "where you left off and complete the task. " +
-          (qaFollows ? "A QA agent" : config.ownerName) +
-          " will review your work when you're genuinely done."
-        : STALL_NUDGE;
+      const reason = silent ? "resumed session produced nothing" : turnLimit ? "turn limit hit" : "ended its turn without finishing";
+      this.logAutoResume(thread.id, n, reason);
+      const nudge = silent
+        ? SILENT_RESUME_NUDGE
+        : turnLimit
+          ? "You haven't finished — you stopped at a turn limit, not because the work is done. Continue exactly " +
+            "where you left off and complete the task. " +
+            (qaFollows ? "A QA agent" : config.ownerName) +
+            " will review your work when you're genuinely done."
+          : STALL_NUDGE;
       // Close the turn-maxed query before resuming so we never run two implementors on one workspace;
       // startImplementor's onEnd guard tolerates the relaunch replacing `this.live` first either way.
       await current.stop();
@@ -3033,11 +3067,23 @@ export class ThreadManager implements OrchestratorApi {
         effort,
         resumeNudge: nudge,
         qaFollows,
+        // A session that just returned empty has proven it can't be continued in place — re-resuming the
+        // same id would most likely return empty again and burn the whole auto-resume budget on no-ops.
+        forceFresh: silent,
       });
       if (!start) break; // cancelled while compressing the prior session
       this.flushDirectorNotes(thread.id, start.run);
       current = start.run;
+      attemptFrom = this.attemptStart(thread.id);
       res = await this.awaitImplementorResult(thread, effort, kickoff, start.run, start.accountId, false, nudge);
+      silent = this.ranSilently(thread.id, attemptFrom, res);
+      if (silent) this.markSilentRun(thread.id);
+    }
+    // Still silent on the way out (the auto-resume budget ran out, or there was no session left to resume):
+    // the implementor did NOT finish, so replace its hollow success with a real failure. Without this the
+    // caller reads `res && !res.isError` as a clean finish and hands unfinished work to QA — the exact bug.
+    if (silent && !this.cancelled(thread.id)) {
+      res = { type: "result", subtype: "error_during_execution", isError: true, result: SILENT_RUN_ERROR };
     }
     // Three consecutive transient API failures exhausted the same-provider retries. Hand the task to
     // another enabled backend from the durable working-tree state. Track failed providers through the
@@ -3166,6 +3212,40 @@ export class ThreadManager implements OrchestratorApi {
    *  resume. Backed by a set so future involuntary-cutoff subtypes can be added in one place. */
   private isTurnLimitStop(res: ResultEvent | undefined): boolean {
     return !!res && res.isError && LIMIT_SUBTYPES.has(res.subtype);
+  }
+
+  /** When the attempt about to be awaited actually began: the live run's own start, not "now". Anchoring on
+   *  the clock would miss anything the run emitted between spawning and this call, and count it as silent. */
+  private attemptStart(threadId: string): number {
+    const runId = this.live.get(threadId)?.runId;
+    return (runId ? this.db.getRun(runId)?.startedAt : undefined) ?? Date.now();
+  }
+
+  /** Whether an implementor attempt returned a SUCCESS result having produced nothing at all — no text, no
+   *  reasoning, no tool call — since `from`. Seen when a warm `--resume` comes back in seconds with 0 turns
+   *  and $0: the CLI loads the session, emits `system:init`, and exits without ever reaching the model. That
+   *  is not a finish, but it looks exactly like one to the caller, which is how half-done work reached QA.
+   *
+   *  Counted from the persisted messages rather than the run's own events on purpose: `awaitImplementorResult`
+   *  can relaunch the run internally on an account failover, so the result may come from a DIFFERENT run than
+   *  the one we were handed — the thread's message stream covers every relaunch in the attempt. */
+  private ranSilently(threadId: string, from: number, res: ResultEvent | undefined): boolean {
+    // A cancelled run legitimately stops without output — that's the user's doing, not a failed resume, and
+    // mislabelling it would both retry a task the user killed and file it as a failure in the run history.
+    if (!res || res.isError || this.cancelled(threadId)) return false;
+    return this.db.countAgentMessagesSince(threadId, "implementor", from) === 0;
+  }
+
+  /** Record a silent run as the failure it is instead of leaving a `done` row with 0 turns. The run-history
+   *  triage (`probe:run-errors`, and the nightly sweep through it) only reads non-done runs, so a `done` row
+   *  would hide this class of failure entirely. `finalizeRun`'s endedAt guard makes this the terminal write. */
+  private markSilentRun(threadId: string): void {
+    const runId = this.live.get(threadId)?.runId;
+    if (!runId) return;
+    const run = this.db.getRun(runId);
+    if (!run || run.endedAt != null) return;
+    this.db.updateRun(runId, { state: "error", error: SILENT_RUN_ERROR, endedAt: Date.now() });
+    this.emitRun(runId);
   }
 
   /** The owner-facing park reason for an implementor that ended on an error result instead of finishing.

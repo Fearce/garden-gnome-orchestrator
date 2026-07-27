@@ -625,6 +625,16 @@ export class Db {
     ).map(rowToMessage);
   }
 
+  /** How many messages a role has PRODUCED for a thread since `since` (inclusive). `system` rows are
+   *  excluded because the orchestrator writes those itself (the auto-resume notice), so they say nothing
+   *  about whether the agent did any work — which is exactly what the silent-run check asks. */
+  countAgentMessagesSince(threadId: string, role: Message["role"], since: number): number {
+    const row = this.raw
+      .prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = ? AND role = ? AND kind != 'system' AND created_at >= ?")
+      .get(threadId, role, since) as { n: number };
+    return row.n;
+  }
+
   /** The most recent message of a given role+kind for a thread, or null — a single indexed lookup so
    *  callers (e.g. the auto-resume "looks done?" check) don't materialize the whole message history. */
   lastMessageOf(threadId: string, role: Message["role"], kind: Message["kind"]): Message | null {
