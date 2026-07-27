@@ -78,6 +78,15 @@ const runs = db
   .prepare("SELECT * FROM agent_runs WHERE thread_id = ? ORDER BY started_at ASC")
   .all(thread.id);
 
+// How much the run actually PRODUCED. `system` rows are the orchestrator's own notices (the auto-resume
+// line), so they say nothing about whether the agent worked — the same exclusion ranSilently uses.
+const outputOf = db.prepare("SELECT COUNT(*) n FROM messages WHERE run_id = ? AND kind != 'system'");
+const produced = (r) => outputOf.get(r.id).n;
+// A run that ended NON-ERROR having produced nothing never reached the model. That's the silent-resume
+// signature, and it reads as a perfectly healthy `done` row — which is exactly why it went undiagnosed
+// for days. Rows written before the fix keep their misleading `done` state, so the probe has to say it.
+const silent = (r) => r.state === "done" && r.ended_at != null && produced(r) === 0;
+
 section(`run trail (${runs.length} runs)`);
 for (const r of runs) {
   console.log({
@@ -89,7 +98,26 @@ for (const r of runs) {
     dur: dur(r.started_at, r.ended_at),
     started: iso(r.started_at),
     error: short(r.error, 70) || undefined,
+    ...(silent(r) ? { output: "⚠ NONE — never reached the model" } : {}),
   });
+}
+
+const silentRuns = runs.filter(silent);
+if (silentRuns.length) {
+  section(`silent runs (${silentRuns.length})`);
+  console.log(
+    "  These ended as `done` without producing a single message — the agent never ran. On an implementor\n" +
+      "  that is the silent-resume failure: the CLI loaded the session, emitted init and exited, and the\n" +
+      "  pipeline used to read it as a finish and hand the half-done work straight to QA.",
+  );
+  for (const r of silentRuns) {
+    console.log(`  - ${r.role} · ${r.model} · ${iso(r.started_at)} · ${dur(r.started_at, r.ended_at)} · ${r.num_turns ?? "—"} turns`);
+  }
+  console.log(
+    "  ↳ Handled since 2026-07-27 (threadManager `ranSilently` → forced-fresh retry, gate test:silent-resume).\n" +
+      "    A silent run on a NEW row is stamped `error` instead and shows up in `npm run probe:run-errors`;\n" +
+      "    a `done` one here predates that. Several in a row on one task means the retry itself isn't working.",
+  );
 }
 
 section("totals by (role, model)");

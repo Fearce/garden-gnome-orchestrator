@@ -41,6 +41,7 @@
     "test:gates": "node scripts/run-gates.cjs",
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
     "probe:task-runs": "node scripts/probe-task-runs.cjs",
+    "probe:sdk-resume": "tsx src/tools/probeSdkResume.ts",
     "probe:run-errors": "node scripts/probe-run-errors.cjs",
     "probe:accounts": "node scripts/probe-accounts.cjs",
     "probe:schedule-detect": "tsx src/tools/probeScheduleDetect.ts",

@@ -96,5 +96,8 @@ Each question is ~20–60s; a few questions can exceed a single foreground comma
 budget. Launch with `run_in_background` (or `… > log 2>&1 &`) writing to a log,
 then poll the log for a done-sentinel — don't block a whole turn on it.
 
-Cross-refs: `add-a-setting.md` / `add-a-thread-column.md` (the change patterns this
+Cross-refs: `threadmanager-itest.md` — the FREE seam (stub the agent spawn, real Db) that
+covers pipeline LOGIC, and the traps that make such a test pass while proving nothing; reach
+for it first and keep this harness for "does the lane actually answer".
+`add-a-setting.md` / `add-a-thread-column.md` (the change patterns this
 verifies), CLAUDE.md § "Debugging a failed task" (the `agent_runs` run-trail columns).
