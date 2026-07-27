@@ -6,17 +6,17 @@ logic, the QA loop, failover, gating. The cheap seam is a REAL `Db` (temp file) 
 subprocess, no quota, ~1s. (For "does the lane actually answer" use the real-agent
 harness in `e2e-a-pipeline-lane.md` instead — it costs money.)
 
-References: `silentResume.itest.ts` (drives one private method with fake runs),
-`qaRoundBudget.itest.ts` / `tokenFreezeResume.itest.ts` (full harness),
-`officeGating.itest.ts`, `perRepoConcurrency.itest.ts`.
+References: `silentResume.itest.ts` (one private method, fake runs), `qaRoundBudget.itest.ts`
+/ `tokenFreezeResume.itest.ts` / `autoReview.itest.ts` (full harness), `officeGating.itest.ts`,
+`perRepoConcurrency.itest.ts`.
 
 ## The check that is NOT optional: revert the fix, watch the gate fail
 
-A test written AFTER the fix proves nothing until you have seen it fail without it.
-Comment out your change, run the gate, require RED, restore. Commit `70c2f84` shipped
-with two gaps that made it a no-op in production — its tests passed anyway, and only
-the revert-check (landed as `5a618cc`) found them. Budget one minute for this; it is
-the difference between a regression gate and a green decoration.
+A test written AFTER the fix proves nothing until you have seen it fail without it. Comment
+out your change, run the gate, require RED, restore. Commit `70c2f84` shipped with two gaps
+that made it a no-op in production — its tests passed anyway, and only the revert-check
+(`5a618cc`) found them. One minute, and it's the difference between a regression gate and a
+green decoration.
 
 ## Trap: your stub hands the code a state production never has
 
@@ -33,15 +33,18 @@ exactly where lifecycle bugs live:
   and prove it can't veto your path.
 - **Fresh `db.createRun` rows** are `state='starting'`, `endedAt: null`. Production
   rows reaching your code are often already terminal.
+- **A faked result event must carry `type`/`subtype`/`isError`.** A bare `{isError:true}`
+  is not a `ResultEvent`: `runErrorText` reads `subtype`, so the stub throws a TypeError
+  the settle path's catch swallows into the owner-facing message — the test still passes
+  while the real error text is never exercised. Fake the whole shape.
 
 ## When the question is "what does the SDK actually do?"
 
-Some pipeline logic rests on Agent SDK behaviour we don't control — whether `--resume`
-gets a fresh turn budget, whether it reaches the model at all. Don't hand-roll a harness
-and don't reason from the types: `npm run probe:sdk-resume --prefix server` drives the
-real `AgentRun` through a fresh query + N resumes and prints subtype/turns/output/cost
-per attempt (`out: 0` on a success = the silent-resume signature). Costs real quota;
-defaults to Haiku at ~$0.10.
+Some pipeline logic rests on Agent SDK behaviour we don't control — whether `--resume` gets a
+fresh turn budget, whether it reaches the model at all. Don't hand-roll a harness or reason from
+the types: `npm run probe:sdk-resume --prefix server` drives the real `AgentRun` through a fresh
+query + N resumes, printing subtype/turns/output/cost per attempt (`out: 0` on a success = the
+silent-resume signature). Costs real quota; defaults to Haiku at ~$0.10.
 
 ## Gotchas that cost a run each
 
@@ -52,7 +55,9 @@ defaults to Haiku at ~$0.10.
 - `dispose()` must `clearInterval(capSupervisor)` + `clearTimeout(tokenResumeTimer)` and
   `db.raw.close()` BEFORE `rmSync`, or Windows throws EBUSY on the sqlite file.
 - A `StubAccounts` fake must carry every method the constructor's boot-apply calls
-  (`setSpreadUsage`, `applyWeeklySafetyPct`, …) or construction crashes.
+  (`setSpreadUsage`, `applyWeeklySafetyPct`, …) or construction crashes — plus `auxToken()`
+  if your path can reach `setState(id,"done")`: `announceDone` calls it inside a `void`ed
+  promise, so a missing method is an unhandled rejection that kills the whole run.
 
 ## Register it or the sweep never runs it
 

@@ -1,7 +1,8 @@
 # Adding a server-authoritative broadcast collection + WS commands + view
 
 For a whole new persisted entity the console lists and edits live — the Scheduled
-Tasks feature is the reference. (For a single tunable knob use `add-a-setting.md`
+Tasks feature is the reference. (For a new agent role or thread state use
+`add-a-role-or-thread-state.md`; for a single tunable knob use `add-a-setting.md`
 instead. This is the bigger pattern: its own table, CRUD commands, a broadcast, and
 a view.) Touch every spot — missing one typechecks fine but silently drops the value
 at that layer:

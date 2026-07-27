@@ -42,7 +42,12 @@ the different-provider-QA / per-repo-cap / copy-reference features.)
 - Settings open: `[aria-label="Open settings"]` (gear); panel
   `[role="dialog"][aria-label="Settings"]` (also `.settings-pop`).
 - A task row: `.card` (click opens ThreadDetail); title `.closed-card-title`.
-- Buttons: by text — `button:has-text("Copy reference")`.
+- Buttons: by text — `button:has-text("Copy reference")`. `has-text` is a SUBSTRING
+  match, so adding a button can break an existing selector (strict-mode violation:
+  "Auto-review & mark done" also matches `has-text("Mark done")`) — use
+  `button:text-is("✓ Mark done")` for anything whose label is a substring of another's.
+- State badges are CSS-uppercased (`.detail-head .badge`, `.card` badge): the DOM text
+  reads `AUTO-REVIEW`, so compare case-insensitively, not against the `stateLabel` string.
 - Clipboard in headless chromium: make the context with
   `permissions:["clipboard-read","clipboard-write"]` AND inject a `writeText`
   stub (`window.__copied = t`) — `readText()` alone can be gated in headless.

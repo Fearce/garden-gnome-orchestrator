@@ -4,7 +4,8 @@ For a NEW kind of agent output that must survive reload in the thread feed — a
 `text`/`tool`/`thinking`-style row, not a one-off. The reference is the Grok
 `thinking` (reasoning) kind: a durable message + a live draft mirroring the
 `agent.delta`→`agent.text` pair. (For a whole new entity the console lists/edits
-use `add-a-broadcast-collection.md`; for a knob use `add-a-setting.md`.)
+use `add-a-broadcast-collection.md`; for a knob use `add-a-setting.md`; for a new
+agent role or thread state use `add-a-role-or-thread-state.md`.)
 
 Touch every spot — a miss typechecks fine but silently drops the value at that
 layer. **The one that bites: `messageToFeed` — skip it and the row streams LIVE
