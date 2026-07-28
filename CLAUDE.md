@@ -112,7 +112,9 @@ cutoff/cap/retry/restart, and did the handling mechanism actually run — use
 reasons:` line). For a **subscription/account-chip** question ("why does it say idle / limited / 0% / a wrong %?"), run
 `npm run probe:accounts --prefix server` — it dumps each account's persisted `account_usage_*` state
 (5h/7d usage + resets, `holdUntil` stagger-hold, `extWakeAt` outside-consumer mark) with plain-English
-reads. "idle" is a stagger hold-off (GG parked its OWN 5h restart and stops pinging), NOT a globally
+reads, then the **failover ladder**: Codex/Grok/z.ai availability from their `setting_*_enabled` +
+`*_cap_until` kv keys, plus a ladder-depth line (a sub only counts while BOTH windows are under 98%).
+"idle" is a stagger hold-off (GG parked its OWN 5h restart and stops pinging), NOT a globally
 unused sub — a 2nd orchestrator/service sharing the sub burns it while GG is held-blind (`accountManager.ts`).
 Read the run trail to tell causes apart:
 - run `state='interrupted'` → a **server restart** killed it (`markInterrupted`), not the agent. A
