@@ -97,10 +97,12 @@ button { font-family: inherit; cursor: pointer; }
   min-width: 0;
 }
 
-/* Medium desktop (common 1280–1500px): four subscription chips don't fit beside brand + office +
+/* Medium desktop (1280–1699px): five subscription chips (~848px) don't fit beside brand + office +
    controls. Wrap the accounts strip onto a full-width second row so Grok's 7d/mo meters stay on
-   screen instead of clipped under .app overflow:hidden. Wider viewports keep the single-row layout. */
-@media (max-width: 1500px) and (min-width: 769px) {
+   screen instead of clipped under .app overflow:hidden. From ~1700px the strip fits inline again, so
+   wider viewports keep the single-row layout — re-measure this bound when a chip is added or widened
+   (web/scripts/check-accounts-visible.cjs). */
+@media (max-width: 1699.98px) and (min-width: 769px) {
   .topbar {
     flex-wrap: wrap;
     row-gap: 6px;

@@ -52,7 +52,9 @@ function resolvePassword() {
 const chromium = loadChromium();
 const BASE = process.env.ORCH_URL || "http://127.0.0.1:4317";
 const PASSWORD = resolvePassword();
-const WIDTHS = (process.env.ORCH_WIDTHS || "1280,1440,1600")
+// 1700 sits just above the wrap breakpoint (styles.css), where the strip goes back to a single
+// in-bar row — the width that catches a chip added since the bound was last measured.
+const WIDTHS = (process.env.ORCH_WIDTHS || "1280,1440,1600,1700")
   .split(",")
   .map((s) => parseInt(s.trim(), 10))
   .filter((n) => n > 0);
@@ -93,8 +95,14 @@ async function measure(page) {
     });
 
     const grok = after.find((c) => /grok/i.test(c.label) || /grok/i.test(c.text));
+    const canScroll = accounts.scrollWidth > accounts.clientWidth + 2;
     const failures = [];
     if (chips.length === 0) failures.push("zero chips rendered");
+    // On desktop every chip must be readable WITHOUT scrolling — a scrollable strip means the bar is
+    // hiding usage until the operator drags it, which is the clipping this check exists to catch.
+    if (canScroll && vw >= 769) {
+      failures.push(`strip is clipped: ${accounts.scrollWidth}px of chips in a ${accounts.clientWidth}px box (widen the wrap breakpoint)`);
+    }
     for (const c of after) {
       if (!c.fullyVisible) {
         failures.push(
@@ -111,7 +119,7 @@ async function measure(page) {
       reason: failures.join("; ") || null,
       vw,
       chipCount: chips.length,
-      canScroll: accounts.scrollWidth > accounts.clientWidth + 2,
+      canScroll,
       accountsW: accounts.clientWidth,
       contentW: accounts.scrollWidth,
       after,
