@@ -47,6 +47,10 @@ typechecks fine but silently strands the backend at that layer — the **failove
    `cliCapped || xCapped` flip AND the `runRole` `provider !== "claude"` cap block. `noteXCap` in all three.
 10. `capParkMessage`, `providerLabel`, and — CLI text-bridge backends ONLY — `isCliOfficeBridge` (a
     reuse-AgentRun backend has the real office MCP, so LEAVE IT OUT).
+11. **`scripts/probe-accounts.cjs` `BACKENDS`** — the sweep's failover-ladder readout reads
+    `setting_x_enabled` + `x_cap_until` by literal name. A backend missing here is invisible to the
+    nightly headroom check, which then reports a partial ladder as full coverage (Grok sat cap-latched
+    for days unseen). `test:failover-ladder` pins the key names to `threadManager.ts`.
 
 ## Verify
 Unit gate for the usage parser (`test:zai-usage` is the reference; register in `run-gates.cjs`). Prove it

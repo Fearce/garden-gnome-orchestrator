@@ -56,6 +56,7 @@ const ROLE_TURN_CEILING = {
   researcher: 40,
   reader: 40,
   qa: 60,
+  reviewer: 60,
   implementor: envNumber("IMPLEMENTOR_MAX_TURNS") ?? 100,
 };
 

@@ -4,6 +4,8 @@
 // Run: node scripts/run-classify.test.cjs
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { classifyRun, CLASSES, ROLE_TURN_CEILING } = require("./probe-run-errors.cjs");
 
 const run = (over) => ({ role: "implementor", state: "error", error: "", num_turns: null, ...over });
@@ -93,5 +95,39 @@ is("real", { error: "TypeError: cannot read property 'x' of undefined" });
 // A message merely *mentioning* a limit still classifies as a cap here (deliberately broader than the
 // runner's control-flow regexes) — assert the intent so a future narrowing is a conscious choice.
 is("cap", { error: "the task failed because we hit your usage limit while writing the report" });
+
+// --- ROLE_TURN_CEILING must cover every role that HAS a ceiling ------------------------------------
+// The map is the last-resort evidence for an OPAQUE row ("Run failed." with no reason), so a role
+// missing from it degrades to "unclassifiable" and the sweep reports a benign turn-ceiling cutoff as
+// something needing a human. That is silent: it renders as a longer list, never as an error. `reviewer`
+// shipped with the auto-review feature and sat unenrolled until a sweep tripped over it — so pin the
+// map against roles.ts rather than against a hand-copied list that drifts the same way again.
+const rolesSrc = fs.readFileSync(path.resolve(__dirname, "..", "src", "agents", "roles.ts"), "utf8");
+const declared = {};
+for (const chunk of rolesSrc.split(/export function /).slice(1)) {
+  const role = chunk.match(/^(\w+?)Config\s*\(/)?.[1];
+  if (!role) continue;
+  const turns = chunk.match(/maxTurns: (.+?),/)?.[1];
+  if (turns) declared[role] = turns;
+}
+assert.ok(Object.keys(declared).length >= 6, `expected to parse the role configs out of roles.ts, got ${Object.keys(declared)}`);
+
+for (const [role, turns] of Object.entries(declared)) {
+  assert.ok(
+    ROLE_TURN_CEILING[role] > 0,
+    `roles.ts caps '${role}' at ${turns} turns but ROLE_TURN_CEILING has no entry — an opaque ${role} row at its ceiling would classify as 'unclassifiable' and be reported as needing a human`,
+  );
+  if (/^\d+$/.test(turns)) {
+    assert.equal(ROLE_TURN_CEILING[role], Number(turns), `ceiling for '${role}' drifted from roles.ts`);
+  }
+}
+// The converse: a role the probe thinks is bounded but roles.ts does not cap would let a runaway run
+// be filed as a benign cutoff — the one direction this classifier must never get wrong.
+for (const role of Object.keys(ROLE_TURN_CEILING)) {
+  assert.ok(declared[role], `ROLE_TURN_CEILING caps '${role}', which roles.ts no longer bounds`);
+}
+// director is deliberately absent — it sets no maxTurns, so it genuinely has no ceiling to hit.
+assert.equal(declared.director, undefined, "director is expected to be unbounded in roles.ts");
+assert.equal(ROLE_TURN_CEILING.director, undefined, "an unbounded role must NOT be given a ceiling");
 
 console.log("runClassify: all assertions passed");

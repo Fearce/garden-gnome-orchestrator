@@ -29,6 +29,10 @@ for a persisted entity `add-a-broadcast-collection.md`.)
    builds `var(--role-${role})` — a missing var renders unstyled, no error), `Gnome.tsx` `roleProp`
    (default `null` = a propless gnome), `ThreadDetail.tsx` `ROLE_ORDER` + `FILTER_ORDER`,
    `Board.tsx` `pipRoles`.
+7. **`scripts/probe-run-errors.cjs` `ROLE_TURN_CEILING`** — if your role sets `maxTurns`. Missing, an
+   opaque row at its ceiling degrades to "unclassifiable" and the sweep reports a benign cutoff as
+   needing a human (`reviewer` shipped unenrolled). `test:run-classify` pins the map to `roles.ts`;
+   an unbounded role (director) must stay OUT — a ceiling it can't hit files a runaway as benign.
 
 ## A new THREAD STATE
 1. `server/src/types.ts` — the union, then audit **every set** in `threadManager.ts`: `IN_FLIGHT`,
