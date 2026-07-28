@@ -6,7 +6,7 @@
 // until its stagger slot. `holdStartAt` bounds a known-shared sub's re-test to a short probe;
 // `extWakeAfterProbe` decides whether that probe confirms the consumer (keep) or finds it gone (clear).
 
-import { holdStartAt, extWakeAfterProbe } from "../accounts/accountManager.js";
+import { holdStartAt, extWakeAfterProbe, startAtWeeklyReset } from "../accounts/accountManager.js";
 import { WINDOW_MS } from "../accounts/resetStagger.js";
 
 let failures = 0;
@@ -32,6 +32,12 @@ check("staggered, no history → slot", holdStartAt(true, null, NOW, SLOT) === S
 
 // Staggered, lapsed ext-wake history → a SHORT probe, well before the far slot.
 const probe = holdStartAt(true, NOW - 25 * 3_600_000, NOW, SLOT);
+
+console.log("weekly reset: a stagger hold cannot hide a renewed 7d window");
+const WEEKLY_RESET = NOW + 90 * 60_000;
+check("weekly reset before stagger slot → ping just after weekly reset", startAtWeeklyReset(SLOT, WEEKLY_RESET, NOW) === WEEKLY_RESET + 3000);
+check("weekly reset after stagger slot → preserve stagger slot", startAtWeeklyReset(SLOT, SLOT + 60_000, NOW) === SLOT);
+check("elapsed weekly reset → caller refreshes immediately, no synthetic hold change", startAtWeeklyReset(SLOT, NOW - 1, NOW) === SLOT);
 check("staggered + history → short probe, not the far slot", probe < SLOT && probe > NOW && probe - NOW <= 5 * 60_000);
 
 console.log("ext-wake: extWakeAfterProbe (probe/dispatch-release outcome)");

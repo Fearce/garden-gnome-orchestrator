@@ -142,6 +142,13 @@ export function holdStartAt(staggered: boolean, extWakeAt: number | null, now: n
   return staggered && extWakeAt != null ? now + EXT_WAKE_PROBE_MS : slot;
 }
 
+/** Keep a weekly reset visible: do not let a longer 5h stagger hold delay its fresh usage read. */
+export function startAtWeeklyReset(holdStart: number, sevenDayReset: number | null, now: number): number {
+  if (sevenDayReset == null || sevenDayReset <= now) return holdStart;
+  const weeklyStart = sevenDayReset + RESET_BUFFER_MS;
+  return weeklyStart < holdStart ? weeklyStart : holdStart;
+}
+
 /**
  * The account's new `extWakeAt` after an `expectIdle` ping (a scheduled probe or a dispatch hold-release).
  * Set it to `now` when the window was already running well before our ping — an outside consumer woke the
@@ -344,9 +351,11 @@ export class AccountManager {
       const windowRunning = p?.fiveHourReset != null && p.fiveHourReset > now;
       const heldThrough = p?.holdUntil != null && p.holdUntil > now;
       const recentIdleRead = !windowRunning && p != null && now - p.usageAt < BOOT_TRUST_MS;
+      // A 7d reset cannot remain behind a restored 5h stagger hold: refresh it immediately.
+      const weeklyResetElapsed = p?.sevenDayReset != null && p.sevenDayReset <= now;
       // An externally-woken account never boot-holds: the outside consumer has likely started the
       // window again already, so a restored "idle" would just mask its live burn — read the truth.
-      if (this.staggered() && !this.recentExtWake(st, now) && (heldThrough || recentIdleRead)) {
+      if (this.staggered() && !weeklyResetElapsed && !this.recentExtWake(st, now) && (heldThrough || recentIdleRead)) {
         toHold.push({ a, restoredHold: heldThrough ? p!.holdUntil! : null });
       } else {
         toPing.push(a);
@@ -493,8 +502,10 @@ export class AccountManager {
       this.resetPing(a);
       return;
     }
+    const now = Date.now();
     const slot = this.staggered() ? this.stagger!.nextStart(a.id, resetAt) : resetAt;
-    const startAt = holdStartAt(this.staggered(), st?.extWakeAt ?? null, Date.now(), slot);
+    const holdStart = holdStartAt(this.staggered(), st?.extWakeAt ?? null, now, slot);
+    const startAt = startAtWeeklyReset(holdStart, st?.sevenDayReset ?? null, now);
     if (startAt - Date.now() < MIN_HOLD_MS) {
       this.resetPing(a);
       return;
