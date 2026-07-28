@@ -533,6 +533,9 @@ function Meter({
   // went stale, so keep counting down as long as it's still in the future. The `reset <= now` guard
   // already drops a window that has actually rolled over (its new reset is unknown until the next run).
   const left = reset == null || reset <= now ? "" : countdown(reset, now);
+  // The reset epoch we hold has passed but no fresh read has replaced it yet, so the percentage next
+  // to it is a pre-reset leftover. Say so — a blank slot reads as a broken chip, not as a pending read.
+  const lapsed = !holding && reset != null && reset <= now;
   const detailNote = detail ? ` · ${detail}` : "";
   const usageTip =
     pct == null
@@ -543,7 +546,9 @@ function Meter({
     ? `${usageTip} · window idle — starts in ${countdown(hold, now)} (staggered so 5h resets spread out across subscriptions; a dispatch starts it right away)`
     : left
       ? `${usageTip} · ${resetTip}`
-      : usageTip;
+      : lapsed
+        ? `${usageTip} · the ${win} window has reset — this reading is from before it and updates at the next usage read`
+        : usageTip;
   const shown = valueLabel
     ? `${stale ? "~" : ""}${valueLabel}`
     : `${pct != null && stale ? "~" : ""}${label(pct)}`;
@@ -554,7 +559,7 @@ function Meter({
         <div className={"meter-fill " + kind + (stale ? " stale" : "")} style={{ width: `${clamp(pct)}%` }} />
       </div>
       <span className="meter-v">{shown}</span>
-      <span className="meter-r">{holding ? `idle ${countdown(hold, now)}` : left ? `${resetEstimated ? "~" : ""}${left}` : ""}</span>
+      <span className="meter-r">{holding ? `idle ${countdown(hold, now)}` : left ? `${resetEstimated ? "~" : ""}${left}` : lapsed ? "reset" : ""}</span>
     </div>
   );
 }

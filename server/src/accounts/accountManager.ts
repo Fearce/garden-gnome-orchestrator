@@ -150,6 +150,22 @@ export function startAtWeeklyReset(holdStart: number, sevenDayReset: number | nu
 }
 
 /**
+ * Whether a restored snapshot lets the account stay parked at boot instead of pinging: it was
+ * deliberately idle (a hold still running, or a recent read with the 5h window already expired).
+ * A weekly reset that has already elapsed overrides all of it — the snapshot's `sevenDay` is a
+ * pre-reset reading no one would refresh while held, so the chip would show a spent week with no
+ * countdown. Ext-wake history is the caller's to weigh; this reads only the snapshot.
+ */
+export function bootHoldsIdle(p: PersistedAccountUsage | null, now: number): p is PersistedAccountUsage {
+  if (!p) return false;
+  if (p.sevenDayReset != null && p.sevenDayReset <= now) return false;
+  const windowRunning = p.fiveHourReset != null && p.fiveHourReset > now;
+  const heldThrough = p.holdUntil != null && p.holdUntil > now;
+  const recentIdleRead = !windowRunning && now - p.usageAt < BOOT_TRUST_MS;
+  return heldThrough || recentIdleRead;
+}
+
+/**
  * The account's new `extWakeAt` after an `expectIdle` ping (a scheduled probe or a dispatch hold-release).
  * Set it to `now` when the window was already running well before our ping — an outside consumer woke the
  * held account. On a SCHEDULED PROBE that instead finds the window fresh, clear it: our own ping started
@@ -334,7 +350,7 @@ export class AccountManager {
   private async bootPing(): Promise<void> {
     const now = Date.now();
     const toPing: Account[] = [];
-    const toHold: Array<{ a: Account; restoredHold: number | null }> = [];
+    const toHold: Array<{ a: Account; p: PersistedAccountUsage }> = [];
     for (const a of this.accounts) {
       const st = this.states.get(a.id)!;
       const p = this.persist?.load(a.id) ?? null;
@@ -348,28 +364,39 @@ export class AccountManager {
         st.modelLimits = new Map(Object.entries(p.modelLimits ?? {}).filter(([, r]) => r > now));
         st.updatedAt = now;
       }
-      const windowRunning = p?.fiveHourReset != null && p.fiveHourReset > now;
-      const heldThrough = p?.holdUntil != null && p.holdUntil > now;
-      const recentIdleRead = !windowRunning && p != null && now - p.usageAt < BOOT_TRUST_MS;
-      // A 7d reset cannot remain behind a restored 5h stagger hold: refresh it immediately.
-      const weeklyResetElapsed = p?.sevenDayReset != null && p.sevenDayReset <= now;
       // An externally-woken account never boot-holds: the outside consumer has likely started the
       // window again already, so a restored "idle" would just mask its live burn — read the truth.
-      if (this.staggered() && !weeklyResetElapsed && !this.recentExtWake(st, now) && (heldThrough || recentIdleRead)) {
-        toHold.push({ a, restoredHold: heldThrough ? p!.holdUntil! : null });
+      if (this.staggered() && !this.recentExtWake(st, now) && bootHoldsIdle(p, now)) {
+        toHold.push({ a, p });
       } else {
         toPing.push(a);
       }
     }
     await Promise.all(toPing.map((a) => this.pingOne(a)));
-    for (const { a, restoredHold } of toHold) {
+    for (const { a, p } of toHold) {
+      const at = Date.now();
+      // Re-decide against the clock the pings above advanced: a weekly reset that elapsed while they
+      // ran must be read now, not parked behind hours of hold.
+      if (!bootHoldsIdle(p, at)) {
+        this.resetPing(a);
+        continue;
+      }
       const st = this.states.get(a.id)!;
-      st.fiveHour = 0;
-      st.fiveHourReset = null;
       // A known-shared sub (ext-wake history) short-probes even if a far hold was persisted — don't
       // restore hours of blind "idle" across a restart while an outside consumer drains it.
-      const slot = restoredHold ?? (this.stagger?.nextStart(a.id, Date.now()) ?? Date.now());
-      this.armHold(a, holdStartAt(true, st.extWakeAt, Date.now(), slot));
+      const restoredHold = p.holdUntil != null && p.holdUntil > at ? p.holdUntil : null;
+      const slot = restoredHold ?? (this.stagger?.nextStart(a.id, at) ?? at);
+      // Same cap as a live rollover: a restored hold may not outlast this account's weekly reset.
+      const startAt = startAtWeeklyReset(holdStartAt(true, st.extWakeAt, at, slot), st.sevenDayReset, at);
+      // And the same degeneration: a sub-minute hold isn't worth synthesizing an idle window, and its
+      // truncated release would read as a probe short enough to wrongly clear a real ext-wake mark.
+      if (startAt - at < MIN_HOLD_MS) {
+        this.resetPing(a);
+        continue;
+      }
+      st.fiveHour = 0;
+      st.fiveHourReset = null;
+      this.armHold(a, startAt);
     }
     this.publish();
     this.onUsage?.();
