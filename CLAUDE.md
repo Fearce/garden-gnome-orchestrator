@@ -116,6 +116,9 @@ reads, then the **failover ladder**: Codex/Grok/z.ai availability from their `se
 `*_cap_until` kv keys, plus a ladder-depth line (a sub only counts while BOTH windows are under 98%).
 "idle" is a stagger hold-off (GG parked its OWN 5h restart and stops pinging), NOT a globally
 unused sub — a 2nd orchestrator/service sharing the sub burns it while GG is held-blind (`accountManager.ts`).
+To SEE a chip in a given state (a lapsed weekly, a hold, a stale read) instead of only reading its numbers,
+`npm run chip-lab --prefix server` boots a throwaway instance with bogus tokens + a seeded snapshot and
+renders the strip headlessly (`--list` for scenarios) — no quota, no effect on prod's real windows.
 Read the run trail to tell causes apart:
 - run `state='interrupted'` → a **server restart** killed it (`markInterrupted`), not the agent. A
   thread whose `error` starts with "interrupted by a server restart" died to a bounce; actively-running

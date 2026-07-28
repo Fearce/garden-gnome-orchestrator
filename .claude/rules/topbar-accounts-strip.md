@@ -3,6 +3,7 @@ paths:
   - "web/src/components/Accounts.tsx"
   - "web/src/styles.css"
   - "web/src/App.tsx"
+  - "server/src/accounts/*.ts"
 ---
 
 # Top-bar accounts strip (chips must stay on-screen)
@@ -24,13 +25,19 @@ must be *visible* at common desktop widths.
 
 ## Verify before claiming done
 ```bash
-node web/scripts/check-accounts-visible.cjs          # 1280,1440,1600,1700
-ORCH_URL=http://127.0.0.1:4327 node web/scripts/check-accounts-visible.cjs   # throwaway instance
+npm run build && npm run chip-lab --prefix server        # boots its own instance, renders + asserts
+npm run chip-lab --prefix server -- --list               # healthy | lapsed-weekly | stagger-hold | stale | capped
 ```
-It fails when a chip isn't fully visible OR when the strip is scrollable at all on
-desktop (`scrollWidth > clientWidth` = usage hidden until you drag). 1700px is the
-width that catches a bound gone stale — run it against a throwaway instance, never
-live prod (project memory `browser-test-throwaway-instance`).
+`chip-lab` (`server/scripts/chip-lab.cjs`) is the one-command version: temp DATA_DIR,
+**bogus account tokens** (a live token makes the boot ping START a real 5h window and
+wreck the stagger you're inspecting), seeded `account_usage_*` blobs, then a real
+browser at 1280/1440/1600/1700 printing every meter's text + tooltip. Exit 1 = clipped.
+Use it for any change to a meter's *state* — an `idle`/`stale`/lapsed-reset reading
+is invisible to a typecheck and to prod (whose accounts are usually healthy).
+
+`node web/scripts/check-accounts-visible.cjs` is the geometry-only check against an
+already-running instance (`ORCH_URL=…`); it fails when a chip isn't fully visible OR
+when the strip is scrollable at all on desktop. Never point either at live prod.
 
 Cross-ref: project memory `grok-cli-integration-facts.md`; global
 `css_mobile_grid_column_minmax_clips.md`.
