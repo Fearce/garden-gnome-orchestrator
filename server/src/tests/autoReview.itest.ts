@@ -164,7 +164,37 @@ function seedParkedTask(h: Harness, error = "QA still not satisfied after 3 roun
   return t.id;
 }
 
-const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+/** Let a review that was started with `void runAutoReview(...)` run to its settle. Several macrotask
+ *  turns, not one: the chain is runRole → finalizeReview → the finally that releases the slot, and a
+ *  test that disposes (closing the DB) while it is still in flight crashes the whole file. */
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+const REVIEWER_SESSION = "reviewer-session-cut-off";
+/** A run the SDK ended at the per-session turn ceiling: involuntary, so no verdict. No `result` text —
+ *  an Agent-SDK error result carries none. */
+const CUTOFF = { type: "result", subtype: "error_max_turns", isError: true } as RunOutcome;
+
+/** Drive a SEQUENCE of reviewer outcomes (the shared stub returns one fixed outcome), recording the resume
+ *  session each run was given. Also persists the `agent_runs` row the real `runRole` would have written:
+ *  a continuation resumes the cut-off run's session, so a harness with an empty runs table would silently
+ *  prove nothing. The last queued outcome repeats if the code runs more times than the test queued. */
+function stubReviewerRuns(h: Harness, results: RunOutcome[]): (string | undefined)[] {
+  const resumes: (string | undefined)[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = h.mgr as any;
+  internals.runRole = async (thread: { id: string }, role: string, kickoff: string | unknown[], _cfg: unknown, resume?: string): Promise<RunOutcome> => {
+    h.roleCalls.push(role);
+    h.kickoffs.push(typeof kickoff === "string" ? kickoff : JSON.stringify(kickoff));
+    resumes.push(resume);
+    const res = results[Math.min(resumes.length - 1, results.length - 1)];
+    const run = h.db.createRun({ threadId: thread.id, role: "reviewer", model: "claude-opus-5" });
+    h.db.updateRun(run.id, { sessionId: REVIEWER_SESSION, state: res?.isError ? "error" : "done", endedAt: Date.now() });
+    return res;
+  };
+  return resumes;
+}
 
 async function main(): Promise<void> {
   console.log("\n=== Auto-review & mark done — integration test (real machinery) ===\n");
@@ -220,6 +250,7 @@ async function main(): Promise<void> {
       check("no implementor was spawned", h.implementorStarts() === 0, String(h.implementorStarts()));
       check("the slot was released", h.activePipelines() === 0, String(h.activePipelines()));
       check("the button is armed again", (await h.mgr.autoReview(id)).state === "reviewing");
+      await settle(); // let that second review finish before the DB closes under it
     } finally {
       h.dispose();
     }
@@ -319,6 +350,34 @@ async function main(): Promise<void> {
         const any = rebooted as any;
         if (any.capSupervisor) clearInterval(any.capSupervisor);
         if (any.tokenResumeTimer) clearTimeout(any.tokenResumeTimer);
+      }
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test H: a reviewer cut off at its turn ceiling is continued, not handed straight back ----------
+  // The point of the button is that the owner does NOT read the diff themselves, so a stop that says
+  // nothing about the work must not bounce the task back to their desk while a warm resume is available.
+  // Test C above proves the re-park when there is no session to continue; this proves the continuation.
+  console.log("\nTest H — a turn-ceiling cutoff continues the reviewer's own session before giving up");
+  for (const [label, results, expect] of [
+    ["a continuation that decides", [CUTOFF, okResult({ accept: true, summary: "verified after the cutoff" })], { runs: 2, state: "done" }],
+    ["a reviewer that keeps being cut off", [CUTOFF, CUTOFF, CUTOFF, CUTOFF], { runs: 3, state: "review" }],
+  ] as const) {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      const resumes = stubReviewerRuns(h, [...results]);
+      await h.mgr.autoReview(id);
+      await settle();
+      check(`${label} → the reviewer ran ${expect.runs}×`, h.roleCalls.length === expect.runs, JSON.stringify(h.roleCalls));
+      check(`${label} → every continuation resumed the cut-off session`, resumes.slice(1).every((r) => r === REVIEWER_SESSION), JSON.stringify(resumes));
+      check(`${label} → the first run started fresh`, resumes[0] === undefined, String(resumes[0]));
+      check(`${label} → the task settled ${expect.state}`, h.db.getThread(id)?.state === expect.state, `state=${h.db.getThread(id)?.state}`);
+      check(`${label} → no implementor was spawned`, h.implementorStarts() === 0, String(h.implementorStarts()));
+      if (expect.runs > 1) {
+        check(`${label} → the continuation told the reviewer it was cut off`, (h.kickoffs[1] ?? "").includes("stopped at a per-session turn limit"), (h.kickoffs[1] ?? "").slice(0, 80));
       }
     } finally {
       h.dispose();

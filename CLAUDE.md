@@ -36,8 +36,9 @@ misrouting a real task to the reader is not. The card shows a **READ** badge. Se
 panel's "Auto-review & mark done" button delegates that call to one **reviewer** agent (Opus,
 read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing`, verifies the work,
 `ask_user`s Kevin about anything only he can decide, then settles the task `done` or hands it back to
-`review` with its reasons — an errored/verdict-less run always re-parks, never accepts. So `done`
-now has three sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
+`review` with its reasons — an errored/verdict-less run always re-parks, never accepts (a turn-ceiling
+cutoff is first continued on its own session, up to twice, in-process only). So `done` now has three
+sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
 
 ## Run / build
 - Dev (hot reload): `npm run dev` at repo root — tsx-watch server + Vite web.

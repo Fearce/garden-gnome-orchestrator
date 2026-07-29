@@ -168,6 +168,9 @@ const LIMIT_SUBTYPES: ReadonlySet<string> = new Set(["error_max_turns"]);
 // verdict. Charged per task rather than per round, so a reviewer that keeps wedging costs a bounded
 // couple of extra runs instead of two more on every one of the maxQaRounds rounds.
 const MAX_QA_CUTOFF_RESUMES = 2;
+// The same allowance for the on-demand auto-reviewer. It is one owner-initiated run rather than a loop,
+// so the budget lives in-process: a restart re-parks the task for a fresh click instead of resuming it.
+const MAX_REVIEW_CUTOFF_RESUMES = 2;
 // Explicit, terminal completion phrasing in the implementor's last words — deliberately narrow, since a
 // false "done" suppresses a needed auto-resume (the bug), while a missed "done" only costs one cheap warm
 // resume. Forward-looking phrasing ("doing that now", "starting that next") must NOT match.
@@ -4489,14 +4492,7 @@ export class ThreadManager implements OrchestratorApi {
       const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
       const plan = this.db.getThreadStageOutputs(thread.id).plan ?? undefined;
       const kickoff = reviewerKickoff(thread, plan, unsurfaced);
-      const res = await this.runRole(thread, "reviewer", this.kickoffContent(thread.id, this.withOfficeNote(thread, "reviewer", kickoff)), ({ token, resume, runId }) => {
-        const bus = createBusServer(this, { threadId: thread.id, role: "reviewer", getRunId: () => runId });
-        const office = createOfficeServer(this, { threadId: thread.id, role: "reviewer", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
-        const cfg = reviewerConfig(thread.workspace, { bus, office });
-        cfg.oauthToken = token;
-        if (resume) cfg.resume = resume;
-        return cfg;
-      });
+      const res = await this.reviewToVerdict(thread, this.kickoffContent(thread.id, this.withOfficeNote(thread, "reviewer", kickoff)));
       if (this.cancelled(thread.id)) return;
       this.finalizeReview(thread, res);
     } catch (e) {
@@ -4514,6 +4510,58 @@ export class ThreadManager implements OrchestratorApi {
       this.activePipelines.delete(thread.id);
       this.pumpQueue();
     }
+  }
+
+  /** Run the auto-reviewer to a verdict, continuing it when the per-session turn ceiling cut it off before
+   *  it could decide. The whole point of the button is that the owner does NOT have to read the diff, so
+   *  handing the task back over a stop that says nothing about the work is exactly the outcome worth one
+   *  warm resume — the same reasoning as the implementor and QA paths.
+   *
+   *  The budget is in-process only, unlike QA's: a restart during 'reviewing' re-parks the task for a fresh
+   *  click (`markInterrupted`) rather than resuming it, so there is no cross-restart budget to keep. */
+  private async reviewToVerdict(thread: Thread, kickoff: string | unknown[]): Promise<ResultEvent | undefined> {
+    let res = await this.runReviewer(thread, kickoff);
+    for (let spent = 0; spent < MAX_REVIEW_CUTOFF_RESUMES; spent++) {
+      if (res?.structuredOutput || !this.isTurnLimitStop(res) || this.cancelled(thread.id)) break;
+      const session = this.latestRoleSession(thread.id, "reviewer");
+      if (!session) break;
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "reviewer",
+        summary: "Auto-review stopped at its turn ceiling before deciding — continuing the same review",
+        detail: `The reviewer was cut off mid-review, not finished. Waking its session with a fresh turn budget (continuation ${spent + 1} of ${MAX_REVIEW_CUTOFF_RESUMES}).`,
+        severity: "note",
+      });
+      res = await this.runReviewer(thread, reviewerContinueKickoff(), session);
+    }
+    return res;
+  }
+
+  private runReviewer(thread: Thread, kickoff: string | unknown[], resumeSession?: string): Promise<ResultEvent | undefined> {
+    return this.runRole(
+      thread,
+      "reviewer",
+      kickoff,
+      ({ token, resume, runId }) => {
+        const bus = createBusServer(this, { threadId: thread.id, role: "reviewer", getRunId: () => runId });
+        const office = createOfficeServer(this, { threadId: thread.id, role: "reviewer", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
+        const cfg = reviewerConfig(thread.workspace, { bus, office });
+        cfg.oauthToken = token;
+        if (resume) cfg.resume = resume;
+        return cfg;
+      },
+      resumeSession,
+    );
+  }
+
+  /** The most recent session id a given role produced on this thread, for a same-role warm resume. */
+  private latestRoleSession(threadId: string, role: Role): string | undefined {
+    return (
+      this.db
+        .listRuns(threadId)
+        .filter((r) => r.role === role && r.sessionId)
+        .sort((a, b) => b.startedAt - a.startedAt)[0]?.sessionId ?? undefined
+    );
   }
 
   /** The reviewer's verdict decides the task: accepted → 'done' (identical to the owner clicking Mark
@@ -5541,6 +5589,17 @@ function reviewerKickoff(thread: Thread, plan: PlanOutput | undefined, unsurface
     );
   }
   return parts.join("\n");
+}
+
+/** The RESUMED form for an auto-reviewer the turn ceiling cut off before it decided. Its session already
+ * holds the brief, the park reason and everything it read, so all it needs is to know it wasn't finished. */
+function reviewerContinueKickoff(): string {
+  return [
+    "You stopped at a per-session turn limit, not because your review was finished — nothing has touched the repo since you stopped.",
+    "Continue exactly where you left off: finish the checks you still had outstanding, then return your structured verdict.",
+    "Work efficiently; you have a fresh turn budget but not an unlimited one, so prioritise what decides accept-or-hand-back.",
+    `Remember: \`accept: true\` marks the task DONE. If you can't finish verifying it, hand it back with what you did and didn't check rather than accepting on a guess.`,
+  ].join("\n");
 }
 
 /** The reviewer's issue list, rendered for the finding's detail. Empty string when it raised none (an
