@@ -304,7 +304,10 @@ async function main() {
       //     ~capRetryMs/2m) SHOULD unpark it once any backend frees up. One sitting
       //     for hours means a persistent full cap wave OR a wedged supervisor —
       //     worth a human glance, so warn past a 2h threshold.
-      //   • "QA could not complete" → a diagnosable QA park (kept as a warn).
+      //   • "QA could not complete" → a QA park (kept as a warn), split by whether the
+      //     turn-ceiling continuation budget was SPENT ("cut off again each time", from
+      //     qaParkDetail): spent = the mechanism ran and gave up, so it's a genuine
+      //     hand-off; unspent = QA died some other way and the reason is worth reading.
       //   • anything else → a plain "needs your review" human park, left for the
       //     owner by design — informational, never a warn.
       const reviewRows = db.prepare("SELECT error, updated_at FROM threads WHERE state='review'").all();
@@ -312,6 +315,7 @@ async function main() {
       let autoResume = 0;
       let staleAutoResume = 0;
       let qaCouldNot = 0;
+      let qaContinuationsSpent = 0;
       let humanReview = 0;
       let oldestAutoResumeH = 0;
       for (const r of reviewRows) {
@@ -324,6 +328,7 @@ async function main() {
           if (ageH > oldestAutoResumeH) oldestAutoResumeH = ageH;
         } else if (/QA could not complete/i.test(err)) {
           qaCouldNot++;
+          if (/cut off again each time/i.test(err)) qaContinuationsSpent++;
         } else {
           humanReview++;
         }
@@ -335,7 +340,10 @@ async function main() {
       } else if (autoResume) {
         ok(`${autoResume} auto-resume-pending park(s) (oldest ${oldestAutoResumeH.toFixed(1)}h) — within normal supervisor window`);
       }
-      if (qaCouldNot) warn(`${qaCouldNot} thread(s) parked on bare/diagnosable QA-could-not-complete`);
+      if (qaCouldNot) {
+        const spent = qaContinuationsSpent ? `, ${qaContinuationsSpent} after the turn-ceiling continuations were spent (mechanism ran, reviewer still couldn't finish)` : "";
+        warn(`${qaCouldNot} thread(s) parked on bare/diagnosable QA-could-not-complete${spent} — read the thread error for the reason`);
+      }
       if (humanReview) ok(`${humanReview} plain human-review park(s) — awaiting owner by design, not stuck`);
 
       const junkChat = db

@@ -33,6 +33,14 @@ for a persisted entity `add-a-broadcast-collection.md`.)
    opaque row at its ceiling degrades to "unclassifiable" and the sweep reports a benign cutoff as
    needing a human (`reviewer` shipped unenrolled). `test:run-classify` pins the map to `roles.ts`;
    an unbounded role (director) must stay OUT — a ceiling it can't hit files a runaway as benign.
+8. **Decide what `error_max_turns` does — a bounded role WILL hit its ceiling.** That stop is
+   involuntary (the agent was mid-work), so a role whose structured verdict GATES a settle must
+   CONTINUE the cut-off session in a fresh query before giving up, or a paid Opus pass is discarded
+   and the task lands on the owner for a reason that says nothing about the work. QA
+   (`continueCutOffQa`, durable `qaCutoffResumes`) and the reviewer (`reviewToVerdict`, in-process)
+   are the references — durable only if the state auto-resumes across a restart. A role that merely
+   degrades (planner → brief-only implementor) or whose park IS the design (reader → re-dispatch)
+   correctly does nothing. Both gates shipped without this and parked real tasks.
 
 ## A new THREAD STATE
 1. `server/src/types.ts` — the union, then audit **every set** in `threadManager.ts`: `IN_FLIGHT`,
