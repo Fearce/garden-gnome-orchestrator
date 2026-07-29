@@ -91,7 +91,7 @@ const CLASSES = [
   { key: "real", label: "REAL failure — the agent or its environment broke", human: true },
   { key: "unclassifiable", label: "opaque legacy row (pre-458566e) — no reason recorded", human: true },
   { key: "structured", label: "structured-output retries exhausted — the agent never matched the schema", human: true },
-  { key: "cutoff", label: "turn-ceiling cutoff — involuntary, warm-resumed on the implementor path", human: false },
+  { key: "cutoff", label: "turn-ceiling cutoff — involuntary, warm-resumed on the implementor and QA paths", human: false },
   { key: "silent", label: "resumed session returned empty — retried on a fresh session", human: false },
   { key: "cap", label: "usage cap — account/backend failover expected", human: false },
   { key: "transient", label: "transient provider/transport error — retried automatically", human: false },
@@ -251,6 +251,14 @@ function reportRecovery(db, buckets) {
   const explained = (threadError) => {
     const e = String(threadError || "");
     if (e.includes("⏳ Auto-resume pending")) return "cap-supervisor park — resumeCapParked owns it";
+    // A QA round that ended without a verdict parks for a person BY DESIGN. A turn-ceiling cutoff there is
+    // continued first (bounded by qaCutoffResumes), so a park that names spent continuations means the
+    // mechanism ran and gave up — not that nothing tried. health counts these separately as its own warn.
+    if (/QA could not complete/i.test(e)) {
+      return /cut off again each time/i.test(e)
+        ? "QA park — the reviewer's continuation budget is spent, awaiting the owner"
+        : "QA park — QA ended without a verdict, awaiting the owner";
+    }
     if (/interrupted by (?:a )?server restart/i.test(e)) return "human-gated park after a restart — Resume continues it";
     return undefined;
   };

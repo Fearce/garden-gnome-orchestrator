@@ -355,6 +355,9 @@ export interface StageOutputs {
   qaRoundsUsed?: number; // QA rounds already spent in the current implementor→QA episode — persisted so a
   // server restart / cap-resume CONTINUES the maxQaRounds budget instead of resetting it to 1 (which let a
   // bouncing server re-run a fresh full QA pass on every resume and drain the backend). Reset by retry (blob nulled).
+  qaCutoffResumes?: number; // continuations spent waking a QA run that stopped at its per-session turn ceiling
+  // before it could return a verdict. Charged separately from qaRoundsUsed (a cutoff isn't a review↔fix cycle)
+  // and persisted before each retry, so a restart mid-continuation can't re-enter the loop forever.
 }
 
 /**

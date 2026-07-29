@@ -146,12 +146,28 @@ interface PipeOpts {
   qaAppliesFixes?: boolean;
 }
 
+/** One QA attempt: which round it belongs to, the QA-fixes options, and whether it is continuing a
+ *  reviewer that was cut off at its turn ceiling rather than starting that round's review. */
+interface QaRoundOpts {
+  round: number;
+  applyFixes?: boolean;
+  autoPush?: boolean;
+  forcedProvider?: ImplementorProvider;
+  forceFresh?: boolean;
+  priorFixSummary?: string;
+  continuation?: boolean;
+}
+
 const MAX_RESULT_PREVIEW = 600;
 const QUESTION_TIMEOUT_MS = 20 * 60 * 1000;
 // SDK result subtypes that mean "involuntarily cut off, not finished" — the orchestrator silently
 // warm-resumes these instead of carrying half-done work into QA. A genuine finish is `success`; a usage
 // cap is detected separately (agent.rateLimited). Kept as a set so more cutoff subtypes can join here.
 const LIMIT_SUBTYPES: ReadonlySet<string> = new Set(["error_max_turns"]);
+// How many times ONE task may wake a QA run that was cut off at its turn ceiling before returning a
+// verdict. Charged per task rather than per round, so a reviewer that keeps wedging costs a bounded
+// couple of extra runs instead of two more on every one of the maxQaRounds rounds.
+const MAX_QA_CUTOFF_RESUMES = 2;
 // Explicit, terminal completion phrasing in the implementor's last words — deliberately narrow, since a
 // false "done" suppresses a needed auto-resume (the bug), while a missed "done" only costs one cheap warm
 // resume. Forward-looking phrasing ("doing that now", "starting that next") must NOT match.
@@ -2514,7 +2530,7 @@ export class ThreadManager implements OrchestratorApi {
 
   private async runQA(
     thread: Thread,
-    opts: { round: number; applyFixes?: boolean; autoPush?: boolean; forcedProvider?: ImplementorProvider; forceFresh?: boolean; priorFixSummary?: string },
+    opts: QaRoundOpts,
   ): Promise<QaOutput | undefined> {
     // Fix-rounds 2..N resume the SAME QA session — a warm cache read of the diff/files/tests it
     // already ingested — instead of a fresh session that re-reads everything from scratch. QA still
@@ -2533,7 +2549,9 @@ export class ThreadManager implements OrchestratorApi {
     // "different-provider" finding for an explicit verifier choice.
     if (!opts.forcedProvider) this.noteDifferentProviderQa(thread, forcedQaProvider);
 
-    const prior = !opts.forceFresh && opts.round > 1 ? this.latestQaRun(thread.id) : undefined;
+    // A continuation resumes for the same reason a fix-round does — the session is warm and already holds
+    // the diff it was reading when the turn ceiling cut it off — so it's resume-eligible on round 1 too.
+    const prior = !opts.forceFresh && (opts.round > 1 || opts.continuation) ? this.latestQaRun(thread.id) : undefined;
     let resume: string | undefined;
     let preferredProvider: ImplementorProvider | undefined;
     // A warm resume of the previous QA session is only valid on the SAME backend it ran on — and, when a
@@ -2567,13 +2585,7 @@ export class ThreadManager implements OrchestratorApi {
     // deliverables check starts from a concrete list instead of the model's memory. Recomputed each
     // round — a fix-round that emits a forgotten deliverable drops it from the next round's hint.
     const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
-    const baseKickoff = resume
-      ? opts.priorFixSummary
-        ? qaFixRecheckKickoff(opts.priorFixSummary, unsurfaced)
-        : qaRecheckKickoff(unsurfaced)
-      : opts.priorFixSummary
-        ? qaFixFreshKickoff(thread, plan, opts.priorFixSummary, unsurfaced)
-        : qaKickoff(thread, plan, unsurfaced);
+    const baseKickoff = qaRoundKickoff(thread, { resume: !!resume, opts, plan, unsurfaced });
     const kickoff = opts.applyFixes ? `${baseKickoff}\n\n${qaFixCommitPolicy(opts.autoPush !== false)}` : baseKickoff;
     const res = await this.runRole(
       thread,
@@ -2595,7 +2607,58 @@ export class ThreadManager implements OrchestratorApi {
           ? { preferredProvider }
           : undefined,
     );
-    return res?.structuredOutput as QaOutput | undefined;
+    const verdict = res?.structuredOutput as QaOutput | undefined;
+    if (verdict || !this.isTurnLimitStop(res)) return verdict;
+    return this.continueCutOffQa(thread, opts);
+  }
+
+  /** Why a QA round ended without a verdict, in the owner's words. Prefers the latest QA run's own error
+   *  (e.g. a Grok structured-output miss after retries) over a bare "could not complete", and names a
+   *  spent continuation budget — the difference between one involuntary cutoff and a reviewer that was
+   *  cut off again every time we woke it. */
+  private qaParkDetail(threadId: string): string | undefined {
+    const lastQa = this.db
+      .listRuns(threadId)
+      .filter((r) => r.role === "qa")
+      .sort((a, b) => b.startedAt - a.startedAt)[0];
+    const spentContinuations = (this.db.getThreadStageOutputs(threadId).qaCutoffResumes ?? 0) >= MAX_QA_CUTOFF_RESUMES;
+    return (
+      [
+        lastQa?.error?.trim() || undefined,
+        spentContinuations ? `It was woken ${MAX_QA_CUTOFF_RESUMES} more times and cut off again each time.` : undefined,
+      ]
+        .filter(Boolean)
+        .join(" ") || undefined
+    );
+  }
+
+  /**
+   * A QA run that stopped at its per-session turn ceiling returned no verdict: the reviewer was cut off
+   * mid-verification, which is the same involuntary stop the implementor path already resumes. Without
+   * this the task parked on the owner with a finished-looking review it never got — and the review's cost
+   * (an Opus QA pass) was spent for nothing. Wake the same session in a FRESH query, which restarts the
+   * per-query turn budget, exactly as `awaitImplementorCompletion` does for the implementor.
+   *
+   * The counter is durable and spent BEFORE the retry, so a restart landing mid-continuation still counts
+   * it; when it runs out the caller's existing park keeps its diagnosable turn-ceiling message.
+   */
+  private async continueCutOffQa(thread: Thread, opts: QaRoundOpts): Promise<QaOutput | undefined> {
+    if (this.cancelled(thread.id)) return undefined;
+    const used = this.db.getThreadStageOutputs(thread.id).qaCutoffResumes ?? 0;
+    if (used >= MAX_QA_CUTOFF_RESUMES) return undefined;
+    this.db.updateThreadStageOutputs(thread.id, { qaCutoffResumes: used + 1 });
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "qa",
+      summary: "QA stopped at its turn ceiling before reaching a verdict — continuing the same review",
+      detail: `The reviewer was cut off mid-verification, not finished. Waking its session with a fresh turn budget (continuation ${used + 1} of ${MAX_QA_CUTOFF_RESUMES}).`,
+      severity: "note",
+    });
+    // `forceFresh` exists so an editing QA run can't warm-resume into approving its own edits. A
+    // continuation resumes the run that was just cut off — for a verifier round that IS the fresh
+    // verifier's own session, not the editor's — so the invariant holds and the guard is dropped;
+    // keeping it would throw away the interrupted review and start a third full pass from scratch.
+    return this.runQA(thread, { ...opts, continuation: true, forceFresh: false });
   }
 
   /** For the "different-provider QA" setting: pick an enabled + ready implementor backend OTHER than the
@@ -3564,13 +3627,7 @@ export class ThreadManager implements OrchestratorApi {
       if (this.cancelled(thread.id)) return;
 
       if (!qa) {
-        // Prefer the latest QA run's error (e.g. Grok structured-output miss after retries) so the park
-        // message is diagnosable rather than a bare "could not complete".
-        const lastQa = this.db
-          .listRuns(thread.id)
-          .filter((r) => r.role === "qa")
-          .sort((a, b) => b.startedAt - a.startedAt)[0];
-        const detail = lastQa?.error?.trim() || undefined;
+        const detail = this.qaParkDetail(thread.id);
         this.postFinding({
           threadId: thread.id,
           fromRole: "qa",
@@ -5346,6 +5403,40 @@ function qaRecheckKickoff(unsurfacedArtifacts: string[] = []): string {
     "",
     deliverablesCheckBlock(unsurfacedArtifacts),
   ].join("\n");
+}
+
+/** The RESUMED form for a reviewer the turn ceiling cut off mid-verification. It is not a re-check —
+ * nothing else touched the repo while it was stopped — so the only thing it needs is to know it was not
+ * finished. In QA-fixes mode it must also be told that its OWN pre-cutoff edits still count as changes:
+ * a `changed: false` there would accept the reviewer's edits with no independent pass, which is exactly
+ * what the fixes mode forbids. */
+function qaContinueKickoff(unsurfacedArtifacts: string[] = [], applyFixes = false): string {
+  const lines = [
+    "You stopped at a per-session turn limit, not because your review was finished — nothing else has touched the repo since you stopped.",
+    "Continue exactly where you left off: finish the checks you still had outstanding, then return your structured verdict (pass + issues).",
+    "Work efficiently; you have a fresh turn budget but not an unlimited one, so prioritise the checks that decide the verdict.",
+  ];
+  if (applyFixes) {
+    lines.push(
+      "If you modified any task file at any point in this review — including before you were cut off — you must still report `changed: true`. Your own edits are the one thing that HAS changed, and they need an independent QA pass before the task can be accepted.",
+    );
+  }
+  return [...lines, "", deliverablesCheckBlock(unsurfacedArtifacts)].join("\n");
+}
+
+/** The kickoff for one QA attempt. A RESUMED session already holds the brief, the plan and the diff it
+ * read, so it gets only the reason it was woken; a fresh one gets the full review brief. */
+function qaRoundKickoff(
+  thread: Thread,
+  o: { resume: boolean; opts: QaRoundOpts; plan?: PlanOutput; unsurfaced: string[] },
+): string {
+  if (!o.resume) {
+    return o.opts.priorFixSummary
+      ? qaFixFreshKickoff(thread, o.plan, o.opts.priorFixSummary, o.unsurfaced)
+      : qaKickoff(thread, o.plan, o.unsurfaced);
+  }
+  if (o.opts.continuation) return qaContinueKickoff(o.unsurfaced, o.opts.applyFixes);
+  return o.opts.priorFixSummary ? qaFixRecheckKickoff(o.opts.priorFixSummary, o.unsurfaced) : qaRecheckKickoff(o.unsurfaced);
 }
 
 /** Handoff between two editing-QA passes. Unlike qaRecheckKickoff, no implementor was relaunched:

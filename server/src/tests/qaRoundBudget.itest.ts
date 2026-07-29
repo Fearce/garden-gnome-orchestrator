@@ -23,17 +23,25 @@
 process.env.CAP_RETRY_MS = "0"; // no cap-supervisor interval during the test
 process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
+// The QA-continuation tests (H/I/J) resume a FAKE session id, which has no CLI transcript on disk — so
+// the age-based warm check can't evaluate it. Force full resume to exercise the resumed branch. NOTE
+// this is process-global: it is inert for the tests that stub `runQA`/`startResumedImplementor`, but any
+// future test driving the REAL `startResumedImplementor` would take the full-resume branch and never the
+// compressed-seed one. Set it around the H/I/J block instead if such a test lands here.
+process.env.RESUME_FULL_SESSION = "1";
 
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
+import type { ResultEvent } from "../agents/runner.js";
 import type { Thread } from "../types.js";
 
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager, qaFixFreshKickoff } = await import("../orchestrator/threadManager.js");
+const { runErrorText } = await import("../orchestrator/runError.js");
 const { clientCommandSchema } = await import("../ws/protocol.js");
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
@@ -128,6 +136,51 @@ function makeHarness(): Harness {
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+const QA_SESSION = "qa-session-cut-off";
+/** A run the SDK ended at the per-session turn ceiling: an involuntary cutoff, so no structured verdict.
+ *  No `result` text — an Agent-SDK error result carries none, which is why `runErrorText` falls through
+ *  to the canned subtype reason the park message and the sweep classifier both key on. */
+const CUTOFF = { type: "result", subtype: "error_max_turns", isError: true };
+const verdictResult = (structuredOutput: { pass: boolean; summary: string; changed: boolean }) => ({
+  type: "result",
+  subtype: "success",
+  isError: false,
+  structuredOutput,
+});
+
+interface QaRoleCall {
+  kickoff: string;
+  resume: string | undefined;
+}
+
+/** Stub the agent-spawning leaf BELOW runQA, so the real runQA (its resume decision, its kickoff choice
+ *  and its turn-ceiling continuation) runs. Each queued result is returned by one QA run, in order; the
+ *  last one repeats if QA is called more times than the test queued.
+ *
+ *  The stub also persists the `agent_runs` row the real `runRole` would have written, error text and
+ *  all: the park path reads the latest QA run's error to stay diagnosable, and a harness with an empty
+ *  runs table would silently exercise the generic fallback instead. */
+function stubQaRunRole(h: Harness, results: unknown[]): QaRoleCall[] {
+  const calls: QaRoleCall[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = h.mgr as any;
+  delete internals.runQA; // drop makeHarness's stub — this test exercises the real one
+  internals.latestQaRun = () => ({ sessionId: QA_SESSION, provider: "claude" });
+  internals.runRole = async (t: Thread, role: string, kickoff: string | unknown[], _cfg: unknown, resume?: string): Promise<unknown> => {
+    calls.push({ kickoff: typeof kickoff === "string" ? kickoff : JSON.stringify(kickoff), resume });
+    const res = results[Math.min(calls.length - 1, results.length - 1)] as { isError?: boolean };
+    const run = h.db.createRun({ threadId: t.id, role: role as "qa", model: "claude-opus-5" });
+    h.db.updateRun(run.id, {
+      sessionId: QA_SESSION,
+      state: res.isError ? "error" : "done",
+      error: res.isError ? runErrorText(res as ResultEvent) : null,
+      endedAt: Date.now(),
+    });
+    return res;
+  };
+  return calls;
 }
 
 function seedTask(h: Harness): string {
@@ -304,6 +357,87 @@ async function main(): Promise<void> {
       h.mgr.setSettings({ qaAppliesFixes: false });
       check("disabling QA-fixes persists the kv value", h.db.kvGet("setting_qa_applies_fixes") === "0", String(h.db.kvGet("setting_qa_applies_fixes")));
       check("disabling QA-fixes is reflected in settings", h.mgr.settings().qaAppliesFixes === false, String(h.mgr.settings().qaAppliesFixes));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test H: a QA run cut off at its turn ceiling is CONTINUED, not parked on the owner -----------
+  // The implementor path already warm-resumes an `error_max_turns` stop because it is involuntary. QA
+  // had no such path: the reviewer was cut off mid-verification, produced no verdict, and the task
+  // parked with a review the owner had already paid an Opus pass for. These two tests stub `runRole`
+  // (one level deeper than the others) so the REAL runQA + continuation logic runs.
+  console.log("\nTest H — a turn-ceiling QA cutoff continues the same session instead of parking");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const qaCalls = stubQaRunRole(h, [CUTOFF, verdictResult({ pass: true, summary: "verified", changed: false })]);
+      await runLoop(h, id, 4);
+      check("QA ran twice: the cutoff plus its continuation", qaCalls.length === 2, `calls=${qaCalls.length}`);
+      check("round 1's own QA still started fresh", qaCalls[0]?.resume === undefined, String(qaCalls[0]?.resume));
+      check("the continuation resumed the cut-off QA session", qaCalls[1]?.resume === QA_SESSION, String(qaCalls[1]?.resume));
+      check(
+        "the continuation told QA it was cut off, not that the tree changed",
+        !!qaCalls[1]?.kickoff.includes("stopped at a per-session turn limit"),
+        qaCalls[1]?.kickoff.slice(0, 80),
+      );
+      check("the continuation did NOT spend a QA round", h.db.getThreadStageOutputs(id).qaRoundsUsed === 1, String(h.db.getThreadStageOutputs(id).qaRoundsUsed));
+      check("the continuation was charged to the durable cutoff budget", h.db.getThreadStageOutputs(id).qaCutoffResumes === 1, String(h.db.getThreadStageOutputs(id).qaCutoffResumes));
+      check("the continued verdict settled the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test I: the continuation budget is bounded and durable ---------------------------------------
+  console.log("\nTest I — a QA reviewer that keeps hitting the ceiling is bounded, then parks");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const qaCalls = stubQaRunRole(h, [CUTOFF, CUTOFF, CUTOFF, CUTOFF]);
+      await runLoop(h, id, 4);
+      // MAX_QA_CUTOFF_RESUMES (2) continuations on top of the round's own QA run.
+      check("QA stopped after the bounded continuations", qaCalls.length === 3, `calls=${qaCalls.length}`);
+      check("the cutoff budget was fully spent", h.db.getThreadStageOutputs(id).qaCutoffResumes === 2, String(h.db.getThreadStageOutputs(id).qaCutoffResumes));
+      check("a verdict-less QA still parks for the owner", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check("the park stays diagnosable (names the turn ceiling)", !!h.db.getThread(id)?.error?.includes("per-session turn ceiling"), String(h.db.getThread(id)?.error));
+      check("the park says the continuations were spent too", !!h.db.getThread(id)?.error?.includes("cut off again each time"), String(h.db.getThread(id)?.error));
+
+      // A restart mid-continuation must not hand the task a fresh continuation budget.
+      h.db.updateThread(id, { state: "failed", error: null });
+      h.db.updateThreadStageOutputs(id, { qaRoundsUsed: 1 });
+      await runLoop(h, id, 4);
+      check("a re-entry gets no fresh continuation budget", qaCalls.length === 4, `calls=${qaCalls.length}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test J: a cut-off QA-fixes VERIFIER continues its own session ---------------------------------
+  // The verifier round is deliberately forced fresh so an editing QA run can't warm-resume into
+  // approving its own edits. That guard must not survive into the continuation: the session being
+  // continued is the verifier's own, so re-forcing fresh would discard the interrupted review.
+  console.log("\nTest J — a cut-off QA-fixes verifier continues its own session, not a third fresh pass");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const qaCalls = stubQaRunRole(h, [
+        verdictResult({ pass: true, summary: "fixed one issue", changed: true }),
+        CUTOFF,
+        verdictResult({ pass: true, summary: "independently verified", changed: false }),
+      ]);
+      await runLoop(h, id, 4, true);
+      check("the verifier round started fresh (no self-approval)", qaCalls[1]?.resume === undefined, String(qaCalls[1]?.resume));
+      check("its continuation resumed the verifier's own session", qaCalls[2]?.resume === QA_SESSION, String(qaCalls[2]?.resume));
+      check(
+        "the continuation still binds the reviewer to reporting its own edits",
+        !!qaCalls[2]?.kickoff.includes("you must still report `changed: true`"),
+        qaCalls[2]?.kickoff.slice(0, 120),
+      );
+      check("the continued verifier accepted the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
     } finally {
       h.dispose();
     }
