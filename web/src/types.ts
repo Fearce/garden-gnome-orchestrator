@@ -595,6 +595,7 @@ export type ClientCommand =
   | { type: "thread.git"; threadId: string }
   | { type: "thread.gitSummary"; threadId: string }
   | { type: "thread.gitDiff"; threadId: string; path: string }
+  | { type: "director.cancel" }
   | { type: "director.search"; query: string }
   | { type: "chat.history"; room: string; before?: ChatCursor }
   | { type: "chat.post"; room: string; body: string }

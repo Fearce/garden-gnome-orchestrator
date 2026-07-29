@@ -240,6 +240,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("thread.git"), threadId: z.string() }),
   z.object({ type: z.literal("thread.gitSummary"), threadId: z.string() }),
   z.object({ type: z.literal("thread.gitDiff"), threadId: z.string(), path: z.string().min(1).max(4096) }),
+  // Stop the director's current turn when it's spinning (busy but neither replying nor dispatching).
+  // Kills the live run, discards the in-flight turn, and settles the director back to idle; the
+  // conversation session is preserved so the next message resumes with full context.
+  z.object({ type: z.literal("director.cancel") }),
   // Search the WHOLE director conversation (across every task) for a substring; replies with
   // director.results. The snapshot only ships the recent slice, so old mentions need a server query.
   z.object({ type: z.literal("director.search"), query: z.string().min(1).max(200) }),

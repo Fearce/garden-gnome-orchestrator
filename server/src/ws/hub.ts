@@ -211,6 +211,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       send(socket, { type: "thread.gitDiff", threadId: cmd.threadId, path: cmd.path, diff });
       break;
     }
+    case "director.cancel":
+      ctx.director.cancelTurn();
+      break;
     case "director.search":
       send(socket, { type: "director.results", query: cmd.query, messages: ctx.db.searchDirectorMessages(cmd.query) });
       break;

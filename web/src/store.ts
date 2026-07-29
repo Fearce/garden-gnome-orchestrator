@@ -137,6 +137,8 @@ interface State {
   clearDirectorSearch: () => void;
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
   sendDirect: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
+  // Stop the director when it's busy but spinning (looping without replying or dispatching).
+  cancelDirector: () => void;
   answer: (questionId: string, answer: string) => void;
   inject: (threadId: string, message: string, mode: "append" | "interrupt" | "queue", images?: ImageAttachment[]) => void;
   interrupt: (threadId: string) => void;
@@ -460,6 +462,7 @@ export const useStore = create<State>((set) => ({
     sendCommand({ type: "prompt.new", text, workspace: workspace || undefined, images: images?.length ? images : undefined }),
   sendDirect: (text, workspace, images) =>
     sendCommand({ type: "prompt.direct", text, workspace: workspace || undefined, images: images?.length ? images : undefined }),
+  cancelDirector: () => sendCommand({ type: "director.cancel" }),
   answer: (questionId, answer) => sendCommand({ type: "question.answer", questionId, answer }),
   inject: (threadId, message, mode, images) =>
     sendCommand({ type: "thread.inject", threadId, message, mode, images: images?.length ? images : undefined }),

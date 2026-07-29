@@ -366,6 +366,8 @@ button { font-family: inherit; cursor: pointer; }
 .rail-head .who { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .rail-head-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rail-head-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Stop button (director spinning): icon + label on one row, never squeezed by the flexing toggles. */
+.director-stop { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
 /* The header search icon is a mobile-only affordance (the full search bar collapses behind it there);
    on desktop the bar under the header is always visible, so this toggle stays hidden. */
 .rail-search-toggle { display: none; }

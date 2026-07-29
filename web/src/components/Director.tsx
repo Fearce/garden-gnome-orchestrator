@@ -40,6 +40,7 @@ export function Director() {
   const busy = useStore((s) => s.directorBusy);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const sendDirect = useStore((s) => s.sendDirect);
+  const cancelDirector = useStore((s) => s.cancelDirector);
   const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
   const directorName = useStore((s) => s.settings.directorName);
   // The director's model, resolved like the server's modelFor: the operator's default-layer override
@@ -175,6 +176,23 @@ export function Director() {
             </div>
           </div>
           <div className="rail-head-actions">
+            {/* Only offered while the director is thinking: a hard stop for a turn that's spinning —
+                busy but neither streaming a reply nor dispatching. Cancels the turn and settles to
+                idle; the conversation is preserved so the next message resumes with full context. */}
+            {busy && (
+              <button
+                type="button"
+                className="btn danger sm director-stop"
+                aria-label="Stop the director"
+                title="Stop the director — cancels the current turn if it's stuck looping without replying or dispatching"
+                onClick={cancelDirector}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <rect x="5" y="5" width="14" height="14" rx="2" />
+                </svg>
+                Stop
+              </button>
+            )}
             <AgentToggles />
             {/* Mobile-only search affordance — collapses the full-width search row into one tap. */}
             <button

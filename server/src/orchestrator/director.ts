@@ -148,6 +148,33 @@ export class Director {
     if (this.api.settings().skipDirectorRetitle) void this.api.retitleFromBrief(id, text);
   }
 
+  /**
+   * Owner-invoked stop for a stuck turn. The director is "thinking" (busy) but spinning — looping
+   * without streaming a reply or dispatching a task — so kill the live run, discard the in-flight
+   * turn so a trailing failover/classify can't revive it, and settle back to idle. The long-lived
+   * session id is kept, so the NEXT message resumes the conversation with full context; only this
+   * one turn is abandoned. A no-op when idle (nothing to stop).
+   */
+  cancelTurn(): void {
+    if (!this.busy) return;
+    const run = this.run;
+    // Drop the run reference FIRST: stop() triggers this run's onEnd, and clearing it here makes
+    // that handler see itself superseded (this.run !== run) and skip reactiveFailover — we settle
+    // the turn deterministically below instead of letting the failover path re-send it.
+    this.run = undefined;
+    // Discard the in-flight turn so an in-flight classifyThenFailover bails (it guards on
+    // `pending === undefined`) and no re-send can resurrect the loop.
+    this.pending = undefined;
+    this.pendingImages = [];
+    this.failovers = 0;
+    if (run) void run.stop();
+    this.hub.log("info", "Director turn stopped by the owner.");
+    // Posting a director message also clears any half-streamed draft on the clients (the draft is
+    // reset when a role:"director" message lands), so the "thinking…" bubble resolves cleanly.
+    this.postDirectorNote("Stopped that turn. Send a new message whenever you're ready.");
+    this.setBusy(false);
+  }
+
   private postDirectorNote(content: string): DirectorMessage {
     const m = this.db.addDirectorMessage({ role: "director", kind: "text", content });
     this.hub.publish({ type: "director.message", message: m });
