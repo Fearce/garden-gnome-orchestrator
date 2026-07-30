@@ -104,6 +104,31 @@ assert.equal(spentWindow({ sevenDay: null, fiveHour: null }, NOW), null, "an unm
 // Grok reports no 5h window at all; a missing meter must not read as 0% room or as spent.
 assert.equal(spentWindow({ sevenDay: 20, sevenDayReset: NOW + HOUR }, NOW), null, "Grok's absent 5h meter doesn't fabricate a cap");
 
+// A reset too distant to belong to its window is a backend sentinel, not an outage length. z.ai's quota
+// endpoint was seen returning 1799999999000 (Jan 2027) as a 5-HOUR window's nextResetTime, which rendered
+// as "resets in 169d" — a number a reader would act on. The verdict must not move (routing reads the same
+// meters and refuses the rung either way); only the countdown is withheld, with the raw value kept so the
+// line can say where it came from.
+const sentinel = spentWindow({ fiveHour: 100, fiveHourReset: Date.parse("2027-01-15T07:59:59.000Z") }, NOW);
+assert.equal(sentinel.window, "5h", "an implausible reset does not un-spend the window");
+assert.equal(sentinel.reset, null, "no countdown is printed for a reset that can't be this window's");
+assert.equal(sentinel.reportedReset, Date.parse("2027-01-15T07:59:59.000Z"), "keeps the raw value so the readout can name it");
+assert.equal(
+  spentWindow({ fiveHour: 100, fiveHourReset: NOW + 9 * HOUR }, NOW).reset,
+  NOW + 9 * HOUR,
+  "a late-but-believable 5h reset (under 2× the window) still counts down — the clamp must not eat real outages",
+);
+assert.equal(
+  spentWindow({ sevenDay: 100, sevenDayReset: NOW + 6 * 24 * HOUR }, NOW).reset,
+  NOW + 6 * 24 * HOUR,
+  "the bound scales with the window: 6 days is nonsense for 5h but ordinary for a weekly",
+);
+assert.equal(
+  backendState(CODEX, kvOf({ setting_codex_enabled: "1" }), NOW, usageOf({ sevenDay: 100, sevenDayReset: NOW + 400 * 24 * HOUR })).until,
+  null,
+  "backendState passes the withheld reset through as unknown, so the ladder line can't print a fake countdown",
+);
+
 // --- claudeHasHeadroom: BOTH windows gate the rung --------------------------------------------------
 assert.equal(claudeHasHeadroom({ fiveHour: 43, sevenDay: 32 }), true, "both windows under the limit");
 assert.equal(claudeHasHeadroom({}), true, "a sub with no usage read yet is assumed free");
