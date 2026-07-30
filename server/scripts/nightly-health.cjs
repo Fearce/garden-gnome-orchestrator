@@ -113,6 +113,63 @@ function newestSrcMtimeMs() {
   return newest || null;
 }
 
+/**
+ * Whether `dist` was built from current HEAD's server code — the gap the process-vs-dist check cannot see.
+ * Both of those can agree perfectly while `dist` ITSELF predates HEAD, which is how a feature shipped its
+ * web half and sat in prod for a day with its server half unbuilt (the director Stop button, 2026-07-29:
+ * the button rendered, and the WS command it sent wasn't in the server's union).
+ *
+ * Compared by CONTENT, never by timestamp: build → verify → commit is the normal order, so a dist a minute
+ * older than HEAD is usually correct, and mtimes are rewritten wholesale by a checkout. The build stamps the
+ * commit it came from (scripts/stamp-build.cjs); the only question that matters is whether anything under
+ * server/src changed between that commit and HEAD.
+ *
+ * Returns { state, detail } where state is "current" | "stale" | "unknown" | "dirty-build".
+ */
+function distVsHead() {
+  const stampFile = path.join(DIST, ".build-info.json");
+  let stamp;
+  try {
+    stamp = JSON.parse(fs.readFileSync(stampFile, "utf8"));
+  } catch {
+    return { state: "unknown", detail: "dist has no .build-info.json — built before build stamping, or by a bare `tsc`" };
+  }
+  if (!stamp.commit) return { state: "unknown", detail: "the build recorded no commit (no git at build time)" };
+  const repo = path.resolve(SERVER, "..");
+  const short = String(stamp.commit).slice(0, 8);
+  let changed;
+  try {
+    // Two-dot: what server/src looks like at HEAD vs at the built commit. Direction-agnostic on purpose — a
+    // dist built from a LATER commit than HEAD (a checkout back in time) is just as much a mismatch. Tests
+    // and tools are excluded for the same reason newestSrcMtimeMs skips them: they don't run in the server,
+    // so a committed test would otherwise report a perfectly deployed dist as "not live".
+    changed = execFileSync(
+      "git",
+      ["diff", "--name-only", `${stamp.commit}..HEAD`, "--", "server/src", ":(exclude)server/src/tests", ":(exclude)server/src/tools"],
+      { encoding: "utf8", cwd: repo },
+    ).trim();
+  } catch {
+    return { state: "unknown", detail: `git cannot compare the built commit ${short} to HEAD (unreachable after a rebase?)` };
+  }
+  if (changed) {
+    const files = changed.split(/\r?\n/);
+    return {
+      state: "stale",
+      detail:
+        `dist was built from ${short}, and ${files.length} server/src file(s) have changed in HEAD since ` +
+        `(${files.slice(0, 3).join(", ")}${files.length > 3 ? ", …" : ""}) — that committed change is NOT live, ` +
+        "however fresh the process looks. Run `npm run build`, then the atomic hub restart.",
+    };
+  }
+  if (stamp.dirty) {
+    return {
+      state: "dirty-build",
+      detail: `dist matches HEAD's server/src (built from ${short}) but was built from a DIRTY tree — it may carry uncommitted code`,
+    };
+  }
+  return { state: "current", detail: `dist was built from ${short}, whose server/src matches HEAD` };
+}
+
 function processStartMs(pid) {
   if (!pid) return null;
   try {
@@ -215,6 +272,10 @@ async function main() {
       } else if (startMs && startMs >= distMs - 5000) {
         ok("process started at/after dist mtime (fresh build likely loaded)");
       }
+      // The gap the process-vs-dist comparison above cannot see: dist itself behind HEAD.
+      const vsHead = distVsHead();
+      if (vsHead.state === "stale") warn(vsHead.detail);
+      else ok(`dist vs HEAD: ${vsHead.detail}`);
     } else {
       fail(`missing ${sampleDist}`);
     }

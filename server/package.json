@@ -8,7 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "serve": "node scripts/supervise.cjs",
     "serve:raw": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/stamp-build.cjs",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "chip-lab": "node scripts/chip-lab.cjs",

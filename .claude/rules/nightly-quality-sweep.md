@@ -7,21 +7,25 @@ are auto-resumed after an orchestrator restart that already completed:
 ```
 npm run health --prefix server
 ```
-(`nightly-health.cjs`) — hits `/api/health`, checks `:4317` vs `dist` mtime, greps live reliability
-symbols, lists dirty git paths, summarizes SQLite parks/caps/stuck runs, and scans `crash.log` for
-real faults vs the benign memory high-water notes. Exit 1 = hard fail; a dirty tree alone does **not** fail.
+(`nightly-health.cjs`) — hits `/api/health`, checks `:4317` vs `dist` mtime **and `dist` vs HEAD**, greps live
+reliability symbols, lists dirty git paths, summarizes SQLite parks/caps/stuck runs, and scans `crash.log` for
+real faults vs benign memory high-water notes. Exit 1 = hard fail; a dirty tree alone does **not** fail.
+
+Read the **`dist` vs HEAD** line carefully: process-vs-dist can agree perfectly while `dist` itself predates
+HEAD — how a feature shipped its web half and sat in prod a full day unbuilt on the server (Stop button,
+2026-07-29). It compares by CONTENT (the build stamps its commit into `dist/.build-info.json`; the check
+diffs that commit's `server/src` vs HEAD, tests excluded), since build→verify→commit is the normal order and
+timestamps alone would cry wolf every sweep. A warn = `npm run build` + the atomic hub restart.
 
 ## Second command — run the gate suite (health does NOT)
 ```
 npm run typecheck && npm run test:gates --prefix server
 ```
-`health` greps dist symbols but never RUNS the unit gates, so a green health can sit on top of
-crash-broken gates (a feature landing without updating a test stub — this is how a missing
-`StubAccounts.setSpreadUsage` slipped past a "13/13 green" claim). `test:gates` (`scripts/run-gates.cjs`)
-runs all FREE gates in ~25s (the count is whatever's registered — don't hardcode it here) and exits
-non-zero on any failure, including the local reader, structured-output, and effort-cap integration
-tests. They use stubs and a throwaway git repo; no `claude` subprocess or account quota is involved.
-Don't hand-run gates one by one.
+`health` greps dist symbols but never RUNS the unit gates, so a green health can sit on top of crash-broken
+gates (a feature landing without updating a test stub — how a missing `StubAccounts.setSpreadUsage` slipped
+past a "13/13 green" claim). `test:gates` (`scripts/run-gates.cjs`) runs every registered FREE gate in ~25s
+(don't hardcode the count) and exits non-zero on any failure. Stubs + a throwaway git repo; no `claude`
+subprocess, no quota. Don't hand-run gates one by one.
 
 ## Third command — triage the non-done runs (don't read the counts yourself)
 ```
@@ -41,11 +45,10 @@ npm run probe:accounts --prefix server
 A green sweep still leaves headroom to eyeball. Prints the Claude subs' 5h/7d capacity, then the **full
 failover ladder** — Codex / Grok / z.ai, each `available (5h x% · 7d y%)`, `CAPPED — frees in <countdown>`,
 `NO ROOM — <window> at N%`, or `disabled` — and a **ladder depth** line. Nothing counts as a rung while
-either window is ≥98%, sub or backend: a "5h 0%" sub with an exhausted weekly doesn't, and neither does a
-backend that never got rejected (so has no cap latch) but is simply spent — that's `NO ROOM`, and reading the
-latch alone once reported 3 rungs over a 1-rung reality. Caps are handled by failover (`probe:run-errors`
-confirms it ran); depth ≤1 is the thing to act on, because a burst then parks on caps. One capped/spent alt
-backend is normal — a latch self-expires, a spent window waits for its real reset. Gate: `test:failover-ladder`.
+either window is ≥98%, sub or backend: a "5h 0%" sub with a spent weekly doesn't, and neither does a backend
+never rejected (so unlatched) but simply spent — that's `NO ROOM`; reading the latch alone once reported 3
+rungs over a 1-rung reality. Depth ≤1 is the thing to act on: a burst then parks on caps. One capped/spent
+backend is normal (a latch self-expires, a spent window waits for its reset). Gate: `test:failover-ladder`.
 
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already completed — only verify live `dist` + health.
@@ -58,9 +61,8 @@ backend is normal — a latch self-expires, a spent window waits for its real re
   restore a partial install; after any dependency update, run both `npm run typecheck` and `npm run build`.
 
 ## If the sweep finds a real bug
-Fix it in its own conventional commit, pathspec-stage, push (not vota). Deploy server changes yourself
-via atomic hub restart **only when you changed server code and it's not already in the running dist** —
-the health script's process-vs-dist section tells you.
+Fix it in its own conventional commit, pathspec-stage, push (not vota). Deploy server changes yourself via
+the atomic hub restart when your code isn't in the running dist — health's `dist` vs HEAD line answers that.
 
 ## Related
 - Office harvest gotchas: `.claude/rules/office-bridge.md`
