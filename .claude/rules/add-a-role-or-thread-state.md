@@ -8,11 +8,10 @@ paths:
 
 # Adding an agent ROLE or a THREAD STATE (the two seams TypeScript only half-guards)
 
-For a new one-shot agent (the `reviewer` auto-review lane and the `reader` read lane are the
-references) and/or a new `ThreadState`. Some spots are `Record<Role|ThreadState, …>` and fail the
-build when you miss them — **the ones that bite are the plain Sets, the free-text role arrays, and
-the pipeline gates, which all compile fine and break at runtime.** (For a knob use `add-a-setting.md`;
-for a persisted entity `add-a-broadcast-collection.md`.)
+For a new one-shot agent (`reviewer`, `reader`) and/or a new `ThreadState`. Some spots are
+`Record<Role|ThreadState, …>` and fail the build when you miss them — **the ones that bite are the plain
+Sets, the free-text role arrays, and the pipeline gates, which all compile fine and break at runtime.**
+(For a knob use `add-a-setting.md`; for a persisted entity `add-a-broadcast-collection.md`.)
 
 ## A new ROLE
 1. `server/src/types.ts` — `Role` union + `ROLE_RANK` (office names). `config.ts` — `models.<role>`.
@@ -33,22 +32,19 @@ for a persisted entity `add-a-broadcast-collection.md`.)
    opaque row at its ceiling degrades to "unclassifiable" and the sweep reports a benign cutoff as
    needing a human (`reviewer` shipped unenrolled). `test:run-classify` pins the map to `roles.ts`;
    an unbounded role (director) must stay OUT — a ceiling it can't hit files a runaway as benign.
-8. **Decide what `error_max_turns` does — a bounded role WILL hit its ceiling.** That stop is
-   involuntary (the agent was mid-work), so a role whose structured verdict GATES a settle must
-   CONTINUE the cut-off session in a fresh query before giving up, or a paid Opus pass is discarded
-   and the task lands on the owner for a reason that says nothing about the work. QA
-   (`continueCutOffQa`, durable `qaCutoffResumes`) and the reviewer (`reviewToVerdict`, in-process)
-   are the references — durable only if the state auto-resumes across a restart. A role that merely
-   degrades (planner → brief-only implementor) or whose park IS the design (reader → re-dispatch)
-   correctly does nothing. Both gates shipped without this and parked real tasks.
-9. **Then decide what an EMPTY run does — the same stop wearing a success suit.** A session the CLI
-   loaded and exited without reaching the model returns subtype `success` with 0 turns, $0 and NO
-   structured output, so every `isTurnLimitStop`/`isError` branch misses it and the absent verdict reads
-   as the role's answer. Detect it from the absence of output (`ranSilently(threadId, role, from, res)`
-   over `countAgentMessagesSince`, `from` stamped BEFORE the spawn), stamp the row via `markSilentRun`
-   (else the run history keeps a `done` 0-turn row and the sweep can't see the failure), and recover
-   FRESH — re-waking the same session is the one thing already known not to work. `retrySilentQa` /
-   `reviewToVerdict` are the references. Add the role to `SilentCapableRole`.
+8. **Decide what its two involuntary stops do — a bounded role hits both, and neither is a verdict.**
+   A turn ceiling (`error_max_turns`), and an EMPTY run: the CLI loaded the session and exited without
+   reaching the model, so it returns subtype `success`, 0 turns, $0, NO structured output — every
+   `isTurnLimitStop`/`isError` branch misses it and the absent verdict reads as the role's answer. A role
+   whose verdict GATES a settle must recover both before giving up, else a paid Opus pass is discarded and
+   the task lands on the owner for a reason that says nothing about the work. Cutoff ⇒ CONTINUE the session
+   that made progress; empty ⇒ start FRESH (re-waking it is what already failed), detected from absent
+   output (`ranSilently` + `SilentCapableRole`, `from` stamped BEFORE the spawn) and stamped with
+   `markSilentRun`, or the run history keeps a `done` 0-turn row the sweep cannot see. References: QA
+   (`continueCutOffQa` / `retrySilentQa`, durable counters — durable only if the state auto-resumes across
+   a restart) and the reviewer (`reviewToVerdict`, in-process). A role that merely degrades (planner →
+   brief-only implementor) or whose park IS the design (reader → re-dispatch) correctly does nothing; every
+   gate that shipped without this parked real tasks.
 
 ## A new THREAD STATE
 1. `server/src/types.ts` — the union, then audit **every set** in `threadManager.ts`: `IN_FLIGHT`,
