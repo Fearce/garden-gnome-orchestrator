@@ -36,8 +36,9 @@ misrouting a real task to the reader is not. The card shows a **READ** badge. Se
 panel's "Auto-review & mark done" button delegates that call to one **reviewer** agent (Opus,
 read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing`, verifies the work,
 `ask_user`s Kevin about anything only he can decide, then settles the task `done` or hands it back to
-`review` with its reasons — an errored/verdict-less run always re-parks, never accepts (a turn-ceiling
-cutoff is first continued on its own session, up to twice, in-process only). So `done` now has three
+`review` with its reasons — an errored/verdict-less run always re-parks, never accepts (its two involuntary
+stops are recovered first, sharing one in-process budget of 2: a turn-ceiling cutoff continues the session it
+made progress in, an empty run starts the review over). So `done` now has three
 sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
 
 ## Run / build
@@ -130,10 +131,14 @@ Read the run trail to tell causes apart:
   path, and several per long task are expected, NOT failures. A QA run cut off the same way is continued
   too: it warm-resumes the SAME review session with a fresh turn budget, charged to a durable per-task
   `qaCutoffResumes` (max 2, separate from the QA-round budget), and only parks once that is spent.
-  "Resumed session produced no output" is a resume that came back empty (0 turns, $0, no messages — the CLI
-  loaded the session and exited without reaching the model): also benign on its own, retried on a FRESH
-  session seeded from a compressed handoff, and only if the whole auto-resume budget goes that way does the
-  task park instead of reaching QA. A 5h/weekly cap auto-switches account and
+  "Resumed session produced no output" is a run that came back empty (0 turns, $0, no messages — the CLI
+  loaded the session and exited without reaching the model). Benign on its own: it is never read as an
+  answer on any path whose output GATES the pipeline, and each of those recovers it — the implementor retries
+  on a FRESH session seeded from a compressed handoff (parking only if its whole auto-resume budget goes that
+  way), a QA round re-runs the review fresh once (durable `qaSilentRetries`, since re-waking the same
+  session is what already failed), and the auto-reviewer starts its review over (in-process, sharing
+  `MAX_REVIEW_RECOVERIES` with its cutoff continuations). Every empty run is stamped with this text, so a
+  `done` row with 0 turns is never left to look like a finish. A 5h/weekly cap auto-switches account and
   resumes the SDK session; `runner.ts` flags the cap from a `rate_limit_event`, an assistant
   `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
   another sub with headroom. A cap on a **Fable** model is first classified (`classifyCap`: fresh Haiku

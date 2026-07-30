@@ -41,6 +41,14 @@ for a persisted entity `add-a-broadcast-collection.md`.)
    are the references — durable only if the state auto-resumes across a restart. A role that merely
    degrades (planner → brief-only implementor) or whose park IS the design (reader → re-dispatch)
    correctly does nothing. Both gates shipped without this and parked real tasks.
+9. **Then decide what an EMPTY run does — the same stop wearing a success suit.** A session the CLI
+   loaded and exited without reaching the model returns subtype `success` with 0 turns, $0 and NO
+   structured output, so every `isTurnLimitStop`/`isError` branch misses it and the absent verdict reads
+   as the role's answer. Detect it from the absence of output (`ranSilently(threadId, role, from, res)`
+   over `countAgentMessagesSince`, `from` stamped BEFORE the spawn), stamp the row via `markSilentRun`
+   (else the run history keeps a `done` 0-turn row and the sweep can't see the failure), and recover
+   FRESH — re-waking the same session is the one thing already known not to work. `retrySilentQa` /
+   `reviewToVerdict` are the references. Add the role to `SilentCapableRole`.
 
 ## A new THREAD STATE
 1. `server/src/types.ts` — the union, then audit **every set** in `threadManager.ts`: `IN_FLIGHT`,
