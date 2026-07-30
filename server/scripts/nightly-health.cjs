@@ -24,6 +24,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const Database = require("better-sqlite3");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
+const { classifyPark, continuationsSpent } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
 
 const args = process.argv.slice(2);
@@ -359,53 +360,50 @@ async function main() {
       if (caps?.c) warn(`${caps.c} run(s) hit weekly limit in last 24h (failover expected)`);
       else ok("no weekly-limit errors in last 24h");
 
-      // Review-state parks, classified by marker so a sweep can tell an actionable
-      // stuck park from a by-design human-review one (counts alone can't):
-      //   • "⏳ Auto-resume pending" → the cap supervisor (resumeCapParked, every
-      //     ~capRetryMs/2m) SHOULD unpark it once any backend frees up. One sitting
-      //     for hours means a persistent full cap wave OR a wedged supervisor —
-      //     worth a human glance, so warn past a 2h threshold.
-      //   • "QA could not complete" → a QA park (kept as a warn), split by whether the
-      //     turn-ceiling continuation budget was SPENT ("cut off again each time", from
-      //     qaParkDetail): spent = the mechanism ran and gave up, so it's a genuine
-      //     hand-off; unspent = QA died some other way and the reason is worth reading.
-      //   • anything else → a plain "needs your review" human park, left for the
-      //     owner by design — informational, never a warn.
+      // Review-state parks, classified by `classifyPark` (shared with probe-parks.cjs, so the two can
+      // never disagree about what counts as stuck):
+      //   • capWait — the cap supervisor (resumeCapParked, every ~capRetryMs/2m) SHOULD unpark it once
+      //     any backend frees up. One sitting for hours means a persistent full cap wave OR a wedged
+      //     supervisor — worth a human glance, so warn past a 2h threshold.
+      //   • stalled — QA, an auto-review or a resume stopped mid-verification. Nothing will come back
+      //     for it on its own, so it's a warn; a QA one is split by whether the turn-ceiling continuation
+      //     budget was SPENT ("cut off again each time", from qaParkDetail), which says the mechanism
+      //     ran and gave up rather than the reason being unread.
+      //   • verdict — the pipeline finished and is asking the owner to decide. By design, never a warn.
+      //   • unknown — a park message no class recognizes, i.e. the classification has drifted from
+      //     threadManager's wording. Warn, because a silent demotion here hides a stalled task.
       const reviewRows = db.prepare("SELECT error, updated_at FROM threads WHERE state='review'").all();
       const STALE_PARK_MS = 2 * 3600 * 1000;
-      let autoResume = 0;
+      const parks = { capWait: 0, stalled: 0, verdict: 0, unknown: 0 };
       let staleAutoResume = 0;
-      let qaCouldNot = 0;
       let qaContinuationsSpent = 0;
-      let humanReview = 0;
       let oldestAutoResumeH = 0;
       for (const r of reviewRows) {
-        const err = r.error || "";
-        if (err.includes("⏳ Auto-resume pending")) {
-          autoResume++;
+        const key = classifyPark(r.error).key;
+        parks[key]++;
+        if (key === "capWait") {
           const ageMs = Date.now() - r.updated_at;
           if (ageMs > STALE_PARK_MS) staleAutoResume++;
           const ageH = ageMs / 3600000;
           if (ageH > oldestAutoResumeH) oldestAutoResumeH = ageH;
-        } else if (/QA could not complete/i.test(err)) {
-          qaCouldNot++;
-          if (/cut off again each time/i.test(err)) qaContinuationsSpent++;
-        } else {
-          humanReview++;
+        } else if (key === "stalled" && continuationsSpent(r.error)) {
+          qaContinuationsSpent++;
         }
       }
+      const NAME_THEM = "name them with: npm run probe:parks --prefix server";
       if (staleAutoResume) {
         warn(
-          `${staleAutoResume} of ${autoResume} auto-resume-pending park(s) have sat >2h (oldest ${oldestAutoResumeH.toFixed(1)}h) — supervisor should unpark within ~2m of a backend freeing up; a persistent one means every backend is still capped OR resumeCapParked is wedged (check the cap supervisor)`,
+          `${staleAutoResume} of ${parks.capWait} auto-resume-pending park(s) have sat >2h (oldest ${oldestAutoResumeH.toFixed(1)}h) — supervisor should unpark within ~2m of a backend freeing up; a persistent one means every backend is still capped OR resumeCapParked is wedged (check the cap supervisor)`,
         );
-      } else if (autoResume) {
-        ok(`${autoResume} auto-resume-pending park(s) (oldest ${oldestAutoResumeH.toFixed(1)}h) — within normal supervisor window`);
+      } else if (parks.capWait) {
+        ok(`${parks.capWait} auto-resume-pending park(s) (oldest ${oldestAutoResumeH.toFixed(1)}h) — within normal supervisor window`);
       }
-      if (qaCouldNot) {
+      if (parks.stalled) {
         const spent = qaContinuationsSpent ? `, ${qaContinuationsSpent} after the turn-ceiling continuations were spent (mechanism ran, reviewer still couldn't finish)` : "";
-        warn(`${qaCouldNot} thread(s) parked on bare/diagnosable QA-could-not-complete${spent} — read the thread error for the reason`);
+        warn(`${parks.stalled} thread(s) parked mid-pipeline — QA/auto-review/resume couldn't finish${spent}; ${NAME_THEM}`);
       }
-      if (humanReview) ok(`${humanReview} plain human-review park(s) — awaiting owner by design, not stuck`);
+      if (parks.unknown) warn(`${parks.unknown} park(s) with text no class recognizes — ${NAME_THEM}`);
+      if (parks.verdict) ok(`${parks.verdict} park(s) awaiting your verdict by design, not stuck`);
 
       const junkChat = db
         .prepare(

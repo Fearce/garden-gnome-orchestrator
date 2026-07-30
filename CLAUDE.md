@@ -111,7 +111,11 @@ For one task's full trail + per-model cost/turn totals + a QA-loop budget check,
 To triage ALL non-done runs in a window instead of one task — which errors are real vs. an expected
 cutoff/cap/retry/restart, and did the handling mechanism actually run — use
 `npm run probe:run-errors --prefix server [-- <hours>]` (its classifier also backs health's `non-done
-reasons:` line). For a **subscription/account-chip** question ("why does it say idle / limited / 0% / a wrong %?"), run
+reasons:` line). For **"what is parked in `review`, and does any of it need a human?"**, run
+`npm run probe:parks --prefix server` — it names every parked task (id, age, reason, last run) and splits
+them into a **stalled** pipeline (QA/auto-review/resume stopped mid-verification; a Resume or Auto-review
+clears it, nothing else will), an owner **verdict** wait (by design, however old), a **capWait** the cap
+supervisor owns, and **unknown** wording that drifted from the classifier. For a **subscription/account-chip** question ("why does it say idle / limited / 0% / a wrong %?"), run
 `npm run probe:accounts --prefix server` — it dumps each account's persisted `account_usage_*` state
 (5h/7d usage + resets, `holdUntil` stagger-hold, `extWakeAt` outside-consumer mark) with plain-English
 reads, then the **failover ladder**: Codex/Grok/z.ai availability from their `setting_*_enabled` +
