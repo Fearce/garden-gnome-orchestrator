@@ -1,0 +1,187 @@
+// Name every task parked in `review` and say WHICH KIND of park it is — "the sweep says 2 threads are
+// parked, what are they and does either need me?". Read-only. Safe while prod is up (WAL + busy_timeout).
+//
+//   node scripts/probe-parks.cjs
+//   npm run probe:parks --prefix server
+//
+// Why it exists: `npm run health` ends most sweeps on `⚠ N thread(s) parked … read the thread error for
+// the reason` — and then offers no way to read it, so every sweep hand-writes the same SQLite query
+// (twice in the 2026-07-30 sweep alone) to recover ids the last handoff had already written down by hand.
+// This is that query, with the classification health can't fit on one line.
+//
+// The distinction that matters is NOT "QA vs human". It is:
+//   • the pipeline STOPPED mid-verification (QA couldn't complete, an auto-review reached no verdict, a
+//     resume failed to start) — the work may well be finished; nothing is coming back for it on its own,
+//     so a Resume or Auto-review is what clears it; and
+//   • the pipeline FINISHED and is asking for a verdict (QA rounds exhausted, QA found issues it wouldn't
+//     fix, an implementor handing off) — by design, and not a defect however long it sits.
+// Health lumped every non-QA park into the second group, so a "Resume failed to start" read as a normal
+// hand-off. `classifyPark` is exported and health imports it, so the two can never disagree again.
+//
+// GOTCHAS:
+//   • The park text IS the classification input — these are `settleReview`/`setState` literals in
+//     orchestrator/threadManager.ts. Rewording one silently demotes its class, which is why the gate
+//     (scripts/parks-classify.test.cjs) pins the markers against that file.
+//   • A park is NOT time-bounded: `review` threads sit until a human acts, so this window is all-time,
+//     unlike probe:run-errors. Oldest first — the forgotten one is the one at the top.
+//   • `⏳ Auto-resume pending` is the only class nobody should touch: the cap supervisor unparks it
+//     within ~2m of any backend freeing up. Acting on it manually races that.
+
+const path = require("node:path");
+const Database = require("better-sqlite3");
+
+const DB_PATH = path.resolve(__dirname, "..", "data", "orchestrator.sqlite");
+
+// Every marker below is a literal `settleReview`/`setState(…,"review")` message in
+// orchestrator/threadManager.ts — the park texts, not invented phrasings. Apostrophes are matched both
+// ways because the source mixes ASCII and typographic ones.
+const STALL_MARKERS = [
+  /QA could not complete/i, // the QA round itself never produced a verdict
+  /Reader could not complete/i,
+  /disposition was lost to a restart/i, // a reader answer that a bounce ate — re-dispatch
+  /Reader escalated to the full pipeline/i, // read lane refused it; nothing re-dispatches on its own
+  /Resume failed to start/i,
+  /Auto-review failed to run/i,
+  /could\s?n(?:o|['’])t reach a verdict/i, // auto-review ran but settled nothing
+];
+
+// The pipeline finished and handed the call to the owner. Long-lived by design; never a defect.
+const VERDICT_MARKERS = [
+  /needs your review/i, // the generic tail on most owner hand-offs
+  /still not satisfied/i,
+  /unresolved issues/i,
+  /needs an independent re-check/i, // QA edited in its final round, so QA can't be its own reviewer
+  /Auto-review did\s?n(?:o|['’])t accept/i,
+];
+
+/**
+ * How a park reads, in priority order — first match wins, so a message carrying both a stall marker and
+ * the generic "needs your review" tail classifies as the stall it actually is.
+ *
+ * `human: false` means something automated still owes this task a run; the rest are waiting on the owner,
+ * and only `stalled` is waiting on the owner *unexpectedly*.
+ */
+const PARK_CLASSES = [
+  {
+    key: "capWait",
+    human: false,
+    title: "waiting on a free backend — leave it alone",
+    match: (err) => err.includes("⏳ Auto-resume pending"),
+    action: "the cap supervisor resumes it within ~2m of any backend freeing up (probe:accounts shows the ladder)",
+  },
+  {
+    key: "stalled",
+    human: true,
+    title: "the pipeline could not finish verifying — needs a nudge",
+    match: (err) => STALL_MARKERS.some((re) => re.test(err)),
+    action: "read the reason below, then Resume (or Auto-review) — the work itself is often complete",
+  },
+  {
+    key: "verdict",
+    human: true,
+    title: "finished, awaiting your verdict — by design",
+    match: (err) => VERDICT_MARKERS.some((re) => re.test(err)),
+    action: "yours to call: Mark done, Auto-review, or send it back with a note",
+  },
+  {
+    key: "unknown",
+    human: true,
+    title: "unrecognized park text — classification may have drifted",
+    match: () => true,
+    action: "if this is a normal park, add its marker to PARK_CLASSES so health can count it correctly",
+  },
+];
+
+/** The class a park message falls into. Never throws: a null/empty error still classifies (as unknown). */
+function classifyPark(error) {
+  const err = error ?? "";
+  return PARK_CLASSES.find((c) => c.match(err)) ?? PARK_CLASSES[PARK_CLASSES.length - 1];
+}
+
+/** Whether a QA park already spent its turn-ceiling continuation budget — i.e. the recovery mechanism ran
+ *  and still couldn't finish, which is a genuine hand-off rather than a reason to just retry it. */
+function continuationsSpent(error) {
+  return /cut off again each time/i.test(error ?? "");
+}
+
+const hoursAgo = (t) => (t == null ? null : (Date.now() - t) / 3_600_000);
+
+function age(t) {
+  const h = hoursAgo(t);
+  if (h == null) return "—";
+  return h >= 48 ? `${(h / 24).toFixed(1)}d ago` : `${h.toFixed(1)}h ago`;
+}
+
+function short(s, n) {
+  const one = String(s ?? "").replace(/\s+/g, " ").trim();
+  return one.length > n ? `${one.slice(0, n - 1)}…` : one;
+}
+
+/** The last run of a parked task — the park message says what the pipeline decided, this says what the
+ *  agent actually did just before it. A park with no run at all is itself worth seeing. */
+function lastRun(db, threadId) {
+  return db
+    .prepare(
+      `SELECT role, model, state, error, num_turns, cost_usd, started_at, ended_at
+       FROM agent_runs WHERE thread_id = ? ORDER BY started_at DESC LIMIT 1`,
+    )
+    .get(threadId);
+}
+
+function reportThread(db, t) {
+  console.log(`- ${t.id.slice(0, 8)}  ${short(t.title, 58)}`);
+  console.log(`    parked ${age(t.updated_at)} · ${t.workspace}`);
+  console.log(`    reason: ${short(t.error, 200) || "(no park message recorded)"}`);
+  if (continuationsSpent(t.error)) {
+    console.log("    ↳ its turn-ceiling continuations were already spent — the recovery mechanism ran and gave up");
+  }
+  const run = lastRun(db, t.id);
+  if (!run) {
+    console.log("    last run: none recorded — the task parked before any agent ran");
+    return;
+  }
+  const turns = run.num_turns == null ? "?" : run.num_turns;
+  const cost = run.cost_usd == null ? "$?" : `$${run.cost_usd.toFixed(2)}`;
+  console.log(`    last run: ${run.role} on ${run.model} [${run.state}] ${age(run.ended_at ?? run.started_at)} · ${turns} turns · ${cost}`);
+  if (run.error) console.log(`              ${short(run.error, 160)}`);
+}
+
+function main() {
+  const db = new Database(DB_PATH, { readonly: true });
+  db.pragma("busy_timeout = 5000");
+
+  const rows = db
+    .prepare("SELECT id, title, error, workspace, updated_at FROM threads WHERE state = 'review' ORDER BY updated_at ASC")
+    .all();
+
+  console.log(`\n=== parked in review (${rows.length}) ===`);
+  if (!rows.length) {
+    console.log("  ✓ nothing parked — no task is waiting on you or on a backend.");
+    db.close();
+    return;
+  }
+
+  const buckets = new Map(PARK_CLASSES.map((c) => [c.key, []]));
+  for (const t of rows) buckets.get(classifyPark(t.error).key).push(t);
+
+  for (const cls of PARK_CLASSES) {
+    const group = buckets.get(cls.key);
+    if (!group.length) continue;
+    const mark = cls.key === "stalled" || cls.key === "unknown" ? "⚠" : cls.key === "capWait" ? "⏳" : "·";
+    console.log(`\n${mark} ${cls.title} (${group.length})`);
+    console.log(`  ↳ ${cls.action}`);
+    for (const t of group) reportThread(db, t);
+  }
+
+  const needsKevin = buckets.get("stalled").length + buckets.get("unknown").length;
+  console.log(
+    `\n  ${needsKevin ? "⚠" : "✓"} ${needsKevin} park(s) stopped mid-pipeline, ` +
+      `${buckets.get("verdict").length} awaiting a verdict by design, ${buckets.get("capWait").length} on the supervisor.`,
+  );
+  console.log("  ↳ full run trail for any one: npm run probe:task-runs --prefix server -- <id>");
+  db.close();
+}
+
+if (require.main === module) main();
+
+module.exports = { classifyPark, continuationsSpent, PARK_CLASSES, STALL_MARKERS, VERDICT_MARKERS };

@@ -24,6 +24,7 @@ const GATES = [
   "test:run-classify",
   "test:crashlog-scan",
   "test:failover-ladder",
+  "test:park-classify",
   "test:office-bridge",
   "test:office-gating",
   "test:zai-usage",

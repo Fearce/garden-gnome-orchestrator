@@ -90,19 +90,40 @@ function backendState({ enabledKey, capKey, usageFile }, kv, at, usage = () => n
   if (Number.isFinite(until) && until > at) return { available: false, reason: "capped", until };
   const meters = usageFile ? usage(usageFile) : null;
   const spent = meters ? spentWindow(meters, at) : null;
-  if (spent) return { available: false, reason: "spent", until: spent.reset, window: spent.window, pct: spent.pct };
+  if (spent) {
+    return {
+      available: false,
+      reason: "spent",
+      until: spent.reset,
+      window: spent.window,
+      pct: spent.pct,
+      reportedReset: spent.reportedReset ?? null,
+    };
+  }
   return { available: true, reason: "ready", meters };
 }
 
+// How far out a window's reported reset can be before it is not believable as that window's reset. z.ai's
+// quota endpoint has been seen returning a fixed far-future sentinel (1799999999000 — Jan 2027) as a
+// 5-HOUR window's nextResetTime, which would otherwise render as "resets in 169d". Generous (2× the
+// window) so a real, legitimately-late reset is never suppressed.
+const WINDOW_MAX_RESET_MS = { "5h": 2 * 5 * 3_600_000, "7d": 2 * 7 * 86_400_000 };
+
 /** The first window with no room left, or null. Mirrors routing's rule (`>= PROVIDER_HARD_LIMIT` with a
  *  reset that hasn't passed): an unknown reset still counts as spent, since a full window with no known
- *  reset is exactly the state routing refuses to send work into. */
+ *  reset is exactly the state routing refuses to send work into. A reset too distant to be this window's
+ *  is reported as unknown rather than counted down — the verdict is unaffected (routing reads the same
+ *  meters and reaches the same conclusion), but a bogus countdown would be read as a real outage length. */
 function spentWindow(meters, at) {
   for (const [window, pct, reset] of [
     ["5h", meters.fiveHour, meters.fiveHourReset],
     ["7d", meters.sevenDay, meters.sevenDayReset],
   ]) {
-    if (typeof pct === "number" && pct >= HARD_LIMIT_PCT && (reset == null || reset > at)) return { window, pct, reset };
+    if (typeof pct !== "number" || pct < HARD_LIMIT_PCT) continue;
+    if (reset != null && reset <= at) continue; // window already rolled over — it has room again
+    const plausible = reset != null && reset - at <= WINDOW_MAX_RESET_MS[window];
+    if (reset == null || plausible) return { window, pct, reset };
+    return { window, pct, reset: null, reportedReset: reset };
   }
   return null;
 }
@@ -195,7 +216,12 @@ function main() {
     // real window reset, which the meters may not even name. Say which window and how full it is, or the
     // line reads like a mystery outage.
     spent: (s) =>
-      `NO ROOM — ${s.window} at ${Math.round(s.pct)}%` + (s.until != null ? `, resets in ${countdown(s.until)}` : ", reset unknown"),
+      `NO ROOM — ${s.window} at ${Math.round(s.pct)}%` +
+      (s.until != null
+        ? `, resets in ${countdown(s.until)}`
+        : s.reportedReset != null
+          ? `, reset unknown (backend reported ${new Date(s.reportedReset).toISOString().slice(0, 10)}, too far out to be a ${s.window} window)`
+          : ", reset unknown"),
     ready: (s) => "available" + (s.meters ? ` (${meterSummary(s.meters)})` : " (no usage reading yet)"),
   };
   const backends = BACKENDS.map((b) => ({ ...b, ...backendState(b, kv, now, readBackendUsage) }));
