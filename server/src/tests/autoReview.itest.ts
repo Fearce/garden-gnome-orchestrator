@@ -175,6 +175,10 @@ const REVIEWER_SESSION = "reviewer-session-cut-off";
 /** A run the SDK ended at the per-session turn ceiling: involuntary, so no verdict. No `result` text —
  *  an Agent-SDK error result carries none. */
 const CUTOFF = { type: "result", subtype: "error_max_turns", isError: true } as RunOutcome;
+/** A run that came back EMPTY: a SUCCESS result with no verdict, from a session the CLI loaded and exited
+ *  without ever reaching the model. Nothing but the absence of any output distinguishes it from a finish —
+ *  and the harness's stub writes no messages either, exactly as such a run doesn't. */
+const EMPTY = { type: "result", subtype: "success", isError: false } as RunOutcome;
 
 /** Drive a SEQUENCE of reviewer outcomes (the shared stub returns one fixed outcome), recording the resume
  *  session each run was given. Also persists the `agent_runs` row the real `runRole` would have written:
@@ -379,6 +383,53 @@ async function main(): Promise<void> {
       if (expect.runs > 1) {
         check(`${label} → the continuation told the reviewer it was cut off`, (h.kickoffs[1] ?? "").includes("stopped at a per-session turn limit"), (h.kickoffs[1] ?? "").slice(0, 80));
       }
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test I: a reviewer that came back EMPTY is started over, not handed back -------------------------
+  // The other verdict-less stop: the session returned without ever reaching the model, which arrives as a
+  // SUCCESS result and so used to fall straight through to a re-park — the owner clicked the button, paid
+  // for a run that reviewed nothing, and got the task back with "Run failed (success)." as the reason.
+  console.log("\nTest I — an auto-review that came back empty is re-run from scratch before giving up");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      const resumes = stubReviewerRuns(h, [EMPTY, okResult({ accept: true, summary: "verified on the retry" })]);
+      await h.mgr.autoReview(id);
+      await settle();
+      check("the reviewer ran twice: the empty run plus its retry", h.roleCalls.length === 2, JSON.stringify(h.roleCalls));
+      check("the retry started FRESH — resuming an empty session is what already failed", resumes[1] === undefined, JSON.stringify(resumes));
+      check("the retry got the full review kickoff, not a continuation nudge", !(h.kickoffs[1] ?? "").includes("stopped at a per-session turn limit"), (h.kickoffs[1] ?? "").slice(0, 80));
+      check("the retry's verdict decided the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      const firstRun = h.db.listRuns(id).sort((a, b) => a.startedAt - b.startedAt)[0];
+      check("the empty run is recorded as a failure, not a clean 'done'", firstRun?.state === "error", `state=${firstRun?.state}`);
+      check("...and it says why", !!firstRun?.error?.includes("produced no output"), String(firstRun?.error));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test J: the recovery budget is bounded and shared across BOTH involuntary stops -----------------
+  console.log("\nTest J — recovery is bounded, shared between cutoffs and empty runs, and parks diagnosably");
+  for (const [label, results, expectResumes] of [
+    ["a reviewer that keeps coming back empty", [EMPTY, EMPTY, EMPTY, EMPTY], [undefined, undefined, undefined]],
+    ["a cutoff whose continuation comes back empty", [CUTOFF, EMPTY, EMPTY, EMPTY], [undefined, REVIEWER_SESSION, undefined]],
+  ] as const) {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      const resumes = stubReviewerRuns(h, [...results]);
+      await h.mgr.autoReview(id);
+      await settle();
+      // MAX_REVIEW_RECOVERIES (2) recoveries on top of the run the owner's click started.
+      check(`${label} → the reviewer ran 3× and stopped`, h.roleCalls.length === 3, JSON.stringify(h.roleCalls));
+      check(`${label} → each recovery chose the right session`, JSON.stringify(resumes) === JSON.stringify(expectResumes), JSON.stringify(resumes));
+      check(`${label} → a verdict-less review re-parks, never accepts`, h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check(`${label} → the park names the empty run, not "Run failed (success)"`, !!h.db.getThread(id)?.error?.includes("produced no output"), String(h.db.getThread(id)?.error));
+      check(`${label} → no implementor was spawned`, h.implementorStarts() === 0, String(h.implementorStarts()));
     } finally {
       h.dispose();
     }

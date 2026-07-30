@@ -158,6 +158,11 @@ interface QaRoundOpts {
   continuation?: boolean;
 }
 
+// The roles whose empty runs are detected and recovered: each one's verdict (or finished work) GATES what
+// the pipeline does next, so a run that produced nothing must not read as an answer. The one-shot
+// planner/researcher/reader are excluded on purpose — their park IS the design.
+type SilentCapableRole = Extract<Role, "implementor" | "qa" | "reviewer">;
+
 const MAX_RESULT_PREVIEW = 600;
 const QUESTION_TIMEOUT_MS = 20 * 60 * 1000;
 // SDK result subtypes that mean "involuntarily cut off, not finished" — the orchestrator silently
@@ -174,9 +179,11 @@ const MAX_QA_CUTOFF_RESUMES = 2;
 // stale-resume problem, so a second attempt would just repeat the same experiment at Opus prices. One retry,
 // then park with the run's own diagnosable reason.
 const MAX_QA_SILENT_RETRIES = 1;
-// The same allowance for the on-demand auto-reviewer. It is one owner-initiated run rather than a loop,
-// so the budget lives in-process: a restart re-parks the task for a fresh click instead of resuming it.
-const MAX_REVIEW_CUTOFF_RESUMES = 2;
+// The same allowance for the on-demand auto-reviewer, shared across BOTH involuntary stops it recovers
+// from (a turn-ceiling cutoff and an empty run), since either can follow the other. It is one
+// owner-initiated run rather than a loop, so the budget lives in-process: a restart re-parks the task for a
+// fresh click instead of resuming it.
+const MAX_REVIEW_RECOVERIES = 2;
 // Explicit, terminal completion phrasing in the implementor's last words — deliberately narrow, since a
 // false "done" suppresses a needed auto-resume (the bug), while a missed "done" only costs one cheap warm
 // resume. Forward-looking phrasing ("doing that now", "starting that next") must NOT match.
@@ -3378,7 +3385,7 @@ export class ThreadManager implements OrchestratorApi {
    *  can relaunch the run internally on an account failover, so the result may come from a DIFFERENT run than
    *  the one we were handed — the thread's message stream covers every relaunch in the attempt. `runRole`
    *  relaunches the same way, so QA reads the same signal off its own role's messages. */
-  private ranSilently(threadId: string, role: Extract<Role, "implementor" | "qa">, from: number, res: ResultEvent | undefined): boolean {
+  private ranSilently(threadId: string, role: SilentCapableRole, from: number, res: ResultEvent | undefined): boolean {
     // A cancelled run legitimately stops without output — that's the user's doing, not a failed resume, and
     // mislabelling it would both retry a task the user killed and file it as a failure in the run history.
     if (!res || res.isError || this.cancelled(threadId)) return false;
@@ -3394,7 +3401,7 @@ export class ThreadManager implements OrchestratorApi {
    *  wins. Keying off `this.live` alone, or bailing on an already-stamped `endedAt`, would therefore leave
    *  the misleading `done` row in place exactly when this matters most. So fall back to the thread's newest
    *  row for the role and overwrite a terminal state that carries no reason of its own. */
-  private markSilentRun(threadId: string, role: Extract<Role, "implementor" | "qa">): void {
+  private markSilentRun(threadId: string, role: SilentCapableRole): void {
     // Only the implementor keeps a `{runId}` live handle; `runRole` has already finalized a QA run before its
     // result reaches the caller, so for QA the newest row IS the attempt that just came back empty.
     const runId = (role === "implementor" ? this.live.get(threadId)?.runId : undefined) ?? this.latestRunIdOf(threadId, role);
@@ -4562,29 +4569,58 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
-  /** Run the auto-reviewer to a verdict, continuing it when the per-session turn ceiling cut it off before
-   *  it could decide. The whole point of the button is that the owner does NOT have to read the diff, so
-   *  handing the task back over a stop that says nothing about the work is exactly the outcome worth one
-   *  warm resume — the same reasoning as the implementor and QA paths.
+  /** Run the auto-reviewer to a verdict, recovering it from the two ways it can stop without deciding:
+   *  cut off at the per-session turn ceiling, or returning empty without ever reaching the model. The whole
+   *  point of the button is that the owner does NOT have to read the diff, so handing the task back over a
+   *  stop that says nothing about the work is exactly the outcome worth one more run — the same reasoning as
+   *  the implementor and QA paths.
    *
    *  The budget is in-process only, unlike QA's: a restart during 'reviewing' re-parks the task for a fresh
    *  click (`markInterrupted`) rather than resuming it, so there is no cross-restart budget to keep. */
   private async reviewToVerdict(thread: Thread, kickoff: string | unknown[]): Promise<ResultEvent | undefined> {
+    let attemptFrom = Date.now();
     let res = await this.runReviewer(thread, kickoff);
-    for (let spent = 0; spent < MAX_REVIEW_CUTOFF_RESUMES; spent++) {
-      if (res?.structuredOutput || !this.isTurnLimitStop(res) || this.cancelled(thread.id)) break;
-      const session = this.latestRoleSession(thread.id, "reviewer");
-      if (!session) break;
-      this.postFinding({
-        threadId: thread.id,
-        fromRole: "reviewer",
-        summary: "Auto-review stopped at its turn ceiling before deciding — continuing the same review",
-        detail: `The reviewer was cut off mid-review, not finished. Waking its session with a fresh turn budget (continuation ${spent + 1} of ${MAX_REVIEW_CUTOFF_RESUMES}).`,
-        severity: "note",
-      });
-      res = await this.runReviewer(thread, reviewerContinueKickoff(), session);
+    let empty = this.markIfEmpty(thread.id, attemptFrom, res);
+    for (let spent = 0; spent < MAX_REVIEW_RECOVERIES; spent++) {
+      if (res?.structuredOutput || this.cancelled(thread.id)) break;
+      if (!empty && !this.isTurnLimitStop(res)) break;
+      // A cut-off review left real progress in the session and is worth waking. An empty one never reached
+      // the model, so waking it again is the one thing already known not to work: start the review over.
+      const session = empty ? undefined : this.latestRoleSession(thread.id, "reviewer");
+      if (!empty && !session) break;
+      this.noteReviewRecovery(thread.id, empty, spent);
+      attemptFrom = Date.now();
+      res = empty ? await this.runReviewer(thread, kickoff) : await this.runReviewer(thread, reviewerContinueKickoff(), session);
+      empty = this.markIfEmpty(thread.id, attemptFrom, res);
     }
     return res;
+  }
+
+  /** Whether a reviewer attempt came back empty — recording it as the failure it is when so. An empty run
+   *  arrives as a SUCCESS result, so it can only be recognised from the absence of any output; and it is
+   *  stamped the moment it is seen, whether or not recovery budget remains, because the run history must not
+   *  keep a `done` row with 0 turns and $0 and the park message reads its reason off that row. */
+  private markIfEmpty(threadId: string, attemptFrom: number, res: ResultEvent | undefined): boolean {
+    const empty = this.ranSilently(threadId, "reviewer", attemptFrom, res);
+    if (empty) this.markSilentRun(threadId, "reviewer");
+    return empty;
+  }
+
+  /** Say which involuntary stop the auto-review is recovering from, and that the recovery is bounded — the
+   *  owner is watching a button they clicked, so a silent extra Opus run would look like a hang. */
+  private noteReviewRecovery(threadId: string, empty: boolean, spent: number): void {
+    const attempt = `(attempt ${spent + 2} of ${MAX_REVIEW_RECOVERIES + 1})`;
+    this.postFinding({
+      threadId,
+      fromRole: "reviewer",
+      summary: empty
+        ? "Auto-review came back empty without reviewing anything — starting it over"
+        : "Auto-review stopped at its turn ceiling before deciding — continuing the same review",
+      detail: empty
+        ? `The review session returned without ever reaching the model (0 turns, $0), so nothing was verified. Running it again from scratch ${attempt}.`
+        : `The reviewer was cut off mid-review, not finished. Waking its session with a fresh turn budget ${attempt}.`,
+      severity: "note",
+    });
   }
 
   private runReviewer(thread: Thread, kickoff: string | unknown[], resumeSession?: string): Promise<ResultEvent | undefined> {
@@ -4621,7 +4657,7 @@ export class ThreadManager implements OrchestratorApi {
   private finalizeReview(thread: Thread, res: ResultEvent | undefined): void {
     const out = res?.structuredOutput as ReviewerOutput | undefined;
     if (!res || res.isError || !out) {
-      const detail = res ? runErrorText(res) : undefined;
+      const detail = res ? this.reviewFailureDetail(thread.id, res) : undefined;
       this.postFinding({
         threadId: thread.id,
         fromRole: "reviewer",
@@ -4652,6 +4688,16 @@ export class ThreadManager implements OrchestratorApi {
     });
     this.setState(thread.id, "done");
     this.hub.log("info", `Auto-review accepted task ${thread.id.slice(0, 8)} — marked done.`);
+  }
+
+  /** Why an auto-review ended without a verdict, for the park message. A verdict-less SUCCESS result carries
+   *  no reason of its own — `runErrorText` would render it as the nonsense "Run failed (success)." — so fall
+   *  back to what the run row recorded, which for an empty run names the real cause. */
+  private reviewFailureDetail(threadId: string, res: ResultEvent): string {
+    if (res.isError) return runErrorText(res);
+    const runId = this.latestRunIdOf(threadId, "reviewer");
+    const recorded = runId ? this.db.getRun(runId)?.error?.trim() : undefined;
+    return recorded || runErrorText(res);
   }
 
   /** Force-stop any lingering agent run for a thread and drop its in-memory bookkeeping, leaving the
