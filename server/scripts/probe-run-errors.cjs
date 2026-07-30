@@ -260,6 +260,10 @@ function reportRecovery(db, buckets) {
       if (/restarted on a fresh session/i.test(e)) return "QA park — the reviewer came back empty and its fresh-session retry is spent, awaiting the owner";
       return "QA park — QA ended without a verdict, awaiting the owner";
     }
+    // An auto-review that reached no verdict re-parks the task BY DESIGN — an absent decision is never an
+    // acceptance. Its involuntary stops are recovered first (a cutoff continues the session, an empty run
+    // starts over), so a park here means the recovery ran and the button is the owner's again.
+    if (/Auto-review (?:couldn't|could not) reach a verdict/i.test(e)) return "auto-review park — no verdict reached, back on the owner's desk";
     if (/interrupted by (?:a )?server restart/i.test(e)) return "human-gated park after a restart — Resume continues it";
     return undefined;
   };

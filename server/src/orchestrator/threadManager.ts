@@ -3384,7 +3384,7 @@ export class ThreadManager implements OrchestratorApi {
    *  Counted from the persisted messages rather than the run's own events on purpose: `awaitImplementorResult`
    *  can relaunch the run internally on an account failover, so the result may come from a DIFFERENT run than
    *  the one we were handed — the thread's message stream covers every relaunch in the attempt. `runRole`
-   *  relaunches the same way, so QA reads the same signal off its own role's messages. */
+   *  relaunches the same way, so QA and the reviewer read the same signal off their own role's messages. */
   private ranSilently(threadId: string, role: SilentCapableRole, from: number, res: ResultEvent | undefined): boolean {
     // A cancelled run legitimately stops without output — that's the user's doing, not a failed resume, and
     // mislabelling it would both retry a task the user killed and file it as a failure in the run history.
@@ -3402,8 +3402,8 @@ export class ThreadManager implements OrchestratorApi {
    *  the misleading `done` row in place exactly when this matters most. So fall back to the thread's newest
    *  row for the role and overwrite a terminal state that carries no reason of its own. */
   private markSilentRun(threadId: string, role: SilentCapableRole): void {
-    // Only the implementor keeps a `{runId}` live handle; `runRole` has already finalized a QA run before its
-    // result reaches the caller, so for QA the newest row IS the attempt that just came back empty.
+    // Only the implementor keeps a `{runId}` live handle; `runRole` has already finalized a one-shot role's
+    // run before its result reaches the caller, so there the newest row IS the attempt that came back empty.
     const runId = (role === "implementor" ? this.live.get(threadId)?.runId : undefined) ?? this.latestRunIdOf(threadId, role);
     if (!runId) return;
     const run = this.db.getRun(runId);
@@ -4697,7 +4697,7 @@ export class ThreadManager implements OrchestratorApi {
     if (res.isError) return runErrorText(res);
     const runId = this.latestRunIdOf(threadId, "reviewer");
     const recorded = runId ? this.db.getRun(runId)?.error?.trim() : undefined;
-    return recorded || runErrorText(res);
+    return recorded || "The review ran but returned no verdict, so there is nothing to accept or hand back on.";
   }
 
   /** Force-stop any lingering agent run for a thread and drop its in-memory bookkeeping, leaving the
