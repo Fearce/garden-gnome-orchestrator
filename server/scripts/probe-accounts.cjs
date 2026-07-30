@@ -18,13 +18,15 @@
 //   • usageAt / staleness — a value older than ~20 min means the ping is failing (chip shows "stale").
 //
 // It then prints the FULL failover ladder: the Claude subs above are only its first rung, and an
-// implementor falls through to Codex / Grok / z.ai when every sub is capped. Those rungs live in different
-// kv keys (setting_*_enabled + *_cap_until), so a ladder that is one rung deep — or a backend that has been
-// cap-latched for days — is invisible from the account_usage_* blobs alone.
+// implementor falls through to Codex / Grok / z.ai when every sub is capped. Those rungs live elsewhere
+// entirely — kv keys (setting_*_enabled + *_cap_until) plus each backend's own data/<x>-usage-cache.json
+// meters — so a ladder that is one rung deep, a backend cap-latched for days, or one whose weekly is simply
+// spent is invisible from the account_usage_* blobs alone.
 //
 // GOTCHA: labels are NOT in the DB — they come from server/.env (ACCOUNT_i_ID ↔ ACCOUNT_i_LABEL). With no
 // .env accounts the single inherited-login account is keyed "default". The kv column is snake-free JSON.
 
+const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 try {
@@ -41,10 +43,16 @@ const HARD_LIMIT_PCT = 98;
 // The non-Claude rungs. Each is gated by a setting_*_enabled flag ("1" = on) and cap-latched by a
 // *_cap_until epoch that threadManager writes on a rejected turn and clears once it expires — so an
 // absent/empty/past value means "not capped" (see loadCodexCap / loadGrokCap / loadZaiCap).
+//
+// `usageFile` is the backend's own last-reading cache under data/ (written by agents/<x>Usage.ts). The
+// latch alone is NOT enough: a backend whose window is simply SPENT was never rejected, so nothing latches
+// it, and routing skips it purely on the meters (zaiCapActive / codexProviderCandidate.hasHeadroom). Read
+// without the meters, this readout called an exhausted Codex and z.ai live rungs and reported a ladder of
+// 3 when only 1 could take work — the same "one-rung ladder looks healthy" blind spot in a new door.
 const BACKENDS = [
-  { name: "Codex", enabledKey: "setting_codex_enabled", capKey: "codex_cap_until" },
-  { name: "Grok", enabledKey: "setting_grok_enabled", capKey: "grok_cap_until" },
-  { name: "z.ai", enabledKey: "setting_zai_enabled", capKey: "zai_cap_until" },
+  { name: "Codex", enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", usageFile: "codex-usage-cache.json" },
+  { name: "Grok", enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", usageFile: "grok-usage-cache.json" },
+  { name: "z.ai", enabledKey: "setting_zai_enabled", capKey: "zai_cap_until", usageFile: "zai-usage-cache.json" },
 ];
 const now = Date.now();
 
@@ -69,12 +77,57 @@ function countdown(t) {
 const ago = (t) => (t == null ? "—" : `${Math.round((now - t) / 60000)}m ago`);
 const pct = (v) => (v == null ? "  —" : `${String(Math.round(v)).padStart(3)}%`);
 
-/** A non-Claude rung's live state, from its two kv keys. Pure — `kv` reads a key, `at` is the clock. */
-function backendState({ enabledKey, capKey }, kv, at) {
+/** A non-Claude rung's live state, from its kv keys plus its own last usage reading. Pure — `kv` reads a
+ *  key, `usage` reads a backend's cached meters (null when it has never written one), `at` is the clock.
+ *
+ *  Order matters: disabled outranks a cap, and an explicit latch outranks the meters, because the latch
+ *  carries the deadline routing itself is waiting on. A SPENT window is reported separately from a latched
+ *  cap so the readout can say which one is holding the rung — they need different reactions (a latch
+ *  self-expires; a spent weekly waits for the real reset). */
+function backendState({ enabledKey, capKey, usageFile }, kv, at, usage = () => null) {
   if (kv(enabledKey) !== "1") return { available: false, reason: "disabled" };
   const until = Number(kv(capKey));
   if (Number.isFinite(until) && until > at) return { available: false, reason: "capped", until };
-  return { available: true, reason: "ready" };
+  const meters = usageFile ? usage(usageFile) : null;
+  const spent = meters ? spentWindow(meters, at) : null;
+  if (spent) return { available: false, reason: "spent", until: spent.reset, window: spent.window, pct: spent.pct };
+  return { available: true, reason: "ready", meters };
+}
+
+/** The first window with no room left, or null. Mirrors routing's rule (`>= PROVIDER_HARD_LIMIT` with a
+ *  reset that hasn't passed): an unknown reset still counts as spent, since a full window with no known
+ *  reset is exactly the state routing refuses to send work into. */
+function spentWindow(meters, at) {
+  for (const [window, pct, reset] of [
+    ["5h", meters.fiveHour, meters.fiveHourReset],
+    ["7d", meters.sevenDay, meters.sevenDayReset],
+  ]) {
+    if (typeof pct === "number" && pct >= HARD_LIMIT_PCT && (reset == null || reset > at)) return { window, pct, reset };
+  }
+  return null;
+}
+
+/** The windows an available backend still has, so "available" is a number the reader can check rather than
+ *  a bare claim. Omits a window the backend doesn't meter (Grok reports no 5h). */
+function meterSummary(m) {
+  return (
+    [
+      typeof m.fiveHour === "number" ? `5h ${Math.round(m.fiveHour)}%` : null,
+      typeof m.sevenDay === "number" ? `7d ${Math.round(m.sevenDay)}%` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || "no windows metered"
+  );
+}
+
+/** A backend's cached meters, read from data/<file>. Read-only and never throws: a missing or corrupt
+ *  cache reads as "no meters", which leaves the rung on the latch-only verdict rather than inventing one. */
+function readBackendUsage(file) {
+  try {
+    return JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "data", file), "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 /** A sub only counts as a live rung while BOTH windows are under the hard limit — a sub sitting at 99%
@@ -138,9 +191,14 @@ function main() {
   const NOTE = {
     disabled: () => "disabled (not in the ladder)",
     capped: (s) => `CAPPED — frees in ${countdown(s.until)}`,
-    ready: () => "available",
+    // A spent window was never rejected, so there is no latch and no cooldown to count down — only the
+    // real window reset, which the meters may not even name. Say which window and how full it is, or the
+    // line reads like a mystery outage.
+    spent: (s) =>
+      `NO ROOM — ${s.window} at ${Math.round(s.pct)}%` + (s.until != null ? `, resets in ${countdown(s.until)}` : ", reset unknown"),
+    ready: (s) => "available" + (s.meters ? ` (${meterSummary(s.meters)})` : " (no usage reading yet)"),
   };
-  const backends = BACKENDS.map((b) => ({ ...b, ...backendState(b, kv, now) }));
+  const backends = BACKENDS.map((b) => ({ ...b, ...backendState(b, kv, now, readBackendUsage) }));
   console.log("Failover ladder — where an implementor lands when every Claude sub above is capped:");
   for (const b of backends) console.log(`  ${b.available ? "✓" : "✗"} ${b.name.padEnd(6)} ${NOTE[b.reason](b)}`);
 
@@ -160,12 +218,13 @@ function main() {
     '\nReading it: "idle" on a chip = a stagger hold-off, NOT that the subscription is globally unused. A sub' +
       "\nshared with another orchestrator/service shows extWakeAt set; while held, GG can't see that outside" +
       "\nburn. holdUntil in the future + extWakeAt lapsed is the classic false-idle case this probe exists for." +
-      "\nA CAPPED alt backend is expected (the latch self-expires and routing skips it) — it only matters when" +
-      "\nit shrinks the ladder to one rung.",
+      "\nA CAPPED alt backend is expected (the latch self-expires and routing skips it); NO ROOM is the quieter" +
+      "\nform — a window simply spent, so nothing was ever rejected and nothing is latched, and only the real" +
+      "\nwindow reset frees it. Either way it only matters when it shrinks the ladder to one rung.",
   );
   db.close();
 }
 
 if (require.main === module) main();
 
-module.exports = { backendState, claudeHasHeadroom, BACKENDS, HARD_LIMIT_PCT };
+module.exports = { backendState, claudeHasHeadroom, spentWindow, BACKENDS, HARD_LIMIT_PCT };

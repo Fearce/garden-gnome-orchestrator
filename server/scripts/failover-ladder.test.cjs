@@ -1,35 +1,38 @@
 // Gate for the failover-ladder readout in probe-accounts.cjs — the nightly sweep's "backend headroom"
-// step. The ladder is Claude subs → Codex → Grok → z.ai, and every rung below the subs lives in kv keys
-// the account_usage_* blobs know nothing about. A misread is expensive in one direction: reporting a
-// CAPPED or disabled backend as an available rung makes a one-rung ladder look healthy, which is exactly
-// the blind spot this readout was added to close (Grok sat cap-latched for days, invisible to the sweep).
+// step. The ladder is Claude subs → Codex → Grok → z.ai, and every rung below the subs lives outside the
+// account_usage_* blobs: in kv keys AND in each backend's own usage-cache file. A misread is expensive in
+// one direction: reporting a capped, spent or disabled backend as an available rung makes a one-rung ladder
+// look healthy, which is the blind spot this readout was added to close — and which has now bitten twice
+// (Grok sat cap-latched for days; then Codex and z.ai sat at 100% weekly with no latch to give them away).
 // Run: node scripts/failover-ladder.test.cjs
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { backendState, claudeHasHeadroom, BACKENDS, HARD_LIMIT_PCT } = require("./probe-accounts.cjs");
+const { backendState, claudeHasHeadroom, spentWindow, BACKENDS, HARD_LIMIT_PCT } = require("./probe-accounts.cjs");
 
 const NOW = Date.parse("2026-07-28T00:00:00.000Z");
 const HOUR = 3_600_000;
 // A kv stub: absent keys read null, exactly like the real `SELECT value FROM kv` lookup.
 const kvOf = (map) => (key) => (key in map ? map[key] : null);
-const CODEX = { enabledKey: "setting_codex_enabled", capKey: "codex_cap_until" };
+// A meters stub, standing in for reading data/<file>. Absent file ⇒ null, exactly like a missing cache.
+const usageOf = (meters) => () => meters ?? null;
+const CODEX = { enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", usageFile: "codex-usage-cache.json" };
 
 // --- backendState: enabled + not cap-latched is the ONLY available state ---------------------------
 assert.deepEqual(
   backendState(CODEX, kvOf({ setting_codex_enabled: "1", codex_cap_until: "" }), NOW),
-  { available: true, reason: "ready" },
+  { available: true, reason: "ready", meters: null },
   "enabled with an empty cap latch is a live rung",
 );
 assert.deepEqual(
   backendState(CODEX, kvOf({ setting_codex_enabled: "1" }), NOW),
-  { available: true, reason: "ready" },
+  { available: true, reason: "ready", meters: null },
   "enabled with NO cap key ever written is a live rung",
 );
 assert.deepEqual(
   backendState(CODEX, kvOf({ setting_codex_enabled: "1", codex_cap_until: String(NOW - HOUR) }), NOW),
-  { available: true, reason: "ready" },
+  { available: true, reason: "ready", meters: null },
   "a lapsed latch frees the rung (threadManager clears it on boot; we must not out-live that)",
 );
 
@@ -58,6 +61,48 @@ assert.equal(
   "ready",
   "an unparseable latch is treated as no latch, not as a permanent cap",
 );
+
+// --- a SPENT window takes the rung out even with no latch -------------------------------------------
+// The second door into the same blind spot: a backend nobody rejected has no cap latch, so a latch-only
+// read called an exhausted Codex and z.ai live rungs and reported a 3-rung ladder over a 1-rung reality.
+const spent = backendState(CODEX, kvOf({ setting_codex_enabled: "1" }), NOW, usageOf({ fiveHour: 0, sevenDay: 100, sevenDayReset: NOW + 5 * HOUR }));
+assert.equal(spent.available, false, "a spent weekly window is not a live rung, latch or no latch");
+assert.equal(spent.reason, "spent", "reported apart from 'capped' — a spent window waits for a real reset, not a cooldown");
+assert.equal(spent.window, "7d", "names WHICH window is out, so the readout isn't a mystery outage");
+assert.equal(spent.pct, 100);
+assert.equal(spent.until, NOW + 5 * HOUR, "carries the window reset so the line can count down to it");
+
+assert.equal(
+  backendState(CODEX, kvOf({ setting_codex_enabled: "1" }), NOW, usageOf({ fiveHour: 0, sevenDay: 40 })).available,
+  true,
+  "a metered backend with room stays a rung",
+);
+assert.equal(
+  backendState(CODEX, kvOf({ setting_codex_enabled: "1" }), NOW, usageOf(null)).available,
+  true,
+  "no usage cache yet ⇒ fall back to the latch-only verdict, never invent a cap",
+);
+// The latch owns the reset-unknown case and carries the deadline routing waits on, so it outranks meters.
+assert.equal(
+  backendState(CODEX, kvOf({ setting_codex_enabled: "1", codex_cap_until: String(NOW + HOUR) }), NOW, usageOf({ sevenDay: 100 })).reason,
+  "capped",
+  "an explicit latch outranks the meters",
+);
+assert.equal(
+  backendState(CODEX, kvOf({ setting_codex_enabled: "0" }), NOW, usageOf({ sevenDay: 100 })).reason,
+  "disabled",
+  "disabled still outranks everything",
+);
+
+// spentWindow: mirrors routing's `>= PROVIDER_HARD_LIMIT` with a reset that hasn't passed.
+assert.equal(spentWindow({ fiveHour: 100, fiveHourReset: NOW + HOUR }, NOW).window, "5h", "either window can be the spent one");
+assert.equal(spentWindow({ sevenDay: HARD_LIMIT_PCT, sevenDayReset: NOW + HOUR }, NOW)?.window, "7d", "AT the limit is spent (>= check)");
+assert.equal(spentWindow({ sevenDay: HARD_LIMIT_PCT - 1, sevenDayReset: NOW + HOUR }, NOW), null, "just under the limit has room");
+assert.equal(spentWindow({ sevenDay: 100, sevenDayReset: NOW - HOUR }, NOW), null, "a window whose reset already passed is free again");
+assert.equal(spentWindow({ sevenDay: 100 }, NOW)?.pct, 100, "a full window with an UNKNOWN reset is still spent — routing refuses it too");
+assert.equal(spentWindow({ sevenDay: null, fiveHour: null }, NOW), null, "an unmetered backend is not 'spent'");
+// Grok reports no 5h window at all; a missing meter must not read as 0% room or as spent.
+assert.equal(spentWindow({ sevenDay: 20, sevenDayReset: NOW + HOUR }, NOW), null, "Grok's absent 5h meter doesn't fabricate a cap");
 
 // --- claudeHasHeadroom: BOTH windows gate the rung --------------------------------------------------
 assert.equal(claudeHasHeadroom({ fiveHour: 43, sevenDay: 32 }), true, "both windows under the limit");
@@ -90,6 +135,23 @@ for (const b of BACKENDS) {
     tm.includes(`this.settingBool("${b.enabledKey}"`),
     `BACKENDS reads enabled flag '${b.enabledKey}', which threadManager.ts no longer writes`,
   );
+}
+
+// --- the usage-cache file names must still match the modules that WRITE them ------------------------
+// Same drift guard as the kv keys above, for the same reason: the probe opens these files by literal name,
+// so a rename in agents/<x>Usage.ts would leave it reading a file nobody writes — silently back to the
+// latch-only view that reported a 3-rung ladder over a 1-rung reality.
+const usageModules = { Codex: "codexUsage.ts", Grok: "grokUsage.ts", "z.ai": "zaiUsage.ts" };
+for (const b of BACKENDS) {
+  assert.ok(b.usageFile, `BACKENDS entry '${b.name}' has no usageFile — its windows would be invisible to the ladder`);
+  const mod = usageModules[b.name];
+  assert.ok(mod, `no usage module mapped for backend '${b.name}'`);
+  const src = fs.readFileSync(path.resolve(__dirname, "..", "src", "agents", mod), "utf8");
+  assert.ok(
+    src.includes(`"${b.usageFile}"`),
+    `probe reads meters from '${b.usageFile}', which agents/${mod} no longer writes`,
+  );
+  assert.ok(src.includes("writeFileSync"), `agents/${mod} must persist its reading, or the ladder has no meters to read`);
 }
 
 console.log("failoverLadder: all assertions passed");

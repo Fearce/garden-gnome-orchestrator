@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
 
@@ -99,6 +99,23 @@ const LIVE_PING_MAX_AGE_MS = 30 * 60_000;
 /** Record a live app-server rate-limit read. Called by the usage ping on every successful probe. */
 export function noteCodexPing(usage: CodexUsageDTO): void {
   livePing = usage;
+  persistCache();
+}
+
+const CACHE_FILE = (): string => join(config.dataDir, "codex-usage-cache.json");
+
+/** Mirror the freshest MERGED reading to disk, the way z.ai and Grok already do. Codex's usage lives in
+ *  `CODEX_HOME` rollout files plus this in-memory ping, so a read-only offline reader — the nightly
+ *  failover-ladder probe — has no way to see its windows and would count an exhausted Codex as a live
+ *  rung. Best-effort: nothing on the live path reads it back. */
+function persistCache(): void {
+  const u = readCodexUsage();
+  if (!u) return;
+  try {
+    writeFileSync(CACHE_FILE(), JSON.stringify(u), "utf8");
+  } catch {
+    /* best-effort */
+  }
 }
 
 // When the 5h window is idle, the monitor schedules a cheap wake turn at Codex's stagger slot

@@ -39,11 +39,13 @@ why this step exists. Same classifier backs health's `non-done reasons:` line (g
 npm run probe:accounts --prefix server
 ```
 A green sweep still leaves headroom to eyeball. Prints the Claude subs' 5h/7d capacity, then the **full
-failover ladder** — Codex / Grok / z.ai, each `available`, `CAPPED — frees in <countdown>`, or `disabled` —
-and a **ladder depth** line. Depth counts only subs under 98% on BOTH windows, so a sub showing "5h 0%"
-with an exhausted weekly does not count. Caps are handled by failover (`probe:run-errors` confirms it ran);
-depth ≤1 is the thing to act on, because a burst then parks on caps. A capped alt backend on its own is
-normal — the latch self-expires. Gate: `test:failover-ladder`.
+failover ladder** — Codex / Grok / z.ai, each `available (5h x% · 7d y%)`, `CAPPED — frees in <countdown>`,
+`NO ROOM — <window> at N%`, or `disabled` — and a **ladder depth** line. Nothing counts as a rung while
+either window is ≥98%, sub or backend: a "5h 0%" sub with an exhausted weekly doesn't, and neither does a
+backend that never got rejected (so has no cap latch) but is simply spent — that's `NO ROOM`, and reading the
+latch alone once reported 3 rungs over a 1-rung reality. Caps are handled by failover (`probe:run-errors`
+confirms it ran); depth ≤1 is the thing to act on, because a burst then parks on caps. One capped/spent alt
+backend is normal — a latch self-expires, a spent window waits for its real reset. Gate: `test:failover-ladder`.
 
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already completed — only verify live `dist` + health.

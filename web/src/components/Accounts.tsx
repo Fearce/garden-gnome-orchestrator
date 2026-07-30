@@ -239,25 +239,45 @@ function CodexChip({
   usage: CodexUsageDTO | null;
   now: number;
 }) {
-  const state = !enabled ? "off" : !hasAuth ? "noauth" : live ? "implementing" : "ready";
-  const tag = state === "implementing" ? "implementing" : state === "ready" ? "ready" : state === "noauth" ? "no auth" : "off";
-  const tagCls = state === "noauth" ? "acct-tag" : state === "off" ? "acct-tag dim" : "acct-tag ok";
+  // An exhausted window makes Codex unroutable (server codexUsageCapped / codexProviderCandidate), and
+  // without this the chip cheerfully read "ready" at 100% weekly — the one state where the operator most
+  // needs to know the rung is gone. Same rule as the z.ai chip above: a full window whose reset hasn't
+  // passed. There is no cap-latch field on this DTO, so the meters are the only signal here.
+  const capReset =
+    usage?.sevenDay != null && usage.sevenDay >= 100 && (usage.sevenDayReset == null || usage.sevenDayReset > now)
+      ? usage.sevenDayReset
+      : usage?.fiveHour != null && usage.fiveHour >= 100 && (usage.fiveHourReset == null || usage.fiveHourReset > now)
+        ? usage.fiveHourReset
+        : null;
+  const capped = capReset !== null;
+  const state = !enabled ? "off" : !hasAuth ? "noauth" : capped ? "capped" : live ? "implementing" : "ready";
+  const tag =
+    state === "implementing" ? "implementing" : state === "ready" ? "ready" : state === "capped" ? "capped" : state === "noauth" ? "no auth" : "off";
+  const tagCls = state === "noauth" || state === "capped" ? "acct-tag" : state === "off" ? "acct-tag dim" : "acct-tag ok";
   const authNote = chatgpt ? "via your ChatGPT plan" : "via API key";
   const title =
     state === "implementing"
       ? `Codex is implementing a task now · ${authNote} · model ${model} · ${effortLabel(effort)} effort`
       : state === "ready"
         ? `Codex (OpenAI) enabled · ${authNote} · model ${model} · ${effortLabel(effort)} effort · implements dispatched tasks`
-        : state === "noauth"
-          ? "Codex is enabled but has no usable auth — sign in with `codex login` or add an API key in Settings → Subscriptions"
-          : `Codex (OpenAI) configured but off · model ${model} · ${effortLabel(effort)} effort`;
+        : state === "capped"
+          ? `Codex hit its usage limit — routing implementors elsewhere${capReset != null ? `; frees in ${countdown(capReset, now)}` : ""}`
+          : state === "noauth"
+            ? "Codex is enabled but has no usable auth — sign in with `codex login` or add an API key in Settings → Subscriptions"
+            : `Codex (OpenAI) configured but off · model ${model} · ${effortLabel(effort)} effort`;
   // Render meters whenever we have any usage reading, regardless of on/off — the headroom is real and
   // useful even when Codex isn't the active backend right now.
   const showMeters = !!usage && (usage.fiveHour != null || usage.sevenDay != null);
   const stale = !!usage && now - usage.updatedAt > CODEX_STALE_MS;
   return (
     <div
-      className={"acct codex" + (state === "implementing" ? " active" : "") + (state === "off" ? " is-off" : "") + (stale ? " stale" : "")}
+      className={
+        "acct codex" +
+        (state === "implementing" ? " active" : "") +
+        (state === "off" ? " is-off" : "") +
+        (state === "capped" ? " limited" : "") +
+        (stale ? " stale" : "")
+      }
       title={title}
     >
       <div className="acct-head">

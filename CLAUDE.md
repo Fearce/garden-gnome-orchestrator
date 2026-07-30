@@ -115,7 +115,8 @@ reasons:` line). For a **subscription/account-chip** question ("why does it say 
 `npm run probe:accounts --prefix server` — it dumps each account's persisted `account_usage_*` state
 (5h/7d usage + resets, `holdUntil` stagger-hold, `extWakeAt` outside-consumer mark) with plain-English
 reads, then the **failover ladder**: Codex/Grok/z.ai availability from their `setting_*_enabled` +
-`*_cap_until` kv keys, plus a ladder-depth line (a sub only counts while BOTH windows are under 98%).
+`*_cap_until` kv keys AND their own `data/<x>-usage-cache.json` meters, plus a ladder-depth line (nothing
+counts as a rung while either window is ≥98% — a sub OR a backend, latch or no latch).
 "idle" is a stagger hold-off (GG parked its OWN 5h restart and stops pinging), NOT a globally
 unused sub — a 2nd orchestrator/service sharing the sub burns it while GG is held-blind (`accountManager.ts`).
 To SEE a chip in a given state (a lapsed weekly, a hold, a stale read) instead of only reading its numbers,
