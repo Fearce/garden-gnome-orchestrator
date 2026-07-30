@@ -143,6 +143,10 @@ const QA_SESSION = "qa-session-cut-off";
  *  No `result` text — an Agent-SDK error result carries none, which is why `runErrorText` falls through
  *  to the canned subtype reason the park message and the sweep classifier both key on. */
 const CUTOFF = { type: "result", subtype: "error_max_turns", isError: true };
+/** A run that came back EMPTY: a SUCCESS result with no structured output, produced by a session the CLI
+ *  loaded and exited without ever reaching the model. It is indistinguishable from a finish at the result
+ *  level — the only evidence is that the run emitted no messages, which the harness's stub also doesn't. */
+const SILENT = { type: "result", subtype: "success", isError: false };
 const verdictResult = (structuredOutput: { pass: boolean; summary: string; changed: boolean }) => ({
   type: "result",
   subtype: "success",
@@ -438,6 +442,86 @@ async function main(): Promise<void> {
         qaCalls[2]?.kickoff.slice(0, 120),
       );
       check("the continued verifier accepted the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test K: a QA run that produced NOTHING is re-run fresh, not read as a review ------------------
+  // An empty run arrives as a SUCCESS result with no verdict, so it used to fall straight through to the
+  // owner: the console showed a QA run that looked fine, the park message said only "could not complete",
+  // and nothing had actually been reviewed. A warm resume is what fails this way, so the retry is fresh.
+  console.log("\nTest K — a QA run that came back empty is re-run on a fresh session");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThreadStageOutputs(id, { qaRoundsUsed: 1 }); // round 2 ⇒ warm-resume eligible, as in production
+      const qaCalls = stubQaRunRole(h, [SILENT, verdictResult({ pass: true, summary: "verified", changed: false })]);
+      await runLoop(h, id, 4);
+      check("QA ran twice: the empty run plus its retry", qaCalls.length === 2, `calls=${qaCalls.length}`);
+      check("the empty run was the warm resume", qaCalls[0]?.resume === QA_SESSION, String(qaCalls[0]?.resume));
+      check("the retry started a FRESH session, not the same resume", qaCalls[1]?.resume === undefined, String(qaCalls[1]?.resume));
+      check("the fresh retry got the full review brief", !!qaCalls[1]?.kickoff.includes("# QA review for task:"), qaCalls[1]?.kickoff.slice(0, 80));
+      check("the retry did NOT spend a QA round", h.db.getThreadStageOutputs(id).qaRoundsUsed === 2, String(h.db.getThreadStageOutputs(id).qaRoundsUsed));
+      check("the retry was charged to the durable silent budget", h.db.getThreadStageOutputs(id).qaSilentRetries === 1, String(h.db.getThreadStageOutputs(id).qaSilentRetries));
+      const firstQa = h.db.listRuns(id).filter((r) => r.role === "qa").sort((a, b) => a.startedAt - b.startedAt)[0];
+      check("the empty run is recorded as a failure, not a clean 'done'", firstQa?.state === "error", `state=${firstQa?.state}`);
+      check("...and it says why (the sweep classifier keys on this text)", !!firstQa?.error?.includes("produced no output"), String(firstQa?.error));
+      check("the retry's verdict settled the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test L: the production sequence — a turn-ceiling continuation that itself comes back empty -----
+  // This is the shape that parked a real task: QA hit its ceiling, the continuation woke the session, and
+  // the woken session returned without reaching the model. The cutoff path had spent its resume and the
+  // empty result carried no verdict, so an already-paid Opus review was thrown away.
+  console.log("\nTest L — a continuation that comes back empty falls back to a fresh review");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const qaCalls = stubQaRunRole(h, [CUTOFF, SILENT, verdictResult({ pass: true, summary: "verified", changed: false })]);
+      await runLoop(h, id, 4);
+      check("QA ran three times: cutoff, continuation, fresh retry", qaCalls.length === 3, `calls=${qaCalls.length}`);
+      check("the continuation resumed the cut-off session", qaCalls[1]?.resume === QA_SESSION, String(qaCalls[1]?.resume));
+      check("the retry after the empty continuation is fresh", qaCalls[2]?.resume === undefined, String(qaCalls[2]?.resume));
+      check(
+        "the fresh retry is no longer told to 'continue where you left off'",
+        !qaCalls[2]?.kickoff.includes("stopped at a per-session turn limit"),
+        qaCalls[2]?.kickoff.slice(0, 80),
+      );
+      check("both recovery budgets were charged once each", h.db.getThreadStageOutputs(id).qaCutoffResumes === 1 && h.db.getThreadStageOutputs(id).qaSilentRetries === 1, JSON.stringify(h.db.getThreadStageOutputs(id)));
+      check("still only one QA round was spent", h.db.getThreadStageOutputs(id).qaRoundsUsed === 1, String(h.db.getThreadStageOutputs(id).qaRoundsUsed));
+      check("the task reached a verdict instead of the owner's queue", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test M: the silent-retry budget is bounded and durable ----------------------------------------
+  console.log("\nTest M — a reviewer that keeps coming back empty is bounded, then parks diagnosably");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const qaCalls = stubQaRunRole(h, [SILENT, SILENT, SILENT]);
+      await runLoop(h, id, 4);
+      // MAX_QA_SILENT_RETRIES (1) fresh retry on top of the round's own QA run.
+      check("QA stopped after the single bounded retry", qaCalls.length === 2, `calls=${qaCalls.length}`);
+      check("the silent budget was fully spent", h.db.getThreadStageOutputs(id).qaSilentRetries === 1, String(h.db.getThreadStageOutputs(id).qaSilentRetries));
+      check("a still-empty QA parks for the owner", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check("the park names the real cause (an empty run, not 'could not complete')", !!h.db.getThread(id)?.error?.includes("produced no output"), String(h.db.getThread(id)?.error));
+      check("the park says the fresh retry was already tried", !!h.db.getThread(id)?.error?.includes("restarted on a fresh session"), String(h.db.getThread(id)?.error));
+
+      // A restart mid-retry must not hand the task a fresh retry budget.
+      h.db.updateThread(id, { state: "failed", error: null });
+      h.db.updateThreadStageOutputs(id, { qaRoundsUsed: 1 });
+      await runLoop(h, id, 4);
+      check("a re-entry gets no fresh silent-retry budget", qaCalls.length === 3, `calls=${qaCalls.length}`);
+      check("the re-entry parked again rather than looping", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
     } finally {
       h.dispose();
     }

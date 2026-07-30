@@ -168,6 +168,12 @@ const LIMIT_SUBTYPES: ReadonlySet<string> = new Set(["error_max_turns"]);
 // verdict. Charged per task rather than per round, so a reviewer that keeps wedging costs a bounded
 // couple of extra runs instead of two more on every one of the maxQaRounds rounds.
 const MAX_QA_CUTOFF_RESUMES = 2;
+// How many times ONE task may re-run a QA review that came back EMPTY (a session that never reached the
+// model). Only one, deliberately: unlike a cutoff — where waking a warm session resumes real, half-finished
+// work — the retry here is a full fresh review, and a FRESH session that still produces nothing is not a
+// stale-resume problem, so a second attempt would just repeat the same experiment at Opus prices. One retry,
+// then park with the run's own diagnosable reason.
+const MAX_QA_SILENT_RETRIES = 1;
 // The same allowance for the on-demand auto-reviewer. It is one owner-initiated run rather than a loop,
 // so the budget lives in-process: a restart re-parks the task for a fresh click instead of resuming it.
 const MAX_REVIEW_CUTOFF_RESUMES = 2;
@@ -2590,6 +2596,9 @@ export class ThreadManager implements OrchestratorApi {
     const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
     const baseKickoff = qaRoundKickoff(thread, { resume: !!resume, opts, plan, unsurfaced });
     const kickoff = opts.applyFixes ? `${baseKickoff}\n\n${qaFixCommitPolicy(opts.autoPush !== false)}` : baseKickoff;
+    // Stamped BEFORE the run starts, so the silent-run check below can't count a message this attempt
+    // emitted between spawning and the result coming back as belonging to an earlier attempt.
+    const attemptFrom = Date.now();
     const res = await this.runRole(
       thread,
       "qa",
@@ -2611,28 +2620,37 @@ export class ThreadManager implements OrchestratorApi {
           : undefined,
     );
     const verdict = res?.structuredOutput as QaOutput | undefined;
-    if (verdict || !this.isTurnLimitStop(res)) return verdict;
+    if (verdict) return verdict;
+    // An empty run is NOT a review that found nothing — it never reached the model at all. Checked before
+    // the turn-ceiling branch because it arrives as a SUCCESS result, so `isTurnLimitStop` is false and the
+    // round would otherwise fall straight through to the owner.
+    if (this.ranSilently(thread.id, "qa", attemptFrom, res)) return this.retrySilentQa(thread, opts);
+    if (!this.isTurnLimitStop(res)) return undefined;
     return this.continueCutOffQa(thread, opts);
   }
 
   /** Why a QA round ended without a verdict, in the owner's words. Prefers the latest QA run's own error
-   *  (e.g. a Grok structured-output miss after retries) over a bare "could not complete", and names a
-   *  spent continuation budget — the difference between one involuntary cutoff and a reviewer that was
-   *  cut off again every time we woke it. */
+   *  (e.g. a Grok structured-output miss after retries, or an empty run) over a bare "could not complete",
+   *  and names a spent recovery budget — the difference between one involuntary stop and a reviewer that
+   *  failed the same way every time we restarted it. */
   private qaParkDetail(threadId: string): string | undefined {
     const lastQa = this.db
       .listRuns(threadId)
       .filter((r) => r.role === "qa")
       .sort((a, b) => b.startedAt - a.startedAt)[0];
-    const spentContinuations = (this.db.getThreadStageOutputs(threadId).qaCutoffResumes ?? 0) >= MAX_QA_CUTOFF_RESUMES;
-    return (
-      [
-        lastQa?.error?.trim() || undefined,
-        spentContinuations ? `It was woken ${MAX_QA_CUTOFF_RESUMES} more times and cut off again each time.` : undefined,
-      ]
-        .filter(Boolean)
-        .join(" ") || undefined
-    );
+    return [lastQa?.error?.trim() || undefined, ...this.qaRecoveryNotes(threadId)].filter(Boolean).join(" ") || undefined;
+  }
+
+  /** What was already tried to get a verdict out of this task's reviewer, for the park message. Each budget
+   *  only reads as spent once exhausted — a task that recovered on its last attempt never parks at all. */
+  private qaRecoveryNotes(threadId: string): string[] {
+    const stage = this.db.getThreadStageOutputs(threadId);
+    const notes: string[] = [];
+    if ((stage.qaCutoffResumes ?? 0) >= MAX_QA_CUTOFF_RESUMES)
+      notes.push(`It was woken ${MAX_QA_CUTOFF_RESUMES} more times and cut off again each time.`);
+    if ((stage.qaSilentRetries ?? 0) >= MAX_QA_SILENT_RETRIES)
+      notes.push("A review in this task also came back empty without reaching the model, and was already restarted on a fresh session.");
+    return notes;
   }
 
   /**
@@ -2662,6 +2680,35 @@ export class ThreadManager implements OrchestratorApi {
     // verifier's own session, not the editor's — so the invariant holds and the guard is dropped;
     // keeping it would throw away the interrupted review and start a third full pass from scratch.
     return this.runQA(thread, { ...opts, continuation: true, forceFresh: false });
+  }
+
+  /**
+   * A QA run that produced NOTHING never reviewed anything: the CLI loaded the session, emitted its init
+   * event and exited without reaching the model (0 turns, $0). It arrives as a SUCCESS result carrying no
+   * structured output, so before this the round read as "the reviewer declined to answer" and parked the
+   * task on the owner with nothing to go on — while the console showed a QA run that looked fine.
+   *
+   * A warm resume is what breaks this way, so the retry is FRESH: re-running the same resume is the one
+   * thing already known not to reach the model. The empty run is first stamped as the failure it is, so the
+   * run history (and the park reason, if the retry also comes up empty) names the real cause.
+   */
+  private async retrySilentQa(thread: Thread, opts: QaRoundOpts): Promise<QaOutput | undefined> {
+    this.markSilentRun(thread.id, "qa");
+    if (this.cancelled(thread.id)) return undefined;
+    const used = this.db.getThreadStageOutputs(thread.id).qaSilentRetries ?? 0;
+    if (used >= MAX_QA_SILENT_RETRIES) return undefined;
+    // Spent BEFORE the retry, so a restart landing mid-retry still counts it.
+    this.db.updateThreadStageOutputs(thread.id, { qaSilentRetries: used + 1 });
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "qa",
+      summary: "QA came back empty without reviewing anything — starting the review fresh",
+      detail: `The review session returned without ever reaching the model (0 turns, $0), so nothing was verified. Re-running it on a fresh session (retry ${used + 1} of ${MAX_QA_SILENT_RETRIES}).`,
+      severity: "note",
+    });
+    // Fresh, and no longer a continuation: a new session holds none of the cut-off review's context, so it
+    // needs the full review brief rather than "carry on where you left off".
+    return this.runQA(thread, { ...opts, forceFresh: true, continuation: false });
   }
 
   /** For the "different-provider QA" setting: pick an enabled + ready implementor backend OTHER than the
@@ -3129,8 +3176,8 @@ export class ThreadManager implements OrchestratorApi {
     let attemptFrom = this.attemptStart(thread.id);
     let res = await this.awaitImplementorResult(thread, effort, kickoff, run, accountId, useNext, continueMsg);
     let current = run;
-    let silent = this.ranSilently(thread.id, attemptFrom, res);
-    if (silent) this.markSilentRun(thread.id);
+    let silent = this.ranSilently(thread.id, "implementor", attemptFrom, res);
+    if (silent) this.markSilentRun(thread.id, "implementor");
     while (
       (this.isTurnLimitStop(res) || this.implementorStalled(thread.id, res) || silent) &&
       !this.cancelled(thread.id) &&
@@ -3177,8 +3224,8 @@ export class ThreadManager implements OrchestratorApi {
       current = start.run;
       attemptFrom = this.attemptStart(thread.id);
       res = await this.awaitImplementorResult(thread, effort, kickoff, start.run, start.accountId, false, nudge);
-      silent = this.ranSilently(thread.id, attemptFrom, res);
-      if (silent) this.markSilentRun(thread.id);
+      silent = this.ranSilently(thread.id, "implementor", attemptFrom, res);
+      if (silent) this.markSilentRun(thread.id, "implementor");
     }
     // Still silent on the way out (the auto-resume budget ran out, or there was no session left to resume):
     // the implementor did NOT finish, so replace its hollow success with a real failure. Without this the
@@ -3322,19 +3369,20 @@ export class ThreadManager implements OrchestratorApi {
     return (runId ? this.db.getRun(runId)?.startedAt : undefined) ?? Date.now();
   }
 
-  /** Whether an implementor attempt returned a SUCCESS result having produced nothing at all — no text, no
+  /** Whether a role's attempt returned a SUCCESS result having produced nothing at all — no text, no
    *  reasoning, no tool call — since `from`. Seen when a warm `--resume` comes back in seconds with 0 turns
    *  and $0: the CLI loads the session, emits `system:init`, and exits without ever reaching the model. That
    *  is not a finish, but it looks exactly like one to the caller, which is how half-done work reached QA.
    *
    *  Counted from the persisted messages rather than the run's own events on purpose: `awaitImplementorResult`
    *  can relaunch the run internally on an account failover, so the result may come from a DIFFERENT run than
-   *  the one we were handed — the thread's message stream covers every relaunch in the attempt. */
-  private ranSilently(threadId: string, from: number, res: ResultEvent | undefined): boolean {
+   *  the one we were handed — the thread's message stream covers every relaunch in the attempt. `runRole`
+   *  relaunches the same way, so QA reads the same signal off its own role's messages. */
+  private ranSilently(threadId: string, role: Extract<Role, "implementor" | "qa">, from: number, res: ResultEvent | undefined): boolean {
     // A cancelled run legitimately stops without output — that's the user's doing, not a failed resume, and
     // mislabelling it would both retry a task the user killed and file it as a failure in the run history.
     if (!res || res.isError || this.cancelled(threadId)) return false;
-    return this.db.countAgentMessagesSince(threadId, "implementor", from) === 0;
+    return this.db.countAgentMessagesSince(threadId, role, from) === 0;
   }
 
   /** Record a silent run as the failure it is instead of leaving a `done` row with 0 turns. The run-history
@@ -3345,9 +3393,11 @@ export class ThreadManager implements OrchestratorApi {
    *  as `done`) races the result we just awaited — for a silent run the CLI exits immediately, so it often
    *  wins. Keying off `this.live` alone, or bailing on an already-stamped `endedAt`, would therefore leave
    *  the misleading `done` row in place exactly when this matters most. So fall back to the thread's newest
-   *  implementor row and overwrite a terminal state that carries no reason of its own. */
-  private markSilentRun(threadId: string): void {
-    const runId = this.live.get(threadId)?.runId ?? this.latestImplementorRunId(threadId);
+   *  row for the role and overwrite a terminal state that carries no reason of its own. */
+  private markSilentRun(threadId: string, role: Extract<Role, "implementor" | "qa">): void {
+    // Only the implementor keeps a `{runId}` live handle; `runRole` has already finalized a QA run before its
+    // result reaches the caller, so for QA the newest row IS the attempt that just came back empty.
+    const runId = (role === "implementor" ? this.live.get(threadId)?.runId : undefined) ?? this.latestRunIdOf(threadId, role);
     if (!runId) return;
     const run = this.db.getRun(runId);
     // A row that already recorded a real failure keeps its own reason — that one says more than "empty".
@@ -3356,12 +3406,12 @@ export class ThreadManager implements OrchestratorApi {
     this.emitRun(runId);
   }
 
-  /** The thread's most recent implementor run row, by start time — the run whose result just came back
+  /** The thread's most recent run row for a role, by start time — the run whose result just came back
    *  once `onEnd` has already cleared the live handle. */
-  private latestImplementorRunId(threadId: string): string | undefined {
+  private latestRunIdOf(threadId: string, role: Role): string | undefined {
     return this.db
       .listRuns(threadId)
-      .filter((r) => r.role === "implementor")
+      .filter((r) => r.role === role)
       .sort((a, b) => b.startedAt - a.startedAt)[0]?.id;
   }
 

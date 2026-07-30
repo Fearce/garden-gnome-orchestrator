@@ -251,13 +251,14 @@ function reportRecovery(db, buckets) {
   const explained = (threadError) => {
     const e = String(threadError || "");
     if (e.includes("⏳ Auto-resume pending")) return "cap-supervisor park — resumeCapParked owns it";
-    // A QA round that ended without a verdict parks for a person BY DESIGN. A turn-ceiling cutoff there is
-    // continued first (bounded by qaCutoffResumes), so a park that names spent continuations means the
-    // mechanism ran and gave up — not that nothing tried. health counts these separately as its own warn.
+    // A QA round that ended without a verdict parks for a person BY DESIGN. An involuntary stop there is
+    // recovered first — a turn-ceiling cutoff is continued (bounded by qaCutoffResumes), an empty run is
+    // re-run fresh (qaSilentRetries) — so a park naming a spent budget means the mechanism ran and gave up,
+    // not that nothing tried. health counts these separately as its own warn.
     if (/QA could not complete/i.test(e)) {
-      return /cut off again each time/i.test(e)
-        ? "QA park — the reviewer's continuation budget is spent, awaiting the owner"
-        : "QA park — QA ended without a verdict, awaiting the owner";
+      if (/cut off again each time/i.test(e)) return "QA park — the reviewer's continuation budget is spent, awaiting the owner";
+      if (/restarted on a fresh session/i.test(e)) return "QA park — the reviewer came back empty and its fresh-session retry is spent, awaiting the owner";
+      return "QA park — QA ended without a verdict, awaiting the owner";
     }
     if (/interrupted by (?:a )?server restart/i.test(e)) return "human-gated park after a restart — Resume continues it";
     return undefined;

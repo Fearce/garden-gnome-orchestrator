@@ -358,6 +358,9 @@ export interface StageOutputs {
   qaCutoffResumes?: number; // continuations spent waking a QA run that stopped at its per-session turn ceiling
   // before it could return a verdict. Charged separately from qaRoundsUsed (a cutoff isn't a review↔fix cycle)
   // and persisted before each retry, so a restart mid-continuation can't re-enter the loop forever.
+  qaSilentRetries?: number; // fresh-session retries spent after a QA run came back EMPTY (a warm --resume that
+  // never reached the model: 0 turns, $0, no output). Also charged separately, and durable for the same
+  // reason — a restart landing mid-retry must not hand the task an unbounded supply of full Opus reviews.
 }
 
 /**
