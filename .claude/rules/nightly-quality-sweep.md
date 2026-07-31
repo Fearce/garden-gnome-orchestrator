@@ -35,7 +35,11 @@ age, reason and last run. Classes: **stalled** (QA/auto-review/resume stopped mi
 resumes it on its own, so a Resume or Auto-review is what clears it), **verdict** (finished, waiting on the
 owner — by design, however old it gets), **capWait** (`⏳ Auto-resume pending` — the cap supervisor owns it,
 acting manually races it), **unknown** (the park wording drifted from `PARK_CLASSES` — fix the classifier).
-Shared with health, so they can't disagree. Gate: `test:park-classify`.
+Shared with health, so they can't disagree. A stalled park is already tagged **bug or stale** via its `↳`
+line — trust it, don't re-derive the ship date by hand: `stale — … predates <feature> (<sha>); a Resume
+exercises the fix` (`recovery-features.cjs`, gate `test:recovery-features`), or `… continuations already
+spent — the recovery mechanism ran and gave up`. Only a stalled park with NEITHER needs a `probe:task-runs`
+drill. Gate: `test:park-classify`.
 
 ## 5. `npm run probe:accounts --prefix server` — backend headroom (the one watch-item)
 A green sweep still leaves headroom to eyeball. Prints the Claude subs' 5h/7d capacity, then the **full

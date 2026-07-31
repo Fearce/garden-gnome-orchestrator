@@ -30,6 +30,8 @@
 const path = require("node:path");
 const Database = require("better-sqlite3");
 
+const { recoveryAnnotationFor } = require("./recovery-features.cjs");
+
 const DB_PATH = path.resolve(__dirname, "..", "data", "orchestrator.sqlite");
 
 // Every marker below is a literal `settleReview`/`setState(…,"review")` message in
@@ -128,14 +130,28 @@ function lastRun(db, threadId) {
     .get(threadId);
 }
 
-function reportThread(db, t) {
+/**
+ * The `↳` line answering "is this stall a bug?" for one park — the recovery mechanism ran and gave up, or
+ * the park predates the fix that would have handled it — else null.
+ *
+ * The stale half is scoped to `stalled` on purpose. A capWait park belongs to the cap supervisor, and its
+ * last run can carry a turn-ceiling error (cut off, then capped before the continuation), so an unscoped
+ * annotation would tell a sweep to "Resume — it exercises the fix" on a task that resumes itself, which is
+ * exactly the race the capWait guidance warns against.
+ */
+function recoveryLineFor(parkClass, error, run) {
+  if (continuationsSpent(error)) return "its turn-ceiling continuations were already spent — the recovery mechanism ran and gave up";
+  if (parkClass !== "stalled") return null;
+  return recoveryAnnotationFor(error, run);
+}
+
+function reportThread(db, t, parkClass) {
   console.log(`- ${t.id.slice(0, 8)}  ${short(t.title, 58)}`);
   console.log(`    parked ${age(t.updated_at)} · ${t.workspace}`);
   console.log(`    reason: ${short(t.error, 200) || "(no park message recorded)"}`);
-  if (continuationsSpent(t.error)) {
-    console.log("    ↳ its turn-ceiling continuations were already spent — the recovery mechanism ran and gave up");
-  }
   const run = lastRun(db, t.id);
+  const recovery = recoveryLineFor(parkClass, t.error, run);
+  if (recovery) console.log(`    ↳ ${recovery}`);
   if (!run) {
     console.log("    last run: none recorded — the task parked before any agent ran");
     return;
@@ -170,7 +186,7 @@ function main() {
     const mark = cls.key === "stalled" || cls.key === "unknown" ? "⚠" : cls.key === "capWait" ? "⏳" : "·";
     console.log(`\n${mark} ${cls.title} (${group.length})`);
     console.log(`  ↳ ${cls.action}`);
-    for (const t of group) reportThread(db, t);
+    for (const t of group) reportThread(db, t, cls.key);
   }
 
   const needsKevin = buckets.get("stalled").length + buckets.get("unknown").length;
@@ -184,4 +200,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { classifyPark, continuationsSpent, PARK_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
+module.exports = { classifyPark, continuationsSpent, recoveryLineFor, PARK_CLASSES, STALL_MARKERS, VERDICT_MARKERS };

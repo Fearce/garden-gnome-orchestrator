@@ -16,7 +16,8 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { classifyPark, continuationsSpent, PARK_CLASSES } = require("./probe-parks.cjs");
+const { classifyPark, continuationsSpent, recoveryLineFor, PARK_CLASSES } = require("./probe-parks.cjs");
+const { resolveShipDate } = require("./recovery-features.cjs");
 
 const cls = (err) => classifyPark(err).key;
 
@@ -75,6 +76,32 @@ assert.equal(
 );
 assert.equal(continuationsSpent("QA could not complete — needs your review."), false);
 assert.equal(continuationsSpent(null), false, "a NULL error must not throw");
+
+// --- the `↳` recovery line, and the class it is scoped to --------------------------------------------
+// A cap-parked QA task can carry a turn-ceiling run (cut off, then capped before the continuation ran).
+// Annotating it "a Resume exercises the fix" would send a sweep to hand-resume a task the cap supervisor
+// already owns — the race capWait exists to prevent. So the stale flag is stalled-only.
+const preFix = { role: "qa", num_turns: 61, started_at: resolveShipDate("a0f4a74").getTime() - 7 * 86_400_000, ended_at: null };
+const ceilingPark = "QA could not complete — Stopped at the per-session turn ceiling (error_max_turns) — an involuntary cutoff, not a crash.";
+
+assert.match(
+  recoveryLineFor("stalled", ceilingPark, preFix) ?? "",
+  /stale — .*predates/,
+  "a stalled park whose last run predates its recovery fix should say so",
+);
+assert.equal(
+  recoveryLineFor("capWait", `⏳ Auto-resume pending (QA stage) — ${ceilingPark}`, preFix),
+  null,
+  "a cap park is the supervisor's — never tell the sweep to Resume it",
+);
+assert.equal(recoveryLineFor("verdict", ceilingPark, preFix), null, "an owner hand-off gets no stale flag either");
+
+// The spent-budget line is class-agnostic on purpose: it reports what already happened rather than
+// prescribing an action, so it stays true wherever the park landed.
+assert.match(
+  recoveryLineFor("capWait", "QA could not complete — It was woken 2 more times and cut off again each time.", preFix) ?? "",
+  /continuations were already spent/,
+);
 
 // --- drift guard: these are threadManager's own words ------------------------------------------------
 // The load-bearing check. Classification keys off text the server writes, so a rename there without a

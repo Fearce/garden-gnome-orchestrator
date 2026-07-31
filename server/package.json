@@ -31,6 +31,7 @@
     "test:crashlog-scan": "node scripts/crashlog-scan.test.cjs",
     "test:failover-ladder": "node scripts/failover-ladder.test.cjs",
     "test:park-classify": "node scripts/parks-classify.test.cjs",
+    "test:recovery-features": "node scripts/recovery-features.test.cjs",
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
     "test:office-gating": "tsx src/tests/officeGating.itest.ts",
     "test:zai-usage": "tsx src/tests/zaiUsage.test.ts",
