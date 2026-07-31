@@ -107,9 +107,9 @@ interface CodexEvent {
 }
 
 // Matches both API-key 429/quota errors AND the ChatGPT-plan usage-cap wording the CLI prints when the
-// 5h/weekly limit is hit ("usage limit reached", "reached your usage limit", "usage_limit_reached").
+// 5h/weekly or session limit is hit ("usage limit reached", "reached your usage limit", "session limit").
 const RATE_LIMIT_RE =
-  /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient_quota|usage[ _]limit|reached your (?:usage|plan)|limit reached)/i;
+  /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient_quota|(?:usage|session)[ _]?limit|reached your (?:usage|plan)|limit reached)/i;
 // Hard ceiling on the partial-line stdout buffer. A well-behaved Codex CLI emits one newline-terminated
 // JSON event at a time, so this only trips on a runaway newline-less blob — at which point we drop it
 // rather than let it grow the heap unbounded (16 MB is far above any real single event).
