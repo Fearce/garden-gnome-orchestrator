@@ -60,7 +60,7 @@ was touched, and `~/.pi/` was never authenticated.
 | License | **MIT** (vs. the Agent SDK's proprietary "SEE LICENSE IN README.md") |
 | Windows | Runs natively. Needs a bash for its `bash` tool; Git Bash present and found automatically |
 | Headless RPC | `pi --mode rpc` booted with **no provider auth** and answered `get_state`, `get_commands`, `get_session_stats`, `get_available_models` over LF-delimited JSONL |
-| Real agent loop | `pi -p --mode json --provider zai --model glm-4.7 --tools read,ls,grep` — 47 events, streamed `thinking_delta`, issued a `read` tool call, returned the file's marker, `agent_settled`, exit 0 |
+| Real agent loop | `pi -p --mode json --provider zai --model glm-4.7 --tools read,ls,grep` — 47 events, streamed `thinking_delta`, issued a `read` tool call whose result carried the file's marker back into the transcript, `agent_settled`, exit 0. (The model's *final* text block came back empty — a GLM-4.7 quirk, not a harness one; the loop mechanics are what this tested.) |
 | Provider pickup | It auto-discovered `ZAI_API_KEY` from the environment and offered the z.ai catalogue — and, correctly, **saw none of our Claude credentials** (those live in `~/.claude`, not `~/.pi/agent/auth.json`) |
 
 Built-in tools are exactly seven: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`.
@@ -310,6 +310,17 @@ Everything asserted above was checked directly; nothing rests on a summary of a 
 - **Runtime:** `--version`, `--help`; a `--mode rpc` probe answering four control commands with no
   auth; and a full `-p --mode json` run against z.ai GLM-4.7 that read a file via the `read` tool and
   returned its contents (47 events, exit 0).
+**Traps for whoever builds the §7 prototype** — measured here, so you don't pay for them again:
+
+- **Pi cannot see our Claude Code credentials.** It reads `~/.pi/agent/auth.json`, not `~/.claude`.
+  With no `/login`, `get_available_models` returned *only* z.ai models on this box despite a live
+  Claude auth sitting right there.
+- **It silently inherits provider API keys from the environment** — it picked up `ZAI_API_KEY` and
+  defaulted to GLM-5.1 with no flags. Always pass `--provider` and `--model` explicitly, or your
+  "test against X" quietly runs against whatever key is exported.
+- **RPC mode boots and answers control commands with no auth at all**, so the whole event-mapping
+  and tool-bridge layer can be built and tested before any credential work.
+
 - **Not done:** no Anthropic `/login` was performed, so Pi's Claude path was not exercised against a
   live Max account — the billing claim rests on Anthropic's/Pi's stated policy, not a measured
   invoice. Testing it would cost real extra-usage dollars to confirm a documented behaviour.
