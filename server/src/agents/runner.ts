@@ -469,7 +469,7 @@ export interface TransientApiErrorInfo {
 // the right response. They are matched tightly enough not to catch prose about connecting something, since a
 // false positive here spends MAX_TRANSIENT_API_FAILURES relaunches before giving up.
 const TRANSIENT_API_ERROR_RE =
-  /(?:(?:api\s*(?:error|status)?|http(?:\s+status)?)\s*[:=]?\s*(?:500|502|503|504|520|522|524|529)\b|overload(?:ed|_error)?|internal server error|service unavailable|bad gateway|gateway timeout|upstream (?:error|failure)|temporar(?:y|ily) unavailable|connection (?:reset|closed|refused)|unable to connect to (?:the )?api|failed ?to ?open ?socket|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|socket hang up)/i;
+  /(?:(?:api\s*(?:error|status)?|http(?:\s+status)?)\s*[:=]?\s*(?:500|502|503|504|520|522|524|529)\b|overload(?:ed|_error)?|internal server error|service unavailable|bad gateway|gateway timeout|upstream (?:error|failure)|temporar(?:y|ily) unavailable|connection (?:reset|closed|refused)|unable to connect to (?:the )?api|failed ?to ?open ?socket|error sending request for url|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|socket hang up)/i;
 
 /** Classify retryable provider/transport failures without conflating them with quota/auth/client errors. */
 export function transientApiErrorInfo(value: unknown): TransientApiErrorInfo | undefined {
