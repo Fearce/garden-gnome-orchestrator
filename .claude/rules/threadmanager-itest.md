@@ -65,5 +65,6 @@ Both gaps above were this — the differences are exactly where lifecycle bugs l
   the real `AgentRun` through a fresh query + N resumes, printing subtype/turns/output/cost
   each (`out: 0` on a success = the silent-resume signature). Real quota, ~$0.10.
 - Register the gate: the `test:*` script in `server/package.json` AND in `GATES` in
-  `server/scripts/run-gates.cjs`, or the nightly sweep never runs it. Verify with
+  `server/scripts/run-gates.cjs`, or the nightly sweep never runs it — `test:gate-registration`
+  red-flags both halves of that omission. Verify with
   `npm run typecheck && npm run test:gates --prefix server`.

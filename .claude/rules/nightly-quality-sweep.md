@@ -17,9 +17,10 @@ timestamps alone would cry wolf every sweep. A warn = `npm run build` + the atom
 ## 2. `npm run typecheck && npm run test:gates --prefix server` — health does NOT run the gates
 It greps dist symbols only, so a green health can sit on top of crash-broken gates (a feature landing
 without updating a test stub — how a missing `StubAccounts.setSpreadUsage` slipped past a "13/13 green"
-claim). `test:gates` (`scripts/run-gates.cjs`) runs every registered FREE gate in ~25s (don't hardcode the
+claim). `test:gates` (`scripts/run-gates.cjs`) runs every registered FREE gate in ~90s (don't hardcode the
 count) and exits non-zero on any failure — stubs + a throwaway git repo, no `claude` subprocess, no quota.
-Once, at the end; never gate by gate.
+Once, at the end; never gate by gate. One of them, `test:gate-registration`, checks the suite is complete:
+a `test:*` script missing from `GATES`, or a `src/tests` file with no script at all, is itself a failure.
 
 ## 3. `npm run probe:run-errors --prefix server` — triage the non-done runs (`-- 168` for 7 days)
 `health`'s `runs 24h: { error: 10 }` is a COUNT, and most non-done runs are expected: a turn-ceiling cutoff,

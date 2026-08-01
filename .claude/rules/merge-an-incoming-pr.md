@@ -35,7 +35,8 @@ breaks the naive merge — do it the cherry-pick way.
 - **A PR that adds a test script must be wired into the gate suite.** New FREE (no-agent,
   no-quota) `test:*` scripts go into `GATES` in `server/scripts/run-gates.cjs`, or the
   nightly sweep never runs them (see `nightly-quality-sweep.md`). PRs routinely add the
-  script and forget the registration.
+  script and forget the registration — `test:gate-registration` now fails the suite on
+  exactly that (and on a test FILE with no script at all), so fix the wiring, not the gate.
 - **Before assuming a `serve`/`package.json` script change affects prod:** it doesn't.
   Windows prod launches `node dist\index.js` under script-hub keepAlive (registry id
   `claude-orchestrator`), NOT `npm run serve`. The `serve` path is dev-only.
