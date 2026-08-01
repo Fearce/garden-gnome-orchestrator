@@ -28,6 +28,16 @@ mutates state, a round-trip persisting across reload, clipboard, drag). **Drive
 it on a THROWAWAY instance** (recipe: project memory `browser-test-throwaway-
 instance`), never against live prod.
 
+## The line: READING prod is fine, INTERACTING with it is not
+"Never browser-test prod" is about *interaction*, and stopping there sends sweep
+agents off to hand-roll their own script (measured 2026-08-01 — one clicked a card
+on `:4317`). A no-click load — navigate, wait, read the DOM — mutates nothing and
+is the only way to see that the console still boots. Two committed checks do
+exactly that and nothing more: `npm run probe:console` (mounted / WS live / zero
+console errors) and `npm run probe:chips` (chip geometry at 4 widths). Use them
+for a HEALTH read; they are never proof that *your change* works — prod's state is
+not your change's state. Keep both click-free, or they stop being prod-safe.
+
 ## Gotcha: live prod is often modal-blocked — do NOT drive it
 The live console frequently has a pending **director question** (an owner decision
 awaiting Kevin) up as a full-screen `.scrim` + `.modal` (QuestionModal) that
