@@ -76,5 +76,11 @@
   },
   "allowScripts": {
     "better-sqlite3@12.10.0": true
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "minimatch@9.0.9": {
+      "brace-expansion": "2.1.3"
+    }
   }
 }
