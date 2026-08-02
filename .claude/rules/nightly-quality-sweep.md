@@ -1,7 +1,7 @@
 # Nightly / quality sweep + resume-after-bounce
 
 When the brief is a health/quality sweep ("nightly check", "make sure everything is smooth") or you
-are auto-resumed after an orchestrator restart that already completed, run these six, in order.
+are auto-resumed after an orchestrator restart that already completed, run these seven, in order.
 
 ## 1. `npm run health --prefix server`
 (`nightly-health.cjs`) — hits `/api/health`, checks `:4317` vs `dist` **and `dist` vs HEAD**, greps live
@@ -56,6 +56,14 @@ errors / failed requests (`-- --shot <png>` saves screenshot evidence for the re
 is the separate 4-width chip-clipping check. Both are read-only and **click NOTHING** — that is what makes
 them the only browser checks safe against prod; read `.claude/rules/verify-a-ui-change-shipped.md` before
 extending either, and never hand-roll your own drive against `:4317`.
+
+## 7. `npm run audit:deps --prefix server && npm run audit:secrets --prefix server` â€” security hygiene
+`audit:deps` asks npm only about packages deployed to the server (`--omit=dev`) and fails when it finds a
+**high** or **critical** advisory. It still prints lower-severity upstream notices so they are visible without
+turning a healthy sweep red. Do not run `npm audit fix` blindly in the shared checkout: inspect the dependency
+path and make a focused lockfile/package override only when it is compatible and verified. `audit:secrets`
+checks the real gitignored `.env` values against both the tracked tree and git history, known token shapes,
+tracked secret-type files, and public-repo basics. Both commands are read-only.
 
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already completed — only verify live `dist` + health.

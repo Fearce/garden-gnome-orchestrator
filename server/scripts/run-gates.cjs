@@ -43,6 +43,7 @@ const GATES = [
   "test:leak-bookkeeping",
   "test:git",
   "test:supervisor",
+  "test:audit-deps",
   "test:gate-registration",
 ];
 

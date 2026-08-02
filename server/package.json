@@ -46,6 +46,7 @@
     "test:git": "tsx src/tests/gitService.itest.ts",
     "test:supervisor": "node scripts/supervise.itest.cjs",
     "test:gate-registration": "node scripts/gate-registration.test.cjs",
+    "test:audit-deps": "node scripts/audit-deps.test.cjs",
     "test:gates": "node scripts/run-gates.cjs",
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
     "probe:task-runs": "node scripts/probe-task-runs.cjs",
@@ -55,6 +56,7 @@
     "probe:parks": "node scripts/probe-parks.cjs",
     "probe:schedule-detect": "tsx src/tools/probeScheduleDetect.ts",
     "health": "node scripts/nightly-health.cjs",
+    "audit:deps": "node scripts/audit-deps.cjs",
     "audit:secrets": "node scripts/audit-secrets.cjs"
   },
   "dependencies": {
