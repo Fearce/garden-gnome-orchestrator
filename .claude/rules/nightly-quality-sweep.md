@@ -45,8 +45,11 @@ ladder** — Codex / Grok / z.ai as `available (5h x% · 7d y%)`, `CAPPED — fr
 <window> at N%`, or `disabled` — and a **ladder depth** line. Nothing counts as a rung while either window
 is ≥98%, sub or backend: a "5h 0%" sub with a spent weekly doesn't, and neither does a backend never
 rejected (so unlatched) but simply spent — that's `NO ROOM`; reading the latch alone once reported 3 rungs
-over a 1-rung reality. A reported reset >2× its own window is a backend sentinel, printed but never counted
-down (z.ai answered Jan 2027 for a 5h window). Depth ≤1 is the thing to act on: a burst then parks on caps.
+over a 1-rung reality. Windows aren't the only door: Grok also meters a monthly CREDIT pool routing refuses
+it on, so its line carries `credits N%` and a dry pool is `NO ROOM — monthly credits`. A window whose reset
+has already passed has rolled over and counts as free even at 100% (routing agrees) — that is why Grok can
+read `7d 100%` and still be a rung. A reported reset >2× its own period is a backend sentinel, printed but
+never counted down (z.ai answered Jan 2027 for a 5h window). Depth ≤1 is what to act on: a burst then parks.
 One capped/spent backend is normal. Gate: `test:failover-ladder`.
 
 ## 6. `npm run probe:console` — the console still loads (health cannot see this)
