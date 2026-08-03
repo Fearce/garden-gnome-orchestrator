@@ -138,7 +138,11 @@ renders the strip headlessly (`--list` for scenarios) — no quota, no effect on
 Read the run trail to tell causes apart:
 - run `state='interrupted'` → a **server restart** killed it (`markInterrupted`), not the agent. A
   thread whose `error` starts with "interrupted by a server restart" died to a bounce; actively-running
-  phases now **auto-resume on boot** (crash-loop guarded — repeated <60s deaths stop it).
+  phases now **auto-resume on boot** (crash-loop guarded — repeated <60s deaths stop it). Two rounds are
+  exempt because they run on ALREADY-accepted work and are keyed on a durable MARKER, not the state (both
+  run under auto-resume states): an auto-review fix round re-parks (`reviewFixing`), and the opt-in
+  self-improvement round settles the task **done** (`selfImproving`) — so a `done` task holding one
+  interrupted implementor run is that, not a lost resume. Gate: `test:self-improve-restart`.
 - run `state='error'` → a real failure, an involuntary **cutoff**, or a **usage cap**. Read the row's
   `error` text: it now names the reason (the SDK's `errors`, else the subtype). "Stopped at the
   per-session turn ceiling" is the deliberate role turn ceiling — benign, warm-resumed on the implementor
