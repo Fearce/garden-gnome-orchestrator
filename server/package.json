@@ -43,6 +43,7 @@
     "test:per-repo": "tsx src/tests/perRepoConcurrency.itest.ts",
     "test:crashlog": "tsx src/tests/crashLog.itest.ts",
     "test:leak-bookkeeping": "tsx src/tests/threadBookkeepingLeak.itest.ts",
+    "test:stale-gnomes": "tsx src/tests/staleGnomeCleanup.itest.ts",
     "test:git": "tsx src/tests/gitService.itest.ts",
     "test:supervisor": "node scripts/supervise.itest.cjs",
     "test:gate-registration": "node scripts/gate-registration.test.cjs",

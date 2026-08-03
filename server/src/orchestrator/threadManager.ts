@@ -769,6 +769,14 @@ export class ThreadManager implements OrchestratorApi {
     for (const r of this.db.listActiveRuns()) {
       this.db.updateRun(r.id, { state: "interrupted", endedAt: r.endedAt ?? at });
     }
+    // Safety net for the missed-cleanup path: a run left in a live state but already ended (endedAt set)
+    // is a corrupted orphan `listActiveRuns` can't reach — a late agent event that resurrected a
+    // finalized run's state to "running". The gnome strip draws it forever (it filters on state, not
+    // endedAt), so a closed/done task keeps a phantom walking gnome across restarts. Enforce the
+    // invariant that an ended run is terminal; keep its real end time.
+    for (const r of this.db.listEndedButLiveStateRuns()) {
+      this.db.updateRun(r.id, { state: "interrupted" });
+    }
     for (const t of this.db.listThreads()) {
       if (!IN_FLIGHT.has(t.state)) continue;
       if (t.state === "reviewing") {
@@ -5309,14 +5317,24 @@ export class ThreadManager implements OrchestratorApi {
 
   private wireRun(agent: AgentRunLike, threadId: string, runId: string, role: Role, accountId: string): void {
     let leftStarting = false;
+    // A finalized run (endedAt set) is immutable. finishRun/finalizeRun run OUTSIDE this listener — from
+    // runRole's explicit finishRun and the implementor's onEnd — and can land while the SDK is still
+    // flushing a buffered init/text/result as the session tears down. Without this guard, such a late
+    // event flips the row back to a live state ("running") while endedAt stays set: a run the gnome strip
+    // then draws forever and the boot reconciler (ended_at IS NULL) can never reconcile. Every state-
+    // bearing write from an agent event goes through here so a dead run cannot be resurrected.
+    const patchLiveRun = (patch: Parameters<Db["updateRun"]>[1]): void => {
+      if (this.db.getRun(runId)?.endedAt != null) return;
+      this.db.updateRun(runId, patch);
+      this.emitRun(runId);
+    };
     const markRunning = (sessionId?: string) => {
       if (leftStarting && !sessionId) return;
       leftStarting = true;
-      this.db.updateRun(runId, {
+      patchLiveRun({
         state: "running",
         ...(sessionId ? { sessionId } : {}),
       });
-      this.emitRun(runId);
     };
     const off = agent.onEvent((e: AgentEvent) => {
       switch (e.type) {
@@ -5356,12 +5374,10 @@ export class ThreadManager implements OrchestratorApi {
           break;
         }
         case "result":
-          this.db.updateRun(runId, { costUsd: e.costUsd ?? null, numTurns: e.numTurns ?? null, state: e.isError ? "error" : "idle" });
-          this.emitRun(runId);
+          patchLiveRun({ costUsd: e.costUsd ?? null, numTurns: e.numTurns ?? null, state: e.isError ? "error" : "idle" });
           break;
         case "error":
-          this.db.updateRun(runId, { state: "error", error: e.message.slice(0, MAX_RUN_ERROR_LEN) });
-          this.emitRun(runId);
+          patchLiveRun({ state: "error", error: e.message.slice(0, MAX_RUN_ERROR_LEN) });
           this.hub.log("error", `${role} on ${threadId.slice(0, 8)}: ${e.message}`);
           break;
         case "rate_limit":

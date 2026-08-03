@@ -489,6 +489,22 @@ export class Db {
     ).map(rowToRun);
   }
 
+  /** Runs stuck in a live run-state but ALREADY stamped with an end time — the corrupted rows a late
+   *  agent event can leave behind (its state flipped back to "running" after the run finalized). These
+   *  break the invariant "an ended run has a terminal state": `listActiveRuns` can't see them (it needs
+   *  ended_at IS NULL), yet the console's gnome strip draws any starting/running run regardless of
+   *  ended_at — so each shows as a phantom working gnome forever, surviving restarts. The boot reconciler
+   *  stamps them terminal. */
+  listEndedButLiveStateRuns(): AgentRun[] {
+    return (
+      this.raw
+        .prepare(
+          "SELECT * FROM agent_runs WHERE state IN ('starting','running','idle') AND ended_at IS NOT NULL ORDER BY started_at ASC",
+        )
+        .all() as Row[]
+    ).map(rowToRun);
+  }
+
   // ---- findings ----
   addFinding(input: {
     threadId: string;
