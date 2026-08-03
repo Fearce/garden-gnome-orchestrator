@@ -38,7 +38,16 @@ read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing
 `ask_user`s Kevin about anything only he can decide, then settles the task `done` or hands it back to
 `review` with its reasons — an errored/verdict-less run always re-parks, never accepts (its two involuntary
 stops are recovered first, sharing one in-process budget of 2: a turn-ceiling cutoff continues the session it
-made progress in, an empty run starts the review over). So `done` now has three
+made progress in, an empty run starts the review over). **A hand-back isn't the end of the lane:** the
+reviewer is read-only, so what blocks a task is usually implementor work — an `accept: false` carrying
+concrete `issues` relaunches the implementor with that list (no QA loop; the reviewer is the gate), then
+warm-resumes the reviewer to re-check and decide again, bounded by the `maxReviewFixRounds` setting
+(default 1, `0` = old behavior). A failed fix round parks, never accepts — a cap there parks WITHOUT the
+`⏳ Auto-resume pending` marker on purpose, since the supervisor would resume it through the QA loop and
+could mark it done on a verdict the reviewer never gave. The round runs under `implementing` with a durable
+`reviewFixing` marker so a restart re-parks it for a fresh click instead of reviving it into the pipeline,
+and the inject/resume gates key on the episode (not the state) so nothing spawns a second implementor in
+the window where the fix run has ended but the state hasn't flipped back. So `done` has three
 sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
 
 ## Run / build

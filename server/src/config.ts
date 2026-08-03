@@ -266,6 +266,9 @@ export const config = {
   maxTransientApiFailures: Math.max(1, Math.floor(numEnv(process.env.API_ERROR_MAX_FAILURES, 3))),
   transientApiRetryBaseMs: Math.max(0, numEnv(process.env.API_ERROR_RETRY_BASE_MS, 1_500)),
   maxQaRounds: Number(process.env.MAX_QA_ROUNDS ?? 4),
+  // Implementor fix-rounds the auto-reviewer may trigger before it gives up and parks the task for the
+  // owner. Surfaced as an operator setting (persisted in kv) — this is just the first-boot default.
+  maxReviewFixRounds: Number(process.env.MAX_REVIEW_FIX_ROUNDS ?? 1),
   // Default ceiling on pipelines running at once; further dispatches wait in 'queued' until a slot
   // frees. Surfaced as an operator setting (persisted in kv) — this is just the first-boot default.
   maxConcurrent: Number(process.env.MAX_CONCURRENT ?? 3),

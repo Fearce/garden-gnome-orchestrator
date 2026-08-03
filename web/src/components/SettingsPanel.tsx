@@ -51,6 +51,14 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             max={12}
             onChange={(v) => setSettings({ maxQaRounds: v })}
           />
+          <NumberRow
+            label="Auto-review fix rounds"
+            hint="When “Auto-review & mark done” hands a task back, how many times the implementor is sent in to fix the reviewer's issues before the task lands on you. The reviewer re-checks its work each round and still makes the final call. 0 = hand it straight back."
+            value={settings.maxReviewFixRounds}
+            min={0}
+            max={3}
+            onChange={(v) => setSettings({ maxReviewFixRounds: v })}
+          />
           <ToggleRow
             label="Different-provider QA"
             hint="On: QA is reviewed by a DIFFERENT enabled provider than the one that implemented the task — so, e.g., GPT (Codex) reviews Claude's work and vice-versa — for an independent cross-provider check. Needs a second backend enabled (Codex/Grok/z.ai); with only one provider it quietly falls back to normal QA. Off by default."

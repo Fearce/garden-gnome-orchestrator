@@ -358,6 +358,10 @@ export interface StageOutputs {
   qaCutoffResumes?: number; // continuations spent waking a QA run that stopped at its per-session turn ceiling
   // before it could return a verdict. Charged separately from qaRoundsUsed (a cutoff isn't a review↔fix cycle)
   // and persisted before each retry, so a restart mid-continuation can't re-enter the loop forever.
+  reviewFixing?: boolean; // an auto-review fix round owns the 'implementing' state right now. The auto-review
+  // lane is in-process only (a restart during it re-parks for a fresh click), but its fix round runs under
+  // 'implementing' — an AUTO_RESUME state — so without this marker a restart would auto-resume the task into
+  // the normal pipeline instead, re-entering the QA loop the episode had already left behind.
   qaSilentRetries?: number; // fresh-session retries spent after a QA run came back EMPTY (a warm --resume that
   // never reached the model: 0 turns, $0, no output). Also charged separately, and durable for the same
   // reason — a restart landing mid-retry must not hand the task an unbounded supply of full Opus reviews.
@@ -377,6 +381,7 @@ export interface OrchestratorSettings {
   autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
   directorName: string; // the director persona's display name, set by the operator (default "ChangeNameInSettings")
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
+  maxReviewFixRounds: number; // implementor fix-rounds the auto-reviewer may trigger when it hands a task back (default 1; 0 = hand straight back to the owner, the pre-fix-round behavior)
   selfImproveEnabled: boolean; // off (default) → opt-in; on → after a task completes, the implementor runs one extra round building the tools/skills/memories that would have made the task easier
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
   maxConcurrentPerRepo: number; // max pipelines running at once for a SINGLE repo (normalized workspace); 0 (default) = unlimited. Additional tasks for a repo already at its per-repo cap wait in 'queued' until one of that repo's tasks finishes — tasks in OTHER repos are unaffected (they still run up to maxConcurrent).

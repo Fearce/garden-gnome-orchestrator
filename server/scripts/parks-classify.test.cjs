@@ -40,6 +40,11 @@ for (const err of [
   "Auto-review failed to run: Error: spawn ENOENT",
   "Auto-review couldn't reach a verdict — the review run came back empty — still needs your review.",
   "Auto-review couldn’t reach a verdict — still needs your review.",
+  // The auto-review fix round: the implementor it sent in never finished, so the reviewer never got to
+  // re-check. The lane owes this task a run that nothing but a click will start.
+  "The auto-review's fix round didn't finish — Run failed (error_during_execution). The issues it was sent to fix are still open, so this needs your review.",
+  "Auto-review was interrupted by a server restart — click “Auto-review & mark done” to run it again.",
+  "Auto-review was fixing the issues it found when a server restart interrupted it — whatever the implementor had already changed is still in the working tree. Click “Auto-review & mark done” to re-review from there.",
 ]) {
   assert.equal(cls(err), "stalled", `should be a stall: ${err}`);
 }
@@ -52,6 +57,8 @@ for (const err of [
   "Resume finished — needs your review.",
   "Auto-review didn't accept it: the CSV export is still missing a header row",
   "Auto-review didn’t accept it: the CSV export is still missing a header row",
+  // Same hand-off after the lane already spent a fix round on it — still the owner's call, not a stall.
+  "Auto-review didn't accept it (after 1 fix round): the CSV export is still missing a header row",
   "Stopped at the per-session turn ceiling — needs your review (QA is disabled for this task).",
 ]) {
   assert.equal(cls(err), "verdict", `should be an owner hand-off: ${err}`);
@@ -121,7 +128,10 @@ const LITERALS = [
   "still not satisfied",
   "unresolved issues",
   "needs an independent re-check",
-  "accept it:",
+  "Auto-review didn't accept it",
+  "fix round didn't finish",
+  "Auto-review was interrupted by a server restart",
+  "Auto-review was fixing the issues it found",
   "cut off again each time",
 ];
 for (const lit of LITERALS) {

@@ -45,6 +45,10 @@ const STALL_MARKERS = [
   /Resume failed to start/i,
   /Auto-review failed to run/i,
   /could\s?n(?:o|['’])t reach a verdict/i, // auto-review ran but settled nothing
+  /fix round did\s?n(?:o|['’])t finish/i, // the implementor round an auto-review hand-back started never completed
+  // A bounce during an auto-review or its fix round. The lane is in-process by design, so nothing resumes
+  // it on its own — only a fresh Auto-review click does, which is exactly what `stalled` means.
+  /Auto-review was (?:interrupted by a server restart|fixing the issues it found)/i,
 ];
 
 // The pipeline finished and handed the call to the owner. Long-lived by design; never a defect.
