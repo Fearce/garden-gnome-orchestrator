@@ -20,6 +20,7 @@
     "test:weekly-safety": "tsx src/tests/weeklySafety.test.ts",
     "test:spread-usage": "tsx src/tests/spreadUsage.test.ts",
     "test:ext-wake": "tsx src/tests/extWakeProbe.test.ts",
+    "test:account-usage": "tsx src/tests/accountUsageSnapshot.test.ts",
     "test:grok-runner": "tsx src/tests/grokRunner.test.ts",
     "test:grok-reasoning": "tsx src/tests/grokReasoning.test.ts",
     "test:grok-usage": "tsx src/tests/grokUsage.test.ts",

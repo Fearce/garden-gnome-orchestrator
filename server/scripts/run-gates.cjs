@@ -14,6 +14,7 @@ const GATES = [
   "test:weekly-safety",
   "test:spread-usage",
   "test:ext-wake",
+  "test:account-usage",
   "test:grok-runner",
   "test:grok-reasoning",
   "test:grok-usage",

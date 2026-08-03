@@ -10,6 +10,7 @@ import type {
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { EventEmitter } from "node:events";
+import type { Account } from "../accounts/account.js";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { AgentEvent, RateLimitInfo } from "../types.js";
@@ -82,6 +83,27 @@ export interface AgentRunLike {
 }
 
 /**
+ * The run's backend + subscription identity, published to the agent process as plain (non-secret) env
+ * vars. Claude Code's own usage hook (`~/.claude/usage-watcher/handoff_gate.py`) reads them to decide
+ * WHICH subscription a session is burning: agents run on per-account tokens, so a machine-global "usage
+ * is high" signal derived from one sub would otherwise fire a handoff warning in every session,
+ * including the ones running on a sub with plenty of headroom.
+ */
+const RUN_IDENTITY_ENV = ["CLAUDE_ORCH_PROVIDER", "CLAUDE_ORCH_ACCOUNT_ID", "CLAUDE_ORCH_ACCOUNT_LABEL"] as const;
+
+/**
+ * Which configured subscription a run's token belongs to. Derived from the token the run actually
+ * authenticates with, so the published identity can never drift from the credential. Undefined when the
+ * run rides the inherited CLI login — that account's usage is what the machine-global watcher already
+ * measures, so the hook's default path is correct for it. Pure (accounts passed in) so it unit-tests
+ * without seeding the process env config is read from.
+ */
+export function accountForToken(accounts: Account[], token: string | undefined): Account | undefined {
+  if (!token) return undefined;
+  return accounts.find((a) => a.token && a.token === token);
+}
+
+/**
  * Build the child-process env. The cardinal rule: never let ANTHROPIC_API_KEY
  * through, so agents authenticate via the Max subscription only. A long stream
  * close timeout keeps a human-blocked MCP tool (e.g. ask_user) from aborting.
@@ -89,24 +111,37 @@ export interface AgentRunLike {
  * When `baseUrl` + `authToken` are given (a z.ai GLM run), the request is routed to that
  * Anthropic-compatible endpoint via ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN instead of the Claude
  * subscription — the subscription OAuth token is dropped so the run bills the alternate provider only.
+ *
+ * Exported for `test:account-usage`: the three RUN_IDENTITY_ENV names are a contract with a hook in
+ * another repo, so a rename here has to fail a gate rather than silently stop identifying sessions.
  */
-function buildEnv(opts: { oauthToken?: string; baseUrl?: string; authToken?: string }): Record<string, string | undefined> {
+export function buildEnv(opts: { oauthToken?: string; baseUrl?: string; authToken?: string }): Record<string, string | undefined> {
   const env = withAgentToolPath();
   delete env.ANTHROPIC_API_KEY;
   // Clear any inherited endpoint override so a stray env var can't redirect a normal Claude run; the
   // z.ai branch below sets them deliberately for its own run only.
   delete env.ANTHROPIC_BASE_URL;
   delete env.ANTHROPIC_AUTH_TOKEN;
+  // Same reason: this process may itself have been started from an agent shell, and an inherited
+  // identity would mislabel every run it spawns. Each branch below states its own.
+  for (const key of RUN_IDENTITY_ENV) delete env[key];
   env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT ?? "1800000";
   if (opts.baseUrl && opts.authToken) {
     delete env.CLAUDE_CODE_OAUTH_TOKEN; // don't leak a Claude sub token to the alternate provider
     env.ANTHROPIC_BASE_URL = opts.baseUrl;
     env.ANTHROPIC_AUTH_TOKEN = opts.authToken;
     env.API_TIMEOUT_MS = env.API_TIMEOUT_MS ?? String(config.zai.timeoutMs);
+    env.CLAUDE_ORCH_PROVIDER = "zai";
     return env;
   }
   const oauth = opts.oauthToken ?? config.oauthToken;
   if (oauth) env.CLAUDE_CODE_OAUTH_TOKEN = oauth;
+  env.CLAUDE_ORCH_PROVIDER = "claude";
+  const account = accountForToken(config.accounts, oauth);
+  if (account) {
+    env.CLAUDE_ORCH_ACCOUNT_ID = account.id;
+    env.CLAUDE_ORCH_ACCOUNT_LABEL = account.label;
+  }
   return env;
 }
 

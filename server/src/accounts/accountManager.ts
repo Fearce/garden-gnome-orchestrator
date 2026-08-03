@@ -4,6 +4,7 @@ import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
 import type { Account } from "./account.js";
 import { pingUsage, type PingFailReason, type PingUsage } from "./usagePing.js";
+import type { AccountUsageEntry } from "./usageSnapshot.js";
 import { ResetStagger, WINDOW_MS } from "./resetStagger.js";
 import { logCrash } from "../crashLog.js";
 
@@ -911,6 +912,27 @@ export class AccountManager {
     const states = [...this.states.values()];
     const enabled = states.find((s) => s.enabled && s.account.token);
     return (enabled ?? states.find((s) => s.account.token))?.account.token || undefined;
+  }
+
+  /**
+   * Each subscription's raw usage for the snapshot published to Claude Code's own tooling
+   * (`usageSnapshot.ts`). Deliberately NOT the `dto()` shape: a consumer outside this process needs the
+   * time of the READING (`usageAt`) to judge freshness, where `dto().updatedAt` is the time of the last
+   * state change. The ping cadence rides along so the consumer can size its staleness bound to it.
+   */
+  usageSnapshot(): { accounts: Record<string, AccountUsageEntry>; pingIntervalMs: number } {
+    const accounts: Record<string, AccountUsageEntry> = {};
+    for (const s of this.states.values()) {
+      accounts[s.account.id] = {
+        label: s.account.label,
+        fiveHour: s.fiveHour,
+        sevenDay: s.sevenDay,
+        usageAt: s.usageAt,
+        stale: s.usageStale,
+        enabled: s.enabled,
+      };
+    }
+    return { accounts, pingIntervalMs: this.pingIntervalMs };
   }
 
   dto(): AccountDTO[] {
