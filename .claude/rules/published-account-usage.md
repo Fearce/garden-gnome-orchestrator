@@ -35,11 +35,17 @@ undo the reset stagger `accountManager.ts` works to maintain. `AccountManager`'s
 Haiku ping is the one sanctioned reader; this snapshot is how everyone else sees
 the result.
 
+We are not the only dispatcher on this contract: `C:\trading_orchestrator` runs its
+own concurrent wrappers on saved account snapshots and publishes
+`trading-fleet-accounts.json` the same way. The gate never merges the two — a session
+reads the file its own dispatcher named via `CLAUDE_ACCOUNT_SNAPSHOT_PATH` — so keys
+are ours to choose and **our readings never speak for its wrappers, or the reverse.**
+
 ## Before you change it
 
 - Renaming a var or the file? Update `handoff_gate.py` + its README in the same
   change, then re-run `python ~/.claude/usage-watcher/smoke_test.py` (expects
-  `15/15 passed`) — it exercises the real gate against a seeded snapshot.
+  `18/18 passed`) — it exercises the real gate against a seeded snapshot.
 - A cheap end-to-end check that the vars actually reach a hook (Claude Code
   scrubs `CLAUDE_CODE_OAUTH_TOKEN` from child processes, so "it's in the env"
   is not obvious): run `claude -p` with the identity vars +
