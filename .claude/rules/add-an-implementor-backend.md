@@ -47,10 +47,15 @@ typechecks fine but silently strands the backend at that layer — the **failove
    `cliCapped || xCapped` flip AND the `runRole` `provider !== "claude"` cap block. `noteXCap` in all three.
 10. `capParkMessage`, `providerLabel`, and — CLI text-bridge backends ONLY — `isCliOfficeBridge` (a
     reuse-AgentRun backend has the real office MCP, so LEAVE IT OUT).
-11. **`scripts/probe-accounts.cjs` `BACKENDS`** — the sweep's failover-ladder readout reads
-    `setting_x_enabled` + `x_cap_until` by literal name. A backend missing here is invisible to the
-    nightly headroom check, which then reports a partial ladder as full coverage (Grok sat cap-latched
-    for days unseen). `test:failover-ladder` pins the key names to `threadManager.ts`.
+11. **`scripts/probe-accounts.cjs` — `BACKENDS` *and* `MIRRORED_HEADROOM_TERMS`.** The sweep's
+    failover-ladder readout reads `setting_x_enabled` + `x_cap_until` by literal name, and it
+    re-implements your `xProviderCandidate`'s `hasHeadroom` by hand. Both drift silently and in the
+    flattering direction — an unread door keeps printing the rung `available`, so the sweep reports
+    more failover depth than exists (Grok sat cap-latched for days unseen; its monthly credit door went
+    unread for weeks). So: implement each of your candidate's headroom terms as a real check here, then
+    declare it in `MIRRORED_HEADROOM_TERMS` naming the check that covers it. `test:failover-ladder`
+    parses the live `hasHeadroom` expressions out of `threadManager.ts` and fails on any term you gate
+    on but don't mirror — and on a mirror you claim but no longer have.
 
 ## Verify
 Unit gate for the usage parser (`test:zai-usage` is the reference; register in `run-gates.cjs`). Prove it

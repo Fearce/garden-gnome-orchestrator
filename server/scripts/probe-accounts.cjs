@@ -56,6 +56,29 @@ const BACKENDS = [
   { name: "Grok", enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", usageFile: "grok-usage-cache.json" },
   { name: "z.ai", enabledKey: "setting_zai_enabled", capKey: "zai_cap_until", usageFile: "zai-usage-cache.json" },
 ];
+// Every term threadManager's *ProviderCandidate methods gate `hasHeadroom` on, and where THIS file
+// mirrors it. The ladder re-implements routing's decision by hand, so the two drift — and the drift is
+// one-directional: a door added over there that isn't read over here keeps printing the rung as
+// available, which reads as a HEALTHIER ladder than exists. That has now shipped three times (08d743b
+// meters, 707cc13 sentinel resets, a523668 Grok credits), each found by eye long after the fact.
+// `test:failover-ladder` diffs this map against the real source, so the next door fails a gate instead.
+// Adding a term here without implementing it does not satisfy the gate — the map is the claim, and the
+// mirror named beside each term is what has to be true.
+const MIRRORED_HEADROOM_TERMS = {
+  grokProviderCandidate: {
+    grokCapActive: "capKey latch → reason 'capped'",
+    nearWeekly: "spentWindow (7d)",
+    monthlyExhausted: "spentCredits (monthly pool)",
+  },
+  zaiProviderCandidate: {
+    zaiCapActive: "capKey latch → reason 'capped'",
+    near: "spentWindow (5h + 7d)",
+  },
+  codexProviderCandidate: {
+    nearLimit: "spentWindow (5h + 7d)",
+  },
+};
+
 const now = Date.now();
 
 const labels = {};
@@ -276,4 +299,12 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { backendState, claudeHasHeadroom, spentWindow, spentCredits, BACKENDS, HARD_LIMIT_PCT };
+module.exports = {
+  backendState,
+  claudeHasHeadroom,
+  spentWindow,
+  spentCredits,
+  BACKENDS,
+  HARD_LIMIT_PCT,
+  MIRRORED_HEADROOM_TERMS,
+};

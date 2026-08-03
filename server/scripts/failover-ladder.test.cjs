@@ -9,7 +9,15 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { backendState, claudeHasHeadroom, spentWindow, spentCredits, BACKENDS, HARD_LIMIT_PCT } = require("./probe-accounts.cjs");
+const {
+  backendState,
+  claudeHasHeadroom,
+  spentWindow,
+  spentCredits,
+  BACKENDS,
+  HARD_LIMIT_PCT,
+  MIRRORED_HEADROOM_TERMS,
+} = require("./probe-accounts.cjs");
 
 const NOW = Date.parse("2026-07-28T00:00:00.000Z");
 const HOUR = 3_600_000;
@@ -167,15 +175,6 @@ assert.equal(
   "7d",
   "a spent window outranks spent credits in the readout",
 );
-// Drift guard, same shape as the kv-key checks: the probe mirrors routing's rule by hand, so a rename or
-// removal on the routing side must fail here rather than silently re-open the blind spot.
-{
-  const tmSrc = fs.readFileSync(path.resolve(__dirname, "..", "src", "orchestrator", "threadManager.ts"), "utf8");
-  assert.ok(
-    /monthlyExhausted/.test(tmSrc) && /u\.monthlyUsed >= u\.monthlyLimit/.test(tmSrc),
-    "threadManager no longer gates Grok on monthly credit exhaustion — re-check what the ladder must mirror",
-  );
-}
 
 // --- claudeHasHeadroom: BOTH windows gate the rung --------------------------------------------------
 assert.equal(claudeHasHeadroom({ fiveHour: 43, sevenDay: 32 }), true, "both windows under the limit");
@@ -225,6 +224,57 @@ for (const b of BACKENDS) {
     `probe reads meters from '${b.usageFile}', which agents/${mod} no longer writes`,
   );
   assert.ok(src.includes("writeFileSync"), `agents/${mod} must persist its reading, or the ladder has no meters to read`);
+}
+
+// --- the ladder must mirror EVERY door routing gates a backend on ------------------------------------
+// The load-bearing structural check. Everything above verifies the doors this readout already knows
+// about; this one is about the door it does NOT. The ladder re-implements `hasHeadroom` by hand, and an
+// unmirrored term fails silently and in the flattering direction — the rung keeps printing "available",
+// so the sweep reports more failover depth than exists. Three separate shipped instances (08d743b,
+// 707cc13, a523668) were each found by reading the two sources side by side, months apart. So: parse the
+// real `hasHeadroom` expressions out of threadManager.ts and require the probe to have declared each
+// term, with the mirror that implements it. Adding a door on the routing side now fails this gate the
+// same day, instead of quietly inflating the number the sweep is supposed to act on.
+{
+  const tmSrc = fs.readFileSync(path.resolve(__dirname, "..", "src", "orchestrator", "threadManager.ts"), "utf8");
+  // Not identifiers of the decision — the receiver, the usage local, and literals. Everything else in a
+  // hasHeadroom expression is a door: a guard call (`grokCapActive`) or a predicate local (`nearWeekly`).
+  const NOISE = new Set(["this", "u", "null", "undefined", "true", "false"]);
+
+  /** The identifiers a candidate's `hasHeadroom` actually gates on, read from the source of truth. */
+  function headroomTerms(method) {
+    const body = new RegExp(`private ${method}\\(\\)[\\s\\S]*?hasHeadroom:([\\s\\S]*?),\\n\\s*[a-zA-Z]\\w*:`).exec(tmSrc);
+    assert.ok(body, `no ${method}() with a hasHeadroom property in threadManager.ts — the ladder mirrors a method that moved`);
+    const expr = body[1]
+      .replace(/this\./g, "") // `this.grokCapActive()` → `grokCapActive()`: the guard IS the term
+      .replace(/\??\.\w+/g, ""); // `u?.fiveHour` → `u`: a field read is not a door, the predicate around it is
+    return new Set((expr.match(/[A-Za-z_$][\w$]*/g) ?? []).filter((id) => !NOISE.has(id)));
+  }
+
+  for (const [method, mirrors] of Object.entries(MIRRORED_HEADROOM_TERMS)) {
+    const live = headroomTerms(method);
+    for (const term of live) {
+      assert.ok(
+        term in mirrors,
+        `${method} gates headroom on '${term}', which probe-accounts.cjs does not mirror — the ladder would ` +
+          `keep reporting this backend as an available rung while routing refuses it. Implement the check, ` +
+          `then declare it in MIRRORED_HEADROOM_TERMS.`,
+      );
+    }
+    for (const term of Object.keys(mirrors)) {
+      assert.ok(
+        live.has(term),
+        `probe-accounts.cjs claims to mirror '${term}' for ${method}, but routing no longer gates on it — ` +
+          `a stale mirror hides the next real change. Re-read the method and correct the map.`,
+      );
+    }
+  }
+  // The map is only a guard while it covers every backend the ladder reports on.
+  assert.equal(
+    Object.keys(MIRRORED_HEADROOM_TERMS).length,
+    BACKENDS.length,
+    "every BACKENDS rung needs its *ProviderCandidate mirrored in MIRRORED_HEADROOM_TERMS, or its doors go unchecked",
+  );
 }
 
 console.log("failoverLadder: all assertions passed");
