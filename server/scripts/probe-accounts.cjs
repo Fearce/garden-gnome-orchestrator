@@ -49,6 +49,8 @@ const HARD_LIMIT_PCT = 98;
 // it, and routing skips it purely on the meters (zaiCapActive / codexProviderCandidate.hasHeadroom). Read
 // without the meters, this readout called an exhausted Codex and z.ai live rungs and reported a ladder of
 // 3 when only 1 could take work — the same "one-rung ladder looks healthy" blind spot in a new door.
+// Windows are not the only door: Grok's plan also meters a monthly CREDIT pool that routing refuses the
+// rung on, and it can run dry while the weekly window still reads room (see spentCredits).
 const BACKENDS = [
   { name: "Codex", enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", usageFile: "codex-usage-cache.json" },
   { name: "Grok", enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", usageFile: "grok-usage-cache.json" },
@@ -89,7 +91,7 @@ function backendState({ enabledKey, capKey, usageFile }, kv, at, usage = () => n
   const until = Number(kv(capKey));
   if (Number.isFinite(until) && until > at) return { available: false, reason: "capped", until };
   const meters = usageFile ? usage(usageFile) : null;
-  const spent = meters ? spentWindow(meters, at) : null;
+  const spent = meters ? (spentWindow(meters, at) ?? spentCredits(meters, at)) : null;
   if (spent) {
     return {
       available: false,
@@ -128,13 +130,34 @@ function spentWindow(meters, at) {
   return null;
 }
 
+// A billing period is a month, so its end can legitimately sit ~31 days out — the same sentinel clamp as
+// the windows above, with the bound its own length rather than a window's.
+const MONTHLY_MAX_RESET_MS = 2 * 31 * 86_400_000;
+
+/** A spent credit pool, or null. Grok's plan meters a MONTHLY credit allowance alongside its weekly
+ *  window, and routing refuses the rung on it too (`monthlyExhausted` in grokProviderCandidate). Credits
+ *  can run dry while the weekly still reads room, so reading windows alone would report an available rung
+ *  that routing skips — the overstated-depth blind spot, through the one door percentages can't express. */
+function spentCredits(meters, at) {
+  const { monthlyUsed: used, monthlyLimit: limit, monthlyReset: reset } = meters;
+  if (typeof used !== "number" || typeof limit !== "number" || !(limit > 0) || used < limit) return null;
+  if (reset != null && reset <= at) return null; // billing period ended — the pool has refilled
+  const pct = Math.round((used / limit) * 100);
+  const plausible = reset != null && reset - at <= MONTHLY_MAX_RESET_MS;
+  if (reset == null || plausible) return { window: "monthly credits", pct, reset };
+  return { window: "monthly credits", pct, reset: null, reportedReset: reset };
+}
+
 /** The windows an available backend still has, so "available" is a number the reader can check rather than
- *  a bare claim. Omits a window the backend doesn't meter (Grok reports no 5h). */
+ *  a bare claim. Omits a window the backend doesn't meter (Grok reports no 5h, only Grok meters credits). */
 function meterSummary(m) {
   return (
     [
       typeof m.fiveHour === "number" ? `5h ${Math.round(m.fiveHour)}%` : null,
       typeof m.sevenDay === "number" ? `7d ${Math.round(m.sevenDay)}%` : null,
+      typeof m.monthlyUsed === "number" && m.monthlyLimit > 0
+        ? `credits ${Math.round((m.monthlyUsed / m.monthlyLimit) * 100)}%`
+        : null,
     ]
       .filter(Boolean)
       .join(" · ") || "no windows metered"
@@ -220,7 +243,7 @@ function main() {
       (s.until != null
         ? `, resets in ${countdown(s.until)}`
         : s.reportedReset != null
-          ? `, reset unknown (backend reported ${new Date(s.reportedReset).toISOString().slice(0, 10)}, too far out to be a ${s.window} window)`
+          ? `, reset unknown (backend reported ${new Date(s.reportedReset).toISOString().slice(0, 10)}, too far out to be a ${s.window} period)`
           : ", reset unknown"),
     ready: (s) => "available" + (s.meters ? ` (${meterSummary(s.meters)})` : " (no usage reading yet)"),
   };
@@ -253,4 +276,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { backendState, claudeHasHeadroom, spentWindow, BACKENDS, HARD_LIMIT_PCT };
+module.exports = { backendState, claudeHasHeadroom, spentWindow, spentCredits, BACKENDS, HARD_LIMIT_PCT };

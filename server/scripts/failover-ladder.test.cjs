@@ -9,7 +9,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { backendState, claudeHasHeadroom, spentWindow, BACKENDS, HARD_LIMIT_PCT } = require("./probe-accounts.cjs");
+const { backendState, claudeHasHeadroom, spentWindow, spentCredits, BACKENDS, HARD_LIMIT_PCT } = require("./probe-accounts.cjs");
 
 const NOW = Date.parse("2026-07-28T00:00:00.000Z");
 const HOUR = 3_600_000;
@@ -128,6 +128,54 @@ assert.equal(
   null,
   "backendState passes the withheld reset through as unknown, so the ladder line can't print a fake countdown",
 );
+
+// --- Grok's monthly credit pool is a third exhaustion door ------------------------------------------
+// Routing refuses Grok on three conditions, not two (grokProviderCandidate): the cap latch, the weekly
+// window, and the SuperGrok plan's MONTHLY credit pool. Credits run out while the weekly still reads
+// room, so a windows-only read prints "available" for a rung routing will not send work to — the same
+// overstated-depth blind spot as the un-latched spent window, through the one door left open.
+const GROK = { enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", usageFile: "grok-usage-cache.json" };
+const noCredits = backendState(
+  GROK,
+  kvOf({ setting_grok_enabled: "1" }),
+  NOW,
+  usageOf({ sevenDay: 40, sevenDayReset: NOW + 3 * 24 * HOUR, monthlyUsed: 15000, monthlyLimit: 15000, monthlyReset: NOW + 5 * 24 * HOUR }),
+);
+assert.equal(noCredits.available, false, "a spent monthly credit pool is not a live rung, even with weekly room");
+assert.equal(noCredits.reason, "spent", "reported like any other spent meter — it waits for a real reset, not a cooldown");
+assert.equal(noCredits.window, "monthly credits", "names the pool, so the line isn't read as a weekly outage");
+assert.equal(noCredits.pct, 100);
+assert.equal(noCredits.until, NOW + 5 * 24 * HOUR, "carries the billing-period end so the line can count down");
+
+assert.equal(spentCredits({ monthlyUsed: 9231, monthlyLimit: 15000, monthlyReset: NOW + HOUR }, NOW), null, "credits left is not spent");
+assert.equal(spentCredits({ monthlyUsed: 15001, monthlyLimit: 15000 }, NOW)?.pct, 100, "over the cap with an unknown reset is still spent");
+assert.equal(
+  spentCredits({ monthlyUsed: 15000, monthlyLimit: 15000, monthlyReset: NOW - HOUR }, NOW),
+  null,
+  "a billing period that already ended has refilled — mirrors routing's `monthlyReset > now` guard",
+);
+assert.equal(spentCredits({ sevenDay: 100 }, NOW), null, "a backend that meters no credits at all never reads as credit-spent");
+assert.equal(spentCredits({ monthlyUsed: 5, monthlyLimit: 0 }, NOW), null, "a zero/absent limit is no information, not a full pool");
+assert.equal(
+  spentCredits({ monthlyUsed: 15000, monthlyLimit: 15000, monthlyReset: Date.parse("2027-06-01T00:00:00.000Z") }, NOW).reset,
+  null,
+  "a reset too far out to be a billing period is withheld from the countdown, like the window sentinel",
+);
+// The weekly window still wins the report when both are out — it is the one that resets sooner.
+assert.equal(
+  backendState(GROK, kvOf({ setting_grok_enabled: "1" }), NOW, usageOf({ sevenDay: 100, sevenDayReset: NOW + HOUR, monthlyUsed: 15000, monthlyLimit: 15000 })).window,
+  "7d",
+  "a spent window outranks spent credits in the readout",
+);
+// Drift guard, same shape as the kv-key checks: the probe mirrors routing's rule by hand, so a rename or
+// removal on the routing side must fail here rather than silently re-open the blind spot.
+{
+  const tmSrc = fs.readFileSync(path.resolve(__dirname, "..", "src", "orchestrator", "threadManager.ts"), "utf8");
+  assert.ok(
+    /monthlyExhausted/.test(tmSrc) && /u\.monthlyUsed >= u\.monthlyLimit/.test(tmSrc),
+    "threadManager no longer gates Grok on monthly credit exhaustion — re-check what the ladder must mirror",
+  );
+}
 
 // --- claudeHasHeadroom: BOTH windows gate the rung --------------------------------------------------
 assert.equal(claudeHasHeadroom({ fiveHour: 43, sevenDay: 32 }), true, "both windows under the limit");
