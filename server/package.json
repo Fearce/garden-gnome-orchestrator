@@ -50,6 +50,7 @@
     "test:supervisor": "node scripts/supervise.itest.cjs",
     "test:gate-registration": "node scripts/gate-registration.test.cjs",
     "test:audit-deps": "node scripts/audit-deps.test.cjs",
+    "test:audit-overrides": "node scripts/audit-overrides.test.cjs",
     "test:gates": "node scripts/run-gates.cjs",
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
     "probe:task-runs": "node scripts/probe-task-runs.cjs",
@@ -60,6 +61,7 @@
     "probe:schedule-detect": "tsx src/tools/probeScheduleDetect.ts",
     "health": "node scripts/nightly-health.cjs",
     "audit:deps": "node scripts/audit-deps.cjs",
+    "audit:overrides": "node scripts/audit-overrides.cjs",
     "audit:secrets": "node scripts/audit-secrets.cjs"
   },
   "dependencies": {

@@ -7,7 +7,15 @@
 // lower-severity findings remain visible for follow-up without failing a healthy run.
 
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
+const {
+  satisfies,
+  reportOverrides,
+  declaredOverrides,
+  collectInstalled,
+  degradedReason,
+} = require("./audit-overrides.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -32,6 +40,103 @@ function blockingAdvisories(report) {
     .sort((a, b) => a.severity.localeCompare(b.severity) || a.name.localeCompare(b.name));
 }
 
+/**
+ * The first version outside an advisory's vulnerable range, i.e. what to upgrade to.
+ * GHSA ranges are upper-bounded by the first patched release ("<2.1.4"), which is the
+ * number a remediation needs and the one npm's own summary never prints.
+ */
+function firstFixed(range) {
+  const m = /<\s*(\d+\.\d+\.\d+)/.exec(String(range ?? ""));
+  return m ? m[1] : null;
+}
+
+/** Every installed package that declares `name` as a dependency, with its declared range. */
+function dependantsOf(tree, name, nodes = []) {
+  const out = new Map();
+  const visit = (node, nodeName) => {
+    if (!node || typeof node !== "object") return;
+    for (const [childName, child] of Object.entries(node.dependencies ?? {})) {
+      if (childName === name && nodeName) {
+        out.set(`${nodeName}@${node.version}`, { parent: nodeName, version: node.version });
+      }
+      visit(child, childName);
+    }
+  };
+  visit(tree, null);
+  return [...out.values()].map((p) => ({ ...p, range: declaredRange(p.parent, p.version, name, nodes) }));
+}
+
+/**
+ * What `parent` asks for of `name`. Hoisting means `node_modules/<parent>` is not
+ * necessarily the copy the tree meant — here `node_modules/minimatch` is the 10.x that
+ * wants brace-expansion ^5, while the parent in question is the 9.x nested under rimraf
+ * that wants ^2. Reading the wrong copy yields a confidently wrong remediation, so every
+ * candidate is version-checked and a mismatch reports null rather than guessing.
+ */
+function declaredRange(parent, version, name, nodes) {
+  // A node path already ends in the `node_modules` dir holding the package, so dropping
+  // the package name yields the directory a sibling parent copy would live in.
+  const prefixes = ["node_modules", ...nodes.map((n) => n.replace(/\/[^/]+$/, ""))];
+  for (const prefix of [...new Set(prefixes)]) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(SERVER_DIR, prefix, parent, "package.json"), "utf8"));
+      if (pkg.version !== version) continue;
+      return pkg.dependencies?.[name] ?? pkg.optionalDependencies?.[name] ?? pkg.peerDependencies?.[name] ?? null;
+    } catch {
+      /* candidate not present here — try the next */
+    }
+  }
+  return null;
+}
+
+/**
+ * The remediation table this command used to leave as manual legwork: where each
+ * vulnerable package sits, what version clears it, and — the decision that actually
+ * matters — whether every parent's declared range already accepts that version. If it
+ * does, an `overrides` floor bump is safe; if not, the override fights semver and the
+ * parent needs upgrading instead.
+ */
+function explain(advisory, tree) {
+  const lines = [];
+  const paths = (advisory.nodes ?? []).map((n) => n.replace(/^node_modules\//, ""));
+  if (paths.length) lines.push(`installed at: ${paths.join(", ")}`);
+
+  const ranges = (Array.isArray(advisory.via) ? advisory.via : [])
+    .filter((v) => typeof v === "object" && v.range)
+    .map((v) => v.range);
+  const fixes = [...new Set(ranges.map(firstFixed).filter(Boolean))].sort();
+  if (fixes.length) lines.push(`clears at: ${fixes.map((f) => `>=${f}`).join(" / ")}`);
+
+  for (const dep of dependantsOf(tree, advisory.name, advisory.nodes ?? [])) {
+    if (!dep.range) {
+      lines.push(`parent ${dep.parent}@${dep.version}: declared range not resolvable`);
+      continue;
+    }
+    const inRange = fixes.filter((f) => satisfies(f, dep.range) === true);
+    const verdict = !fixes.length
+      ? "no fix version parsed from the advisory"
+      : inRange.length
+        ? `accepts ${inRange.join("/")} — a floor bump, safe to override`
+        : `does NOT accept ${fixes.join("/")} — an override here fights semver; upgrade the parent`;
+    lines.push(`parent ${dep.parent}@${dep.version} wants ${dep.range} → ${verdict}`);
+  }
+  return lines;
+}
+
+function productionTree() {
+  const res = spawnSync(NPM, ["ls", "--omit=dev", "--all", "--json"], {
+    cwd: SERVER_DIR,
+    encoding: "utf8",
+    shell: process.platform === "win32",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  try {
+    return JSON.parse(res.stdout);
+  } catch {
+    return {};
+  }
+}
+
 function auditReport() {
   const result = spawnSync(NPM, ["audit", "--omit=dev", "--json"], {
     cwd: SERVER_DIR,
@@ -53,22 +158,29 @@ function main() {
   const report = auditReport();
   const counts = summarizeAudit(report);
   const blocking = blockingAdvisories(report);
+  const tree = productionTree();
 
   console.log(
     `  vulnerabilities: critical=${counts.critical} high=${counts.high} moderate=${counts.moderate} low=${counts.low}`,
   );
-  if (!blocking.length) {
+  if (blocking.length) {
+    console.log("  [fail] high/critical findings:");
+    for (const advisory of blocking) {
+      console.log(`      ${advisory.severity}: ${advisory.name}${advisory.direct ? " (direct)" : " (transitive)"}`);
+      for (const line of explain(report.vulnerabilities[advisory.name] ?? {}, tree)) {
+        console.log(`        ${line}`);
+      }
+    }
+  } else {
     console.log("  [ok] no high or critical production dependency vulnerabilities");
-    process.exit(0);
   }
 
-  console.log("  [fail] high/critical findings:");
-  for (const advisory of blocking) {
-    console.log(`      ${advisory.severity}: ${advisory.name}${advisory.direct ? " (direct)" : " (transitive)"}`);
-  }
-  process.exit(1);
+  // Rides this command rather than needing its own trigger: an override that stopped
+  // binding is the same class of problem, and this is what the nightly sweep already runs.
+  const overridesOk = reportOverrides(declaredOverrides(), collectInstalled(tree), degradedReason(tree));
+  process.exit(blocking.length || !overridesOk ? 1 : 0);
 }
 
 if (require.main === module) main();
 
-module.exports = { summarizeAudit, blockingAdvisories };
+module.exports = { summarizeAudit, blockingAdvisories, firstFixed, explain, dependantsOf };

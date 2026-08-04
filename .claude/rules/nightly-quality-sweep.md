@@ -60,13 +60,22 @@ is the separate 4-width chip-clipping check. Both are read-only and **click NOTH
 them the only browser checks safe against prod; read `.claude/rules/verify-a-ui-change-shipped.md` before
 extending either, and never hand-roll your own drive against `:4317`.
 
-## 7. `npm run audit:deps --prefix server && npm run audit:secrets --prefix server` â€” security hygiene
+## 7. `npm run audit:deps --prefix server && npm run audit:secrets --prefix server` — security hygiene
 `audit:deps` asks npm only about packages deployed to the server (`--omit=dev`) and fails when it finds a
 **high** or **critical** advisory. It still prints lower-severity upstream notices so they are visible without
-turning a healthy sweep red. Do not run `npm audit fix` blindly in the shared checkout: inspect the dependency
-path and make a focused lockfile/package override only when it is compatible and verified. `audit:secrets`
-checks the real gitignored `.env` values against both the tracked tree and git history, known token shapes,
-tracked secret-type files, and public-repo basics. Both commands are read-only.
+turning a healthy sweep red. Do not run `npm audit fix` blindly in the shared checkout. You no longer have to
+derive the fix by hand: on a failure it prints, per advisory, where the package sits, the version that clears
+it, and **each parent's declared range with a verdict** — `a floor bump, safe to override` means every parent
+already accepts the fix (make the override), while `fights semver` means upgrade the parent instead.
+It also runs the **override audit** (`audit:overrides` standalone) over `package.json`'s `overrides`, because
+a pin that stopped binding is invisible — npm never reports one, and `audit:deps` only goes red later, once a
+new advisory lands on whatever quietly came unpinned. **Key an override on the major line with a range value**
+(`"brace-expansion@^2": "^2.1.4"`), never an exact version: the 08-02 pin to `2.1.3` was itself in the
+advisory range days later, and its `minimatch@9.0.9` parent key would have silently become a no-op on the next
+bump. A dead selector fails; an exact one warns. Unlike a `scripts/*.cjs` fix, a dependency patch **needs a
+deploy** — the old copies stay resident in the running process. `audit:secrets` checks the real gitignored
+`.env` values against both the tracked tree and git history, known token shapes, tracked secret-type files,
+and public-repo basics. Both commands are read-only.
 
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already completed — only verify live `dist` + health.

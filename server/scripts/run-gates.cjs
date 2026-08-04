@@ -47,6 +47,7 @@ const GATES = [
   "test:git",
   "test:supervisor",
   "test:audit-deps",
+  "test:audit-overrides",
   "test:gate-registration",
 ];
 
