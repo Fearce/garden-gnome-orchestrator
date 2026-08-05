@@ -180,6 +180,12 @@ function escapeLike(s: string): string {
 /** The two tables whose `attachments` JSON column can hold a reference to a stored blob. */
 const REF_TABLES = ["messages", "director_messages"] as const;
 
+/** A row that references a blob, addressed by primary key so a rewrite doesn't scan the table. */
+interface RefRow {
+  table: (typeof REF_TABLES)[number];
+  id: string;
+}
+
 export class Db {
   readonly raw: Database.Database;
 
@@ -277,7 +283,8 @@ export class Db {
     if (this.kvGet("attachment_dedupe_v1")) return;
     this.raw.transaction(() => {
       this.backfillAttachmentHashes();
-      for (const ids of this.duplicateAttachmentGroups()) this.collapseAttachmentGroup(ids);
+      const holders = this.attachmentReferenceIndex();
+      for (const ids of this.duplicateAttachmentGroups()) this.collapseAttachmentGroup(ids, holders);
       this.pruneAttachments(this.allAttachmentIds());
     })();
     this.kvSet("attachment_dedupe_v1", "1");
@@ -309,15 +316,30 @@ export class Db {
     return rows.map((r) => String(r.ids).split(","));
   }
 
-  /** Point every reference at the first id, then delete the rows that gave up their bytes. */
-  private collapseAttachmentGroup([keep, ...redundant]: string[]): void {
-    const drop = this.raw.prepare("DELETE FROM attachments WHERE id = ?");
-    for (const id of redundant) {
-      for (const table of REF_TABLES) {
-        this.raw
-          .prepare(`UPDATE ${table} SET attachments = replace(attachments, ?, ?) WHERE attachments LIKE ?`)
-          .run(id, keep, `%${id}%`);
+  /** Which rows reference each blob, from ONE pass per table. Matching by `LIKE '%id%'` per duplicate
+   *  instead re-reads all ~200k messages for each one, which turned this into a 13s boot on a mature DB. */
+  private attachmentReferenceIndex(): Map<string, RefRow[]> {
+    const index = new Map<string, RefRow[]>();
+    for (const table of REF_TABLES) {
+      for (const r of this.raw.prepare(`SELECT id, attachments FROM ${table} WHERE attachments != '[]'`).all() as Row[]) {
+        for (const ref of parseAttachments(r.attachments)) {
+          const rows = index.get(ref.id) ?? [];
+          rows.push({ table, id: r.id as string });
+          index.set(ref.id, rows);
+        }
       }
+    }
+    return index;
+  }
+
+  /** Point every reference at the first id, then delete the rows that gave up their bytes. */
+  private collapseAttachmentGroup([keep, ...redundant]: string[], holders: Map<string, RefRow[]>): void {
+    const drop = this.raw.prepare("DELETE FROM attachments WHERE id = ?");
+    const rewrite = Object.fromEntries(
+      REF_TABLES.map((t) => [t, this.raw.prepare(`UPDATE ${t} SET attachments = replace(attachments, ?, ?) WHERE id = ?`)]),
+    );
+    for (const id of redundant) {
+      for (const row of holders.get(id) ?? []) rewrite[row.table]?.run(id, keep, row.id);
       drop.run(id);
     }
   }
