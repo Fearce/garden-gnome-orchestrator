@@ -43,6 +43,7 @@ const GATES = [
   "test:per-repo",
   "test:crashlog",
   "test:leak-bookkeeping",
+  "test:attachment-dedupe",
   "test:stale-gnomes",
   "test:git",
   "test:supervisor",

@@ -95,11 +95,14 @@ CREATE TABLE IF NOT EXISTS director_messages (
   created_at  INTEGER NOT NULL
 );
 
+-- sha256 of the data column, so the same bytes are stored once however many messages reference them: an
+-- image dropped into the director is attached to BOTH the director message and the dispatched task's.
 CREATE TABLE IF NOT EXISTS attachments (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   media_type  TEXT NOT NULL,
   data        TEXT NOT NULL,
+  sha256      TEXT,
   created_at  INTEGER NOT NULL
 );
 
