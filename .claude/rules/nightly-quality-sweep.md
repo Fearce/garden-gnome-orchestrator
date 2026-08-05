@@ -1,7 +1,7 @@
 # Nightly / quality sweep + resume-after-bounce
 
 When the brief is a health/quality sweep ("nightly check", "make sure everything is smooth") or you
-are auto-resumed after an orchestrator restart that already completed, run these seven, in order.
+are auto-resumed after an orchestrator restart that already completed, run these eight, in order.
 
 ## 1. `npm run health --prefix server`
 (`nightly-health.cjs`) — hits `/api/health`, checks `:4317` vs `dist` **and `dist` vs HEAD**, greps live
@@ -76,6 +76,20 @@ bump. A dead selector fails; an exact one warns. Unlike a `scripts/*.cjs` fix, a
 deploy** — the old copies stay resident in the running process. `audit:secrets` checks the real gitignored
 `.env` values against both the tracked tree and git history, known token shapes, tracked secret-type files,
 and public-repo basics. Both commands are read-only.
+
+## 8. `npm run probe:db-size --prefix server` — what the DB is made of, and is any of it waste
+The one watch-item that used to have no probe, so it was tracked in prose — which drifted into being
+WRONG and stayed wrong for weeks: it named `messages` as "the bulk" because `messages` has the most
+ROWS, while by BYTES it was `attachments` (183 MB of 291.7 MB from 337 rows, 75 MB of it the same
+pictures stored per reference; `1cd7154`). **Measure table size with `dbstat`, never `COUNT(*)`** — this
+probe does, folding each index into the table it serves. It also standing-checks the attachment store
+and **exits non-zero on a regression**: duplicate blobs keyed exactly as `addAttachment` keys its dedupe
+(sha256+name+type, so a deliberately re-named copy is not miscounted), and rows with no sha256 (an
+insert path that bypassed it). An orphan is a WARNING only — a crash between storing bytes and writing
+the message that points at them leaves one legitimately. Free pages are headroom, not waste: SQLite
+reuses them, so don't propose a `VACUUM` (exclusive lock on a live DB, buys only file size). Growth
+itself is never a failure — once nothing is duplicated, shrinking further is Kevin's retention DECISION.
+Gate: `test:db-size`.
 
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already completed — only verify live `dist` + health.

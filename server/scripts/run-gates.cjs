@@ -49,6 +49,7 @@ const GATES = [
   "test:supervisor",
   "test:audit-deps",
   "test:audit-overrides",
+  "test:db-size",
   "test:gate-registration",
 ];
 
