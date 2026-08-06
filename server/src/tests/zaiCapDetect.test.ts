@@ -43,12 +43,17 @@ for (const notice of ZAI_CAPS) {
 
   assert.equal(run.rateLimited, true, `a z.ai cap notice must set the failover flag the cap block reads: ${notice}`);
   assert.ok(
-    events.some((e) => e.type === "rate_limit"),
-    "the cap must be announced so the run's backend can be latched",
-  );
-  assert.ok(
     !events.some((e) => e.type === "text"),
     "the dead-end notice is swallowed, not shown to the owner as the agent's answer",
+  );
+
+  // The CLI repeats the notice while the session winds down, and every rate_limit event reaches
+  // AccountManager — so the cap is announced exactly once per run, as flagCapFromSignal documents.
+  handle(run, assistantText(notice));
+  assert.equal(
+    events.filter((e) => e.type === "rate_limit").length,
+    1,
+    "the cap is announced once per run, however often the CLI repeats it",
   );
 }
 

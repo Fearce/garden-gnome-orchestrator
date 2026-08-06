@@ -407,13 +407,12 @@ export class AgentRun implements AgentRunLike {
               // This per-session cap is invisible to the usage-ping headers (which track only the
               // 5h/weekly windows), so unless we tell AccountManager, the account keeps looking free:
               // a cap-parked task is auto-resumed, instantly re-caps, and loops — re-showing this very
-              // message. Emit a synthetic rate_limit so the account is held out of rotation until the
-              // window resets. Parse the "resets 7pm" clock for the real reset; fall back to the ~5h
-              // session cadence when it's absent, so the hold always self-expires (never a stuck cap).
+              // message. flagCapFromSignal emits the synthetic rate_limit that holds the account out of
+              // rotation until the window resets — once per run, since the CLI repeats this notice and
+              // each event reaches AccountManager. Parse the "resets 7pm" clock for the real reset; fall
+              // back to the ~5h session cadence when absent, so the hold always self-expires.
               const resetsAt = parseResetClock(b.text, Date.now()) ?? Date.now() + SESSION_LIMIT_FALLBACK_MS;
-              const info: RateLimitInfo = { status: "rejected", resetsAt };
-              this.flagCapFromSignal(info);
-              this.emit({ type: "rate_limit", info });
+              this.flagCapFromSignal({ status: "rejected", resetsAt });
               continue;
             }
             this.emit({ type: "text", text: b.text });
