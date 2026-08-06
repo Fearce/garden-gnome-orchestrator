@@ -45,6 +45,12 @@ typechecks fine but silently strands the backend at that layer — the **failove
    `.capped`, and has NO sibling Claude account: in `awaitImplementorResult` early-return for `instanceof
    XAgentRun` (else it wrongly fails over to a Claude account), and add it to the `awaitImplementorCompletion`
    `cliCapped || xCapped` flip AND the `runRole` `provider !== "claude"` cap block. `noteXCap` in all three.
+   **First make `rateLimited` settable at all:** only ANTHROPIC's phrasing sets it, so override `protected
+   get providerCapText()` with your backend's own cap wording (`ZaiAgentRun`/`ZAI_CAP_TEXT_RE` — anchored,
+   since the match swallows the message and latches the backend). Miss it and every trap above is
+   unreachable: z.ai's `Request rejected (429) · [1310][Weekly/Monthly Limit Exhausted…]` read as a crash
+   for weeks — no latch, no hand-off, a burnt QA round. Mirror the wording into `probe-run-errors.cjs`'s
+   `CAP_RE` too, or the sweep files it as a REAL failure. Gate: `test:zai-cap`.
 10. `capParkMessage`, `providerLabel`, and — CLI text-bridge backends ONLY — `isCliOfficeBridge` (a
     reuse-AgentRun backend has the real office MCP, so LEAVE IT OUT).
 11. **`scripts/probe-accounts.cjs` — `BACKENDS` *and* `MIRRORED_HEADROOM_TERMS`.** The sweep's

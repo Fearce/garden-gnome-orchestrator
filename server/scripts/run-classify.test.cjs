@@ -41,6 +41,17 @@ is("cap", { model: "claude-fable-5", error: "You've hit your limit · resets Jul
 is("cap", { error: "429 Too Many Requests" });
 is("cap", { error: "402 Payment Required" });
 is("cap", { error: "api_error_status=429 rejected" });
+// z.ai says it in its own words — the exact row a QA run recorded on 2026-08-05, reported as a REAL
+// failure needing a human when the backend had simply spent its weekly quota.
+is("cap", {
+  role: "qa",
+  model: "glm-5.2",
+  error:
+    "API Error: Request rejected (429) · [1310][Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-08-07 05:17:25][20260805162117d671fff34d0b496f]",
+});
+
+// …the envelope alone is not the notice, so a run that merely narrates the rejection path stays visible.
+is("real", { error: "the reader explained how a request rejected (429) reaches the failover ladder" });
 
 // …but a bare number must NOT read as a cap: `429` is also a line number, and filing a crash as a cap hides it.
 is("real", { error: "TypeError: Cannot read properties of undefined at threadManager.ts:429:15" });

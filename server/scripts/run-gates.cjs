@@ -31,6 +31,7 @@ const GATES = [
   "test:office-bridge",
   "test:office-gating",
   "test:zai-usage",
+  "test:zai-cap",
   "test:structured",
   "test:effort",
   "test:reader",

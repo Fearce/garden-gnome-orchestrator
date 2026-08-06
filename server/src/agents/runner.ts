@@ -237,6 +237,12 @@ export class AgentRun implements AgentRunLike {
     this.emitter.setMaxListeners(50);
   }
 
+  /** Cap wording specific to the backend this run talks to, beyond the Claude CLI's own notice.
+   *  Undefined on the Claude path — a non-Anthropic backend overrides it (see ZaiAgentRun). */
+  protected get providerCapText(): RegExp | undefined {
+    return undefined;
+  }
+
   start(firstMessage: UserContent): this {
     const options: Options = {
       model: this.cfg.model,
@@ -397,7 +403,7 @@ export class AgentRun implements AgentRunLike {
             // ("You've hit your session limit · resets 7pm") with no rate_limit_event and no
             // message-level error. Flag the cap and SWALLOW the text so the failover path runs
             // instead of the owner seeing a dead-end "limit" message in the chat.
-            if (SESSION_LIMIT_TEXT_RE.test(b.text)) {
+            if (looksLikeCapNotice(b.text, this.providerCapText)) {
               // This per-session cap is invisible to the usage-ping headers (which track only the
               // 5h/weekly windows), so unless we tell AccountManager, the account keeps looking free:
               // a cap-parked task is auto-resumed, instantly re-caps, and loops — re-showing this very
@@ -469,7 +475,7 @@ export class AgentRun implements AgentRunLike {
         // error_during_execution carrying a rate-limit message, or is_error + api_error_status 429)
         // rather than a rate_limit_event / assistant error. Flag BEFORE emitting so the awaiting
         // failover path (which reads agent.rateLimited the moment result() resolves) sees it.
-        if (evt.isError && resultLooksRateLimited(m)) this.flagCapFromSignal({ status: "rejected" });
+        if (evt.isError && resultLooksRateLimited(m, this.providerCapText)) this.flagCapFromSignal({ status: "rejected" });
         if (evt.isError) this.flagTransientApiError(m);
         this.emit(evt);
         break;
@@ -487,7 +493,11 @@ export class AgentRun implements AgentRunLike {
  * the cap-failover flip): z.ai is AgentRun-based but is NOT a Claude account, so its usage cap must be
  * handled like a CLI backend's (fail over to another provider) rather than as a Claude-account failover.
  */
-export class ZaiAgentRun extends AgentRun {}
+export class ZaiAgentRun extends AgentRun {
+  protected override get providerCapText(): RegExp {
+    return ZAI_CAP_TEXT_RE;
+  }
+}
 
 function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -551,6 +561,26 @@ const RATE_LIMIT_RESULT_RE =
 const SESSION_LIMIT_TEXT_RE =
   /you'?ve hit your (?:fable[\w .-]{0,10}?|model )?(?:session|usage|\d+-hour|weekly) limit|(?:session|usage|weekly) limit\s*[·:—–-]\s*resets/i;
 
+/**
+ * z.ai announces a spent quota in its own words, sharing none of Anthropic's phrasing — the run's last
+ * assistant text (and its error result) reads `API Error: Request rejected (429) · [1310][Weekly/Monthly
+ * Limit Exhausted. Your limit will reset at 2026-08-07 05:17:25]`. Matched by neither regex above, such a
+ * cap was recorded as an ordinary crash: no `noteZaiCap` latch, no provider hand-off, and the sweep's
+ * triage reported it as a real failure needing a human.
+ *
+ * ANCHORED, because the matching branch swallows the text and latches the backend: every notice
+ * production has recorded IS the whole message, while an agent that merely quotes one — this repo's own
+ * source now contains the literal — always has words before it. Requires the rejection envelope AND a
+ * limit word, and is reachable only through `ZaiAgentRun.providerCapText`, so it can never speak for a
+ * Claude run.
+ */
+const ZAI_CAP_TEXT_RE = /^\s*(?:api error:\s*)?request rejected \(429\)[^\n]{0,160}\blimit (?:exhausted|reached)/i;
+
+/** Whether an assistant TEXT block is a usage-cap notice — the CLI's own wording, plus the backend's. */
+export function looksLikeCapNotice(text: string, providerCapText?: RegExp): boolean {
+  return SESSION_LIMIT_TEXT_RE.test(text) || (providerCapText?.test(text) ?? false);
+}
+
 // A session-limit notice with no parseable reset clock is held for the ~5h session cadence, so the cap
 // self-expires and the account rejoins rotation rather than staying stuck limited forever.
 const SESSION_LIMIT_FALLBACK_MS = 5 * 60 * 60 * 1000;
@@ -581,12 +611,15 @@ function parseResetClock(text: string, now: number): number | undefined {
  * Whether an ERROR result looks like a usage-cap rejection (vs. error_max_turns / error_max_budget_usd
  * / a real crash). The caller gates this on is_error, so matching the result/errors text here can't
  * false-positive on a successful run that merely mentions rate limits. Checks the structured signals
- * first (429 status, stop_reason) then the human-readable error/result text.
+ * first (429 status, stop_reason) then the human-readable error/result text — the run's own backend
+ * contributes its wording via `providerCapText`, since only Anthropic's phrasing is known here.
+ * Exported for `test:zai-cap`; the sole production caller is the result branch above.
  */
-function resultLooksRateLimited(m: Record<string, any>): boolean {
+export function resultLooksRateLimited(m: Record<string, any>, providerCapText?: RegExp): boolean {
   if (m.api_error_status === 429) return true;
   if (typeof m.stop_reason === "string" && /rate.?limit/i.test(m.stop_reason)) return true;
   const errs = Array.isArray(m.errors) ? m.errors.join(" ") : "";
   const text = typeof m.result === "string" ? m.result : "";
-  return RATE_LIMIT_RESULT_RE.test(errs) || RATE_LIMIT_RESULT_RE.test(text);
+  const capped = (s: string): boolean => RATE_LIMIT_RESULT_RE.test(s) || (providerCapText?.test(s) ?? false);
+  return capped(errs) || capped(text);
 }

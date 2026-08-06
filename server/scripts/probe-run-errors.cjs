@@ -68,8 +68,12 @@ const ROLE_TURN_CEILING = {
 // number in a stack trace), hence the required context around it. The one deliberate widening is the
 // qualifier-less "You've hit your limit · resets …" — a Fable model-pool notice the runner catches via the
 // rate_limit_event rather than text; it still requires that whole CLI phrase, so it can't match prose.
+// The last alternative is z.ai's own wording (ZAI_CAP_TEXT_RE in runner.ts), which shares none of
+// Anthropic's: `API Error: Request rejected (429) · [1310][Weekly/Monthly Limit Exhausted…]`. It reached
+// this sweep as a REAL failure until 2026-08-06. Anchored like its runner twin: a persisted reason can be
+// a CLI backend's own final words, and an agent WRITING about the notice must not read as one.
 const CAP_RE =
-  /you'?ve hit your [\w .-]{0,24}limit|session limit|weekly limit|usage limit|hour limit|limit reached|rate.?limit|too many requests|(?:http|api)[\w .:=_-]{0,16}429\b|\b429\s+too many|payment required|quota (?:exceeded|reached)/i;
+  /you'?ve hit your [\w .-]{0,24}limit|session limit|weekly limit|usage limit|hour limit|limit reached|rate.?limit|too many requests|(?:http|api)[\w .:=_-]{0,16}429\b|\b429\s+too many|payment required|quota (?:exceeded|reached)|^\s*(?:api error:\s*)?request rejected \(429\)[^\n]{0,160}\blimit (?:exhausted|reached)/i;
 const TRANSIENT_RE =
   /api\s*(?:error|status)?\s*[:=]?\s*(?:500|502|503|504|520|522|524|529)\b|overload|internal server error|service unavailable|bad gateway|gateway timeout|temporar(?:y|ily) unavailable|connection (?:reset|closed|refused)|unable to connect to (?:the )?api|failed ?to ?open ?socket|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|socket hang up/i;
 // Every wording a turn/cost cutoff can arrive in — a backend whose text isn't here raises a REAL-failure
