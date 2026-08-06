@@ -89,6 +89,8 @@ export interface AgentRun {
   costUsd?: number | null;
   numTurns?: number | null;
   error?: string | null;
+  /** The runner read this run's ending as a usage cap (mirrors the server field). */
+  capFlagged?: boolean | null;
   startedAt: number;
   endedAt?: number | null;
 }

@@ -5539,6 +5539,7 @@ export class ThreadManager implements OrchestratorApi {
       state: res?.isError ? "error" : "done",
       // Persist the failure reason so a dead run is diagnosable instead of a silent error row.
       error: res?.isError ? runErrorText(res) : null,
+      capFlagged: capFlaggedBy(agent),
       endedAt: Date.now(),
       costUsd: res?.costUsd ?? null,
       numTurns: res?.numTurns ?? null,
@@ -5558,6 +5559,7 @@ export class ThreadManager implements OrchestratorApi {
     this.db.updateRun(runId, {
       state,
       error: res?.isError ? runErrorText(res) : run.error ?? null,
+      capFlagged: capFlaggedBy(agent),
       endedAt: Date.now(),
       costUsd: res?.costUsd ?? run.costUsd ?? null,
       numTurns: res?.numTurns ?? run.numTurns ?? null,
@@ -6089,6 +6091,16 @@ export function cliRoleKickoff(
     .filter(Boolean)
     .join("\n\n");
   return prependUserContent(content, prelude);
+}
+
+/** Whether the runner itself saw a usage cap during this run — the flag the failover paths key on. The
+ *  two backends' signals are deliberately different (`rateLimited` drives Claude-account failover, a CLI
+ *  backend sets `capped` instead to avoid it), and either one means "a quota, not a crash". Narrowed by
+ *  `instanceof` rather than a structural cast, so renaming `capped` fails the build instead of silently
+ *  reporting every Grok/Codex cap as none — which is the exact blindness this flag exists to expose. */
+export function capFlaggedBy(agent: AgentRunLike): boolean {
+  const cliCapped = (agent instanceof CodexAgentRun || agent instanceof GrokAgentRun) && agent.capped;
+  return agent.rateLimited || cliCapped;
 }
 
 /** Human label for an implementor backend, for the failover findings/notices. */

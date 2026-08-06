@@ -110,6 +110,13 @@ export interface AgentRun {
   costUsd?: number | null;
   numTurns?: number | null;
   error?: string | null;
+  /** Whether the RUNNER saw a usage cap during this run (`rateLimited` / a CLI backend's `capped`) — the
+   *  flag every failover path keys on. Persisted because its absence is otherwise unprovable: a cap the
+   *  runner failed to recognize looks exactly like a crash, and telling the two apart meant inferring from
+   *  missing findings and kv latches that self-expire. Sticky for the whole run on Claude/z.ai; the CLI
+   *  backends re-arm per turn, so theirs describes the last one. Null = no runner verdict was recorded —
+   *  a row predating the flag, or one a restart/silent-run stamp closed out instead of its own agent. */
+  capFlagged?: boolean | null;
   startedAt: number;
   endedAt?: number | null;
 }

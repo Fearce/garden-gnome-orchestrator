@@ -127,7 +127,37 @@ function classifyRun(run) {
   return "unclassifiable";
 }
 
-module.exports = { classifyRun, CLASSES, ROLE_TURN_CEILING };
+// The classes that put a run in front of a human. A runner-flagged cap landing in one means this file's
+// regexes are behind the runner's — annoying but safe. The reverse (below) is the dangerous one. DERIVED
+// from CLASSES, never hand-listed: a second copy of `human` is the same drift this whole check exists for.
+const HUMAN_ALARM_CLASSES = new Set(CLASSES.filter((c) => c.human).map((c) => c.key));
+
+/**
+ * Where this file's regexes and the RUNNER's own verdict disagree about a cap. `agent_runs.cap_flagged`
+ * records what the runner concluded (`rateLimited` / a CLI backend's `capped`) — the flag every failover
+ * path keys on — so the drift between the two classifiers is readable instead of inferred. It exists
+ * because on 2026-08-05 BOTH were ignorant of z.ai's wording at once, and proving that took an hour of
+ * reading absent findings and self-expiring kv latches.
+ *
+ * `null` is not "the runner saw no cap" — it means no runner verdict was ever recorded: a row predating
+ * the flag, or one closed out by a restart/silent-run stamp rather than by its own agent. Skipped, so the
+ * check has no opinion until the data can support one.
+ *
+ * @param {Array<{run: object, key: string}>} classified — every non-done run with its class
+ */
+function classifierDisagreements(classified) {
+  const unrecognizedByRunner = []; // the sweep called it a cap; the runner didn't act on one
+  const unrecognizedByProbe = []; // the runner capped; the sweep is about to alarm a human about it
+  for (const { run, key } of classified) {
+    if (run.cap_flagged == null) continue;
+    const runnerSaidCap = run.cap_flagged === 1;
+    if (key === "cap" && !runnerSaidCap) unrecognizedByRunner.push(run);
+    else if (runnerSaidCap && HUMAN_ALARM_CLASSES.has(key)) unrecognizedByProbe.push(run);
+  }
+  return { unrecognizedByRunner, unrecognizedByProbe };
+}
+
+module.exports = { classifyRun, CLASSES, ROLE_TURN_CEILING, classifierDisagreements };
 
 // ---- CLI ----
 
@@ -158,9 +188,16 @@ function main() {
   db.pragma("busy_timeout = 5000");
   const since = Date.now() - hours * 3600 * 1000;
 
+  // The flag arrived after this probe did, and a sweep can run against a DB whose server hasn't booted the
+  // migration yet — so read the column only when it exists, rather than crashing the whole triage.
+  const hasCapFlag = db
+    .prepare("PRAGMA table_info(agent_runs)")
+    .all()
+    .some((c) => c.name === "cap_flagged");
   const runs = db
     .prepare(
       `SELECT r.id, r.thread_id, r.role, r.model, r.account, r.state, r.error, r.cost_usd, r.num_turns,
+              ${hasCapFlag ? "r.cap_flagged" : "NULL AS cap_flagged"},
               r.started_at, t.title, t.state AS thread_state, t.error AS thread_error
        FROM agent_runs r LEFT JOIN threads t ON t.id = r.thread_id
        WHERE r.started_at > ? AND r.state IN ('error','interrupted')
@@ -181,6 +218,7 @@ function main() {
 
   reportVerdict(buckets);
   reportNeedsHuman(buckets);
+  reportCapAgreement(buckets);
   reportRecovery(db, buckets);
   reportBenignByTask(buckets);
   db.close();
@@ -222,6 +260,42 @@ function reportNeedsHuman(buckets) {
           "    carry the agent's own words or the SDK subtype, so this class should shrink to zero over time.",
       );
     }
+  }
+}
+
+// Does the RUNNER agree this was a cap? Every classifier in this file is a hand-copied mirror of the
+// runner's, and a mirror nobody diffs drifts silently — z.ai's `Request rejected (429) · [1310][Weekly/
+// Monthly Limit Exhausted…]` was unknown to BOTH for weeks, so a spent backend kept counting as a failover
+// rung and a QA round burned. `cap_flagged` makes the disagreement readable, in the direction that matters:
+// a cap the RUNNER missed did not fail over, whatever this file calls it.
+function reportCapAgreement(buckets) {
+  const classified = CLASSES.flatMap((c) => buckets.get(c.key).map((run) => ({ run, key: c.key })));
+  const covered = classified.filter((c) => c.run.cap_flagged != null);
+  if (!covered.length) return; // every row predates the flag — say nothing rather than something unfounded
+  const { unrecognizedByRunner, unrecognizedByProbe } = classifierDisagreements(classified);
+
+  console.log("\n=== cap classifier agreement (does the runner read these the same way?) ===");
+  const line = (r) =>
+    `- ${r.role} · ${r.model} · ${r.account ?? "?"} · ${iso(r.started_at)} · task ${String(r.thread_id).slice(0, 8)}` +
+    `\n    ${short(r.error) || "(no error text recorded)"}`;
+
+  if (!unrecognizedByRunner.length && !unrecognizedByProbe.length) {
+    console.log(`  ✓ both classifiers agree on all ${covered.length} run(s) carrying the flag.`);
+    return;
+  }
+  if (unrecognizedByRunner.length) {
+    console.log(`  ⚠ ${unrecognizedByRunner.length} run(s) look like a usage cap here, but the RUNNER never flagged one:`);
+    for (const r of unrecognizedByRunner) console.log(line(r));
+    console.log(
+      "  ↳ That run did NOT fail over: no cap latch, no provider hand-off, the backend kept counting as a\n" +
+        "    failover rung. Teach the runner this wording — a non-Anthropic backend supplies its own via\n" +
+        "    `providerCapText` (agents/runner.ts, gate test:zai-cap), then mirror it into CAP_RE here.",
+    );
+  }
+  if (unrecognizedByProbe.length) {
+    console.log(`  · ${unrecognizedByProbe.length} run(s) the runner capped are about to be reported to you as a failure:`);
+    for (const r of unrecognizedByProbe) console.log(line(r));
+    console.log("  ↳ Harmless to the pipeline (the runner handled it); CAP_RE in this file is behind the runner's.");
   }
 }
 

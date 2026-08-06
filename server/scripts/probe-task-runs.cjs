@@ -101,6 +101,9 @@ for (const r of runs) {
     dur: dur(r.started_at, r.ended_at),
     started: iso(r.started_at),
     error: short(r.error, 70) || undefined,
+    // What the RUNNER concluded about a cap, where an error row is read. Absent = no verdict recorded
+    // (a row predating the flag, or one a restart/silent-run stamp closed out) — never "saw no cap".
+    ...(r.cap_flagged != null ? { cap: r.cap_flagged === 1 } : {}),
     ...(silent(r) ? { output: "⚠ NONE — never reached the model" } : {}),
   });
 }

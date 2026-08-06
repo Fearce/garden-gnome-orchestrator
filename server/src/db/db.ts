@@ -73,6 +73,8 @@ function rowToRun(r: Row): AgentRun {
     costUsd: (r.cost_usd as number | null) ?? null,
     numTurns: (r.num_turns as number | null) ?? null,
     error: (r.error as string | null) ?? null,
+    // Null (never written) is NOT "the runner saw no cap" — it's a row from before the flag existed.
+    capFlagged: r.cap_flagged == null ? null : r.cap_flagged === 1,
     startedAt: r.started_at as number,
     endedAt: (r.ended_at as number | null) ?? null,
   };
@@ -220,6 +222,7 @@ export class Db {
       "ALTER TABLE director_messages ADD COLUMN thread_id TEXT",
       "ALTER TABLE threads ADD COLUMN lane TEXT",
       "ALTER TABLE attachments ADD COLUMN sha256 TEXT",
+      "ALTER TABLE agent_runs ADD COLUMN cap_flagged INTEGER",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -516,6 +519,7 @@ export class Db {
       costUsd: null,
       numTurns: null,
       error: null,
+      capFlagged: null, // no verdict until the run ends — matches what a re-read of the row returns
       startedAt: now(),
       endedAt: null,
     };
@@ -530,7 +534,7 @@ export class Db {
 
   updateRun(
     id: string,
-    patch: Partial<Pick<AgentRun, "sessionId" | "state" | "costUsd" | "numTurns" | "error" | "endedAt">>,
+    patch: Partial<Pick<AgentRun, "sessionId" | "state" | "costUsd" | "numTurns" | "error" | "endedAt" | "capFlagged">>,
   ): void {
     const sets: string[] = [];
     const params: Row = { id };
@@ -540,12 +544,14 @@ export class Db {
       costUsd: "cost_usd",
       numTurns: "num_turns",
       error: "error",
+      capFlagged: "cap_flagged",
       endedAt: "ended_at",
     };
     for (const [k, col] of Object.entries(map)) {
       if (k in patch) {
         sets.push(`${col} = @${k}`);
-        params[k] = (patch as Row)[k] ?? null;
+        const v = (patch as Row)[k] ?? null;
+        params[k] = typeof v === "boolean" ? (v ? 1 : 0) : v; // better-sqlite3 refuses to bind a boolean
       }
     }
     if (!sets.length) return;

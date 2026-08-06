@@ -27,6 +27,12 @@ what needs a human, and **verifies the mechanism ran** (a cap/restart on a `revi
 later run = something stopped mid-work). `num_turns` at the role's ceiling (implementor
 `implementorMaxTurns`, qa 60, others 40) is a benign cutoff — that misread is why this step exists. Backs
 health's `non-done reasons:` line. Gate: `test:run-classify`.
+**Read the `cap classifier agreement` section when it appears.** Its regexes are a hand-copied mirror of
+`runner.ts`'s, and on 08-05 both were blind to z.ai's wording at once — so it now diffs itself against
+`agent_runs.cap_flagged` (what the RUNNER concluded). "Looks like a cap here but the RUNNER never flagged
+one" means that run did NOT fail over: teach the backend's wording to `providerCapText`, then mirror it
+into `CAP_RE`. The reverse is only noise in this probe. A silent section is not proof — when BOTH are
+blind (the 08-05 case) the row reads `real`, so check `cap_flagged` on any real failure. Gate: `test:cap-flag`.
 
 ## 4. `npm run probe:parks --prefix server` — name the parked tasks
 health's park line is a count too; this is the "read the thread error" it asks for — each task's id, age,

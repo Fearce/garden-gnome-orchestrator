@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   cost_usd    REAL,
   num_turns   INTEGER,
   error       TEXT,
+  cap_flagged INTEGER,
   started_at  INTEGER NOT NULL,
   ended_at    INTEGER
 );

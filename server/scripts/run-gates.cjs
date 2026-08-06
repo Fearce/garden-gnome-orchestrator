@@ -24,6 +24,7 @@ const GATES = [
   "test:injection",
   "test:run-error",
   "test:run-classify",
+  "test:cap-flag",
   "test:crashlog-scan",
   "test:failover-ladder",
   "test:park-classify",
