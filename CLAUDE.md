@@ -113,8 +113,12 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
 
 ## Debugging a failed task
 State + run history live in `server/data/orchestrator.sqlite` (open read-only with the bundled
-`better-sqlite3`; columns are snake_case — `agent_runs.thread_id/started_at/ended_at/session_id`;
-there's NO `backend` column — the backend is encoded in `model`, e.g. `grok-4.5`/`gpt-*-sol`/`claude-*`).
+`better-sqlite3`; columns are snake_case — `agent_runs.thread_id/started_at/ended_at/session_id`, the
+subscription is `account` (not `account_label`), and message text is `messages.content` (not `text`);
+there's NO `backend` column — the backend is encoded in `model`, e.g. `grok-4.5`/`gpt-*-sol`/`claude-*`.
+`agent_runs.cap_flagged` is what the RUNNER concluded about a cap — 1/0, null when no verdict was recorded
+(a row predating it, or one a restart/silent-run stamp closed out) — so "was this a quota or a crash?" is a
+read, not an inference from absent findings and expiring kv latches; `probe:task-runs` prints it).
 For one task's full trail + per-model cost/turn totals + a QA-loop budget check, run
 `npm run probe:task-runs --prefix server -- <thread-id|title-substring>` (read-only, safe while prod is up).
 To triage ALL non-done runs in a window instead of one task — which errors are real vs. an expected
