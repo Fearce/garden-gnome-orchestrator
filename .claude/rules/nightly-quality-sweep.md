@@ -78,6 +78,10 @@ often does not: `no parent upgrade exists, so an override is the only route` mea
 vulnerable version in its NEWEST release (officeparser has pinned `pdfjs-dist` exactly in every release), and
 overriding past the pin is then correct — verify the consumer still works, and key the override on the major
 line so a future upstream major fails the override audit loudly instead of silently forcing a downgrade.
+**An override is verified at the RESOLUTION path but takes effect at the LOAD path**, so confirm the patched
+copy is the one that RUNS: officeparser also hardcodes a CDN worker URL pinned to the vulnerable pdfjs, which
+would have made the 08-07 fix cosmetic had Node used it. `test:pdf-parse` now holds that (parses a real PDF,
+fails on a `PDF_WORKER_FALLBACK`); a dep that loads by URL/vendored copy/wasm blob needs the same treatment.
 It also runs the **override audit** (`audit:overrides` standalone) over `package.json`'s `overrides`, because
 a pin that stopped binding is invisible — npm never reports one, and `audit:deps` only goes red later, once a
 new advisory lands on whatever quietly came unpinned. **Key an override on the major line with a range value**
