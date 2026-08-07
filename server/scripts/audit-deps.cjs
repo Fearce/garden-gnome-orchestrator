@@ -162,7 +162,9 @@ function explain(advisory, tree, lookupLatest = registryLatest) {
       ? "no fix version parsed from the advisory"
       : inRange.length
         ? `accepts ${inRange.join("/")} — a floor bump, safe to override`
-        : `does NOT accept ${fixes.join("/")} — an override here fights semver; upgrade the parent`;
+        // The route is deliberately left to the follow-up line, which knows whether a parent
+        // upgrade was ever published; naming one here would sometimes contradict it.
+        : `does NOT accept ${fixes.join("/")} — an override here fights semver`;
     lines.push(`parent ${dep.parent}@${dep.version} wants ${dep.range} → ${verdict}`);
     // Only the semver-fighting branch needs the registry — the floor-bump case is already actionable.
     if (fixes.length && !inRange.length) lines.push(...upstreamRoute(dep, advisory.name, fixes, lookupLatest));

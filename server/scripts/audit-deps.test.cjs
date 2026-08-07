@@ -123,6 +123,10 @@ const fought = explain(pinned, pinnedTree, (parent, name) => {
 });
 assert.equal(asked, "officeparser/pdfjs-dist", "explain must ask the registry about the pinning parent");
 assert.ok(
+  !fought.some((l) => /fights semver.*upgrade the parent/.test(l)),
+  "the verdict must not prescribe a route the follow-up line may contradict",
+);
+assert.ok(
   fought.some((l) => l.includes("no parent upgrade exists")),
   `expected the dead-end route to be surfaced, got: ${JSON.stringify(fought)}`,
 );
