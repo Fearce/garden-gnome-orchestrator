@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const assert = require("node:assert/strict");
-const { blockingAdvisories, summarizeAudit, firstFixed, explain, dependantsOf } = require("./audit-deps.cjs");
+const { blockingAdvisories, summarizeAudit, firstFixed, explain, dependantsOf, upstreamRoute } = require("./audit-deps.cjs");
 
 const report = {
   metadata: { vulnerabilities: { info: 1, low: 2, moderate: 3, high: 4, critical: 5 } },
@@ -68,6 +68,63 @@ assert.ok(lines.some((l) => l.includes("clears at: >=2.1.4")), "the version that
 assert.ok(
   lines.some((l) => /parent minimatch@9\.0\.9 wants \^2\.0\.2 → accepts 2\.1\.4 — a floor bump/.test(l)),
   `expected an in-range floor-bump verdict, got: ${JSON.stringify(lines)}`,
+);
+
+// --- is a parent upgrade actually available? ---------------------------------
+// The 2026-08-07 sweep hit an advisory whose parent pinned an exact vulnerable version and
+// STILL did in its newest release, so "upgrade the parent" was a dead end that cost several
+// tool calls to disprove. The table must answer that itself.
+const pinned = {
+  name: "pdfjs-dist",
+  nodes: ["node_modules/pdfjs-dist"],
+  via: [{ range: ">=5.6.83 <6.2.108" }],
+};
+const pinnedTree = {
+  dependencies: { officeparser: { version: "7.2.3", dependencies: { "pdfjs-dist": { version: "6.1.200" } } } },
+};
+// declaredRange reads the real node_modules, so drive upstreamRoute directly for the
+// registry verdicts — the installed-parent lookup is already covered above.
+const dep = { parent: "officeparser", version: "7.2.3", range: "6.1.200" };
+
+assert.deepEqual(
+  upstreamRoute(dep, "pdfjs-dist", ["6.2.108"], () => ({ version: "7.5.1", range: "6.1.200" })),
+  ["  even the newest officeparser@7.5.1 wants 6.1.200 — no parent upgrade exists, so an override is the only route"],
+  "a parent that still pins the vulnerable version must say an override is the only route",
+);
+assert.ok(
+  upstreamRoute(dep, "pdfjs-dist", ["6.2.108"], () => ({ version: "8.0.0", range: "^6.2.108" }))[0].includes(
+    "upgrade the parent to it and this clears",
+  ),
+  "a newer parent that accepts the fix must be named as the route",
+);
+assert.ok(
+  upstreamRoute(dep, "pdfjs-dist", ["6.2.108"], () => ({ version: "8.0.0", range: null }))[0].includes("dropped pdfjs-dist entirely"),
+  "a parent that no longer depends on it clears by upgrade too",
+);
+assert.ok(
+  upstreamRoute(dep, "pdfjs-dist", ["6.2.108"], () => null)[0].includes("could not reach the registry"),
+  "an unreachable registry degrades honestly instead of inventing a verdict",
+);
+
+// The registry is a network call, so the common floor-bump path must never make it.
+let probed = 0;
+const floorBump = explain(advisory, tree, () => {
+  probed += 1;
+  return null;
+});
+assert.equal(probed, 0, "a safe floor bump must not consult the registry");
+assert.ok(floorBump.some((l) => l.includes("a floor bump")), "the floor-bump verdict still stands");
+
+// ...and the semver-fighting path must, reaching it through explain()'s real wiring.
+let asked = null;
+const fought = explain(pinned, pinnedTree, (parent, name) => {
+  asked = `${parent}/${name}`;
+  return { version: "7.5.1", range: "6.1.200" };
+});
+assert.equal(asked, "officeparser/pdfjs-dist", "explain must ask the registry about the pinning parent");
+assert.ok(
+  fought.some((l) => l.includes("no parent upgrade exists")),
+  `expected the dead-end route to be surfaced, got: ${JSON.stringify(fought)}`,
 );
 
 // A parent whose installed copy cannot be matched by version reports honestly rather

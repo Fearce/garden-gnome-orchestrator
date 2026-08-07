@@ -89,14 +89,59 @@ function declaredRange(parent, version, name, nodes) {
   return null;
 }
 
+const REGISTRY_TIMEOUT_MS = 20_000;
+
+/** What the newest published `parent` declares for `name`; null when the registry is unreachable. */
+function registryLatest(parent, name) {
+  const res = spawnSync(NPM, ["view", `${parent}@latest`, "--json"], {
+    cwd: SERVER_DIR,
+    encoding: "utf8",
+    shell: process.platform === "win32",
+    timeout: REGISTRY_TIMEOUT_MS,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  try {
+    const parsed = JSON.parse(res.stdout);
+    const manifest = Array.isArray(parsed) ? parsed[parsed.length - 1] : parsed;
+    if (!manifest || typeof manifest.version !== "string") return null;
+    const deps = manifest.dependencies ?? {};
+    return {
+      version: manifest.version,
+      range: deps[name] ?? manifest.optionalDependencies?.[name] ?? manifest.peerDependencies?.[name] ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether upgrading the parent is even possible, asked of the registry rather than of the
+ * reader. "Upgrade the parent" is only advice when a parent that accepts the fix was ever
+ * published — officeparser has pinned pdfjs-dist to one exact version in every release
+ * including its newest, so on 2026-08-07 that line sent the sweep hunting for an upgrade
+ * that does not exist, when an override was the only route. Answer it here instead.
+ */
+function upstreamRoute(dep, name, fixes, lookupLatest) {
+  const latest = lookupLatest(dep.parent, name);
+  if (!latest) return [`  could not reach the registry to see whether a newer ${dep.parent} accepts it`];
+  if (!latest.range) return [`  ${dep.parent}@${latest.version} dropped ${name} entirely — upgrading the parent clears it`];
+  if (fixes.some((f) => satisfies(f, latest.range) === true)) {
+    return [`  ${dep.parent}@${latest.version} wants ${latest.range} — upgrade the parent to it and this clears`];
+  }
+  return [
+    `  even the newest ${dep.parent}@${latest.version} wants ${latest.range} — no parent upgrade exists,` +
+      " so an override is the only route",
+  ];
+}
+
 /**
  * The remediation table this command used to leave as manual legwork: where each
  * vulnerable package sits, what version clears it, and — the decision that actually
  * matters — whether every parent's declared range already accepts that version. If it
- * does, an `overrides` floor bump is safe; if not, the override fights semver and the
- * parent needs upgrading instead.
+ * does, an `overrides` floor bump is safe; if not, the override fights semver, and the
+ * follow-up line says whether a parent upgrade is actually available to take instead.
  */
-function explain(advisory, tree) {
+function explain(advisory, tree, lookupLatest = registryLatest) {
   const lines = [];
   const paths = (advisory.nodes ?? []).map((n) => n.replace(/^node_modules\//, ""));
   if (paths.length) lines.push(`installed at: ${paths.join(", ")}`);
@@ -119,6 +164,8 @@ function explain(advisory, tree) {
         ? `accepts ${inRange.join("/")} — a floor bump, safe to override`
         : `does NOT accept ${fixes.join("/")} — an override here fights semver; upgrade the parent`;
     lines.push(`parent ${dep.parent}@${dep.version} wants ${dep.range} → ${verdict}`);
+    // Only the semver-fighting branch needs the registry — the floor-bump case is already actionable.
+    if (fixes.length && !inRange.length) lines.push(...upstreamRoute(dep, advisory.name, fixes, lookupLatest));
   }
   return lines;
 }
@@ -183,4 +230,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { summarizeAudit, blockingAdvisories, firstFixed, explain, dependantsOf };
+module.exports = { summarizeAudit, blockingAdvisories, firstFixed, explain, dependantsOf, upstreamRoute };

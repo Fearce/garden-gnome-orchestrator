@@ -72,7 +72,12 @@ extending either, and never hand-roll your own drive against `:4317`.
 turning a healthy sweep red. Do not run `npm audit fix` blindly in the shared checkout. You no longer have to
 derive the fix by hand: on a failure it prints, per advisory, where the package sits, the version that clears
 it, and **each parent's declared range with a verdict** — `a floor bump, safe to override` means every parent
-already accepts the fix (make the override), while `fights semver` means upgrade the parent instead.
+already accepts the fix (make the override), while `fights semver` means the parent needs upgrading instead.
+**A `fights semver` line always carries a follow-up naming whether that upgrade actually exists**, because it
+often does not: `no parent upgrade exists, so an override is the only route` means the parent still pins the
+vulnerable version in its NEWEST release (officeparser has pinned `pdfjs-dist` exactly in every release), and
+overriding past the pin is then correct — verify the consumer still works, and key the override on the major
+line so a future upstream major fails the override audit loudly instead of silently forcing a downgrade.
 It also runs the **override audit** (`audit:overrides` standalone) over `package.json`'s `overrides`, because
 a pin that stopped binding is invisible — npm never reports one, and `audit:deps` only goes red later, once a
 new advisory lands on whatever quietly came unpinned. **Key an override on the major line with a range value**
