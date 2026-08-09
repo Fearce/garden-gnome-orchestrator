@@ -101,6 +101,21 @@ assert.deepEqual(
   selectorsOf({ a: "1.0.0", "b@^2": { c: "3.0.0" } }).map((s) => s.key),
   ["a", "b@^2", "c"],
 );
+// npm overrides can name a whole dependency PATH, and the package the pin actually
+// applies to is the DEEPEST key — stopping at the first level leaves it unchecked.
+assert.deepEqual(
+  selectorsOf({ p: { q: { r: "1.0.0" } } }).map((s) => s.key),
+  ["p", "q", "r"],
+);
+assert.deepEqual(
+  selectorsOf({ p: { q: { r: "1.0.0" } } }).map((s) => (s.path ?? [s.key]).join(" > ")),
+  ["p", "p > q", "p > q > r"],
+);
+// An override of the parent itself ("." ) is a value, not another selector.
+assert.deepEqual(
+  selectorsOf({ p: { ".": "2.0.0", q: "1.0.0" } }).map((s) => s.key),
+  ["p", "q"],
+);
 
 // --- classification ---------------------------------------------------------
 // The live shape: major-line selectors that all bind, and nothing brittle.
@@ -147,6 +162,42 @@ assert.deepEqual(auditOverrides({ "minimatch@^9": { "brace-expansion": "2.1.4" }
 const ghostChild = auditOverrides({ "minimatch@^9": { "left-pad": "1.3.0" } }, installed);
 assert.equal(ghostChild.dead.length, 1);
 assert.match(ghostChild.dead[0].reason, /no "left-pad" is installed anywhere/);
+
+// THE 2026-08-09 SHAPE: a security pin two levels down. The package it names must be
+// audited like any other selector — checking only the first level reported the whole
+// entry healthy even with the pinned package absent from the entire tree.
+const deepTree = collectInstalled({
+  dependencies: {
+    "@sentropic/graphify": {
+      version: "0.17.1",
+      dependencies: {
+        "ollama-ai-provider": {
+          version: "1.2.0",
+          dependencies: { nanoid: { version: "3.3.18" } },
+        },
+      },
+    },
+  },
+});
+const deepPin = { "@sentropic/graphify": { "ollama-ai-provider": { nanoid: "3.3.18" } } };
+assert.deepEqual(auditOverrides(deepPin, deepTree).dead, [], "a deep pin that binds is not a finding");
+
+const withoutNanoid = collectInstalled({
+  dependencies: {
+    "@sentropic/graphify": {
+      version: "0.17.1",
+      dependencies: { "ollama-ai-provider": { version: "1.2.0" } },
+    },
+  },
+});
+const rotted = auditOverrides(deepPin, withoutNanoid);
+assert.equal(rotted.dead.length, 1, "the deepest selector is audited, not just the first level");
+assert.equal(rotted.dead[0].label, "@sentropic/graphify > ollama-ai-provider > nanoid");
+assert.match(rotted.dead[0].reason, /no "nanoid" is installed anywhere/);
+
+// A dead parent names the full path of everything it takes down with it.
+const deepParentGone = auditOverrides(deepPin, collectInstalled({ dependencies: {} }));
+assert.match(deepParentGone.dead[0].reason, /ollama-ai-provider > nanoid/);
 
 // A selector naming a package that is not installed at all is dead too.
 assert.equal(auditOverrides({ "left-pad@^1": "^1.3.0" }, installed).dead.length, 1);

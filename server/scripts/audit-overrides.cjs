@@ -98,16 +98,34 @@ function collectInstalled(tree) {
   return found;
 }
 
+/**
+ * Every selector nested under an override VALUE, at ANY depth, as {key, path} pairs.
+ *
+ * npm lets an override name a whole dependency PATH — the 2026-08-09 nanoid pin is
+ * `@sentropic/graphify > ollama-ai-provider > nanoid`, three levels deep. Walking only the
+ * first level left the package the pin actually names unchecked, so the entry could rot
+ * completely while this gate still reported every selector binding: the exact
+ * indistinguishable-from-working failure it exists to catch.
+ */
+function descendantsOf(value, trail = []) {
+  const out = [];
+  if (!value || typeof value !== "object") return out;
+  for (const [child, childValue] of Object.entries(value)) {
+    if (child === ".") continue;
+    const path = [...trail, child];
+    out.push({ key: child, path });
+    out.push(...descendantsOf(childValue, path));
+  }
+  return out;
+}
+
 /** Every selector an overrides block declares, flattened to {key, nested} pairs. */
 function selectorsOf(overrides) {
   const out = [];
   for (const [key, value] of Object.entries(overrides ?? {})) {
     out.push({ key, nested: false });
-    if (value && typeof value === "object") {
-      for (const child of Object.keys(value)) {
-        if (child === ".") continue;
-        out.push({ key: child, nested: true, parent: key });
-      }
+    for (const { key: child, path } of descendantsOf(value)) {
+      out.push({ key: child, nested: true, parent: key, path: [key, ...path] });
     }
   }
   return out;
@@ -131,8 +149,10 @@ function auditOverrides(overrides, installed) {
   for (const [key, value] of Object.entries(overrides ?? {})) {
     const { name, range } = parseSelector(key);
     const versions = installed.get(name);
-    const children = value && typeof value === "object" ? Object.keys(value).filter((k) => k !== ".") : [];
-    const alsoKills = children.length ? ` (and its nested ${children.join(", ")})` : "";
+    const children = descendantsOf(value);
+    const alsoKills = children.length
+      ? ` (and its nested ${children.map((c) => c.path.join(" > ")).join(", ")})`
+      : "";
 
     if (!versions || versions.size === 0) {
       dead.push({ label: key, name, reason: `no "${name}" is installed in the production tree${alsoKills}` });
@@ -160,10 +180,10 @@ function auditOverrides(overrides, installed) {
     }
 
     for (const child of children) {
-      const childName = parseSelector(child).name;
+      const childName = parseSelector(child.key).name;
       if (!installed.has(childName)) {
         dead.push({
-          label: `${key} > ${child}`,
+          label: `${key} > ${child.path.join(" > ")}`,
           name: childName,
           reason: `no "${childName}" is installed anywhere in the production tree`,
         });
@@ -261,6 +281,7 @@ module.exports = {
   parseVersion,
   satisfies,
   collectInstalled,
+  descendantsOf,
   selectorsOf,
   auditOverrides,
   reportOverrides,
