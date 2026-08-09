@@ -78,6 +78,12 @@ often does not: `no parent upgrade exists, so an override is the only route` mea
 vulnerable version in its NEWEST release (officeparser has pinned `pdfjs-dist` exactly in every release), and
 overriding past the pin is then correct — verify the consumer still works, and key the override on the major
 line so a future upstream major fails the override audit loudly instead of silently forcing a downgrade.
+When the advisory sits in one branch but a sibling needs a different major, scope the override to the
+**narrowest direct-dependency branch**, rather than overriding the common ancestor: npm applies an ancestor's
+override to every descendant. For example, an affected `root > provider > nanoid` path beside a `root > docx >
+nanoid@5` path needs `"root": { "provider": { "nanoid": "^3.3.18" } }`, not `"root": { "nanoid":
+"3.3.18" }`. Confirm with `npm ls nanoid --omit=dev --all` that the patched copy is on the affected branch and
+the sibling kept its required major. The override audit walks nested selectors so that full path is still checked.
 **An override is verified at the RESOLUTION path but takes effect at the LOAD path**, so confirm the patched
 copy is the one that RUNS: officeparser also hardcodes a CDN worker URL pinned to the vulnerable pdfjs, which
 would have made the 08-07 fix cosmetic had Node used it. `test:pdf-parse` now holds that (parses a real PDF,
