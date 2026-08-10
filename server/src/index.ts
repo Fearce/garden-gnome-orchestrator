@@ -5,7 +5,7 @@ import fastifyStatic from "@fastify/static";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, basename, extname, relative } from "node:path";
 import { config } from "./config.js";
-import { installCrashGuards, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
+import { installCrashGuards, logBoot, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
 import { Db } from "./db/db.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
@@ -103,6 +103,9 @@ async function main(): Promise<void> {
   // Crash records should show what the pipeline was DOING when it died, and a slow memory climb should be
   // visible in the log BEFORE an OOM abort — the two things missing when crashes vanished without a trace.
   registerCrashContext("active-work", () => manager.describeActiveWork());
+  // The manager's constructor has just reconciled whatever the previous process left mid-flight. Record it
+  // beside the boot line so "did that bounce eat something?" is one grep, not a cross-table reconstruction.
+  if (manager.bootReconcile) logRestartReconcile(manager.bootReconcile);
   startMemoryMonitor();
   // Recurring dispatches: fires a schedule's prompt through the normal pipeline on its cron cadence.
   // Standalone (depends only on manager.dispatch), so scheduled runs use whatever provider/model is
@@ -596,4 +599,5 @@ async function main(): Promise<void> {
 }
 
 installCrashGuards();
+logBoot(); // before main(), so a startup that dies still leaves the boot bracketed in crash.log
 void main();

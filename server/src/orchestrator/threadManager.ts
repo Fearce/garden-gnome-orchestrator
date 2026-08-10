@@ -799,8 +799,12 @@ export class ThreadManager implements OrchestratorApi {
     // Stamp orphaned runs terminal FIRST, so the crash-loop guard below counts THIS boot's just-killed
     // run when it looks for resumes that keep dying within seconds.
     const at = Date.now();
+    // Tallied so the boot leaves one greppable line saying what it did to the previous process's work —
+    // see logRestartReconcile. Without it, "did that bounce eat something?" is a cross-table reconstruction.
+    const tally = { runs: 0, resumed: 0, revived: 0, gaveUp: 0, reParked: 0, handedBack: 0, settled: 0, requeued: 0 };
     for (const r of this.db.listActiveRuns()) {
       this.db.updateRun(r.id, { state: "interrupted", endedAt: r.endedAt ?? at });
+      tally.runs++;
     }
     // Safety net for the missed-cleanup path: a run left in a live state but already ended (endedAt set)
     // is a corrupted orphan `listActiveRuns` can't reach — a late agent event that resurrected a
@@ -811,7 +815,9 @@ export class ThreadManager implements OrchestratorApi {
       this.db.updateRun(r.id, { state: "interrupted" });
     }
     // Before the scan below stamps THIS boot's promises: keep the ones an earlier boot made and couldn't.
-    this.reviveStrandedAutoResumes(at);
+    const strays = this.reviveStrandedAutoResumes(at);
+    tally.revived = strays.revived;
+    tally.gaveUp = strays.gaveUp;
     for (const t of this.db.listThreads()) {
       if (!IN_FLIGHT.has(t.state)) continue;
       // The auto-review lane is in-process: re-park it for a fresh click rather than resuming. That covers
@@ -831,22 +837,26 @@ export class ThreadManager implements OrchestratorApi {
         }
         this.postFinding({ threadId: t.id, fromRole: "implementor", summary: SELF_IMPROVE_INTERRUPTED_MSG, severity: "info" });
         this.setState(t.id, "done");
+        tally.settled++;
         continue;
       }
       const fixing = stage.reviewFixing;
       if (t.state === "reviewing" || fixing) {
         this.db.updateThreadStageOutputs(t.id, { reviewFixing: false });
         this.db.updateThread(t.id, { state: "review", error: fixing ? REVIEW_FIX_INTERRUPTED_MSG : REVIEW_INTERRUPTED_MSG });
+        tally.reParked++;
         continue;
       }
       if (!AUTO_RESUME_STATES.has(t.state)) {
         // Was waiting on a person (question/approval/paused/intake) — leave it for a manual Resume.
         this.db.updateThread(t.id, { state: "failed", error: RESTART_FAILED_MSG });
+        tally.handedBack++;
         continue;
       }
       const fastInterrupts = this.fastInterruptCount(t.id, at);
       if (fastInterrupts >= MAX_FAST_INTERRUPTS) {
         this.db.updateThread(t.id, { state: "failed", error: this.crashLoopMsg(fastInterrupts) });
+        tally.handedBack++;
         continue;
       }
       // Route through the SAME resume-aware path as a manual Resume: 'failed' is that path's entry
@@ -860,18 +870,22 @@ export class ThreadManager implements OrchestratorApi {
       // failed to get THIS interruption's resume airborne, not how many the task has survived in its life.
       this.db.updateThreadStageOutputs(t.id, { autoResumeRevivals: 0 });
       this.scheduleAutoResume(t.id, t.title);
+      tally.resumed++;
     }
     // Re-arm any task left 'queued' by the restart: the in-memory dispatch queue starts empty, so
     // without this they'd wait forever. Deferred like the auto-resumes so the listeners are up first;
     // enqueueOrRun re-queues or starts each depending on the live concurrency cap.
     const queued = this.db.listThreads().filter((t) => t.state === "queued");
     if (queued.length) {
+      tally.requeued = queued.length;
       setTimeout(() => {
         // Re-check state at fire time — a queued task could have been cancelled/dismissed during the
         // delay, and enqueueOrRun would otherwise stamp it 'queued' again (resurrecting a dead row).
         for (const t of queued) if (this.db.getThread(t.id)?.state === "queued") this.enqueueOrRun(t.id);
       }, AUTO_RESUME_DELAY_MS);
     }
+    const touched = Object.entries(tally).filter(([, n]) => n > 0);
+    this.bootReconcile = touched.length ? touched.map(([k, n]) => `${k}=${n}`).join(" ") : null;
   }
 
   /** An auto-resume the PREVIOUS process promised but never delivered — it schedules the resume in memory,
@@ -880,7 +894,8 @@ export class ThreadManager implements OrchestratorApi {
    *  outlives the process and no other path writes it, so it is exactly the record that a resume is still
    *  owed: re-arm from it. (2026-08-08: two tasks, one of them the nightly sweep itself, sat two days
    *  showing that promise with nothing coming back for them.) */
-  private reviveStrandedAutoResumes(at: number): void {
+  private reviveStrandedAutoResumes(at: number): { revived: number; gaveUp: number } {
+    const counts = { revived: 0, gaveUp: 0 };
     for (const t of this.db.listThreads()) {
       if (t.state !== "failed" || t.error !== RESTART_AUTO_RESUME_MSG) continue;
       const attempt = (this.db.getThreadStageOutputs(t.id).autoResumeRevivals ?? 0) + 1;
@@ -888,12 +903,15 @@ export class ThreadManager implements OrchestratorApi {
       if (giveUp) {
         // Stop claiming a resume is coming — the promise in the error is what a person reads.
         this.db.updateThread(t.id, { state: "failed", error: giveUp });
+        counts.gaveUp++;
         continue;
       }
       this.db.updateThreadStageOutputs(t.id, { autoResumeRevivals: attempt });
       this.hub.log("warn", `Re-arming the auto-resume of "${t.title.slice(0, 48)}" (attempt ${attempt}) — a restart landed before the last one fired.`);
       this.scheduleAutoResume(t.id, t.title);
+      counts.revived++;
     }
+    return counts;
   }
 
   /** Why this stranded task should be handed to a person instead of re-armed again, or null to re-arm.
@@ -1018,6 +1036,11 @@ export class ThreadManager implements OrchestratorApi {
   getThread(id: string): Thread | null {
     return this.db.getThread(id);
   }
+
+  /** What this boot did to the work the previous process left mid-flight (`runs=2 resumed=1 …`), or null
+   *  if it found none. `index.ts` writes it to crash.log — the durable trail lives with the other
+   *  process-lifecycle records, and constructing a manager in a test must not append to the real log. */
+  bootReconcile: string | null = null;
 
   /** A one-line snapshot of what the pipeline is DOING right now — the live agent runs plus the running
    *  thread titles. Registered as a crash-context provider so a crash record shows the in-flight work

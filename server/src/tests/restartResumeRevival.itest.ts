@@ -192,6 +192,10 @@ async function testStrandedPromiseIsRevived(): Promise<void> {
   await sleep(AUTO_RESUME_DELAY_MS + 800);
   check("boot 2 re-arms the lost auto-resume", second.resumed.includes(id), `resumed=[${second.resumed.join(",")}]`);
   check("…and charges the attempt durably, so it can't loop forever", bed.db.getThreadStageOutputs(id).autoResumeRevivals === 1, String(bed.db.getThreadStageOutputs(id).autoResumeRevivals));
+  // The forensic trail: index.ts writes this to crash.log, which is what makes a restart's effect on
+  // in-flight work greppable rather than a cross-table reconstruction after the fact.
+  check("boot 1 reports what it interrupted", (first.mgr.bootReconcile ?? "").includes("resumed=1"), String(first.mgr.bootReconcile));
+  check("boot 2 reports the revival", (second.mgr.bootReconcile ?? "").includes("revived=1"), String(second.mgr.bootReconcile));
 
   second.stop();
   bed.dispose();

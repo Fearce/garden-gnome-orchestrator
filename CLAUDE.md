@@ -114,7 +114,8 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
 ## Debugging a failed task
 State + run history live in `server/data/orchestrator.sqlite` (open read-only with the bundled
 `better-sqlite3`; columns are snake_case — `agent_runs.thread_id/started_at/ended_at/session_id`, the
-subscription is `account` (not `account_label`), and message text is `messages.content` (not `text`);
+subscription is `account` (not `account_label`), message text is `messages.content` (not `text`), and a task's
+saved stage outputs are a JSON blob in `threads.stage_outputs` — there is NO `thread_stage_outputs` table;
 there's NO `backend` column — the backend is encoded in `model`, e.g. `grok-4.5`/`gpt-*-sol`/`claude-*`.
 `agent_runs.cap_flagged` is what the RUNNER concluded about a cap — 1/0, null when no verdict was recorded
 (a row predating it, or one a restart/silent-run stamp closed out) — so "was this a quota or a crash?" is a
