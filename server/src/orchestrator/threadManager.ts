@@ -20,6 +20,7 @@ import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
+import { validRepoPath } from "../git/repoOps.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
@@ -5757,7 +5758,10 @@ export class ThreadManager implements OrchestratorApi {
 
   async getFileDiff(threadId: string, path: string): Promise<GitFileDiff> {
     const t = this.db.getThread(threadId);
-    if (!t) return { path, binary: false, patch: "", truncated: false };
+    // The path comes from the client, and getFileDiff's untracked-file branch diffs against the null
+    // device — which would render a file OUTSIDE the repo as one big addition. Confine it to a
+    // repo-relative path here rather than trusting the caller to only ask for files it listed.
+    if (!t || !validRepoPath(path)) return { path, binary: false, patch: "", truncated: false };
     return getFileDiff(t.workspace, path, t.baselineHead ?? null);
   }
 }
