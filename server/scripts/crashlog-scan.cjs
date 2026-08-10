@@ -28,6 +28,11 @@ const LIFECYCLE_BUCKETS = [
   [/^WARNING memory pressure/, "memory pressure"],
   [/^signal /, "signal"],
   [/^process exit/, "exit"],
+  // A process STARTING, and what that boot did to work the previous one left mid-flight. Every other
+  // record says how a process went down, which is why "when did each boot happen?" used to be answerable
+  // only by finding a memory high-water note and subtracting its `uptime=`.
+  [/^boot\b/, "boot"],
+  [/^restart reconcile/, "restart reconcile"],
   [/^warning:/, "warning"],
 ];
 
@@ -43,7 +48,7 @@ function isFaultEntry(label, body) {
  */
 function scanCrashLog(text, sinceMs) {
   const faults = [];
-  const lifecycle = { "memory high-water": 0, "memory pressure": 0, signal: 0, exit: 0, warning: 0, other: 0 };
+  const lifecycle = { "memory high-water": 0, "memory pressure": 0, signal: 0, exit: 0, boot: 0, "restart reconcile": 0, warning: 0, other: 0 };
   const inWindow = (ts) => !Number.isFinite(ts) || ts >= sinceMs;
   // Split before each `[<iso>]` opener; the leading chunk (preamble before the first entry) is empty.
   const chunks = String(text).split(/(?=^\[\d{4}-\d{2}-\d{2}T)/m);

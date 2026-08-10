@@ -20,28 +20,43 @@
     "test:weekly-safety": "tsx src/tests/weeklySafety.test.ts",
     "test:spread-usage": "tsx src/tests/spreadUsage.test.ts",
     "test:ext-wake": "tsx src/tests/extWakeProbe.test.ts",
+    "test:account-usage": "tsx src/tests/accountUsageSnapshot.test.ts",
     "test:grok-runner": "tsx src/tests/grokRunner.test.ts",
     "test:grok-reasoning": "tsx src/tests/grokReasoning.test.ts",
+    "test:grok-usage": "tsx src/tests/grokUsage.test.ts",
     "test:schedule-detect": "tsx src/tests/scheduleDetect.test.ts",
     "test:scheduler": "tsx src/tests/scheduler.test.ts",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",
     "test:injection": "tsx src/tests/injection.test.ts",
     "test:run-error": "tsx src/tests/runError.test.ts",
     "test:run-classify": "node scripts/run-classify.test.cjs",
+    "test:cap-flag": "tsx src/tests/capFlag.test.ts",
     "test:crashlog-scan": "node scripts/crashlog-scan.test.cjs",
     "test:failover-ladder": "node scripts/failover-ladder.test.cjs",
     "test:park-classify": "node scripts/parks-classify.test.cjs",
+    "test:recovery-features": "node scripts/recovery-features.test.cjs",
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
     "test:office-gating": "tsx src/tests/officeGating.itest.ts",
     "test:zai-usage": "tsx src/tests/zaiUsage.test.ts",
+    "test:zai-cap": "tsx src/tests/zaiCapDetect.test.ts",
     "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",
     "test:auto-review": "tsx src/tests/autoReview.itest.ts",
+    "test:self-improve-restart": "tsx src/tests/selfImproveRestart.itest.ts",
+    "test:restart-revival": "tsx src/tests/restartResumeRevival.itest.ts",
     "test:silent-resume": "tsx src/tests/silentResume.itest.ts",
     "test:cli-role-kickoff": "tsx src/tests/cliRoleKickoff.test.ts",
     "test:per-repo": "tsx src/tests/perRepoConcurrency.itest.ts",
     "test:crashlog": "tsx src/tests/crashLog.itest.ts",
     "test:leak-bookkeeping": "tsx src/tests/threadBookkeepingLeak.itest.ts",
+    "test:attachment-dedupe": "tsx src/tests/attachmentDedupe.test.ts",
+    "test:pdf-parse": "tsx src/tests/pdfParse.test.ts",
+    "test:stale-gnomes": "tsx src/tests/staleGnomeCleanup.itest.ts",
+    "test:git": "tsx src/tests/gitService.itest.ts",
     "test:supervisor": "node scripts/supervise.itest.cjs",
+    "test:gate-registration": "node scripts/gate-registration.test.cjs",
+    "test:audit-deps": "node scripts/audit-deps.test.cjs",
+    "test:audit-overrides": "node scripts/audit-overrides.test.cjs",
+    "test:db-size": "node scripts/db-size.test.cjs",
     "test:gates": "node scripts/run-gates.cjs",
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
     "probe:task-runs": "node scripts/probe-task-runs.cjs",
@@ -49,8 +64,11 @@
     "probe:run-errors": "node scripts/probe-run-errors.cjs",
     "probe:accounts": "node scripts/probe-accounts.cjs",
     "probe:parks": "node scripts/probe-parks.cjs",
+    "probe:db-size": "node scripts/probe-db-size.cjs",
     "probe:schedule-detect": "tsx src/tools/probeScheduleDetect.ts",
     "health": "node scripts/nightly-health.cjs",
+    "audit:deps": "node scripts/audit-deps.cjs",
+    "audit:overrides": "node scripts/audit-overrides.cjs",
     "audit:secrets": "node scripts/audit-secrets.cjs"
   },
   "dependencies": {
@@ -72,5 +90,18 @@
   },
   "allowScripts": {
     "better-sqlite3@12.10.0": true
+  },
+  "overrides": {
+    "@sentropic/graphify": {
+      "ollama-ai-provider": {
+        "nanoid": "^3.3.18"
+      }
+    },
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "brace-expansion@^2": "^2.1.4",
+    "brace-expansion@^5": "^5.0.9",
+    "fast-uri": "^3.1.5",
+    "ip-address": "^10.4.0",
+    "pdfjs-dist@^6": "^6.2.108"
   }
 }

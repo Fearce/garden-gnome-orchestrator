@@ -123,6 +123,9 @@ intake → enriching → [awaiting_user] → planning → [researching] → [awa
                                                   ↕ paused / failed   (Resume re-enters, skipping finished stages)
 
 review ──"Auto-review & mark done"──▶ reviewing ──▶ done            (accepted in your place)
+                                          │  ▲
+                                          │  └── implementing        (fix round: the reviewer's issues,
+                                          │          (×maxReviewFixRounds)   handed to the implementor)
                                           └────────▶ review          (handed back, with reasons)
 ```
 
@@ -176,17 +179,42 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   runs the project's checks, browser-tests UI, and — the reason the lane exists — calls the bus
   `ask_user` for anything only you can decide, which parks the thread in `awaiting_user` and restores
   it to `reviewing` on your answer. Its `ReviewerOutput` verdict is the *only* route out:
-  `accept` → `done` (exactly what Mark done would have produced), anything else → straight back to
-  `review` with the concrete `issues` recorded as a warning finding. **An absent verdict is never an
-  acceptance** — an errored, capped, or turn-ceilinged run re-parks. It is read-only (no Write/Edit,
-  and the prompt forbids mutating git), so it decides but never fixes; work left uncommitted is a
-  reason to hand back. Guards: only a genuine human-review park qualifies — a cap-parked task
+  `accept` → `done` (exactly what Mark done would have produced), anything else → a fix round (below)
+  and ultimately back to `review` with the concrete `issues` recorded as a warning finding. **An absent
+  verdict is never an acceptance** — an errored, capped, or turn-ceilinged run re-parks. It is read-only
+  (no Write/Edit, and the prompt forbids mutating git), so it decides but never fixes. Guards: only a
+  genuine human-review park qualifies — a cap-parked task
   (`CAP_PARK_PREFIX`) is still mid-flight and resumes itself, so the button is disabled there. While a
-  review is live it owns the slot alone: the `reviewing` gates in `injectThread`/`resumeThread` (the
-  QA gate's twins) forward steering to the reviewer rather than spawning an implementor beside it, and
+  review is live it owns the slot alone: the auto-review gates in `injectThread`/`resumeThread` (the QA
+  gate's twins) forward steering to whichever agent is live rather than spawning one beside it. Those
+  gates key on the **episode** (`this.reviewing`), not on the state, because the fix round below runs
+  under `implementing` and the implementor's own `onEnd` clears `this.live` while the awaited result is
+  still in flight — a state-only check falls through in exactly that window and cold-resumes a second
+  implementor onto the workspace the reviewer is about to inspect (proven by reverting it). And
   a server restart mid-review restores the `review` park rather than taking the generic `failed` +
   manual-Resume path. Like the reader it never fails over to a CLI backend (`NO_CLI_FAILOVER`) —
   Codex/Grok have no `ask_user`/`post_finding`. Gate: `test:auto-review`.
+- **A hand-back buys a fix round, not a trip to your desk** (`runReviewFixRound`). Because the reviewer
+  is read-only, what blocks a task is routinely work an implementor finishes in a minute — the case this
+  was built for handed back a whole task because a report file sat outside the workspace, costing a
+  second click and a second full Opus review to clear. So an `accept: false` carrying concrete `issues`
+  relaunches the **implementor** with that list (the pipeline's own resume/failover/auto-continue path, a
+  QA fix-round in all but name, and deliberately **no** QA loop — the reviewer is the gate this lane
+  delegated to), then **warm-resumes the reviewer's own session** to re-check the changed tree and decide
+  again. Bounded by the `maxReviewFixRounds` setting (default 1, `0` = hand straight back); a hand-back
+  with *no* issues buys nothing, since the implementor would only be guessing. A failed fix round parks —
+  it can never itself become a route to `done` — and the final park says how many rounds were spent, the
+  difference between "the reviewer said no" and "it said no, was fixed, and still says no". The round runs
+  under `implementing`, an auto-resume state, so it carries a durable `reviewFixing` marker that makes
+  `markInterrupted` re-park it for a fresh click instead of reviving it into the normal pipeline. **A cap
+  during a fix round parks like any other failure, deliberately WITHOUT the `CAP_PARK_PREFIX` marker**
+  (`capParked` is consumed, not passed to `settleReview`): `resumeCapParked` resumes a marked task through
+  `runPipeline` — the full QA loop, which can reach `done` on its own — which would settle this task on a
+  verdict the reviewer never gave, and `autoReview` refuses a cap-parked task so the owner couldn't even
+  intervene. A routing block is handled the same way rather than letting `gateImplementorProvider`'s
+  `failed` demote an already-finished, owner-parked task.
+  `REVIEWER_PROMPT` tells the reviewer a fixer follows, so its issues read as work orders rather than as
+  "I can't fix this myself".
 - **QA fix-rounds resume the QA session.** Round 1 is a fresh QA session seeded with a *scope hint*
   (the plan summary + the files it expected to touch) so QA doesn't burn Opus turns rediscovering the
   change surface. Rounds 2..N **resume that same QA session** (same warm/cold gate as the implementor;

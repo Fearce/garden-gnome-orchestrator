@@ -284,6 +284,15 @@ const CRASH_FAST_MS = 60_000;
 const MAX_FAST_INTERRUPTS = 3;
 // Defer the resume so the HTTP/WS listeners are up (and the UI is connected) before agents respawn.
 const AUTO_RESUME_DELAY_MS = 4_000;
+// That delay is held in memory, so a SECOND bounce landing inside it kills the resume with the process —
+// and the thread is 'failed' by then, which the IN_FLIGHT scan skips. The next boot re-arms from the
+// persisted promise instead. Bounded: each attempt costs a spawn, so a task that never gets running
+// again becomes a person's to look at rather than every boot's to retry.
+const MAX_STRANDED_REVIVALS = 3;
+// …and bounded in time as well as in attempts. The original promise means "in 4 seconds"; a revival can be
+// arbitrarily later, and resuming a day-old session onto a workspace other agents have since committed to
+// is a surprise, not a recovery. Past this, hand it to a person instead.
+const MAX_STRANDED_AGE_MS = 24 * 3600_000;
 // Marker prefix on a 'review' task's error when it parked ONLY because every Claude account was
 // rate-limited mid-task (no headroom to fail over to). The cap supervisor scans for this prefix and
 // auto-resumes those tasks once an account frees up — so a cap wave doesn't leave the owner to
@@ -304,6 +313,12 @@ const TOKEN_RESUME_BUFFER_MS = 60_000;
 const RESTART_ERROR_PREFIX = "interrupted by a server restart";
 const RESTART_FAILED_MSG = `${RESTART_ERROR_PREFIX} — click Resume to continue from where it left off (finished stages are reused)`;
 const RESTART_AUTO_RESUME_MSG = `${RESTART_ERROR_PREFIX} — auto-resuming…`;
+const RESTART_REVIVAL_SPENT_MSG =
+  `${RESTART_ERROR_PREFIX} — auto-resume was re-armed ${MAX_STRANDED_REVIVALS}× across restarts and never got this task running again. ` +
+  `Click Resume to continue from where it left off (finished stages are reused).`;
+const RESTART_REVIVAL_STALE_MSG =
+  `${RESTART_ERROR_PREFIX} — the auto-resume it was promised never fired, and the task is now too old to pick up on its own. ` +
+  `Click Resume to continue from where it left off (finished stages are reused).`;
 // Woven into the resume nudge/seed ONLY when this resume was triggered by a server restart, so the
 // worker realizes the restart already happened. Implementor workers are child processes of the
 // orchestrator server, so a worker that restarts the orchestrator kills its own session and is then
@@ -331,6 +346,18 @@ const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
 // there is nothing to resume — put it straight back where it came from rather than through the generic
 // 'failed' + manual-Resume path (which would re-enter the implementor pipeline on already-finished work).
 const REVIEW_INTERRUPTED_MSG = "Auto-review was interrupted by a server restart — click “Auto-review & mark done” to run it again.";
+// Same restart, but it landed during the fix round the auto-review had started: the implementor's work so
+// far is in the working tree, and re-running the review is what picks the episode back up from there.
+const REVIEW_FIX_INTERRUPTED_MSG =
+  "Auto-review was fixing the issues it found when a server restart interrupted it — anything the implementor had already changed is still in the working tree. Click “Auto-review & mark done” to re-review from there.";
+// A restart during the opt-in self-improvement round. That round starts only once the task has ALREADY been
+// accepted (QA passed, or a clean finish with QA disabled) and is explicitly best-effort, so 'done' is where
+// the task was headed the moment the round began. Auto-resuming it through the generic 'failed' path instead
+// re-enters runImplementorQaLoop on accepted work and spends another implementor + QA round on it — and
+// again on every subsequent bounce, since each one lands in the same window. (Seen in production: an
+// accepted task took a fresh Codex implementor + a second Opus QA round off ONE bounce.)
+const SELF_IMPROVE_INTERRUPTED_MSG =
+  "The post-task self-improvement round was cut short by a server restart. The task itself was already complete and accepted, so it is marked done — anything the round had started building may still be sitting uncommitted in the working tree.";
 // A re-park message is the reviewer's own prose, and it lands in the thread's `error` — which the board
 // card and the detail header render inline. Cap it so a chatty verdict can't push the whole summary into
 // the header; the full text stays readable as the finding the verdict also posts.
@@ -397,6 +424,12 @@ export class ThreadManager implements OrchestratorApi {
   // 'review'), so this is purely the double-click guard: the button is clickable again the instant the
   // task re-parks, and two reviewers deciding one task's fate concurrently must never happen.
   private readonly reviewing = new Set<string>();
+  // Threads whose opt-in post-task self-improvement round is live. That round runs on ALREADY-accepted
+  // work, so the inject/resume gates must steer it rather than spawn beside it — and like the auto-review
+  // fix round it runs under 'implementing', where the implementor's own onEnd clears `this.live` while the
+  // awaited result is still in flight. A state-only check falls through in exactly that window and
+  // cold-resumes a SECOND implementor onto the workspace, so those gates key on this episode instead.
+  private readonly selfImproving = new Set<string>();
   // Images attached to the original dispatch prompt. Every isolated fresh role session must see these
   // in its first SDKUserMessage; keep them separate from later injected images so a resume/inject path
   // cannot replace the dispatch screenshots before the implementor starts.
@@ -766,37 +799,64 @@ export class ThreadManager implements OrchestratorApi {
     // Stamp orphaned runs terminal FIRST, so the crash-loop guard below counts THIS boot's just-killed
     // run when it looks for resumes that keep dying within seconds.
     const at = Date.now();
+    // Tallied so the boot leaves one greppable line saying what it did to the previous process's work —
+    // see logRestartReconcile. Without it, "did that bounce eat something?" is a cross-table reconstruction.
+    const tally = { runs: 0, resumed: 0, revived: 0, gaveUp: 0, reParked: 0, handedBack: 0, settled: 0, requeued: 0 };
     for (const r of this.db.listActiveRuns()) {
       this.db.updateRun(r.id, { state: "interrupted", endedAt: r.endedAt ?? at });
+      tally.runs++;
     }
+    // Safety net for the missed-cleanup path: a run left in a live state but already ended (endedAt set)
+    // is a corrupted orphan `listActiveRuns` can't reach — a late agent event that resurrected a
+    // finalized run's state to "running". The gnome strip draws it forever (it filters on state, not
+    // endedAt), so a closed/done task keeps a phantom walking gnome across restarts. Enforce the
+    // invariant that an ended run is terminal; keep its real end time.
+    for (const r of this.db.listEndedButLiveStateRuns()) {
+      this.db.updateRun(r.id, { state: "interrupted" });
+    }
+    // Before the scan below stamps THIS boot's promises: keep the ones an earlier boot made and couldn't.
+    const strays = this.reviveStrandedAutoResumes(at);
+    tally.revived = strays.revived;
+    tally.gaveUp = strays.gaveUp;
     for (const t of this.db.listThreads()) {
       if (!IN_FLIGHT.has(t.state)) continue;
-      if (t.state === "reviewing") {
-        this.db.updateThread(t.id, { state: "review", error: REVIEW_INTERRUPTED_MSG });
+      // The auto-review lane is in-process: re-park it for a fresh click rather than resuming. That covers
+      // its fix round too, which runs under 'implementing' (an auto-resume state) and would otherwise be
+      // revived into the normal pipeline — re-entering the QA loop this episode had already left behind.
+      const stage = this.db.getThreadStageOutputs(t.id);
+      // The bonus self-improvement round holds an already-ACCEPTED task through 'qa' and then, once its
+      // implementor is live, 'implementing' — both AUTO_RESUME states. Which one the bounce caught it in
+      // doesn't matter, so this keys on the marker, not the state: settle the task where the pipeline was
+      // about to put it either way. See SELF_IMPROVE_INTERRUPTED_MSG.
+      if (stage.selfImproving) {
+        this.db.updateThreadStageOutputs(t.id, { selfImproving: false });
+        // The round's implementor may have been blocked on an ask_user; its resolver died with the
+        // process, so close the question rather than leave one pending on a task nobody can resume.
+        for (const q of this.db.listOpenQuestions()) {
+          if (q.threadId === t.id) this.resolveQuestion(q.id, "(the self-improvement round was interrupted; the task itself is already complete)");
+        }
+        this.postFinding({ threadId: t.id, fromRole: "implementor", summary: SELF_IMPROVE_INTERRUPTED_MSG, severity: "info" });
+        this.setState(t.id, "done");
+        tally.settled++;
+        continue;
+      }
+      const fixing = stage.reviewFixing;
+      if (t.state === "reviewing" || fixing) {
+        this.db.updateThreadStageOutputs(t.id, { reviewFixing: false });
+        this.db.updateThread(t.id, { state: "review", error: fixing ? REVIEW_FIX_INTERRUPTED_MSG : REVIEW_INTERRUPTED_MSG });
+        tally.reParked++;
         continue;
       }
       if (!AUTO_RESUME_STATES.has(t.state)) {
         // Was waiting on a person (question/approval/paused/intake) — leave it for a manual Resume.
         this.db.updateThread(t.id, { state: "failed", error: RESTART_FAILED_MSG });
+        tally.handedBack++;
         continue;
       }
-      // Crash-loop guard: count this task's implementor runs that were interrupted within seconds of
-      // starting (resume-then-die), recently. Long-lived interrupted runs made progress and don't count.
-      const fastInterrupts = this.db
-        .listRuns(t.id)
-        .filter(
-          (r) =>
-            r.role === "implementor" &&
-            r.state === "interrupted" &&
-            r.endedAt != null &&
-            at - r.endedAt < RESTART_LOOP_WINDOW_MS &&
-            r.endedAt - r.startedAt < CRASH_FAST_MS,
-        ).length;
+      const fastInterrupts = this.fastInterruptCount(t.id, at);
       if (fastInterrupts >= MAX_FAST_INTERRUPTS) {
-        this.db.updateThread(t.id, {
-          state: "failed",
-          error: `Auto-resume stopped — this task kept getting interrupted within seconds of resuming ${fastInterrupts}× (likely a crash loop, not progress). Click Resume to retry once the cause is fixed.`,
-        });
+        this.db.updateThread(t.id, { state: "failed", error: this.crashLoopMsg(fastInterrupts) });
+        tally.handedBack++;
         continue;
       }
       // Route through the SAME resume-aware path as a manual Resume: 'failed' is that path's entry
@@ -806,24 +866,90 @@ export class ThreadManager implements OrchestratorApi {
       // told the restart already completed and must not restart the orchestrator, which it's a child of,
       // again, the loop these warnings exist for.
       this.db.updateThread(t.id, { state: "failed", error: RESTART_AUTO_RESUME_MSG });
-      const id = t.id;
-      const title = t.title;
-      setTimeout(() => {
-        this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
-        void this.resumeThread(id).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
-      }, AUTO_RESUME_DELAY_MS);
+      // A fresh interruption is a fresh episode: what the budget below counts is how many boots in a row
+      // failed to get THIS interruption's resume airborne, not how many the task has survived in its life.
+      this.db.updateThreadStageOutputs(t.id, { autoResumeRevivals: 0 });
+      this.scheduleAutoResume(t.id, t.title);
+      tally.resumed++;
     }
     // Re-arm any task left 'queued' by the restart: the in-memory dispatch queue starts empty, so
     // without this they'd wait forever. Deferred like the auto-resumes so the listeners are up first;
     // enqueueOrRun re-queues or starts each depending on the live concurrency cap.
     const queued = this.db.listThreads().filter((t) => t.state === "queued");
     if (queued.length) {
+      tally.requeued = queued.length;
       setTimeout(() => {
         // Re-check state at fire time — a queued task could have been cancelled/dismissed during the
         // delay, and enqueueOrRun would otherwise stamp it 'queued' again (resurrecting a dead row).
         for (const t of queued) if (this.db.getThread(t.id)?.state === "queued") this.enqueueOrRun(t.id);
       }, AUTO_RESUME_DELAY_MS);
     }
+    const touched = Object.entries(tally).filter(([, n]) => n > 0);
+    this.bootReconcile = touched.length ? touched.map(([k, n]) => `${k}=${n}`).join(" ") : null;
+  }
+
+  /** An auto-resume the PREVIOUS process promised but never delivered — it schedules the resume in memory,
+   *  so a second bounce inside that window took it down with the process, leaving a task stamped 'failed'
+   *  that markInterrupted's IN_FLIGHT scan will never look at again. The persisted RESTART_AUTO_RESUME_MSG
+   *  outlives the process and no other path writes it, so it is exactly the record that a resume is still
+   *  owed: re-arm from it. (2026-08-08: two tasks, one of them the nightly sweep itself, sat two days
+   *  showing that promise with nothing coming back for them.) */
+  private reviveStrandedAutoResumes(at: number): { revived: number; gaveUp: number } {
+    const counts = { revived: 0, gaveUp: 0 };
+    for (const t of this.db.listThreads()) {
+      if (t.state !== "failed" || t.error !== RESTART_AUTO_RESUME_MSG) continue;
+      const attempt = (this.db.getThreadStageOutputs(t.id).autoResumeRevivals ?? 0) + 1;
+      const giveUp = this.revivalGiveUpMsg(t, attempt, at);
+      if (giveUp) {
+        // Stop claiming a resume is coming — the promise in the error is what a person reads.
+        this.db.updateThread(t.id, { state: "failed", error: giveUp });
+        counts.gaveUp++;
+        continue;
+      }
+      this.db.updateThreadStageOutputs(t.id, { autoResumeRevivals: attempt });
+      this.hub.log("warn", `Re-arming the auto-resume of "${t.title.slice(0, 48)}" (attempt ${attempt}) — a restart landed before the last one fired.`);
+      this.scheduleAutoResume(t.id, t.title);
+      counts.revived++;
+    }
+    return counts;
+  }
+
+  /** Why this stranded task should be handed to a person instead of re-armed again, or null to re-arm.
+   *  `updatedAt` is when the promise was stamped — nothing touches it while a task sits stranded. */
+  private revivalGiveUpMsg(t: Thread, attempt: number, at: number): string | null {
+    const fastInterrupts = this.fastInterruptCount(t.id, at);
+    if (fastInterrupts >= MAX_FAST_INTERRUPTS) return this.crashLoopMsg(fastInterrupts);
+    if (at - t.updatedAt > MAX_STRANDED_AGE_MS) return RESTART_REVIVAL_STALE_MSG;
+    if (attempt > MAX_STRANDED_REVIVALS) return RESTART_REVIVAL_SPENT_MSG;
+    return null;
+  }
+
+  /** Implementor runs this task lost within seconds of starting, recently: a resume-then-die crash loop
+   *  rather than progress. Long-lived interrupted runs got somewhere and don't count. */
+  private fastInterruptCount(threadId: string, at: number): number {
+    return this.db
+      .listRuns(threadId)
+      .filter(
+        (r) =>
+          r.role === "implementor" &&
+          r.state === "interrupted" &&
+          r.endedAt != null &&
+          at - r.endedAt < RESTART_LOOP_WINDOW_MS &&
+          r.endedAt - r.startedAt < CRASH_FAST_MS,
+      ).length;
+  }
+
+  private crashLoopMsg(fastInterrupts: number): string {
+    return `Auto-resume stopped — this task kept getting interrupted within seconds of resuming ${fastInterrupts}× (likely a crash loop, not progress). Click Resume to retry once the cause is fixed.`;
+  }
+
+  /** Defer the resume so the HTTP/WS listeners are up before agents respawn. Held in memory by design —
+   *  reviveStrandedAutoResumes is what makes it survive a bounce landing inside the delay. */
+  private scheduleAutoResume(id: string, title: string): void {
+    setTimeout(() => {
+      this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
+      void this.resumeThread(id).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
+    }, AUTO_RESUME_DELAY_MS);
   }
 
   private dispatchAccount(): Acct {
@@ -910,6 +1036,11 @@ export class ThreadManager implements OrchestratorApi {
   getThread(id: string): Thread | null {
     return this.db.getThread(id);
   }
+
+  /** What this boot did to the work the previous process left mid-flight (`runs=2 resumed=1 …`), or null
+   *  if it found none. `index.ts` writes it to crash.log — the durable trail lives with the other
+   *  process-lifecycle records, and constructing a manager in a test must not append to the real log. */
+  bootReconcile: string | null = null;
 
   /** A one-line snapshot of what the pipeline is DOING right now — the live agent runs plus the running
    *  thread titles. Registered as a crash-context provider so a crash record shows the in-flight work
@@ -1045,6 +1176,7 @@ export class ThreadManager implements OrchestratorApi {
       autoPush: this.settingBool("setting_auto_push", true),
       directorName: this.directorName(),
       maxQaRounds: this.settingNum("setting_max_qa_rounds", config.maxQaRounds, 1, 12),
+      maxReviewFixRounds: this.settingNum("setting_max_review_fix_rounds", config.maxReviewFixRounds, 0, 3),
       maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
       maxConcurrentPerRepo: this.settingNum("setting_max_concurrent_per_repo", 0, 0, 20),
       selfImproveEnabled: this.settingBool("setting_self_improve_enabled", false),
@@ -1321,6 +1453,7 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.autoPush !== undefined) this.db.kvSet("setting_auto_push", patch.autoPush ? "1" : "0");
     if (patch.directorName !== undefined) this.db.kvSet("setting_director_name", patch.directorName.trim().slice(0, 40));
     if (patch.maxQaRounds !== undefined) this.db.kvSet("setting_max_qa_rounds", String(patch.maxQaRounds));
+    if (patch.maxReviewFixRounds !== undefined) this.db.kvSet("setting_max_review_fix_rounds", String(patch.maxReviewFixRounds));
     if (patch.maxConcurrent !== undefined) this.db.kvSet("setting_max_concurrent", String(patch.maxConcurrent));
     if (patch.maxConcurrentPerRepo !== undefined) this.db.kvSet("setting_max_concurrent_per_repo", String(patch.maxConcurrentPerRepo));
     if (patch.selfImproveEnabled !== undefined) this.db.kvSet("setting_self_improve_enabled", patch.selfImproveEnabled ? "1" : "0");
@@ -3587,6 +3720,9 @@ export class ThreadManager implements OrchestratorApi {
   ): Promise<void> {
     this.autoResumes.set(thread.id, 0);
     this.capParked.delete(thread.id); // fresh run — drop any stale cap flag from a prior attempt
+    // This implementor belongs to the pipeline — not an auto-review fix round, and not a post-task
+    // self-improvement round. Clearing both here also drops a marker a crash-loop park left behind.
+    this.db.updateThreadStageOutputs(thread.id, { reviewFixing: false, selfImproving: false });
     // Durable QA-round budget. `round` used to be a fresh local counter, so EVERY re-entry (a server
     // restart's auto-resume, or a cap-resume) started the loop at round 1 and ran a full fresh QA pass —
     // with a frequently-bouncing server that's an unbounded implementor↔QA loop that drained a whole Grok
@@ -3863,6 +3999,24 @@ export class ThreadManager implements OrchestratorApi {
     if (!this.settings().selfImproveEnabled || this.cancelled(thread.id)) return;
     const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
     if (!session) return; // no implementor session to build on — nothing this round could reflect over
+    // Two markers, two jobs. The DURABLE one survives the process: it is how markInterrupted knows a
+    // restart landed on already-accepted work and must settle the task done instead of resuming it into
+    // the pipeline. The IN-MEMORY one is the episode the inject/resume gates key on while we're alive.
+    this.db.updateThreadStageOutputs(thread.id, { selfImproving: true });
+    this.selfImproving.add(thread.id);
+    try {
+      await this.selfImprovementRound(thread, effort, kickoff, session);
+    } catch (e) {
+      // Best-effort by contract: the task is already accepted, so a throw in the bonus round must not
+      // propagate into the caller's settle and strand a finished task mid-pipeline.
+      this.hub.log("warn", `Self-improvement round on ${thread.id.slice(0, 8)} failed: ${String(e)}`);
+    } finally {
+      this.db.updateThreadStageOutputs(thread.id, { selfImproving: false });
+      this.selfImproving.delete(thread.id);
+    }
+  }
+
+  private async selfImprovementRound(thread: Thread, effort: Effort | undefined, kickoff: string, session: string): Promise<void> {
     this.postFinding({
       threadId: thread.id,
       fromRole: "implementor",
@@ -3888,7 +4042,11 @@ export class ThreadManager implements OrchestratorApi {
     });
     if (!start) return; // cancelled while compressing the prior session
     this.flushDirectorNotes(thread.id, start.run);
-    const res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, SELF_IMPROVE_MSG, false);
+    let res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, SELF_IMPROVE_MSG, false);
+    // Honor anything the owner queued during the round: the Queue button promises delivery at the
+    // implementor's next hand-off boundary, and this is the task's LAST one — the caller settles it done
+    // straight after, so nothing else would ever drain it.
+    res = await this.drainQueuedImplementor(thread, effort, kickoff, res, false);
     // A cap flagged during this bonus round must not tag the task's settle — the task is going 'done',
     // and a stale flag could otherwise leak into a later settle of this thread.
     this.capParked.delete(thread.id);
@@ -4006,11 +4164,19 @@ export class ThreadManager implements OrchestratorApi {
     // implementor beside it. Steering goes to the reviewer (a `send`, never an interrupt — a one-shot
     // structured role tears down into a verdict-less result if interrupted). A note that lands after the
     // verdict simply doesn't change it; the invariant this gate guarantees is "never a second agent".
-    if (thread?.state === "reviewing") {
+    // Keyed on the EPISODE, not just the state (see resumeThread's twin): the lane also owns the thread
+    // through its fix round, which runs under 'implementing' with a window where the implementor's own
+    // onEnd has cleared `this.live` — falling through there would cold-resume a second implementor.
+    if (thread?.state === "reviewing" || this.reviewing.has(threadId)) {
       const reviewer = this.liveReviewer.get(threadId);
+      const impl = this.live.get(threadId);
+      const blocks = images?.length ? images.map(toImageBlock) : [];
       if (reviewer) {
-        const blocks = images?.length ? images.map(toImageBlock) : [];
         reviewer.send(contentWithImages(structuredAcknowledgedInjection(message), blocks), mode === "interrupt" ? { priority: "now" } : undefined);
+      } else if (impl) {
+        // Mid fix round: the implementor IS the agent to steer, and it takes the ordinary (non-structured)
+        // injection — it has no output schema to corrupt.
+        impl.run.send(contentWithImages(acknowledgedInjection(message), blocks), mode === "interrupt" ? { priority: "now" } : undefined);
       } else {
         // The sub-second window before the reviewer registers its handle (or just after it returned).
         // Buffer like the QA gate does; runAutoReview drops the buffer when the task settles, so a note
@@ -4021,12 +4187,35 @@ export class ThreadManager implements OrchestratorApi {
         threadId,
         role: "director",
         kind: "system",
-        content: `↪ injected (forwarded to the auto-reviewer): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+        content: `↪ injected (forwarded to ${reviewer ? "the auto-reviewer" : impl ? "the auto-review's fix round" : "the auto-review lane"}): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
         attachments: injectRefs(),
       });
       this.hub.publish({ type: "thread.message", threadId, message: m });
       this.touchThread(threadId);
-      return { ok: true, state: "reviewing" };
+      return { ok: true, state: thread?.state ?? "reviewing" };
+    }
+    // Self-improvement gate — the auto-review gate's twin, for the same reason and with the same shape.
+    // The bonus round runs on ALREADY-accepted work under 'implementing', and its implementor's own onEnd
+    // clears `this.live` while the awaited result is still in flight; falling through in that window would
+    // cold-resume a SECOND implementor onto the workspace and then re-park a task the caller is about to
+    // settle done. Keyed on the episode, so it holds for the round's whole life.
+    if (this.selfImproving.has(threadId)) {
+      const impl = this.live.get(threadId);
+      const blocks = images?.length ? images.map(toImageBlock) : [];
+      // Buffered notes are drained by flushDirectorNotes when the round's implementor goes live, so the
+      // pre-launch window (stopLive → compressed seed) loses nothing either.
+      if (impl) impl.run.send(contentWithImages(acknowledgedInjection(message), blocks), mode === "interrupt" ? { priority: "now" } : undefined);
+      else this.bufferDirectorNote(threadId, message);
+      const m = this.db.addMessage({
+        threadId,
+        role: "director",
+        kind: "system",
+        content: `↪ injected (forwarded to the self-improvement round): ${message}${blocks.length ? ` [+${blocks.length} image(s)]` : ""}`,
+        attachments: injectRefs(),
+      });
+      this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.touchThread(threadId);
+      return { ok: true, state: thread?.state ?? "implementing" };
     }
     const live = this.live.get(threadId);
     if (live) {
@@ -4225,16 +4414,33 @@ export class ThreadManager implements OrchestratorApi {
       }
       return { ok: true, state: "qa" };
     }
-    // Auto-review gate — same guarantee as the QA one above: the reviewer owns the slot, so a resume here
-    // must never wake or spawn an implementor beside it. Steering reaches the reviewer; a bare Resume is a
-    // no-op (the review is already running and settles the task itself).
-    if (thread.state === "reviewing") {
+    // Auto-review gate — same guarantee as the QA one above: the lane owns the slot, so a resume here must
+    // never wake or spawn an agent beside it. Keyed on the EPISODE, not just the state, because the lane
+    // also owns the thread through its fix round: that runs under 'implementing', and the implementor's own
+    // onEnd clears `this.live` while the awaited result is still in flight — a state-only check would fall
+    // through in exactly that window and cold-resume a SECOND implementor onto the same workspace. Steering
+    // goes to whichever agent is actually live; a bare Resume is a no-op (the episode settles the task).
+    if (thread.state === "reviewing" || this.reviewing.has(threadId)) {
       if (message?.trim()) {
         const reviewer = this.liveReviewer.get(threadId);
+        const impl = this.live.get(threadId);
         if (reviewer) reviewer.send(structuredAcknowledgedInjection(message), { priority: "now" });
+        else if (impl) impl.run.send(acknowledgedInjection(message), { priority: "now" });
         else this.bufferDirectorNote(threadId, message);
       }
-      return { ok: true, state: "reviewing" };
+      return { ok: true, state: thread.state };
+    }
+    // Self-improvement gate — injectThread's twin. The bonus round owns an already-accepted task through
+    // 'implementing', including the window where its implementor's onEnd has already cleared `this.live`;
+    // falling through there would start a second implementor and re-park a task that is about to settle
+    // done. A bare Resume is a no-op (the round finishes on its own); steering reaches the round.
+    if (this.selfImproving.has(threadId)) {
+      if (message?.trim()) {
+        const impl = this.live.get(threadId);
+        if (impl) impl.run.send(acknowledgedInjection(message), { priority: "now" });
+        else this.bufferDirectorNote(threadId, message);
+      }
+      return { ok: true, state: thread.state };
     }
     const live = this.live.get(threadId);
     if (live) {
@@ -4282,6 +4488,10 @@ export class ThreadManager implements OrchestratorApi {
     this.activePipelines.add(thread.id);
     this.capParked.delete(thread.id); // fresh resume — drop any stale cap flag before this run sets its own
     this.autoResumes.set(thread.id, 0); // fresh budget for the stall/turn-limit auto-continues
+    // A manual resume is never an auto-review fix round nor a post-task self-improvement round. Clearing
+    // both matters most for a marker that leaked (a round whose process died outside an IN_FLIGHT state):
+    // left set, the next bounce would settle this genuinely-unfinished work as done.
+    this.db.updateThreadStageOutputs(thread.id, { reviewFixing: false, selfImproving: false });
     const releaseSlot = () => {
       this.activePipelines.delete(thread.id);
       this.implementorProvider.delete(thread.id);
@@ -4519,7 +4729,9 @@ export class ThreadManager implements OrchestratorApi {
   async autoReview(threadId: string): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
-    if (this.reviewing.has(threadId)) return { ok: true, state: "reviewing" };
+    // Already running. Report the thread's REAL state, not a blanket "reviewing" — mid fix round the board
+    // shows 'implementing', and an ack that contradicts it reads as a bug.
+    if (this.reviewing.has(threadId)) return { ok: true, state: thread.state };
     if (thread.state !== "review") {
       return { ok: false, error: `Only a task parked in review can be auto-reviewed — this one is ${thread.state}.` };
     }
@@ -4541,23 +4753,39 @@ export class ThreadManager implements OrchestratorApi {
     return { ok: true, state: "reviewing" };
   }
 
-  /** Run the auto-reviewer and settle the task on its verdict. Mirrors runReader's shape (one runRole +
-   *  a disposition), and like it never leaves the task in the running state: every exit — verdict, error,
-   *  or a thrown run — puts it back in 'review' or moves it to 'done'. */
+  /** Run the auto-reviewer and settle the task on its verdict — with the fix loop that makes the button
+   *  mean what it says. A hand-back is rarely something the owner has to do by hand: the reviewer is
+   *  read-only by design, so the one thing blocking a task is routinely work an implementor could finish in
+   *  a minute (the case this was built for handed a whole task back because a report file sat outside the
+   *  workspace). So each hand-back with concrete issues buys ONE implementor fix round plus a re-review,
+   *  up to `maxReviewFixRounds`. Only the final verdict settles the task, and only an acceptance is 'done'.
+   *
+   *  Like runReader it never leaves the task in a running state: every exit — verdict, error, or a thrown
+   *  run — puts it back in 'review' or moves it to 'done'. */
   private async runAutoReview(thread: Thread): Promise<void> {
     try {
-      const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
-      const plan = this.db.getThreadStageOutputs(thread.id).plan ?? undefined;
-      const kickoff = reviewerKickoff(thread, plan, unsurfaced);
-      const res = await this.reviewToVerdict(thread, this.kickoffContent(thread.id, this.withOfficeNote(thread, "reviewer", kickoff)));
+      const total = this.settings().maxReviewFixRounds;
+      let res = await this.reviewToVerdict(thread, this.freshReviewKickoff(thread));
+      let fixRounds = 0;
+      for (let round = 1; round <= total; round++) {
+        if (this.cancelled(thread.id)) return;
+        const handedBack = this.handBackWithIssues(res);
+        if (!handedBack) break;
+        if (!(await this.runReviewFixRound(thread, handedBack, round, total))) return; // the round settled it
+        if (this.cancelled(thread.id)) return;
+        fixRounds = round;
+        res = await this.reviewRecheck(thread, handedBack);
+      }
       if (this.cancelled(thread.id)) return;
-      this.finalizeReview(thread, res);
+      this.finalizeReview(thread, res, fixRounds);
     } catch (e) {
       this.hub.log("warn", `Auto-review of ${thread.id.slice(0, 8)} failed: ${String(e)}`);
-      if (!this.cancelled(thread.id) && this.db.getThread(thread.id)?.state === "reviewing") {
+      const state = this.db.getThread(thread.id)?.state;
+      if (!this.cancelled(thread.id) && (state === "reviewing" || state === "implementing")) {
         this.setState(thread.id, "review", `Auto-review failed to run: ${String(e)}`.slice(0, MAX_REVIEW_ERROR_LEN));
       }
     } finally {
+      this.db.updateThreadStageOutputs(thread.id, { reviewFixing: false });
       this.reviewing.delete(thread.id);
       this.liveReviewer.delete(thread.id);
       // Anything the owner injected into the sub-second window where the reviewer had no steerable handle
@@ -4569,6 +4797,124 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
+  /** The full review request — the brief, the park reason, the plan's scope hint, the unsurfaced-artifact
+   *  hint. Built from the thread SNAPSHOT taken before the state flipped to 'reviewing', so it still
+   *  carries the park reason the owner would have read. Also the re-check's fallback when the reviewer
+   *  left no session to resume. */
+  private freshReviewKickoff(thread: Thread): string | unknown[] {
+    const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
+    const plan = this.db.getThreadStageOutputs(thread.id).plan ?? undefined;
+    const kickoff = reviewerKickoff(thread, plan, unsurfaced, this.settings().maxReviewFixRounds);
+    return this.kickoffContent(thread.id, this.withOfficeNote(thread, "reviewer", kickoff));
+  }
+
+  /** The reviewer's verdict when — and only when — it is a hand-back the implementor can act on. A
+   *  verdict-less run has nothing to fix, and an `accept: false` with no concrete issues gives the
+   *  implementor nothing to work from, so both fall through to the owner rather than paying for a fix
+   *  round that would be guesswork. */
+  private handBackWithIssues(res: ResultEvent | undefined): ReviewerOutput | undefined {
+    const out = res?.structuredOutput as ReviewerOutput | undefined;
+    if (!res || res.isError || !out || out.accept) return undefined;
+    return out.issues?.length ? out : undefined;
+  }
+
+  /** One implementor fix round driven by the auto-reviewer's issue list. Returns true when the fix
+   *  finished and the task is ready to be re-reviewed; false when this round SETTLED the task itself
+   *  (parked, blocked by routing, or cancelled) and the caller must stop.
+   *
+   *  Reuses the pipeline's implementor path wholesale — the same warm/cold resume gate, account failover,
+   *  and turn-limit/stall/empty auto-continue a QA fix-round gets — so a fix round is exactly as robust as
+   *  any other implementor run. It deliberately does NOT re-enter the QA loop: the owner delegated their
+   *  own final review to the reviewer, so the reviewer is the gate that decides, and QA already had its
+   *  rounds earlier in this task's life. Every exit that isn't `true` has already parked the task. */
+  private async runReviewFixRound(thread: Thread, out: ReviewerOutput, round: number, total: number): Promise<boolean> {
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "reviewer",
+      summary: `Auto-review handed this back — sending it to the implementor to fix (round ${round} of ${total}): ${out.summary}`,
+      detail: `${formatReviewIssues(out)}\n\nThe implementor is being relaunched with this list; the reviewer then re-checks its work and makes the final call.`,
+      severity: "warning",
+    });
+    // The fix runs under 'implementing' — an auto-resume state — so a restart would otherwise revive it
+    // into the normal pipeline. Mark the round durably; markInterrupted re-parks it for a fresh click.
+    this.db.updateThreadStageOutputs(thread.id, { reviewFixing: true });
+    this.capParked.delete(thread.id);
+    this.autoResumes.set(thread.id, 0);
+    try {
+      if (!this.gateImplementorProvider(thread)) {
+        // The shared gate parks 'failed', which is right for a fresh dispatch but wrong here: this task's
+        // work is FINISHED and was parked for the owner, and 'failed' would arm a Resume into the pipeline.
+        this.setState(thread.id, "review", "Auto-review found issues but couldn't start a fix round — no implementor backend is available under the current subscription settings. Fix the routing, then run the auto-review again.");
+        return false;
+      }
+      const effort = thread.effortOverride ?? undefined;
+      const kickoff = this.db.getThreadStageOutputs(thread.id).kickoff ?? thread.brief;
+      const fixMsg = reviewFixMessage(out, this.officeName(thread.id, "reviewer"));
+      // State stays 'reviewing' across the (possibly awaited) session compression — startImplementor flips
+      // it only once the run is live — so an inject landing in that window routes to the reviewer gate's
+      // buffer instead of spawning a second agent, and flushDirectorNotes delivers it a moment later.
+      const start = await this.startResumedImplementor(thread, kickoff, this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id), {
+        effort,
+        resumeNudge: fixMsg,
+        directorNote: fixMsg,
+        qaFollows: false,
+      });
+      if (!start) return false; // cancelled while compressing the prior session
+      this.flushDirectorNotes(thread.id, start.run);
+      let res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, fixMsg, false);
+      // Honor anything the owner queued during the fix, exactly as the QA loop does at its hand-off — the
+      // Queue button promises delivery at a boundary, and this is one. Nothing else on this lane drains it.
+      res = await this.drainQueuedImplementor(thread, effort, kickoff, res, false);
+      // Flip BEFORE the implementor is stopped (the QA loop's ordering, for the same reason): its own
+      // onEnd races the awaited result and usually wins, so an 'implementing' thread with an empty
+      // `this.live` is a window where a Resume/inject would fall through and spawn a SECOND implementor.
+      if (!this.cancelled(thread.id)) this.setState(thread.id, "reviewing");
+      if (this.cancelled(thread.id)) return false;
+      if (!res || res.isError) {
+        // Never leave the auto-resume marker on: `resumeCapParked` hands a CAP_PARK task to runPipeline,
+        // which would finish this task through the QA loop and could mark it done — a verdict the reviewer
+        // never gave, on a lane whose whole contract is that only its acceptance settles the task. So a cap
+        // during a fix round parks like any other failure, with the button re-armed for a fresh review.
+        const capped = this.capParked.get(thread.id);
+        this.capParked.delete(thread.id);
+        const why = capped
+          ? "every backend was usage-capped mid-fix."
+          : res?.isError
+            ? runErrorText(res)
+            : "The implementor ended its turn without finishing.";
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "implementor",
+          summary: "The auto-review fix round didn't complete — needs your review",
+          detail: `${why}\n\nStill open:\n${formatReviewIssues(out)}`,
+          severity: "warning",
+        });
+        this.setState(thread.id, "review", `The auto-review's fix round didn't finish — ${why} The issues it was sent to fix are still open, so this needs your review.`.slice(0, MAX_REVIEW_ERROR_LEN));
+        return false;
+      }
+      return true;
+    } finally {
+      // The implementor must be down before the reviewer takes the slot back — one agent at a time — and
+      // this is the only place that holds on a THROWN round too (which otherwise leaves an agent running
+      // on a task the catch above has already parked).
+      await this.stopLive(thread.id);
+      this.db.updateThreadStageOutputs(thread.id, { reviewFixing: false });
+      this.autoResumes.delete(thread.id);
+      this.implementorProvider.delete(thread.id);
+      this.queuedForImplementor.delete(thread.id);
+    }
+  }
+
+  /** Re-review after a fix round. Warm-resumes the reviewer's OWN session where it has one: it already
+   *  knows the brief, the diff it read and precisely what it asked for, so re-checking is a fraction of a
+   *  cold review — and it can't forget an issue it raised. Falls back to a full fresh review when the
+   *  session is gone (an errored or empty first run leaves none). */
+  private reviewRecheck(thread: Thread, out: ReviewerOutput): Promise<ResultEvent | undefined> {
+    const session = this.latestRoleSession(thread.id, "reviewer");
+    if (!session) return this.reviewToVerdict(thread, this.freshReviewKickoff(thread));
+    return this.reviewToVerdict(thread, reviewerRecheckKickoff(out), session);
+  }
+
   /** Run the auto-reviewer to a verdict, recovering it from the two ways it can stop without deciding:
    *  cut off at the per-session turn ceiling, or returning empty without ever reaching the model. The whole
    *  point of the button is that the owner does NOT have to read the diff, so handing the task back over a
@@ -4576,10 +4922,15 @@ export class ThreadManager implements OrchestratorApi {
    *  the implementor and QA paths.
    *
    *  The budget is in-process only, unlike QA's: a restart during 'reviewing' re-parks the task for a fresh
-   *  click (`markInterrupted`) rather than resuming it, so there is no cross-restart budget to keep. */
-  private async reviewToVerdict(thread: Thread, kickoff: string | unknown[]): Promise<ResultEvent | undefined> {
+   *  click (`markInterrupted`) rather than resuming it, so there is no cross-restart budget to keep.
+   *
+   *  `resumeSession` starts from an existing review session (a post-fix re-check). Starting over then means
+   *  a FULL fresh review, not re-sending the short re-check nudge — that nudge only makes sense to a session
+   *  that still remembers what it asked for, and an empty run proves this one doesn't. */
+  private async reviewToVerdict(thread: Thread, kickoff: string | unknown[], resumeSession?: string): Promise<ResultEvent | undefined> {
+    const startOver = (): Promise<ResultEvent | undefined> => this.runReviewer(thread, resumeSession ? this.freshReviewKickoff(thread) : kickoff);
     let attemptFrom = Date.now();
-    let res = await this.runReviewer(thread, kickoff);
+    let res = await this.runReviewer(thread, kickoff, resumeSession);
     let empty = this.markIfEmpty(thread.id, attemptFrom, res);
     for (let spent = 0; spent < MAX_REVIEW_RECOVERIES; spent++) {
       if (res?.structuredOutput || this.cancelled(thread.id)) break;
@@ -4590,7 +4941,7 @@ export class ThreadManager implements OrchestratorApi {
       if (!empty && !session) break;
       this.noteReviewRecovery(thread.id, empty, spent);
       attemptFrom = Date.now();
-      res = empty ? await this.runReviewer(thread, kickoff) : await this.runReviewer(thread, reviewerContinueKickoff(), session);
+      res = empty ? await startOver() : await this.runReviewer(thread, reviewerContinueKickoff(), session);
       empty = this.markIfEmpty(thread.id, attemptFrom, res);
     }
     return res;
@@ -4651,32 +5002,36 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** The reviewer's verdict decides the task: accepted → 'done' (identical to the owner clicking Mark
-   *  done); anything else → straight back to 'review', untouched, with the reasons recorded as a finding
-   *  so they're readable without re-opening the run. A run that produced no verdict (errored, capped,
-   *  hit its turn ceiling) also re-parks — an absent decision is never an acceptance. */
-  private finalizeReview(thread: Thread, res: ResultEvent | undefined): void {
+   *  done); anything else → back to 'review' with the reasons recorded as a finding so they're readable
+   *  without re-opening the run. A run that produced no verdict (errored, capped, hit its turn ceiling)
+   *  also re-parks — an absent decision is never an acceptance. `fixRounds` is how many implementor fix
+   *  rounds this episode already spent, which is the difference between "the reviewer said no" and "it
+   *  said no, was fixed, and still says no" — the second is worth the owner's attention, the first often
+   *  isn't. */
+  private finalizeReview(thread: Thread, res: ResultEvent | undefined, fixRounds = 0): void {
+    const tried = fixRounds ? ` (after ${fixRounds} fix ${fixRounds === 1 ? "round" : "rounds"})` : "";
     const out = res?.structuredOutput as ReviewerOutput | undefined;
     if (!res || res.isError || !out) {
       const detail = res ? this.reviewFailureDetail(thread.id, res) : undefined;
       this.postFinding({
         threadId: thread.id,
         fromRole: "reviewer",
-        summary: "Auto-review couldn't reach a verdict — the task stays parked for you",
+        summary: `Auto-review couldn't reach a verdict${tried} — the task stays parked for you`,
         detail,
         severity: "warning",
       });
-      this.setState(thread.id, "review", `Auto-review couldn't reach a verdict${detail ? ` — ${detail}` : ""} — still needs your review.`.slice(0, MAX_REVIEW_ERROR_LEN));
+      this.setState(thread.id, "review", `Auto-review couldn't reach a verdict${tried}${detail ? ` — ${detail}` : ""} — still needs your review.`.slice(0, MAX_REVIEW_ERROR_LEN));
       return;
     }
     if (!out.accept) {
       this.postFinding({
         threadId: thread.id,
         fromRole: "reviewer",
-        summary: `Auto-review handed this back: ${out.summary}`,
+        summary: `Auto-review handed this back${tried}: ${out.summary}`,
         detail: formatReviewIssues(out),
         severity: "warning",
       });
-      this.setState(thread.id, "review", `Auto-review didn't accept it: ${out.summary}`.slice(0, MAX_REVIEW_ERROR_LEN));
+      this.setState(thread.id, "review", `Auto-review didn't accept it${tried}: ${out.summary}`.slice(0, MAX_REVIEW_ERROR_LEN));
       return;
     }
     this.postFinding({
@@ -5268,6 +5623,7 @@ export class ThreadManager implements OrchestratorApi {
       state: res?.isError ? "error" : "done",
       // Persist the failure reason so a dead run is diagnosable instead of a silent error row.
       error: res?.isError ? runErrorText(res) : null,
+      capFlagged: capFlaggedBy(agent),
       endedAt: Date.now(),
       costUsd: res?.costUsd ?? null,
       numTurns: res?.numTurns ?? null,
@@ -5287,6 +5643,7 @@ export class ThreadManager implements OrchestratorApi {
     this.db.updateRun(runId, {
       state,
       error: res?.isError ? runErrorText(res) : run.error ?? null,
+      capFlagged: capFlaggedBy(agent),
       endedAt: Date.now(),
       costUsd: res?.costUsd ?? run.costUsd ?? null,
       numTurns: res?.numTurns ?? run.numTurns ?? null,
@@ -5309,14 +5666,24 @@ export class ThreadManager implements OrchestratorApi {
 
   private wireRun(agent: AgentRunLike, threadId: string, runId: string, role: Role, accountId: string): void {
     let leftStarting = false;
+    // A finalized run (endedAt set) is immutable. finishRun/finalizeRun run OUTSIDE this listener — from
+    // runRole's explicit finishRun and the implementor's onEnd — and can land while the SDK is still
+    // flushing a buffered init/text/result as the session tears down. Without this guard, such a late
+    // event flips the row back to a live state ("running") while endedAt stays set: a run the gnome strip
+    // then draws forever and the boot reconciler (ended_at IS NULL) can never reconcile. Every state-
+    // bearing write from an agent event goes through here so a dead run cannot be resurrected.
+    const patchLiveRun = (patch: Parameters<Db["updateRun"]>[1]): void => {
+      if (this.db.getRun(runId)?.endedAt != null) return;
+      this.db.updateRun(runId, patch);
+      this.emitRun(runId);
+    };
     const markRunning = (sessionId?: string) => {
       if (leftStarting && !sessionId) return;
       leftStarting = true;
-      this.db.updateRun(runId, {
+      patchLiveRun({
         state: "running",
         ...(sessionId ? { sessionId } : {}),
       });
-      this.emitRun(runId);
     };
     const off = agent.onEvent((e: AgentEvent) => {
       switch (e.type) {
@@ -5356,12 +5723,10 @@ export class ThreadManager implements OrchestratorApi {
           break;
         }
         case "result":
-          this.db.updateRun(runId, { costUsd: e.costUsd ?? null, numTurns: e.numTurns ?? null, state: e.isError ? "error" : "idle" });
-          this.emitRun(runId);
+          patchLiveRun({ costUsd: e.costUsd ?? null, numTurns: e.numTurns ?? null, state: e.isError ? "error" : "idle" });
           break;
         case "error":
-          this.db.updateRun(runId, { state: "error", error: e.message.slice(0, MAX_RUN_ERROR_LEN) });
-          this.emitRun(runId);
+          patchLiveRun({ state: "error", error: e.message.slice(0, MAX_RUN_ERROR_LEN) });
           this.hub.log("error", `${role} on ${threadId.slice(0, 8)}: ${e.message}`);
           break;
         case "rate_limit":
@@ -5649,7 +6014,7 @@ function deliverablesCheckBlock(unsurfacedArtifacts: string[]): string {
  *  (the thing the owner would have opened it to look at), and the two rules that make the lane worth
  *  using — ask the owner rather than guess, and hand back rather than wave through. The full reviewer
  *  doctrine lives in REVIEWER_PROMPT; this is the per-task hand-off. */
-function reviewerKickoff(thread: Thread, plan: PlanOutput | undefined, unsurfacedArtifacts: string[]): string {
+function reviewerKickoff(thread: Thread, plan: PlanOutput | undefined, unsurfacedArtifacts: string[], fixRounds: number): string {
   const parts: string[] = [
     `# Review request for task: ${thread.title}`,
     "",
@@ -5674,7 +6039,12 @@ function reviewerKickoff(thread: Thread, plan: PlanOutput | undefined, unsurface
     "",
     `Call \`ask_user\` for anything that genuinely needs ${config.ownerName} — a product decision, "is this what you meant", whether a known trade-off is acceptable. One bundled, short, preferably multiple-choice ask; that is the whole reason this review came to you instead of them. If no answer comes, hand the task back rather than accepting on a guess.`,
     "",
-    "Then return your structured verdict. `accept: true` marks this task DONE — only if you would sign it off yourself. Otherwise `accept: false` with concrete `issues`, and it goes back on their desk untouched.",
+    // What a hand-back actually DOES depends on the operator's fix-round budget, and the difference
+    // changes how the reviewer should weigh handing back against asking the owner — so it is stated per
+    // run rather than baked into the cache-stable system prompt, which would be a lie at a budget of 0.
+    fixRounds > 0
+      ? `Then return your structured verdict. \`accept: true\` marks this task DONE — only if you would sign it off yourself. Otherwise \`accept: false\` with concrete, actionable \`issues\`, and **you are not the last stop**: the implementor is relaunched with that list, fixes it, and you re-check its work and decide again (up to ${fixRounds} ${fixRounds === 1 ? "round" : "rounds"}). So never reason "I can't fix this myself, therefore ${config.ownerName} has to" — if a competent implementor could resolve it, hand it back and say exactly what to do. An \`accept: false\` with no \`issues\` buys no fix round; it just lands on their desk.`
+      : "Then return your structured verdict. `accept: true` marks this task DONE — only if you would sign it off yourself. Otherwise `accept: false` with concrete `issues`, and it goes back on their desk untouched — no fix round follows, so anything you don't name here is something they have to rediscover themselves.",
   );
   if (unsurfacedArtifacts.length) {
     parts.push(
@@ -5695,6 +6065,36 @@ function reviewerContinueKickoff(): string {
     "Continue exactly where you left off: finish the checks you still had outstanding, then return your structured verdict.",
     "Work efficiently; you have a fresh turn budget but not an unlimited one, so prioritise what decides accept-or-hand-back.",
     `Remember: \`accept: true\` marks the task DONE. If you can't finish verifying it, hand it back with what you did and didn't check rather than accepting on a guess.`,
+  ].join("\n");
+}
+
+/** What the implementor is relaunched with when the auto-reviewer hands a task back. Deliberately shaped
+ * like the QA fix message — the same "here's the list, fix all of it, they re-check" contract the
+ * implementor already knows — but names the reviewer as standing in for the owner, because that is what
+ * makes an item like "your report isn't where the owner can open it" worth doing rather than arguing with. */
+function reviewFixMessage(out: ReviewerOutput, reviewerName: string): string {
+  return [
+    `${reviewerName} (the auto-reviewer standing in for ${config.ownerName}'s own final review of this task) went through your finished work and held it back over the issues below.`,
+    "",
+    `Their verdict: ${out.summary}`,
+    "",
+    formatReviewIssues(out),
+    "",
+    "Fix ALL of these properly — no stubs, no half-measures — then commit per this repo's doctrine. If an item is genuinely wrong or impossible, say so explicitly in your final message with the reason; don't silently skip it. The same reviewer re-checks your work straight after and decides whether the task is done.",
+  ].join("\n");
+}
+
+/** The RESUMED form for a reviewer re-checking after the implementor fixed what it asked for. Its session
+ * still holds the brief, the diff it read and its own issue list, so all it needs is the fact that the tree
+ * has changed underneath it — and a reminder that the verdict is still its call, not a rubber stamp. */
+function reviewerRecheckKickoff(out: ReviewerOutput): string {
+  return [
+    `The implementor has been through the issues you raised and reports it addressed them. The working tree has CHANGED since you read it — re-read the files and re-run the checks that matter; nothing you saw before can be assumed to still hold.`,
+    "",
+    "The issues you handed it back for were:",
+    formatReviewIssues(out),
+    "",
+    "Verify each one is genuinely resolved (and that the fixes broke nothing else), then return your structured verdict. `accept: true` marks the task DONE — only if you would sign it off yourself now. If something is still outstanding, hand it back with what remains; do not accept a partial fix to close the loop.",
   ].join("\n");
 }
 
@@ -5775,6 +6175,16 @@ export function cliRoleKickoff(
     .filter(Boolean)
     .join("\n\n");
   return prependUserContent(content, prelude);
+}
+
+/** Whether the runner itself saw a usage cap during this run — the flag the failover paths key on. The
+ *  two backends' signals are deliberately different (`rateLimited` drives Claude-account failover, a CLI
+ *  backend sets `capped` instead to avoid it), and either one means "a quota, not a crash". Narrowed by
+ *  `instanceof` rather than a structural cast, so renaming `capped` fails the build instead of silently
+ *  reporting every Grok/Codex cap as none — which is the exact blindness this flag exists to expose. */
+export function capFlaggedBy(agent: AgentRunLike): boolean {
+  const cliCapped = (agent instanceof CodexAgentRun || agent instanceof GrokAgentRun) && agent.capped;
+  return agent.rateLimited || cliCapped;
 }
 
 /** Human label for an implementor backend, for the failover findings/notices. */

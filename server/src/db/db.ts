@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
 import type {
   AgentRun,
@@ -73,6 +73,8 @@ function rowToRun(r: Row): AgentRun {
     costUsd: (r.cost_usd as number | null) ?? null,
     numTurns: (r.num_turns as number | null) ?? null,
     error: (r.error as string | null) ?? null,
+    // Null (never written) is NOT "the runner saw no cap" — it's a row from before the flag existed.
+    capFlagged: r.cap_flagged == null ? null : r.cap_flagged === 1,
     startedAt: r.started_at as number,
     endedAt: (r.ended_at as number | null) ?? null,
   };
@@ -177,6 +179,15 @@ function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (c) => "\\" + c);
 }
 
+/** The two tables whose `attachments` JSON column can hold a reference to a stored blob. */
+const REF_TABLES = ["messages", "director_messages"] as const;
+
+/** A row that references a blob, addressed by primary key so a rewrite doesn't scan the table. */
+interface RefRow {
+  table: (typeof REF_TABLES)[number];
+  id: string;
+}
+
 export class Db {
   readonly raw: Database.Database;
 
@@ -210,6 +221,8 @@ export class Db {
       "ALTER TABLE findings ADD COLUMN label TEXT",
       "ALTER TABLE director_messages ADD COLUMN thread_id TEXT",
       "ALTER TABLE threads ADD COLUMN lane TEXT",
+      "ALTER TABLE attachments ADD COLUMN sha256 TEXT",
+      "ALTER TABLE agent_runs ADD COLUMN cap_flagged INTEGER",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -217,7 +230,11 @@ export class Db {
         /* column already present */
       }
     }
+    // After the ALTER, never in SCHEMA: on a pre-sha256 DB the column doesn't exist yet when
+    // SCHEMA runs, and exec(SCHEMA) is unguarded — the failed index would abort boot.
+    this.raw.exec("CREATE INDEX IF NOT EXISTS idx_attachments_content ON attachments(sha256, name, media_type)");
     this.backfillDirectorThreadLinks();
+    this.dedupeAttachmentBlobs();
   }
 
   // One-time: attribute each pre-existing director message to the task its turn dispatched, so the
@@ -257,6 +274,81 @@ export class Db {
       )
       .run(CONFIRMATION_WINDOW_MS);
     this.kvSet("director_thread_backfill_v2", "1");
+  }
+
+  // One-time: collapse byte-identical attachment blobs onto one row, then drop whatever nothing points
+  // at any more. Until addAttachment content-addressed them, an image dropped into the director was
+  // stored TWICE — once for the director message, once again when the dispatch copied it onto the task's
+  // own message — so a mature DB carries roughly a copy per reference (75 MB of 183 MB when this shipped).
+  // Every reference is rewritten to the surviving id, so nothing the console can open changes; only the
+  // redundant bytes go. Transactional: a failure part-way leaves the old rows untouched.
+  private dedupeAttachmentBlobs(): void {
+    if (this.kvGet("attachment_dedupe_v1")) return;
+    this.raw.transaction(() => {
+      this.backfillAttachmentHashes();
+      const holders = this.attachmentReferenceIndex();
+      for (const ids of this.duplicateAttachmentGroups()) this.collapseAttachmentGroup(ids, holders);
+      this.pruneAttachments(this.allAttachmentIds());
+    })();
+    this.kvSet("attachment_dedupe_v1", "1");
+  }
+
+  /** Hash the rows that predate the sha256 column, one at a time — the blobs are ~0.5 MB each, so
+   *  selecting them all at once would hold the whole table in memory. */
+  private backfillAttachmentHashes(): void {
+    const ids = (this.raw.prepare("SELECT id FROM attachments WHERE sha256 IS NULL").all() as Row[]).map(
+      (r) => r.id as string,
+    );
+    const read = this.raw.prepare("SELECT data FROM attachments WHERE id = ?");
+    const write = this.raw.prepare("UPDATE attachments SET sha256 = ? WHERE id = ?");
+    for (const id of ids) {
+      const row = read.get(id) as Row | undefined;
+      if (row) write.run(sha256Of(row.data as string), id);
+    }
+  }
+
+  /** Ids of every set of rows holding identical content. Members are byte-identical and carry the same
+   *  name/type, so any one of them can be the keeper; the ordering just favours preserving the original. */
+  private duplicateAttachmentGroups(): string[][] {
+    const rows = this.raw
+      .prepare(
+        `SELECT group_concat(id) ids FROM (SELECT id, sha256, name, media_type FROM attachments ORDER BY created_at ASC)
+         GROUP BY sha256, name, media_type HAVING COUNT(*) > 1`,
+      )
+      .all() as Row[];
+    return rows.map((r) => String(r.ids).split(","));
+  }
+
+  /** Which rows reference each blob, from ONE pass per table. Matching by `LIKE '%id%'` per duplicate
+   *  instead re-reads all ~200k messages for each one, which turned this into a 13s boot on a mature DB. */
+  private attachmentReferenceIndex(): Map<string, RefRow[]> {
+    const index = new Map<string, RefRow[]>();
+    for (const table of REF_TABLES) {
+      for (const r of this.raw.prepare(`SELECT id, attachments FROM ${table} WHERE attachments != '[]'`).all() as Row[]) {
+        for (const ref of parseAttachments(r.attachments)) {
+          const rows = index.get(ref.id) ?? [];
+          rows.push({ table, id: r.id as string });
+          index.set(ref.id, rows);
+        }
+      }
+    }
+    return index;
+  }
+
+  /** Point every reference at the first id, then delete the rows that gave up their bytes. */
+  private collapseAttachmentGroup([keep, ...redundant]: string[], holders: Map<string, RefRow[]>): void {
+    const drop = this.raw.prepare("DELETE FROM attachments WHERE id = ?");
+    const rewrite = Object.fromEntries(
+      REF_TABLES.map((t) => [t, this.raw.prepare(`UPDATE ${t} SET attachments = replace(attachments, ?, ?) WHERE id = ?`)]),
+    );
+    for (const id of redundant) {
+      for (const row of holders.get(id) ?? []) rewrite[row.table]?.run(id, keep, row.id);
+      drop.run(id);
+    }
+  }
+
+  private allAttachmentIds(): string[] {
+    return (this.raw.prepare("SELECT id FROM attachments").all() as Row[]).map((r) => r.id as string);
   }
 
   // ---- kv ----
@@ -313,11 +405,15 @@ export class Db {
   /** Permanently delete a thread and all its children. agent_runs/findings/messages drop via FK
    *  ON DELETE CASCADE (the foreign_keys pragma is asserted in the constructor). questions.thread_id
    *  is nullable with NO FK — a question can be threadless — so its rows are deleted explicitly.
+   *  Attachment blobs have no FK either (they outlive any one message, being shared), so the ones this
+   *  thread held the last reference to are collected first and pruned once the messages are gone.
    *  Wrapped in a transaction so the thread and its questions go together or not at all. */
   deleteThread(id: string): void {
     this.raw.transaction((tid: string) => {
+      const blobs = this.threadAttachmentIds(tid);
       this.raw.prepare("DELETE FROM questions WHERE thread_id = ?").run(tid);
       this.raw.prepare("DELETE FROM threads WHERE id = ?").run(tid);
+      this.pruneAttachments(blobs);
     })(id);
   }
 
@@ -399,11 +495,13 @@ export class Db {
    *  all-or-nothing. */
   resetThreadForRetry(id: string): void {
     this.raw.transaction((tid: string) => {
+      const blobs = this.threadAttachmentIds(tid);
       this.raw.prepare("DELETE FROM agent_runs WHERE thread_id = ?").run(tid);
       this.raw.prepare("DELETE FROM findings WHERE thread_id = ?").run(tid);
       this.raw.prepare("DELETE FROM messages WHERE thread_id = ?").run(tid);
       this.raw.prepare("DELETE FROM questions WHERE thread_id = ?").run(tid);
       this.raw.prepare("UPDATE threads SET stage_outputs = NULL, error = NULL WHERE id = ?").run(tid);
+      this.pruneAttachments(blobs);
     })(id);
   }
 
@@ -421,6 +519,7 @@ export class Db {
       costUsd: null,
       numTurns: null,
       error: null,
+      capFlagged: null, // no verdict until the run ends — matches what a re-read of the row returns
       startedAt: now(),
       endedAt: null,
     };
@@ -435,7 +534,7 @@ export class Db {
 
   updateRun(
     id: string,
-    patch: Partial<Pick<AgentRun, "sessionId" | "state" | "costUsd" | "numTurns" | "error" | "endedAt">>,
+    patch: Partial<Pick<AgentRun, "sessionId" | "state" | "costUsd" | "numTurns" | "error" | "endedAt" | "capFlagged">>,
   ): void {
     const sets: string[] = [];
     const params: Row = { id };
@@ -445,12 +544,14 @@ export class Db {
       costUsd: "cost_usd",
       numTurns: "num_turns",
       error: "error",
+      capFlagged: "cap_flagged",
       endedAt: "ended_at",
     };
     for (const [k, col] of Object.entries(map)) {
       if (k in patch) {
         sets.push(`${col} = @${k}`);
-        params[k] = (patch as Row)[k] ?? null;
+        const v = (patch as Row)[k] ?? null;
+        params[k] = typeof v === "boolean" ? (v ? 1 : 0) : v; // better-sqlite3 refuses to bind a boolean
       }
     }
     if (!sets.length) return;
@@ -484,6 +585,22 @@ export class Db {
       this.raw
         .prepare(
           "SELECT * FROM agent_runs WHERE state IN ('starting','running','idle') AND ended_at IS NULL ORDER BY started_at ASC",
+        )
+        .all() as Row[]
+    ).map(rowToRun);
+  }
+
+  /** Runs stuck in a live run-state but ALREADY stamped with an end time — the corrupted rows a late
+   *  agent event can leave behind (its state flipped back to "running" after the run finalized). These
+   *  break the invariant "an ended run has a terminal state": `listActiveRuns` can't see them (it needs
+   *  ended_at IS NULL), yet the console's gnome strip draws any starting/running run regardless of
+   *  ended_at — so each shows as a phantom working gnome forever, surviving restarts. The boot reconciler
+   *  stamps them terminal. */
+  listEndedButLiveStateRuns(): AgentRun[] {
+    return (
+      this.raw
+        .prepare(
+          "SELECT * FROM agent_runs WHERE state IN ('starting','running','idle') AND ended_at IS NOT NULL ORDER BY started_at ASC",
         )
         .all() as Row[]
     ).map(rowToRun);
@@ -893,12 +1010,49 @@ export class Db {
   }
 
   // ---- attachments (image bytes; served on demand over HTTP, refs over WS) ----
+  /** Content-addressed: the same bytes under the same name/type reuse the stored row rather than adding
+   *  another copy. One image legitimately hangs off several messages — the director's and every task it
+   *  was dispatched to — and storing it per reference is what made blobs the biggest table in the DB.
+   *  Keyed on name/type as well as the hash so a re-upload under a different name keeps its own filename
+   *  when it's served back over /api/attachment/:id. */
   addAttachment(input: { name: string; mediaType: string; data: string }): AttachmentRef {
+    const sha256 = sha256Of(input.data);
+    const ref = { name: input.name, mediaType: input.mediaType };
+    const existing = this.raw
+      .prepare("SELECT id FROM attachments WHERE sha256 = ? AND name = ? AND media_type = ?")
+      .get(sha256, input.name, input.mediaType) as Row | undefined;
+    if (existing) return { id: existing.id as string, ...ref };
     const id = newId();
     this.raw
-      .prepare(`INSERT INTO attachments(id, name, media_type, data, created_at) VALUES(?, ?, ?, ?, ?)`)
-      .run(id, input.name, input.mediaType, input.data, now());
-    return { id, name: input.name, mediaType: input.mediaType };
+      .prepare(`INSERT INTO attachments(id, name, media_type, data, sha256, created_at) VALUES(?, ?, ?, ?, ?, ?)`)
+      .run(id, input.name, input.mediaType, input.data, sha256, now());
+    return { id, ...ref };
+  }
+
+  /** Delete any of `ids` no message points at any more. Blobs are shared, so a thread going away only
+   *  frees the ones it held the last reference to — call this AFTER the referencing rows are gone. */
+  private pruneAttachments(ids: string[]): void {
+    if (!ids.length) return;
+    const referenced = this.referencedAttachmentIds();
+    const drop = this.raw.prepare("DELETE FROM attachments WHERE id = ?");
+    for (const id of new Set(ids)) if (!referenced.has(id)) drop.run(id);
+  }
+
+  private referencedAttachmentIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const table of REF_TABLES) {
+      for (const r of this.raw.prepare(`SELECT attachments FROM ${table} WHERE attachments != '[]'`).all() as Row[]) {
+        for (const ref of parseAttachments(r.attachments)) ids.add(ref.id);
+      }
+    }
+    return ids;
+  }
+
+  private threadAttachmentIds(threadId: string): string[] {
+    const rows = this.raw
+      .prepare("SELECT attachments FROM messages WHERE thread_id = ? AND attachments != '[]'")
+      .all(threadId) as Row[];
+    return rows.flatMap((r) => parseAttachments(r.attachments).map((ref) => ref.id));
   }
 
   getAttachment(id: string): { name: string; mediaType: string; data: string } | null {
@@ -915,6 +1069,10 @@ function parseStageOutputs(raw: unknown): StageOutputs {
   } catch {
     return {};
   }
+}
+
+function sha256Of(data: string): string {
+  return createHash("sha256").update(data).digest("hex");
 }
 
 function parseAttachments(raw: unknown): AttachmentRef[] {

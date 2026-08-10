@@ -13,7 +13,9 @@
     "build": "npm run build --prefix web && npm run build --prefix server",
     "start": "npm run start --prefix server",
     "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix web",
-    "health": "npm run health --prefix server"
+    "health": "npm run health --prefix server",
+    "probe:console": "node web/scripts/console-smoke.cjs",
+    "probe:chips": "node web/scripts/check-accounts-visible.cjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

@@ -9,7 +9,15 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { backendState, claudeHasHeadroom, spentWindow, BACKENDS, HARD_LIMIT_PCT } = require("./probe-accounts.cjs");
+const {
+  backendState,
+  claudeHasHeadroom,
+  spentWindow,
+  spentCredits,
+  BACKENDS,
+  HARD_LIMIT_PCT,
+  MIRRORED_HEADROOM_TERMS,
+} = require("./probe-accounts.cjs");
 
 const NOW = Date.parse("2026-07-28T00:00:00.000Z");
 const HOUR = 3_600_000;
@@ -129,6 +137,45 @@ assert.equal(
   "backendState passes the withheld reset through as unknown, so the ladder line can't print a fake countdown",
 );
 
+// --- Grok's monthly credit pool is a third exhaustion door ------------------------------------------
+// Routing refuses Grok on three conditions, not two (grokProviderCandidate): the cap latch, the weekly
+// window, and the SuperGrok plan's MONTHLY credit pool. Credits run out while the weekly still reads
+// room, so a windows-only read prints "available" for a rung routing will not send work to — the same
+// overstated-depth blind spot as the un-latched spent window, through the one door left open.
+const GROK = { enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", usageFile: "grok-usage-cache.json" };
+const noCredits = backendState(
+  GROK,
+  kvOf({ setting_grok_enabled: "1" }),
+  NOW,
+  usageOf({ sevenDay: 40, sevenDayReset: NOW + 3 * 24 * HOUR, monthlyUsed: 15000, monthlyLimit: 15000, monthlyReset: NOW + 5 * 24 * HOUR }),
+);
+assert.equal(noCredits.available, false, "a spent monthly credit pool is not a live rung, even with weekly room");
+assert.equal(noCredits.reason, "spent", "reported like any other spent meter — it waits for a real reset, not a cooldown");
+assert.equal(noCredits.window, "monthly credits", "names the pool, so the line isn't read as a weekly outage");
+assert.equal(noCredits.pct, 100);
+assert.equal(noCredits.until, NOW + 5 * 24 * HOUR, "carries the billing-period end so the line can count down");
+
+assert.equal(spentCredits({ monthlyUsed: 9231, monthlyLimit: 15000, monthlyReset: NOW + HOUR }, NOW), null, "credits left is not spent");
+assert.equal(spentCredits({ monthlyUsed: 15001, monthlyLimit: 15000 }, NOW)?.pct, 100, "over the cap with an unknown reset is still spent");
+assert.equal(
+  spentCredits({ monthlyUsed: 15000, monthlyLimit: 15000, monthlyReset: NOW - HOUR }, NOW),
+  null,
+  "a billing period that already ended has refilled — mirrors routing's `monthlyReset > now` guard",
+);
+assert.equal(spentCredits({ sevenDay: 100 }, NOW), null, "a backend that meters no credits at all never reads as credit-spent");
+assert.equal(spentCredits({ monthlyUsed: 5, monthlyLimit: 0 }, NOW), null, "a zero/absent limit is no information, not a full pool");
+assert.equal(
+  spentCredits({ monthlyUsed: 15000, monthlyLimit: 15000, monthlyReset: Date.parse("2027-06-01T00:00:00.000Z") }, NOW).reset,
+  null,
+  "a reset too far out to be a billing period is withheld from the countdown, like the window sentinel",
+);
+// The weekly window still wins the report when both are out — it is the one that resets sooner.
+assert.equal(
+  backendState(GROK, kvOf({ setting_grok_enabled: "1" }), NOW, usageOf({ sevenDay: 100, sevenDayReset: NOW + HOUR, monthlyUsed: 15000, monthlyLimit: 15000 })).window,
+  "7d",
+  "a spent window outranks spent credits in the readout",
+);
+
 // --- claudeHasHeadroom: BOTH windows gate the rung --------------------------------------------------
 assert.equal(claudeHasHeadroom({ fiveHour: 43, sevenDay: 32 }), true, "both windows under the limit");
 assert.equal(claudeHasHeadroom({}), true, "a sub with no usage read yet is assumed free");
@@ -177,6 +224,57 @@ for (const b of BACKENDS) {
     `probe reads meters from '${b.usageFile}', which agents/${mod} no longer writes`,
   );
   assert.ok(src.includes("writeFileSync"), `agents/${mod} must persist its reading, or the ladder has no meters to read`);
+}
+
+// --- the ladder must mirror EVERY door routing gates a backend on ------------------------------------
+// The load-bearing structural check. Everything above verifies the doors this readout already knows
+// about; this one is about the door it does NOT. The ladder re-implements `hasHeadroom` by hand, and an
+// unmirrored term fails silently and in the flattering direction — the rung keeps printing "available",
+// so the sweep reports more failover depth than exists. Three separate shipped instances (08d743b,
+// 707cc13, a523668) were each found by reading the two sources side by side, months apart. So: parse the
+// real `hasHeadroom` expressions out of threadManager.ts and require the probe to have declared each
+// term, with the mirror that implements it. Adding a door on the routing side now fails this gate the
+// same day, instead of quietly inflating the number the sweep is supposed to act on.
+{
+  const tmSrc = fs.readFileSync(path.resolve(__dirname, "..", "src", "orchestrator", "threadManager.ts"), "utf8");
+  // Not identifiers of the decision — the receiver, the usage local, and literals. Everything else in a
+  // hasHeadroom expression is a door: a guard call (`grokCapActive`) or a predicate local (`nearWeekly`).
+  const NOISE = new Set(["this", "u", "null", "undefined", "true", "false"]);
+
+  /** The identifiers a candidate's `hasHeadroom` actually gates on, read from the source of truth. */
+  function headroomTerms(method) {
+    const body = new RegExp(`private ${method}\\(\\)[\\s\\S]*?hasHeadroom:([\\s\\S]*?),\\n\\s*[a-zA-Z]\\w*:`).exec(tmSrc);
+    assert.ok(body, `no ${method}() with a hasHeadroom property in threadManager.ts — the ladder mirrors a method that moved`);
+    const expr = body[1]
+      .replace(/this\./g, "") // `this.grokCapActive()` → `grokCapActive()`: the guard IS the term
+      .replace(/\??\.\w+/g, ""); // `u?.fiveHour` → `u`: a field read is not a door, the predicate around it is
+    return new Set((expr.match(/[A-Za-z_$][\w$]*/g) ?? []).filter((id) => !NOISE.has(id)));
+  }
+
+  for (const [method, mirrors] of Object.entries(MIRRORED_HEADROOM_TERMS)) {
+    const live = headroomTerms(method);
+    for (const term of live) {
+      assert.ok(
+        term in mirrors,
+        `${method} gates headroom on '${term}', which probe-accounts.cjs does not mirror — the ladder would ` +
+          `keep reporting this backend as an available rung while routing refuses it. Implement the check, ` +
+          `then declare it in MIRRORED_HEADROOM_TERMS.`,
+      );
+    }
+    for (const term of Object.keys(mirrors)) {
+      assert.ok(
+        live.has(term),
+        `probe-accounts.cjs claims to mirror '${term}' for ${method}, but routing no longer gates on it — ` +
+          `a stale mirror hides the next real change. Re-read the method and correct the map.`,
+      );
+    }
+  }
+  // The map is only a guard while it covers every backend the ladder reports on.
+  assert.equal(
+    Object.keys(MIRRORED_HEADROOM_TERMS).length,
+    BACKENDS.length,
+    "every BACKENDS rung needs its *ProviderCandidate mirrored in MIRRORED_HEADROOM_TERMS, or its doors go unchecked",
+  );
 }
 
 console.log("failoverLadder: all assertions passed");

@@ -2,17 +2,23 @@
  * Integration test — the "Auto-review & mark done" lane (real ThreadManager machinery).
  *
  * The button hands the owner's OWN final review of a parked task to one agent, which either accepts it
- * (the task settles 'done', exactly as if they'd clicked Mark done) or hands it back to 'review'. That
- * makes two things load-bearing and worth guarding: the verdict must be the ONLY route to 'done' — an
- * errored or verdict-less run must never be read as an acceptance — and while the reviewer holds the slot
- * nothing may spawn an implementor beside it.
+ * (the task settles 'done', exactly as if they'd clicked Mark done) or hands it back. That makes two things
+ * load-bearing and worth guarding: the verdict must be the ONLY route to 'done' — an errored or
+ * verdict-less run must never be read as an acceptance — and only one agent may ever hold the slot.
+ *
+ * A hand-back is NOT the end of the lane: the reviewer is read-only, so what blocks a task is routinely
+ * work an implementor could finish in a minute, and each hand-back with concrete issues buys a bounded
+ * implementor fix round plus a re-review (`maxReviewFixRounds`). Tests K–P cover that loop — including
+ * that a fix round can never itself become a route to 'done'.
  *
  * WHAT IS REAL vs. STUBBED
  *  - REAL: `autoReview` (its guards, the slot accounting, the state transitions), `runAutoReview`,
- *    `finalizeReview`, the resume/inject gates, `markInterrupted`, and the real `Db` + `EventHub`.
- *  - STUBBED: only `runRole` — the leaf that would spawn a real `claude` process. The test drives it to
+ *    `runReviewFixRound`, `reviewRecheck`, `finalizeReview`, the resume/inject gates, `markInterrupted`,
+ *    and the real `Db` + `EventHub`.
+ *  - STUBBED: `runRole` — the leaf that would spawn a real `claude` process. The test drives it to
  *    return whatever the reviewer "decided" (or to fail), and can hold it open to assert what the rest of
- *    the manager does WHILE a review is live.
+ *    the manager does WHILE a review is live. Plus the implementor's two leaves
+ *    (`startResumedImplementor` / `awaitImplementorCompletion`), which the fix round drives.
  *
  * Run:  npm run test:auto-review   (from server/)   — or:  npx tsx src/tests/autoReview.itest.ts
  * Exits non-zero if any assertion fails. Self-contained: creates a throwaway DB + workspace and removes them.
@@ -60,6 +66,11 @@ class StubAccounts {
   hasHeadroom(): boolean {
     return true;
   }
+  // The fix round runs the REAL routing gate (gateImplementorProvider), which asks the account manager
+  // which Claude sub it would dispatch to. Without this the gate throws and the round never starts.
+  dispatchPreview(): Record<string, unknown> {
+    return { account: { id: "acct-a", label: "acct-a" }, hasHeadroom: true, fiveHour: 0, sevenDay: 0, fiveHourReset: null, sevenDayReset: null, weeklySafetyPct: 100 };
+  }
   auxToken(): string | undefined {
     return undefined;
   }
@@ -76,6 +87,11 @@ type RunOutcome = { type: "result"; subtype: string; isError: boolean; structure
 
 const okResult = (structuredOutput: ReviewerOutput): RunOutcome => ({ type: "result", subtype: "success", isError: false, structuredOutput });
 
+/** How the stubbed implementor of a fix round ends. The real `awaitImplementorCompletion` hands back an
+ *  SDK result, so the stub does too — an errored one must never read as a completed fix. */
+const FIX_OK = { type: "result", subtype: "success", isError: false } as RunOutcome;
+const FIX_FAILED = { type: "result", subtype: "error_during_execution", isError: true } as RunOutcome;
+
 interface Harness {
   mgr: InstanceType<typeof ThreadManager>;
   db: InstanceType<typeof Db>;
@@ -84,9 +100,18 @@ interface Harness {
   roleCalls: string[]; // every role runRole was asked to run, in order
   kickoffs: string[]; // the kickoff text each run was given
   implementorStarts: () => number;
+  fixMessages: string[]; // what each fix round's implementor was relaunched with
+  resumeSessions: (string | undefined)[]; // the implementor session each fix round was asked to resume
+  capNextFix(): void; // make the next fix round end the way a usage cap does
   setOutcome(o: RunOutcome): void;
+  setFixOutcome(o: RunOutcome): void;
   /** Hold the next run open; the returned function releases it with the given outcome. */
   holdNextRun(): () => void;
+  /** Hold the next fix round's implementor open, to assert what the task looks like mid-fix. */
+  holdNextFix(): () => void;
+  /** Hold the fix round in the window AFTER its implementor ended (live handle gone) but BEFORE the
+   *  round flips the state back — the one production reaches via the run's own onEnd racing the result. */
+  holdAfterFixEnded(): () => void;
   activePipelines(): number;
   dispose(): void;
 }
@@ -102,9 +127,14 @@ function makeHarness(): Harness {
 
   const roleCalls: string[] = [];
   const kickoffs: string[] = [];
+  const fixMessages: string[] = [];
+  const resumeSessions: (string | undefined)[] = [];
   let implementorStarts = 0;
   let outcome: RunOutcome = okResult({ accept: true, summary: "looks good" });
+  let fixOutcome: RunOutcome = FIX_OK;
   let gate: Promise<void> | undefined;
+  let fixGate: Promise<void> | undefined;
+  let endedGate: Promise<void> | undefined;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = mgr as any;
@@ -114,10 +144,27 @@ function makeHarness(): Harness {
     if (gate) await gate;
     return outcome;
   };
-  // The implementor leaves: a review must never reach these. Counting them is the assertion.
-  internals.startResumedImplementor = async (): Promise<unknown> => {
+  // The implementor leaves. Outside a fix round a review must never reach these, so the count is the
+  // assertion; inside one they stand in for the spawn. Two things here are production's behavior, not
+  // the stub's convenience, and both are load-bearing: the real `startImplementor` flips the thread to
+  // 'implementing' AND populates `this.live` as the run goes live (the inject/resume gates and
+  // `stopLive` all read that handle), and the run's own `onEnd` clears it — racing, and usually
+  // beating, the result the caller awaits. Without both, a test can "prove" an exclusivity the code
+  // doesn't have.
+  internals.startResumedImplementor = async (thread: { id: string }, _kickoff: string, resume: string | undefined, opts: { resumeNudge: string }): Promise<unknown> => {
     implementorStarts++;
-    return { run: { send(): void {} }, accountId: "acct-a" };
+    fixMessages.push(opts?.resumeNudge ?? "");
+    resumeSessions.push(resume);
+    const live = { run: { send(): void {}, async stop(): Promise<void> {} }, runId: "stub-run", accountId: "acct-a" };
+    internals.live.set(thread.id, live);
+    internals.setState(thread.id, "implementing");
+    return live;
+  };
+  internals.awaitImplementorCompletion = async (thread: { id: string }): Promise<RunOutcome> => {
+    if (fixGate) await fixGate;
+    internals.live.delete(thread.id); // the real run's onEnd, which races (and usually wins) this return
+    if (endedGate) await endedGate; // hold HERE: state is still 'implementing' but no agent is live
+    return fixOutcome;
   };
   internals.resumeImplementorOnly = async (): Promise<void> => {
     implementorStarts++;
@@ -130,9 +177,25 @@ function makeHarness(): Harness {
     workspace,
     roleCalls,
     kickoffs,
+    fixMessages,
+    resumeSessions,
     implementorStarts: () => implementorStarts,
+    // How a usage cap actually reaches the fix round: `awaitImplementorResult` flags the thread in
+    // `capParked` and returns undefined. That flag is what `settleReview` turns into the CAP_PARK marker
+    // the supervisor acts on, so a test that only returns undefined misses the whole hazard.
+    capNextFix() {
+      fixOutcome = undefined;
+      const inner = internals.awaitImplementorCompletion;
+      internals.awaitImplementorCompletion = async (thread: { id: string }): Promise<RunOutcome> => {
+        internals.capParked.set(thread.id, "implementor");
+        return inner(thread);
+      };
+    },
     setOutcome(o) {
       outcome = o;
+    },
+    setFixOutcome(o) {
+      fixOutcome = o;
     },
     holdNextRun() {
       let release = (): void => {};
@@ -141,6 +204,26 @@ function makeHarness(): Harness {
       });
       return () => {
         gate = undefined;
+        release();
+      };
+    },
+    holdNextFix() {
+      let release = (): void => {};
+      fixGate = new Promise<void>((res) => {
+        release = res;
+      });
+      return () => {
+        fixGate = undefined;
+        release();
+      };
+    },
+    holdAfterFixEnded() {
+      let release = (): void => {};
+      endedGate = new Promise<void>((res) => {
+        release = res;
+      });
+      return () => {
+        endedGate = undefined;
         release();
       };
     },
@@ -156,10 +239,17 @@ function makeHarness(): Harness {
   };
 }
 
-/** A task parked exactly the way the pipeline parks one for the owner to look at. */
+const IMPLEMENTOR_SESSION = "implementor-session-from-the-pipeline";
+
+/** A task parked exactly the way the pipeline parks one for the owner to look at — including the
+ *  implementor `agent_runs` row it got there with. That row is not decoration: a fix round is supposed to
+ *  WARM-RESUME that session, and a harness with an empty runs table makes `latestImplementorSession`
+ *  return undefined, so the resume silently degrades to a fresh start and the test proves nothing. */
 function seedParkedTask(h: Harness, error = "QA still not satisfied after 3 rounds — needs your review."): string {
   const t = h.db.createThread({ title: "mock parked task", workspace: h.workspace, rawPrompt: "do the thing", brief: "Do the thing properly." });
   h.db.updateThreadStageOutputs(t.id, { kickoff: "KICKOFF: mock", planDone: true, approved: true });
+  const run = h.db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5", account: "acct-a" });
+  h.db.updateRun(run.id, { sessionId: IMPLEMENTOR_SESSION, state: "done", endedAt: Date.now() });
   h.db.updateThread(t.id, { state: "review", error });
   return t.id;
 }
@@ -232,10 +322,13 @@ async function main(): Promise<void> {
   }
 
   // -- Test B: a hand-back re-parks the task with the reasons, and NEVER marks it done -----------------
-  console.log("\nTest B — a rejecting verdict hands the task back to review with its reasons");
+  // With the fix budget at 0 this is the whole lane: the reviewer decides and the owner gets the task
+  // back. Tests K–P cover the budgeted fix rounds on top of it.
+  console.log("\nTest B — with 0 fix rounds, a rejecting verdict hands the task straight back with its reasons");
   {
     const h = makeHarness();
     try {
+      h.mgr.setSettings({ maxReviewFixRounds: 0 });
       const id = seedParkedTask(h);
       h.setOutcome(
         okResult({
@@ -404,7 +497,12 @@ async function main(): Promise<void> {
       check("the retry started FRESH — resuming an empty session is what already failed", resumes[1] === undefined, JSON.stringify(resumes));
       check("the retry got the full review kickoff, not a continuation nudge", !(h.kickoffs[1] ?? "").includes("stopped at a per-session turn limit"), (h.kickoffs[1] ?? "").slice(0, 80));
       check("the retry's verdict decided the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
-      const firstRun = h.db.listRuns(id).sort((a, b) => a.startedAt - b.startedAt)[0];
+      // The reviewer's first run — the seeded task carries an earlier implementor row (the one a fix
+      // round warm-resumes), so an unscoped "first run" would assert against that instead.
+      const firstRun = h.db
+        .listRuns(id)
+        .filter((r) => r.role === "reviewer")
+        .sort((a, b) => a.startedAt - b.startedAt)[0];
       check("the empty run is recorded as a failure, not a clean 'done'", firstRun?.state === "error", `state=${firstRun?.state}`);
       check("...and it says why", !!firstRun?.error?.includes("produced no output"), String(firstRun?.error));
     } finally {
@@ -435,10 +533,239 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test K: the point of the whole change — a hand-back is fixed, re-checked, and finished ---------
+  // The task this was built for was blocked by ONE mechanical item the reviewer is forbidden to do
+  // itself, and cost the owner a second click plus a second full Opus review to clear.
+  console.log("\nTest K — a hand-back with issues buys an implementor fix round, then a re-review that can finish it");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      const resumes = stubReviewerRuns(h, [
+        okResult({
+          accept: false,
+          summary: "everything checks out except the report placement",
+          issues: [{ severity: "blocker", description: "the review report sits outside the workspace and was never surfaced", location: "benchmark-results/PR-73.md" }],
+        }),
+        okResult({ accept: true, summary: "the report is surfaced now — accepting" }),
+      ]);
+      await h.mgr.autoReview(id);
+      await settle();
+      check("the implementor was sent in exactly once", h.implementorStarts() === 1, String(h.implementorStarts()));
+      check("the reviewer ran twice: the verdict, then the re-check", h.roleCalls.length === 2 && h.roleCalls.every((r) => r === "reviewer"), JSON.stringify(h.roleCalls));
+      check("the re-check warm-resumed the reviewer's own session", resumes[1] === REVIEWER_SESSION, JSON.stringify(resumes));
+      check("the re-check told it the tree had changed under it", (h.kickoffs[1] ?? "").includes("has CHANGED since you read it"), (h.kickoffs[1] ?? "").slice(0, 100));
+      check("the re-check restated the issues it handed back for", (h.kickoffs[1] ?? "").includes("never surfaced"), (h.kickoffs[1] ?? "").slice(0, 200));
+      const fix = h.fixMessages[0] ?? "";
+      check("the implementor got the reviewer's concrete issue list", fix.includes("the review report sits outside the workspace"), fix.slice(0, 200));
+      check("...and the location with it", fix.includes("benchmark-results/PR-73.md"), fix.slice(0, 200));
+      check("...and the reviewer's verdict as context", fix.includes("everything checks out except"), fix.slice(0, 200));
+      check("...told plainly that the reviewer re-checks the fix", fix.includes("re-checks your work"), fix.slice(-200));
+      check("the fix warm-resumed the task's own implementor session", h.resumeSessions[0] === IMPLEMENTOR_SESSION, JSON.stringify(h.resumeSessions));
+      check("the accepted re-check settled the task done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check("the fix-round restart marker was cleared", h.db.getThreadStageOutputs(id).reviewFixing !== true, JSON.stringify(h.db.getThreadStageOutputs(id)));
+      check("the slot was released", h.activePipelines() === 0, String(h.activePipelines()));
+      const handBack = h.db.listFindings(id).find((f) => f.summary.includes("sending it to the implementor"));
+      check("the hand-back that triggered the fix is on the thread", !!handBack && handBack.severity === "warning", JSON.stringify(handBack?.summary));
+      check("...and names which round it was", (handBack?.summary ?? "").includes("round 1 of 1"), handBack?.summary);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test L: the fix budget is bounded, and a still-unhappy reviewer parks (never accepts) ----------
+  console.log("\nTest L — the fix budget is bounded: a reviewer still unsatisfied after it parks the task");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      const rejection = okResult({ accept: false, summary: "the typecheck still fails", issues: [{ severity: "blocker", description: "tsc reports 3 errors" }] });
+      stubReviewerRuns(h, [rejection]); // never satisfied
+      await h.mgr.autoReview(id);
+      await settle();
+      check("only the budgeted single fix round ran", h.implementorStarts() === 1, String(h.implementorStarts()));
+      check("the reviewer ran twice and stopped", h.roleCalls.length === 2, JSON.stringify(h.roleCalls));
+      check("the task is parked for the owner, not done", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check("the park says a fix was already attempted", (h.db.getThread(id)?.error ?? "").includes("after 1 fix round"), String(h.db.getThread(id)?.error));
+      check("the park still carries the reviewer's reason", (h.db.getThread(id)?.error ?? "").includes("typecheck still fails"), String(h.db.getThread(id)?.error));
+      check("the fix-round restart marker was cleared", h.db.getThreadStageOutputs(id).reviewFixing !== true, JSON.stringify(h.db.getThreadStageOutputs(id)));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test M: what does NOT buy a fix round ----------------------------------------------------------
+  // A verdict-less run has nothing to act on, and an `accept: false` with no issues would send the
+  // implementor in to guess. Both belong on the owner's desk instead.
+  console.log("\nTest M — a hand-back with no concrete issues (and a verdict-less run) never spends a fix round");
+  for (const [label, outcome] of [
+    ["a hand-back with no issues at all", okResult({ accept: false, summary: "something feels off" })],
+    ["a hand-back with an empty issue list", okResult({ accept: false, summary: "something feels off", issues: [] })],
+    ["a run that reached no verdict", { type: "result", subtype: "success", isError: false } as RunOutcome],
+  ] as const) {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      h.setOutcome(outcome);
+      await h.mgr.autoReview(id);
+      await settle();
+      check(`${label} → no implementor was sent in`, h.implementorStarts() === 0, String(h.implementorStarts()));
+      check(`${label} → the task parks for the owner`, h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check(`${label} → and it is not blamed on a fix round`, !(h.db.getThread(id)?.error ?? "").includes("fix round"), String(h.db.getThread(id)?.error));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test N: a fix round that fails must never become a route to 'done' ------------------------------
+  console.log("\nTest N — an implementor that fails its fix round parks the task, and no re-review 'accepts' it");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      stubReviewerRuns(h, [
+        okResult({ accept: false, summary: "the build is broken", issues: [{ severity: "blocker", description: "npm run build fails" }] }),
+        okResult({ accept: true, summary: "would have accepted — must never be reached" }),
+      ]);
+      h.setFixOutcome(FIX_FAILED);
+      await h.mgr.autoReview(id);
+      await settle();
+      check("the fix round was attempted", h.implementorStarts() === 1, String(h.implementorStarts()));
+      check("no re-review ran on a fix that didn't land", h.roleCalls.length === 1, JSON.stringify(h.roleCalls));
+      check("the task parked instead of being accepted", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check("the park names the failed fix round", (h.db.getThread(id)?.error ?? "").includes("fix round"), String(h.db.getThread(id)?.error));
+      const finding = h.db.listFindings(id).find((f) => f.summary.includes("didn't complete"));
+      check("the owner still gets the reviewer's issue list", (finding?.detail ?? "").includes("npm run build fails"), String(finding?.detail));
+      check("the fix-round restart marker was cleared", h.db.getThreadStageOutputs(id).reviewFixing !== true, JSON.stringify(h.db.getThreadStageOutputs(id)));
+      check("the slot was released", h.activePipelines() === 0, String(h.activePipelines()));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test O: mid-fix the task looks like real implementor work, and only ONE agent ever holds it -----
+  // The fix round runs under 'implementing' with a live implementor, so it re-opens exactly the window
+  // Test E guards for the reviewer: a Resume/inject must steer the running agent, never spawn a second.
+  console.log("\nTest O — while a fix round runs, the task shows as implementing and no second agent can start");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      stubReviewerRuns(h, [okResult({ accept: false, summary: "one thing left", issues: [{ severity: "major", description: "surface the report" }] })]);
+      const release = h.holdNextFix();
+      await h.mgr.autoReview(id);
+      await settle();
+      check("the task shows as implementing while the fix runs", h.db.getThread(id)?.state === "implementing", `state=${h.db.getThread(id)?.state}`);
+      check("the fix round is marked for a restart to find", h.db.getThreadStageOutputs(id).reviewFixing === true, JSON.stringify(h.db.getThreadStageOutputs(id)));
+      check("the slot is still held", h.activePipelines() === 1, String(h.activePipelines()));
+      check("the auto-review ack reports the real state, not a contradicting one", (await h.mgr.autoReview(id)).state === "implementing", JSON.stringify(h.db.getThread(id)?.state));
+      check("a second auto-review click starts no second review", h.roleCalls.length === 1, JSON.stringify(h.roleCalls));
+
+      await h.mgr.resumeThread(id, "also bump the version");
+      check("a resume mid-fix steers the running implementor, it doesn't start another", h.implementorStarts() === 1, String(h.implementorStarts()));
+      await h.mgr.injectThread(id, "and mention it in the report", "append");
+      check("an inject mid-fix doesn't start another either", h.implementorStarts() === 1, String(h.implementorStarts()));
+
+      release();
+      await settle();
+      check("the episode still settles", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check("the slot was released", h.activePipelines() === 0, String(h.activePipelines()));
+      check("nothing was left queued for a later unrelated run", ((h.mgr as unknown as { queuedForImplementor: Map<string, string[]> }).queuedForImplementor.get(id) ?? []).length === 0);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test R: the window where the implementor has ended but the round hasn't flipped the state ------
+  // Production always passes through it: the run's own onEnd clears `this.live` and races the awaited
+  // result, usually winning. The thread then reads 'implementing' with NO live agent — and a state-only
+  // gate falls straight through that to the cold-resume path, spawning a second implementor on a
+  // workspace the reviewer is about to inspect. Hence the gates key on the EPISODE, not the state.
+  console.log("\nTest R — a resume/inject after the fix implementor ended, before the state flips, starts nothing");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      stubReviewerRuns(h, [
+        okResult({ accept: false, summary: "one thing left", issues: [{ severity: "major", description: "surface the report" }] }),
+        okResult({ accept: true, summary: "fixed" }),
+      ]);
+      const release = h.holdAfterFixEnded();
+      await h.mgr.autoReview(id);
+      await settle();
+      check("the window is real: implementing, but nothing live", h.db.getThread(id)?.state === "implementing" && !(h.mgr as unknown as { live: Map<string, unknown> }).live.has(id), `state=${h.db.getThread(id)?.state}`);
+      await h.mgr.resumeThread(id, "one more thing");
+      check("a resume in that window spawns no second implementor", h.implementorStarts() === 1, String(h.implementorStarts()));
+      await h.mgr.injectThread(id, "and this too", "interrupt");
+      check("an inject in that window spawns none either", h.implementorStarts() === 1, String(h.implementorStarts()));
+      release();
+      await settle();
+      check("the episode still reaches its verdict", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check("exactly one fix round ran", h.implementorStarts() === 1, String(h.implementorStarts()));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test Q: a usage cap during a fix round must NOT hand the task to the cap supervisor -------------
+  // `resumeCapParked` resumes a CAP_PARK-marked task through runPipeline — the full QA loop, which can
+  // reach 'done' on its own. Leaving the marker on after a capped fix round would therefore let a task
+  // be marked done by a verdict the reviewer never gave, on the one lane whose contract forbids exactly
+  // that — and `autoReview` refuses a cap-parked task, so the owner couldn't even intervene.
+  console.log("\nTest Q — a usage cap during a fix round parks for the owner, never for the cap supervisor");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      stubReviewerRuns(h, [okResult({ accept: false, summary: "one thing left", issues: [{ severity: "blocker", description: "surface the report" }] })]);
+      h.capNextFix();
+      await h.mgr.autoReview(id);
+      await settle();
+      const err = h.db.getThread(id)?.error ?? "";
+      check("the task parked in review", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check("it does NOT carry the cap auto-resume marker", !err.startsWith("⏳ Auto-resume pending"), err);
+      check("the owner is told a cap stopped the fix", err.includes("usage-capped"), err);
+      check("...and the button is armed again for them", (await h.mgr.autoReview(id)).ok);
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test P: a restart during the FIX round re-parks it, rather than reviving the old pipeline -------
+  // The fix runs under 'implementing', an auto-resume state, so without the durable marker a restart
+  // would hand the task to runPipeline and re-enter the QA loop this episode had already left behind.
+  console.log("\nTest P — a restart during the fix round re-parks the task instead of auto-resuming the pipeline");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      h.db.updateThreadStageOutputs(id, { reviewFixing: true, qaRoundsUsed: 4 });
+      h.db.updateThread(id, { state: "implementing", error: null });
+      const rebooted = new ThreadManager(h.db, new EventHub(), new FileMemoryService(join(h.dir, "memory")), new StubAccounts() as unknown as AccountManager);
+      try {
+        const after = h.db.getThread(id);
+        check("the task is parked in review again", after?.state === "review", `state=${after?.state}`);
+        check("it is NOT left failed for the pipeline to auto-resume", after?.state !== "failed", `state=${after?.state}`);
+        check("the owner is told the fix work is still in the tree", (after?.error ?? "").includes("still in the working tree"), String(after?.error));
+        check("the marker was consumed, so a later resume isn't mistaken for one", h.db.getThreadStageOutputs(id).reviewFixing !== true, JSON.stringify(h.db.getThreadStageOutputs(id)));
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const any = rebooted as any;
+        if (any.capSupervisor) clearInterval(any.capSupervisor);
+        if (any.tokenResumeTimer) clearTimeout(any.tokenResumeTimer);
+      }
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Test G: the WS boundary accepts the command ----------------------------------------------------
   console.log("\nTest G — the thread.autoReview command validates at the WebSocket boundary");
   check("thread.autoReview is accepted", clientCommandSchema.safeParse({ type: "thread.autoReview", threadId: "abc" }).success);
   check("thread.autoReview requires a threadId", !clientCommandSchema.safeParse({ type: "thread.autoReview" }).success);
+  check("the fix-round budget is settable, including off", clientCommandSchema.safeParse({ type: "settings.set", settings: { maxReviewFixRounds: 0 } }).success);
+  check("...and is bounded", !clientCommandSchema.safeParse({ type: "settings.set", settings: { maxReviewFixRounds: 9 } }).success);
 
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS ✅" : "FAIL ❌"} — ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {

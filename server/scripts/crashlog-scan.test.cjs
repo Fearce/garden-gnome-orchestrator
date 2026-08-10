@@ -17,6 +17,12 @@ assert.equal(isFaultEntry("memory high-water rss=200MB", "mem rss=200MB heapUsed
 assert.equal(isFaultEntry("WARNING memory pressure — heapUsed at 90%", "mem rss=300MB"), false, "pressure warning is not a fault");
 assert.equal(isFaultEntry("signal SIGTERM received — shutting down", "mem rss=135MB"), false, "signal is not a fault");
 assert.equal(isFaultEntry("process exit code=0", "mem rss=100MB"), false, "exit record is not a fault");
+assert.equal(isFaultEntry("boot", "mem rss=40MB heapUsed=12MB"), false, "a boot record is not a fault");
+assert.equal(
+  isFaultEntry("restart reconcile — runs=2 resumed=1 revived=1", "mem rss=41MB"),
+  false,
+  "the restart reconciliation summary is not a fault",
+);
 assert.equal(
   isFaultEntry("warning: MaxListenersExceededWarning: Possible EventEmitter memory leak", "mem rss=130MB"),
   false,
@@ -52,6 +58,9 @@ const LOG = [
   entry("2026-07-25T04:00:00.000Z", "WARNING memory pressure — heapUsed at 90% of the 4096MB ceiling; an OOM abort is imminent", ""),
   entry("2026-07-25T04:05:00.000Z", "warning: MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 listeners added.", ""),
   entry("2026-07-25T04:07:00.000Z", "signal SIGTERM received — shutting down", ""),
+  // The restart pair: the boot that followed that shutdown, and what it did to the interrupted work.
+  entry("2026-07-25T04:07:20.000Z", "boot", ""),
+  entry("2026-07-25T04:07:21.000Z", "restart reconcile — runs=2 resumed=1 revived=1 handedBack=1", ""),
   entry("2026-07-25T04:08:00.000Z", "memory high-water rss=217MB", "active-work: 1 live agent run(s) across 1 thread(s)"),
   entry("2026-07-25T04:09:00.000Z", "someFutureGuardLabel", "Error: future-fault\n    at z (q.ts:1:1)"), // fault via stack frame, unknown label
   entry("2026-07-25T04:10:00.000Z", "inputQueue.overflow", "dropping oldest of 5 buffered input messages (consumer stalled)"), // string-bodied fault
@@ -77,6 +86,8 @@ assert.equal(scan.lifecycle.warning, 1, "Node warning counted once");
 assert.equal(scan.lifecycle.signal, 1, "signal counted once");
 assert.equal(scan.lifecycle.exit, 1, "exit counted once");
 assert.equal(scan.lifecycle["memory high-water"], 1, "only the in-window high-water counted (the 07-24 one excluded)");
+assert.equal(scan.lifecycle.boot, 1, "the boot record is bucketed as a boot, not as 'other'");
+assert.equal(scan.lifecycle["restart reconcile"], 1, "the reconciliation summary gets its own bucket");
 assert.equal(scan.lifecycle.other, 0, "no 'other' bucket leakage");
 
 // Windowing on faults: push sinceMs past the 03:30 fault; the three newer faults remain.

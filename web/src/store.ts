@@ -293,6 +293,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   autoPush: true,
   directorName: "ChangeNameInSettings",
   maxQaRounds: 4,
+  maxReviewFixRounds: 1,
   maxConcurrent: 3,
   maxConcurrentPerRepo: 0,
   selfImproveEnabled: false,

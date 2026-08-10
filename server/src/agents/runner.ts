@@ -10,6 +10,7 @@ import type {
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { EventEmitter } from "node:events";
+import type { Account } from "../accounts/account.js";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { AgentEvent, RateLimitInfo } from "../types.js";
@@ -82,6 +83,27 @@ export interface AgentRunLike {
 }
 
 /**
+ * The run's backend + subscription identity, published to the agent process as plain (non-secret) env
+ * vars. Claude Code's own usage hook (`~/.claude/usage-watcher/handoff_gate.py`) reads them to decide
+ * WHICH subscription a session is burning: agents run on per-account tokens, so a machine-global "usage
+ * is high" signal derived from one sub would otherwise fire a handoff warning in every session,
+ * including the ones running on a sub with plenty of headroom.
+ */
+const RUN_IDENTITY_ENV = ["CLAUDE_ORCH_PROVIDER", "CLAUDE_ORCH_ACCOUNT_ID", "CLAUDE_ORCH_ACCOUNT_LABEL"] as const;
+
+/**
+ * Which configured subscription a run's token belongs to. Derived from the token the run actually
+ * authenticates with, so the published identity can never drift from the credential. Undefined when the
+ * run rides the inherited CLI login — that account's usage is what the machine-global watcher already
+ * measures, so the hook's default path is correct for it. Pure (accounts passed in) so it unit-tests
+ * without seeding the process env config is read from.
+ */
+export function accountForToken(accounts: Account[], token: string | undefined): Account | undefined {
+  if (!token) return undefined;
+  return accounts.find((a) => a.token && a.token === token);
+}
+
+/**
  * Build the child-process env. The cardinal rule: never let ANTHROPIC_API_KEY
  * through, so agents authenticate via the Max subscription only. A long stream
  * close timeout keeps a human-blocked MCP tool (e.g. ask_user) from aborting.
@@ -89,24 +111,37 @@ export interface AgentRunLike {
  * When `baseUrl` + `authToken` are given (a z.ai GLM run), the request is routed to that
  * Anthropic-compatible endpoint via ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN instead of the Claude
  * subscription — the subscription OAuth token is dropped so the run bills the alternate provider only.
+ *
+ * Exported for `test:account-usage`: the three RUN_IDENTITY_ENV names are a contract with a hook in
+ * another repo, so a rename here has to fail a gate rather than silently stop identifying sessions.
  */
-function buildEnv(opts: { oauthToken?: string; baseUrl?: string; authToken?: string }): Record<string, string | undefined> {
+export function buildEnv(opts: { oauthToken?: string; baseUrl?: string; authToken?: string }): Record<string, string | undefined> {
   const env = withAgentToolPath();
   delete env.ANTHROPIC_API_KEY;
   // Clear any inherited endpoint override so a stray env var can't redirect a normal Claude run; the
   // z.ai branch below sets them deliberately for its own run only.
   delete env.ANTHROPIC_BASE_URL;
   delete env.ANTHROPIC_AUTH_TOKEN;
+  // Same reason: this process may itself have been started from an agent shell, and an inherited
+  // identity would mislabel every run it spawns. Each branch below states its own.
+  for (const key of RUN_IDENTITY_ENV) delete env[key];
   env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT ?? "1800000";
   if (opts.baseUrl && opts.authToken) {
     delete env.CLAUDE_CODE_OAUTH_TOKEN; // don't leak a Claude sub token to the alternate provider
     env.ANTHROPIC_BASE_URL = opts.baseUrl;
     env.ANTHROPIC_AUTH_TOKEN = opts.authToken;
     env.API_TIMEOUT_MS = env.API_TIMEOUT_MS ?? String(config.zai.timeoutMs);
+    env.CLAUDE_ORCH_PROVIDER = "zai";
     return env;
   }
   const oauth = opts.oauthToken ?? config.oauthToken;
   if (oauth) env.CLAUDE_CODE_OAUTH_TOKEN = oauth;
+  env.CLAUDE_ORCH_PROVIDER = "claude";
+  const account = accountForToken(config.accounts, oauth);
+  if (account) {
+    env.CLAUDE_ORCH_ACCOUNT_ID = account.id;
+    env.CLAUDE_ORCH_ACCOUNT_LABEL = account.label;
+  }
   return env;
 }
 
@@ -200,6 +235,12 @@ export class AgentRun implements AgentRunLike {
 
   constructor(private readonly cfg: AgentRunConfig) {
     this.emitter.setMaxListeners(50);
+  }
+
+  /** Cap wording specific to the backend this run talks to, beyond the Claude CLI's own notice.
+   *  Undefined on the Claude path — a non-Anthropic backend overrides it (see ZaiAgentRun). */
+  protected get providerCapText(): RegExp | undefined {
+    return undefined;
   }
 
   start(firstMessage: UserContent): this {
@@ -362,17 +403,16 @@ export class AgentRun implements AgentRunLike {
             // ("You've hit your session limit · resets 7pm") with no rate_limit_event and no
             // message-level error. Flag the cap and SWALLOW the text so the failover path runs
             // instead of the owner seeing a dead-end "limit" message in the chat.
-            if (SESSION_LIMIT_TEXT_RE.test(b.text)) {
+            if (looksLikeCapNotice(b.text, this.providerCapText)) {
               // This per-session cap is invisible to the usage-ping headers (which track only the
               // 5h/weekly windows), so unless we tell AccountManager, the account keeps looking free:
               // a cap-parked task is auto-resumed, instantly re-caps, and loops — re-showing this very
-              // message. Emit a synthetic rate_limit so the account is held out of rotation until the
-              // window resets. Parse the "resets 7pm" clock for the real reset; fall back to the ~5h
-              // session cadence when it's absent, so the hold always self-expires (never a stuck cap).
+              // message. flagCapFromSignal emits the synthetic rate_limit that holds the account out of
+              // rotation until the window resets — once per run, since the CLI repeats this notice and
+              // each event reaches AccountManager. Parse the "resets 7pm" clock for the real reset; fall
+              // back to the ~5h session cadence when absent, so the hold always self-expires.
               const resetsAt = parseResetClock(b.text, Date.now()) ?? Date.now() + SESSION_LIMIT_FALLBACK_MS;
-              const info: RateLimitInfo = { status: "rejected", resetsAt };
-              this.flagCapFromSignal(info);
-              this.emit({ type: "rate_limit", info });
+              this.flagCapFromSignal({ status: "rejected", resetsAt });
               continue;
             }
             this.emit({ type: "text", text: b.text });
@@ -434,7 +474,7 @@ export class AgentRun implements AgentRunLike {
         // error_during_execution carrying a rate-limit message, or is_error + api_error_status 429)
         // rather than a rate_limit_event / assistant error. Flag BEFORE emitting so the awaiting
         // failover path (which reads agent.rateLimited the moment result() resolves) sees it.
-        if (evt.isError && resultLooksRateLimited(m)) this.flagCapFromSignal({ status: "rejected" });
+        if (evt.isError && resultLooksRateLimited(m, this.providerCapText)) this.flagCapFromSignal({ status: "rejected" });
         if (evt.isError) this.flagTransientApiError(m);
         this.emit(evt);
         break;
@@ -452,7 +492,11 @@ export class AgentRun implements AgentRunLike {
  * the cap-failover flip): z.ai is AgentRun-based but is NOT a Claude account, so its usage cap must be
  * handled like a CLI backend's (fail over to another provider) rather than as a Claude-account failover.
  */
-export class ZaiAgentRun extends AgentRun {}
+export class ZaiAgentRun extends AgentRun {
+  protected override get providerCapText(): RegExp {
+    return ZAI_CAP_TEXT_RE;
+  }
+}
 
 function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -516,6 +560,26 @@ const RATE_LIMIT_RESULT_RE =
 const SESSION_LIMIT_TEXT_RE =
   /you'?ve hit your (?:fable[\w .-]{0,10}?|model )?(?:session|usage|\d+-hour|weekly) limit|(?:session|usage|weekly) limit\s*[·:—–-]\s*resets/i;
 
+/**
+ * z.ai announces a spent quota in its own words, sharing none of Anthropic's phrasing — the run's last
+ * assistant text (and its error result) reads `API Error: Request rejected (429) · [1310][Weekly/Monthly
+ * Limit Exhausted. Your limit will reset at 2026-08-07 05:17:25]`. Matched by neither regex above, such a
+ * cap was recorded as an ordinary crash: no `noteZaiCap` latch, no provider hand-off, and the sweep's
+ * triage reported it as a real failure needing a human.
+ *
+ * ANCHORED, because the matching branch swallows the text and latches the backend: every notice
+ * production has recorded IS the whole message, while an agent that merely quotes one — this repo's own
+ * source now contains the literal — always has words before it. Requires the rejection envelope AND a
+ * limit word, and is reachable only through `ZaiAgentRun.providerCapText`, so it can never speak for a
+ * Claude run.
+ */
+const ZAI_CAP_TEXT_RE = /^\s*(?:api error:\s*)?request rejected \(429\)[^\n]{0,160}\blimit (?:exhausted|reached)/i;
+
+/** Whether an assistant TEXT block is a usage-cap notice — the CLI's own wording, plus the backend's. */
+export function looksLikeCapNotice(text: string, providerCapText?: RegExp): boolean {
+  return SESSION_LIMIT_TEXT_RE.test(text) || (providerCapText?.test(text) ?? false);
+}
+
 // A session-limit notice with no parseable reset clock is held for the ~5h session cadence, so the cap
 // self-expires and the account rejoins rotation rather than staying stuck limited forever.
 const SESSION_LIMIT_FALLBACK_MS = 5 * 60 * 60 * 1000;
@@ -546,12 +610,15 @@ function parseResetClock(text: string, now: number): number | undefined {
  * Whether an ERROR result looks like a usage-cap rejection (vs. error_max_turns / error_max_budget_usd
  * / a real crash). The caller gates this on is_error, so matching the result/errors text here can't
  * false-positive on a successful run that merely mentions rate limits. Checks the structured signals
- * first (429 status, stop_reason) then the human-readable error/result text.
+ * first (429 status, stop_reason) then the human-readable error/result text — the run's own backend
+ * contributes its wording via `providerCapText`, since only Anthropic's phrasing is known here.
+ * Exported for `test:zai-cap`; the sole production caller is the result branch above.
  */
-function resultLooksRateLimited(m: Record<string, any>): boolean {
+export function resultLooksRateLimited(m: Record<string, any>, providerCapText?: RegExp): boolean {
   if (m.api_error_status === 429) return true;
   if (typeof m.stop_reason === "string" && /rate.?limit/i.test(m.stop_reason)) return true;
   const errs = Array.isArray(m.errors) ? m.errors.join(" ") : "";
   const text = typeof m.result === "string" ? m.result : "";
-  return RATE_LIMIT_RESULT_RE.test(errs) || RATE_LIMIT_RESULT_RE.test(text);
+  const capped = (s: string): boolean => RATE_LIMIT_RESULT_RE.test(s) || (providerCapText?.test(s) ?? false);
+  return capped(errs) || capped(text);
 }

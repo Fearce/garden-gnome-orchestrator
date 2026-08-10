@@ -49,11 +49,36 @@ const HARD_LIMIT_PCT = 98;
 // it, and routing skips it purely on the meters (zaiCapActive / codexProviderCandidate.hasHeadroom). Read
 // without the meters, this readout called an exhausted Codex and z.ai live rungs and reported a ladder of
 // 3 when only 1 could take work — the same "one-rung ladder looks healthy" blind spot in a new door.
+// Windows are not the only door: Grok's plan also meters a monthly CREDIT pool that routing refuses the
+// rung on, and it can run dry while the weekly window still reads room (see spentCredits).
 const BACKENDS = [
   { name: "Codex", enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", usageFile: "codex-usage-cache.json" },
   { name: "Grok", enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", usageFile: "grok-usage-cache.json" },
   { name: "z.ai", enabledKey: "setting_zai_enabled", capKey: "zai_cap_until", usageFile: "zai-usage-cache.json" },
 ];
+// Every term threadManager's *ProviderCandidate methods gate `hasHeadroom` on, and where THIS file
+// mirrors it. The ladder re-implements routing's decision by hand, so the two drift — and the drift is
+// one-directional: a door added over there that isn't read over here keeps printing the rung as
+// available, which reads as a HEALTHIER ladder than exists. That has now shipped three times (08d743b
+// meters, 707cc13 sentinel resets, a523668 Grok credits), each found by eye long after the fact.
+// `test:failover-ladder` diffs this map against the real source, so the next door fails a gate instead.
+// Adding a term here without implementing it does not satisfy the gate — the map is the claim, and the
+// mirror named beside each term is what has to be true.
+const MIRRORED_HEADROOM_TERMS = {
+  grokProviderCandidate: {
+    grokCapActive: "capKey latch → reason 'capped'",
+    nearWeekly: "spentWindow (7d)",
+    monthlyExhausted: "spentCredits (monthly pool)",
+  },
+  zaiProviderCandidate: {
+    zaiCapActive: "capKey latch → reason 'capped'",
+    near: "spentWindow (5h + 7d)",
+  },
+  codexProviderCandidate: {
+    nearLimit: "spentWindow (5h + 7d)",
+  },
+};
+
 const now = Date.now();
 
 const labels = {};
@@ -89,7 +114,7 @@ function backendState({ enabledKey, capKey, usageFile }, kv, at, usage = () => n
   const until = Number(kv(capKey));
   if (Number.isFinite(until) && until > at) return { available: false, reason: "capped", until };
   const meters = usageFile ? usage(usageFile) : null;
-  const spent = meters ? spentWindow(meters, at) : null;
+  const spent = meters ? (spentWindow(meters, at) ?? spentCredits(meters, at)) : null;
   if (spent) {
     return {
       available: false,
@@ -128,13 +153,34 @@ function spentWindow(meters, at) {
   return null;
 }
 
+// A billing period is a month, so its end can legitimately sit ~31 days out — the same sentinel clamp as
+// the windows above, with the bound its own length rather than a window's.
+const MONTHLY_MAX_RESET_MS = 2 * 31 * 86_400_000;
+
+/** A spent credit pool, or null. Grok's plan meters a MONTHLY credit allowance alongside its weekly
+ *  window, and routing refuses the rung on it too (`monthlyExhausted` in grokProviderCandidate). Credits
+ *  can run dry while the weekly still reads room, so reading windows alone would report an available rung
+ *  that routing skips — the overstated-depth blind spot, through the one door percentages can't express. */
+function spentCredits(meters, at) {
+  const { monthlyUsed: used, monthlyLimit: limit, monthlyReset: reset } = meters;
+  if (typeof used !== "number" || typeof limit !== "number" || !(limit > 0) || used < limit) return null;
+  if (reset != null && reset <= at) return null; // billing period ended — the pool has refilled
+  const pct = Math.round((used / limit) * 100);
+  const plausible = reset != null && reset - at <= MONTHLY_MAX_RESET_MS;
+  if (reset == null || plausible) return { window: "monthly credits", pct, reset };
+  return { window: "monthly credits", pct, reset: null, reportedReset: reset };
+}
+
 /** The windows an available backend still has, so "available" is a number the reader can check rather than
- *  a bare claim. Omits a window the backend doesn't meter (Grok reports no 5h). */
+ *  a bare claim. Omits a window the backend doesn't meter (Grok reports no 5h, only Grok meters credits). */
 function meterSummary(m) {
   return (
     [
       typeof m.fiveHour === "number" ? `5h ${Math.round(m.fiveHour)}%` : null,
       typeof m.sevenDay === "number" ? `7d ${Math.round(m.sevenDay)}%` : null,
+      typeof m.monthlyUsed === "number" && m.monthlyLimit > 0
+        ? `credits ${Math.round((m.monthlyUsed / m.monthlyLimit) * 100)}%`
+        : null,
     ]
       .filter(Boolean)
       .join(" · ") || "no windows metered"
@@ -220,7 +266,7 @@ function main() {
       (s.until != null
         ? `, resets in ${countdown(s.until)}`
         : s.reportedReset != null
-          ? `, reset unknown (backend reported ${new Date(s.reportedReset).toISOString().slice(0, 10)}, too far out to be a ${s.window} window)`
+          ? `, reset unknown (backend reported ${new Date(s.reportedReset).toISOString().slice(0, 10)}, too far out to be a ${s.window} period)`
           : ", reset unknown"),
     ready: (s) => "available" + (s.meters ? ` (${meterSummary(s.meters)})` : " (no usage reading yet)"),
   };
@@ -253,4 +299,12 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { backendState, claudeHasHeadroom, spentWindow, BACKENDS, HARD_LIMIT_PCT };
+module.exports = {
+  backendState,
+  claudeHasHeadroom,
+  spentWindow,
+  spentCredits,
+  BACKENDS,
+  HARD_LIMIT_PCT,
+  MIRRORED_HEADROOM_TERMS,
+};

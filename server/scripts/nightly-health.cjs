@@ -24,7 +24,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const Database = require("better-sqlite3");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
-const { classifyPark, continuationsSpent } = require("./probe-parks.cjs");
+const { classifyPark, classifyAbandoned, continuationsSpent } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
 
 const args = process.argv.slice(2);
@@ -404,6 +404,15 @@ async function main() {
       }
       if (parks.unknown) warn(`${parks.unknown} park(s) with text no class recognizes — ${NAME_THEM}`);
       if (parks.verdict) ok(`${parks.verdict} park(s) awaiting your verdict by design, not stuck`);
+
+      // `review` isn't the only state waiting on a person: a restart's casualties land in `failed`, and no
+      // sweep step read that state until 2026-08-10 — a task still claiming "auto-resuming…" is one whose
+      // promised resume died with the process that made it, so it is a warn, not a count.
+      const lost = { promised: 0, clickResume: 0, otherFailure: 0 };
+      for (const r of db.prepare("SELECT error FROM threads WHERE state='failed'").all()) lost[classifyAbandoned(r.error).key]++;
+      if (lost.promised) warn(`${lost.promised} abandoned thread(s) still promising an auto-resume that never arrived — ${NAME_THEM}`);
+      if (lost.otherFailure) warn(`${lost.otherFailure} failed thread(s) with text no class recognizes — ${NAME_THEM}`);
+      if (lost.clickResume) ok(`${lost.clickResume} restart casualt(ies) handed back for a Resume click, not stuck`);
 
       const junkChat = db
         .prepare(

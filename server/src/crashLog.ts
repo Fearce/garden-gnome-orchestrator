@@ -98,6 +98,23 @@ function logLifecycle(label: string): void {
 }
 
 /**
+ * Record that a process STARTED. Every other record here says how one went down, which left the log unable
+ * to answer the one question a restart-boundary bug actually turns on: when did each boot happen? Proving
+ * a second bounce landed 18s after the first (2026-08-08, the lost auto-resume) meant finding a memory
+ * high-water note that happened to fire and subtracting its `uptime=` — and that note only exists when RSS
+ * crosses a 100MB step, so the evidence was luck rather than a record. Now it is a record.
+ */
+export function logBoot(): void {
+  logLifecycle("boot");
+}
+
+/** What this boot did to the work the previous process left mid-flight — the other half of the same
+ *  question ("did a bounce eat something?"), answerable by grep instead of by cross-referencing tables. */
+export function logRestartReconcile(summary: string): void {
+  logLifecycle(`restart reconcile — ${summary}`);
+}
+
+/**
  * Last-resort process guards. This server supervises long-running autonomous agents, so a stray rejection
  * in one fire-and-forget async path (a ping timer, a WS handler, an agent pipeline `void this.run()`) must
  * not silently take down the whole console. An unhandledRejection is logged with full memory + task context

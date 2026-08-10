@@ -38,7 +38,16 @@ read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing
 `ask_user`s Kevin about anything only he can decide, then settles the task `done` or hands it back to
 `review` with its reasons — an errored/verdict-less run always re-parks, never accepts (its two involuntary
 stops are recovered first, sharing one in-process budget of 2: a turn-ceiling cutoff continues the session it
-made progress in, an empty run starts the review over). So `done` now has three
+made progress in, an empty run starts the review over). **A hand-back isn't the end of the lane:** the
+reviewer is read-only, so what blocks a task is usually implementor work — an `accept: false` carrying
+concrete `issues` relaunches the implementor with that list (no QA loop; the reviewer is the gate), then
+warm-resumes the reviewer to re-check and decide again, bounded by the `maxReviewFixRounds` setting
+(default 1, `0` = old behavior). A failed fix round parks, never accepts — a cap there parks WITHOUT the
+`⏳ Auto-resume pending` marker on purpose, since the supervisor would resume it through the QA loop and
+could mark it done on a verdict the reviewer never gave. The round runs under `implementing` with a durable
+`reviewFixing` marker so a restart re-parks it for a fresh click instead of reviving it into the pipeline,
+and the inject/resume gates key on the episode (not the state) so nothing spawns a second implementor in
+the window where the fix run has ended but the state hasn't flipped back. So `done` has three
 sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
 
 ## Run / build
@@ -104,8 +113,13 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
 
 ## Debugging a failed task
 State + run history live in `server/data/orchestrator.sqlite` (open read-only with the bundled
-`better-sqlite3`; columns are snake_case — `agent_runs.thread_id/started_at/ended_at/session_id`;
-there's NO `backend` column — the backend is encoded in `model`, e.g. `grok-4.5`/`gpt-*-sol`/`claude-*`).
+`better-sqlite3`; columns are snake_case — `agent_runs.thread_id/started_at/ended_at/session_id`, the
+subscription is `account` (not `account_label`), message text is `messages.content` (not `text`), and a task's
+saved stage outputs are a JSON blob in `threads.stage_outputs` — there is NO `thread_stage_outputs` table;
+there's NO `backend` column — the backend is encoded in `model`, e.g. `grok-4.5`/`gpt-*-sol`/`claude-*`.
+`agent_runs.cap_flagged` is what the RUNNER concluded about a cap — 1/0, null when no verdict was recorded
+(a row predating it, or one a restart/silent-run stamp closed out) — so "was this a quota or a crash?" is a
+read, not an inference from absent findings and expiring kv latches; `probe:task-runs` prints it).
 For one task's full trail + per-model cost/turn totals + a QA-loop budget check, run
 `npm run probe:task-runs --prefix server -- <thread-id|title-substring>` (read-only, safe while prod is up).
 To triage ALL non-done runs in a window instead of one task — which errors are real vs. an expected
@@ -115,7 +129,10 @@ reasons:` line). For **"what is parked in `review`, and does any of it need a hu
 `npm run probe:parks --prefix server` — it names every parked task (id, age, reason, last run) and splits
 them into a **stalled** pipeline (QA/auto-review/resume stopped mid-verification; a Resume or Auto-review
 clears it, nothing else will), an owner **verdict** wait (by design, however old), a **capWait** the cap
-supervisor owns, and **unknown** wording that drifted from the classifier. For a **subscription/account-chip** question ("why does it say idle / limited / 0% / a wrong %?"), run
+supervisor owns, and **unknown** wording that drifted from the classifier. It then does the same for the
+OTHER state that waits on a person — tasks abandoned in **`failed`** by a restart, which no sweep step read
+until 2026-08-10: **promised** (still claiming "auto-resuming…", i.e. a resume that never arrived — the one
+to act on), **clickResume** (handed back by design), **otherFailure** (unclassified). For a **subscription/account-chip** question ("why does it say idle / limited / 0% / a wrong %?"), run
 `npm run probe:accounts --prefix server` — it dumps each account's persisted `account_usage_*` state
 (5h/7d usage + resets, `holdUntil` stagger-hold, `extWakeAt` outside-consumer mark) with plain-English
 reads, then the **failover ladder**: Codex/Grok/z.ai availability from their `setting_*_enabled` +
@@ -129,7 +146,15 @@ renders the strip headlessly (`--list` for scenarios) — no quota, no effect on
 Read the run trail to tell causes apart:
 - run `state='interrupted'` → a **server restart** killed it (`markInterrupted`), not the agent. A
   thread whose `error` starts with "interrupted by a server restart" died to a bounce; actively-running
-  phases now **auto-resume on boot** (crash-loop guarded — repeated <60s deaths stop it).
+  phases now **auto-resume on boot** (crash-loop guarded — repeated <60s deaths stop it). That resume is
+  armed by a 4s in-memory timer, so a SECOND bounce inside the window used to lose it for good (the thread
+  is `failed` by then, which the IN_FLIGHT scan skips); the next boot now re-arms from the persisted
+  "auto-resuming…" promise, up to 3 attempts and only while the promise is <24h old — past either bound it
+  says so and waits for a click. Gate: `test:restart-revival`. Two rounds are
+  exempt because they run on ALREADY-accepted work and are keyed on a durable MARKER, not the state (both
+  run under auto-resume states): an auto-review fix round re-parks (`reviewFixing`), and the opt-in
+  self-improvement round settles the task **done** (`selfImproving`) — so a `done` task holding one
+  interrupted implementor run is that, not a lost resume. Gate: `test:self-improve-restart`.
 - run `state='error'` → a real failure, an involuntary **cutoff**, or a **usage cap**. Read the row's
   `error` text: it now names the reason (the SDK's `errors`, else the subtype). "Stopped at the
   per-session turn ceiling" is the deliberate role turn ceiling — benign, warm-resumed on the implementor
@@ -218,6 +243,13 @@ path)`, and the task workspace is often the **parent** of this git repo (e.g. wo
 is then NOT found by a repo-relative path. **Pass an ABSOLUTE path** (the containment guard still confines it
 to the workspace) — or save the file at the workspace root. Verify before handing off: the file must sit at
 `join(workspace, path)` (or be absolute and inside the workspace).
+
+## Before investigating "should we adopt / replace X?"
+Read **`docs/DECISIONS.md`** — the closed-questions register: one row per settled question with its
+headline verdict, plus what's genuinely still open. Adding a backend, swapping the harness, and
+token-freeze behaviour are already answered there. `grep` finds scripts, never verdicts, so a brief
+nothing points at gets rebuilt from scratch. If your question is listed, **extend that brief instead
+of writing a second one**, and add your row in the same commit when you close a new one.
 
 ## Conventions
 - Conventional Commits (`feat:`/`fix:`/`refactor:`/`chore:`…), matching `git log`.

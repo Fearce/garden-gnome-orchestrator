@@ -45,12 +45,23 @@ typechecks fine but silently strands the backend at that layer — the **failove
    `.capped`, and has NO sibling Claude account: in `awaitImplementorResult` early-return for `instanceof
    XAgentRun` (else it wrongly fails over to a Claude account), and add it to the `awaitImplementorCompletion`
    `cliCapped || xCapped` flip AND the `runRole` `provider !== "claude"` cap block. `noteXCap` in all three.
+   **First make `rateLimited` settable at all:** only ANTHROPIC's phrasing sets it, so override `protected
+   get providerCapText()` with your backend's own cap wording (`ZaiAgentRun`/`ZAI_CAP_TEXT_RE` — anchored,
+   since the match swallows the message and latches the backend). Miss it and every trap above is
+   unreachable: z.ai's `Request rejected (429) · [1310][Weekly/Monthly Limit Exhausted…]` read as a crash
+   for weeks — no latch, no hand-off, a burnt QA round. Mirror the wording into `probe-run-errors.cjs`'s
+   `CAP_RE` too, or the sweep files it as a REAL failure. Gate: `test:zai-cap`.
 10. `capParkMessage`, `providerLabel`, and — CLI text-bridge backends ONLY — `isCliOfficeBridge` (a
     reuse-AgentRun backend has the real office MCP, so LEAVE IT OUT).
-11. **`scripts/probe-accounts.cjs` `BACKENDS`** — the sweep's failover-ladder readout reads
-    `setting_x_enabled` + `x_cap_until` by literal name. A backend missing here is invisible to the
-    nightly headroom check, which then reports a partial ladder as full coverage (Grok sat cap-latched
-    for days unseen). `test:failover-ladder` pins the key names to `threadManager.ts`.
+11. **`scripts/probe-accounts.cjs` — `BACKENDS` *and* `MIRRORED_HEADROOM_TERMS`.** The sweep's
+    failover-ladder readout reads `setting_x_enabled` + `x_cap_until` by literal name, and it
+    re-implements your `xProviderCandidate`'s `hasHeadroom` by hand. Both drift silently and in the
+    flattering direction — an unread door keeps printing the rung `available`, so the sweep reports
+    more failover depth than exists (Grok sat cap-latched for days unseen; its monthly credit door went
+    unread for weeks). So: implement each of your candidate's headroom terms as a real check here, then
+    declare it in `MIRRORED_HEADROOM_TERMS` naming the check that covers it. `test:failover-ladder`
+    parses the live `hasHeadroom` expressions out of `threadManager.ts` and fails on any term you gate
+    on but don't mirror — and on a mirror you claim but no longer have.
 
 ## Verify
 Unit gate for the usage parser (`test:zai-usage` is the reference; register in `run-gates.cjs`). Prove it

@@ -10,6 +10,9 @@
 //   • the thread's state/error, then every agent_run in order (role · model · state · cost · turns ·
 //     duration · error) — the run trail CLAUDE.md's "Debugging a failed task" section tells you to read.
 //   • per-(role,model) totals, and a state breakdown (done / error / interrupted / running).
+//   • an auto-review trace: every reviewer hand-back / acceptance finding, and the next run it caused.
+//     This answers the otherwise expensive question "did the reviewer send a fixable issue back to an
+//     implementor, or did it simply re-park the task?" without hand-reading SQLite timestamps.
 //   • a QA-loop heuristic: launches vs. the maxQaRounds setting, and how many QA runs were killed by a
 //     restart (state='interrupted', no verdict) — the signature of the durable-QA-budget drain
 //     (see qaRoundBudget.itest.ts / handoff 2026-07-20). If launches ≫ cap, the loop wasn't bounded.
@@ -98,6 +101,9 @@ for (const r of runs) {
     dur: dur(r.started_at, r.ended_at),
     started: iso(r.started_at),
     error: short(r.error, 70) || undefined,
+    // What the RUNNER concluded about a cap, where an error row is read. Absent = no verdict recorded
+    // (a row predating the flag, or one a restart/silent-run stamp closed out) — never "saw no cap".
+    ...(r.cap_flagged != null ? { cap: r.cap_flagged === 1 } : {}),
     ...(silent(r) ? { output: "⚠ NONE — never reached the model" } : {}),
   });
 }
@@ -136,6 +142,51 @@ const byState = db
   )
   .all(thread.id);
 for (const s of byState) console.log(s);
+
+// Auto-review trace. A reviewer's structured verdict is persisted as a finding; the matching run alone
+// cannot say whether it accepted, handed work back, or found no verdict. The next run after a hand-back
+// makes the key control-flow transition visible: current builds should normally show implementor here,
+// then a reviewer re-check. A missing/other next run is factual rather than automatically an error: it
+// can be an old build, a zero fix-round budget, a failed routing gate, or a second owner click later.
+section("auto-review trace");
+{
+  const fixBudgetRow = db.prepare("SELECT value FROM kv WHERE key = 'setting_max_review_fix_rounds'").get();
+  const fixBudget = fixBudgetRow ? Number(fixBudgetRow.value) : 1; // first-boot default before the setting is persisted
+  const verdicts = db
+    .prepare(
+      `SELECT summary, detail, created_at
+       FROM findings
+       WHERE thread_id = ? AND from_role = 'reviewer'
+       ORDER BY created_at ASC`,
+    )
+    .all(thread.id)
+    .filter((f) => /^Auto-review (?:handed this back|accepted this as finished)/.test(f.summary ?? ""));
+  const handBacks = verdicts.filter((f) => /^Auto-review handed this back/.test(f.summary ?? ""));
+  const accepts = verdicts.filter((f) => /^Auto-review accepted this as finished/.test(f.summary ?? ""));
+  console.log({ maxReviewFixRoundsSetting: fixBudget, handBacks: handBacks.length, accepts: accepts.length });
+  if (!verdicts.length) {
+    console.log("  No settled auto-review verdicts are recorded for this task.");
+  }
+  for (const verdict of verdicts) {
+    const handedBack = /^Auto-review handed this back/.test(verdict.summary ?? "");
+    const next = handedBack ? runs.find((r) => r.started_at >= verdict.created_at) : undefined;
+    const disposition = !handedBack
+      ? "accepted"
+      : next?.role === "implementor"
+        ? "implementor fix round followed"
+        : next
+          ? `no immediate fix round (next run: ${next.role})`
+          : "no later run recorded";
+    console.log(`  - ${iso(verdict.created_at)} • ${disposition}`);
+    console.log(`    ${short(verdict.summary, 180)}`);
+    if (handedBack && next) {
+      console.log(`    next: ${next.role} · ${next.model} · ${next.state} · ${iso(next.started_at)}`);
+    }
+  }
+  if (handBacks.length && !handBacks.some((f) => runs.find((r) => r.started_at >= f.created_at && r.role === "implementor"))) {
+    console.log("  ↳ No hand-back in this trail was followed by an implementor run. Check the historical build and maxReviewFixRounds setting before treating that as a defect.");
+  }
+}
 
 // QA-loop heuristic — the durable-budget drain signature.
 section("QA-loop check");

@@ -89,6 +89,8 @@ export interface AgentRun {
   costUsd?: number | null;
   numTurns?: number | null;
   error?: string | null;
+  /** The runner read this run's ending as a usage cap (mirrors the server field). */
+  capFlagged?: boolean | null;
   startedAt: number;
   endedAt?: number | null;
 }
@@ -320,6 +322,7 @@ export interface OrchestratorSettings {
   autoPush: boolean;
   directorName: string; // the director persona's display name, operator-set (default "ChangeNameInSettings")
   maxQaRounds: number;
+  maxReviewFixRounds: number; // implementor fix-rounds the auto-reviewer may trigger when it hands a task back (default 1; 0 = hand straight back to the owner)
   maxConcurrent: number;
   maxConcurrentPerRepo: number; // max pipelines running at once for a single repo; 0 (default) = unlimited (only the global maxConcurrent applies)
   selfImproveEnabled: boolean; // opt-in (off by default): completed tasks get one extra implementor round that builds the tools/skills/memories the session showed were missing

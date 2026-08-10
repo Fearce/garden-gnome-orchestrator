@@ -5,12 +5,13 @@ import fastifyStatic from "@fastify/static";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, basename, extname, relative } from "node:path";
 import { config } from "./config.js";
-import { installCrashGuards, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
+import { installCrashGuards, logBoot, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
 import { Db } from "./db/db.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
 import { AccountManager, type PersistedAccountUsage } from "./accounts/accountManager.js";
 import { ResetStagger } from "./accounts/resetStagger.js";
+import { publishAccountUsage } from "./accounts/usageSnapshot.js";
 import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
 import { startGrokUsageMonitor } from "./agents/grokUsagePing.js";
 import { startZaiUsageMonitor } from "./agents/zaiUsagePing.js";
@@ -91,10 +92,20 @@ async function main(): Promise<void> {
       save: (id, usage) => db.kvSet(`account_usage_${id}`, JSON.stringify(usage)),
     },
   });
+  // Republish every sub's usage to ~/.claude/state on each account-state change, so Claude Code's own
+  // handoff hook can judge the account a session is actually burning instead of the single account in
+  // the global credentials file (see accounts/usageSnapshot.ts).
+  publishAccountUsage(accounts.usageSnapshot());
+  hub.subscribe((e) => {
+    if (e.type === "accounts") publishAccountUsage(accounts.usageSnapshot());
+  });
   const manager = new ThreadManager(db, hub, memory, accounts);
   // Crash records should show what the pipeline was DOING when it died, and a slow memory climb should be
   // visible in the log BEFORE an OOM abort — the two things missing when crashes vanished without a trace.
   registerCrashContext("active-work", () => manager.describeActiveWork());
+  // The manager's constructor has just reconciled whatever the previous process left mid-flight. Record it
+  // beside the boot line so "did that bounce eat something?" is one grep, not a cross-table reconstruction.
+  if (manager.bootReconcile) logRestartReconcile(manager.bootReconcile);
   startMemoryMonitor();
   // Recurring dispatches: fires a schedule's prompt through the normal pipeline on its cron cadence.
   // Standalone (depends only on manager.dispatch), so scheduled runs use whatever provider/model is
@@ -588,4 +599,5 @@ async function main(): Promise<void> {
 }
 
 installCrashGuards();
+logBoot(); // before main(), so a startup that dies still leaves the boot bracketed in crash.log
 void main();

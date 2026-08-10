@@ -128,7 +128,9 @@ export function MessageThumbs({ refs }: { refs?: AttachmentRef[] }) {
     <>
       <div className="msg-thumbs">
         {refs.map((r, i) => (
-          <button className="msg-thumb" key={r.id} type="button" onClick={() => setOpen(i)} title={r.name} aria-label={`View ${r.name}`}>
+          // Position-qualified: attachments are content-addressed server-side, so the same picture sent
+          // twice in one message is the same id twice.
+          <button className="msg-thumb" key={`${r.id}:${i}`} type="button" onClick={() => setOpen(i)} title={r.name} aria-label={`View ${r.name}`}>
             <img src={attachmentUrl(r)} alt={r.name} />
           </button>
         ))}

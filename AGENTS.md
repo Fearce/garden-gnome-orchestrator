@@ -175,6 +175,13 @@ is then NOT found by a repo-relative path. **Pass an ABSOLUTE path** (the contai
 to the workspace) — or save the file at the workspace root. Verify before handing off: the file must sit at
 `join(workspace, path)` (or be absolute and inside the workspace).
 
+## Before investigating "should we adopt / replace X?"
+Read **`docs/DECISIONS.md`** — the closed-questions register: one row per settled question with its
+headline verdict, plus what's genuinely still open. Adding a backend, swapping the harness, and
+token-freeze behaviour are already answered there. `grep` finds scripts, never verdicts, so a brief
+nothing points at gets rebuilt from scratch. If your question is listed, **extend that brief instead
+of writing a second one**, and add your row in the same commit when you close a new one.
+
 ## Conventions
 - Conventional Commits (`feat:`/`fix:`/`refactor:`/`chore:`…), matching `git log`.
 - One concern per commit — don't sweep unrelated working-tree changes into a fix.

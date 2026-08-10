@@ -35,9 +35,13 @@ browser at 1280/1440/1600/1700 printing every meter's text + tooltip. Exit 1 = c
 Use it for any change to a meter's *state* — an `idle`/`stale`/lapsed-reset reading
 is invisible to a typecheck and to prod (whose accounts are usually healthy).
 
-`node web/scripts/check-accounts-visible.cjs` is the geometry-only check against an
-already-running instance (`ORCH_URL=…`); it fails when a chip isn't fully visible OR
-when the strip is scrollable at all on desktop. Never point either at live prod.
+`npm run probe:chips` (`web/scripts/check-accounts-visible.cjs`) is the geometry-only
+check against an already-running instance (`ORCH_URL=…`); it fails when a chip isn't
+fully visible OR when the strip is scrollable at all on desktop. It clicks nothing, so
+it is safe to point at prod for a **health** read (the nightly sweep does) — but prod's
+chips are whatever prod's accounts happen to be, so it is never proof of YOUR change:
+use `chip-lab`, which seeds the state. Never point `chip-lab` at prod — it wants its own
+instance, and a live token would start a real 5h window.
 
 Cross-ref: project memory `grok-cli-integration-facts.md`; global
 `css_mobile_grid_column_minmax_clips.md`.
