@@ -284,6 +284,15 @@ const CRASH_FAST_MS = 60_000;
 const MAX_FAST_INTERRUPTS = 3;
 // Defer the resume so the HTTP/WS listeners are up (and the UI is connected) before agents respawn.
 const AUTO_RESUME_DELAY_MS = 4_000;
+// That delay is held in memory, so a SECOND bounce landing inside it kills the resume with the process —
+// and the thread is 'failed' by then, which the IN_FLIGHT scan skips. The next boot re-arms from the
+// persisted promise instead. Bounded: each attempt costs a spawn, so a task that never gets running
+// again becomes a person's to look at rather than every boot's to retry.
+const MAX_STRANDED_REVIVALS = 3;
+// …and bounded in time as well as in attempts. The original promise means "in 4 seconds"; a revival can be
+// arbitrarily later, and resuming a day-old session onto a workspace other agents have since committed to
+// is a surprise, not a recovery. Past this, hand it to a person instead.
+const MAX_STRANDED_AGE_MS = 24 * 3600_000;
 // Marker prefix on a 'review' task's error when it parked ONLY because every Claude account was
 // rate-limited mid-task (no headroom to fail over to). The cap supervisor scans for this prefix and
 // auto-resumes those tasks once an account frees up — so a cap wave doesn't leave the owner to
@@ -304,6 +313,12 @@ const TOKEN_RESUME_BUFFER_MS = 60_000;
 const RESTART_ERROR_PREFIX = "interrupted by a server restart";
 const RESTART_FAILED_MSG = `${RESTART_ERROR_PREFIX} — click Resume to continue from where it left off (finished stages are reused)`;
 const RESTART_AUTO_RESUME_MSG = `${RESTART_ERROR_PREFIX} — auto-resuming…`;
+const RESTART_REVIVAL_SPENT_MSG =
+  `${RESTART_ERROR_PREFIX} — auto-resume was re-armed ${MAX_STRANDED_REVIVALS}× across restarts and never got this task running again. ` +
+  `Click Resume to continue from where it left off (finished stages are reused).`;
+const RESTART_REVIVAL_STALE_MSG =
+  `${RESTART_ERROR_PREFIX} — the auto-resume it was promised never fired, and the task is now too old to pick up on its own. ` +
+  `Click Resume to continue from where it left off (finished stages are reused).`;
 // Woven into the resume nudge/seed ONLY when this resume was triggered by a server restart, so the
 // worker realizes the restart already happened. Implementor workers are child processes of the
 // orchestrator server, so a worker that restarts the orchestrator kills its own session and is then
@@ -795,6 +810,8 @@ export class ThreadManager implements OrchestratorApi {
     for (const r of this.db.listEndedButLiveStateRuns()) {
       this.db.updateRun(r.id, { state: "interrupted" });
     }
+    // Before the scan below stamps THIS boot's promises: keep the ones an earlier boot made and couldn't.
+    this.reviveStrandedAutoResumes(at);
     for (const t of this.db.listThreads()) {
       if (!IN_FLIGHT.has(t.state)) continue;
       // The auto-review lane is in-process: re-park it for a fresh click rather than resuming. That covers
@@ -827,23 +844,9 @@ export class ThreadManager implements OrchestratorApi {
         this.db.updateThread(t.id, { state: "failed", error: RESTART_FAILED_MSG });
         continue;
       }
-      // Crash-loop guard: count this task's implementor runs that were interrupted within seconds of
-      // starting (resume-then-die), recently. Long-lived interrupted runs made progress and don't count.
-      const fastInterrupts = this.db
-        .listRuns(t.id)
-        .filter(
-          (r) =>
-            r.role === "implementor" &&
-            r.state === "interrupted" &&
-            r.endedAt != null &&
-            at - r.endedAt < RESTART_LOOP_WINDOW_MS &&
-            r.endedAt - r.startedAt < CRASH_FAST_MS,
-        ).length;
+      const fastInterrupts = this.fastInterruptCount(t.id, at);
       if (fastInterrupts >= MAX_FAST_INTERRUPTS) {
-        this.db.updateThread(t.id, {
-          state: "failed",
-          error: `Auto-resume stopped — this task kept getting interrupted within seconds of resuming ${fastInterrupts}× (likely a crash loop, not progress). Click Resume to retry once the cause is fixed.`,
-        });
+        this.db.updateThread(t.id, { state: "failed", error: this.crashLoopMsg(fastInterrupts) });
         continue;
       }
       // Route through the SAME resume-aware path as a manual Resume: 'failed' is that path's entry
@@ -853,12 +856,10 @@ export class ThreadManager implements OrchestratorApi {
       // told the restart already completed and must not restart the orchestrator, which it's a child of,
       // again, the loop these warnings exist for.
       this.db.updateThread(t.id, { state: "failed", error: RESTART_AUTO_RESUME_MSG });
-      const id = t.id;
-      const title = t.title;
-      setTimeout(() => {
-        this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
-        void this.resumeThread(id).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
-      }, AUTO_RESUME_DELAY_MS);
+      // A fresh interruption is a fresh episode: what the budget below counts is how many boots in a row
+      // failed to get THIS interruption's resume airborne, not how many the task has survived in its life.
+      this.db.updateThreadStageOutputs(t.id, { autoResumeRevivals: 0 });
+      this.scheduleAutoResume(t.id, t.title);
     }
     // Re-arm any task left 'queued' by the restart: the in-memory dispatch queue starts empty, so
     // without this they'd wait forever. Deferred like the auto-resumes so the listeners are up first;
@@ -871,6 +872,66 @@ export class ThreadManager implements OrchestratorApi {
         for (const t of queued) if (this.db.getThread(t.id)?.state === "queued") this.enqueueOrRun(t.id);
       }, AUTO_RESUME_DELAY_MS);
     }
+  }
+
+  /** An auto-resume the PREVIOUS process promised but never delivered — it schedules the resume in memory,
+   *  so a second bounce inside that window took it down with the process, leaving a task stamped 'failed'
+   *  that markInterrupted's IN_FLIGHT scan will never look at again. The persisted RESTART_AUTO_RESUME_MSG
+   *  outlives the process and no other path writes it, so it is exactly the record that a resume is still
+   *  owed: re-arm from it. (2026-08-08: two tasks, one of them the nightly sweep itself, sat two days
+   *  showing that promise with nothing coming back for them.) */
+  private reviveStrandedAutoResumes(at: number): void {
+    for (const t of this.db.listThreads()) {
+      if (t.state !== "failed" || t.error !== RESTART_AUTO_RESUME_MSG) continue;
+      const attempt = (this.db.getThreadStageOutputs(t.id).autoResumeRevivals ?? 0) + 1;
+      const giveUp = this.revivalGiveUpMsg(t, attempt, at);
+      if (giveUp) {
+        // Stop claiming a resume is coming — the promise in the error is what a person reads.
+        this.db.updateThread(t.id, { state: "failed", error: giveUp });
+        continue;
+      }
+      this.db.updateThreadStageOutputs(t.id, { autoResumeRevivals: attempt });
+      this.hub.log("warn", `Re-arming the auto-resume of "${t.title.slice(0, 48)}" (attempt ${attempt}) — a restart landed before the last one fired.`);
+      this.scheduleAutoResume(t.id, t.title);
+    }
+  }
+
+  /** Why this stranded task should be handed to a person instead of re-armed again, or null to re-arm.
+   *  `updatedAt` is when the promise was stamped — nothing touches it while a task sits stranded. */
+  private revivalGiveUpMsg(t: Thread, attempt: number, at: number): string | null {
+    const fastInterrupts = this.fastInterruptCount(t.id, at);
+    if (fastInterrupts >= MAX_FAST_INTERRUPTS) return this.crashLoopMsg(fastInterrupts);
+    if (at - t.updatedAt > MAX_STRANDED_AGE_MS) return RESTART_REVIVAL_STALE_MSG;
+    if (attempt > MAX_STRANDED_REVIVALS) return RESTART_REVIVAL_SPENT_MSG;
+    return null;
+  }
+
+  /** Implementor runs this task lost within seconds of starting, recently: a resume-then-die crash loop
+   *  rather than progress. Long-lived interrupted runs got somewhere and don't count. */
+  private fastInterruptCount(threadId: string, at: number): number {
+    return this.db
+      .listRuns(threadId)
+      .filter(
+        (r) =>
+          r.role === "implementor" &&
+          r.state === "interrupted" &&
+          r.endedAt != null &&
+          at - r.endedAt < RESTART_LOOP_WINDOW_MS &&
+          r.endedAt - r.startedAt < CRASH_FAST_MS,
+      ).length;
+  }
+
+  private crashLoopMsg(fastInterrupts: number): string {
+    return `Auto-resume stopped — this task kept getting interrupted within seconds of resuming ${fastInterrupts}× (likely a crash loop, not progress). Click Resume to retry once the cause is fixed.`;
+  }
+
+  /** Defer the resume so the HTTP/WS listeners are up before agents respawn. Held in memory by design —
+   *  reviveStrandedAutoResumes is what makes it survive a bounce landing inside the delay. */
+  private scheduleAutoResume(id: string, title: string): void {
+    setTimeout(() => {
+      this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
+      void this.resumeThread(id).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
+    }, AUTO_RESUME_DELAY_MS);
   }
 
   private dispatchAccount(): Acct {

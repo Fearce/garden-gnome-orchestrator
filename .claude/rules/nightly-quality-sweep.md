@@ -34,7 +34,7 @@ one" means that run did NOT fail over: teach the backend's wording to `providerC
 into `CAP_RE`. The reverse is only noise in this probe. A silent section is not proof — when BOTH are
 blind (the 08-05 case) the row reads `real`, so check `cap_flagged` on any real failure. Gate: `test:cap-flag`.
 
-## 4. `npm run probe:parks --prefix server` — name the parked tasks
+## 4. `npm run probe:parks --prefix server` — name the parked AND abandoned tasks
 health's park line is a count too; this is the "read the thread error" it asks for — each task's id, age,
 reason and last run, from the same classifier, so the two can't disagree. Classes: **stalled**
 (QA/auto-review/resume stopped mid-verification — only a Resume or Auto-review clears it), **verdict**
@@ -44,6 +44,11 @@ classifier). A stalled park is already tagged **bug or stale** on its `↳` line
 gate `test:recovery-features`): `stale — … predates <feature> (<sha>); a Resume exercises the fix`, or
 `… continuations already spent — the recovery mechanism ran and gave up`. Trust it, don't re-derive ship
 dates by hand; only a stalled park tagged NEITHER needs a `probe:task-runs` drill. Gate: `test:park-classify`.
+**Read the second section too — `review` is not the only state waiting on a person.** A restart's casualties
+sit in `failed`, which no sweep step read until 08-10: nine had piled up, two stranded mid-work for two days
+(08-08's own sweep among them) because the auto-resume they were promised died with the process that promised
+it. **promised** is the class to act on (still claiming "auto-resuming…" — a Resume clears it, and a boot now
+re-arms it automatically); **clickResume** is the standing owner queue, like `verdict`.
 
 ## 5. `npm run probe:accounts --prefix server` — backend headroom (the one watch-item)
 A green sweep still leaves headroom to eyeball. Prints the Claude subs' 5h/7d capacity, then the **failover

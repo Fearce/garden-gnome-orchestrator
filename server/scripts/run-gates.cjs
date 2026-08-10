@@ -40,6 +40,7 @@ const GATES = [
   "test:qa-budget",
   "test:auto-review",
   "test:self-improve-restart",
+  "test:restart-revival",
   "test:silent-resume",
   "test:cli-role-kickoff",
   "test:per-repo",

@@ -128,7 +128,10 @@ reasons:` line). For **"what is parked in `review`, and does any of it need a hu
 `npm run probe:parks --prefix server` — it names every parked task (id, age, reason, last run) and splits
 them into a **stalled** pipeline (QA/auto-review/resume stopped mid-verification; a Resume or Auto-review
 clears it, nothing else will), an owner **verdict** wait (by design, however old), a **capWait** the cap
-supervisor owns, and **unknown** wording that drifted from the classifier. For a **subscription/account-chip** question ("why does it say idle / limited / 0% / a wrong %?"), run
+supervisor owns, and **unknown** wording that drifted from the classifier. It then does the same for the
+OTHER state that waits on a person — tasks abandoned in **`failed`** by a restart, which no sweep step read
+until 2026-08-10: **promised** (still claiming "auto-resuming…", i.e. a resume that never arrived — the one
+to act on), **clickResume** (handed back by design), **otherFailure** (unclassified). For a **subscription/account-chip** question ("why does it say idle / limited / 0% / a wrong %?"), run
 `npm run probe:accounts --prefix server` — it dumps each account's persisted `account_usage_*` state
 (5h/7d usage + resets, `holdUntil` stagger-hold, `extWakeAt` outside-consumer mark) with plain-English
 reads, then the **failover ladder**: Codex/Grok/z.ai availability from their `setting_*_enabled` +
@@ -142,7 +145,11 @@ renders the strip headlessly (`--list` for scenarios) — no quota, no effect on
 Read the run trail to tell causes apart:
 - run `state='interrupted'` → a **server restart** killed it (`markInterrupted`), not the agent. A
   thread whose `error` starts with "interrupted by a server restart" died to a bounce; actively-running
-  phases now **auto-resume on boot** (crash-loop guarded — repeated <60s deaths stop it). Two rounds are
+  phases now **auto-resume on boot** (crash-loop guarded — repeated <60s deaths stop it). That resume is
+  armed by a 4s in-memory timer, so a SECOND bounce inside the window used to lose it for good (the thread
+  is `failed` by then, which the IN_FLIGHT scan skips); the next boot now re-arms from the persisted
+  "auto-resuming…" promise, up to 3 attempts and only while the promise is <24h old — past either bound it
+  says so and waits for a click. Gate: `test:restart-revival`. Two rounds are
   exempt because they run on ALREADY-accepted work and are keyed on a durable MARKER, not the state (both
   run under auto-resume states): an auto-review fix round re-parks (`reviewFixing`), and the opt-in
   self-improvement round settles the task **done** (`selfImproving`) — so a `done` task holding one

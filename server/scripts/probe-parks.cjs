@@ -1,5 +1,6 @@
-// Name every task parked in `review` and say WHICH KIND of park it is — "the sweep says 2 threads are
-// parked, what are they and does either need me?". Read-only. Safe while prod is up (WAL + busy_timeout).
+// Name every task parked in `review` — and every task abandoned in `failed` — and say WHICH KIND it is:
+// "the sweep says N threads are parked, what are they and does any need me?". Read-only. Safe while prod
+// is up (WAL + busy_timeout).
 //
 //   node scripts/probe-parks.cjs
 //   npm run probe:parks --prefix server
@@ -26,6 +27,11 @@
 //     unlike probe:run-errors. Oldest first — the forgotten one is the one at the top.
 //   • `⏳ Auto-resume pending` is the only class nobody should touch: the cap supervisor unparks it
 //     within ~2m of any backend freeing up. Acting on it manually races that.
+//   • `review` is not the only state that waits on a person. A restart leaves its casualties in `failed`,
+//     and NO sweep step read that state until 2026-08-10 — nine of them had accumulated, two stranded
+//     mid-work for two days (that night's own nightly sweep among them) because the auto-resume they were
+//     promised died with the process that promised it. Same question, different state, so it is classified
+//     here rather than in a probe of its own.
 
 const path = require("node:path");
 const Database = require("better-sqlite3");
@@ -104,6 +110,43 @@ function classifyPark(error) {
   return PARK_CLASSES.find((c) => c.match(err)) ?? PARK_CLASSES[PARK_CLASSES.length - 1];
 }
 
+/**
+ * The same question for a thread left in `failed`: is something still owed, or is this the owner's?
+ *
+ * `markInterrupted` is what writes almost all of them — a restart either promises an auto-resume or hands
+ * the task back for a click. The promise is the one that matters: it is the only state that claims a run
+ * is COMING, so one still sitting here means it never arrived.
+ */
+const ABANDON_CLASSES = [
+  {
+    key: "promised",
+    human: true,
+    title: "promised an auto-resume that never arrived — needs a nudge",
+    match: (err) => /interrupted by a server restart\s+—\s+auto-resuming/i.test(err),
+    action: "a bounce landed inside the 4s resume window; the next boot re-arms it (3 attempts) — if one is still here, Resume it",
+  },
+  {
+    key: "clickResume",
+    human: true,
+    title: "a restart handed it back for a click — by design",
+    match: (err) => /interrupted by (?:a )?server restart/i.test(err) || /Auto-resume stopped/i.test(err),
+    action: "yours to call: Resume to continue from where it left off (finished stages are reused), or dismiss it",
+  },
+  {
+    key: "otherFailure",
+    human: true,
+    title: "failed for some other reason — unclassified",
+    match: () => true,
+    action: "read the reason below; if it is a normal outcome, add its marker to ABANDON_CLASSES",
+  },
+];
+
+/** How an abandoned (`failed`) thread reads. Never throws: a null/empty error classifies as otherFailure. */
+function classifyAbandoned(error) {
+  const err = error ?? "";
+  return ABANDON_CLASSES.find((c) => c.match(err)) ?? ABANDON_CLASSES[ABANDON_CLASSES.length - 1];
+}
+
 /** Whether a QA park already spent its turn-ceiling continuation budget — i.e. the recovery mechanism ran
  *  and still couldn't finish, which is a genuine hand-off rather than a reason to just retry it. */
 function continuationsSpent(error) {
@@ -166,37 +209,54 @@ function reportThread(db, t, parkClass) {
   if (run.error) console.log(`              ${short(run.error, 160)}`);
 }
 
+/** Which classes read as "something went wrong here", so they get the ⚠ and land in the summary count. */
+const ALARM_KEYS = new Set(["stalled", "unknown", "promised", "otherFailure"]);
+const markFor = (key) => (ALARM_KEYS.has(key) ? "⚠" : key === "capWait" ? "⏳" : "·");
+
+function threadsInState(db, state) {
+  return db
+    .prepare("SELECT id, title, error, workspace, updated_at FROM threads WHERE state = ? ORDER BY updated_at ASC")
+    .all(state);
+}
+
+/** Group one state's threads by class and print each group. Returns the per-class counts. */
+function reportSection(db, rows, classes, classify) {
+  const buckets = new Map(classes.map((c) => [c.key, []]));
+  for (const t of rows) buckets.get(classify(t.error).key).push(t);
+  for (const cls of classes) {
+    const group = buckets.get(cls.key);
+    if (!group.length) continue;
+    console.log(`\n${markFor(cls.key)} ${cls.title} (${group.length})`);
+    console.log(`  ↳ ${cls.action}`);
+    for (const t of group) reportThread(db, t, cls.key);
+  }
+  return (key) => buckets.get(key).length;
+}
+
 function main() {
   const db = new Database(DB_PATH, { readonly: true });
   db.pragma("busy_timeout = 5000");
 
-  const rows = db
-    .prepare("SELECT id, title, error, workspace, updated_at FROM threads WHERE state = 'review' ORDER BY updated_at ASC")
-    .all();
+  const parked = threadsInState(db, "review");
+  console.log(`\n=== parked in review (${parked.length}) ===`);
+  if (!parked.length) console.log("  ✓ nothing parked — no task is waiting on you or on a backend.");
+  const parks = reportSection(db, parked, PARK_CLASSES, classifyPark);
 
-  console.log(`\n=== parked in review (${rows.length}) ===`);
-  if (!rows.length) {
-    console.log("  ✓ nothing parked — no task is waiting on you or on a backend.");
-    db.close();
-    return;
-  }
+  // Same question, other state: a restart's casualties sit in `failed`, and nothing ever resumes one on
+  // its own once the boot that promised it is gone.
+  const abandoned = threadsInState(db, "failed");
+  console.log(`\n=== abandoned in failed (${abandoned.length}) ===`);
+  if (!abandoned.length) console.log("  ✓ nothing abandoned — no task was left behind by a restart.");
+  const lost = reportSection(db, abandoned, ABANDON_CLASSES, classifyAbandoned);
 
-  const buckets = new Map(PARK_CLASSES.map((c) => [c.key, []]));
-  for (const t of rows) buckets.get(classifyPark(t.error).key).push(t);
-
-  for (const cls of PARK_CLASSES) {
-    const group = buckets.get(cls.key);
-    if (!group.length) continue;
-    const mark = cls.key === "stalled" || cls.key === "unknown" ? "⚠" : cls.key === "capWait" ? "⏳" : "·";
-    console.log(`\n${mark} ${cls.title} (${group.length})`);
-    console.log(`  ↳ ${cls.action}`);
-    for (const t of group) reportThread(db, t, cls.key);
-  }
-
-  const needsKevin = buckets.get("stalled").length + buckets.get("unknown").length;
+  const needsKevin = parks("stalled") + parks("unknown") + lost("promised") + lost("otherFailure");
   console.log(
-    `\n  ${needsKevin ? "⚠" : "✓"} ${needsKevin} park(s) stopped mid-pipeline, ` +
-      `${buckets.get("verdict").length} awaiting a verdict by design, ${buckets.get("capWait").length} on the supervisor.`,
+    `\n  ${needsKevin ? "⚠" : "✓"} ${parks("stalled") + parks("unknown")} park(s) stopped mid-pipeline, ` +
+      `${parks("verdict")} awaiting a verdict by design, ${parks("capWait")} on the supervisor.`,
+  );
+  console.log(
+    `  ${lost("promised") + lost("otherFailure") ? "⚠" : "·"} ${lost("promised")} abandoned task(s) still promising a resume, ` +
+      `${lost("clickResume")} handed back for a click, ${lost("otherFailure")} unclassified.`,
   );
   console.log("  ↳ full run trail for any one: npm run probe:task-runs --prefix server -- <id>");
   db.close();
@@ -204,4 +264,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { classifyPark, continuationsSpent, recoveryLineFor, PARK_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
+module.exports = { classifyPark, classifyAbandoned, continuationsSpent, recoveryLineFor, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };

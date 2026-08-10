@@ -374,6 +374,10 @@ export interface StageOutputs {
   // implementor goes live, then 'implementing') — so it is the MARKER, never the state, that tells a restart
   // this work is already accepted. Without it a bounce auto-resumes the task back into the pipeline and
   // spends another implementor + QA round on it; with it the restart settles it where it was headed: done.
+  autoResumeRevivals?: number; // times a boot has re-armed a restart auto-resume that an EARLIER boot promised
+  // (state 'failed' + the auto-resuming marker) but died before delivering. Durable because the whole failure
+  // mode is a process not surviving long enough to keep its own promise; reset by the next real interruption,
+  // so it bounds one episode's consecutive misses rather than the task's lifetime.
   qaSilentRetries?: number; // fresh-session retries spent after a QA run came back EMPTY (a warm --resume that
   // never reached the model: 0 turns, $0, no output). Also charged separately, and durable for the same
   // reason — a restart landing mid-retry must not hand the task an unbounded supply of full Opus reviews.

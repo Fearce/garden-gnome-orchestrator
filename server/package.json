@@ -42,6 +42,7 @@
     "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",
     "test:auto-review": "tsx src/tests/autoReview.itest.ts",
     "test:self-improve-restart": "tsx src/tests/selfImproveRestart.itest.ts",
+    "test:restart-revival": "tsx src/tests/restartResumeRevival.itest.ts",
     "test:silent-resume": "tsx src/tests/silentResume.itest.ts",
     "test:cli-role-kickoff": "tsx src/tests/cliRoleKickoff.test.ts",
     "test:per-repo": "tsx src/tests/perRepoConcurrency.itest.ts",

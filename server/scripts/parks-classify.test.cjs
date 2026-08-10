@@ -16,7 +16,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { classifyPark, continuationsSpent, recoveryLineFor, PARK_CLASSES } = require("./probe-parks.cjs");
+const { classifyPark, classifyAbandoned, continuationsSpent, recoveryLineFor, PARK_CLASSES, ABANDON_CLASSES } = require("./probe-parks.cjs");
 const { resolveShipDate } = require("./recovery-features.cjs");
 
 const cls = (err) => classifyPark(err).key;
@@ -110,6 +110,29 @@ assert.match(
   /continuations were already spent/,
 );
 
+// --- the other state that waits on a person: threads abandoned in `failed` ---------------------------
+// `promised` is the load-bearing one. It is the only message claiming a run is COMING, so demoting it to
+// the by-design bucket would re-hide exactly the two tasks (2026-08-08) that motivated this section.
+const abandoned = (err) => classifyAbandoned(err).key;
+
+assert.equal(abandoned("interrupted by a server restart — auto-resuming…"), "promised", "an undelivered promise must stay visible");
+for (const err of [
+  "interrupted by a server restart — click Resume to continue from where it left off (finished stages are reused)",
+  // The revival budget spent, and the crash-loop guard — both stop promising and ask for a click.
+  "interrupted by a server restart — auto-resume was re-armed 3× across restarts and never got this task running again. Click Resume to continue from where it left off (finished stages are reused).",
+  "interrupted by a server restart — the auto-resume it was promised never fired, and the task is now too old to pick up on its own. Click Resume to continue from where it left off (finished stages are reused).",
+  "Auto-resume stopped — this task kept getting interrupted within seconds of resuming 3× (likely a crash loop, not progress). Click Resume to retry once the cause is fixed.",
+  // Historical wording from the June builds, still on real rows — threadManager no longer writes it, so
+  // it is matched by shape rather than pinned below.
+  "interrupted by server restart — re-dispatch to retry",
+]) {
+  assert.equal(abandoned(err), "clickResume", `should be an owner hand-off: ${err}`);
+}
+assert.equal(abandoned("Workspace \"C:\\gone\" does not exist on disk — agents can't run there."), "otherFailure");
+assert.equal(abandoned(""), "otherFailure", "an empty error classifies rather than throwing");
+assert.equal(abandoned(null), "otherFailure", "a NULL error column classifies rather than throwing");
+assert.equal(ABANDON_CLASSES.at(-1).key, "otherFailure", "the catch-all must stay last, or it swallows the real classes");
+
 // --- drift guard: these are threadManager's own words ------------------------------------------------
 // The load-bearing check. Classification keys off text the server writes, so a rename there without a
 // change here leaves the sweep reporting a stalled task as a normal hand-off — invisible, and exactly
@@ -133,6 +156,13 @@ const LITERALS = [
   "Auto-review was interrupted by a server restart",
   "Auto-review was fixing the issues it found",
   "cut off again each time",
+  // The `failed`-state messages. The promise is the one that must not drift: it is written by one process
+  // and read back by the next boot's revival scan, so a reword there is a cross-process contract break.
+  "auto-resuming…",
+  "click Resume to continue from where it left off",
+  "auto-resume was re-armed",
+  "too old to pick up on its own",
+  "Auto-resume stopped",
 ];
 for (const lit of LITERALS) {
   assert.ok(
