@@ -18,88 +18,15 @@
 //     "origin". It never acts on this checkout, so a fetch/push here can't reach GitHub.
 //   • Alt ports; the instance is killed by PORT owner (killing by process name would hit prod).
 
-const { spawn, execFileSync } = require("node:child_process");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
+const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
 
-const SERVER_ROOT = path.resolve(__dirname, "..");
 const PORT = 4337;
 const BASE = `http://127.0.0.1:${PORT}`;
-
-// ---- harness plumbing (mirrors chip-lab.cjs, deliberately: one way to boot a throwaway instance) ----
-
-function loadChromium() {
-  for (const mod of [process.env.PLAYWRIGHT_PATH, "playwright", "playwright-core"].filter(Boolean)) {
-    try {
-      return require(mod).chromium;
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  // NODE_PATH is unset in agent shells, so a bare require misses the global install — resolve it.
-  const root = execFileSync("npm", ["root", "-g"], { shell: true }).toString().trim();
-  return require(path.join(root, "playwright")).chromium;
-}
-
-function authPassword() {
-  const line = fs
-    .readFileSync(path.join(SERVER_ROOT, ".env"), "utf8")
-    .split(/\r?\n/)
-    .find((l) => /^AUTH_PASSWORD=/.test(l));
-  return line ? line.slice("AUTH_PASSWORD=".length).trim() : "";
-}
-
-function requireBuild() {
-  for (const rel of ["dist/index.js", "../web/dist/index.html"]) {
-    if (!fs.existsSync(path.resolve(SERVER_ROOT, rel))) {
-      console.error(`missing ${rel} — run \`npm run build\` at the repo root first.`);
-      process.exit(2);
-    }
-  }
-}
-
-async function boot(dataDir) {
-  const child = spawn(process.execPath, [path.join(SERVER_ROOT, "dist", "index.js")], {
-    cwd: SERVER_ROOT,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      DATA_DIR: dataDir,
-      PORT: String(PORT),
-      HTTPS_PORT: String(PORT + 2),
-      ACCOUNT_1_TOKEN: "git-lab-not-a-real-token",
-      ACCOUNT_2_TOKEN: "git-lab-not-a-real-token",
-      CLAUDE_CODE_OAUTH_TOKEN: "git-lab-not-a-real-token",
-    },
-  });
-  const log = fs.createWriteStream(path.join(dataDir, "git-lab.log"));
-  child.stdout.pipe(log);
-  child.stderr.pipe(log);
-  for (let i = 0; i < 60; i++) {
-    await new Promise((r) => setTimeout(r, 500));
-    try {
-      if ((await fetch(`${BASE}/api/me`)).ok) return child;
-    } catch {
-      /* not listening yet */
-    }
-  }
-  throw new Error(`instance never came up — see ${path.join(dataDir, "git-lab.log")}`);
-}
-
-/** Kill by PORT owner: killing by process name would take prod's node down with it. */
-function killInstance() {
-  try {
-    execFileSync(
-      "powershell",
-      ["-NoProfile", "-Command", `Get-NetTCPConnection -LocalPort ${PORT} -State Listen | Select-Object -Expand OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force }`],
-      { stdio: "ignore" },
-    );
-  } catch {
-    /* already gone */
-  }
-}
 
 // ---- the fixture repository ------------------------------------------------------------------------
 
@@ -155,11 +82,7 @@ const TASK_ID = "git-lab-task-0000";
 
 // ---- the drive -------------------------------------------------------------------------------------
 
-const results = [];
-function check(label, cond, detail) {
-  results.push({ label, ok: !!cond, detail });
-  console.log(`  ${cond ? "✓" : "✗"} ${label}${detail && !cond ? ` — ${detail}` : ""}`);
-}
+const check = createChecks();
 
 /** Wait for the activity strip to leave "running git…" and settle on an outcome. */
 async function settle(page) {
@@ -330,7 +253,7 @@ async function drive(page, work, keep) {
 (async () => {
   const keep = process.argv.includes("--keep");
   requireBuild();
-  killInstance(); // a previous --keep run may still hold the port
+  killInstance(PORT); // a previous --keep run may still hold the port
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-lab-"));
   const fixtureBase = fs.mkdtempSync(path.join(os.tmpdir(), "git-lab-repo-"));
@@ -338,7 +261,7 @@ async function drive(page, work, keep) {
 
   let browser;
   try {
-    await boot(dataDir);
+    await boot({ dataDir, port: PORT });
     seedRepoAndTask(dataDir, work);
     browser = await loadChromium().launch();
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -346,21 +269,14 @@ async function drive(page, work, keep) {
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (!keep) {
-      killInstance();
+      killInstance(PORT);
       fs.rmSync(dataDir, { recursive: true, force: true });
       fs.rmSync(fixtureBase, { recursive: true, force: true });
     }
   }
-
-  const failed = results.filter((r) => !r.ok);
-  console.log(`\n${results.length - failed.length} passed, ${failed.length} failed`);
-  if (failed.length > 0) {
-    console.log("\nFailures:");
-    for (const f of failed) console.log(`  - ${f.label}${f.detail ? ` — ${f.detail}` : ""}`);
-    process.exit(1);
-  }
+  process.exit(check.summary());
 })().catch((e) => {
   console.error(e);
-  killInstance();
+  killInstance(PORT);
   process.exit(1);
 });

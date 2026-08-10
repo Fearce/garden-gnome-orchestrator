@@ -21,13 +21,12 @@
 // The rest of server/.env still applies, so Codex/Grok/z.ai chips render exactly as they do in prod
 // and the geometry you measure is the real one.
 
-const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
+const { loadChromium, authPassword, requireBuild, boot, killInstance } = require("./lab-harness.cjs");
 
-const SERVER_ROOT = path.resolve(__dirname, "..");
 const PORT = 4327;
 const BASE = `http://127.0.0.1:${PORT}`;
 const HOUR = 3_600_000;
@@ -59,81 +58,14 @@ function parseArgs(argv) {
   return out;
 }
 
-function loadChromium() {
-  for (const mod of [process.env.PLAYWRIGHT_PATH, "playwright", "playwright-core"].filter(Boolean)) {
-    try {
-      return require(mod).chromium;
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  // NODE_PATH is unset in agent shells, so a bare require misses the global install — resolve it.
-  const root = execFileSync("npm", ["root", "-g"], { shell: true }).toString().trim();
-  return require(path.join(root, "playwright")).chromium;
-}
-
-function authPassword() {
-  const line = fs
-    .readFileSync(path.join(SERVER_ROOT, ".env"), "utf8")
-    .split(/\r?\n/)
-    .find((l) => /^AUTH_PASSWORD=/.test(l));
-  return line ? line.slice("AUTH_PASSWORD=".length).trim() : "";
-}
-
-function requireBuild() {
-  for (const rel of ["dist/index.js", "../web/dist/index.html"]) {
-    if (!fs.existsSync(path.resolve(SERVER_ROOT, rel))) {
-      console.error(`missing ${rel} — run \`npm run build\` at the repo root first.`);
-      process.exit(2);
-    }
-  }
-}
-
-/** Boot the throwaway instance and resolve once it answers. Bogus tokens: see the header. */
-async function boot(dataDir) {
-  const child = spawn(process.execPath, [path.join(SERVER_ROOT, "dist", "index.js")], {
-    cwd: SERVER_ROOT,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      DATA_DIR: dataDir,
-      PORT: String(PORT),
-      HTTPS_PORT: String(PORT + 2),
-      ACCOUNT_1_TOKEN: "chip-lab-not-a-real-token",
-      ACCOUNT_1_ID: "acct1",
-      ACCOUNT_1_LABEL: "personal",
-      ACCOUNT_2_TOKEN: "chip-lab-not-a-real-token",
-      ACCOUNT_2_ID: "acct2",
-      ACCOUNT_2_LABEL: "vota",
-    },
-  });
-  const log = fs.createWriteStream(path.join(dataDir, "chip-lab.log"));
-  child.stdout.pipe(log);
-  child.stderr.pipe(log);
-  for (let i = 0; i < 60; i++) {
-    await new Promise((r) => setTimeout(r, 500));
-    try {
-      const res = await fetch(`${BASE}/api/me`);
-      if (res.ok) return child;
-    } catch {
-      /* not listening yet */
-    }
-  }
-  throw new Error(`instance never came up — see ${path.join(dataDir, "chip-lab.log")}`);
-}
-
-/** Kill by PORT owner: killing by process name would take prod's node down with it. */
-function killInstance() {
-  try {
-    execFileSync(
-      "powershell",
-      ["-NoProfile", "-Command", `Get-NetTCPConnection -LocalPort ${PORT} -State Listen | Select-Object -Expand OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force }`],
-      { stdio: "ignore" },
-    );
-  } catch {
-    /* already gone */
-  }
-}
+/** The account identities the strip renders. Labels matter here (they're what the chip shows), so this
+ *  lab pins them rather than taking the harness's bare bogus-token defaults. */
+const ACCOUNT_ENV = {
+  ACCOUNT_1_ID: "acct1",
+  ACCOUNT_1_LABEL: "personal",
+  ACCOUNT_2_ID: "acct2",
+  ACCOUNT_2_LABEL: "vota",
+};
 
 function seed(dataDir, scenario) {
   const db = new Database(path.join(dataDir, "orchestrator.sqlite"));
@@ -196,10 +128,10 @@ async function main() {
   let clipped = false;
   try {
     // First boot creates the schema; the snapshots are only read by bootPing, so seed and boot again.
-    await boot(dataDir);
-    killInstance();
+    await boot({ dataDir, port: PORT, env: ACCOUNT_ENV });
+    killInstance(PORT);
     seed(dataDir, args.scenario);
-    await boot(dataDir);
+    await boot({ dataDir, port: PORT, env: ACCOUNT_ENV });
 
     const browser = await loadChromium().launch();
     const shot = path.join(dataDir, "strip.png");
@@ -221,7 +153,7 @@ async function main() {
     }
     console.log(`\n  screenshot: ${shot}`);
   } finally {
-    killInstance();
+    killInstance(PORT);
     if (args.keep) console.log(`  kept ${dataDir}`);
     else fs.rmSync(dataDir, { recursive: true, force: true });
   }
@@ -237,7 +169,7 @@ main().then(
   (code) => process.exit(code),
   (e) => {
     console.error(e);
-    killInstance();
+    killInstance(PORT);
     process.exit(1);
   },
 );
