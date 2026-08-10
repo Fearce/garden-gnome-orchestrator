@@ -4,6 +4,8 @@ import type { CodexUsageDTO } from "../agents/codexUsage.js";
 import type { GrokUsageDTO } from "../agents/grokUsage.js";
 import type { ZaiUsageDTO } from "../agents/zaiUsage.js";
 import type { GitFileDiff, GitStatus, GitSummary } from "../gitService.js";
+import type { RepoCommitDetail } from "../git/repoOps.js";
+import type { RepoActionDTO, RepoRef, RepoStateDTO } from "../orchestrator/repoConsole.js";
 import type {
   AgentRun,
   ChatMessage,
@@ -84,6 +86,18 @@ export type ServerEvent =
   | { type: "thread.git"; threadId: string; status: GitStatus }
   | { type: "thread.gitSummary"; threadId: string; summary: GitSummary }
   | { type: "thread.gitDiff"; threadId: string; path: string; diff: GitFileDiff }
+  // ---- the repo-level Git console (the in-app GitHub Desktop) ----
+  // `preferred` is the repo of the task the console was opened from (`forThread`), already resolved
+  // from its workspace — null when there was no task or it isn't in a checkout. `forThread` is echoed
+  // back so the client can discard a slow earlier reply: the first list costs a disk scan, so an answer
+  // to a previous open can easily arrive after the current one's request (see director.results).
+  | { type: "repo.list"; repos: RepoRef[]; preferred: string | null; forThread: string | null }
+  | { type: "repo.state"; path: string; state: RepoStateDTO }
+  // `commit` echoes back which side the diff came from (a working-tree file vs. a file inside a commit),
+  // so the console can key its cache without guessing which request a reply answers.
+  | { type: "repo.diff"; path: string; file: string; commit: string | null; diff: GitFileDiff }
+  | { type: "repo.commit"; path: string; detail: RepoCommitDetail }
+  | { type: "repo.result"; path: string; action: string; result: RepoActionDTO }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
   // A cancelled task was restarted from scratch: its prior runs/findings/feed were deleted server-side,
@@ -241,6 +255,49 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("thread.git"), threadId: z.string() }),
   z.object({ type: z.literal("thread.gitSummary"), threadId: z.string() }),
   z.object({ type: z.literal("thread.gitDiff"), threadId: z.string(), path: z.string().min(1).max(4096) }),
+  // ---- the repo-level Git console ----
+  // `path` is an operator-chosen repository (a picker entry or a browsed folder); the server resolves it
+  // to a real repo root and rejects anything that isn't one. Branch names and file paths are re-validated
+  // in git/repoOps.ts — this schema bounds them, it does not sanitize them.
+  // `rescan` forces a fresh disk walk for repositories instead of reusing the memoized one.
+  // `forThread` is the task open in the console, whose repo the reply names as `preferred` so the
+  // picker can open on it.
+  z.object({ type: z.literal("repo.list"), rescan: z.boolean().default(false), forThread: z.string().max(100).optional() }),
+  z.object({ type: z.literal("repo.state"), path: z.string().min(1).max(600) }),
+  z.object({
+    type: z.literal("repo.diff"),
+    path: z.string().min(1).max(600),
+    file: z.string().min(1).max(4096),
+    // Present = the file's diff INSIDE that commit (History tab); absent = its working-tree diff vs HEAD.
+    commit: z.string().min(1).max(100).optional(),
+  }),
+  z.object({ type: z.literal("repo.commit"), path: z.string().min(1).max(600), hash: z.string().min(1).max(100) }),
+  z.object({
+    type: z.literal("repo.action"),
+    path: z.string().min(1).max(600),
+    // Re-run a tree-mutating action the live-agent gate refused. Only ever set by an explicit
+    // "do it anyway" confirmation in the console.
+    force: z.boolean().default(false),
+    op: z.discriminatedUnion("action", [
+      z.object({ action: z.literal("fetch"), prune: z.boolean().default(false) }),
+      z.object({ action: z.literal("pull"), rebase: z.boolean().default(false) }),
+      z.object({ action: z.literal("push"), setUpstream: z.boolean().default(false) }),
+      z.object({
+        action: z.literal("checkout"),
+        branch: z.string().min(1).max(255),
+        create: z.boolean().default(false),
+        from: z.string().max(255).optional(),
+      }),
+      z.object({ action: z.literal("deleteBranch"), branch: z.string().min(1).max(255), force: z.boolean().default(false) }),
+      z.object({
+        action: z.literal("commit"),
+        summary: z.string().min(1).max(500),
+        description: z.string().max(10000).default(""),
+        paths: z.array(z.string().min(1).max(4096)).min(1).max(2000),
+      }),
+      z.object({ action: z.literal("discard"), paths: z.array(z.string().min(1).max(4096)).min(1).max(2000) }),
+    ]),
+  }),
   // Stop the director's current turn when it's spinning (busy but neither replying nor dispatching).
   // Kills the live run, discards the in-flight turn, and settles the director back to idle; the
   // conversation session is preserved so the next message resumes with full context.

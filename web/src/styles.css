@@ -721,6 +721,16 @@ button { font-family: inherit; cursor: pointer; }
 .settings-btn.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); }
 .settings-btn.on svg { transform: rotate(35deg); transition: transform 0.2s; }
 
+/* Git console trigger — same chip geometry as the gear it sits beside, so the pair reads as one group. */
+.git-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--r-sm); cursor: pointer; flex: 0 0 auto;
+  border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint);
+  transition: color 0.12s, border-color 0.12s;
+}
+.git-btn:hover { color: var(--text-dim); border-color: var(--line-strong); }
+.git-btn.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); }
+
 /* ---- settings panel (gear popover) ---- */
 .settings-scrim { position: fixed; inset: 0; z-index: 60; background: oklch(0 0 0 / 0.32); }
 .settings-pop {

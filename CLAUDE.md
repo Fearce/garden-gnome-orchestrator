@@ -193,6 +193,28 @@ Read the run trail to tell causes apart:
   is re-started at its slot by a cheap real wake turn (one-word prompt, `gpt-5.5` low effort — mini
   models 400 on ChatGPT-plan auth; `CODEX_WAKE=off` disables, `CODEX_WAKE_MODEL` overrides).
 
+## The Git console (the in-app GitHub Desktop)
+The GitHub button beside the gear opens a repo-level git surface: a repository picker, a branch menu
+(switch / create / check out a remote branch as a tracking branch / delete), Fetch · Pull · Push, an
+**Open** link to the repo on its host (derived from the remote, deep-linked to the current branch), a
+ticked-file list with per-file diffs and a commit box, and a History tab that opens any commit's diff.
+**The picker fills itself** — `git/discoverRepos.ts` walks `config.workspaceSearchRoots` (`C:\;D:\`,
+env `WORKSPACE_SEARCH_ROOTS`) for checkouts, async and bounded by depth/count/wall-clock, memoized 10min
+with a Rescan in the menu; the repos actually in use (recent dispatches, task workspaces, this checkout)
+sort above the merely-found ones. Nobody types a path; Browse is the fallback. **It opens on the selected
+task's repo** when one is open (`repoForThread` resolves it server-side, since a workspace is often the
+PARENT of its checkout), else the last repo used here, else the busiest — and an explicit pick always
+wins. Writes live in
+`git/repoOps.ts` (reusing `gitService.ts`'s hardened `runGit` + parsers — that module stays read-only),
+the repo list + safety gate in `orchestrator/repoConsole.ts`, the wire in the `repo.*` WS commands.
+Rules it keeps: **never `--force`, never `--no-verify`**; Pull is fast-forward-only with an explicit
+Pull (rebase) in its caret menu; a **Vota** origin refuses to push (commit-only policy); a checkout /
+pull / discard is **refused while an agent is live in that repo**, naming the tasks, with an explicit
+"Do it anyway" override. Branch names and paths arrive from the client, so they're validated in
+`repoOps` (no leading `-`, no `..`) and always passed after `--`. Gates: `test:repo-ops` (real repos,
+free, no browser) and `npm run git-lab --prefix server` (drives the console in a headless browser
+against its own throwaway instance + fixture repo). Details: `.claude/rules/git-changes-surface.md`.
+
 ## The office (cross-agent chat)
 Concurrent tasks on the same repo would otherwise edit the same files blind. Every running agent is
 "in the office": each role gets an `office` MCP server (`bus/officeServer.ts` — `office_look`/`chat_post`/

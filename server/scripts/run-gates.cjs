@@ -49,6 +49,7 @@ const GATES = [
   "test:attachment-dedupe",
   "test:stale-gnomes",
   "test:git",
+  "test:repo-ops",
   "test:supervisor",
   "test:audit-deps",
   "test:audit-overrides",

@@ -506,6 +506,93 @@ export interface GitFileDiff {
   truncated: boolean;
 }
 
+// ---- the repo-level Git console (mirrors server/src/git/repoOps.ts + orchestrator/repoConsole.ts) ----
+
+export interface RepoRef {
+  path: string; // the resolved repo ROOT — the identity every repo command uses
+  name: string;
+  taskCount: number; // tasks in this console living in this repo
+  activeCount: number; // …of which have an agent live in the workspace right now
+  isSelf: boolean; // the orchestrator's own checkout
+  discovered: boolean; // found by scanning the disk, not known from a dispatch
+}
+
+export interface RepoBranch {
+  name: string;
+  current: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  at: number; // epoch ms of the branch tip
+  gone: boolean; // the upstream is configured but no longer on the remote
+}
+
+export interface RepoRemote {
+  name: string;
+  url: string;
+}
+
+/** A task with an agent live in this repo — what the console names before a destructive action. */
+export interface RepoBusyTask {
+  id: string;
+  title: string;
+  state: ThreadState;
+}
+
+export interface RepoState {
+  path: string;
+  name: string;
+  isRepo: boolean;
+  error: string | null;
+  branch: string | null;
+  detached: boolean;
+  branches: RepoBranch[];
+  remoteBranches: string[];
+  remotes: RepoRemote[];
+  upstreamRef: string | null;
+  pushRef: string | null;
+  ahead: number; // commits a Push would send
+  behind: number; // commits a Pull would take
+  isVota: boolean;
+  pushState: PushState;
+  files: GitFile[];
+  commits: GitCommit[];
+  lastFetchAt: number | null;
+  /** Browser URL for the repo on its host, deep-linked to the current branch; null when the remote
+   *  isn't a recognizable web host. */
+  webUrl: string | null;
+  busy: RepoBusyTask[];
+}
+
+export interface RepoCommitDetail {
+  hash: string;
+  fullHash: string;
+  subject: string;
+  body: string;
+  author: string;
+  email: string;
+  at: number;
+  files: GitFile[];
+  isMerge: boolean;
+  error: string | null;
+}
+
+export interface RepoActionResult {
+  ok: boolean;
+  message: string;
+  /** Refused by the live-agent gate rather than by git — the console offers an explicit override. */
+  blocked: boolean;
+}
+
+export type RepoOp =
+  | { action: "fetch"; prune?: boolean }
+  | { action: "pull"; rebase?: boolean }
+  | { action: "push"; setUpstream?: boolean }
+  | { action: "checkout"; branch: string; create?: boolean; from?: string }
+  | { action: "deleteBranch"; branch: string; force?: boolean }
+  | { action: "commit"; summary: string; description?: string; paths: string[] }
+  | { action: "discard"; paths: string[] };
+
 export type ServerEvent =
   | {
       type: "hello";
@@ -541,6 +628,17 @@ export type ServerEvent =
   | { type: "thread.git"; threadId: string; status: GitStatus }
   | { type: "thread.gitSummary"; threadId: string; summary: GitSummary }
   | { type: "thread.gitDiff"; threadId: string; path: string; diff: GitFileDiff }
+  // ---- the repo-level Git console ----
+  // `preferred` = the repo of the task the console was opened from, resolved server-side; null when
+  // no task was open or its workspace isn't a checkout. `forThread` echoes the request so a slow
+  // earlier reply can be discarded.
+  | { type: "repo.list"; repos: RepoRef[]; preferred: string | null; forThread: string | null }
+  | { type: "repo.state"; path: string; state: RepoState }
+  // `commit` echoes which side the diff came from (working tree vs. inside a commit) so the cache can be
+  // keyed without guessing which request a reply answers.
+  | { type: "repo.diff"; path: string; file: string; commit: string | null; diff: GitFileDiff }
+  | { type: "repo.commit"; path: string; detail: RepoCommitDetail }
+  | { type: "repo.result"; path: string; action: string; result: RepoActionResult }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
   // A cancelled task was restarted from scratch: prune its now-deleted runs/findings/feed (keeping the
@@ -598,6 +696,11 @@ export type ClientCommand =
   | { type: "thread.git"; threadId: string }
   | { type: "thread.gitSummary"; threadId: string }
   | { type: "thread.gitDiff"; threadId: string; path: string }
+  | { type: "repo.list"; rescan?: boolean; forThread?: string }
+  | { type: "repo.state"; path: string }
+  | { type: "repo.diff"; path: string; file: string; commit?: string }
+  | { type: "repo.commit"; path: string; hash: string }
+  | { type: "repo.action"; path: string; op: RepoOp; force?: boolean }
   | { type: "director.cancel" }
   | { type: "director.search"; query: string }
   | { type: "chat.history"; room: string; before?: ChatCursor }

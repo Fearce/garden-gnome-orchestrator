@@ -5,7 +5,8 @@
  * resolves a task's repo (even when the workspace is the PARENT of a nested checkout), reads the changed
  * files with per-file ±counts, the commit log with each commit tagged pushed-or-local, the branch list +
  * current branch, ahead/behind vs upstream, and the push state (with the Vota commit-only case neutral) —
- * plus per-file diffs and a guarded branch checkout.
+ * plus per-file diffs. This module is READ-ONLY; the write side (fetch/pull/push/checkout/commit/discard,
+ * the repo-level Git console) is `git/repoOps.ts`, covered by `repoOps.itest.ts`.
  *
  * WHAT IS REAL: the entire gitService runs unmodified against throwaway on-disk repos. Only the "remote"
  * is a local bare repo instead of GitHub; every git operation is 100% real.
@@ -17,7 +18,6 @@
  *   D. VOTA        — an origin whose url contains "vota" reads commit-only (neutral), never a push nag.
  *   E. BEHIND      — upstream moved ahead → behind > 0 after a fetch.
  *   F. DIFF        — a tracked modification, a brand-new untracked file, and a binary file.
- *   G. CHECKOUT    — switching to an existing branch succeeds; a nonexistent branch is refused.
  *
  * Run:  npm run test:git   (from server/)   — or:  npx tsx src/tests/gitService.itest.ts
  * Exits non-zero if any assertion fails. Self-contained: builds throwaway repos in a temp dir, removes them.
@@ -28,7 +28,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { resolveRepoRoot, getGitStatus, getGitSummary, getTaskGitSummary, getTaskGitStatus, getHeadSha, getFileDiff, checkoutBranch } = await import("../gitService.js");
+const { resolveRepoRoot, getGitStatus, getGitSummary, getTaskGitSummary, getTaskGitStatus, getHeadSha, getFileDiff } = await import("../gitService.js");
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
 let passed = 0;
@@ -257,23 +257,6 @@ try {
     // And the status file list marks it binary too.
     const s = await getGitStatus(work);
     check("binary file marked binary in status", s.files.find((f) => f.path === "blob.bin")?.binary === true);
-  }
-
-  // ---- G. checkout ----------------------------------------------------------------------------------
-  console.log("\nG. checkoutBranch — switch to an existing branch; refuse a nonexistent one");
-  {
-    const { work } = setupClone(root, "checkout");
-    git(work, "branch", "feature/x");
-    const okRes = await checkoutBranch(work, "feature/x");
-    check("checkout to existing branch ok", okRes.ok, okRes.error);
-    check("HEAD now on feature/x", git(work, "rev-parse", "--abbrev-ref", "HEAD") === "feature/x");
-    const status = await getGitStatus(work);
-    check("status reports the new branch", status.branch === "feature/x", String(status.branch));
-    check("branch list includes both branches", status.branches.includes("master") && status.branches.includes("feature/x"));
-
-    const badRes = await checkoutBranch(work, "does-not-exist");
-    check("checkout to a nonexistent branch is refused", badRes.ok === false && !!badRes.error, JSON.stringify(badRes));
-    check("HEAD unchanged after a refused checkout", git(work, "rev-parse", "--abbrev-ref", "HEAD") === "feature/x");
   }
 
   // ---- H. task-scoped summary — attribute ONLY this task's diff, excluding foreign WIP/commits --------

@@ -18,6 +18,11 @@ import type {
   GitStatus,
   GitFileDiff,
   ImageAttachment,
+  RepoActionResult,
+  RepoCommitDetail,
+  RepoOp,
+  RepoRef,
+  RepoState,
   Message,
   OrchestratorSettings,
   Question,
@@ -34,6 +39,12 @@ interface ThreadDraft {
   runId: string;
   role: Role;
   text: string;
+}
+
+/** Cache key for a Git-console diff. A file's working-tree diff and the same file inside a commit are
+ *  different content, so the commit id (when there is one) is part of the key. */
+export function repoDiffKey(file: string, commit: string | null | undefined): string {
+  return commit ? `${commit}:${file}` : file;
 }
 
 interface State {
@@ -103,6 +114,28 @@ interface State {
   gitSummaries: Record<string, GitSummary>;
   gitStatus: Record<string, GitStatus>;
   gitDiffs: Record<string, Record<string, GitFileDiff>>;
+  // The repo-level Git console, keyed by repo root. `repoDiffs` is keyed by repo → diffKey(file, commit)
+  // so a file's working-tree diff and the same file inside a commit never collide. `repoResult` is the
+  // last action's outcome (the activity line); `repoBusy` is true while one is in flight, which is what
+  // disables the action buttons.
+  repos: RepoRef[];
+  /** The repo of the task the console was opened from — what the picker opens on. */
+  repoPreferred: string | null;
+  /** A repo.list request is in flight. The console keeps BOTH the list and the preference from the
+   *  previous time it was opened, so without this it would auto-select from stale data before this
+   *  open's answer — and then keep that stale choice, since auto-selection only happens once. */
+  repoListPending: boolean;
+  /** The `forThread` of the request in flight. The first list costs a disk scan, so the answer to a
+   *  PREVIOUS open can arrive after this one's request; a reply that doesn't echo this is discarded. */
+  repoListFor: string | null;
+  repoStates: Record<string, RepoState>;
+  repoDiffs: Record<string, Record<string, GitFileDiff>>;
+  repoCommits: Record<string, Record<string, RepoCommitDetail>>;
+  repoResult: (RepoActionResult & { action: string; at: number }) | null;
+  repoBusy: boolean;
+  // The op the last `repoAction` sent — what a "Do it anyway" re-issues with force after the live-agent
+  // gate blocked it. Kept in the store rather than the component so it survives a re-render of the panel.
+  repoLastOp: RepoOp | null;
   railHidden: boolean;
   detailWidth: number;
   directorWidth: number;
@@ -166,6 +199,14 @@ interface State {
   loadGitSummary: (threadId: string) => void;
   loadGitStatus: (threadId: string) => void;
   loadGitDiff: (threadId: string, path: string) => void;
+  // The Git console. `repoAction` marks the console busy until the server's repo.result lands, so the
+  // buttons can't be double-fired against a repo mid-checkout.
+  loadRepos: (rescan?: boolean, forThread?: string | null) => void;
+  loadRepoState: (path: string) => void;
+  loadRepoDiff: (path: string, file: string, commit?: string) => void;
+  loadRepoCommit: (path: string, hash: string) => void;
+  repoAction: (path: string, op: RepoOp, force?: boolean) => void;
+  clearRepoResult: () => void;
   toggleRail: () => void;
   setDetailWidth: (px: number) => void;
   setDirectorWidth: (px: number) => void;
@@ -427,6 +468,16 @@ export const useStore = create<State>((set) => ({
   gitSummaries: {},
   gitStatus: {},
   gitDiffs: {},
+  repos: [],
+  repoPreferred: null,
+  repoListPending: false,
+  repoListFor: null,
+  repoStates: {},
+  repoDiffs: {},
+  repoCommits: {},
+  repoResult: null,
+  repoBusy: false,
+  repoLastOp: null,
   railHidden: lsBool("orch-rail-hidden", false),
   detailWidth: lsNum("orch-detail-w", 480),
   directorWidth: lsNum("orch-rail-w", 384),
@@ -531,6 +582,18 @@ export const useStore = create<State>((set) => ({
   loadGitSummary: (threadId) => sendCommand({ type: "thread.gitSummary", threadId }),
   loadGitStatus: (threadId) => sendCommand({ type: "thread.git", threadId }),
   loadGitDiff: (threadId, path) => sendCommand({ type: "thread.gitDiff", threadId, path }),
+  loadRepos: (rescan = false, forThread = null) => {
+    set({ repoListPending: true, repoListFor: forThread, repoPreferred: null });
+    sendCommand({ type: "repo.list", rescan, ...(forThread ? { forThread } : {}) });
+  },
+  loadRepoState: (path) => sendCommand({ type: "repo.state", path }),
+  loadRepoDiff: (path, file, commit) => sendCommand({ type: "repo.diff", path, file, ...(commit ? { commit } : {}) }),
+  loadRepoCommit: (path, hash) => sendCommand({ type: "repo.commit", path, hash }),
+  repoAction: (path, op, force = false) => {
+    set({ repoBusy: true, repoResult: null, repoLastOp: op });
+    sendCommand({ type: "repo.action", path, op, force });
+  },
+  clearRepoResult: () => set({ repoResult: null }),
   toggleRail: () =>
     set((s) => {
       const v = !s.railHidden;
@@ -797,6 +860,38 @@ function applyEvent(ev: ServerEvent): void {
       useStore.setState((s) => ({
         gitDiffs: { ...s.gitDiffs, [ev.threadId]: { ...(s.gitDiffs[ev.threadId] ?? {}), [ev.path]: ev.diff } },
       }));
+      break;
+    case "repo.list":
+      useStore.setState((s) =>
+        // Not the reply to the request in flight — an earlier open's answer, arriving late. Taking it
+        // would auto-select the wrong repo AND clear the pending flag the real answer still needs.
+        ev.forThread !== s.repoListFor ? {} : { repos: ev.repos, repoPreferred: ev.preferred, repoListPending: false },
+      );
+      break;
+    case "repo.state":
+      useStore.setState((s) => ({ repoStates: { ...s.repoStates, [ev.path]: ev.state } }));
+      break;
+    case "repo.diff":
+      useStore.setState((s) => ({
+        repoDiffs: { ...s.repoDiffs, [ev.path]: { ...(s.repoDiffs[ev.path] ?? {}), [repoDiffKey(ev.file, ev.commit)]: ev.diff } },
+      }));
+      break;
+    case "repo.commit":
+      useStore.setState((s) => ({
+        repoCommits: { ...s.repoCommits, [ev.path]: { ...(s.repoCommits[ev.path] ?? {}), [ev.detail.hash]: ev.detail } },
+      }));
+      break;
+    case "repo.result":
+      useStore.setState((s) => {
+        if (!ev.result.ok) return { repoBusy: false, repoResult: { ...ev.result, action: ev.action, at: Date.now() } };
+        // The repo moved, so the per-task Changes surfaces that read the same repo are stale too. The
+        // drawer caches are DROPPED — both re-fetch themselves whenever a drawer/diff is opened. The card
+        // chips are RE-REQUESTED instead of dropped: a chip only fetches its summary on mount, so
+        // clearing it would make every chip on the board disappear until the card remounted.
+        const { [ev.path]: _stale, ...repoDiffs } = s.repoDiffs;
+        for (const threadId of Object.keys(s.gitSummaries)) sendCommand({ type: "thread.gitSummary", threadId });
+        return { repoBusy: false, repoResult: { ...ev.result, action: ev.action, at: Date.now() }, repoDiffs, gitStatus: {}, gitDiffs: {} };
+      });
       break;
     case "thread.upsert":
       useStore.setState((s) => {

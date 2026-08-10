@@ -17,6 +17,7 @@ import { startGrokUsageMonitor } from "./agents/grokUsagePing.js";
 import { startZaiUsageMonitor } from "./agents/zaiUsagePing.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
+import { RepoConsole } from "./orchestrator/repoConsole.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
@@ -112,6 +113,11 @@ async function main(): Promise<void> {
   // active, exactly like a hand-dispatched task. The director can also create/edit schedules via its tools.
   const scheduler = new Scheduler(db, hub, (input) => manager.dispatch(input));
   const director = new Director(manager, db, hub, scheduler);
+  // The repo-level Git console (fetch/pull/push/branch/commit over any repo the console knows about).
+  // Standalone: Db only, so it never entangles with the pipeline. It always offers the orchestrator's
+  // own checkout (resolved from server/, so it holds in dev and in the built dist alike) even before any
+  // task has been dispatched.
+  const repos = new RepoConsole(db, config.serverRoot);
   accounts.start();
   scheduler.start();
   // Live pickable-model lists for the Settings dropdowns — needs a subscription token, so start it after
@@ -171,7 +177,7 @@ async function main(): Promise<void> {
     // Pasted images travel inline (base64) in a single prompt.new frame; lift the
     // default ws payload cap so a few screenshots don't get dropped on send.
     await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
-    registerWs(app, { db, hub, manager, director, accounts, scheduler });
+    registerWs(app, { db, hub, manager, director, accounts, scheduler, repos });
 
     app.get("/api/health", async () => ({
       ok: true,

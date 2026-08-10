@@ -4,6 +4,7 @@ import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { Director } from "../orchestrator/director.js";
+import type { RepoActionDTO, RepoConsole } from "../orchestrator/repoConsole.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
 import { readCodexUsage } from "../agents/codexUsage.js";
@@ -32,6 +33,7 @@ export interface WsContext {
   director: Director;
   accounts: AccountManager;
   scheduler: Scheduler;
+  repos: RepoConsole;
 }
 
 const STREAMING_EVENTS = new Set(["agent.delta", "agent.thinking", "director.delta"]);
@@ -209,6 +211,47 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
     case "thread.gitDiff": {
       const diff = await ctx.manager.getFileDiff(cmd.threadId, cmd.path);
       send(socket, { type: "thread.gitDiff", threadId: cmd.threadId, path: cmd.path, diff });
+      break;
+    }
+    case "repo.list":
+      send(socket, {
+        type: "repo.list",
+        repos: await ctx.repos.list(cmd.rescan),
+        preferred: cmd.forThread ? await ctx.repos.repoForThread(cmd.forThread) : null,
+        forThread: cmd.forThread ?? null,
+      });
+      break;
+    case "repo.state":
+      send(socket, { type: "repo.state", path: cmd.path, state: await ctx.repos.state(cmd.path) });
+      break;
+    case "repo.diff":
+      send(socket, {
+        type: "repo.diff",
+        path: cmd.path,
+        file: cmd.file,
+        commit: cmd.commit ?? null,
+        diff: await ctx.repos.diff(cmd.path, cmd.file, cmd.commit),
+      });
+      break;
+    case "repo.commit":
+      send(socket, { type: "repo.commit", path: cmd.path, detail: await ctx.repos.commitDetail(cmd.path, cmd.hash) });
+      break;
+    case "repo.action": {
+      // The console goes busy on send and un-busies on the result, so this command MUST answer exactly
+      // once — an unexpected throw anywhere below would otherwise leave it spinning forever with no way
+      // back. Everything fallible is inside the try, and the catch still answers.
+      let result: RepoActionDTO;
+      try {
+        result = await ctx.repos.action(cmd.path, cmd.op, cmd.force);
+        // Fresh state FIRST, outcome second. Re-reading the repo costs a dozen git spawns, so a result
+        // sent ahead of it would flip the console out of its "running git…" state while the file list,
+        // branch and counts still described the pre-action repo — a visible lie for as long as the
+        // re-read takes. That ordering is what makes the pair atomic to the operator.
+        send(socket, { type: "repo.state", path: cmd.path, state: await ctx.repos.state(cmd.path) });
+      } catch (e) {
+        result = { ok: false, blocked: false, message: `git ${cmd.op.action} failed: ${(e as Error).message}` };
+      }
+      send(socket, { type: "repo.result", path: cmd.path, action: cmd.op.action, result });
       break;
     }
     case "director.cancel":
