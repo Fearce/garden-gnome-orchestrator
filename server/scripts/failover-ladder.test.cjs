@@ -241,9 +241,11 @@ for (const b of BACKENDS) {
   // hasHeadroom expression is a door: a guard call (`grokCapActive`) or a predicate local (`nearWeekly`).
   const NOISE = new Set(["this", "u", "null", "undefined", "true", "false"]);
 
-  /** The identifiers a candidate's `hasHeadroom` actually gates on, read from the source of truth. */
+  /** The identifiers a candidate's `hasHeadroom` actually gates on, read from the source of truth.
+   *  `\r?\n` because a clone with `core.autocrlf=true` checks the source out CRLF, and a bare `\n`
+   *  then matches nothing, so the gate fails on the checkout instead of on the code. */
   function headroomTerms(method) {
-    const body = new RegExp(`private ${method}\\(\\)[\\s\\S]*?hasHeadroom:([\\s\\S]*?),\\n\\s*[a-zA-Z]\\w*:`).exec(tmSrc);
+    const body = new RegExp(`private ${method}\\(\\)[\\s\\S]*?hasHeadroom:([\\s\\S]*?),\\r?\\n\\s*[a-zA-Z]\\w*:`).exec(tmSrc);
     assert.ok(body, `no ${method}() with a hasHeadroom property in threadManager.ts — the ladder mirrors a method that moved`);
     const expr = body[1]
       .replace(/this\./g, "") // `this.grokCapActive()` → `grokCapActive()`: the guard IS the term
