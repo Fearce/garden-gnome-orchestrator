@@ -103,7 +103,9 @@ advisory range days later, and its `minimatch@9.0.9` parent key would have silen
 bump. A dead selector fails; an exact one warns. Unlike a `scripts/*.cjs` fix, a dependency patch **needs a
 deploy** — the old copies stay resident in the running process. `audit:secrets` checks the real gitignored
 `.env` values against both the tracked tree and git history, known token shapes, tracked secret-type files,
-and public-repo basics. Both commands are read-only.
+and public-repo basics. Its WARN-only email check treats `git@github.com` as an SSH user@host, not a mailbox —
+**strip** such a remote from the row rather than dropping the row, or a real address beside one goes unreported
+(`scripts/email-hygiene.cjs`, gate `test:email-hygiene`). Both commands are read-only.
 
 ## 8. `npm run probe:db-size --prefix server` — what the DB is made of, and is any of it waste
 The one watch-item that used to have no probe, so it was tracked in prose — which drifted into being

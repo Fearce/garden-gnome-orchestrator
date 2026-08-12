@@ -58,6 +58,7 @@
     "test:gate-registration": "node scripts/gate-registration.test.cjs",
     "test:audit-deps": "node scripts/audit-deps.test.cjs",
     "test:audit-overrides": "node scripts/audit-overrides.test.cjs",
+    "test:email-hygiene": "node scripts/email-hygiene.test.cjs",
     "test:db-size": "node scripts/db-size.test.cjs",
     "test:gates": "node scripts/run-gates.cjs",
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
