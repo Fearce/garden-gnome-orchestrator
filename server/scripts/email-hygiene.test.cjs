@@ -18,6 +18,16 @@ assert.equal(broad.test("missing@tld"), false, "a bare host is not an address");
 assert.equal(withoutSshRemotes("git@github.com:Fearce/sample.git"), ":Fearce/sample.git");
 assert.equal(withoutSshRemotes("ssh://git@github.com:22/o/r.git"), "ssh://:22/o/r.git");
 assert.equal(withoutSshRemotes("owner@acme.test"), "owner@acme.test", "a real address is untouched");
+assert.equal(
+  withoutSshRemotes("git@company.test"),
+  "git@company.test",
+  "a bare git@ mailbox is not an SSH remote URL",
+);
+assert.equal(
+  withoutSshRemotes("build-git@company.test"),
+  "build-git@company.test",
+  "do not strip the tail of a longer email local part",
+);
 
 // --- what the audit actually reports -----------------------------------------
 assert.deepEqual(realEmailLines(""), [], "no grep hits is not a finding");
@@ -40,6 +50,9 @@ assert.deepEqual(
 // ...but the check still has to DO its job — this is the leak it exists to catch.
 assert.deepEqual(realEmailLines("docs/notes.md:3: ping owner@acme.test about it"), [
   "docs/notes.md:3: ping owner@acme.test about it",
+]);
+assert.deepEqual(realEmailLines("docs/notes.md:4: ping git@company.test about it"), [
+  "docs/notes.md:4: ping git@company.test about it",
 ]);
 
 // The reason the SSH remote is stripped rather than the whole ROW dropped: a real
