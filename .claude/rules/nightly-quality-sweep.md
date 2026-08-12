@@ -1,9 +1,12 @@
 # Nightly / quality sweep + resume-after-bounce
 
 When the brief is a health/quality sweep ("nightly check", "make sure everything is smooth") or you
-are auto-resumed after an orchestrator restart that already completed, run `npm run quality`. It executes
-the eight checks below in order and stops at the first failing command. Run an individual step only when
-you are diagnosing a failure or re-checking a specific surface.
+are auto-resumed after an orchestrator restart that already completed, run `npm run quality`
+(`scripts/quality-sweep.cjs`). It runs the eight steps below in order, **does not stop at the first
+failure** — the point of a sweep is the whole picture, and every step is read-only — and prints a
+per-step verdict at the end. Re-check just the failures with `npm run quality -- <step numbers>`.
+Reading the output is still the job: a green exit says nothing about ladder depth, park counts or DB
+growth, which is what §5, §4 and §8 exist to make you look at.
 
 ## 1. `npm run health --prefix server`
 (`nightly-health.cjs`) — hits `/api/health`, checks `:4317` vs `dist` **and `dist` vs HEAD**, greps live

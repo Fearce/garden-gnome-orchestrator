@@ -14,7 +14,7 @@
     "start": "npm run start --prefix server",
     "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix web",
     "health": "npm run health --prefix server",
-    "quality": "npm run health && npm run typecheck && npm run test:gates --prefix server && npm run probe:run-errors --prefix server && npm run probe:parks --prefix server && npm run probe:accounts --prefix server && npm run probe:console && npm run probe:chips && npm run audit:deps --prefix server && npm run audit:secrets --prefix server && npm run probe:db-size --prefix server",
+    "quality": "node scripts/quality-sweep.cjs",
     "probe:console": "node web/scripts/console-smoke.cjs",
     "probe:chips": "node web/scripts/check-accounts-visible.cjs"
   },
