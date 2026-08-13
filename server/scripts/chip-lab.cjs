@@ -47,7 +47,7 @@ const SCENARIOS = {
 };
 
 function parseArgs(argv) {
-  const out = { scenario: "lapsed-weekly", widths: [1280, 1440, 1600, 1700], keep: false, list: false };
+  const out = { scenario: "lapsed-weekly", widths: [1280, 1440, 1600, 1700, 1750, 1920], keep: false, list: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--list") out.list = true;

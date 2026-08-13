@@ -52,9 +52,10 @@ function resolvePassword() {
 const chromium = loadChromium();
 const BASE = process.env.ORCH_URL || "http://127.0.0.1:4317";
 const PASSWORD = resolvePassword();
-// 1700 sits just above the wrap breakpoint (styles.css), where the strip goes back to a single
-// in-bar row — the width that catches a chip added since the bound was last measured.
-const WIDTHS = (process.env.ORCH_WIDTHS || "1280,1440,1600,1700")
+// 1700 is the last wrapped width and 1750 the first inline one (the styles.css bound), so the pair
+// straddles the breakpoint — the widths that catch a chip added since the bound was last measured.
+// 1920 is the common wide monitor, where the office lane has room to grow gnomes beside the chips.
+const WIDTHS = (process.env.ORCH_WIDTHS || "1280,1440,1600,1700,1750,1920")
   .split(",")
   .map((s) => parseInt(s.trim(), 10))
   .filter((n) => n > 0);

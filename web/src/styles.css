@@ -97,26 +97,32 @@ button { font-family: inherit; cursor: pointer; }
   min-width: 0;
 }
 
-/* Medium desktop (1280–1699px): five subscription chips (~848px) don't fit beside brand + office +
+/* Medium desktop (1280–1749px): five subscription chips (~848px) don't fit beside brand + office +
    controls. Wrap the accounts strip onto a full-width second row so Grok's 7d/mo meters stay on
-   screen instead of clipped under .app overflow:hidden. From ~1700px the strip fits inline again, so
-   wider viewports keep the single-row layout — re-measure this bound when a chip is added or widened
+   screen instead of clipped under .app overflow:hidden. The bound is measured, not decorative: the
+   fixed items (brand + toggles + stat + gate + bell + conn) come to ~661px, gaps + padding ~180px,
+   chips ~848px — so the inline row needs ~1690px BEFORE the office lane, and the old 1700px bound
+   left it one pixel of slack. Re-measure when a chip is added or widened
    (web/scripts/check-accounts-visible.cjs). */
-@media (max-width: 1699.98px) and (min-width: 769px) {
+@media (max-width: 1749.98px) and (min-width: 769px) {
   .topbar {
     flex-wrap: wrap;
     row-gap: 6px;
     padding-top: 6px;
     padding-bottom: 6px;
   }
+  /* Last in the bar, so when the row can't hold it the strip is what drops — alone, full width.
+     Which row it lands on is decided by the content, not by this bound: the bound only decides
+     whether dropping is ALLOWED. (Don't add `flex-basis: 100%` to force the second row: the later
+     `.accounts` rule below wins on source order, so it would be inert.) */
   .accounts {
     order: 20;
-    flex: 1 1 100%;
     min-width: 0;
     max-width: 100%;
     overflow-x: auto;
   }
 }
+
 .brand { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
 .build-tag {
   font-family: var(--font-mono); font-size: 9px; line-height: 1; letter-spacing: 0.08em;
@@ -152,6 +158,14 @@ button { font-family: inherit; cursor: pointer; }
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
   -webkit-overflow-scrolling: touch;
+}
+/* Wide desktop (≥1750px): the strip is inline, on a row whose other items are not all fixed — the
+   connection indicator alone swings 41px ("live") to 100px ("reconnecting…"), and the gnome lane
+   grows 46px per live agent. Shrinking is what the chips must never do: it hides usage behind a
+   scrollbar, so the elastic items yield instead. Must stay AFTER the base rule above — an equally
+   specific `.accounts` declaration later in the file wins over one inside a media query. */
+@media (min-width: 1750px) {
+  .accounts { flex-shrink: 0; }
 }
 .acct {
   display: flex; flex-direction: column; gap: 3px; justify-content: center;
@@ -206,6 +220,10 @@ button { font-family: inherit; cursor: pointer; }
 .accounts.frozen .acct-label { color: color-mix(in oklch, var(--frost-strong) 65%, var(--text-dim)); }
 
 /* ---- the office (top-bar gnomes + chatroom) ---- */
+/* `flex: 1` (basis 0) on purpose: the gnome lane is ambient, so it takes leftover room rather than
+   claiming its content's width — sizing it to content makes the task counter wrap and pulls the
+   accounts strip onto a second row whenever agents are live. It overflows its box instead, which is
+   why the strip can't be `overflow: hidden` (that clips the chat bubbles rising out of it). */
 .office { position: relative; flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: center; }
 /* Gnomes stand on the FLOOR of the top bar (its bottom border), not floating mid-air — so bottom-align
    the strip so boots rest just above the divider line. */
