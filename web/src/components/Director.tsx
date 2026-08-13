@@ -132,6 +132,24 @@ export function Director() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [items.length, draft]);
 
+  // The rail is `display:none` on mobile while the board pane is up, so the autoscroll effect above
+  // fires against a zero-height container and lands nowhere — switch to the director pane and the long
+  // transcript sits at the top. Re-pin to the newest message the moment the container regains height
+  // (the pane becomes visible), matching desktop where the rail is never hidden. Fires only on the
+  // hidden→visible transition so it never fights a user who has scrolled up mid-conversation.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let wasVisible = el.clientHeight > 0;
+    const ro = new ResizeObserver(() => {
+      const visible = el.clientHeight > 0;
+      if (visible && !wasVisible) el.scrollTo({ top: el.scrollHeight });
+      wasVisible = visible;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // In skip mode the message enters the pipeline at its first active stage — planner if it's on,
   // otherwise the implementor (the researcher only ever runs after the planner, never first).
   const firstStage = plannerEnabled ? "planner" : "implementor";
