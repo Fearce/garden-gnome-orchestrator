@@ -127,26 +127,35 @@ async function measure(page) {
   });
 }
 
+async function checkWidth(browser, w) {
+  const page = await browser.newPage({ viewport: { width: w, height: 800 } });
+  try {
+    const login = await page.request.post(`${BASE}/api/login`, {
+      data: { password: PASSWORD },
+    });
+    if (!login.ok()) return { w, ok: false, reason: `login HTTP ${login.status()}` };
+
+    // Not networkidle: the selected thread pulls a burst of multi-MB /api/attachment images and the
+    // app polls /api/voice/status, so idle is data-dependent and can outlast any budget. The chips
+    // themselves are the ready signal this check needs.
+    await page.goto(`${BASE}/?checkAccounts=${Date.now()}`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+    await page.waitForTimeout(2500); // let usage land over the WS before measuring
+    return { w, ...(await measure(page)) };
+  } catch (e) {
+    // First line only — Playwright appends a multi-line call log that would bury the other widths.
+    return { w, ok: false, reason: `could not measure: ${String(e.message || e).split("\n")[0]}` };
+  } finally {
+    await page.close();
+  }
+}
+
 async function main() {
   const browser = await chromium.launch({ headless: true });
   const results = [];
   try {
-    for (const w of WIDTHS) {
-      const page = await browser.newPage({ viewport: { width: w, height: 800 } });
-      const login = await page.request.post(`${BASE}/api/login`, {
-        data: { password: PASSWORD },
-      });
-      if (!login.ok()) {
-        results.push({ w, ok: false, reason: `login HTTP ${login.status()}` });
-        await page.close();
-        continue;
-      }
-      await page.goto(`${BASE}/?checkAccounts=${Date.now()}`, { waitUntil: "networkidle" });
-      await page.waitForTimeout(2500);
-      const m = await measure(page);
-      results.push({ w, ...m });
-      await page.close();
-    }
+    // One bad width reports itself and the rest still run — a partial answer beats a bare stack.
+    for (const w of WIDTHS) results.push(await checkWidth(browser, w));
   } finally {
     await browser.close();
   }

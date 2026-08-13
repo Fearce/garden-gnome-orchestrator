@@ -104,7 +104,10 @@ async function main() {
     const login = await page.request.post(`${base}/api/login`, { data: { password: resolvePassword() } });
     if (!login.ok()) throw new Error(`login failed: HTTP ${login.status()} (check AUTH_PASSWORD in server/.env)`);
 
-    await page.goto(`${base}/`, { waitUntil: "networkidle", timeout: 45_000 });
+    // Not networkidle: the selected thread pulls a burst of multi-MB /api/attachment images and the
+    // app polls /api/voice/status, so idle is data-dependent and can outlast any budget. The .topbar
+    // wait below is the real ready signal, and its absence is reported as a finding rather than a timeout.
+    await page.goto(`${base}/`, { waitUntil: "domcontentloaded", timeout: 45_000 });
     await page.waitForSelector(".topbar", { timeout: 20_000 }).catch(() => {});
     await page.waitForTimeout(2500); // let the WS hello land and the board hydrate
     view = await page.evaluate(inspect);

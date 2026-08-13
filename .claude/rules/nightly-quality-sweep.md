@@ -75,6 +75,10 @@ errors / failed requests (`-- --shot <png>` saves screenshot evidence for the re
 is the separate 4-width chip-clipping check. Both are read-only and **click NOTHING** — that is what makes
 them the only browser checks safe against prod; read `.claude/rules/verify-a-ui-change-shipped.md` before
 extending either, and never hand-roll your own drive against `:4317`.
+**Never gate either one on `networkidle`.** The selected thread pulls a burst of multi-MB `/api/attachment`
+images and the app polls `/api/voice/status`, so idle is data-dependent: it blew the 30s budget mid-sweep on
+08-13 and cleared in 11s on re-run — a red step that says nothing about chips. Wait for the element the check
+actually needs (`.topbar`, `.accounts .acct`), and let a bad width report itself so the others still run.
 
 ## 7. `npm run audit:deps --prefix server && npm run audit:secrets --prefix server` — security hygiene
 `audit:deps` asks npm only about packages deployed to the server (`--omit=dev`) and fails when it finds a
