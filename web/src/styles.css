@@ -97,14 +97,14 @@ button { font-family: inherit; cursor: pointer; }
   min-width: 0;
 }
 
-/* Medium desktop (1280–1749px): five subscription chips (~848px) don't fit beside brand + office +
+/* Medium desktop (1280–1799px): five subscription chips (~848px) don't fit beside brand + office +
    controls. Wrap the accounts strip onto a full-width second row so Grok's 7d/mo meters stay on
-   screen instead of clipped under .app overflow:hidden. The bound is measured, not decorative: the
-   fixed items (brand + toggles + stat + gate + bell + conn) come to ~661px, gaps + padding ~180px,
-   chips ~848px — so the inline row needs ~1690px BEFORE the office lane, and the old 1700px bound
-   left it one pixel of slack. Re-measure when a chip is added or widened
-   (web/scripts/check-accounts-visible.cjs). */
-@media (max-width: 1749.98px) and (min-width: 769px) {
+   screen instead of clipped under .app overflow:hidden. The bound is measured, not decorative, and
+   measured against the WIDEST state the bar can render: with the socket dropped the fixed items come
+   to 720px which puts the single-row floor at 1748px — the old 1700px bound sat below that, which is
+   how a reconnect used to clip the chips. `npm run probe:chips -- --explain` prints that floor; keep
+   the bound comfortably above it rather than one pixel above. */
+@media (max-width: 1799.98px) and (min-width: 769px) {
   .topbar {
     flex-wrap: wrap;
     row-gap: 6px;
@@ -159,12 +159,12 @@ button { font-family: inherit; cursor: pointer; }
   scrollbar-width: thin;
   -webkit-overflow-scrolling: touch;
 }
-/* Wide desktop (≥1750px): the strip is inline, on a row whose other items are not all fixed — the
+/* Wide desktop (≥1800px): the strip is inline, on a row whose other items are not all fixed — the
    connection indicator alone swings 41px ("live") to 100px ("reconnecting…"), and the gnome lane
    grows 46px per live agent. Shrinking is what the chips must never do: it hides usage behind a
    scrollbar, so the elastic items yield instead. Must stay AFTER the base rule above — an equally
    specific `.accounts` declaration later in the file wins over one inside a media query. */
-@media (min-width: 1750px) {
+@media (min-width: 1800px) {
   .accounts { flex-shrink: 0; }
 }
 .acct {

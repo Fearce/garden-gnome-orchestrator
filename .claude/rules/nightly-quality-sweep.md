@@ -72,7 +72,10 @@ One capped/spent backend is normal. Gate: `test:failover-ladder`.
 `/api/health` proves the SERVER answers; a bundle that throws on mount or a WS that never connects keeps it
 green over a dead UI. `console-smoke.cjs` asserts the app mounted, `.conn` reads live, and zero console
 errors / failed requests (`-- --shot <png>` saves screenshot evidence for the report). `npm run probe:chips`
-is the separate 4-width chip-clipping check. Both are read-only and **click NOTHING** — that is what makes
+is the separate chip-clipping check: six widths, each measured twice (as the bar looks, then with the socket
+label at its widest), plus a final `bound` line that bisects for where wrapping switches off and fails if one
+row can't fit there — the only part that doesn't depend on which widths got sampled. `-- --explain` prints the
+fit arithmetic when a bound has to move. Both are read-only and **click NOTHING** — that is what makes
 them the only browser checks safe against prod; read `.claude/rules/verify-a-ui-change-shipped.md` before
 extending either, and never hand-roll your own drive against `:4317`.
 **Never gate either one on `networkidle`.** The selected thread pulls a burst of multi-MB `/api/attachment`
