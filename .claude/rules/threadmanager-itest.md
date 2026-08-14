@@ -30,8 +30,11 @@ Both gaps above were this — the differences are exactly where lifecycle bugs l
 - **An empty `agent_runs` table.** A stubbed `runRole` writes no run row, so everything
   reading the run trail silently takes its fallback: the QA park degrades to the generic
   "needs your review" instead of the diagnosable reason, and `latestQaRun` /
-  `latestRoleSession` find no session, so a warm-resume path never even runs. Persist
+  `latestRoleRun` find no session, so a warm-resume path never even runs. Persist
   what the real `runRole` would have (`createRun` + `updateRun` with `sessionId`/`error`).
+  **Persist its `account` too**: `latestRoleRun` reads the backend back off that label
+  (`zai:…`/`codex:…`/`grok:…`, else Claude), so a row without one reads as Claude and any
+  assertion about provider-pinned resume passes vacuously.
 - **An empty `messages` table.** Guards like `implementorLooksDone` read the last
   implementor MESSAGE, which in production carries over from an EARLIER session — a
   QA fix-round resume routinely inherits "the task is complete". Seed a stale sign-off
