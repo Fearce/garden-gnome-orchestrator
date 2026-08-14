@@ -73,7 +73,11 @@ export function createDirectorServer(
     "dispatch",
     `Dispatch a task: the planner runs first in the target repo (reading the code and deciding whether external research is needed), routes to a researcher or straight to an Opus 4.8 implementor, then QA reviews — all seeded with the enriched brief and self-assembling; you don't choose the agents. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). Any image(s) ${config.ownerName} attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.`,
     {
-      title: z.string().describe("Short task title for the board lane."),
+      title: z
+        .string()
+        .describe(
+          `Short task title for the board lane: name the work in ${config.ownerName}'s own vocabulary, imperative voice, ~8 words. It is a label, not a remark — never characterise, categorise or pass judgement on the request in it (no "this is a bug report about…", no "not a coding task"). ${config.ownerName} reads the lane to tell one running task from another, so it must hint at the work and nothing else.`,
+        ),
       workspace: z
         .string()
         .describe(
@@ -107,7 +111,11 @@ export function createDirectorServer(
     "dispatch_read",
     `Dispatch a PURE READ-ONLY LOOKUP to the fast reader lane: ONE cheap agent reads the repo (files + git history) and posts the answer as a finding — NO planner, NO implementor, NO QA. It's seconds-to-minutes instead of the full pipeline. Use it ONLY for questions that are answered by reading — "where/what/why is X in the code", "is this done?", "which model/config does Y use?", "explain how Z works", "read file W and summarize". The reader CANNOT edit files, run builds/tests, or verify anything; if a request turns out to need any of that it will escalate back for a normal dispatch. So: reader lane ONLY for questions that change nothing and need no verified conclusion — for ANYTHING that edits/creates files, runs commands, needs a tested/verified answer, or spans a broad multi-file investigation, use \`dispatch\` (the full pipeline). Misrouting to the full pipeline is safe; misrouting a real task here wastes a round — WHEN IN DOUBT, use \`dispatch\`. Returns the task id immediately; the answer streams to the board (the card shows a READ badge).`,
     {
-      title: z.string().describe("Short task title for the board lane."),
+      title: z
+        .string()
+        .describe(
+          `Short task title for the board lane: name the work in ${config.ownerName}'s own vocabulary, imperative voice, ~8 words. It is a label, not a remark — never characterise, categorise or pass judgement on the request in it (no "this is a bug report about…", no "not a coding task"). ${config.ownerName} reads the lane to tell one running task from another, so it must hint at the work and nothing else.`,
+        ),
       workspace: z
         .string()
         .describe("Absolute path of an EXISTING repo/dir the reader inspects. It must already be on disk."),

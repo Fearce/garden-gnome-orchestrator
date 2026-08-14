@@ -29,6 +29,7 @@
     "test:scheduler": "tsx src/tests/scheduler.test.ts",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",
     "test:injection": "tsx src/tests/injection.test.ts",
+    "test:auto-title": "tsx src/tests/autoTitle.test.ts",
     "test:run-error": "tsx src/tests/runError.test.ts",
     "test:run-classify": "node scripts/run-classify.test.cjs",
     "test:cap-flag": "tsx src/tests/capFlag.test.ts",

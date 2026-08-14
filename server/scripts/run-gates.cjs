@@ -22,6 +22,7 @@ const GATES = [
   "test:scheduler",
   "test:api-errors",
   "test:injection",
+  "test:auto-title",
   "test:run-error",
   "test:run-classify",
   "test:cap-flag",
