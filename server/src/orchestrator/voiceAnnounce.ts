@@ -7,11 +7,14 @@
 // "Task complete: <title>" fallback; never throws.
 
 import type { Thread } from "../types.js";
-import { haikuLine } from "./titleFromInjection.js";
+import { disputesTheWork, haikuLine } from "./titleFromInjection.js";
 
 const VOICE_GW = process.env.VOICE_GATEWAY_URL || "http://127.0.0.1:3960";
 
-const ANNOUNCE_PROMPT = `A coding task just finished successfully and its completion will be read aloud to the owner over speakers. Compose ONE short spoken sentence (under 22 words) announcing it — name concretely WHAT got done, naturally, like a colleague telling them in passing. Plain text only: no markdown, no quotes, no emoji, no preamble, no "Task complete:" prefix. The task follows:`;
+// Don't tell the model what KIND of task it was: the same "a coding task" framing in the auto-titler
+// made it dispute the premise on a request that didn't look like code, and here that argument would be
+// read aloud. It announces whatever finished; the guard below catches it if it argues anyway.
+const ANNOUNCE_PROMPT = `A task just finished successfully and its completion will be read aloud to the owner over speakers. Compose ONE short spoken sentence (under 22 words) announcing it — name concretely WHAT got done, naturally, like a colleague telling them in passing. Never remark on what sort of request it was; just say what was done. Plain text only: no markdown, no quotes, no emoji, no preamble, no "Task complete:" prefix. The task follows:`;
 
 async function voiceModeOn(): Promise<boolean> {
   try {
@@ -29,5 +32,7 @@ export async function completionAnnouncement(thread: Thread, token: string | und
   if (!(await voiceModeOn())) return null;
   const detail = `Title: ${thread.title}\n\nBrief: ${(thread.brief ?? "").slice(0, 600)}`;
   const line = await haikuLine(detail, token, ANNOUNCE_PROMPT).catch(() => null);
-  return line || `Task complete: ${thread.title}.`;
+  // A line arguing about whether this counted as work is worse than the plain fallback — and it would
+  // be spoken out loud, where there is no glancing past it.
+  return line && !disputesTheWork(line) ? line : `Task complete: ${thread.title}.`;
 }

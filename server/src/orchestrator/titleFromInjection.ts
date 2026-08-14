@@ -53,20 +53,34 @@ function cleanTitle(s: string): string {
 // address the reader) or is a phrase no genuine label contains, so a real title survives: "Fix crash when
 // players cannot enter vehicles" is untouched, while "I can't title this" and "This is not a coding task"
 // are not. A false positive only costs the raw first line of the request, which is a fine hint by itself.
-const COMMENTARY = [
-  /^(i|we|you)\b/i, // the model addressing the reader: "I can't…", "I'd call this…"
-  /^(this|that|it|these|those)\b/i, // talking ABOUT the request: "This is not a coding task…"
-  /^the (user|owner|requester|request|message|brief|prompt|input|text|above)\b/i,
-  /^(sorry|apologies|unfortunately|note|hmm|actually|however|no|nothing)\b/i,
-  /^(cannot|can't|unable)\b/i,
+// Disputing that the request is real work — the failure that produced the WoW title. Applies to ANY
+// model-written artifact about the owner's request, including a spoken line, so it's exported separately.
+const DISPUTES_THE_WORK = [
   /\bnot (a|an|really|actually|truly)\b.{0,24}\b(task|request|bug|issue|problem|code|coding|programming|software)\b/i,
   /\b(coding|programming|development|software) (task|request)\b/i, // the framing leaking back out
 ];
 
+// Addressing the reader instead of labelling. A LABEL only: a spoken sentence may open with "I" or
+// "This", so these must not be applied to the voice line.
+const ADDRESSES_THE_READER = [
+  /^(i|we|you)\b/i, // "I can't…", "I'd call this…"
+  /^(this|that|it|these|those)\b/i, // "This is not a coding task…"
+  /^the (user|owner|requester|request|message|brief|prompt|input|text|above)\b/i,
+  /^(sorry|apologies|unfortunately|note|hmm|actually|however|no|nothing)\b/i,
+  /^(cannot|can't|unable)\b/i,
+];
+
+/** True when the model argued with the request instead of doing the job it was given — it decided the
+ *  request isn't real work. Every caller that persists or speaks model prose should reject on this. */
+export function disputesTheWork(text: string): boolean {
+  const t = text.trim();
+  return !!t && DISPUTES_THE_WORK.some((re) => re.test(t));
+}
+
 /** True when the model answered ABOUT the request instead of naming it — reject and fall back. */
 export function looksLikeCommentary(title: string): boolean {
   const t = title.trim();
-  return !!t && COMMENTARY.some((re) => re.test(t));
+  return !!t && (disputesTheWork(t) || ADDRESSES_THE_READER.some((re) => re.test(t)));
 }
 
 async function summarize(message: string, token: string, prompt: string, maxTokens = 32): Promise<string | null> {
