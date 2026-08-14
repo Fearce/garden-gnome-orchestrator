@@ -20,8 +20,11 @@ Sets, the free-text role arrays, and the pipeline gates, which all compile fine 
    Read-only = `disallowedTools` under `bypassPermissions` (a HARD block), never prompt-only.
 3. `threadManager.ts` — add it to the `StructuredRole` union (`runRole` + `cliRoleKickoff` share it),
    then a `run<Role>()` that calls `runRole` with per-(thread, role) `createBusServer`/`createOfficeServer`.
-4. **`NO_CLI_FAILOVER`** — add the role if it needs in-process MCP tools (`post_finding`, `ask_user`).
-   Codex/Grok have none, so a cap-failover there silently strips the role's only channel.
+4. **`MCP_DEPENDENT_ROLES`** — add the role if it needs in-process MCP tools (`post_finding`, `ask_user`).
+   `providerServesRole` then keeps it off the CLI text-bridge backends (`CLI_BRIDGED_PROVIDERS` — Codex/Grok,
+   which reach the bus only through the runner's string bridge), so a cap-failover never silently strips its
+   only channel. z.ai reuses the Claude SDK and keeps those tools, so it serves these roles — do NOT add it
+   to `CLI_BRIDGED_PROVIDERS`. Gate: `test:provider-serves-role`.
 5. `dropTerminalBookkeeping` + `retryThread` — both iterate a **hand-written role array** for the
    `checkedIn` office keys. Not typed: a miss leaks one Set entry per finished task, forever.
 6. Web mirror: `web/src/types.ts` (`Role` + `ROLE_RANK`), `styles.css` **`--role-<x>`** (`roleColor`

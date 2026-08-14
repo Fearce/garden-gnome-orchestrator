@@ -192,8 +192,12 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   still in flight — a state-only check falls through in exactly that window and cold-resumes a second
   implementor onto the workspace the reviewer is about to inspect (proven by reverting it). And
   a server restart mid-review restores the `review` park rather than taking the generic `failed` +
-  manual-Resume path. Like the reader it never fails over to a CLI backend (`NO_CLI_FAILOVER`) —
-  Codex/Grok have no `ask_user`/`post_finding`. Gate: `test:auto-review`.
+  manual-Resume path. Like the reader it never fails over to a CLI text-bridge backend
+  (`providerServesRole` / `MCP_DEPENDENT_ROLES`) — Codex/Grok have no `ask_user`/`post_finding` (z.ai does,
+  so it can take a capped reviewer over). One episode can therefore span backends, so every warm resume of a
+  review carries the backend that produced it (`resumableReviewSession`): a session id doesn't travel, and a
+  "carry on" nudge means nothing to a session that never heard the question — when that backend can't take
+  the run, the recovery is a fresh full review instead. Gate: `test:auto-review`.
 - **A hand-back buys a fix round, not a trip to your desk** (`runReviewFixRound`). Because the reviewer
   is read-only, what blocks a task is routinely work an implementor finishes in a minute — the case this
   was built for handed back a whole task because a report file sat outside the workspace, costing a

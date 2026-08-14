@@ -38,9 +38,11 @@ read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing
 `ask_user`s Kevin about anything only he can decide, then settles the task `done` or hands it back to
 `review` with its reasons — an errored/verdict-less run always re-parks, never accepts (its two involuntary
 stops are recovered first, sharing one in-process budget of 2: a turn-ceiling cutoff continues the session it
-made progress in, an empty run starts the review over). **A hand-back isn't the end of the lane:** the
-reviewer is read-only, so what blocks a task is usually implementor work — an `accept: false` carrying
-concrete `issues` relaunches the implementor with that list (no QA loop; the reviewer is the gate), then
+made progress in — on the backend that holds it, since a review can run on Claude or, when every sub is
+capped, z.ai — and an empty run, or a session whose backend is now capped, starts the review over).
+**A hand-back isn't the end of the lane:** the reviewer is read-only, so what blocks a task is usually
+implementor work — an `accept: false` carrying concrete `issues` relaunches the implementor with that
+list (no QA loop; the reviewer is the gate), then
 warm-resumes the reviewer to re-check and decide again, bounded by the `maxReviewFixRounds` setting
 (default 1, `0` = old behavior). A failed fix round parks, never accepts — a cap there parks WITHOUT the
 `⏳ Auto-resume pending` marker on purpose, since the supervisor would resume it through the QA loop and

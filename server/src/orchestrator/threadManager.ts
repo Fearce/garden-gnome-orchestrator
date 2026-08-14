@@ -108,6 +108,13 @@ interface LiveImplementor {
   accountId: string;
 }
 
+/** A resumable agent session: the id AND the backend that produced it. Session ids are provider-specific
+ *  (a Claude SDK session vs a Codex thread id vs a Grok session id), so the two only ever travel together. */
+interface RoleSession {
+  sessionId: string;
+  provider: ImplementorProvider;
+}
+
 export interface ProviderCandidate {
   provider: ImplementorProvider;
   hasHeadroom: boolean;
@@ -389,12 +396,22 @@ const CLOSEABLE: ReadonlySet<Thread["state"]> = new Set(["done", "failed", "canc
 // resume settled here with no QA loop) and 'paused' are work the owner can sign off on directly — the
 // pipeline's own only-QA-marks-done rule never applies to these, so without this they'd be stuck.
 const DONEABLE: ReadonlySet<Thread["state"]> = new Set(["review", "paused"]);
-// Structured roles that must NOT fail over to a CLI backend when Claude is capped. Both depend on the
-// in-process MCP tools the Codex/Grok adapters can't provide: the reader on its harness-enforced
-// read-only surface plus post_finding, the auto-reviewer on post_finding AND ask_user (a reviewer that
-// silently loses its only way to ask the owner would decide the task's fate blind). They park instead,
-// which for both is a state the owner can simply retry once a window frees.
-const NO_CLI_FAILOVER: ReadonlySet<Role> = new Set(["reader", "reviewer"]);
+// Structured roles whose only channel to the owner IS the in-process MCP bus: the reader posts its whole
+// answer as a finding on a harness-enforced read-only surface, and the auto-reviewer decides a task's fate
+// through post_finding AND ask_user (one that silently lost its way to ask would decide blind). They may
+// only run on a backend that actually serves those tools.
+const MCP_DEPENDENT_ROLES: ReadonlySet<Role> = new Set(["reader", "reviewer"]);
+// Backends that reach the bus/office through the runner's `OFFICE[...]` TEXT bridge instead of real MCP
+// servers, so the tools above simply aren't there. z.ai is deliberately NOT one: it drives the same Claude
+// SDK against an Anthropic-compatible endpoint and keeps the MCP servers and structured output `makeCfg`
+// built, so gating it out here would park a role that could have run (see the `provider === "zai"` branch).
+const CLI_BRIDGED_PROVIDERS: ReadonlySet<ImplementorProvider> = new Set(["codex", "grok"]);
+
+/** Whether a backend can serve a role at all — the fitness test the failover paths gate on. Exported for
+ *  the provider-serves-role unit gate (the role×provider matrix IS the failover contract). */
+export function providerServesRole(role: Role, provider: ImplementorProvider): boolean {
+  return !MCP_DEPENDENT_ROLES.has(role) || !CLI_BRIDGED_PROVIDERS.has(provider);
+}
 /** The roles `runRole` drives: every non-implementor agent, each one-shot and schema-bound. */
 type StructuredRole = "planner" | "researcher" | "qa" | "reader" | "reviewer";
 
@@ -1778,15 +1795,19 @@ export class ThreadManager implements OrchestratorApi {
   /** The best implementor backend OTHER than `exclude` that can take over RIGHT NOW (has headroom), or
    *  undefined when none can. Drives cross-provider failover: a capped backend hands off to whichever of
    *  the remaining ones is readiest. */
-  private nextReadyImplementor(exclude: ImplementorProvider, unavailable: ReadonlySet<ImplementorProvider> = new Set()): ImplementorProvider | undefined {
+  private nextReadyImplementor(exclude: ImplementorProvider, unavailable: ReadonlySet<ImplementorProvider> = new Set(), role?: Role): ImplementorProvider | undefined {
+    // A structured role whose only owner-channel is the in-process MCP bus (reader/reviewer) may only land
+    // on a backend that actually serves those tools — skip the CLI text-bridge backends for it. The
+    // implementor path passes no role, so it still considers every backend.
+    const serves = (provider: ImplementorProvider): boolean => !role || providerServesRole(role, provider);
     const cands: ProviderCandidate[] = [];
-    if (exclude !== "claude" && !unavailable.has("claude")) {
+    if (exclude !== "claude" && !unavailable.has("claude") && serves("claude")) {
       const c = this.claudeProviderCandidate();
       if (c.hasHeadroom) cands.push(c);
     }
-    if (exclude !== "codex" && !unavailable.has("codex") && this.codexImplementorReady()) cands.push(this.codexProviderCandidate());
-    if (exclude !== "grok" && !unavailable.has("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate());
-    if (exclude !== "zai" && !unavailable.has("zai") && this.zaiImplementorReady()) cands.push(this.zaiProviderCandidate());
+    if (exclude !== "codex" && !unavailable.has("codex") && serves("codex") && this.codexImplementorReady()) cands.push(this.codexProviderCandidate());
+    if (exclude !== "grok" && !unavailable.has("grok") && serves("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate());
+    if (exclude !== "zai" && !unavailable.has("zai") && serves("zai") && this.zaiImplementorReady()) cands.push(this.zaiProviderCandidate());
     if (!cands.length) return undefined;
     return this.preferredImplementorProvider(cands);
   }
@@ -2301,35 +2322,24 @@ export class ThreadManager implements OrchestratorApi {
    *  Claude SDK session vs a Codex thread id vs a Grok session id), so a resume must only reuse one whose
    *  backend matches the now-resolved provider. */
   private priorImplementorProvider(threadId: string): ImplementorProvider | undefined {
+    return this.latestRoleRun(threadId, "implementor")?.provider;
+  }
+
+  /** The most recent run of a role that left a session id, with the backend it ran on. Latest-by-startedAt
+   *  handles failover (one role, several runs): we want the session the role was actually on when it
+   *  stopped. Sourced from the DB, so it survives a restart — that is the whole point of a resume. */
+  private latestRoleRun(threadId: string, role: Role): RoleSession | undefined {
     const run = this.db
       .listRuns(threadId)
-      .filter((r) => r.role === "implementor" && r.sessionId)
+      .filter((r) => r.role === role && r.sessionId)
       .sort((a, b) => b.startedAt - a.startedAt)[0];
-    if (!run) return undefined;
-    return run.account?.startsWith("codex:")
-      ? "codex"
-      : run.account?.startsWith("grok:")
-        ? "grok"
-        : run.account?.startsWith("zai:")
-          ? "zai"
-          : "claude";
+    if (!run?.sessionId) return undefined;
+    return { sessionId: run.sessionId, provider: providerOfRunAccount(run.account) };
   }
 
   /** The most recent QA run that has a session id (any backend), so fix-rounds 2..N can resume it. */
-  private latestQaRun(threadId: string): { sessionId: string; provider: ImplementorProvider } | undefined {
-    const run = this.db
-      .listRuns(threadId)
-      .filter((r) => r.role === "qa" && r.sessionId)
-      .sort((a, b) => b.startedAt - a.startedAt)[0];
-    if (!run?.sessionId) return undefined;
-    const provider: ImplementorProvider = run.account?.startsWith("codex:")
-      ? "codex"
-      : run.account?.startsWith("grok:")
-        ? "grok"
-        : run.account?.startsWith("zai:")
-          ? "zai"
-          : "claude";
-    return { sessionId: run.sessionId, provider };
+  private latestQaRun(threadId: string): RoleSession | undefined {
+    return this.latestRoleRun(threadId, "qa");
   }
 
   /** The most recent QA run's session id (any backend). Prefer `latestQaRun` when the provider matters. */
@@ -2364,19 +2374,19 @@ export class ThreadManager implements OrchestratorApi {
     // drops it when the prior session was on a different backend).
     const forced = opts?.forcedProvider;
     const pref = opts?.preferredProvider;
-    if (forced && !NO_CLI_FAILOVER.has(role)) {
+    if (forced && providerServesRole(role, forced)) {
       provider = forced;
-    } else if (pref && pref !== "claude" && !NO_CLI_FAILOVER.has(role)) {
-      const ready = pref === "codex" ? this.codexImplementorReady() : pref === "grok" ? this.grokImplementorReady() : this.zaiImplementorReady();
-      if (ready) {
+    } else if (pref && pref !== "claude" && providerServesRole(role, pref)) {
+      if (this.providerReady(pref)) {
         provider = pref;
       } else {
         resume = undefined; // can't resume a CLI session on another backend
       }
-    } else if (!NO_CLI_FAILOVER.has(role) && !this.accounts.hasHeadroom()) {
-      // Claude is already exhausted — skip the doomed first attempt and go straight to a ready CLI.
-      // (Reader/reviewer can't fail over: they need the in-process MCP tools — see NO_CLI_FAILOVER.)
-      const cli = this.nextReadyImplementor("claude", unavailableProviders);
+    } else if (!this.accounts.hasHeadroom()) {
+      // Claude is already exhausted — skip the doomed first attempt and go straight to a ready backend.
+      // nextReadyImplementor(role) keeps reader/reviewer off the MCP-less CLI backends, so they land on z.ai
+      // when it's up and otherwise stay on Claude (attempt, cap, park) exactly as before.
+      const cli = this.nextReadyImplementor("claude", unavailableProviders, role);
       if (cli) {
         this.postFinding({
           threadId: thread.id,
@@ -2474,9 +2484,9 @@ export class ThreadManager implements OrchestratorApi {
           continue;
         }
         unavailableProviders.add(provider);
-        // The reader and the auto-reviewer depend on in-process MCP tools the CLI adapters cannot provide
-        // (see NO_CLI_FAILOVER). Other structured roles can safely use their schema adapters.
-        const next: ImplementorProvider | undefined = NO_CLI_FAILOVER.has(role) ? undefined : this.nextReadyImplementor(provider, unavailableProviders);
+        // nextReadyImplementor(role) confines reader/reviewer to MCP-capable backends: a flip onto Codex/Grok
+        // would drop the in-process bus and silently strip the role's post_finding/ask_user channel.
+        const next: ImplementorProvider | undefined = this.nextReadyImplementor(provider, unavailableProviders, role);
         if (!next) return res;
         const fromName = providerLabel(provider);
         const toName = providerLabel(next);
@@ -2506,7 +2516,7 @@ export class ThreadManager implements OrchestratorApi {
         else if (provider === "grok") this.noteGrokCap();
         else if (provider === "zai") this.noteZaiCap();
         unavailableProviders.add(provider);
-        const next = this.nextReadyImplementor(provider, unavailableProviders);
+        const next = this.nextReadyImplementor(provider, unavailableProviders, role);
         if (!next) return res;
         provider = next;
         transientFailures = 0;
@@ -2528,13 +2538,13 @@ export class ThreadManager implements OrchestratorApi {
       }
       const next = this.failoverAccount(acct.id);
       // Claude exhausted for this run — no other account has headroom, or the per-run failover budget is
-      // spent. Before parking, keep planner/researcher/QA alive by continuing on a ready CLI backend
-      // (Codex/Grok) — this is the "don't lose researcher/QA when the Claude subs are maxed" path. The
-      // reader and auto-reviewer can't fail over (see NO_CLI_FAILOVER — they rely on in-process MCP tools
-      // the adapters lack). A planner/researcher cap otherwise degrades to no-plan/no-research; QA otherwise
-      // parks the task to 'review' (capParked flags it for the supervisor).
+      // spent. Before parking, keep the role alive on another ready backend — this is the "don't lose
+      // planner/researcher/QA when the Claude subs are maxed" path, and reader/reviewer now join it via z.ai
+      // (nextReadyImplementor(role) keeps them off the MCP-less CLI backends). A planner/researcher cap
+      // otherwise degrades to no-plan/no-research; QA otherwise parks the task to 'review' (capParked flags
+      // it for the supervisor).
       if (!next || accountFailovers >= MAX_ACCOUNT_FAILOVERS) {
-        const cli = NO_CLI_FAILOVER.has(role) ? undefined : this.nextReadyImplementor("claude", unavailableProviders);
+        const cli = this.nextReadyImplementor("claude", unavailableProviders, role);
         if (cli) {
           this.postFinding({
             threadId: thread.id,
@@ -4911,9 +4921,20 @@ export class ThreadManager implements OrchestratorApi {
    *  cold review — and it can't forget an issue it raised. Falls back to a full fresh review when the
    *  session is gone (an errored or empty first run leaves none). */
   private reviewRecheck(thread: Thread, out: ReviewerOutput): Promise<ResultEvent | undefined> {
-    const session = this.latestRoleSession(thread.id, "reviewer");
-    if (!session) return this.reviewToVerdict(thread, this.freshReviewKickoff(thread));
-    return this.reviewToVerdict(thread, reviewerRecheckKickoff(out), session);
+    const prior = this.resumableReviewSession(thread.id);
+    if (!prior) return this.reviewToVerdict(thread, this.freshReviewKickoff(thread));
+    return this.reviewToVerdict(thread, reviewerRecheckKickoff(out), prior);
+  }
+
+  /** The reviewer's own last session, but only while the backend that produced it can still take the run.
+   *  A session id doesn't travel between backends, and a re-check/continue nudge only means anything to a
+   *  session that remembers the review — so when its backend is capped or gone the caller must start a full
+   *  fresh review instead of nudging a stranger. (The reviewer runs on Claude by default and on z.ai when
+   *  every Claude sub is capped, so the two can differ within one episode.) */
+  private resumableReviewSession(threadId: string): RoleSession | undefined {
+    const prior = this.latestRoleRun(threadId, "reviewer");
+    if (!prior || !providerServesRole("reviewer", prior.provider)) return undefined;
+    return this.providerReady(prior.provider) ? prior : undefined;
   }
 
   /** Run the auto-reviewer to a verdict, recovering it from the two ways it can stop without deciding:
@@ -4925,24 +4946,25 @@ export class ThreadManager implements OrchestratorApi {
    *  The budget is in-process only, unlike QA's: a restart during 'reviewing' re-parks the task for a fresh
    *  click (`markInterrupted`) rather than resuming it, so there is no cross-restart budget to keep.
    *
-   *  `resumeSession` starts from an existing review session (a post-fix re-check). Starting over then means
+   *  `resumeFrom` starts from an existing review session (a post-fix re-check). Starting over then means
    *  a FULL fresh review, not re-sending the short re-check nudge — that nudge only makes sense to a session
    *  that still remembers what it asked for, and an empty run proves this one doesn't. */
-  private async reviewToVerdict(thread: Thread, kickoff: string | unknown[], resumeSession?: string): Promise<ResultEvent | undefined> {
-    const startOver = (): Promise<ResultEvent | undefined> => this.runReviewer(thread, resumeSession ? this.freshReviewKickoff(thread) : kickoff);
+  private async reviewToVerdict(thread: Thread, kickoff: string | unknown[], resumeFrom?: RoleSession): Promise<ResultEvent | undefined> {
+    const startOver = (): Promise<ResultEvent | undefined> => this.runReviewer(thread, resumeFrom ? this.freshReviewKickoff(thread) : kickoff);
     let attemptFrom = Date.now();
-    let res = await this.runReviewer(thread, kickoff, resumeSession);
+    let res = await this.runReviewer(thread, kickoff, resumeFrom);
     let empty = this.markIfEmpty(thread.id, attemptFrom, res);
     for (let spent = 0; spent < MAX_REVIEW_RECOVERIES; spent++) {
       if (res?.structuredOutput || this.cancelled(thread.id)) break;
       if (!empty && !this.isTurnLimitStop(res)) break;
-      // A cut-off review left real progress in the session and is worth waking. An empty one never reached
-      // the model, so waking it again is the one thing already known not to work: start the review over.
-      const session = empty ? undefined : this.latestRoleSession(thread.id, "reviewer");
-      if (!empty && !session) break;
-      this.noteReviewRecovery(thread.id, empty, spent);
+      // A cut-off review left real progress in the session and is worth waking — on the backend that holds
+      // it. An empty run never reached the model, so waking it again is the one thing already known not to
+      // work; and a session whose backend can no longer take it is unreachable in the same way. Both spend
+      // the recovery on a full fresh review rather than nudging a session that can't answer.
+      const prior = empty ? undefined : this.resumableReviewSession(thread.id);
+      this.noteReviewRecovery(thread.id, { empty, resuming: !!prior, spent });
       attemptFrom = Date.now();
-      res = empty ? await startOver() : await this.runReviewer(thread, reviewerContinueKickoff(), session);
+      res = prior ? await this.runReviewer(thread, reviewerContinueKickoff(), prior) : await startOver();
       empty = this.markIfEmpty(thread.id, attemptFrom, res);
     }
     return res;
@@ -4958,24 +4980,29 @@ export class ThreadManager implements OrchestratorApi {
     return empty;
   }
 
-  /** Say which involuntary stop the auto-review is recovering from, and that the recovery is bounded — the
-   *  owner is watching a button they clicked, so a silent extra Opus run would look like a hang. */
-  private noteReviewRecovery(threadId: string, empty: boolean, spent: number): void {
-    const attempt = `(attempt ${spent + 2} of ${MAX_REVIEW_RECOVERIES + 1})`;
-    this.postFinding({
-      threadId,
-      fromRole: "reviewer",
-      summary: empty
-        ? "Auto-review came back empty without reviewing anything — starting it over"
-        : "Auto-review stopped at its turn ceiling before deciding — continuing the same review",
-      detail: empty
-        ? `The review session returned without ever reaching the model (0 turns, $0), so nothing was verified. Running it again from scratch ${attempt}.`
-        : `The reviewer was cut off mid-review, not finished. Waking its session with a fresh turn budget ${attempt}.`,
-      severity: "note",
-    });
+  /** Say which involuntary stop the auto-review is recovering from, whether the recovery wakes the same
+   *  session or starts over, and that it is bounded — the owner is watching a button they clicked, so a
+   *  silent extra Opus run would look like a hang. */
+  private noteReviewRecovery(threadId: string, r: { empty: boolean; resuming: boolean; spent: number }): void {
+    const attempt = `(attempt ${r.spent + 2} of ${MAX_REVIEW_RECOVERIES + 1})`;
+    const stop = r.empty
+      ? {
+          summary: "Auto-review came back empty without reviewing anything — starting it over",
+          detail: `The review session returned without ever reaching the model (0 turns, $0), so nothing was verified. Running it again from scratch ${attempt}.`,
+        }
+      : r.resuming
+        ? {
+            summary: "Auto-review stopped at its turn ceiling before deciding — continuing the same review",
+            detail: `The reviewer was cut off mid-review, not finished. Waking its session with a fresh turn budget ${attempt}.`,
+          }
+        : {
+            summary: "Auto-review stopped at its turn ceiling, and its session can't be resumed — starting a fresh review",
+            detail: `The reviewer was cut off mid-review, but the backend holding that session can't take the run now, and a "carry on" nudge means nothing to a session that never heard the question. Reviewing from scratch instead ${attempt}.`,
+          };
+    this.postFinding({ threadId, fromRole: "reviewer", ...stop, severity: "note" });
   }
 
-  private runReviewer(thread: Thread, kickoff: string | unknown[], resumeSession?: string): Promise<ResultEvent | undefined> {
+  private runReviewer(thread: Thread, kickoff: string | unknown[], resumeFrom?: RoleSession): Promise<ResultEvent | undefined> {
     return this.runRole(
       thread,
       "reviewer",
@@ -4988,17 +5015,10 @@ export class ThreadManager implements OrchestratorApi {
         if (resume) cfg.resume = resume;
         return cfg;
       },
-      resumeSession,
-    );
-  }
-
-  /** The most recent session id a given role produced on this thread, for a same-role warm resume. */
-  private latestRoleSession(threadId: string, role: Role): string | undefined {
-    return (
-      this.db
-        .listRuns(threadId)
-        .filter((r) => r.role === role && r.sessionId)
-        .sort((a, b) => b.startedAt - a.startedAt)[0]?.sessionId ?? undefined
+      resumeFrom?.sessionId,
+      // The session only resumes on the backend that produced it, so the resume and its provider travel
+      // together — `resumableReviewSession` has already checked that backend can take the run.
+      resumeFrom ? { preferredProvider: resumeFrom.provider } : undefined,
     );
   }
 
@@ -6189,6 +6209,15 @@ export function cliRoleKickoff(
 export function capFlaggedBy(agent: AgentRunLike): boolean {
   const cliCapped = (agent instanceof CodexAgentRun || agent instanceof GrokAgentRun) && agent.capped;
   return agent.rateLimited || cliCapped;
+}
+
+/** Which backend produced a run, read back off its persisted account label ("codex:…" ⇒ Codex, "grok:…" ⇒
+ *  Grok, "zai:…" ⇒ z.ai, a Claude sub's own label ⇒ Claude). */
+function providerOfRunAccount(account: string | null | undefined): ImplementorProvider {
+  if (account?.startsWith("codex:")) return "codex";
+  if (account?.startsWith("grok:")) return "grok";
+  if (account?.startsWith("zai:")) return "zai";
+  return "claude";
 }
 
 /** Human label for an implementor backend, for the failover findings/notices. */
