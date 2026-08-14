@@ -203,6 +203,68 @@ function claudeHasHeadroom(usage) {
   return (usage.fiveHour ?? 0) < HARD_LIMIT_PCT && (usage.sevenDay ?? 0) < HARD_LIMIT_PCT;
 }
 
+// The ladder above is the IMPLEMENTOR's. Some roles reach the owner only through the in-process MCP bus
+// (post_finding/ask_user), which the text-bridge backends don't serve, so their real ladder is shorter —
+// and a readout that prints one depth for everything states the widest reach as if it were everyone's.
+// That is what hid the 08-14 defect: sweeps read "depth 3" for weeks while the auto-reviewer's own depth
+// was 1, until a click on a capped sub burned itself out with a live backend sitting right there.
+const ROLE_POLICY_SETS = { roles: "MCP_DEPENDENT_ROLES", providers: "CLI_BRIDGED_PROVIDERS" };
+// provider id (threadManager) → the rung name printed above. A CLI-bridged backend missing from here would
+// silently drop out of the exclusion, so the gate pins this map against BACKENDS.
+const PROVIDER_RUNG = { codex: "Codex", grok: "Grok", zai: "z.ai" };
+
+/** The role→backend policy, read out of threadManager.ts rather than restated here. Returns null when
+ *  either Set can't be found — a rename must read as UNKNOWN, never as "no role is restricted", which is
+ *  the flattering direction this whole readout exists to avoid. */
+function roleReachPolicy(src) {
+  const members = (name) => {
+    const m = src.match(new RegExp(`${name}\\b[^=]*=\\s*new Set\\(\\[([^\\]]*)\\]`));
+    return m ? [...m[1].matchAll(/"([a-z.]+)"/g)].map((x) => x[1]) : null;
+  };
+  const roles = members(ROLE_POLICY_SETS.roles);
+  const providers = members(ROLE_POLICY_SETS.providers);
+  return roles && providers ? { roles, providers } : null;
+}
+
+/** Read the live threadManager source, or null when it isn't next to this script (a copied-out probe). */
+function readThreadManagerSource() {
+  try {
+    return fs.readFileSync(path.resolve(__dirname, "..", "src", "orchestrator", "threadManager.ts"), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** How many rungs a role has once the backends that can't serve it are struck off. The Claude subs are
+ *  never excluded (they're where these roles run by default); only the alt rungs are filtered. */
+function roleLadderDepth(backends, claudeRungs, excludedNames) {
+  return claudeRungs + backends.filter((b) => b.available && !excludedNames.includes(b.name)).length;
+}
+
+/** The depth the MCP-dependent roles actually have, printed only when it differs from the implementor's —
+ *  a shorter ladder for the role that decides a task's fate is the finding, and it is invisible above. */
+function printRoleReach(backends, claudeRungs, depth) {
+  const src = readThreadManagerSource();
+  const policy = src && roleReachPolicy(src);
+  if (!policy) {
+    console.log(
+      `\n  ⚠ could not read ${ROLE_POLICY_SETS.roles}/${ROLE_POLICY_SETS.providers} from threadManager.ts — ` +
+        "per-role reach is UNKNOWN, not unrestricted. Some roles may have a shorter ladder than the depth above.",
+    );
+    return;
+  }
+  if (!policy.roles.length) return; // no role is restricted — the one depth above is everyone's
+  const excluded = policy.providers.map((p) => PROVIDER_RUNG[p] ?? p);
+  const roleDepth = roleLadderDepth(backends, claudeRungs, excluded);
+  console.log(
+    `\n  reach for ${policy.roles.join(" + ")}: ${roleDepth} rung(s) — these answer the owner ONLY through the` +
+      `\n  in-process MCP bus (post_finding/ask_user), so ${excluded.join(" and ")} can't serve them at all.` +
+      (roleDepth < depth
+        ? `  ⚠ SHORTER than the ${depth} above — the depth line overstates what these roles can reach.`
+        : ""),
+  );
+}
+
 function main() {
   const dbPath = path.resolve(__dirname, "..", "data", "orchestrator.sqlite");
   const db = new Database(dbPath, { readonly: true });
@@ -286,6 +348,8 @@ function main() {
           : ""),
   );
 
+  printRoleReach(backends, claudeRungs, depth);
+
   console.log(
     '\nReading it: "idle" on a chip = a stagger hold-off, NOT that the subscription is globally unused. A sub' +
       "\nshared with another orchestrator/service shows extWakeAt set; while held, GG can't see that outside" +
@@ -302,6 +366,10 @@ if (require.main === module) main();
 module.exports = {
   backendState,
   claudeHasHeadroom,
+  roleReachPolicy,
+  roleLadderDepth,
+  readThreadManagerSource,
+  PROVIDER_RUNG,
   spentWindow,
   spentCredits,
   BACKENDS,

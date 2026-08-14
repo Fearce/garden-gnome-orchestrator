@@ -66,7 +66,11 @@ it on, so its line carries `credits N%` and a dry pool is `NO ROOM — monthly c
 has already passed has rolled over and counts as free even at 100% (routing agrees) — that is why Grok can
 read `7d 100%` and still be a rung. A reported reset >2× its own period is a backend sentinel, printed but
 never counted down (z.ai answered Jan 2027 for a 5h window). Depth ≤1 is what to act on: a burst then parks.
-One capped/spent backend is normal. Gate: `test:failover-ladder`.
+One capped/spent backend is normal. **That depth is the IMPLEMENTOR's** — the `reach for …` line below it
+gives the MCP-dependent roles (reader/auto-reviewer, which answer only through the in-process bus) their own,
+derived from the live `MCP_DEPENDENT_ROLES`/`CLI_BRIDGED_PROVIDERS`; a `⚠ SHORTER` there means a click can
+park while the depth above says there was room, which is exactly how 08-14's defect hid. `reach UNKNOWN` =
+the parse broke, not "nothing is restricted". Gate: `test:failover-ladder`.
 
 ## 6. `npm run probe:console` — the console still loads (health cannot see this)
 `/api/health` proves the SERVER answers; a bundle that throws on mount or a WS that never connects keeps it
