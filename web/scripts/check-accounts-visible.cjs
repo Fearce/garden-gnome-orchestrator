@@ -65,6 +65,10 @@ const WIDTHS = (process.env.ORCH_WIDTHS || "1280,1440,1600,1750,1800,1920")
   .split(",")
   .map((s) => parseInt(s.trim(), 10))
   .filter((n) => n > 0);
+// Playwright's default is 30s, which this box loses: with agent runs live the machine sits near
+// 100% CPU and a cold navigation has measured 28s while the server answered /api/health in 1ms.
+// console-smoke.cjs already allows 45s for the same reason.
+const NAV_TIMEOUT_MS = 45_000;
 
 async function measure(page) {
   return page.evaluate(() => {
@@ -184,6 +188,46 @@ async function measure(page) {
 }
 
 /**
+ * Log in, load the console, and wait for the chips — the sequence both checks need.
+ *
+ * Retries once on a fresh page, because a lost navigation race is not a chip verdict. This probe
+ * runs against prod on a box that is often saturated (live agent runs, a web auto-build), and a
+ * timeout there reports as a failing width while saying nothing about geometry — the same "red step
+ * that says nothing about chips" the networkidle fix removed. A second failure still fails: a
+ * console that cannot load twice in a row is a real problem, not a busy machine.
+ *
+ * Resolves `{ page }` on success, or `{ page: null, reason }` with the page already closed.
+ */
+async function openConsole(browser, viewport, tag) {
+  const ATTEMPTS = 2;
+  let lastError = null;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    const page = await browser.newPage({ viewport });
+    try {
+      const login = await page.request.post(`${BASE}/api/login`, { data: { password: PASSWORD } });
+      if (!login.ok()) {
+        await page.close();
+        return { page: null, reason: `login HTTP ${login.status()}` };
+      }
+      // Not networkidle: the selected thread pulls a burst of multi-MB /api/attachment images and the
+      // app polls /api/voice/status, so idle is data-dependent and can outlast any budget. The chips
+      // themselves are the ready signal this check needs.
+      await page.goto(`${BASE}/?${tag}=${Date.now()}`, {
+        waitUntil: "domcontentloaded",
+        timeout: NAV_TIMEOUT_MS,
+      });
+      await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+      await page.waitForTimeout(2500); // let usage land over the WS before measuring
+      return { page, retried: attempt > 1 };
+    } catch (e) {
+      lastError = String(e.message || e).split("\n")[0];
+      await page.close();
+    }
+  }
+  return { page: null, reason: `${lastError} (${ATTEMPTS} attempts)` };
+}
+
+/**
  * The invariant behind every width in the list, and the one sampling can't guarantee: where the bar
  * can no longer WRAP, one row must still fit the bar at its widest. Sampling alone misses this —
  * move the bound and the sample widths move with it, away from the range the old bound got wrong.
@@ -193,13 +237,9 @@ async function measure(page) {
  * valve, so "inline" there is always floor-plus-a-pixel by construction and says nothing.
  */
 async function checkBound(browser) {
-  const page = await browser.newPage({ viewport: { width: 2560, height: 800 } });
+  const { page, reason: openFailed } = await openConsole(browser, { width: 2560, height: 800 }, "checkBound");
+  if (!page) return { ok: false, reason: `could not measure the bound: ${openFailed}` };
   try {
-    const login = await page.request.post(`${BASE}/api/login`, { data: { password: PASSWORD } });
-    if (!login.ok()) return { ok: false, reason: `login HTTP ${login.status()}` };
-    await page.goto(`${BASE}/?checkBound=${Date.now()}`, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
-    await page.waitForTimeout(2500);
     await widenChrome(page);
 
     const at = async (w) => {
@@ -254,26 +294,20 @@ async function widenChrome(page) {
 }
 
 async function checkWidth(browser, w) {
-  const page = await browser.newPage({ viewport: { width: w, height: 800 } });
+  const { page, reason: openFailed, retried } = await openConsole(
+    browser,
+    { width: w, height: 800 },
+    "checkAccounts",
+  );
+  if (!page) return { w, ok: false, reason: `could not measure: ${openFailed}` };
   try {
-    const login = await page.request.post(`${BASE}/api/login`, {
-      data: { password: PASSWORD },
-    });
-    if (!login.ok()) return { w, ok: false, reason: `login HTTP ${login.status()}` };
-
-    // Not networkidle: the selected thread pulls a burst of multi-MB /api/attachment images and the
-    // app polls /api/voice/status, so idle is data-dependent and can outlast any budget. The chips
-    // themselves are the ready signal this check needs.
-    await page.goto(`${BASE}/?checkAccounts=${Date.now()}`, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
-    await page.waitForTimeout(2500); // let usage land over the WS before measuring
     const live = await measure(page);
     // Then again with every elastic sibling at its widest. A bound measured only against the state
     // that happened to be on screen holds until the socket drops: that is exactly how the chips
     // shipped one pixel from clipping and hid their meters on every reconnect (2026-08-13).
     await widenChrome(page);
     const worst = await measure(page);
-    return { w, ...live, worst };
+    return { w, ...live, worst, retried };
   } catch (e) {
     // First line only — Playwright appends a multi-line call log that would bury the other widths.
     return { w, ok: false, reason: `could not measure: ${String(e.message || e).split("\n")[0]}` };
@@ -301,7 +335,8 @@ async function main() {
     if (tag === "FAIL") failed = true;
     console.log(
       `[${tag}] ${r.w}px chips=${r.chipCount ?? "?"} scroll=${r.canScroll ? "yes" : "no"} ` +
-        `accounts=${r.accountsW ?? "?"}/${r.contentW ?? "?"} ${r.reason ? "— " + r.reason : ""}`,
+        `accounts=${r.accountsW ?? "?"}/${r.contentW ?? "?"}${r.retried ? " (nav retried — busy box)" : ""} ` +
+        `${r.reason ? "— " + r.reason : ""}`,
     );
     if (worstBad) {
       console.log(`         !! with the socket dropped ("reconnecting…"): ${r.worst.reason}`);

@@ -86,6 +86,12 @@ extending either, and never hand-roll your own drive against `:4317`.
 images and the app polls `/api/voice/status`, so idle is data-dependent: it blew the 30s budget mid-sweep on
 08-13 and cleared in 11s on re-run — a red step that says nothing about chips. Wait for the element the check
 actually needs (`.topbar`, `.accounts .acct`), and let a bad width report itself so the others still run.
+**The navigation needs the same defence, and the element wait does not give it.** On a box near 100% CPU
+(live agent runs, a web auto-build) a cold `page.goto` has measured 28s while `/api/health` answered in 1ms,
+so Playwright's default 30s reds one width for a reason unrelated to geometry (08-15, 1440px). Both probes now
+pass an explicit 45s `timeout`, and chips retries the open once on a fresh page (`(nav retried — busy box)`);
+a second failure still FAILS. Check the box (`Get-CimInstance Win32_Processor`) before blaming the server —
+`/api/health` stays at 1–2ms when the orchestrator is healthy.
 
 ## 7. `npm run audit:deps --prefix server && npm run audit:secrets --prefix server` — security hygiene
 `audit:deps` asks npm only about packages deployed to the server (`--omit=dev`) and fails when it finds a
