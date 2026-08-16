@@ -48,7 +48,10 @@ supervisor owns it, acting manually races it), **unknown** (wording drifted from
 classifier). A stalled park is already tagged **bug or stale** on its `↳` line (`recovery-features.cjs`,
 gate `test:recovery-features`): `stale — … predates <feature> (<sha>); a Resume exercises the fix`, or
 `… continuations already spent — the recovery mechanism ran and gave up`. Trust it, don't re-derive ship
-dates by hand; only a stalled park tagged NEITHER needs a `probe:task-runs` drill. Gate: `test:park-classify`.
+dates by hand; only a stalled park tagged NEITHER needs a `probe:task-runs` drill. **When that drill
+concludes "stale", the answer belongs in `RECOVERY_FEATURES` — not in the report.** An untagged park is
+usually a missing registry row, not a mystery: `e870c68e` was drilled to the same answer on two consecutive
+sweeps before 08-16 added the row that says it once. Gate: `test:park-classify`.
 **Read the second section too — `review` is not the only state waiting on a person.** A restart's casualties
 sit in `failed`, which no sweep step read until 08-10: nine had piled up, two stranded mid-work for two days
 (08-08's own sweep among them) because the auto-resume they were promised died with the process that promised
