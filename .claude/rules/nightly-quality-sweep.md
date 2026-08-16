@@ -7,6 +7,10 @@ failure** — the point of a sweep is the whole picture, and every step is read-
 per-step verdict at the end. Re-check just the failures with `npm run quality -- <step numbers>`.
 Reading the output is still the job: a green exit says nothing about ladder depth, park counts or DB
 growth, which is what §5, §4 and §8 exist to make you look at.
+**Read that output from `server/data/quality-sweep-last.log`, not from your terminal buffer.** The sweep
+prints ~1500 lines — more than one command can hold — so piping it through `tail` silently discards
+steps 1-6, and re-running those probes to get them back is pure waste. Every run rewrites the transcript
+in full, live, and survives you piping the command itself to `head`. Gate: `test:quality-sweep`.
 
 ## 1. `npm run health --prefix server`
 (`nightly-health.cjs`) — hits `/api/health`, checks `:4317` vs `dist` **and `dist` vs HEAD**, greps live
