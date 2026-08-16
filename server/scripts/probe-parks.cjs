@@ -171,7 +171,7 @@ function short(s, n) {
 function lastRun(db, threadId) {
   return db
     .prepare(
-      `SELECT role, model, state, error, num_turns, cost_usd, started_at, ended_at
+      `SELECT role, model, state, error, num_turns, cost_usd, started_at, ended_at, cap_flagged
        FROM agent_runs WHERE thread_id = ? ORDER BY started_at DESC LIMIT 1`,
     )
     .get(threadId);
