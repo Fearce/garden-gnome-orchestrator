@@ -2130,6 +2130,11 @@ body.dl-resizing { user-select: none; }
   .inject-bar .row .inject-row-spacer, .inject-bar .row .inject-id { display: none; }
   .board-tab { min-height: var(--tap-sm); }
   .title-edit { min-height: var(--tap-sm); }
+  /* The recent-repo chips only render with 2+ repos remembered, and the ✕ that forgets one was a
+     19px target beside a 20px name. The board's Closed disclosure was 22px. */
+  .repo-chip-pick { min-height: var(--tap-sm); padding: 0 4px 0 10px; }
+  .repo-chip-x { min-height: var(--tap-sm); min-width: var(--tap-sm); padding: 0 8px; }
+  .closed-toggle { min-height: var(--tap-sm); padding: 4px 8px; }
   /* Every button, not only the .sm ones: the base .btn is a 32px box built for a cursor. */
   .btn { min-height: var(--tap); display: inline-flex; align-items: center; justify-content: center; }
   /* Copied verbatim from the compact band so the two cannot drift. */
@@ -2142,6 +2147,11 @@ body.dl-resizing { user-select: none; }
   .stepper button { width: var(--tap); height: var(--tap); font-size: 19px; }
   .stepper-val { height: var(--tap); font-size: 16px; }
   .settings-row .text-input { height: var(--tap); font-size: 16px; }
+  /* The handle straddles its pane's edge at -3px, and the pane's own overflow:hidden clips that
+     half away — so a 7px strip is really ~4px of hit-testable area. A cursor finds it; a finger
+     does not. Pull it fully inside and widen it. (The ::after indicator is right-anchored, so it
+     still paints on the border.) */
+  .rail-resize { left: auto; right: 0; width: 16px; }
   .mode-toggle { height: var(--tap-sm); }
   .rail-search-input { min-height: var(--tap); }
   .composer input.ws { min-height: var(--tap); }

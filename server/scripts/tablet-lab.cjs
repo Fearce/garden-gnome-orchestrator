@@ -41,6 +41,12 @@ const TAP_EXCEPTIONS = [
   { sel: ".rail-search-toggle", min: 34, why: "sits in the same rail-header row as the gates" },
   { sel: ".board-tab", min: 34, why: "a text heading that doubles as the view switcher" },
   { sel: ".card-chatroom", min: 34, why: "inline in a card's meta row" },
+  { sel: ".closed-toggle", min: 34, why: "a quiet disclosure line under the board's lanes" },
+  // These two only render with 2+ remembered repos, which this lab's fresh DB never has — they were
+  // found by `~/.claude/scripts/tablet-audit.cjs` against prod, not here. Keep the entries anyway so
+  // the two tools agree the day a seeded run does produce them.
+  { sel: ".repo-chip-pick", min: 34, why: "one chip per remembered repo; 44 would double the composer" },
+  { sel: ".repo-chip-x", min: 34, why: "the forget-this-repo ✕ welded to its chip" },
   { sel: ".changes-chip", min: 34, why: "inline on a card whose whole face is already the tap target" },
   { sel: ".mode-toggle", min: 34, why: "113px wide; a 44px row would push the composer down again" },
   { sel: ".card-dismiss", min: 32, why: "corner glyph on a card that is itself the tap target" },
