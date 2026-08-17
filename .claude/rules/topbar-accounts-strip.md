@@ -16,9 +16,12 @@ must be *visible* at common desktop widths.
 - `.app` uses `grid-template-columns: minmax(0, 1fr)` and `overflow: hidden`.
 - `.topbar` has `min-width: 0`.
 - `.accounts` has `min-width: 0`, `overflow-x: auto`, chips `flex: 0 0 auto`.
-- At **769–1799px** desktop, `.accounts` wraps to a **full-width second row**
-  so personal+vota+Codex+Grok+z.ai all fit (see `eda230f`). Mobile (≤768) already
-  full-width-scrolls the strip. **Adding or widening a chip moves that bound** — don't
+- At **900–1799px** desktop, `.accounts` wraps to a **full-width second row**
+  so personal+vota+Codex+Grok+z.ai all fit (see `eda230f`). Compact (≤899.98, which
+  since 2026-08-18 includes a portrait 800px tablet) already full-width-scrolls the
+  strip — `probe:chips` shares that bound as `DESKTOP_MIN` and does not treat a
+  scrollable strip below it as clipping. **Adding or widening a chip moves the wrap
+  bound** — don't
   bisect it by hand, print it: `npm run probe:chips -- --explain` reports the
   single-row floor per width (chips + fixed items + gaps + padding).
 - **Measure the bound against the bar's WIDEST state, not the one on screen.** `.conn`

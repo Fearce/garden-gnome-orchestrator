@@ -69,9 +69,14 @@ const WIDTHS = (process.env.ORCH_WIDTHS || "1280,1440,1600,1750,1800,1920")
 // 100% CPU and a cold navigation has measured 28s while the server answered /api/health in 1ms.
 // console-smoke.cjs already allows 45s for the same reason.
 const NAV_TIMEOUT_MS = 45_000;
+// Below this the compact layout takes over and DELIBERATELY makes the strip a full-width,
+// horizontally-scrolling row — a scrollable strip there is the design, not the clipping this
+// checks for. Tracks the compact bound in styles.css (raised 768 → 900 so a portrait tablet
+// reaches it); the touch layout below it is what `npm run tablet-lab --prefix server` covers.
+const DESKTOP_MIN = 900;
 
 async function measure(page) {
-  return page.evaluate(() => {
+  return page.evaluate((desktopMin) => {
     const vw = window.innerWidth;
     const accounts = document.querySelector(".accounts");
     if (!accounts) return { ok: false, reason: "no .accounts strip (no chips configured?)" };
@@ -121,7 +126,7 @@ async function measure(page) {
     }
     // On desktop every chip must be readable WITHOUT scrolling — a scrollable strip means the bar is
     // hiding usage until the operator drags it, which is the clipping this check exists to catch.
-    if (canScroll && vw >= 769) {
+    if (canScroll && vw >= desktopMin) {
       failures.push(`strip is clipped: ${accounts.scrollWidth}px of chips in a ${accounts.clientWidth}px box (widen the wrap breakpoint)`);
     }
     for (const c of after) {
@@ -184,7 +189,7 @@ async function measure(page) {
         wrapAllowed: barStyle ? barStyle.flexWrap !== "nowrap" : false,
       },
     };
-  });
+  }, DESKTOP_MIN);
 }
 
 /**
@@ -247,7 +252,7 @@ async function checkBound(browser) {
       await page.waitForTimeout(120);
       return measure(page);
     };
-    const LO = 769;
+    const LO = DESKTOP_MIN;
     const HI = 2560;
     if (!(await at(LO)).fit?.wrapAllowed) {
       return { ok: true, note: `the bar cannot wrap even at ${LO}px — the strip has no escape valve at all` };
