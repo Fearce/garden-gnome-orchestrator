@@ -44,6 +44,15 @@ asserting reachability (the ✕ closes, the hover-only actions have a tap route)
 sweep with a documented exception list, and the clamp that keeps a persisted desktop
 `--detail-w` on screen.
 
+**A component's own CSS file loads AFTER `styles.css`, so styling its selectors from
+`styles.css` is a source-order bet you will eventually lose.** `main.tsx` imports
+`styles.css` first, then the component tree pulls in `gitChanges.css` / `gitConsole.css`
+/ `diff.css` — which land later in the bundle. An equally-specific rule for `.changes-chip`
+or a `.gc-*` selector written in `styles.css` therefore applies only while the component
+file happens not to declare the same property, and nothing goes red the day it does. Put
+the rule in the component's own file. Same trap, one level up, as the `getComputedStyle`
+rule in `topbar-accounts-strip.md`: assert what the element computes, never what you wrote.
+
 ## The line: READING prod is fine, INTERACTING with it is not
 "Never browser-test prod" is about *interaction*; stopping there sends agents off to
 hand-roll a script (2026-08-01 — one clicked a card on `:4317`). A no-click load
