@@ -190,8 +190,10 @@
 
 /* The unified diff itself lives in diff.css (Diff.tsx) — shared with the repo-level Git console. */
 
-/* ---- narrow viewports: collapse the two panes into one, master→detail with a Back affordance ---- */
-@media (max-width: 760px) {
+/* ---- narrow viewports: collapse the two panes into one, master→detail with a Back affordance ----
+   Tracks the compact bound in styles.css: a portrait 10" tablet is 800px wide and has no more room
+   for two side-by-side panes than a phone does. */
+@media (max-width: 899.98px) {
   .git-panel { width: 100vw; }
   .git-left { flex-basis: auto; max-width: none; width: 100%; border-right: none; }
   /* No file picked → show the list, hide the diff. A file picked → show the diff, hide the list. */

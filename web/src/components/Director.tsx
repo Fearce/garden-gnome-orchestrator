@@ -18,20 +18,22 @@ import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 // cross-platform (handles / and \ paths):
 const repoLabel = (p: string): string => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
 
-// Tracks the ≤768px mobile breakpoint (mirrors the CSS media query) so a few controls can swap to a
-// space-frugal layout the phone actually has room for — the wrapping recent-repo chips become a single
-// dropdown row. Re-renders on viewport crossings (rotate / resize).
-function useIsMobile(): boolean {
-  const [mobile, setMobile] = useState(
-    () => typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches,
+// Tracks the compact breakpoint (mirrors the CSS media query — keep the two in step) so a few controls
+// can swap to a space-frugal layout a phone or a portrait tablet actually has room for: the wrapping
+// recent-repo chips become a single dropdown row. Re-renders on viewport crossings (rotate / resize).
+const COMPACT_MQ = "(max-width: 899.98px)";
+
+function useIsCompact(): boolean {
+  const [compact, setCompact] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(COMPACT_MQ).matches,
   );
   useEffect(() => {
-    const mq = window.matchMedia("(max-width: 768px)");
-    const onChange = () => setMobile(mq.matches);
+    const mq = window.matchMedia(COMPACT_MQ);
+    const onChange = () => setCompact(mq.matches);
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, []);
-  return mobile;
+  return compact;
 }
 
 export function Director() {
@@ -57,7 +59,7 @@ export function Director() {
   const showPickers = useStore((s) => s.settings.showComposerPickers);
   const recentRepos = useStore((s) => s.settings.recentRepos);
   const maxRecentRepos = useStore((s) => s.settings.maxRecentRepos);
-  const isMobile = useIsMobile();
+  const isCompact = useIsCompact();
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -287,7 +289,7 @@ export function Director() {
 
       <div className={"composer" + (att.dragging ? " dragging" : "") + (skip ? " direct" : "")} {...att.dropHandlers}>
         {recentRepos.length > 1 &&
-          (isMobile ? (
+          (isCompact ? (
             <RecentReposSelect
               repos={recentRepos.slice(0, maxRecentRepos)}
               active={ws.trim()}

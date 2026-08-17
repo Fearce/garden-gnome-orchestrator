@@ -259,8 +259,10 @@ a.gc-btn { text-decoration: none; }
 .gc-detail-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gc-commit-detail .gc-diff-scroll, .gc-commit-detail .diff { flex: 1; min-height: 0; overflow: auto; }
 
-/* ---- narrow viewports: one column, the diff below the list ---- */
-@media (max-width: 900px) {
+/* ---- narrow viewports: one column, the diff below the list ----
+   899.98, not 900: `max-width` is inclusive, so at exactly 900px this collapsed the console to one
+   column while the app around it had already switched to the desktop grid (min-width: 900px). */
+@media (max-width: 899.98px) {
   .gc-scrim { padding: 0; }
   .gc-window { width: 100%; height: 100%; border-radius: 0; border: none; }
   .gc-topbar { flex-wrap: wrap; }

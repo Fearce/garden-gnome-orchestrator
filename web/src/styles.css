@@ -104,7 +104,7 @@ button { font-family: inherit; cursor: pointer; }
    to 720px which puts the single-row floor at 1748px — the old 1700px bound sat below that, which is
    how a reconnect used to clip the chips. `npm run probe:chips -- --explain` prints that floor; keep
    the bound comfortably above it rather than one pixel above. */
-@media (max-width: 1799.98px) and (min-width: 769px) {
+@media (max-width: 1799.98px) and (min-width: 900px) {
   .topbar {
     flex-wrap: wrap;
     row-gap: 6px;
@@ -368,9 +368,12 @@ button { font-family: inherit; cursor: pointer; }
   overflow: hidden;
 }
 .workbench.detail-open { grid-template-columns: var(--rail-w, 384px) minmax(320px, 1fr) var(--detail-w, 480px); }
-/* Desktop-only: hiding the director rail + resizable detail — kept out of the mobile
-   single-pane layout (which overrides .workbench at max-width:768px) via min-width. */
-@media (min-width: 769px) {
+/* Desktop-only: hiding the director rail + resizable detail — kept out of the compact
+   single-pane layout (which overrides .workbench at max-width:899.98px) via min-width.
+   This bound MUST track the compact block's: it is the more specific selector (two classes),
+   so a persisted railHidden would out-rank the single-pane override and blank the Director
+   pane, while its bare `1fr` track (min-content minimum) balloons past the viewport. */
+@media (min-width: 900px) {
   .workbench.rail-hidden { grid-template-columns: 1fr; }
   .workbench.rail-hidden.detail-open { grid-template-columns: minmax(320px, 1fr) var(--detail-w, 480px); }
   .workbench.rail-hidden > .rail { display: none; }
@@ -1609,11 +1612,17 @@ body.dl-resizing { user-select: none; }
 .mobile-nav { display: none; }
 
 /* ============================================================
-   Mobile — ≤768px. Single swappable workbench pane, native-feeling
+   Compact — ≤899.98px. Single swappable workbench pane, native-feeling
    bottom tab bar, full-screen detail overlay. Everything lives behind
    the breakpoint so the desktop three-column layout above is untouched.
+
+   The bound is 900, not 768, because a 10" Android tablet held PORTRAIT
+   is an 800px CSS viewport (Lenovo TB328FU: 1920×1200 at dpr 1.5). At 768
+   it fell through to the desktop grid, whose 1184px three-column minimum
+   pushed the detail pane — its ✕ and its inject composer with it — off the
+   right edge of an overflow:hidden shell, with no scrollbar to get there.
    ============================================================ */
-@media (max-width: 768px) {
+@media (max-width: 899.98px) {
   /* topbar (auto, wraps) · workbench (1fr) · bottom nav (auto). The single column is pinned to
      minmax(0, 1fr): an implicit/auto grid column sizes to its widest child's max-content and, with
      .app's overflow:hidden, would balloon the layout wider than the viewport and clip the right edge
