@@ -2,7 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover makes the env(safe-area-inset-*) already used by the detail header and the
+         bottom nav resolve to real values instead of 0. interactive-widget=resizes-content shrinks the
+         LAYOUT viewport when the soft keyboard opens, so the 100dvh shell re-lays-out and the composer /
+         inject bar stay above the keyboard — declaratively, with no visualViewport listener. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <title>GG Orchestrator</title>
     <link rel="icon" type="image/png" href="gnome-mark.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
