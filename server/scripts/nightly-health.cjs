@@ -24,7 +24,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const Database = require("better-sqlite3");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
-const { classifyPark, classifyAbandoned, continuationsSpent } = require("./probe-parks.cjs");
+const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, DEAD_END_LINE } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
 
 const args = process.argv.slice(2);
@@ -367,12 +367,17 @@ async function main() {
       //     supervisor — worth a human glance, so warn past a 2h threshold.
       //   • stalled — QA, an auto-review or a resume stopped mid-verification. Nothing will come back
       //     for it on its own, so it's a warn; a QA one is split by whether the turn-ceiling continuation
-      //     budget was SPENT ("cut off again each time", from qaParkDetail), which says the mechanism
-      //     ran and gave up rather than the reason being unread.
+      //     budget was genuinely SPENT, which says the mechanism ran and gave up rather than the reason
+      //     being unread. That split defers to `recoveryLineFor` rather than testing the park wording
+      //     directly: a park PREDATING the per-review allowance (748633a) carries the spent marker but was
+      //     never actually woken — earlier unrelated reviews had drained the task-wide budget — so the
+      //     wording alone reported three recoverable tasks as dead ends here for as long as this line
+      //     asked `continuationsSpent` itself. Reusing the probe's precedence is what keeps the sweep's
+      //     step 1 and step 4 from giving opposite verdicts on the same task.
       //   • verdict — the pipeline finished and is asking the owner to decide. By design, never a warn.
       //   • unknown — a park message no class recognizes, i.e. the classification has drifted from
       //     threadManager's wording. Warn, because a silent demotion here hides a stalled task.
-      const reviewRows = db.prepare("SELECT error, updated_at FROM threads WHERE state='review'").all();
+      const reviewRows = db.prepare("SELECT id, error, updated_at FROM threads WHERE state='review'").all();
       const STALE_PARK_MS = 2 * 3600 * 1000;
       const parks = { capWait: 0, stalled: 0, verdict: 0, unknown: 0 };
       let staleAutoResume = 0;
@@ -386,7 +391,7 @@ async function main() {
           if (ageMs > STALE_PARK_MS) staleAutoResume++;
           const ageH = ageMs / 3600000;
           if (ageH > oldestAutoResumeH) oldestAutoResumeH = ageH;
-        } else if (key === "stalled" && continuationsSpent(r.error)) {
+        } else if (key === "stalled" && recoveryLineFor(key, r.error, lastRun(db, r.id)) === DEAD_END_LINE) {
           qaContinuationsSpent++;
         }
       }

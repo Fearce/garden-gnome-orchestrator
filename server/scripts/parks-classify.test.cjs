@@ -16,7 +16,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { classifyPark, classifyAbandoned, continuationsSpent, recoveryLineFor, PARK_CLASSES, ABANDON_CLASSES } = require("./probe-parks.cjs");
+const { classifyPark, classifyAbandoned, continuationsSpent, recoveryLineFor, DEAD_END_LINE, PARK_CLASSES, ABANDON_CLASSES } = require("./probe-parks.cjs");
 const { resolveShipDate } = require("./recovery-features.cjs");
 
 const cls = (err) => classifyPark(err).key;
@@ -124,6 +124,28 @@ assert.match(
   recoveryLineFor("stalled", spentPark, { role: "qa", num_turns: 61, started_at: perReviewShip + 86_400_000, ended_at: null }) ?? "",
   /continuations were already spent/,
   "after the fix it really is exhausted — the hand-off line must still be reachable",
+);
+
+// The sweep asks this question TWICE — `probe:parks` (step 4) names each park, `nightly-health` (step 1)
+// counts them — and step 1 is the one read first. When health tested the park wording itself it kept
+// reporting the three stale tasks above as dead ends after probe:parks had already cleared them, so the
+// two steps gave opposite verdicts on the same task. Pin health to the shared predicate, the same way
+// `test:failover-ladder` pins probe:accounts to the live headroom terms.
+const healthSrc = fs.readFileSync(path.join(__dirname, "nightly-health.cjs"), "utf8");
+assert.equal(
+  recoveryLineFor("stalled", spentPark, { role: "qa", num_turns: 61, started_at: perReviewShip + 86_400_000, ended_at: null }),
+  DEAD_END_LINE,
+  "DEAD_END_LINE must be the very string recoveryLineFor returns — health compares against it by identity",
+);
+assert.match(
+  healthSrc,
+  /recoveryLineFor\((?:[^()]|\([^()]*\))*\)\s*===\s*DEAD_END_LINE/,
+  "nightly-health must route its dead-end count through recoveryLineFor, not re-derive it",
+);
+assert.doesNotMatch(
+  healthSrc,
+  /continuationsSpent\s*\(/,
+  "nightly-health calling continuationsSpent directly is the pre-65c20d0 precedence — it ignores the stale registry",
 );
 
 // --- the other state that waits on a person: threads abandoned in `failed` ---------------------------

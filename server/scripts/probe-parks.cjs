@@ -153,6 +153,13 @@ function continuationsSpent(error) {
   return /cut off again each time/i.test(error ?? "");
 }
 
+/** The one `↳` verdict a sweep acts on by NOT acting, so it is a named constant rather than a literal:
+ *  `nightly-health.cjs` counts these parks and must decide identically to this file. Comparing against the
+ *  exported string keeps the PRECEDENCE in `recoveryLineFor` the single source of truth — health used to
+ *  call `continuationsSpent` directly, which is the pre-65c20d0 ordering, so it kept reporting a dead end
+ *  for the three stale parks this file had already cleared. */
+const DEAD_END_LINE = "its turn-ceiling continuations were already spent — the recovery mechanism ran and gave up";
+
 const hoursAgo = (t) => (t == null ? null : (Date.now() - t) / 3_600_000);
 
 function age(t) {
@@ -196,7 +203,7 @@ function recoveryLineFor(parkClass, error, run) {
     const stale = recoveryAnnotationFor(error, run);
     if (stale) return stale;
   }
-  if (continuationsSpent(error)) return "its turn-ceiling continuations were already spent — the recovery mechanism ran and gave up";
+  if (continuationsSpent(error)) return DEAD_END_LINE;
   return null;
 }
 
@@ -272,4 +279,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { classifyPark, classifyAbandoned, continuationsSpent, recoveryLineFor, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
+module.exports = { classifyPark, classifyAbandoned, continuationsSpent, recoveryLineFor, lastRun, DEAD_END_LINE, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
