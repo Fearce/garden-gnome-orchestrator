@@ -228,6 +228,12 @@ cancel and a failure before any implementor ran are NOT verdicts and are skipped
 `db.modelStats()` aggregates it per model, globally and per repo — that table is fed back into the next
 prompt and rendered read-only under the Settings toggle. Gates: `test:model-select` (pure: validator +
 score) and `test:auto-model` (wiring: pick → run, effort precedence, routing, grading).
+For **"what did it choose for that task, and was that a good call?"** run
+`npm run probe:model-picks --prefix server [-- <limit> --repo <substring>]` (read-only): the scoreboard
+the next pick reads, then each recent pick with its stated reason and outcome — an `ungraded` row on a
+settled task means that ending carried no verdict, and `⚠ split` marks a task a cap-failover moved across
+backends (it scores, but credits no model). Drive the Settings surface headlessly with
+`npm run model-lab --prefix server` (own instance + seeded grades; never prod).
 
 ## The Git console (the in-app GitHub Desktop)
 The GitHub button beside the gear opens a repo-level git surface: a repository picker, a branch menu
