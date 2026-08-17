@@ -82,6 +82,10 @@ button { font-family: inherit; cursor: pointer; }
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  /* viewport-fit=cover (index.html) hands the page the area under a display cutout too, so the left
+     and right insets have to be paid back here — they are 0 on every device without one. */
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 /* Global layout helper: a flex child that grows to fill its column and scrolls its own overflow
@@ -1550,13 +1554,19 @@ body.dl-resizing { user-select: none; }
   max-height: calc(100dvh - 32px);
   display: flex; flex-direction: column;
 }
-.modal .m-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+/* The head must be allowed to shrink and scroll too. A flex item's default min-height:auto floors it
+   at its content, so a QuestionModal whose QUESTION (which lives in .m-head) is taller than the cap
+   would take the whole box and leave .m-body — the options, the answer box, Submit — squeezed to
+   nothing behind .modal's overflow:hidden, with no scrollbar and no way to dismiss the scrim. Both
+   panes shrinking in proportion keeps the answer controls reachable at any viewport height. */
+.modal .m-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); min-height: 0; overflow-y: auto; }
 .modal.login { width: min(380px, 92vw); }
 /* The logo ships on its own black field, so give the login header a matching black panel and let
    the mark sit on it directly (no blend needed — the backdrops are identical black). */
 .modal.login .login-head { background: #000; padding: 22px 18px; display: flex; justify-content: center; }
 .login-logo { height: 40px; width: auto; display: block; }
-.login-body { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
+/* The login modal's body isn't .m-body, so it needs the same scroll treatment on a short viewport. */
+.login-body { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; min-height: 0; }
 .login-body input {
   background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-sm);
   padding: 9px 11px; font-family: var(--font-mono); font-size: 13px;
@@ -2024,17 +2034,18 @@ body.dl-resizing { user-select: none; }
     position: relative;
     /* The rail honours a NARROWER persisted width but never a wider one than the screen affords. */
     --rail-track: clamp(240px, 30vw, var(--rail-w, 384px));
-    /* …and whatever the sheet was dragged to on a monitor, it leaves the board at least 280px.
-       Both are in vw, not %, so the value means the same thing wherever it is substituted — a
-       percentage would resolve against .board's own column in the padding rule below. */
-    --sheet-w: min(var(--detail-w, 480px), calc(100vw - var(--rail-track) - 280px));
+    /* …and whatever the sheet was dragged to on a monitor, it leaves the board one full lane: 336 is
+       .lanes' own 300px minimum plus .board's 18px of padding either side, so the deck never bursts
+       its column. Both are in vw, not %, so the value means the same thing wherever it is
+       substituted — a percentage would resolve against .board's own column in the padding rule. */
+    --sheet-w: min(var(--detail-w, 480px), calc(100vw - var(--rail-track) - 336px));
   }
   .workbench,
   .workbench.detail-open { grid-template-columns: var(--rail-track) minmax(0, 1fr); }
   .workbench.rail-hidden,
   .workbench.rail-hidden.detail-open {
     grid-template-columns: minmax(0, 1fr);
-    --sheet-w: min(var(--detail-w, 480px), calc(100vw - 280px));
+    --sheet-w: min(var(--detail-w, 480px), calc(100vw - 336px));
   }
 
   .detail {
@@ -2043,8 +2054,10 @@ body.dl-resizing { user-select: none; }
     border-left: 1px solid var(--line-strong); box-shadow: var(--shadow-2);
   }
   .workbench.detail-open .board { padding-right: calc(var(--sheet-w) + 18px); }
-  /* Dragging the sheet's edge would set a width the clamp above overrides anyway. */
-  .resize-handle { display: none; }
+  /* Dragging the SHEET's edge would set a width --sheet-w overrides anyway. Scoped to the detail's
+     own handle: the rail's carries the same class, and --rail-track deliberately honours a narrower
+     saved width, which hiding its handle would make unsettable. */
+  .detail > .resize-handle { display: none; }
 
   /* The gear popover anchors 56px below the top of the screen, under a ONE-row top bar — but from
      900 to 1799 the accounts strip wraps to a second row and it floated over the chips. Dock it as
@@ -2108,12 +2121,13 @@ body.dl-resizing { user-select: none; }
   .dl-chip-btn { width: var(--tap); height: var(--tap); }
   .dl-more { width: 34px; height: var(--tap); }
   .card-chatroom { width: var(--tap-sm); height: var(--tap-sm); }
+  /* (.changes-chip is sized in gitChanges.css — that file loads AFTER this one, so a rule for it
+     here would be one stylesheet edit away from silently losing the source-order tie.) */
   /* The trailing thread-id chip is a desktop reference that ellipsises to nothing in a 480px sheet
      once the buttons beside it are 44px — the header's "Copy reference" is the real affordance. */
   .inject-bar .row { gap: 6px; }
   .inject-bar .row .btn.sm { padding: 0 10px; }
   .inject-bar .row .inject-row-spacer, .inject-bar .row .inject-id { display: none; }
-  .changes-chip { min-height: var(--tap-sm); }
   .board-tab { min-height: var(--tap-sm); }
   .title-edit { min-height: var(--tap-sm); }
   /* Every button, not only the .sm ones: the base .btn is a 32px box built for a cursor. */

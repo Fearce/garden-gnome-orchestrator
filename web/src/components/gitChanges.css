@@ -197,6 +197,15 @@
 .file-del { color: color-mix(in oklch, var(--danger) 82%, var(--text-dim)); }
 .file-binary { color: var(--text-faint); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase; }
 
+/* Touch density for this surface. It lives here rather than in styles.css's coarse block because
+   this file loads AFTER styles.css: a rule for .changes-chip over there would win only until
+   someone adds a competing height here, and nothing would go red when it stopped. */
+@media (pointer: coarse) and (max-width: 1365.98px) {
+  .changes-chip { min-height: var(--tap-sm); }
+  .git-file-row { min-height: var(--tap); }
+  .git-diff-back { min-height: var(--tap); }
+}
+
 /* The unified diff itself lives in diff.css (Diff.tsx) — shared with the repo-level Git console. */
 
 /* ---- narrow viewports: collapse the two panes into one, master→detail with a Back affordance ----

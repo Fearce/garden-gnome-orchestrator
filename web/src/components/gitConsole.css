@@ -263,6 +263,33 @@ a.gc-btn { text-decoration: none; }
 .gc-detail-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gc-commit-detail .gc-diff-scroll, .gc-commit-detail .diff { flex: 1; min-height: 0; overflow: auto; }
 
+/* ---- coarse pointer: the console has its own control vocabulary ----
+   .gc-btn / .gc-tab / .gc-link are not .btn, so styles.css's density block reaches none of them —
+   a ~31px Fetch · Pull · Push row on the surface whose top-bar trigger is already 44px. Kept in
+   this file because it loads after styles.css, so a rule for these over there could be out-ordered. */
+@media (pointer: coarse) and (max-width: 1365.98px) {
+  .gc-btn { min-height: var(--tap); }
+  .gc-btn.sm { min-height: var(--tap-sm); padding: 0 10px; }
+  .gc-pick-btn, .gc-tab, .gc-menu-row, .gc-commit-row { min-height: var(--tap); }
+  /* Sized by padding alone, so a width/height bump has to be explicit. .gc-close is align-self:
+     stretch, which gives it nothing once .gc-topbar wraps onto a short second line. */
+  .gc-close { min-width: var(--tap); min-height: var(--tap); }
+  .gc-split-caret { min-width: var(--tap-sm); padding: 0 10px; }
+  .gc-link { min-height: var(--tap-sm); padding: 0 8px; }
+  .gc-detail-file { min-height: var(--tap); }
+  /* The row is the container, its button is the target: drop the row's vertical padding so the
+     stretched child gets the whole 44px instead of the 24px left inside it. */
+  .gc-file { min-height: var(--tap); padding: 0 8px; }
+  .gc-file-main { align-self: stretch; align-items: center; min-height: var(--tap); }
+  /* 24px (WCAG 2.5.8 AA) rather than 44: one per file row, and the row body beside it is the 44px
+     target for the primary action — a 44px box per checkbox would double the list's height. */
+  .gc-window input[type="checkbox"] { width: 24px; height: 24px; }
+  .gc-branch-del { width: var(--tap-sm); height: var(--tap-sm); }
+  /* 16px is the threshold under which a mobile browser zooms the page in on focus. */
+  .gc-filter, .gc-commit-body { font-size: 16px; min-height: var(--tap-sm); }
+  .gc-commit-summary { font-size: 16px; min-height: var(--tap); }
+}
+
 /* ---- narrow viewports: one column, the diff below the list ----
    899.98, not 900: `max-width` is inclusive, so at exactly 900px this collapsed the console to one
    column while the app around it had already switched to the desktop grid (min-width: 900px). */

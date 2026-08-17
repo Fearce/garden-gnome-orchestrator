@@ -19,6 +19,10 @@ export function useColumnResize(onDrag: (clientX: number) => void) {
 
   return useCallback(
     (e: ReactPointerEvent) => {
+      if (e.button !== 0) return; // pointerdown fires for every button; only a primary press resizes
+      // A second press before the first pointerup would otherwise orphan the first drag's listeners
+      // AND leave body.col-resizing set, which is `cursor: col-resize !important` on the whole app.
+      dragCleanup.current?.();
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
       const onMove = (ev: PointerEvent) => onDrag(ev.clientX);
