@@ -248,7 +248,12 @@ export function qaConfig(cwd: string, servers: { bus: McpServerConfig; office: M
     outputFormat: { type: "json_schema", schema: QA_SCHEMA },
     effort: "high",
     includePartialMessages: true,
-    maxTurns: 60,
+    // Two ceilings, because these are two different jobs. Reading a diff and reporting on it fits in 60
+    // turns. Editing mode does the implementor's work over again — edit, build, run the suite, commit,
+    // re-verify — and on 60 it was routinely guillotined mid-verification: a turn-ceiling cutoff on the
+    // FIRST round became the common case once `qaAppliesFixes` shipped, spending a continuation (and its
+    // whole extra Opus run) to buy the handful of turns the review was short.
+    maxTurns: applyFixes ? config.qaFixMaxTurns : 60,
   };
 }
 

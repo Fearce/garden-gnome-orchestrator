@@ -167,7 +167,9 @@ Read the run trail to tell causes apart:
   per-session turn ceiling" is the deliberate role turn ceiling — benign, warm-resumed on the implementor
   path, and several per long task are expected, NOT failures. A QA run cut off the same way is continued
   too: it warm-resumes the SAME review session with a fresh turn budget, charged to a durable per-task
-  `qaCutoffResumes` (max 2, separate from the QA-round budget), and only parks once that is spent.
+  `qaCutoffResumes` (max 2, separate from the QA-round budget), and only parks once that is spent. QA's own
+  ceiling is 60 read-only but implementor-grade in `qaAppliesFixes` mode (`QA_FIX_MAX_TURNS`, default
+  `IMPLEMENTOR_MAX_TURNS`) — an editing QA does the implementor's work, so it gets its budget.
   "Resumed session produced no output" is a run that came back empty (0 turns, $0, no messages — the CLI
   loaded the session and exited without reaching the model). Benign on its own: it is never read as an
   answer on any path whose output GATES the pipeline, and each of those recovers it — the implementor retries

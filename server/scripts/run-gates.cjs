@@ -58,6 +58,7 @@ const GATES = [
   "test:audit-overrides",
   "test:email-hygiene",
   "test:qa-loop-check",
+  "test:role-ceilings",
   "test:pdf-parse",
   "test:db-size",
   "test:gate-registration",
