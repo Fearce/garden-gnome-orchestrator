@@ -30,7 +30,12 @@ health greps dist symbols only, so a green one can sit on top of crash-broken ga
 runs every registered FREE gate in ~90s (don't hardcode the count) and exits non-zero on any failure — stubs
 + a throwaway git repo, no `claude` subprocess, no quota. Once, at the end; never gate by gate.
 `test:gate-registration` checks the suite is itself complete: a `test:*` script missing from `GATES`, or a
-`src/tests` file with no script at all, is a failure.
+`src/tests` file with no script at all, is a failure; `test:gates-driver` pins the runner itself.
+It now runs ~5min (two real-git gates), so **background it RAW and watch
+`server/data/gates-last.log`** — the terminal only carries one line per gate, that transcript carries what
+each one printed, and it grows live so `tail -20` names the gate in flight. Never background it through
+`| tail`: the pipe emits nothing until exit, so the output file stays EMPTY for the whole run and a slow
+gate is indistinguishable from a wedged one (paid for twice — 08-12 and 08-17).
 
 ## 3. `npm run probe:run-errors --prefix server` — triage the non-done runs (`-- 168` for 7 days)
 `health`'s `runs 24h: { error: 10 }` is a COUNT, and most non-done runs are expected: a turn-ceiling cutoff,
