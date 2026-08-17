@@ -166,8 +166,11 @@ Read the run trail to tell causes apart:
   `error` text: it now names the reason (the SDK's `errors`, else the subtype). "Stopped at the
   per-session turn ceiling" is the deliberate role turn ceiling — benign, warm-resumed on the implementor
   path, and several per long task are expected, NOT failures. A QA run cut off the same way is continued
-  too: it warm-resumes the SAME review session with a fresh turn budget, charged to a durable per-task
-  `qaCutoffResumes` (max 2, separate from the QA-round budget), and only parks once that is spent. QA's own
+  too: it warm-resumes the SAME review session with a fresh turn budget, charged to a durable **per-review**
+  allowance (`qaCutoffResumesThisRound`, max 2, separate from the QA-round budget) that renews whenever a
+  round reaches a verdict — what it bounds is one WEDGED review, and a round that answered isn't wedged; it
+  parks only once that allowance is spent. `qaCutoffResumes` beside it is the lifetime tally
+  `probe:task-runs` reconciles launches against, not a budget. QA's own
   ceiling is 60 read-only but implementor-grade in `qaAppliesFixes` mode (`QA_FIX_MAX_TURNS`, default
   `IMPLEMENTOR_MAX_TURNS`) — an editing QA does the implementor's work, so it gets its budget.
   "Resumed session produced no output" is a run that came back empty (0 turns, $0, no messages — the CLI

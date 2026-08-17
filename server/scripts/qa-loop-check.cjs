@@ -60,6 +60,11 @@ const QA_DURABLE_COUNTERS = {
   qaRoundsUsed: { input: "roundsUsed", recoversRound: false, label: "round(s)" },
   qaCutoffResumes: { input: "cutoffResumes", recoversRound: true, label: "turn-ceiling continuation(s)" },
   qaSilentRetries: { input: "silentRetries", recoversRound: true, label: "empty-run retry(ies)" },
+  // Spends no launch of its OWN: it re-counts the subset of qaCutoffResumes charged to the review running
+  // right now, because the cutoff allowance is per review and zeroes whenever one reaches a verdict. It is
+  // the budget the loop enforces; qaCutoffResumes above is the lifetime tally the arithmetic reconciles
+  // against. Adding both would invent a launch for every continuation.
+  qaCutoffResumesThisRound: { input: "cutoffResumesThisRound", recoversRound: false, label: "continuation(s) on the current review" },
 };
 
 /**

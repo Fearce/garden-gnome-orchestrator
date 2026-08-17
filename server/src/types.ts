@@ -364,7 +364,13 @@ export interface StageOutputs {
   // bouncing server re-run a fresh full QA pass on every resume and drain the backend). Reset by retry (blob nulled).
   qaCutoffResumes?: number; // continuations spent waking a QA run that stopped at its per-session turn ceiling
   // before it could return a verdict. Charged separately from qaRoundsUsed (a cutoff isn't a review↔fix cycle)
-  // and persisted before each retry, so a restart mid-continuation can't re-enter the loop forever.
+  // and persisted before each retry, so a restart mid-continuation can't re-enter the loop forever. Counts the
+  // task's LIFETIME, which is what reconciles its QA launches; the budget is enforced against the field below.
+  qaCutoffResumesThisRound?: number; // the same continuations, but only those spent on the review currently
+  // running — zeroed the moment a round reaches a verdict. A cutoff is a property of ONE review, so the
+  // allowance has to be too: enforcing the lifetime count meant a round-4 cutoff could be denied its
+  // continuation because rounds 1 and 2 had each already used one, parking a task on the owner although no
+  // single review ever failed twice. Every value it holds is also inside qaCutoffResumes, never on top of it.
   reviewFixing?: boolean; // an auto-review fix round owns the 'implementing' state right now. The auto-review
   // lane is in-process only (a restart during it re-parks for a fresh click), but its fix round runs under
   // 'implementing' — an AUTO_RESUME state — so without this marker a restart would auto-resume the task into

@@ -218,6 +218,9 @@ section("QA-loop check");
     qaAppliesFixes: appliesFixes,
     qaLaunches: qa.length,
     qaRoundsUsed: stage.qaRoundsUsed ?? null,
+    // The turn-ceiling allowance the review RUNNING NOW still has (it renews on every verdict), as opposed
+    // to the lifetime tally in the arithmetic below. A park at the max is a wedged reviewer, not a long task.
+    qaCutoffResumesThisRound: stage.qaCutoffResumesThisRound ?? null,
     qaVerdicts: verdicts,
     qaKilledByRestart: interrupted,
     qaErrored: errored,

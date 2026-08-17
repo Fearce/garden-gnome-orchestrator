@@ -177,9 +177,10 @@ const QUESTION_TIMEOUT_MS = 20 * 60 * 1000;
 // warm-resumes these instead of carrying half-done work into QA. A genuine finish is `success`; a usage
 // cap is detected separately (agent.rateLimited). Kept as a set so more cutoff subtypes can join here.
 const LIMIT_SUBTYPES: ReadonlySet<string> = new Set(["error_max_turns"]);
-// How many times ONE task may wake a QA run that was cut off at its turn ceiling before returning a
-// verdict. Charged per task rather than per round, so a reviewer that keeps wedging costs a bounded
-// couple of extra runs instead of two more on every one of the maxQaRounds rounds.
+// How many times ONE review may be woken after stopping at its turn ceiling before returning a verdict.
+// Per review, not per task: what this bounds is a reviewer WEDGED on one pass, and a round that did reach
+// a verdict has proven it isn't wedged, so the next round starts with a full allowance again. The task's
+// total is still bounded — maxQaRounds rounds each spending at most this many.
 const MAX_QA_CUTOFF_RESUMES = 2;
 // How many times ONE task may re-run a QA review that came back EMPTY (a session that never reached the
 // model). Only one, deliberately: unlike a cutoff — where waking a warm session resumes real, half-finished
@@ -2771,7 +2772,10 @@ export class ThreadManager implements OrchestratorApi {
           : undefined,
     );
     const verdict = res?.structuredOutput as QaOutput | undefined;
-    if (verdict) return verdict;
+    if (verdict) {
+      this.renewQaCutoffAllowance(thread.id);
+      return verdict;
+    }
     // An empty run is NOT a review that found nothing — it never reached the model at all. Checked before
     // the turn-ceiling branch because it arrives as a SUCCESS result, so `isTurnLimitStop` is false and the
     // round would otherwise fall straight through to the owner.
@@ -2797,11 +2801,23 @@ export class ThreadManager implements OrchestratorApi {
   private qaRecoveryNotes(threadId: string): string[] {
     const stage = this.db.getThreadStageOutputs(threadId);
     const notes: string[] = [];
-    if ((stage.qaCutoffResumes ?? 0) >= MAX_QA_CUTOFF_RESUMES)
+    if ((stage.qaCutoffResumesThisRound ?? 0) >= MAX_QA_CUTOFF_RESUMES)
       notes.push(`It was woken ${MAX_QA_CUTOFF_RESUMES} more times and cut off again each time.`);
     if ((stage.qaSilentRetries ?? 0) >= MAX_QA_SILENT_RETRIES)
       notes.push("A review in this task also came back empty without reaching the model, and was already restarted on a fresh session.");
     return notes;
+  }
+
+  /**
+   * Give the next review a full continuation allowance. Called the moment a round produces a verdict,
+   * which is the proof that the reviewer is not wedged — the only failure `MAX_QA_CUTOFF_RESUMES` exists
+   * to stop. Without this the allowance was the TASK's, so cutoffs in unrelated rounds pooled: a task
+   * whose round 1 and round 3 each needed one continuation had none left for round 5, and that round's
+   * first cutoff parked it on the owner mid-verification with a paid Opus review thrown away.
+   */
+  private renewQaCutoffAllowance(threadId: string): void {
+    if ((this.db.getThreadStageOutputs(threadId).qaCutoffResumesThisRound ?? 0) === 0) return;
+    this.db.updateThreadStageOutputs(threadId, { qaCutoffResumesThisRound: 0 });
   }
 
   /**
@@ -2816,9 +2832,15 @@ export class ThreadManager implements OrchestratorApi {
    */
   private async continueCutOffQa(thread: Thread, opts: QaRoundOpts): Promise<QaOutput | undefined> {
     if (this.cancelled(thread.id)) return undefined;
-    const used = this.db.getThreadStageOutputs(thread.id).qaCutoffResumes ?? 0;
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    const used = stage.qaCutoffResumesThisRound ?? 0;
     if (used >= MAX_QA_CUTOFF_RESUMES) return undefined;
-    this.db.updateThreadStageOutputs(thread.id, { qaCutoffResumes: used + 1 });
+    this.db.updateThreadStageOutputs(thread.id, {
+      qaCutoffResumesThisRound: used + 1,
+      // The lifetime tally isn't a budget — it's what lets the run trail be reconciled afterwards
+      // (`probe:task-runs`), since a continuation spends a QA launch without spending a round.
+      qaCutoffResumes: (stage.qaCutoffResumes ?? 0) + 1,
+    });
     this.postFinding({
       threadId: thread.id,
       fromRole: "qa",
