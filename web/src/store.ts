@@ -24,6 +24,7 @@ import type {
   RepoRef,
   RepoState,
   Message,
+  ModelStat,
   OrchestratorSettings,
   Question,
   Role,
@@ -163,6 +164,9 @@ interface State {
   // view; `boardView` toggles the center pane between the live task board and that view.
   schedules: ScheduledTask[];
   boardView: "tasks" | "schedules";
+  // Auto model selection's scoreboard: per-model averages over every graded auto-picked task. Rendered
+  // read-only in Settings so the selection loop's learning is visible, and rebroadcast on each grading.
+  modelStats: ModelStat[];
 
   select: (id: string | null) => void;
   // Search the whole director conversation (across every task) for a substring, or clear the search.
@@ -338,6 +342,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   maxConcurrent: 3,
   maxConcurrentPerRepo: 0,
   selfImproveEnabled: false,
+  autoModelSelection: false,
   tokenLimitEnabled: false,
   tokenLimitPercent: 80,
   autoResumeOnTokenReset: false,
@@ -490,6 +495,7 @@ export const useStore = create<State>((set) => ({
   officeRoom: null,
   notice: null,
   schedules: [],
+  modelStats: [],
   boardView: "tasks",
 
   select: (id) => {
@@ -766,7 +772,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}) });
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
@@ -796,6 +802,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "schedules":
       useStore.setState({ schedules: ev.schedules });
+      break;
+    case "model.stats":
+      useStore.setState({ modelStats: ev.stats });
       break;
     case "chat.message":
       useStore.setState((s) => {

@@ -42,6 +42,8 @@ const GATES = [
   "test:token-freeze",
   "test:qa-budget",
   "test:auto-review",
+  "test:model-select",
+  "test:auto-model",
   "test:self-improve-restart",
   "test:restart-revival",
   "test:silent-resume",

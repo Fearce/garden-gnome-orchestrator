@@ -326,6 +326,7 @@ export interface OrchestratorSettings {
   maxConcurrent: number;
   maxConcurrentPerRepo: number; // max pipelines running at once for a single repo; 0 (default) = unlimited (only the global maxConcurrent applies)
   selfImproveEnabled: boolean; // opt-in (off by default): completed tasks get one extra implementor round that builds the tools/skills/memories the session showed were missing
+  autoModelSelection: boolean; // opt-in (off by default): before the implementor starts, the director picks its model AND effort from every backend dispatchable right now, judging the task + the planner's read of the repo. Every auto-picked task is graded when it settles, and the grades feed the next pick.
   // Token-usage safety limit: opt-in auto-stop when live utilization reaches the threshold. Disabled by
   // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.
   tokenLimitEnabled: boolean;
@@ -394,6 +395,23 @@ export const MODEL_ROLES: Role[] = ["director", "planner", "researcher", "implem
 /** Which model each role runs on, per subscription. Keyed by subscription id — a Claude account id,
  *  "codex", or "default" (the global per-role fallback). Mirrors the server's ModelOverrides. */
 export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
+
+/** The implementor backends (mirrors the server's ImplementorProvider). */
+export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
+
+/** Auto model selection's scoreboard row: how one model has actually performed on auto-picked tasks.
+ *  100 = the task was accepted with no human involvement; each QA fix-round past the first costs 12.
+ *  Averages cover graded tasks whose whole implementation ran on this one model. Mirrors the server. */
+export interface ModelStat {
+  provider: ImplementorProvider;
+  model: string;
+  picks: number;
+  avgScore: number;
+  doneRate: number; // 0-1
+  avgQaRounds: number;
+  avgCostUsd: number;
+  avgMinutes: number;
+}
 
 /** Subscription-id sentinels for the model matrix (mirror the server). */
 export const DEFAULT_SUB_ID = "default";
@@ -611,8 +629,10 @@ export type ServerEvent =
       chatRooms: ChatRoomSummary[];
       nameOverrides: Record<string, string>;
       schedules: ScheduledTask[];
+      modelStats: ModelStat[];
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  | { type: "model.stats"; stats: ModelStat[] }
   | { type: "schedules"; schedules: ScheduledTask[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }

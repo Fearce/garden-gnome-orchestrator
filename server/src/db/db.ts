@@ -15,7 +15,11 @@ import type {
   Effort,
   Finding,
   FindingKind,
+  ImplementorProvider,
   Message,
+  ModelGrade,
+  ModelOutcome,
+  ModelStat,
   Question,
   QuestionOption,
   Role,
@@ -94,6 +98,28 @@ function rowToFinding(r: Row): Finding {
     severity: r.severity as Severity,
     routed: Boolean(r.routed),
     createdAt: r.created_at as number,
+  };
+}
+
+function rowToModelGrade(r: Row): ModelGrade {
+  return {
+    threadId: r.thread_id as string,
+    workspace: r.workspace as string,
+    title: r.title as string,
+    provider: r.provider as ImplementorProvider,
+    model: r.model as string,
+    effort: r.effort as Effort,
+    reason: r.reason as string,
+    outcome: (r.outcome as ModelOutcome | null) ?? null,
+    score: (r.score as number | null) ?? null,
+    qaRounds: (r.qa_rounds as number | null) ?? null,
+    costUsd: (r.cost_usd as number | null) ?? null,
+    numTurns: (r.num_turns as number | null) ?? null,
+    durationMs: (r.duration_ms as number | null) ?? null,
+    ranModels: (r.ran_models as string | null) ?? null,
+    gradedModel: (r.graded_model as string | null) ?? null,
+    createdAt: r.created_at as number,
+    gradedAt: (r.graded_at as number | null) ?? null,
   };
 }
 
@@ -1007,6 +1033,114 @@ export class Db {
 
   deleteScheduledTask(id: string): boolean {
     return this.raw.prepare("DELETE FROM scheduled_tasks WHERE id = ?").run(id).changes > 0;
+  }
+
+  // ---- auto model selection: picks + their grades ----
+
+  /** Record (or replace) the model auto-selection for a task, ungraded. Replacing on thread_id is what
+   *  keeps a retry — which re-selects against newer grades — from counting the same task twice. */
+  recordModelSelection(input: Omit<ModelGrade, "createdAt" | "gradedAt">): ModelGrade {
+    const g: ModelGrade = { ...input, createdAt: now(), gradedAt: null };
+    this.raw
+      .prepare(
+        `INSERT OR REPLACE INTO model_grades(thread_id, workspace, title, provider, model, effort, reason,
+           outcome, score, qa_rounds, cost_usd, num_turns, duration_ms, ran_models, graded_model, created_at, graded_at)
+         VALUES(@threadId, @workspace, @title, @provider, @model, @effort, @reason,
+           @outcome, @score, @qaRounds, @costUsd, @numTurns, @durationMs, @ranModels, @gradedModel, @createdAt, @gradedAt)`,
+      )
+      .run({
+        threadId: g.threadId,
+        workspace: g.workspace,
+        title: g.title,
+        provider: g.provider,
+        model: g.model,
+        effort: g.effort,
+        reason: g.reason,
+        outcome: g.outcome ?? null,
+        score: g.score ?? null,
+        qaRounds: g.qaRounds ?? null,
+        costUsd: g.costUsd ?? null,
+        numTurns: g.numTurns ?? null,
+        durationMs: g.durationMs ?? null,
+        ranModels: g.ranModels ?? null,
+        gradedModel: g.gradedModel ?? null,
+        createdAt: g.createdAt,
+        gradedAt: g.gradedAt ?? null,
+      });
+    return g;
+  }
+
+  /** Write a settled task's outcome onto its selection record. No-op when the task had no auto-pick. */
+  gradeModelSelection(
+    threadId: string,
+    patch: Pick<ModelGrade, "outcome" | "score" | "qaRounds" | "costUsd" | "numTurns" | "durationMs" | "ranModels" | "gradedModel">,
+  ): ModelGrade | null {
+    const existing = this.getModelGrade(threadId);
+    if (!existing) return null;
+    this.raw
+      .prepare(
+        `UPDATE model_grades SET outcome=@outcome, score=@score, qa_rounds=@qaRounds,
+           cost_usd=@costUsd, num_turns=@numTurns, duration_ms=@durationMs, ran_models=@ranModels,
+           graded_model=@gradedModel, graded_at=@gradedAt WHERE thread_id=@threadId`,
+      )
+      .run({
+        threadId,
+        outcome: patch.outcome ?? null,
+        score: patch.score ?? null,
+        qaRounds: patch.qaRounds ?? null,
+        costUsd: patch.costUsd ?? null,
+        numTurns: patch.numTurns ?? null,
+        durationMs: patch.durationMs ?? null,
+        ranModels: patch.ranModels ?? null,
+        gradedModel: patch.gradedModel ?? null,
+        gradedAt: now(),
+      });
+    return this.getModelGrade(threadId);
+  }
+
+  getModelGrade(threadId: string): ModelGrade | null {
+    const r = this.raw.prepare("SELECT * FROM model_grades WHERE thread_id = ?").get(threadId) as Row | undefined;
+    return r ? rowToModelGrade(r) : null;
+  }
+
+  /** Most recent selection records (graded or not), newest first — the Settings scoreboard's detail list. */
+  listModelGrades(limit = 50): ModelGrade[] {
+    return (
+      this.raw.prepare("SELECT * FROM model_grades ORDER BY created_at DESC LIMIT ?").all(limit) as Row[]
+    ).map(rowToModelGrade);
+  }
+
+  /**
+   * Per-model performance over the graded record. Only rows whose whole implementation ran on ONE model
+   * count: a task a cap-failover split across two backends is evidence about neither. `workspace`
+   * (already normalized) scopes it to a single repo — what the selector reads first, since "which model
+   * suits this codebase" is a different question from "which model is good in general".
+   */
+  modelStats(workspace?: string): ModelStat[] {
+    const rows = this.raw
+      .prepare(
+        `SELECT provider, graded_model AS model, COUNT(*) AS picks,
+                AVG(score) AS avg_score,
+                AVG(CASE WHEN outcome = 'done' THEN 1.0 ELSE 0.0 END) AS done_rate,
+                AVG(COALESCE(qa_rounds, 0)) AS avg_qa,
+                AVG(COALESCE(cost_usd, 0)) AS avg_cost,
+                AVG(COALESCE(duration_ms, 0)) AS avg_ms
+           FROM model_grades
+          WHERE graded_model IS NOT NULL AND score IS NOT NULL${workspace ? " AND workspace = @workspace" : ""}
+          GROUP BY provider, graded_model
+          ORDER BY picks DESC, avg_score DESC`,
+      )
+      .all(workspace ? { workspace } : {}) as Row[];
+    return rows.map((r) => ({
+      provider: r.provider as ModelStat["provider"],
+      model: r.model as string,
+      picks: r.picks as number,
+      avgScore: Math.round((r.avg_score as number) ?? 0),
+      doneRate: (r.done_rate as number) ?? 0,
+      avgQaRounds: Number(((r.avg_qa as number) ?? 0).toFixed(1)),
+      avgCostUsd: Number(((r.avg_cost as number) ?? 0).toFixed(2)),
+      avgMinutes: Math.round(((r.avg_ms as number) ?? 0) / 60_000),
+    }));
   }
 
   // ---- attachments (image bytes; served on demand over HTTP, refs over WS) ----

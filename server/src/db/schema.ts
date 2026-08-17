@@ -148,7 +148,32 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at  INTEGER NOT NULL
 );
 
+-- Auto model selection's memory: one row per task whose implementor model was auto-picked, holding the
+-- pick and — once the task settles — how the work turned out. NO FK to threads on purpose: a closed task
+-- is purged after 30 days, and the lesson has to outlive it (same reasoning as chat_messages). Keyed by
+-- thread_id so a retry's fresh pick replaces the old record rather than double-counting the task.
+CREATE TABLE IF NOT EXISTS model_grades (
+  thread_id    TEXT PRIMARY KEY,
+  workspace    TEXT NOT NULL,
+  title        TEXT NOT NULL DEFAULT '',
+  provider     TEXT NOT NULL,
+  model        TEXT NOT NULL,
+  effort       TEXT NOT NULL,
+  reason       TEXT NOT NULL DEFAULT '',
+  outcome      TEXT,
+  score        INTEGER,
+  qa_rounds    INTEGER,
+  cost_usd     REAL,
+  num_turns    INTEGER,
+  duration_ms  INTEGER,
+  ran_models   TEXT,
+  graded_model TEXT,
+  created_at   INTEGER NOT NULL,
+  graded_at    INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_thread     ON agent_runs(thread_id);
+CREATE INDEX IF NOT EXISTS idx_grades_model    ON model_grades(graded_model);
 CREATE INDEX IF NOT EXISTS idx_findings_thread ON findings(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_questions_thread ON questions(thread_id);

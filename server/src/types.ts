@@ -345,6 +345,68 @@ export interface ReviewerOutput {
   issues?: QaIssue[]; // when not accepting: the concrete reasons, so the owner sees the list without re-reviewing
 }
 
+// ---- Auto model selection: the pick, its grade, and the scoreboard the next pick reads ----
+
+/** The implementor model auto-selection picked for ONE task: which backend, which model, how hard it
+ *  should think, and the one-line reason. Persisted on the thread's stage outputs, because a resume must
+ *  land on the SAME backend (session ids are provider-specific) and the grade written at settle has to
+ *  name what was actually chosen. Absent = the setting was off, or the pick failed and normal
+ *  usage-based routing decided. */
+export interface ModelPick {
+  provider: ImplementorProvider;
+  model: string;
+  effort: Effort;
+  reason: string;
+}
+
+/** How a graded task ended. `cancelled` is recorded but never scored — the owner stopped it, which says
+ *  nothing about the model. */
+export type ModelOutcome = "done" | "review" | "failed" | "cancelled";
+
+/**
+ * One auto-selected task's record: what was picked, and how the work it produced actually turned out.
+ * Written when the pick is made and completed when the task settles. Deliberately NOT foreign-keyed to
+ * `threads`: a task is purged 30 days after it closes, and the entire point of this table is that the
+ * lesson outlives the task it was learned from (the same reasoning as chat_messages).
+ */
+export interface ModelGrade {
+  threadId: string;
+  workspace: string; // normalized workspace — the repo the pick was made for
+  title: string;
+  provider: ImplementorProvider;
+  model: string;
+  effort: Effort;
+  reason: string;
+  outcome?: ModelOutcome | null; // null while the task is still running
+  score?: number | null; // 0-100 quality score; null while ungraded or when the ending wasn't scoreable
+  qaRounds?: number | null; // QA rounds the task consumed (0 = QA disabled / never reached it)
+  costUsd?: number | null; // summed across ALL the task's agent runs at settle time — a cheap model that
+  // needs three QA rounds is not cheap, and only the whole-task total says so
+  numTurns?: number | null;
+  durationMs?: number | null; // dispatch → settle wall-clock
+  /** Every distinct model that actually ran the implementor role, comma-joined — a cap-failover can move
+   *  the work off the picked model mid-task, and the record has to say so. */
+  ranModels?: string | null;
+  /** The single model the whole implementation ran on, else null. Only these rows feed the scoreboard:
+   *  a task split across two models is evidence about neither. */
+  gradedModel?: string | null;
+  createdAt: number;
+  gradedAt?: number | null;
+}
+
+/** Aggregated performance of one model — what the next selection reads, and what the Settings scoreboard
+ *  renders. Averages are over graded, single-model tasks only. */
+export interface ModelStat {
+  provider: ImplementorProvider;
+  model: string;
+  picks: number;
+  avgScore: number;
+  doneRate: number; // 0-1
+  avgQaRounds: number;
+  avgCostUsd: number;
+  avgMinutes: number;
+}
+
 /**
  * Per-stage pipeline outputs persisted to disk so a task that dies mid-pipeline (crash, restart,
  * timeout, Claude exit error) can resume from where it failed instead of redoing finished stages.
@@ -384,6 +446,9 @@ export interface StageOutputs {
   // (state 'failed' + the auto-resuming marker) but died before delivering. Durable because the whole failure
   // mode is a process not surviving long enough to keep its own promise; reset by the next real interruption,
   // so it bounds one episode's consecutive misses rather than the task's lifetime.
+  modelPick?: ModelPick | null; // the auto-selected implementor model for this task (null = selection ran but
+  // produced nothing usable, so normal routing decides). Lives here rather than on the thread row because it
+  // is a per-EPISODE decision: a retry nulls the blob and re-selects against the latest grades.
   qaSilentRetries?: number; // fresh-session retries spent after a QA run came back EMPTY (a warm --resume that
   // never reached the model: 0 turns, $0, no output). Also charged separately, and durable for the same
   // reason — a restart landing mid-retry must not hand the task an unbounded supply of full Opus reviews.
@@ -405,6 +470,7 @@ export interface OrchestratorSettings {
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
   maxReviewFixRounds: number; // implementor fix-rounds the auto-reviewer may trigger when it hands a task back (default 1; 0 = hand straight back to the owner, the pre-fix-round behavior)
   selfImproveEnabled: boolean; // off (default) → opt-in; on → after a task completes, the implementor runs one extra round building the tools/skills/memories that would have made the task easier
+  autoModelSelection: boolean; // off (default) → the implementor runs on the configured per-subscription model and the planner's effort. on → before the implementor starts, the director judges the task + repo and picks the model AND effort from every backend that is dispatchable right now (Haiku…Opus, Fable, Codex gpt, Grok, GLM). Every auto-selected task is graded when it settles, and those grades feed the next pick.
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
   maxConcurrentPerRepo: number; // max pipelines running at once for a SINGLE repo (normalized workspace); 0 (default) = unlimited. Additional tasks for a repo already at its per-repo cap wait in 'queued' until one of that repo's tasks finishes — tasks in OTHER repos are unaffected (they still run up to maxConcurrent).
   // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----

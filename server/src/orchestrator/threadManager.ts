@@ -18,6 +18,8 @@ import { createGitReadServer } from "../bus/gitReadServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
+import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
+import { modelNote, selectImplementorModel, type ModelCandidate } from "./modelSelector.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
@@ -42,6 +44,7 @@ import type {
   ImageAttachment,
   ImplementorProvider,
   ModelOverrides,
+  ModelPick,
   OrchestratorSettings,
   PlanOutput,
   QaOutput,
@@ -57,6 +60,30 @@ import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
 const MAX_MODEL_SUB_ENTRIES = 64;
+
+// The Claude capability tiers auto model selection offers, weakest first — one representative model each,
+// resolved against the curated list. Offering every snapshot the models endpoint returns would bury the
+// real choice (haiku vs opus) under near-identical ids.
+const CLAUDE_TIERS = ["haiku", "sonnet", "opus", "fable"];
+// How many models each CLI/GLM backend contributes to the roster. Their pickable lists are already
+// most-capable-first, and a backend the operator pinned to one model contributes just that one.
+const ROSTER_PER_CLI = 4;
+
+/** The planner's own findings, flattened for the model selector: what the task turned out to involve,
+ *  which files it touches, what's risky, and how hard the planner judged it. This is the only view of the
+ *  REPO the selector gets — the planner already read the code, so re-reading it would be a second cost
+ *  for a worse answer. */
+function planDigest(plan?: PlanOutput): string | undefined {
+  if (!plan) return undefined;
+  const parts = [plan.summary];
+  if (plan.steps?.length) {
+    parts.push("", "Steps:");
+    for (const s of plan.steps) parts.push(`- ${s.title}${s.files?.length ? ` (${s.files.join(", ")})` : ""}: ${s.detail}`);
+  }
+  if (plan.risks?.length) parts.push("", "Risks:", ...plan.risks.map((r) => `- ${r}`));
+  if (plan.effort) parts.push("", `The planner judged this task's effort as: ${plan.effort}.`);
+  return parts.join("\n");
+}
 
 /** Validate an incoming model-overrides map: keep only known roles, trim + length-cap the model ids,
  *  drop blanks, drop subscriptions left with no entries, and cap the number of subscriptions. Bounds a
@@ -1199,6 +1226,7 @@ export class ThreadManager implements OrchestratorApi {
       maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
       maxConcurrentPerRepo: this.settingNum("setting_max_concurrent_per_repo", 0, 0, 20),
       selfImproveEnabled: this.settingBool("setting_self_improve_enabled", false),
+      autoModelSelection: this.settingBool("setting_auto_model_selection", false),
       tokenLimitEnabled: this.settingBool("setting_token_limit_enabled", false),
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
       autoResumeOnTokenReset: this.settingBool("setting_auto_resume_on_token_reset", false),
@@ -1265,10 +1293,14 @@ export class ThreadManager implements OrchestratorApi {
    *  `subId` is the AccountDTO.id the role will run on. */
   modelFor(subId: string, role: Role): string {
     const ov = this.modelOverrides();
-    const model = ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim() || config.models[role];
-    // A model whose OWN metered pool is exhausted on this sub (Fable's gated allowance) dispatches on
-    // its fallback until the pool frees — the sub's normal windows still have headroom, so neither
-    // parking the task nor switching accounts would be right. classifyCap latches the limit.
+    return this.poolResolved(subId, ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim() || config.models[role]);
+  }
+
+  /** A model whose OWN metered pool is exhausted on this sub (Fable's gated allowance) dispatches on its
+   *  fallback until the pool frees — the sub's normal windows still have headroom, so neither parking the
+   *  task nor switching accounts would be right. classifyCap latches the limit. Applies to an
+   *  auto-selected model exactly as it does to a configured one. */
+  private poolResolved(subId: string, model: string): string {
     const fb = fallbackModelFor(model);
     return fb && this.accounts.isModelLimited(subId, model) ? fb : model;
   }
@@ -1315,6 +1347,159 @@ export class ThreadManager implements OrchestratorApi {
   private pickableZaiModels(): string[] {
     const selected = [this.zaiModel(), this.modelOverrides()[ZAI_SUB_ID]?.implementor].filter((x): x is string => !!x);
     return uniq([...CURATED_ZAI_MODELS, ...selected]);
+  }
+
+  // ---- auto model selection (the "Auto model selection" setting) ----
+
+  /** The Claude models offered to the selector: one per capability tier rather than every snapshot the
+   *  models endpoint lists, so the choice is between meaningfully different options (and the prompt stays
+   *  short). The configured implementor default is always included — it is what would have run anyway. */
+  private claudeRosterModels(): string[] {
+    const pickable = this.pickableClaudeModels();
+    const tier = (family: string): string | undefined =>
+      CURATED_CLAUDE_MODELS.find((m) => m.toLowerCase().includes(family)) ?? pickable.find((m) => m.toLowerCase().includes(family));
+    return uniq([...CLAUDE_TIERS.map(tier), this.modelFor(DEFAULT_SUB_ID, "implementor")]);
+  }
+
+  /** Every (provider, model) pair a task could ACTUALLY be dispatched to right now — each backend that is
+   *  enabled, authed and not usage-capped, with the models its own picker offers. A roster built from
+   *  anything looser would let the selector choose a backend that then can't run. */
+  private implementorModelRoster(): ModelCandidate[] {
+    const out: ModelCandidate[] = [];
+    const add = (provider: ImplementorProvider, models: string[]): void => {
+      for (const model of uniq(models)) out.push({ provider, model, note: modelNote(provider, model) });
+    };
+    if (this.accounts.hasHeadroom()) add("claude", this.claudeRosterModels());
+    if (this.codexImplementorReady()) add("codex", this.pickableCodexModels().slice(0, ROSTER_PER_CLI));
+    if (this.grokImplementorReady()) add("grok", this.pickableGrokModels().slice(0, ROSTER_PER_CLI));
+    if (this.zaiImplementorReady()) add("zai", this.pickableZaiModels().slice(0, ROSTER_PER_CLI));
+    return out;
+  }
+
+  /** The effort tiers the selector may ask for — xhigh only where this machine opted in, mirroring
+   *  the planner's own schema so the selector can't name a tier that would be coerced away anyway. */
+  private selectableEfforts(): Effort[] {
+    return EFFORTS.filter((e) => e !== "xhigh" || config.enableXhigh);
+  }
+
+  /**
+   * Choose the implementor model + effort for one task. Runs once per episode, just before the implementor
+   * stage, and persists the pick on the thread's stage outputs — a resume must land on the SAME backend
+   * (session ids are provider-specific), and the grade written at settle has to name what was chosen.
+   * Returns undefined when the setting is off or no usable pick came back, leaving normal usage-based
+   * routing and the planner's effort in charge; a dispatch is never blocked by this.
+   */
+  private async autoSelectModel(thread: Thread, plan?: PlanOutput): Promise<ModelPick | undefined> {
+    if (!this.settings().autoModelSelection) return undefined;
+    const saved = this.db.getThreadStageOutputs(thread.id).modelPick;
+    if (saved) return saved; // already picked for this episode (a resume) — never re-decide mid-task
+    if (saved === null) return undefined; // an earlier attempt already failed; don't pay for it twice
+    const candidates = this.implementorModelRoster();
+    const workspace = normalizeWorkspace(thread.workspace);
+    const pick = await selectImplementorModel(
+      {
+        title: thread.title,
+        workspace: thread.workspace,
+        brief: thread.brief,
+        planText: planDigest(plan),
+        candidates,
+        efforts: this.selectableEfforts(),
+        repoStats: this.db.modelStats(workspace),
+        globalStats: this.db.modelStats(),
+      },
+      // auxToken() is a read-only token grab — it must NOT run the dispatch selector, which would bump
+      // round-robin state and flicker the "active account" badge for a non-dispatch.
+      this.accounts.auxToken(),
+      config.models.director,
+    ).catch((e) => {
+      this.hub.log("warn", `Auto model selection failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
+      return null;
+    });
+    this.db.updateThreadStageOutputs(thread.id, { modelPick: pick ?? null });
+    if (!pick) {
+      this.hub.log("warn", `Auto model selection produced no usable pick for ${thread.id.slice(0, 8)} — using the configured model and the planner's effort.`);
+      return undefined;
+    }
+    this.db.recordModelSelection({
+      threadId: thread.id,
+      workspace,
+      title: thread.title,
+      provider: pick.provider,
+      model: pick.model,
+      effort: pick.effort,
+      reason: pick.reason,
+    });
+    this.hub.log("info", `Auto model selection for ${thread.id.slice(0, 8)}: ${pick.model} @ ${pick.effort} (${providerLabel(pick.provider)}) — ${pick.reason || "no reason given"}`);
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "director",
+      summary: `Auto-selected ${pick.model} at ${pick.effort} effort for this task`,
+      detail: [pick.reason, `Considered: ${candidates.map((c) => c.model).join(", ")}.`].filter(Boolean).join("\n\n"),
+      severity: "info",
+    });
+    return pick;
+  }
+
+  /** The auto-selected model for this thread when the run is going to `provider`. A cap-failover onto
+   *  another backend leaves the pick behind and uses that backend's own configured model — a Claude model
+   *  id means nothing to the Codex CLI. */
+  private pickedModel(threadId: string, provider: ImplementorProvider): string | undefined {
+    const pick = this.db.getThreadStageOutputs(threadId).modelPick;
+    return pick && pick.provider === provider ? pick.model : undefined;
+  }
+
+  /** The implementor's effort for this task: an operator pin beats everything, then the auto-selected
+   *  effort, then the planner's per-task judgement. */
+  private implementorEffort(threadId: string, planEffort?: Effort): Effort | undefined {
+    const thread = this.db.getThread(threadId);
+    return thread?.effortOverride ?? this.db.getThreadStageOutputs(threadId).modelPick?.effort ?? planEffort;
+  }
+
+  /** Which backend an auto-picked task routes to. The pick owns the decision — that IS the feature — but
+   *  only while its backend can still take the work; one that capped since the pick falls back to whatever
+   *  normal usage-based routing chose. */
+  private routeForPick(threadId: string, routed: ImplementorProvider): ImplementorProvider {
+    const pick = this.db.getThreadStageOutputs(threadId).modelPick;
+    if (!pick || pick.provider === routed) return routed;
+    if (!this.providerReady(pick.provider)) {
+      this.hub.log("warn", `Auto-selected ${providerLabel(pick.provider)} for ${threadId.slice(0, 8)} can't take the task now — routing to ${providerLabel(routed)} on its own model.`);
+      return routed;
+    }
+    return pick.provider;
+  }
+
+  /**
+   * Close the loop: score a settled auto-picked task and rebroadcast the scoreboard the NEXT selection
+   * reads. Silent for every task that wasn't auto-picked, and for endings that say nothing about the model
+   * (see gradeSettledTask). A task that settles twice — parked for review, then resumed to done — is
+   * re-graded in place, so the final record describes how it actually ended.
+   */
+  private gradeAutoSelectedModel(thread: Thread): void {
+    if (!outcomeOfState(thread.state)) return;
+    const pending = this.db.getModelGrade(thread.id);
+    if (!pending) return;
+    const patch = gradeSettledTask({
+      state: thread.state,
+      runs: this.db.listRuns(thread.id),
+      qaRounds: this.db.getThreadStageOutputs(thread.id).qaRoundsUsed ?? 0,
+      dispatchedAt: pending.createdAt,
+      settledAt: Date.now(),
+      capParked: (thread.error ?? "").startsWith(CAP_PARK_PREFIX),
+      restartInterrupted: (thread.error ?? "").startsWith(RESTART_ERROR_PREFIX),
+    });
+    if (!patch) return;
+    const first = pending.gradedAt == null;
+    this.db.gradeModelSelection(thread.id, patch);
+    this.hub.publish({ type: "model.stats", stats: this.db.modelStats() });
+    // Announce the first verdict only: a re-grade is the same task saying the same thing again.
+    if (!first || patch.score == null) return;
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "director",
+      summary: `Auto-selected ${pending.model} scored ${patch.score}/100 on this task`,
+      detail: `Outcome: ${patch.outcome}. QA rounds: ${patch.qaRounds}. Cost: $${patch.costUsd.toFixed(2)} over ${patch.numTurns} turns, ${Math.round(patch.durationMs / 60_000)} min.${patch.gradedModel ? "" : ` Ran on more than one model (${patch.ranModels}), so it doesn't count toward any model's average.`}`,
+      severity: "info",
+    });
   }
 
   /** The persisted recent-repo paths (most-recent first), trimmed to the configured cap. Stored as a
@@ -1476,6 +1661,7 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.maxConcurrent !== undefined) this.db.kvSet("setting_max_concurrent", String(patch.maxConcurrent));
     if (patch.maxConcurrentPerRepo !== undefined) this.db.kvSet("setting_max_concurrent_per_repo", String(patch.maxConcurrentPerRepo));
     if (patch.selfImproveEnabled !== undefined) this.db.kvSet("setting_self_improve_enabled", patch.selfImproveEnabled ? "1" : "0");
+    if (patch.autoModelSelection !== undefined) this.db.kvSet("setting_auto_model_selection", patch.autoModelSelection ? "1" : "0");
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
     if (patch.autoResumeOnTokenReset !== undefined) this.db.kvSet("setting_auto_resume_on_token_reset", patch.autoResumeOnTokenReset ? "1" : "0");
@@ -1922,8 +2108,9 @@ export class ThreadManager implements OrchestratorApi {
       this.setState(thread.id, "failed", error);
       return null;
     }
-    this.implementorProvider.set(thread.id, provider);
-    return provider;
+    const chosen = this.routeForPick(thread.id, provider);
+    this.implementorProvider.set(thread.id, chosen);
+    return chosen;
   }
 
   // ---- concurrency queue ----
@@ -2086,6 +2273,9 @@ export class ThreadManager implements OrchestratorApi {
     // reason to outlive the process. Deliberately EXCLUDES 'failed' (a transient state the pipeline
     // re-enters on cap/token/boot resume) and the parked states (review/paused stay resumable).
     if (state === "done" || state === "cancelled") this.dropTerminalBookkeeping(threadId);
+    // Score how an auto-selected model handled this task, so the next selection knows. Reads the FRESH
+    // thread row (it carries the error text a cap-park is recognised by) and no-ops for every other task.
+    this.gradeAutoSelectedModel(t);
   }
 
   /** Voice mode: speak a task-tailored completion line through the gateway. completionAnnouncement
@@ -2284,7 +2474,11 @@ export class ThreadManager implements OrchestratorApi {
       this.directorNotes.delete(threadId);
       const rawNote = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n");
       const note = rawNote ? acknowledgedInjection(rawNote) : undefined;
-      await this.runImplementorQa(thread, kickoff, thread.effortOverride ?? plan?.effort, this.latestImplementorSession(threadId), note, {
+      // Pick the implementor model (and effort) for this task before the routing gate resolves a backend —
+      // the pick decides both. Off by default; a failed pick leaves normal routing in charge.
+      await this.autoSelectModel(thread, plan);
+      if (this.cancelled(threadId)) return;
+      await this.runImplementorQa(thread, kickoff, this.implementorEffort(threadId, plan?.effort), this.latestImplementorSession(threadId), note, {
         qaEnabled: settings.qaEnabled,
         maxQaRounds: settings.maxQaRounds,
         qaAppliesFixes: settings.qaAppliesFixes,
@@ -2989,7 +3183,7 @@ export class ThreadManager implements OrchestratorApi {
     // patches the working tree and stops, never committing — breaking the implementor→commit contract.
     let startKickoff = kickoff;
     if (provider === "codex") {
-      const model = this.codexModel();
+      const model = this.pickedModel(thread.id, "codex") ?? this.codexModel();
       // The director/planner picks the per-task effort; the Codex subscription's setting is its MAX cap, so
       // a tiny task still runs cheap while nothing exceeds what the operator allowed for this backend.
       const effort = clampEffort(plannerEffort, this.codexEffort(model)) as CodexEffort;
@@ -3020,7 +3214,7 @@ export class ThreadManager implements OrchestratorApi {
       codexAgent.onEnd(() => { if (codexAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
       agent = codexAgent;
     } else if (provider === "grok") {
-      const model = this.grokModel();
+      const model = this.pickedModel(thread.id, "grok") ?? this.grokModel();
       // Same as Codex: the per-task effort is capped at the Grok subscription's configured maximum.
       const effort = clampEffort(plannerEffort, this.grokEffort()) as GrokEffort;
       accountId = "xai-grok";
@@ -3050,7 +3244,7 @@ export class ThreadManager implements OrchestratorApi {
       // Codex/Grok — it gets the in-process bus + office MCP servers (post_finding/ask_user/deliverables,
       // real chat_post) and the standard implementor system prompt. The per-task effort is capped at the
       // z.ai subscription's configured maximum, like the other backends.
-      const model = this.zaiModel();
+      const model = this.pickedModel(thread.id, "zai") ?? this.zaiModel();
       const effort = clampEffort(plannerEffort, this.zaiEffort());
       accountId = "zai";
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `zai:${model}`, effort });
@@ -3069,8 +3263,10 @@ export class ThreadManager implements OrchestratorApi {
       accountId = acct.id;
       // The per-task effort is capped at this Claude account's configured maximum (default: uncapped).
       const effort = clampEffort(plannerEffort, this.accountMaxEffort(acct.id));
-      // Model resolved from the subscription this implementor runs on (per-sub override → default → built-in).
-      const model = this.modelFor(acct.id, "implementor");
+      // The auto-selected model when this task has one, else the subscription's configured model (per-sub
+      // override → default → built-in). Either way the Fable-pool fallback applies on this account.
+      const picked = this.pickedModel(thread.id, "claude");
+      const model = picked ? this.poolResolved(acct.id, picked) : this.modelFor(acct.id, "implementor");
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: acct.label, effort });
       runId = run.id;
       this.emitRun(run.id);
@@ -4545,7 +4741,7 @@ export class ThreadManager implements OrchestratorApi {
     const resumeNudge = message ? acknowledgedInjection(message) : "Continue where you left off.";
     let start: LiveImplementor | null;
     try {
-      start = await this.startResumedImplementor(thread, baseKickoff, resume, { effort: thread.effortOverride ?? undefined, resumeNudge, directorNote: message ? resumeNudge : undefined, qaFollows: false });
+      start = await this.startResumedImplementor(thread, baseKickoff, resume, { effort: this.implementorEffort(thread.id), resumeNudge, directorNote: message ? resumeNudge : undefined, qaFollows: false });
     } catch (e) {
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} failed to start: ${String(e)}`);
       start = null;
@@ -4572,7 +4768,7 @@ export class ThreadManager implements OrchestratorApi {
       this.pendingResumeMsgs.delete(thread.id);
       for (const m of buffered) start.run.send(acknowledgedInjection(m), { priority: "next" });
     }
-    await this.awaitImplementorCompletion(thread, thread.effortOverride ?? undefined, baseKickoff, start.run, start.accountId, false, resumeNudge, false)
+    await this.awaitImplementorCompletion(thread, this.implementorEffort(thread.id), baseKickoff, start.run, start.accountId, false, resumeNudge, false)
       .then(() => {
         // A re-cap during the manual resume tags it for the supervisor; a clean finish parks for review.
         if (this.db.getThread(thread.id)?.state === "implementing") this.settleReview(thread.id, "Resume finished — needs your review.");
@@ -4880,7 +5076,7 @@ export class ThreadManager implements OrchestratorApi {
         this.setState(thread.id, "review", "Auto-review found issues but couldn't start a fix round — no implementor backend is available under the current subscription settings. Fix the routing, then run the auto-review again.");
         return false;
       }
-      const effort = thread.effortOverride ?? undefined;
+      const effort = this.implementorEffort(thread.id);
       const kickoff = this.db.getThreadStageOutputs(thread.id).kickoff ?? thread.brief;
       const fixMsg = reviewFixMessage(out, this.officeName(thread.id, "reviewer"));
       // State stays 'reviewing' across the (possibly awaited) session compression — startImplementor flips

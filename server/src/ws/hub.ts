@@ -75,6 +75,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     chatRooms: ctx.db.listProjectRooms(),
     nameOverrides: ctx.manager.officeNameOverrides(),
     schedules: ctx.scheduler.list(),
+    modelStats: ctx.db.modelStats(),
   };
 }
 

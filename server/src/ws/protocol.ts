@@ -13,6 +13,7 @@ import type {
   DirectorMessage,
   Finding,
   Message,
+  ModelStat,
   OrchestratorSettings,
   Question,
   Role,
@@ -65,8 +66,12 @@ export type ServerEvent =
       chatRooms: ChatRoomSummary[];
       nameOverrides: Record<string, string>;
       schedules: ScheduledTask[];
+      modelStats: ModelStat[];
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  // Auto model selection's scoreboard — per-model averages over every graded auto-picked task.
+  // Rebroadcast whenever a task is graded (it's small: one row per model ever picked).
+  | { type: "model.stats"; stats: ModelStat[] }
   // The full scheduled-task list, rebroadcast on every create/update/delete/fire (it's small and bounded).
   | { type: "schedules"; schedules: ScheduledTask[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
@@ -193,6 +198,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         maxConcurrent: z.number().int().min(1).max(20),
         maxConcurrentPerRepo: z.number().int().min(0).max(20),
         selfImproveEnabled: z.boolean(),
+        autoModelSelection: z.boolean(),
         tokenLimitEnabled: z.boolean(),
         tokenLimitPercent: z.number().int().min(50).max(99),
         autoResumeOnTokenReset: z.boolean(),

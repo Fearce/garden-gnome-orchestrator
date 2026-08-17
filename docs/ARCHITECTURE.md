@@ -95,6 +95,13 @@ effort). The planner picks a per-task tier (`plan.effort`), and in skip-director
 mode the composer's own effort dropdown pins one onto the dispatch
 (`threads.effort_override`), beating the planner's pick.
 
+The Implementor row above is the **default** model, not the only one: with the
+opt-in `autoModelSelection` setting the director picks this task's implementor
+model AND effort from every backend dispatchable at that moment, and every such
+task is graded when it settles so the next pick reads real outcomes rather than
+priors (CLAUDE.md § "Auto model selection"). Precedence is then
+`effort_override` > the pick > the planner.
+
 ## 4. In-process MCP servers (`server/src/bus/`)
 
 Three **in-process SDK MCP servers** (`createSdkMcpServer` + `tool`), whose tools
