@@ -59,6 +59,32 @@ assert.equal(
   "a run after the fix shipped is not stale — leave it to the continuationsSpent path",
 );
 
+// --- an EXHAUSTED cutoff allowance is stale too, and outranks the continuation that spent it ---------
+// Three tasks sat parked reading "the recovery mechanism ran and gave up" when it had not run for them at
+// all: the allowance was the TASK's, so earlier, unrelated reviews had spent it and the round that parked
+// was never woken once. That reads as a dead end — the one annotation a sweep acts on by NOT acting.
+const perReview = RECOVERY_FEATURES.find((f) => f.id === "qaCutoffPerReview");
+const perReviewShip = resolveShipDate(perReview.commit);
+const exhaustedPark =
+  "QA could not complete — Stopped at the per-session turn ceiling (error_max_turns) — an involuntary cutoff, " +
+  "not a crash. It was woken 2 more times and cut off again each time.";
+const exhaustedNote = recoveryAnnotationFor(exhaustedPark, { role: "qa", started_at: perReviewShip.getTime() - 7 * DAY, ended_at: null });
+assert.ok(exhaustedNote, "a spent-allowance park from before the fix should read as stale, not as a dead end");
+assert.match(exhaustedNote, /qaCutoffResumesThisRound/, "the LATEST applicable fix wins — not the continuation feature that predates it");
+assert.match(exhaustedNote, /748633a/);
+assert.equal(
+  recoveryAnnotationFor(exhaustedPark, { role: "qa", started_at: perReviewShip.getTime() + 7 * DAY, ended_at: null }),
+  null,
+  "after the fix, a spent allowance really is spent — leave it to the continuationsSpent path",
+);
+// It must NOT swallow a plain turn-ceiling park: that one has no allowance spent yet, and its own,
+// earlier feature is the correct attribution.
+assert.match(
+  recoveryAnnotationFor(cutoffPark, { role: "qa", started_at: cutoffShip.getTime() - 7 * DAY, ended_at: null }),
+  /a0f4a74/,
+  "a park with no spent-allowance sentence still belongs to qaCutoffResumes",
+);
+
 // --- a silent QA park maps to the empty-run retry feature, not the cutoff continuation ---------------
 const silent = RECOVERY_FEATURES.find((f) => f.id === "qaSilentRetries");
 const silentShip = resolveShipDate(silent.commit);

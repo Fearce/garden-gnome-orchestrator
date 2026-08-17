@@ -58,6 +58,18 @@ const RECOVERY_FEATURES = [
         (run.num_turns === 0 && /QA could not complete/i.test(e))),
   },
   {
+    id: "qaCutoffPerReview",
+    label: "the per-review QA continuation allowance (qaCutoffResumesThisRound)",
+    commit: "748633a", // fix(qa): scope the turn-ceiling continuation allowance to the review, not the task
+    // Keyed on the EXHAUSTED-allowance sentence, which is precisely the wording that makes probe-parks
+    // call such a park "the recovery mechanism ran and gave up". Before this fix the allowance was the
+    // task's, so those spends were routinely made by DIFFERENT reviews and the round that actually parked
+    // had never been woken at all — the mechanism had not run for it, it had been billed for someone
+    // else's. Resuming re-runs it with its own allowance, and (in qaAppliesFixes mode) the editing
+    // ceiling that made it get cut off in the first place — 26d4ac3, same day.
+    applies: (e, run) => run?.role === "qa" && /woken \d+ more times and cut off again each time/i.test(e),
+  },
+  {
     id: "autoReviewRecovery",
     label: "the auto-review recovery (MAX_REVIEW_RECOVERIES)",
     commit: "bc7e87b", // fix(review): recover an auto-review that came back empty instead of re-parking

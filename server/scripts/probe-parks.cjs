@@ -187,9 +187,17 @@ function lastRun(db, threadId) {
  * exactly the race the capWait guidance warns against.
  */
 function recoveryLineFor(parkClass, error, run) {
+  // Stale is asked FIRST, because "the mechanism ran and gave up" was routinely untrue of a spent
+  // allowance: until 748633a the budget was the TASK's, so earlier unrelated reviews spent it and the
+  // round that actually parked was never woken once. That is the one annotation a sweep acts on by NOT
+  // acting, and it stranded three tasks. `recoveryAnnotationFor` returns null once the run postdates the
+  // fix, so a genuinely exhausted park still falls through to the hand-off line below.
+  if (parkClass === "stalled") {
+    const stale = recoveryAnnotationFor(error, run);
+    if (stale) return stale;
+  }
   if (continuationsSpent(error)) return "its turn-ceiling continuations were already spent — the recovery mechanism ran and gave up";
-  if (parkClass !== "stalled") return null;
-  return recoveryAnnotationFor(error, run);
+  return null;
 }
 
 function reportThread(db, t, parkClass) {
