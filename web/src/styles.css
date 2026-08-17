@@ -2072,7 +2072,13 @@ body.dl-resizing { user-select: none; }
      back more than it saved. Clamp it to two — the full title is still in the tooltip and in the
      rename field. Clamped on the inner span so .editable-title keeps its flex row + pencil. */
   .editable-title-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .detail-controls { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* A button clipped flat at the pane's edge reads as broken; faded, it reads as "more this way".
+     A touch scrollbar is invisible, so this edge is the only affordance the row has. */
+  .detail-controls {
+    flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
   .detail-controls > * { flex: 0 0 auto; }
   /* Same treatment the compact band already gives it: eight role chips wrap onto a second row and
      cost another 45px of feed. Scroll them sideways instead. */
