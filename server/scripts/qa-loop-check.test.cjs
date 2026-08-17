@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const assert = require("node:assert/strict");
-const { qaLoopReading, accountedLaunches } = require("./qa-loop-check.cjs");
+const { qaLoopReading, accountedLaunches, roundsCap } = require("./qa-loop-check.cjs");
 
 const text = (r) => r.lines.join("\n");
 const base = {
@@ -75,6 +75,23 @@ assert.equal(accountedLaunches({ roundsUsed: 10, interrupted: 2 }), 10, "an inte
   const r = qaLoopReading({ ...base, launches: 4, roundsUsed: 4, cap: null });
   assert.match(text(r), /no cap to check/);
   assert.doesNotMatch(text(r), /within the/);
+}
+
+// --- a missing setting row is NOT a 0-round cap --------------------------------
+// The row is only written when the operator saves settings (settingNum never seeds it),
+// so a fresh DB has none. Number(null) === 0 is FINITE, so the naive isFinite(Number(v))
+// parse turned "no cap" into cap = 0 — and the very first QA round tripped the drain
+// alarm, the exact false positive this module exists to kill. Revert-checked RED.
+assert.equal(roundsCap("10"), 10);
+assert.equal(roundsCap(null), null, "a missing row must stay no-cap, not 0");
+assert.equal(roundsCap(undefined), null);
+assert.equal(roundsCap(""), null, "an empty-string row reads as unset too");
+assert.equal(roundsCap("abc"), null, "a non-numeric row reads as unset");
+{
+  const r = qaLoopReading({ ...base, launches: 3, roundsUsed: 3, cutoffResumes: 0, cap: roundsCap(null) });
+  assert.equal(r.warn, false, "no stored cap must not fire the drain alarm on a healthy task");
+  assert.match(text(r), /no cap to check/);
+  assert.doesNotMatch(text(r), /exceeded its budget/);
 }
 
 // --- unexplained launches are a reconciliation note, not the drain alarm -------

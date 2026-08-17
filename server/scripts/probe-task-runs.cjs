@@ -24,7 +24,7 @@
 
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { qaLoopReading } = require("./qa-loop-check.cjs");
+const { qaLoopReading, roundsCap } = require("./qa-loop-check.cjs");
 
 const arg = process.argv.slice(2).join(" ").trim();
 if (!arg) {
@@ -203,8 +203,9 @@ section("auto-review trace");
 section("QA-loop check");
 {
   const setting = (key) => db.prepare("SELECT value FROM kv WHERE key = ?").get(key)?.value ?? null;
-  // A non-numeric cap is no cap at all — reporting "within the NaN-round cap" would read as a pass.
-  const cap = Number.isFinite(Number(setting("setting_max_qa_rounds"))) ? Number(setting("setting_max_qa_rounds")) : null;
+  // A missing/unreadable cap is no cap at all — see roundsCap. (Number(null) === 0 is finite, so a
+  // naive isFinite check would report "within the 0-round cap", then trip the drain alarm.)
+  const cap = roundsCap(setting("setting_max_qa_rounds"));
   const appliesFixes = setting("setting_qa_applies_fixes") === "1";
   const qa = runs.filter((r) => r.role === "qa");
   const verdicts = qa.filter((r) => r.state === "done").length;

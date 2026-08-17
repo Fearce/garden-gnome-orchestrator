@@ -30,6 +30,21 @@
 const num = (v) => (Number.isFinite(v) ? v : 0);
 
 /**
+ * The rounds cap as the loop enforces it — the stored setting, or null when there is no
+ * usable value. `Number(null) === 0` is FINITE, so a naive `Number.isFinite(Number(v))`
+ * turns a MISSING setting row (or an empty-string one) into cap = 0 — and a task with
+ * even one QA round then trips the drain alarm against a cap that was never set. The
+ * row is only written when the operator saves settings (settingNum never seeds it), so
+ * every fresh DB reads that way.
+ */
+function roundsCap(raw) {
+  if (raw == null) return null;
+  if (typeof raw === "string" && raw.trim() === "") return null; // Number("") is 0 — unset, not a 0-round cap
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Every launch the loop's own bookkeeping can explain. Kept separate from the verdict
  * so an unexplained launch reads as "reconcile this", never as the drain signature.
  */
@@ -65,7 +80,7 @@ function qaLoopReading(input) {
   if (roundsUsed == null) {
     lines.push("  · no durable qaRoundsUsed on this thread (a pre-stage_outputs task, or a retry cleared it) — the round budget can't be checked from here.");
   } else if (cap == null) {
-    lines.push("  · setting_max_qa_rounds is unset, so there is no cap to check the rounds against.");
+    lines.push("  · setting_max_qa_rounds is unset or unreadable, so there is no cap to check the rounds against.");
   } else if (roundsUsed > cap) {
     lines.push(
       `  ⚠ ${roundsUsed} durable QA round(s) against a ${cap}-round cap — the loop exceeded its budget. ` +
@@ -94,4 +109,4 @@ function qaLoopReading(input) {
   return { lines, warn: false };
 }
 
-module.exports = { qaLoopReading, accountedLaunches };
+module.exports = { qaLoopReading, accountedLaunches, roundsCap };
