@@ -180,6 +180,15 @@
 .file-status.modified, .file-status.renamed { color: var(--warn); background: color-mix(in oklch, var(--warn) 15%, transparent); }
 .file-status.deleted { color: var(--danger); background: color-mix(in oklch, var(--danger) 15%, transparent); }
 .file-status.conflicted { color: var(--danger); background: color-mix(in oklch, var(--danger) 22%, transparent); }
+/* The glyph's meaning lives in a title= tooltip, which a touch device has no way to show — spell it
+   out beside the letter there instead. The path is the flexible cell, so it absorbs the width. */
+.file-status-full { display: none; }
+@media (hover: none) {
+  .file-status-full {
+    display: inline; flex: 0 0 auto; font-family: var(--font-mono); font-size: 9.5px;
+    letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint);
+  }
+}
 .file-path { flex: 1; min-width: 0; display: flex; align-items: baseline; font-family: var(--font-mono); font-size: 12px; overflow: hidden; }
 .file-dir { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-name { color: var(--text); white-space: nowrap; }

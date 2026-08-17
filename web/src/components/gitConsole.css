@@ -88,6 +88,10 @@
   background: transparent; border: none; border-radius: var(--r-sm); color: var(--text-faint); opacity: 0;
 }
 .gc-branch-row:hover .gc-branch-del { opacity: 1; }
+/* Without a mouse there is no hover to reveal it, so deleting a branch would be impossible. */
+@media (hover: none) {
+  .gc-branch-del { opacity: 1; }
+}
 .gc-branch-del:hover { color: var(--danger); background: color-mix(in oklch, var(--danger) 14%, transparent); }
 .gc-new-branch { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
 .gc-new-branch .gc-filter { flex: 1; }

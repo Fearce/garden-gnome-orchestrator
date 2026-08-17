@@ -383,6 +383,7 @@ function SelectableFileRow({ file, selected, onSelect }: { file: GitFile; select
         <span className={"file-status " + meta.cls} title={meta.full}>
           {meta.label}
         </span>
+        <span className="file-status-full">{meta.full}</span>
         <span className="file-path">
           {dir ? <span className="file-dir">{dir}</span> : null}
           <span className="file-name">{name}</span>
@@ -424,6 +425,7 @@ function DiffPane({ threadId, file, onBack }: { threadId: string; file: GitFile;
         <span className={"file-status " + meta.cls} title={meta.full}>
           {meta.label}
         </span>
+        <span className="file-status-full">{meta.full}</span>
         <span className="git-diff-path" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}>
           {dir ? <span className="file-dir">{dir}</span> : null}
           <span className="file-name">{name}</span>
