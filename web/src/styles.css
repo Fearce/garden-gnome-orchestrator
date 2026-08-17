@@ -1826,7 +1826,7 @@ body.dl-resizing { user-select: none; }
   .modal textarea { font-size: 16px; }
 
   /* tap-friendly small buttons — 44px min target, centered content */
-  .btn.sm { min-height: 44px; padding: 0 14px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+  .btn.sm { min-height: 44px; min-width: 44px; padding: 0 14px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
 
   /* changes modal: title + close on one row (QuestionModal/login keep block stacking) */
   .modal.changes .m-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -2020,18 +2020,29 @@ body.dl-resizing { user-select: none; }
    modal — the rail stays live beside it and its own ✕ is the dismissal. */
 @media (min-width: 900px) and (max-width: 1183.98px),
        (pointer: coarse) and (min-width: 900px) and (max-width: 1365.98px) {
-  .workbench { position: relative; }
+  .workbench {
+    position: relative;
+    /* The rail honours a NARROWER persisted width but never a wider one than the screen affords. */
+    --rail-track: clamp(240px, 30vw, var(--rail-w, 384px));
+    /* …and whatever the sheet was dragged to on a monitor, it leaves the board at least 280px.
+       Both are in vw, not %, so the value means the same thing wherever it is substituted — a
+       percentage would resolve against .board's own column in the padding rule below. */
+    --sheet-w: min(var(--detail-w, 480px), calc(100vw - var(--rail-track) - 280px));
+  }
   .workbench,
-  .workbench.detail-open { grid-template-columns: min(var(--rail-w, 384px), 42vw) minmax(0, 1fr); }
+  .workbench.detail-open { grid-template-columns: var(--rail-track) minmax(0, 1fr); }
   .workbench.rail-hidden,
-  .workbench.rail-hidden.detail-open { grid-template-columns: minmax(0, 1fr); }
+  .workbench.rail-hidden.detail-open {
+    grid-template-columns: minmax(0, 1fr);
+    --sheet-w: min(var(--detail-w, 480px), calc(100vw - 280px));
+  }
 
   .detail {
     position: absolute; top: 0; right: 0; bottom: 0; left: auto; z-index: 40;
-    width: min(var(--detail-w, 480px), 60vw);
+    width: var(--sheet-w);
     border-left: 1px solid var(--line-strong); box-shadow: var(--shadow-2);
   }
-  .workbench.detail-open .board { padding-right: calc(min(var(--detail-w, 480px), 60vw) + 18px); }
+  .workbench.detail-open .board { padding-right: calc(var(--sheet-w) + 18px); }
   /* Dragging the sheet's edge would set a width the clamp above overrides anyway. */
   .resize-handle { display: none; }
 
@@ -2094,10 +2105,21 @@ body.dl-resizing { user-select: none; }
   .feed-filter .fchip { min-height: var(--tap-sm); padding: 3px 11px; }
   .rail-search-clear { width: 32px; height: 32px; font-size: 18px; }
   .thumb-x { top: -8px; right: -8px; width: 26px; height: 26px; font-size: 15px; }
-  .dl-chip-btn { width: 40px; height: 40px; }
-  .dl-more { width: 34px; height: 40px; }
+  .dl-chip-btn { width: var(--tap); height: var(--tap); }
+  .dl-more { width: 34px; height: var(--tap); }
+  .card-chatroom { width: var(--tap-sm); height: var(--tap-sm); }
+  /* The trailing thread-id chip is a desktop reference that ellipsises to nothing in a 480px sheet
+     once the buttons beside it are 44px — the header's "Copy reference" is the real affordance. */
+  .inject-bar .row { gap: 6px; }
+  .inject-bar .row .btn.sm { padding: 0 10px; }
+  .inject-bar .row .inject-row-spacer, .inject-bar .row .inject-id { display: none; }
+  .changes-chip { min-height: var(--tap-sm); }
+  .board-tab { min-height: var(--tap-sm); }
+  .title-edit { min-height: var(--tap-sm); }
+  /* Every button, not only the .sm ones: the base .btn is a 32px box built for a cursor. */
+  .btn { min-height: var(--tap); display: inline-flex; align-items: center; justify-content: center; }
   /* Copied verbatim from the compact band so the two cannot drift. */
-  .btn.sm { min-height: 44px; padding: 0 14px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+  .btn.sm { min-height: 44px; min-width: 44px; padding: 0 14px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
 
   /* Settings controls. */
   .switch { width: 52px; height: 30px; }
@@ -2106,6 +2128,9 @@ body.dl-resizing { user-select: none; }
   .stepper button { width: var(--tap); height: var(--tap); font-size: 19px; }
   .stepper-val { height: var(--tap); font-size: 16px; }
   .settings-row .text-input { height: var(--tap); font-size: 16px; }
+  .mode-toggle { height: var(--tap-sm); }
+  .rail-search-input { min-height: var(--tap); }
+  .composer input.ws { min-height: var(--tap); }
   .segment button { padding: 10px 14px; }
   /* Two SEPARATE rules: an unknown vendor pseudo-element invalidates the whole selector LIST, so
      combining these would silently void both thumbs. Do not "tidy" them together. */
@@ -2127,6 +2152,7 @@ body.dl-resizing { user-select: none; }
   .approval-reject textarea,
   .login-body input,
   .modal textarea,
+  .rail-search-input,
   .sched-field input[type="text"],
   .sched-field input:not([type]),
   .sched-field .ws-wrap input,
