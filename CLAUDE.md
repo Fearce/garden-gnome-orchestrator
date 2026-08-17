@@ -206,34 +206,28 @@ Read the run trail to tell causes apart:
   models 400 on ChatGPT-plan auth; `CODEX_WAKE=off` disables, `CODEX_WAKE_MODEL` overrides).
 
 ## Auto model selection (`settings.autoModelSelection`, off by default)
-On, the implementor's model + effort stop being a fixed config value and become a per-task judgement:
-just before the implementor stage, `orchestrator/modelSelector.ts` makes ONE cheap structured call on the
-DIRECTOR's model (the raw OAuth fetch the titler uses — `accounts.auxToken()`, no agent role, no tools)
-weighing the brief, the planner's read of the repo, and the roster of models that are **dispatchable right
-now** (each enabled+authed+uncapped backend: the Claude tiers Haiku→Sonnet→Opus→Fable, Codex, Grok, GLM).
-The reply is validated against that roster and the PROVIDER is taken from the matched entry, never from
-the reply — a hallucinated id can't reach a spawn; two unusable replies just fall back to normal routing
-(a dispatch is never blocked). The pick persists in `stage_outputs.modelPick` (a resume must land on the
-same backend — session ids are provider-specific), overrides usage-based routing while its backend is
-still ready, and supplies a model only to the backend it named; effort precedence is
-`effortOverride` > pick > planner. Retry re-selects (the blob is nulled).
+On, the implementor's model + effort become a per-task judgement: just before the implementor stage,
+`orchestrator/modelSelector.ts` makes ONE cheap structured call on the DIRECTOR's model (the raw OAuth fetch
+the titler uses — `auxToken()`, no agent role, no tools) weighing the brief, the planner's read of the repo,
+the graded history, and the roster of models **dispatchable right now** (each enabled+authed+uncapped
+backend: Claude Haiku→Sonnet→Opus→Fable, Codex, Grok, GLM). The reply is validated against that roster and
+the PROVIDER comes from the matched entry, never the reply, so a hallucinated id can't reach a spawn; two
+unusable replies fall back to normal routing (a dispatch is never blocked). The pick persists in
+`stage_outputs.modelPick` (a resume must land on the same backend — session ids are provider-specific),
+overrides usage routing while that backend is ready, and supplies a model only to the backend it named.
+Effort precedence: `effortOverride` > pick > planner. Retry re-selects (the blob is nulled).
 
-**Every auto-picked task is graded** — otherwise the selection is a coin flip repeated forever.
-`orchestrator/modelGrading.ts` scores it DETERMINISTICALLY at settle from what the pipeline already knows
-(no LLM judging an LLM): `done` 100 / `review` 40 / `failed` 0, minus 12 per QA fix-round past the first
-(cap 36) — so a 4-round finish still outranks a first-round hand-off. A cap-park, a restart casualty, a
-cancel and a failure before any implementor ran are NOT verdicts and are skipped. Rows live in
-`model_grades` (keyed by thread, **no FK** — the lesson outlives the task's 30-day purge, like
-`chat_messages`); a task a cap-failover split across two models scores but credits neither.
-`db.modelStats()` aggregates it per model, globally and per repo — that table is fed back into the next
-prompt and rendered read-only under the Settings toggle. Gates: `test:model-select` (pure: validator +
-score) and `test:auto-model` (wiring: pick → run, effort precedence, routing, grading).
-For **"what did it choose for that task, and was that a good call?"** run
-`npm run probe:model-picks --prefix server [-- <limit> --repo <substring>]` (read-only): the scoreboard
-the next pick reads, then each recent pick with its stated reason and outcome — an `ungraded` row on a
-settled task means that ending carried no verdict, and `⚠ split` marks a task a cap-failover moved across
-backends (it scores, but credits no model). Drive the Settings surface headlessly with
-`npm run model-lab --prefix server` (own instance + seeded grades; never prod).
+**Every auto-picked task is graded**, else the selection is a coin flip repeated forever.
+`orchestrator/modelGrading.ts` scores it DETERMINISTICALLY at settle (no LLM judging an LLM): `done` 100 /
+`review` 40 / `failed` 0, minus 12 per QA fix-round past the first (cap 36) — so a 4-round finish still
+outranks a first-round hand-off. A cap-park, restart casualty, cancel, or failure before any implementor
+ran is NOT a verdict and is skipped; a task a cap-failover split across two models scores but credits
+neither. Rows live in `model_grades` — keyed by thread, **no FK**, so the lesson outlives the task's 30-day
+purge (like `chat_messages`). `db.modelStats()` aggregates per model, globally and per repo, feeding both
+the next prompt and a read-only scoreboard under the toggle. Gates: `test:model-select` (validator + score)
+and `test:auto-model` (pick→run, effort precedence, routing, grading). `npm run probe:model-picks --prefix
+server [-- <limit> --repo <sub>]` answers "what did it choose, and was that a good call?"; `npm run
+model-lab --prefix server` drives the Settings surface headlessly (own instance, never prod).
 
 ## The Git console (the in-app GitHub Desktop)
 The GitHub button beside the gear opens a repo-level git surface: a repository picker, a branch menu

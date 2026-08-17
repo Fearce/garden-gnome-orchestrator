@@ -10,6 +10,31 @@
 // this before hand-rolling a throwaway instance — hand-rolling one is how this session started, and it
 // cost several tool calls and one stale-server confusion before the lab existed.
 //
+// ---- The cookbook for whoever writes the next lab (kept HERE because this is the file every lab
+//      requires, and because .claude/rules/verify-a-ui-change-shipped.md has a 60-line budget) ----
+//   • Wait for the socket's `hello`, not for the shell to mount. Everything server-authoritative
+//     (settings, accounts, any broadcast collection) renders NEUTRAL DEFAULTS until that frame lands, so
+//     a check that opens on `.topbar` reads a toggle as "off" and a list as empty on a busy box — which
+//     is indistinguishable from the feature being broken. `.accounts .acct` is hello-only ⇒ the signal.
+//   • Never believe an optimistic control: a settings switch flips its own `aria-checked` before the
+//     round-trip (`store.setSettings`), so re-reading it proves nothing and reloading straight after
+//     races the write. Poll the instance's own kv row read-only (`waitForPersisted`, model-select-lab).
+//   • Selectors: gear `[aria-label="Open settings"]` → `[role="dialog"][aria-label="Settings"]`; Git
+//     console `[aria-label="Open Git"]` → `.gc-window`; a task row `.card`; the top bar `.topbar`.
+//   • `has-text` is a SUBSTRING match, so adding a button can break an existing selector (strict-mode
+//     violation: "Auto-review & mark done" also matches `has-text("Mark done")`) — use `text-is` then.
+//   • State badges are CSS-uppercased (`.detail-head .badge`): the DOM reads `AUTO-REVIEW`, so compare
+//     case-insensitively, never against the `stateLabel` string.
+//   • Clipboard in headless chromium needs context `permissions:["clipboard-read","clipboard-write"]`
+//     AND a `writeText` stub (`window.__copied = t`) — `readText()` alone can be gated.
+//   • A touch change needs `tablet-lab` and ONLY `tablet-lab`: `hasTouch`/`isMobile` are `newContext()`
+//     options, not viewport ones, and they are what make Chromium report `pointer: coarse` /
+//     `hover: none`. Every other lab runs a FINE pointer and is blind to `styles.css`'s touch blocks.
+//   • Assert `getComputedStyle`, never the CSS rule you wrote: `main.tsx` loads `styles.css` FIRST, so
+//     `gitChanges.css` / `gitConsole.css` / `diff.css` land later in the bundle and win ties.
+//   • Don't wrap a lab in `timeout` — it SIGTERMs the whole npm child tree, so `--keep`'s instance dies
+//     with it. Give the Bash call a long timeout, or background it and poll the port.
+//
 // The three traps it encodes, all of which bite silently:
 //   • ACCOUNT_i_TOKEN must be BOGUS. A live token makes the boot ping start a REAL 5h window and shift
 //     the reset stagger — corrupting the production account state you were only trying to look at.
