@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
 import { agentName, MODEL_ROLES, repoRoom } from "../types.js";
@@ -7,6 +7,7 @@ import { Elapsed, RoleElapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
+import { useColumnResize } from "./useColumnResize.js";
 import { Markdown } from "./Markdown.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
@@ -474,25 +475,19 @@ export function ThreadDetail() {
     }
   };
 
-  const startResize = (e: ReactMouseEvent) => {
-    e.preventDefault();
-    const onMove = (ev: MouseEvent) => {
-      const max = Math.max(420, window.innerWidth - 480);
-      setDetailWidth(Math.min(Math.max(window.innerWidth - ev.clientX, 360), max));
-    };
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.classList.remove("col-resizing");
-    };
-    document.body.classList.add("col-resizing");
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  };
+  const startResize = useColumnResize(
+    useCallback(
+      (clientX: number) => {
+        const max = Math.max(420, window.innerWidth - 480);
+        setDetailWidth(Math.min(Math.max(window.innerWidth - clientX, 360), max));
+      },
+      [setDetailWidth],
+    ),
+  );
 
   return (
     <section className="detail">
-      <div className="resize-handle" onMouseDown={startResize} title="Drag to resize this panel" />
+      <div className="resize-handle" onPointerDown={startResize} title="Drag to resize this panel" />
       <div className={"detail-head" + (headCollapsed ? " collapsed" : "")}>
         <div className="top">
           <div>

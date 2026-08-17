@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
@@ -10,6 +10,7 @@ import { CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, codexEffortsForModel, type Codex
 import { codexModelOptions } from "../lib/models.js";
 import { effortLabel, modelLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
+import { useColumnResize } from "./useColumnResize.js";
 
 // The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
 // not localStorage — the console is served on both an HTTP and an HTTPS origin (the tablet Deck iframes
@@ -112,23 +113,17 @@ export function Director() {
 
   // Drag the rail's right edge to resize, mirroring the detail panel. Width is clamped so the
   // board (and an open detail panel) always keep room; persisted via the store.
-  const startResize = (e: ReactMouseEvent) => {
-    e.preventDefault();
-    const onMove = (ev: MouseEvent) => {
-      const { selectedThreadId, detailWidth } = useStore.getState();
-      const reserved = 320 + (selectedThreadId ? detailWidth : 0) + 16;
-      const max = Math.min(760, window.innerWidth - reserved);
-      setDirectorWidth(Math.min(Math.max(ev.clientX, 280), Math.max(280, max)));
-    };
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.classList.remove("col-resizing");
-    };
-    document.body.classList.add("col-resizing");
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  };
+  const startResize = useColumnResize(
+    useCallback(
+      (clientX: number) => {
+        const { selectedThreadId, detailWidth } = useStore.getState();
+        const reserved = 320 + (selectedThreadId ? detailWidth : 0) + 16;
+        const max = Math.min(760, window.innerWidth - reserved);
+        setDirectorWidth(Math.min(Math.max(clientX, 280), Math.max(280, max)));
+      },
+      [setDirectorWidth],
+    ),
+  );
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -181,7 +176,7 @@ export function Director() {
   return (
     <>
     <aside className="rail">
-      <div className="resize-handle rail-resize" onMouseDown={startResize} title="Drag to resize the director panel" />
+      <div className="resize-handle rail-resize" onPointerDown={startResize} title="Drag to resize the director panel" />
       <div className="rail-head">
         <div className="rail-head-row">
           <div className="who">

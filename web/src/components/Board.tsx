@@ -27,6 +27,14 @@ import { ScheduledTasks } from "./ScheduledTasks.js";
 const PIPELINE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
 const PER_PAGE = 15;
 
+// What has to happen before a press on a card becomes a reorder. See the sensor below for why the
+// two differ; read per render rather than at module load so a pointer that changes (a mouse paired
+// with the tablet) is picked up on the next paint.
+const coarsePointerActivation = () =>
+  typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches
+    ? { delay: 250, tolerance: 8 }
+    : { distance: 6 };
+
 // Finished states hidden by the "Show completed tasks" setting. Only the genuinely-done outcomes —
 // review/failed stay visible because they still want the owner's attention.
 const COMPLETED_STATES = new Set<Thread["state"]>(["done", "cancelled"]);
@@ -169,8 +177,11 @@ export function Board() {
 
   const sensors = useSensors(
     // A small activation distance so a click on the grip still selects nearby UI / opens the card,
-    // and only a deliberate drag starts a reorder.
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    // and only a deliberate drag starts a reorder. A finger has no such spare 6px: the whole card is
+    // the drag activator and the board scrolls vertically through it, so a distance constraint turns
+    // every flick-scroll that begins on a card into a reorder. Touch gets a press-and-hold instead,
+    // with a tolerance so the small drift of a stationary thumb doesn't cancel it.
+    useSensor(PointerSensor, { activationConstraint: coarsePointerActivation() }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const activeThread = activeId ? threads[activeId] : undefined;
