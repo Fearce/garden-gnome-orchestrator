@@ -44,7 +44,10 @@ const TAP_EXCEPTIONS = [
   { sel: ".changes-chip", min: 34, why: "inline on a card whose whole face is already the tap target" },
   { sel: ".mode-toggle", min: 34, why: "113px wide; a 44px row would push the composer down again" },
   { sel: ".card-dismiss", min: 32, why: "corner glyph on a card that is itself the tap target" },
-  { sel: ".dl-more", min: 34, why: "welded to the 40px file icon it belongs to" },
+  { sel: ".dl-more", min: 34, why: "welded to the 44px file icon it belongs to; full height, half width" },
+  { sel: ".gc-link", min: 34, why: "a text link in the Git console's section headers" },
+  { sel: ".gc-split-caret", min: 34, why: "the caret half of a split button whose main half is full size" },
+  { sel: "input[type=checkbox]", min: 24, why: "WCAG 2.5.8 AA; one per file row, whose body is the 44px target" },
   { sel: ".rail-search-clear", min: 32, why: "inside the search field, not beside it" },
   { sel: ".thumb-x", min: 26, why: "corner badge on a 52px attachment thumbnail" },
   { sel: ".office-walker", min: 38, why: "the gnome sprite's own box — resizing it breaks the walk" },
@@ -81,22 +84,27 @@ function seed(dataDir) {
   const finding = db.prepare(
     "INSERT INTO findings (id, thread_id, from_role, kind, summary, detail, path, label, severity, routed, created_at) VALUES (?, ?, 'implementor', 'deliverable', ?, ?, ?, ?, 'info', 0, ?)",
   );
+  // Distinct created_at: listFindings orders by it and SQLite's sort is not stable on ties, so equal
+  // timestamps would make `.dl-chip:nth-child(2)` land on either file at random.
   finding.run("tablet-lab-dl-md", TASK_ID, "Sweep report", "The nightly report", path.join(SERVER_ROOT, "data", "report.md"), "Sweep report", now);
-  finding.run("tablet-lab-dl-bin", TASK_ID, "Trace capture", "An opaque capture", path.join(SERVER_ROOT, "data", "trace.bin"), "Trace capture", now);
+  finding.run("tablet-lab-dl-bin", TASK_ID, "Trace capture", "An opaque capture", path.join(SERVER_ROOT, "data", "trace.bin"), "Trace capture", now + 1);
   db.close();
 }
 
 // ---- the measurements -------------------------------------------------------------------------
 
-/** Every visible control, with its box — minus prose links, which are inline by nature and would
- *  make the tap sweep meaningless. */
-const collectControls = () =>
-  [...document.querySelectorAll("button, a[href], input, select, [role='button']")]
+/** Every visible control under `root`, with its box — minus prose links, which are inline by nature
+ *  and would make the tap sweep meaningless. `classes` is the FULL list: matching the exception table
+ *  against a truncated one would fail an element whose exempt class happens to sort late. */
+const collectControls = (rootSel) =>
+  [...(document.querySelector(rootSel) ?? document).querySelectorAll("button, a[href], input, select, [role='button']")]
     .filter((el) => !el.closest(".transcript, .feed, .md-p, .md-li, .markdown"))
     .map((el) => {
       const r = el.getBoundingClientRect();
       const cs = getComputedStyle(el);
       return {
+        classes: el.className.toString().split(/\s+/).filter(Boolean),
+        tag: el.tagName === "INPUT" ? `input[type=${el.type}]` : el.tagName.toLowerCase(),
         cls: (el.className.toString() || el.tagName.toLowerCase()).split(" ").slice(0, 3).join("."),
         txt: (el.textContent || el.getAttribute("aria-label") || "").trim().slice(0, 18),
         w: Math.round(r.width),
@@ -148,6 +156,20 @@ const inViewport = (r, vw, vh) => r.left >= -1 && r.top >= -1 && r.right <= vw +
 
 const check = createChecks();
 
+/** Measure every control under `rootSel` against TAP_MIN, honouring the documented exceptions. */
+async function sweep(page, label, rootSel) {
+  const controls = await page.evaluate(collectControls, rootSel);
+  const small = controls.filter((c) => {
+    const exc = TAP_EXCEPTIONS.find((e) => e.sel === c.tag || c.classes.some((k) => e.sel === `.${k}`));
+    return Math.min(c.w, c.h) < (exc ? exc.min : TAP_MIN);
+  });
+  check(
+    `${label}: ${controls.length} controls all meet their target size`,
+    small.length === 0,
+    small.map((c) => `${c.cls}${c.txt ? `["${c.txt}"]` : ""} ${c.w}×${c.h}`).join(", "),
+  );
+}
+
 async function drivePass(page, { name, width, height }) {
   console.log(`\n════ ${name.toUpperCase()} — ${width}×${height}, touch, dpr 1.5`);
   const errors = [];
@@ -156,6 +178,10 @@ async function drivePass(page, { name, width, height }) {
 
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   await page.goto(`${BASE}/`, { timeout: 45_000 });
+  // Drag-to-reorder is a localStorage view setting, off by default — so the coarse activation
+  // constraint and .card.draggable's touch-action would never be exercised. Turn it on and reload.
+  await page.evaluate(() => localStorage.setItem("director_settings", JSON.stringify({ taskDragAndDrop: true })));
+  await page.reload({ timeout: 45_000 });
   await page.waitForSelector(".topbar", { timeout: 20_000 });
   // The strip mounts off the WS hello, after the bar itself — wait for it, or the topbar geometry
   // measured below is one row short of the one the tablet actually gets.
@@ -226,27 +252,48 @@ async function drivePass(page, { name, width, height }) {
   check(`${name}: tapping away closes it`, (await page.$(".dl-pop.open")) === null);
   // The second chip is a .bin — no preview to open, so its icon used to do nothing at all.
   await page.tap(".dl-chip:nth-child(2) .dl-chip-btn");
+  await page.waitForSelector(".dl-chip:nth-child(2) .dl-pop.open", { timeout: 5_000 }).catch(() => {});
   check(`${name}: a file with no preview opens its actions instead of nothing`, await page.isVisible(".dl-chip:nth-child(2) .dl-pop.open"));
-  await page.tap(".deliverables-label");
+
+  // Swept with the popover still OPEN so View / Download / Copy path are measured too — they are
+  // .btn.sm, the class that needed a min-WIDTH, and they only exist while the popover is up.
   console.log("\n  TAP TARGETS — every visible control");
-  const controls = await page.evaluate(collectControls);
-  const small = controls.filter((c) => {
-    const exc = TAP_EXCEPTIONS.find((e) => c.cls.split(".").some((k) => e.sel === `.${k}`));
-    return Math.min(c.w, c.h) < (exc ? exc.min : TAP_MIN);
-  });
-  check(
-    `${name}: ${controls.length} controls all meet their target size`,
-    small.length === 0,
-    small.map((c) => `${c.cls}${c.txt ? `["${c.txt}"]` : ""} ${c.w}×${c.h}`).join(", "),
-  );
+  await sweep(page, `${name}: the console`, ".app");
 
   const shot = path.join(SERVER_ROOT, "data", `tablet-${name}.png`);
+  await page.tap(".deliverables-label");
   await page.screenshot({ path: shot, fullPage: false });
 
   console.log("\n  DISMISS — the ✕ actually closes the pane");
   await page.tap('.detail-head .close-x:not(.head-toggle)');
   await page.waitForSelector(".detail", { state: "detached", timeout: 5_000 }).catch(() => {});
   check(`${name}: tapping ✕ closes the detail`, (await page.$(".detail")) === null);
+
+  console.log("\n  BOARD DRAG — a coarse pointer reorders by press-and-hold, not by 6px");
+  await page.waitForSelector(".card.draggable", { timeout: 10_000 });
+  const dragCss = await page.$eval(".card.draggable", (el) => ({
+    touch: getComputedStyle(el).touchAction,
+    grip: getComputedStyle(el.querySelector(".card-grip")).opacity,
+  }));
+  check(`${name}: a draggable card opts out of double-tap zoom`, dragCss.touch === "manipulation", JSON.stringify(dragCss));
+  check(`${name}: …and shows its grip with no hover`, dragCss.grip === "1", JSON.stringify(dragCss));
+  // The regression this guards: under {distance: 6} a tap that drifts a few px starts a reorder
+  // instead of opening the task. Under the delay constraint a quick tap must still just select.
+  await page.tap(".card.draggable");
+  await page.waitForSelector(".detail-head", { timeout: 10_000 }).catch(() => {});
+  check(`${name}: a quick tap still opens the task rather than starting a reorder`, (await page.$(".detail")) !== null);
+  // Portrait's detail is a full-screen overlay ABOVE the top bar, so it has to go before the Git
+  // button is reachable at all.
+  await page.tap('.detail-head .close-x:not(.head-toggle)');
+  await page.waitForSelector(".detail", { state: "detached", timeout: 5_000 });
+
+  console.log("\n  GIT CONSOLE — its own control vocabulary, its own density block");
+  await page.tap('[aria-label="Open Git"]');
+  await page.waitForSelector(".gc-window", { timeout: 30_000 });
+  await page.waitForSelector(".gc-btn", { timeout: 30_000 });
+  await sweep(page, `${name}: the Git console`, ".gc-window");
+  await page.tap(".gc-close");
+  await page.waitForSelector(".gc-window", { state: "detached", timeout: 10_000 }).catch(() => {});
 
   console.log("\n  POISON PILL — widths persisted from a large monitor");
   // localStorage is per-origin and the tablet uses the HTTPS port, so in practice these are almost
@@ -261,16 +308,45 @@ async function drivePass(page, { name, width, height }) {
   await page.tap(".card");
   await page.waitForSelector(".detail-head", { timeout: 10_000 });
   check(`${name}: still no overflow with a 760px detail + 700px rail`, (await page.evaluate(collectOverflow)).length === 0, (await page.evaluate(collectOverflow)).join(" | "));
-  const wide = await rectOf(page, ".detail");
-  check(`${name}: the clamp keeps the detail on screen`, inViewport(wide, width, height), JSON.stringify(wide));
-  const railW = await page.$eval(".rail", (el) => Math.round(el.getBoundingClientRect().width));
-  check(`${name}: …and leaves the board room beside the rail`, width - railW - wide.w > 120 || width < 900, `rail=${railW} detail=${Math.round(wide.w)}`);
+  // Assert the INVARIANT --sheet-w claims (one full 300px lane survives), not "the sheet is on screen":
+  // the sheet is right:0-anchored, so it is inside the viewport at any width, clamp or no clamp.
+  // Measured off the board's real content box, which is what the padding-right actually leaves.
+  const boardBox = await page.$eval(".board", (el) => {
+    const cs = getComputedStyle(el);
+    return Math.round(el.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight));
+  });
+  check(
+    `${name}: the clamp still leaves the board a readable column`,
+    boardBox >= 300,
+    `board content box = ${boardBox}px (detail ${Math.round((await rectOf(page, ".detail")).w)}px)`,
+  );
 
   check(`${name}: no console errors during the pass`, errors.length === 0, errors.slice(0, 3).join(" | "));
   console.log(`\n  screenshot: ${shot}`);
 }
 
 // ---- run ---------------------------------------------------------------------------------------
+
+/** requireBuild() only asserts web/dist EXISTS. For a lab whose entire verdict is CSS that is the
+ *  sharpest way to be green about nothing: an unbuilt edit leaves the lab measuring the previous
+ *  bundle and reporting it as a pass. Refuse to run against a bundle older than its sources. */
+function requireFreshWebBuild() {
+  const src = path.resolve(SERVER_ROOT, "..", "web", "src");
+  const built = fs.statSync(path.resolve(SERVER_ROOT, "..", "web", "dist", "index.html")).mtimeMs;
+  let newest = 0;
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else newest = Math.max(newest, fs.statSync(p).mtimeMs);
+    }
+  };
+  walk(src);
+  if (newest > built) {
+    console.error("web/dist is older than web/src — run `npm run build --prefix web` first, or this lab measures the previous bundle.");
+    process.exit(2);
+  }
+}
 
 /** The just-killed instance can hold its sqlite file open for a moment, and on Windows that is an
  *  EBUSY, not a no-op — which would otherwise throw away a whole green run at the cleanup step. */
@@ -289,6 +365,7 @@ async function rmWithRetry(dir) {
 (async () => {
   const keep = process.argv.includes("--keep");
   requireBuild();
+  requireFreshWebBuild();
   killInstance(PORT);
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tablet-lab-"));
