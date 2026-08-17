@@ -45,6 +45,14 @@ health's `non-done reasons:` line. Gate: `test:run-classify`.
 one" means that run did NOT fail over: teach the backend's wording to `providerCapText`, then mirror it
 into `CAP_RE`. The reverse is only noise in this probe. A silent section is not proof — when BOTH are
 blind (the 08-05 case) the row reads `real`, so check `cap_flagged` on any real failure. Gate: `test:cap-flag`.
+**Then read `turn-ceiling economics` — the section that exists because everything above it is too forgiving.**
+A cutoff is filed benign per run, correctly, so the whole class collapses to one green `✓ 218 × turn-ceiling
+cutoff ($3,281)` line however big it grows — and a role whose ceiling is too small produces nothing else.
+QA sat on a read-only role's 60 turns for six weeks after `qaAppliesFixes` made it edit/build/test/commit;
+cutoffs went 1% → 10% of QA runs and no check moved. So this reads the same rows as a RATE per role against
+the previous window: a rate that MULTIPLIED means that role's work outgrew its `maxTurns` in `roles.ts`. A
+high but STEADY rate is not the signal — the implementor is designed to hit its ceiling and warm-resume.
+Gate: `test:ceiling-economics` (real numbers, including the implementor's steady rate as the cry-wolf case).
 
 ## 4. `npm run probe:parks --prefix server` — name the parked AND abandoned tasks
 health's park line is a count too; this is the "read the thread error" it asks for — each task's id, age,

@@ -65,6 +65,7 @@
     "test:audit-overrides": "node scripts/audit-overrides.test.cjs",
     "test:email-hygiene": "node scripts/email-hygiene.test.cjs",
     "test:qa-loop-check": "node scripts/qa-loop-check.test.cjs",
+    "test:ceiling-economics": "node scripts/ceiling-economics.test.cjs",
     "test:role-ceilings": "tsx src/tests/roleTurnCeilings.test.ts",
     "test:db-size": "node scripts/db-size.test.cjs",
     "test:gates": "node scripts/run-gates.cjs",
