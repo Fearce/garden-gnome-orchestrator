@@ -19,10 +19,16 @@ import { useColumnResize } from "./useColumnResize.js";
 // cross-platform (handles / and \ paths):
 const repoLabel = (p: string): string => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
 
-// Tracks the compact breakpoint (mirrors the CSS media query — keep the two in step) so a few controls
-// can swap to a space-frugal layout a phone or a portrait tablet actually has room for: the wrapping
-// recent-repo chips become a single dropdown row. Re-renders on viewport crossings (rotate / resize).
-const COMPACT_MQ = "(max-width: 899.98px)";
+// Tracks "this rail has no room to spare" (mirrors the CSS bands — keep the two in step) so a few
+// controls can swap to a space-frugal layout: the wrapping recent-repo chips become a single dropdown
+// row. Re-renders on viewport crossings (rotate / resize).
+//
+// The second clause is not decoration. Nine remembered repos wrap to FOUR rows of chips — 162px of a
+// 679px rail — and at 1280×800 landscape that left the transcript 149px, i.e. no visible conversation
+// at all. Width alone never catches it: the rail is ~384px wide whatever the viewport is, so the
+// chips wrap exactly the same at 1280 as at 800. A coarse pointer means a tablet means the rail's
+// height is the scarce thing, and the dropdown is one row instead of four.
+const COMPACT_MQ = "(max-width: 899.98px), (pointer: coarse) and (max-width: 1365.98px)";
 
 function useIsCompact(): boolean {
   const [compact, setCompact] = useState(

@@ -98,6 +98,16 @@ function seed(dataDir) {
   // timestamps would make `.dl-chip:nth-child(2)` land on either file at random.
   finding.run("tablet-lab-dl-md", TASK_ID, "Sweep report", "The nightly report", path.join(SERVER_ROOT, "data", "report.md"), "Sweep report", now);
   finding.run("tablet-lab-dl-bin", TASK_ID, "Trace capture", "An opaque capture", path.join(SERVER_ROOT, "data", "trace.bin"), "Trace capture", now + 1);
+  // NINE remembered repos, because the recent-repo control only renders at all with 2+ and the
+  // failure it caused needed a LIST: as chips they wrap to four rows and take 162px of a 679px rail.
+  // Seeding one (or none) is how a lab reports green over a director pane with no visible chat.
+  db.prepare("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(
+    "setting_recent_repos",
+    JSON.stringify([
+      SERVER_ROOT, "C:\\claude-orchestrator", "C:\\trading_orchestrator", "C:\\repos\\bobfish",
+      "C:\\repos", "C:\\vota\\vota-graphql-api", "C:\\repos\\Battlemons", "C:\\", "D:\\work\\sprogbroen",
+    ]),
+  );
   db.close();
 }
 
@@ -227,6 +237,30 @@ async function drivePass(page, { name, width, height }) {
 
   console.log("\n  LAYOUT — nothing wider than the screen");
   check(`${name}: no horizontal overflow, top bar intact`, (await page.evaluate(collectOverflow)).length === 0, (await page.evaluate(collectOverflow)).join(" | "));
+
+  // The detail pane was not the only column with a vertical budget, and measuring only that one is
+  // how a second "I can't see anything" landed. The rail is ~384px wide at EVERY viewport, so its
+  // chips wrap identically at 1280 and at 800 — width-based checks are structurally blind to it.
+  console.log("\n  TRANSCRIPT BUDGET — the director conversation needs room too");
+  // Portrait shows one pane at a time and defaults to the board, so the rail has no height there
+  // until the bottom nav switches to it.
+  if (width < 900) await page.tap('.mobile-nav .mnav-btn:has-text("Director")');
+  await page.waitForSelector(".transcript", { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  const rail = await page.evaluate(() => {
+    const h = (s) => { const e = document.querySelector(s); return e ? Math.round(e.getBoundingClientRect().height) : 0; };
+    const chips = [...document.querySelectorAll(".repo-chip")];
+    return {
+      rail: h(".rail"), head: h(".rail-head"), search: h(".rail-search"), transcript: h(".transcript"), composer: h(".composer"),
+      dropdown: !!document.querySelector(".recent-repos-select"),
+      chipRows: new Set(chips.map((e) => Math.round(e.getBoundingClientRect().top))).size,
+    };
+  });
+  const railBudget = `transcript ${rail.transcript} of ${rail.rail} (${Math.round((rail.transcript / rail.rail) * 100)}%) — head ${rail.head}, search ${rail.search}, composer ${rail.composer}`;
+  check(`${name}: the recent repos are a dropdown, not rows of wrapping chips`, rail.dropdown && rail.chipRows === 0, `dropdown=${rail.dropdown} chipRows=${rail.chipRows}`);
+  check(`${name}: the transcript gets at least 40% of the rail`, rail.transcript >= rail.rail * 0.4, railBudget);
+  check(`${name}: …and is taller than the composer below it`, rail.transcript > rail.composer, railBudget);
+  if (width < 900) await page.tap('.mobile-nav .mnav-btn:has-text("Tasks")');
 
   console.log("\n  DETAIL — open a task, reach its controls, close it");
   await page.tap(".card");

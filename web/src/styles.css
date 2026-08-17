@@ -550,6 +550,26 @@ button { font-family: inherit; cursor: pointer; }
 }
 .repo-chip-x:hover { color: var(--text); }
 
+/* Recent repos as a single dropdown row instead of wrapping chips. Which of the two renders is
+   decided in Director.tsx (see COMPACT_MQ), not here — nine remembered repos wrap to FOUR rows of
+   chips, 162px of a 679px rail, which is what left the transcript 149px on a tablet. So this styling
+   is unconditional: the component only mounts it when the rail cannot afford the chips. */
+.recent-repos-select { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.recent-repos-select .recent-repos-label { flex: 0 0 auto; }
+.repo-select {
+  flex: 1 1 auto; min-width: 0; height: 40px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
+  color: var(--text); font-family: var(--font-mono); font-size: 14px; cursor: pointer;
+}
+.repo-select:focus { outline: none; border-color: var(--accent); }
+.repo-select-x {
+  flex: 0 0 auto; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
+  color: var(--text-faint); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.repo-select-x:active { background: var(--bg-3); color: var(--text); }
+.repo-select-x:disabled { opacity: 0.4; cursor: not-allowed; }
+
 /* ---- workspace path autocomplete ---- */
 .ws-wrap { position: relative; flex: 1; display: flex; }
 .ws-wrap input.ws { flex: 1; width: 100%; }
@@ -1715,24 +1735,6 @@ body.dl-resizing { user-select: none; }
   .agent-toggles { flex-wrap: nowrap; gap: 4px; }
   .agent-toggle { height: 34px; padding: 0 8px; gap: 4px; }
 
-  /* Recent repos as a single dropdown row (not wrapping chips): a long list otherwise stacked into
-     several rows and ate most of the composer, leaving only ~3 lines of transcript above it. */
-  .recent-repos-select { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .recent-repos-select .recent-repos-label { flex: 0 0 auto; }
-  .repo-select {
-    flex: 1 1 auto; min-width: 0; height: 40px; padding: 0 10px;
-    border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
-    color: var(--text); font-family: var(--font-mono); font-size: 14px; cursor: pointer;
-  }
-  .repo-select:focus { outline: none; border-color: var(--accent); }
-  .repo-select-x {
-    flex: 0 0 auto; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
-    border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
-    color: var(--text-faint); font-size: 20px; line-height: 1; cursor: pointer;
-  }
-  .repo-select-x:active { background: var(--bg-3); color: var(--text); }
-  .repo-select-x:disabled { opacity: 0.4; cursor: not-allowed; }
-
   /* Search collapses behind the header icon; its full-width row only appears once opened, giving the
      transcript that row back by default. */
   .rail-search-toggle {
@@ -2059,6 +2061,26 @@ body.dl-resizing { user-select: none; }
      saved width, which hiding its handle would make unsettable. */
   .detail > .resize-handle { display: none; }
 
+  /* The director rail had 149px of transcript out of 679 — 22%, no visible conversation at all.
+     The repo dropdown (Director.tsx) removes 122px of wrapped chips; these remove the other 111,
+     and they are the SAME trims the compact band already settled on: the header collapses onto one
+     line with the name truncating, and the search bar hides behind its header icon until tapped. */
+  .rail-head { padding: 8px 12px; }
+  .rail-head-row { flex-wrap: nowrap; gap: 8px; }
+  .rail-head .who { flex: 1 1 auto; }
+  .rail-head-title h2,
+  .rail-head-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rail-head-actions { flex: 0 0 auto; gap: 6px; }
+  .agent-toggles { flex-wrap: nowrap; gap: 4px; }
+  .rail-search-toggle {
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 36px; height: var(--tap-sm); border-radius: var(--r-sm);
+    border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint); cursor: pointer;
+  }
+  .rail-search-toggle.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, var(--line)); }
+  .rail-search { display: none; }
+  .rail-search.open { display: flex; }
+
   /* A 800px-tall screen cannot afford a 285px header — that left 257px of feed, about three
      paragraphs. Every byte of the excess is height the 44px density pass added, so give it back
      WITHOUT shrinking a single target: the action row scrolls sideways instead of wrapping onto a
@@ -2149,6 +2171,9 @@ body.dl-resizing { user-select: none; }
   .dl-chip-btn { width: var(--tap); height: var(--tap); }
   .dl-more { width: 34px; height: var(--tap); }
   .card-chatroom { width: var(--tap-sm); height: var(--tap-sm); }
+  /* Only renders while 2+ agents share a repo, so it is absent from most measurements — a second
+     agent joining mid-session is what finally surfaced it at 40px. */
+  .office-huddle { height: var(--tap); }
   /* (.changes-chip is sized in gitChanges.css — that file loads AFTER this one, so a rule for it
      here would be one stylesheet edit away from silently losing the source-order tie.) */
   /* The trailing thread-id chip is a desktop reference that ellipsises to nothing in a 480px sheet
@@ -2162,6 +2187,9 @@ body.dl-resizing { user-select: none; }
      19px target beside a 20px name. The board's Closed disclosure was 22px. */
   .repo-chip-pick { min-height: var(--tap-sm); padding: 0 4px 0 10px; }
   .repo-chip-x { min-height: var(--tap-sm); min-width: var(--tap-sm); padding: 0 8px; }
+  /* The dropdown that replaces those chips on a tablet — 40px is the compact band's mouse-era size. */
+  .repo-select { height: var(--tap); font-size: 16px; }
+  .repo-select-x { width: var(--tap); height: var(--tap); }
   .closed-toggle { min-height: var(--tap-sm); padding: 4px 8px; }
   /* Every button, not only the .sm ones: the base .btn is a 32px box built for a cursor. */
   .btn { min-height: var(--tap); display: inline-flex; align-items: center; justify-content: center; }
