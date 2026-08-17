@@ -36,22 +36,16 @@ references — copy the closest one. Mechanics: project memory
 `browser-test-throwaway-instance`. Never against live prod.
 
 **A touch change needs `tablet-lab`, and only `tablet-lab`.** `hasTouch`/`isMobile` are
-`browser.newContext()` options, not viewport ones, and they are what make Chromium report
-`pointer: coarse` / `hover: none` — so every other browser check in this repo runs with a
-FINE pointer and is structurally blind to the coarse-pointer and hover:none blocks at the
-end of `styles.css`. `npm run tablet-lab --prefix server` drives 1280×800 and 800×1280,
-asserting reachability (the ✕ closes, the hover-only actions have a tap route), a tap-target
-sweep with a documented exception list, and the clamp that keeps a persisted desktop
-`--detail-w` on screen.
+`newContext()` options, not viewport ones, and they are what make Chromium report
+`pointer: coarse` / `hover: none` — every other browser check here runs with a FINE pointer
+and is structurally blind to the touch blocks at the end of `styles.css`.
 
-**A component's own CSS file loads AFTER `styles.css`, so styling its selectors from
-`styles.css` is a source-order bet you will eventually lose.** `main.tsx` imports
-`styles.css` first, then the component tree pulls in `gitChanges.css` / `gitConsole.css`
-/ `diff.css` — which land later in the bundle. An equally-specific rule for `.changes-chip`
-or a `.gc-*` selector written in `styles.css` therefore applies only while the component
-file happens not to declare the same property, and nothing goes red the day it does. Put
-the rule in the component's own file. Same trap, one level up, as the `getComputedStyle`
-rule in `topbar-accounts-strip.md`: assert what the element computes, never what you wrote.
+**Put a component's CSS in that component's own file.** `main.tsx` loads `styles.css`
+first, so `gitChanges.css` / `gitConsole.css` / `diff.css` land LATER in the bundle: an
+equally-specific rule for `.changes-chip` or a `.gc-*` written in `styles.css` applies
+only while that file happens not to declare the same property, and nothing goes red the
+day it does. Same trap as `topbar-accounts-strip.md`'s — assert `getComputedStyle`, never
+the rule you wrote.
 
 ## The line: READING prod is fine, INTERACTING with it is not
 "Never browser-test prod" is about *interaction*; stopping there sends agents off to
