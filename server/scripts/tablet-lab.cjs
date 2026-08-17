@@ -86,7 +86,11 @@ function seed(dataDir) {
   }
   db.prepare(
     "INSERT INTO threads (id, title, state, workspace, brief, raw_prompt, created_at, updated_at) VALUES (?, ?, 'review', ?, ?, ?, ?, ?)",
-  ).run(TASK_ID, "Tablet lab task", SERVER_ROOT, "a seeded task", "a seeded task", now, now);
+    // A REALISTIC title, not "Tablet lab task". The header's height is driven by how many lines the
+    // title wraps to, so a short one hides the whole vertical-budget problem: with a two-word title
+    // the 2026-08-17 regression measured 44% of the screen in this lab while prod's real task — this
+    // length — was down to 32%. The fixture, not the threshold, is what made the gate honest.
+  ).run(TASK_ID, "Enable menu revision for 1% of locations behind a flag", SERVER_ROOT, "a seeded task", "a seeded task", now, now);
   const finding = db.prepare(
     "INSERT INTO findings (id, thread_id, from_role, kind, summary, detail, path, label, severity, routed, created_at) VALUES (?, ?, 'implementor', 'deliverable', ?, ?, ?, ?, 'info', 0, ?)",
   );
@@ -139,9 +143,18 @@ const collectOverflow = () => {
   const detail = document.querySelector(".detail");
   if (detail) {
     const dr = detail.getBoundingClientRect();
+    // Content inside a deliberate horizontal scroller (the action row, the feed filter) is SCROLLED,
+    // not spilled — its own container is on screen and the operator can reach the rest.
+    const inScroller = (el) => {
+      for (let p = el.parentElement; p && p !== detail; p = p.parentElement) {
+        const ox = getComputedStyle(p).overflowX;
+        if (ox === "auto" || ox === "scroll") return true;
+      }
+      return false;
+    };
     for (const el of detail.querySelectorAll("*")) {
       const cs = getComputedStyle(el);
-      if (cs.position === "fixed" || cs.display === "none") continue;
+      if (cs.position === "fixed" || cs.display === "none" || inScroller(el)) continue;
       const r = el.getBoundingClientRect();
       if (r.width > 0 && r.right > dr.right + 1) {
         out.push(`.${(el.className.toString() || el.tagName).split(" ")[0]} spills out of the detail (${Math.round(r.right)} > ${Math.round(dr.right)})`);
@@ -244,6 +257,44 @@ async function drivePass(page, { name, width, height }) {
   check(`${name}: nothing spills out of the open detail`, spill.length === 0, spill.join(" | "));
   const dismissOpacity = await page.$eval(".card .card-dismiss", (el) => getComputedStyle(el).opacity).catch(() => "absent");
   check(`${name}: a card's ✕ is visible with no hover to reveal it`, dismissOpacity === "1", `opacity=${dismissOpacity}`);
+
+  // The gap that let a 44px density pass ship a console you could read three lines of: every
+  // assertion here measured WIDTH. Nothing measured what the screen is actually for. A taller
+  // header is invisible to a tap sweep and to an overflow check, and 50/50 stayed green while the
+  // feed was down to 32% of an 800px screen.
+  console.log("\n  VERTICAL BUDGET — the feed is what the screen is for");
+  // Measure only once the whole column exists. The deliverables strip mounts a beat after the head,
+  // and measuring across that gap made this check flip between 28% and 44% run to run — an
+  // assertion that races the render is worse than no assertion.
+  await page.waitForSelector(".deliverables .dl-chip", { timeout: 10_000 });
+  const space = () =>
+    page.evaluate(() => {
+      const h = (s) => { const e = document.querySelector(s); return e ? Math.round(e.getBoundingClientRect().height) : 0; };
+      return { vh: window.innerHeight, feed: h(".feed"), head: h(".detail-head"), topbar: h(".topbar"), inject: h(".inject-bar") };
+    });
+  const open = await space();
+  // Two clauses, both real, because a bare percentage is calibrated against whichever task you
+  // happened to open. 35% is the floor for the TIGHTEST real case — landscape (800px tall) on a
+  // task that also carries a deliverables strip. The second clause is the one that cannot be argued
+  // with: whatever else is on screen, the thing you came to read must be bigger than its own
+  // header. The shipped regression failed both (feed 257 = 32%, head 285).
+  const pct = Math.round((open.feed / open.vh) * 100);
+  const budget = `feed ${open.feed} of ${open.vh} (${pct}%) — head ${open.head}, topbar ${open.topbar}, inject ${open.inject}`;
+  check(`${name}: the feed gets at least 35% of the screen with the header expanded`, open.feed >= open.vh * 0.35, budget);
+  check(`${name}: …and is taller than the header above it`, open.feed > open.head, budget);
+  // Collapsing is the escape hatch for a long feed, so it has to exist, be tappable, and pay.
+  await page.tap(".detail-title-actions .head-toggle");
+  await page.waitForSelector(".detail-head.collapsed", { timeout: 5_000 }).catch(() => {});
+  const shut = await space();
+  check(`${name}: the header collapses when its chevron is tapped`, await page.isVisible(".detail-head.collapsed"));
+  check(
+    `${name}: …and that buys the feed real space`,
+    shut.feed >= open.feed + 60,
+    `feed ${open.feed} → ${shut.feed} (head ${open.head} → ${shut.head})`,
+  );
+  await page.tap(".detail-title-actions .head-toggle"); // restore — the state is persisted globally
+  await page.waitForSelector(".detail-head.collapsed", { state: "detached", timeout: 5_000 }).catch(() => {});
+  check(`${name}: …and expands again`, !(await page.isVisible(".detail-head.collapsed")));
 
   console.log("\n  DELIVERABLES — the hover-only actions have a tap route");
   await page.waitForSelector(".dl-chip", { timeout: 10_000 });
