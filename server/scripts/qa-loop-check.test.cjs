@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 const assert = require("node:assert/strict");
-const { qaLoopReading, accountedLaunches, roundsCap } = require("./qa-loop-check.cjs");
+const fs = require("node:fs");
+const path = require("node:path");
+const { qaLoopReading, accountedLaunches, roundsCap, QA_DURABLE_COUNTERS } = require("./qa-loop-check.cjs");
 
 const text = (r) => r.lines.join("\n");
 const base = {
@@ -117,6 +119,57 @@ assert.equal(roundsCap("abc"), null, "a non-numeric row reads as unset");
   assert.match(text(on), /implementor is not relaunched/);
   const off = qaLoopReading({ ...base, launches: 6, roundsUsed: 3, cutoffResumes: 2, silentRetries: 1 });
   assert.doesNotMatch(text(off), /QA-fixes mode/, "silent for the default single-mode setup");
+}
+
+// --- drift guard: the counter map vs. the live StageOutputs type ---------------
+// The 08-17 defect was not a typo, it was DRIFT: the check assumed launches ≈ rounds, and three
+// recovery mechanisms shipped afterwards that each spend a launch. Nothing failed the day they
+// landed. This is the same two-way diff test:failover-ladder runs against threadManager's real
+// hasHeadroom expressions — read the source of truth, and fail on a gap in either direction.
+{
+  const typesSrc = fs.readFileSync(path.resolve(__dirname, "..", "src", "types.ts"), "utf8");
+  const block = /export interface StageOutputs \{([\s\S]*?)\n\}/.exec(typesSrc);
+  assert.ok(block, "no StageOutputs interface in types.ts — the QA counters moved, and this guard is now blind");
+
+  // Only the numeric per-episode counters: a boolean marker (reviewFixing, selfImproving) is a
+  // state flag, not something that spends a QA launch.
+  const live = new Set(
+    [...block[1].matchAll(/^\s{2}(qa[A-Za-z0-9]*)\??:\s*number\b/gm)].map((m) => m[1]),
+  );
+  assert.ok(live.size >= 3, `expected the known QA counters in StageOutputs, parsed ${[...live]} — the parse broke`);
+
+  for (const field of live) {
+    assert.ok(
+      field in QA_DURABLE_COUNTERS,
+      `StageOutputs declares the durable QA counter '${field}', which qa-loop-check.cjs does not know about. ` +
+        `If it spends a QA launch while recovering a round, add it to QA_DURABLE_COUNTERS with recoversRound: ` +
+        `true (and pass it from probe-task-runs.cjs) — otherwise every task using it reports a phantom ` +
+        `"unexplained launch". If it spends no launch, add it with recoversRound: false.`,
+    );
+  }
+  for (const field of Object.keys(QA_DURABLE_COUNTERS)) {
+    assert.ok(
+      live.has(field),
+      `qa-loop-check.cjs accounts for '${field}', which is no longer a numeric counter on StageOutputs — ` +
+        `a stale term silently inflates the accounted total and hides a real unexplained launch.`,
+    );
+  }
+}
+
+// The map has to DRIVE the arithmetic, not merely describe it: a declaration nothing reads is
+// documentation that rots. Every recovering counter must move the total and appear in the print.
+{
+  const recovering = Object.values(QA_DURABLE_COUNTERS).filter((c) => c.recoversRound);
+  assert.ok(recovering.length >= 2, "expected at least the cutoff + silent-retry counters to recover a round");
+  for (const term of recovering) {
+    assert.equal(
+      accountedLaunches({ roundsUsed: 1, [term.input]: 1 }),
+      2,
+      `'${term.input}' is declared as recovering a round but does not move the accounted total`,
+    );
+    const r = qaLoopReading({ ...base, launches: 2, roundsUsed: 1, [term.input]: 1 });
+    assert.match(text(r), new RegExp(`1 ${term.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), `'${term.input}' is missing from the printed arithmetic`);
+  }
 }
 
 console.log("qa-loop-check: all assertions passed");

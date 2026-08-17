@@ -45,11 +45,44 @@ function roundsCap(raw) {
 }
 
 /**
+ * The durable per-episode QA counters in `StageOutputs`, and what each means for the launch
+ * arithmetic. `recoversRound: true` = it spends a QA launch while RECOVERING a round instead of
+ * starting one, so the reconciliation has to add it on top of roundsUsed.
+ *
+ * This map is the whole reason the 2026-08-17 defect happened: the original check assumed
+ * launches ≈ rounds, and three recovery mechanisms then shipped that quietly broke it. So the
+ * map drives both the sum and the printed arithmetic below (a decorative declaration would rot),
+ * and `test:qa-loop-check` diffs it BOTH WAYS against the live StageOutputs type — a new
+ * `qa*` counter that ships without a row here fails the gate the same day, rather than silently
+ * turning every task using it into an "unexplained launch".
+ */
+const QA_DURABLE_COUNTERS = {
+  qaRoundsUsed: { input: "roundsUsed", recoversRound: false, label: "round(s)" },
+  qaCutoffResumes: { input: "cutoffResumes", recoversRound: true, label: "turn-ceiling continuation(s)" },
+  qaSilentRetries: { input: "silentRetries", recoversRound: true, label: "empty-run retry(ies)" },
+};
+
+/**
+ * A cap failover relaunches QA on another backend without touching any durable counter, so it is
+ * read off the run rows (`agent_runs.cap_flagged`) rather than StageOutputs — hence not in the map.
+ */
+const CAP_FAILOVER_TERM = { input: "capFailovers", label: "cap failover(s)" };
+
+/** Each term of the launch arithmetic, in print order: rounds, then everything that recovers one. */
+function launchTerms() {
+  return [
+    QA_DURABLE_COUNTERS.qaRoundsUsed,
+    ...Object.values(QA_DURABLE_COUNTERS).filter((c) => c.recoversRound),
+    CAP_FAILOVER_TERM,
+  ];
+}
+
+/**
  * Every launch the loop's own bookkeeping can explain. Kept separate from the verdict
  * so an unexplained launch reads as "reconcile this", never as the drain signature.
  */
-function accountedLaunches({ roundsUsed, cutoffResumes, silentRetries, capFailovers }) {
-  return num(roundsUsed) + num(cutoffResumes) + num(silentRetries) + num(capFailovers);
+function accountedLaunches(input) {
+  return launchTerms().reduce((total, term) => total + num(input[term.input]), 0);
 }
 
 /**
@@ -58,15 +91,10 @@ function accountedLaunches({ roundsUsed, cutoffResumes, silentRetries, capFailov
  * exceeding maxQaRounds.
  */
 function qaLoopReading(input) {
-  const { cap, launches, roundsUsed, cutoffResumes, silentRetries, capFailovers, interrupted, appliesFixes } = input;
+  const { cap, launches, roundsUsed, interrupted, appliesFixes } = input;
   const lines = [];
   const accounted = accountedLaunches(input);
-  const parts = [
-    `${num(roundsUsed)} round(s)`,
-    `${num(cutoffResumes)} turn-ceiling continuation(s)`,
-    `${num(silentRetries)} empty-run retry(ies)`,
-    `${num(capFailovers)} cap failover(s)`,
-  ];
+  const parts = launchTerms().map((term) => `${num(input[term.input])} ${term.label}`);
   lines.push(`  ${launches} QA launch(es) = ${parts.join(" + ")}`);
   if (num(interrupted) > 0) {
     lines.push(
@@ -109,4 +137,4 @@ function qaLoopReading(input) {
   return { lines, warn: false };
 }
 
-module.exports = { qaLoopReading, accountedLaunches, roundsCap };
+module.exports = { qaLoopReading, accountedLaunches, roundsCap, QA_DURABLE_COUNTERS };

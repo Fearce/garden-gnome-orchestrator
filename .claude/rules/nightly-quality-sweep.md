@@ -11,6 +11,9 @@ growth, which is what §5, §4 and §8 exist to make you look at.
 prints ~1500 lines — more than one command can hold — so piping it through `tail` silently discards
 steps 1-6, and re-running those probes to get them back is pure waste. Every run rewrites the transcript
 in full, live, and survives you piping the command itself to `head`. Gate: `test:quality-sweep`.
+The run takes ~10min, so background it and block on the transcript's ONE terminal marker —
+`=== sweep summary ===`. Do not wait on "verdict": individual steps print their own `=== verdict ===`
+headers (step 3 does, at ~40s), so that grep returns mid-sweep and you read a half-finished log.
 
 ## 1. `npm run health --prefix server`
 (`nightly-health.cjs`) — hits `/api/health`, checks `:4317` vs `dist` **and `dist` vs HEAD**, greps live
