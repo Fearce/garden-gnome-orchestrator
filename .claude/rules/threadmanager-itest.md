@@ -65,6 +65,10 @@ Both gaps above were this — the differences are exactly where lifecycle bugs l
   is not open" — surfacing inside the NEXT test, so it reads as that test's bug. Yield
   several macrotask turns (not one `setTimeout(0)`) after any call you don't await.
 - `db.createThread` requires `rawPrompt` (NOT NULL) — omitting it throws SQLITE_CONSTRAINT.
+- **`db.updateThread` writes only title/state/brief/workspace/error.** `effort_override` (and the close
+  columns) are set at creation / by their own methods, so `updateThread({effortOverride})` silently no-ops
+  and your "the operator's pin still wins" assertion fails against a thread that was never pinned. Seed the
+  pin the way a dispatch does: `createThread({ effortOverride })`.
 - `dispose()` must `clearInterval(capSupervisor)` + `clearTimeout(tokenResumeTimer)` and
   `db.raw.close()` BEFORE `rmSync`, or Windows throws EBUSY on the sqlite file.
 - A `StubAccounts` fake must carry every method the constructor's boot-apply calls

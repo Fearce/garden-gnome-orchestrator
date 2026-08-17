@@ -35,6 +35,15 @@ script built on it that seeds its own state and drives the surface: `chip-lab.cj
 references — copy the closest one. Mechanics: project memory
 `browser-test-throwaway-instance`. Never against live prod.
 
+**In a lab, wait for the socket's `hello`, not for the shell to mount — and never believe an
+optimistic control.** Everything server-authoritative (settings, accounts, any broadcast collection)
+renders NEUTRAL DEFAULTS until that frame lands, so a check that opens on `.topbar` reads "off" and an
+empty list on a busy box — indistinguishable from the feature being broken. `.accounts .acct` is
+hello-only, so it is the signal (`model-select-lab.cjs`, `chip-lab.cjs`). Likewise a settings toggle
+flips its own `aria-checked` BEFORE the round-trip (`store.setSettings` is optimistic), so re-reading it
+proves nothing and reloading straight after races the write: poll the instance's own kv row read-only
+(`waitForPersisted` in `model-select-lab.cjs`) — that is the claim you actually mean.
+
 **A touch change needs `tablet-lab`, and only `tablet-lab`.** `hasTouch`/`isMobile` are
 `newContext()` options, not viewport ones, and they are what make Chromium report
 `pointer: coarse` / `hover: none` — every other browser check here runs with a FINE pointer
