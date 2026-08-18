@@ -35,7 +35,7 @@ const STEPS = [
   { step: 4, name: "parks", what: "parked + abandoned tasks", script: "probe:parks", cwd: SERVER },
   { step: 5, name: "accounts", what: "backend headroom + failover ladder", script: "probe:accounts", cwd: SERVER },
   { step: 6, name: "console", what: "the console still mounts", script: "probe:console", cwd: ROOT },
-  { step: 6, name: "chips", what: "account chips unclipped at 4 widths", script: "probe:chips", cwd: ROOT },
+  { step: 6, name: "chips", what: "account chips unclipped across desktop widths", script: "probe:chips", cwd: ROOT },
   { step: 7, name: "audit-deps", what: "prod dependency advisories + overrides", script: "audit:deps", cwd: SERVER },
   { step: 7, name: "audit-secrets", what: "secrets in tree or history", script: "audit:secrets", cwd: SERVER },
   { step: 8, name: "db-size", what: "what the DB is made of", script: "probe:db-size", cwd: SERVER },
