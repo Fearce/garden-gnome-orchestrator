@@ -5,6 +5,7 @@ import fastifyStatic from "@fastify/static";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, basename, extname, relative } from "node:path";
 import { config } from "./config.js";
+import { buildInfo } from "./buildInfo.js";
 import { installCrashGuards, logBoot, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
 import { Db } from "./db/db.js";
 import { EventHub } from "./events.js";
@@ -179,10 +180,13 @@ async function main(): Promise<void> {
     await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
     registerWs(app, { db, hub, manager, director, accounts, scheduler, repos });
 
+    // `build` is which dist THIS process loaded, read once at boot — the fact that turns "is the live
+    // server running current code?" into a comparison instead of an inference from mtimes.
     app.get("/api/health", async () => ({
       ok: true,
       auth: config.oauthToken ? "oauth-token" : "inherited-cli-login",
       models: config.models,
+      build: buildInfo(),
     }));
 
     // The current built-bundle hash, so an open client can detect a deploy and reload itself.

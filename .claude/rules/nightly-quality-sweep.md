@@ -19,10 +19,10 @@ headers (step 3 does, at ~40s), so that grep returns mid-sweep and you read a ha
 (`nightly-health.cjs`) — hits `/api/health`, checks `:4317` vs `dist` **and `dist` vs HEAD**, greps live
 reliability symbols, lists dirty git paths, summarizes SQLite parks/caps/stuck runs, and scans `crash.log`
 for real faults vs benign memory high-water notes. Exit 1 = hard fail; a dirty tree alone does **not** fail.
-Read **`dist` vs HEAD** carefully: process-vs-dist can agree while `dist` itself predates HEAD — how a
-feature shipped its web half and sat in prod a full day unbuilt on the server (Stop button, 2026-07-29). It
-compares by CONTENT (`dist/.build-info.json`'s commit vs HEAD's `server/src`, tests excluded); timestamps
-alone would cry wolf every sweep. A warn = `npm run build` + the atomic hub restart.
+**Both build checks compare CONTENT** (a commit + `git diff` over `server/src`, tests excluded); mtimes
+cry wolf. `dist` vs HEAD (`.build-info.json`) can be stale while process-vs-dist agrees — the Stop button
+sat a day unbuilt that way (2026-07-29). Process-vs-dist reads the build the RUNNING process reports
+(`/api/health`→`build`; gate `test:process-build`). Only `stale` = `npm run build` + atomic hub restart.
 
 ## 2. `npm run typecheck && npm run test:gates --prefix server` — health does NOT run the gates
 health greps dist symbols only, so a green one can sit on top of crash-broken gates (a missing
