@@ -10,6 +10,7 @@ const transient = [
   // strings production recorded; both used to fail the run outright instead of retrying or switching provider.
   "API Error: Unable to connect to API (ConnectionRefused)",
   "API Error: Unable to connect to API (FailedToOpenSocket)",
+  "error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
   "connect ECONNREFUSED 127.0.0.1:443",
   { api_error_status: 502, result: "bad gateway" },
   { error: { type: "overloaded_error", message: "Overloaded" } },
