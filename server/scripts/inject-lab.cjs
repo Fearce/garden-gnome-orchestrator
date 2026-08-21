@@ -3,8 +3,8 @@
 // actually shows while a reviewer owns the slot; and "Interrupt & inject" on a task in `qa` has to
 // survive the whole click → socket → injectThread round-trip, which is the regression this exists for
 // (it used to abort QA's turn and park the task in `review` — server side, gate `test:inject-qa`).
-// Boots its own throwaway instance, seeds one task in `qa` and one in `implementing`, drives both.
-// Not in GATES: it needs a browser + an instance, like the other labs.
+// Boots its own throwaway instance, seeds one task each in `qa`, `reviewing` and `implementing`,
+// and drives all three. Not in GATES: it needs a browser + an instance, like the other labs.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
