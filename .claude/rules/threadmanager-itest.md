@@ -75,12 +75,12 @@ Both gaps above were this — the differences are exactly where lifecycle bugs l
   (`setSpreadUsage`, `applyWeeklySafetyPct`, …) or construction crashes — plus `auxToken()`
   if your path can reach `setState(id,"done")`: `announceDone` calls it inside a `void`ed
   promise, so a missing method is an unhandled rejection that kills the whole run.
-- "What does the SDK actually do?" — never reason from the types; several fields have no doc comment.
-  CLI semantics are in the shipped binary: minified, so anchor on a string literal; the grep is free and
-  ~0.3s (`~/.claude/scripts/claude-cli-grep.cjs '("now")'` — how `priority:"now"` was caught being an
-  `abort("interrupt")` that kills a schema-bound role). What a RUN does (resume's turn budget, does it
-  reach the model) needs quota: `npm run probe:sdk-resume --prefix server` — subtype/turns/output/cost
-  per resume, `out: 0` on a success = the silent-resume signature, ~$0.10.
+- "What does the SDK actually do?" — never reason from the types (several fields have no doc comment).
+  CLI semantics live in the shipped binary, minified, so anchor on a string literal. The grep is free
+  and ~0.3s: `claude-cli-grep '("now")'` (Bash tool; PowerShell eats the inner quotes — `--pattern-file`)
+  is how `priority:"now"` was caught being an `abort("interrupt")` that kills a schema-bound role. What
+  a RUN does (resume budget, reaching the model) needs quota: `npm run probe:sdk-resume --prefix server`
+  — per-resume subtype/turns/output/cost, `out: 0` on success = silent resume, ~$0.10.
 - Register the gate: the `test:*` script in `server/package.json` AND in `GATES` in
   `server/scripts/run-gates.cjs`, or the nightly sweep never runs it — `test:gate-registration`
   red-flags both halves of that omission. Verify with
