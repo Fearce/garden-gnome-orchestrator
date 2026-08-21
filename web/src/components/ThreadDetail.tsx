@@ -406,7 +406,11 @@ export function ThreadDetail() {
   const autoReviewable = canAutoReview(thread);
   // While a reviewer owns the slot there is no implementor to stop, and one-shot reviewers can't be
   // interrupted without destroying their verdict — so say what the server will actually do instead.
-  const reviewerOwnsSlot = thread.state === "qa" || thread.state === "reviewing";
+  // The two lanes differ, and the text must not blur it: a QA-stage inject is ALSO queued for the
+  // implementor (the QA gate routes it both ways), but an auto-review-stage inject only reaches the
+  // reviewer — nothing on that lane drains the implementor queue, so don't promise a hand-off there.
+  const qaStage = thread.state === "qa";
+  const reviewerOwnsSlot = qaStage || thread.state === "reviewing";
 
   const threadRuns = Object.values(runs).filter((r) => r.threadId === id);
   const impl = threadRuns.filter((r) => r.role === "implementor").sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -810,9 +814,11 @@ export function ThreadDetail() {
             title={
               frozen
                 ? FROZEN_CONTROL_TOOLTIP
-                : reviewerOwnsSlot
+                : qaStage
                   ? "Send to the reviewer now, and queue it for the implementor to pick up at the next hand-off"
-                  : "Send to the implementor now — it uses this on its next step while it keeps working"
+                  : reviewerOwnsSlot
+                    ? "Send to the auto-reviewer now — it factors this into its verdict"
+                    : "Send to the implementor now — it uses this on its next step while it keeps working"
             }
           >
             Inject
@@ -824,9 +830,11 @@ export function ThreadDetail() {
             title={
               frozen
                 ? FROZEN_CONTROL_TOOLTIP
-                : reviewerOwnsSlot
+                : qaStage
                   ? "Nothing to stop while the reviewer has the task — this goes to the reviewer and is queued for the implementor, same as Inject"
-                  : "Stop the implementor now and hand it this immediately"
+                  : reviewerOwnsSlot
+                    ? "Nothing to stop while the auto-reviewer has the task — this reaches the reviewer, same as Inject"
+                    : "Stop the implementor now and hand it this immediately"
             }
           >
             Interrupt &amp; inject

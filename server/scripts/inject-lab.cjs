@@ -46,6 +46,7 @@ async function openTask(page, title) {
     );
     ins.run("11111111-1111-4111-8111-111111111111", "REVIEWED TASK", "p", "b", process.cwd(), "qa", now, now);
     ins.run("22222222-2222-4222-8222-222222222222", "WORKING TASK", "p", "b", process.cwd(), "implementing", now - 1000, now - 1000);
+    ins.run("33333333-3333-4333-8333-333333333333", "AUTOREVIEWED TASK", "p", "b", process.cwd(), "reviewing", now - 2000, now - 2000);
     db.close();
 
     const chromium = loadChromium();
@@ -67,6 +68,16 @@ async function openTask(page, title) {
     const impl = await titles(page);
     check("implementing Inject tooltip is unchanged", /Send to the implementor now/.test(impl.inject ?? ""), impl.inject);
     check("implementing Interrupt tooltip is unchanged", /Stop the implementor now/.test(impl.interrupt ?? ""), impl.interrupt);
+
+    // The auto-review lane differs from the QA one: the note reaches the reviewer only — nothing on
+    // that lane drains the implementor queue (runAutoReview drops buffered notes when it settles), so
+    // the tooltip must NOT promise a hand-off the server doesn't perform.
+    await openTask(page, "AUTOREVIEWED TASK");
+    const ar = await titles(page);
+    check("auto-review Inject tooltip names the auto-reviewer", /Send to the auto-reviewer now/.test(ar.inject ?? ""), ar.inject);
+    check("auto-review Inject tooltip promises no implementor hand-off", !/queue it for the implementor/.test(ar.inject ?? ""), ar.inject);
+    check("auto-review Interrupt tooltip stops promising to stop an implementor", !/Stop the implementor/.test(ar.interrupt ?? ""), ar.interrupt);
+    check("auto-review Interrupt tooltip says what it really does", /Nothing to stop while the auto-reviewer has the task/.test(ar.interrupt ?? ""), ar.interrupt);
 
     // ...and the click itself, end to end through the socket: a task in `qa` must survive it.
     await openTask(page, "REVIEWED TASK");
