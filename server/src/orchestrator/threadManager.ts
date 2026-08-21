@@ -4291,6 +4291,23 @@ export class ThreadManager implements OrchestratorApi {
 
   // ---- live thread controls ----
 
+  /** Deliver owner steering to a SCHEMA-BOUND one-shot role (QA, the auto-reviewer) — as a plain queued
+   *  message, never as an interrupt, whatever mode the owner picked.
+   *
+   *  `priority: "now"` is not a "reach the current turn sooner" hint: it IS an interrupt. The CLI aborts
+   *  the turn in flight the moment a "now" message is queued, and CodexAgentRun.send maps it straight to
+   *  requestInterrupt(). The abort then comes back as a SUCCESS-shaped result carrying no structured
+   *  output — so nothing downstream can tell it from a review that finished: runQA finds no verdict, it
+   *  is neither an empty run nor a turn-ceiling stop, and the loop parks the task in `review` with "QA
+   *  could not complete". That is how "Interrupt & inject" during QA killed a live task instead of
+   *  steering it. A plain send stays in the same session for the role's next turn.
+   *
+   *  The planner is deliberately NOT on this path: interrupting it is safe precisely because it HAS a
+   *  continuation — drainDirectorNotes re-plans off the aborted turn. Interrupt only a role that has one. */
+  private steerStructuredRole(run: AgentRunLike, message: string, images?: ImageAttachment[]): void {
+    run.send(contentWithImages(structuredAcknowledgedInjection(message), images?.length ? images.map(toImageBlock) : []));
+  }
+
   async injectThread(
     threadId: string,
     message: string,
@@ -4348,40 +4365,31 @@ export class ThreadManager implements OrchestratorApi {
     // QA stage gate (checked BEFORE `this.live`): during QA the implementor is fully stopped and the QA
     // agent runs alone in the slot. Falling through would either `send` to a live implementor (there is
     // none now, but this gate is the structural guarantee of that) or take the cold-resume path and SPAWN
-    // one beside the running QA — two agents in one pipeline slot, the exact race this guards. Forward the
-    // steering to the QA agent instead so the invariant (≤1 active agent per slot) holds.
+    // one beside the running QA — two agents in one pipeline slot, the exact race this guards. So the
+    // steering goes to the QA agent (never as an interrupt — see steerStructuredRole) and, because the
+    // agent that acts on new direction is the implementor, into its delivery queue as well.
     if (thread?.state === "qa") {
-      this.hub.log("info", "[INJECT] QA in progress — forwarding context to QA agent, not re-spawning implementor");
+      this.hub.log("info", "[INJECT] QA in progress — steering QA and queuing for the implementor, not re-spawning one");
+      // No handle while the state is "qa" means a mid-QA account failover (runRole dropped the old handle
+      // and hasn't registered the relaunched one) or the fix-round window after QA returned but before the
+      // re-launched implementor goes live. Either way the queue below is what carries the note.
       const qa = this.liveQa.get(threadId);
-      if (qa) {
-        // Forward to the running QA agent but do NOT call qa.interrupt(): QA runs as a one-shot under
-        // runRole, which stop()s it the instant it emits its verdict result, and the SDK surfaces an
-        // interrupt as an (error) result — so interrupting would tear QA down into 'review' rather than
-        // steer it, and race the follow-up send against teardown. A priority "now" send is the
-        // best-effort way to reach QA's current turn; 'append' queues normally. If the note lands after
-        // QA already emitted its verdict it simply doesn't change THIS round — accepted, since the
-        // invariant (never a second agent), not this round's verdict, is what this gate must guarantee.
-        const blocks = images?.length ? images.map(toImageBlock) : [];
-        qa.send(
-          contentWithImages(structuredAcknowledgedInjection(message), blocks),
-          mode === "interrupt" ? { priority: "now" } : undefined,
-        );
-      } else {
-        // No QA handle while state is "qa" — either a mid-QA account failover (runRole deleted the old
-        // handle and hasn't registered the relaunched one yet) or the fix-round window after QA returned
-        // but before the re-launched implementor goes live (state is held at "qa" across that compression).
-        // Buffer the note; the next fix-round's implementor drains directorNotes into its fix message
-        // (runImplementorQaLoop), so it reaches the implementor when IT is running — never alongside QA, never lost.
-        this.bufferDirectorNote(threadId, message);
-        if (images?.length) {
-          this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
-        }
+      if (qa) this.steerStructuredRole(qa, message, images);
+      if (images?.length) {
+        this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
       }
+      // Reaching QA only lets it FACTOR the note into this round's verdict; it is not delivery. QA is a
+      // one-shot that may already have emitted that verdict, and a QA PASS settles the task — so steering
+      // that went nowhere else is silently swallowed by an accepted review. The agent that ACTS on new
+      // direction is the implementor, so queue it there as well: runImplementorQaLoop drains that queue
+      // both before it calls the task done and after a fix round, so the direction lands whichever way
+      // this round goes. It's the same route the Queue button already takes during the QA stage.
+      this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
       const m = this.db.addMessage({
         threadId,
         role: "director",
         kind: "system",
-        content: `↪ injected (forwarded to QA): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+        content: `↪ injected (QA is reviewing — ${qa ? "sent to QA and queued" : "queued"} for the implementor): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
         attachments: injectRefs(),
       });
       this.hub.publish({ type: "thread.message", threadId, message: m });
@@ -4401,7 +4409,7 @@ export class ThreadManager implements OrchestratorApi {
       const impl = this.live.get(threadId);
       const blocks = images?.length ? images.map(toImageBlock) : [];
       if (reviewer) {
-        reviewer.send(contentWithImages(structuredAcknowledgedInjection(message), blocks), mode === "interrupt" ? { priority: "now" } : undefined);
+        this.steerStructuredRole(reviewer, message, images);
       } else if (impl) {
         // Mid fix round: the implementor IS the agent to steer, and it takes the ordinary (non-structured)
         // injection — it has no output schema to corrupt.
@@ -4629,17 +4637,17 @@ export class ThreadManager implements OrchestratorApi {
       if (message?.trim()) this.bufferDirectorNote(threadId, message);
       return { ok: true, state: "queued" };
     }
-    // QA-stage gate — mirror injectThread's: during the QA stage the implementor is fully stopped and
-    // the QA agent owns the slot, so a resume here must NEVER wake or spawn an implementor beside it.
-    // Forward any steering to the running QA agent if present, else buffer it for the next fix-round's
-    // implementor to drain (runImplementorQaLoop folds directorNotes into the fix message). A boot
-    // auto-resume of a mid-QA task doesn't hit this — markInterrupted flips the thread to "failed"
-    // first, so that path routes through the failed→runPipeline branch below, not here.
+    // QA-stage gate — mirror injectThread's, routing included: during the QA stage the implementor is
+    // fully stopped and the QA agent owns the slot, so a resume here must NEVER wake or spawn an
+    // implementor beside it. Steering reaches the running QA agent when there is one (a plain send — see
+    // steerStructuredRole) and is queued for the implementor either way, so a QA pass can't settle the
+    // task with the owner's direction unread. A boot auto-resume of a mid-QA task doesn't hit this —
+    // markInterrupted flips the thread to "failed" first, so that routes through the branch below.
     if (thread.state === "qa") {
       if (message?.trim()) {
         const qa = this.liveQa.get(threadId);
-        if (qa) qa.send(structuredAcknowledgedInjection(message), { priority: "now" });
-        else this.bufferDirectorNote(threadId, message);
+        if (qa) this.steerStructuredRole(qa, message);
+        this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
       }
       return { ok: true, state: "qa" };
     }
@@ -4653,7 +4661,7 @@ export class ThreadManager implements OrchestratorApi {
       if (message?.trim()) {
         const reviewer = this.liveReviewer.get(threadId);
         const impl = this.live.get(threadId);
-        if (reviewer) reviewer.send(structuredAcknowledgedInjection(message), { priority: "now" });
+        if (reviewer) this.steerStructuredRole(reviewer, message);
         else if (impl) impl.run.send(acknowledgedInjection(message), { priority: "now" });
         else this.bufferDirectorNote(threadId, message);
       }

@@ -404,6 +404,9 @@ export function ThreadDetail() {
   // The auto-review control is live only on a genuine review park: a frozen task resumes itself (there's
   // no finished work to judge yet) and a task already being reviewed shows its progress instead.
   const autoReviewable = canAutoReview(thread);
+  // While a reviewer owns the slot there is no implementor to stop, and one-shot reviewers can't be
+  // interrupted without destroying their verdict — so say what the server will actually do instead.
+  const reviewerOwnsSlot = thread.state === "qa" || thread.state === "reviewing";
 
   const threadRuns = Object.values(runs).filter((r) => r.threadId === id);
   const impl = threadRuns.filter((r) => r.role === "implementor").sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -804,7 +807,13 @@ export function ThreadDetail() {
             className={"btn primary sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("append")}
             disabled={frozen || !msg.trim()}
-            title={frozen ? FROZEN_CONTROL_TOOLTIP : "Send to the implementor now — it uses this on its next step while it keeps working"}
+            title={
+              frozen
+                ? FROZEN_CONTROL_TOOLTIP
+                : reviewerOwnsSlot
+                  ? "Send to the reviewer now, and queue it for the implementor to pick up at the next hand-off"
+                  : "Send to the implementor now — it uses this on its next step while it keeps working"
+            }
           >
             Inject
           </button>
@@ -812,7 +821,13 @@ export function ThreadDetail() {
             className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("interrupt")}
             disabled={frozen || !msg.trim()}
-            title={frozen ? FROZEN_CONTROL_TOOLTIP : "Stop the implementor now and hand it this immediately"}
+            title={
+              frozen
+                ? FROZEN_CONTROL_TOOLTIP
+                : reviewerOwnsSlot
+                  ? "Nothing to stop while the reviewer has the task — this goes to the reviewer and is queued for the implementor, same as Inject"
+                  : "Stop the implementor now and hand it this immediately"
+            }
           >
             Interrupt &amp; inject
           </button>

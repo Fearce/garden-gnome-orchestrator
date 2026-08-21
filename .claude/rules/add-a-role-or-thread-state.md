@@ -53,14 +53,14 @@ Sets, the free-text role arrays, and the pipeline gates, which all compile fine 
 1. `server/src/types.ts` — the union, then audit **every set** in `threadManager.ts`: `IN_FLIGHT`,
    `AUTO_RESUME_STATES`, `PRE_IMPLEMENTOR`, `CLOSEABLE`, `DONEABLE`. Plain `ReadonlySet`s — silent.
 2. **`markInterrupted`** — an `IN_FLIGHT` state with no branch is stamped `failed` + "click Resume",
-   which re-enters the implementor pipeline. A state that owns already-finished work needs its own
-   branch restoring where it came from.
+   re-entering the implementor pipeline. A state owning already-finished work needs its own branch.
 3. **The inject/resume gates — the one that actually bites.** `injectThread` and `resumeThread` walk
-   states in order and FALL THROUGH to a cold resume, which spawns an implementor. If a one-shot
-   agent owns the slot in your state, add a gate beside the `qa` ones: hold a `live<Role>` handle
-   (set/cleared in `runRole`, cleared in `cancelThread`/`retryThread`/`forceStopThreadRuns`) and
-   `send` steering to it — never `interrupt()`, which tears a schema-bound one-shot down into a
-   verdict-less error result. Without the gate you get two agents in one slot.
+   states in order and FALL THROUGH to a cold resume, which spawns an implementor — so if a one-shot
+   owns the slot in your state, gate it beside the `qa` ones or you get two agents in one slot: hold a
+   `live<Role>` handle (set/cleared in `runRole`, cleared in `cancelThread`/`retryThread`/
+   `forceStopThreadRuns`) and steer it via `steerStructuredRole` — never `interrupt()`, **nor
+   `priority: "now"`, which IS one**: either aborts a schema-bound role into a verdict-less result the
+   pipeline reads as "could not complete" and parks on (`test:inject-qa`).
 4. Web mirror: `web/src/types.ts`, `Board.tsx` `STATUS_RANK` (a `Record` — the build catches this
    one), and `lib/format.ts` `stateColor` / `stateLabel` / `threadRunning` / `isTerminal` /
    `isDoneable` / `isClosable` (switches with a `default` — all silent).
