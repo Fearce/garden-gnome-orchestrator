@@ -152,6 +152,35 @@ function main(): void {
   const reopened = new Db(join(dir, "t.sqlite"));
   check("the list survives a reopen of the same DB", new OperatorNotes(reopened, hub).list().length === 4);
   reopened.raw.close();
+  notes.clear();
+
+  console.log("notes: one PR is one line even when the link is spelled differently");
+  // Exact-string dedupe left four rows for one PR: a link copied from the browser after reading a
+  // comment carries a #fragment, `gh` prints no trailing slash where a browser adds one, and http/https
+  // are the same resource. The list's contract is one clickable thing = one row, so these must collapse.
+  const canonical = "https://github.com/acme/vota/pull/42";
+  const spellings = [
+    canonical,
+    canonical + "/",
+    canonical.replace("https://", "http://"),
+    canonical + "#issuecomment-1",
+    "https://GitHub.com/acme/vota/pull/42",
+    "https://www.github.com/acme/vota/pull/42",
+  ];
+  spellings.forEach((u, i) => notes.add({ body: `PR 42 take ${i}`, url: u, threadId: `dedupe-${i}` }));
+  check("every spelling of one PR folds into a single row", notes.list().length === 1);
+  check("the row keeps the link that was first posted", notes.list()[0]!.url === canonical);
+  check("a genuinely different PR is still its own row", notes.add({ body: "PR 43", url: canonical.replace("/42", "/43") }).ok && notes.list().length === 2);
+  check("a different query string is a different link", notes.add({ body: "filtered", url: canonical + "?diff=split" }).ok && notes.list().length === 3);
+  notes.clear();
+
+  console.log("notes: the 255-char cap holds even when the body falls back to the link");
+  // `url` may run to 600 chars; an unclipped fallback body would put one on a 255-char list.
+  const longLink = "https://example.com/" + "x".repeat(400);
+  const fallback = notes.add({ body: "   ", url: longLink });
+  check("the fallback body is clipped like any other", fallback.note!.body.length <= NOTE_MAX_CHARS);
+  check("the full link is still the click target", fallback.note!.url === longLink);
+  notes.clear();
 }
 
 try {
