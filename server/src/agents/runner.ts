@@ -331,17 +331,23 @@ export class AgentRun implements AgentRunLike {
 
   /** Resolves on the NEXT result event regardless of any cached one — for the QA loop. */
   nextResult(): Promise<ResultEvent | undefined> {
+    // A steering abort can be the last event before the owner cancels/stops the run.  Callers that
+    // correctly discard that aborted result then ask for the next outcome; if `end` already fired in
+    // the tiny gap, subscribing below would wait forever for an event that cannot recur.
+    if (this.finished) return Promise.resolve(this.lastResult);
     return new Promise((resolve) => {
+      const onEnd = () => {
+        off();
+        resolve(this.lastResult);
+      };
       const off = this.onEvent((e) => {
         if (e.type === "result") {
+          this.emitter.off("end", onEnd);
           off();
           resolve(e);
         }
       });
-      this.emitter.once("end", () => {
-        off();
-        resolve(this.lastResult);
-      });
+      this.emitter.once("end", onEnd);
     });
   }
 

@@ -277,6 +277,18 @@ async function main(): Promise<void> {
     agent.handle({ type: "result", subtype: "success", is_error: false, result: "BANANA", terminal_reason: "completed" });
     check("a completed turn is not flagged", !seen[2]?.aborted);
     check("a completed turn IS cached as the run's result", agent.lastResult?.result === "BANANA");
+
+    // `awaitTurnResult` discards an aborted event and waits for the continuation turn. If the owner
+    // instead stops the run in that tiny interval, `nextResult` must notice the already-fired end rather
+    // than wait forever for another result event.
+    const stoppedAfterAbort = new AgentRun({ model: "claude-opus-5", cwd: process.cwd() }) as any;
+    stoppedAfterAbort.handle({ type: "result", subtype: "success", is_error: false, result: "", terminal_reason: "aborted_tools" });
+    stoppedAfterAbort.finished = true;
+    const stoppedResult = await Promise.race([
+      stoppedAfterAbort.nextResult(),
+      new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 50)),
+    ]);
+    check("an already-ended aborted run does not leave the pipeline waiting forever", stoppedResult === undefined, String(stoppedResult));
   }
 
   // -- Test B (the bug): a chatroom post must not settle the implementor stage -------------------------
