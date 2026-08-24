@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
@@ -746,7 +746,10 @@ function AgentToggles() {
   );
 }
 
-function DirectorBubble({ item }: { item: DirectorItem }) {
+// Memoized so a keystroke in the composer (or a streaming `draft` delta), both of which re-render the
+// Director, doesn't re-render the whole transcript. `item` references are stable in the store, so a
+// bubble only re-renders when its own message changes. Mirrors `FeedRow` in ThreadDetail.tsx.
+const DirectorBubble = memo(function DirectorBubble({ item }: { item: DirectorItem }) {
   const directorName = useStore((s) => s.settings.directorName);
   if (item.kind === "tool") {
     return (
@@ -765,7 +768,7 @@ function DirectorBubble({ item }: { item: DirectorItem }) {
       </div>
     </div>
   );
-}
+});
 
 /** Whole-conversation search results, shown in place of the transcript while a query is active. Each hit
  *  renders a snippet centered on the match so a long director reply stays readable but the match is seen,
