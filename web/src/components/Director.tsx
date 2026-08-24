@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
@@ -10,6 +10,7 @@ import { CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, codexEffortsForModel, type Codex
 import { codexModelOptions } from "../lib/models.js";
 import { effortLabel, modelLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
+import { useColumnResize } from "./useColumnResize.js";
 
 // The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
 // not localStorage — the console is served on both an HTTP and an HTTPS origin (the tablet Deck iframes
@@ -18,20 +19,28 @@ import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 // cross-platform (handles / and \ paths):
 const repoLabel = (p: string): string => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
 
-// Tracks the ≤768px mobile breakpoint (mirrors the CSS media query) so a few controls can swap to a
-// space-frugal layout the phone actually has room for — the wrapping recent-repo chips become a single
-// dropdown row. Re-renders on viewport crossings (rotate / resize).
-function useIsMobile(): boolean {
-  const [mobile, setMobile] = useState(
-    () => typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches,
+// Tracks "this rail has no room to spare" (mirrors the CSS bands — keep the two in step) so a few
+// controls can swap to a space-frugal layout: the wrapping recent-repo chips become a single dropdown
+// row. Re-renders on viewport crossings (rotate / resize).
+//
+// The second clause is not decoration. Nine remembered repos wrap to FOUR rows of chips — 162px of a
+// 679px rail — and at 1280×800 landscape that left the transcript 149px, i.e. no visible conversation
+// at all. Width alone never catches it: the rail is ~384px wide whatever the viewport is, so the
+// chips wrap exactly the same at 1280 as at 800. A coarse pointer means a tablet means the rail's
+// height is the scarce thing, and the dropdown is one row instead of four.
+const COMPACT_MQ = "(max-width: 899.98px), (pointer: coarse) and (max-width: 1365.98px)";
+
+function useIsCompact(): boolean {
+  const [compact, setCompact] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(COMPACT_MQ).matches,
   );
   useEffect(() => {
-    const mq = window.matchMedia("(max-width: 768px)");
-    const onChange = () => setMobile(mq.matches);
+    const mq = window.matchMedia(COMPACT_MQ);
+    const onChange = () => setCompact(mq.matches);
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, []);
-  return mobile;
+  return compact;
 }
 
 export function Director() {
@@ -57,7 +66,7 @@ export function Director() {
   const showPickers = useStore((s) => s.settings.showComposerPickers);
   const recentRepos = useStore((s) => s.settings.recentRepos);
   const maxRecentRepos = useStore((s) => s.settings.maxRecentRepos);
-  const isMobile = useIsMobile();
+  const isCompact = useIsCompact();
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -110,27 +119,39 @@ export function Director() {
 
   // Drag the rail's right edge to resize, mirroring the detail panel. Width is clamped so the
   // board (and an open detail panel) always keep room; persisted via the store.
-  const startResize = (e: ReactMouseEvent) => {
-    e.preventDefault();
-    const onMove = (ev: MouseEvent) => {
-      const { selectedThreadId, detailWidth } = useStore.getState();
-      const reserved = 320 + (selectedThreadId ? detailWidth : 0) + 16;
-      const max = Math.min(760, window.innerWidth - reserved);
-      setDirectorWidth(Math.min(Math.max(ev.clientX, 280), Math.max(280, max)));
-    };
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.classList.remove("col-resizing");
-    };
-    document.body.classList.add("col-resizing");
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  };
+  const startResize = useColumnResize(
+    useCallback(
+      (clientX: number) => {
+        const { selectedThreadId, detailWidth } = useStore.getState();
+        const reserved = 320 + (selectedThreadId ? detailWidth : 0) + 16;
+        const max = Math.min(760, window.innerWidth - reserved);
+        setDirectorWidth(Math.min(Math.max(clientX, 280), Math.max(280, max)));
+      },
+      [setDirectorWidth],
+    ),
+  );
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [items.length, draft]);
+
+  // The rail is `display:none` on mobile while the board pane is up, so the autoscroll effect above
+  // fires against a zero-height container and lands nowhere — switch to the director pane and the long
+  // transcript sits at the top. Re-pin to the newest message the moment the container regains height
+  // (the pane becomes visible), matching desktop where the rail is never hidden. Fires only on the
+  // hidden→visible transition so it never fights a user who has scrolled up mid-conversation.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let wasVisible = el.clientHeight > 0;
+    const ro = new ResizeObserver(() => {
+      const visible = el.clientHeight > 0;
+      if (visible && !wasVisible) el.scrollTo({ top: el.scrollHeight });
+      wasVisible = visible;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // In skip mode the message enters the pipeline at its first active stage — planner if it's on,
   // otherwise the implementor (the researcher only ever runs after the planner, never first).
@@ -161,7 +182,7 @@ export function Director() {
   return (
     <>
     <aside className="rail">
-      <div className="resize-handle rail-resize" onMouseDown={startResize} title="Drag to resize the director panel" />
+      <div className="resize-handle rail-resize" onPointerDown={startResize} title="Drag to resize the director panel" />
       <div className="rail-head">
         <div className="rail-head-row">
           <div className="who">
@@ -269,7 +290,7 @@ export function Director() {
 
       <div className={"composer" + (att.dragging ? " dragging" : "") + (skip ? " direct" : "")} {...att.dropHandlers}>
         {recentRepos.length > 1 &&
-          (isMobile ? (
+          (isCompact ? (
             <RecentReposSelect
               repos={recentRepos.slice(0, maxRecentRepos)}
               active={ws.trim()}

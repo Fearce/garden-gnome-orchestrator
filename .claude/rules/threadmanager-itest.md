@@ -19,6 +19,14 @@ Comment out your change, run the gate, require RED, restore. Commit `70c2f84` sh
 gaps that made it a no-op in production; its tests passed, and only the revert-check
 (`5a618cc`) found them. One minute, and it is the difference between a gate and a decoration.
 
+**Revert with the Edit tool, and confirm the file actually changed before believing GREEN.**
+A scripted revert that silently edits nothing turns this check inside out: the gate passes,
+and you read that as "my fix isn't load-bearing" when it means "I never removed it". Twice in
+one session (2026-08-17) — `python3 - <<EOF` is not a program on this box (the Microsoft Store
+alias prints its ad to stdout and exits 0), and a `node -e` string replace missed on escaping.
+Both printed nothing alarming. `cp <file> /tmp/x.bak` first, then `diff` after the revert AND
+after the restore — the second diff is what proves you put it back byte-identical.
+
 ## Trap: your stub hands the code a state production never has
 
 Both gaps above were this — the differences are exactly where lifecycle bugs live:
@@ -30,8 +38,11 @@ Both gaps above were this — the differences are exactly where lifecycle bugs l
 - **An empty `agent_runs` table.** A stubbed `runRole` writes no run row, so everything
   reading the run trail silently takes its fallback: the QA park degrades to the generic
   "needs your review" instead of the diagnosable reason, and `latestQaRun` /
-  `latestRoleSession` find no session, so a warm-resume path never even runs. Persist
+  `latestRoleRun` find no session, so a warm-resume path never even runs. Persist
   what the real `runRole` would have (`createRun` + `updateRun` with `sessionId`/`error`).
+  **Persist its `account` too**: `latestRoleRun` reads the backend back off that label
+  (`zai:…`/`codex:…`/`grok:…`, else Claude), so a row without one reads as Claude and any
+  assertion about provider-pinned resume passes vacuously.
 - **An empty `messages` table.** Guards like `implementorLooksDone` read the last
   implementor MESSAGE, which in production carries over from an EARLIER session — a
   QA fix-round resume routinely inherits "the task is complete". Seed a stale sign-off
@@ -54,17 +65,22 @@ Both gaps above were this — the differences are exactly where lifecycle bugs l
   is not open" — surfacing inside the NEXT test, so it reads as that test's bug. Yield
   several macrotask turns (not one `setTimeout(0)`) after any call you don't await.
 - `db.createThread` requires `rawPrompt` (NOT NULL) — omitting it throws SQLITE_CONSTRAINT.
+- **`db.updateThread` writes only title/state/brief/workspace/error.** `effort_override` (and the close
+  columns) are set at creation / by their own methods, so `updateThread({effortOverride})` silently no-ops
+  and your "the operator's pin still wins" assertion fails against a thread that was never pinned. Seed the
+  pin the way a dispatch does: `createThread({ effortOverride })`.
 - `dispose()` must `clearInterval(capSupervisor)` + `clearTimeout(tokenResumeTimer)` and
   `db.raw.close()` BEFORE `rmSync`, or Windows throws EBUSY on the sqlite file.
 - A `StubAccounts` fake must carry every method the constructor's boot-apply calls
   (`setSpreadUsage`, `applyWeeklySafetyPct`, …) or construction crashes — plus `auxToken()`
   if your path can reach `setState(id,"done")`: `announceDone` calls it inside a `void`ed
   promise, so a missing method is an unhandled rejection that kills the whole run.
-- "What does the SDK actually do?" (does `--resume` get a fresh turn budget, does it reach
-  the model): don't reason from the types — `npm run probe:sdk-resume --prefix server` runs
-  the real `AgentRun` through a fresh query + N resumes, printing subtype/turns/output/cost
-  each (`out: 0` on a success = the silent-resume signature). Real quota, ~$0.10.
-- Register the gate: the `test:*` script in `server/package.json` AND in `GATES` in
-  `server/scripts/run-gates.cjs`, or the nightly sweep never runs it — `test:gate-registration`
-  red-flags both halves of that omission. Verify with
+- "What does the SDK actually do?" — never reason from the types (several fields have no doc comment).
+  CLI semantics live in the minified binary, so anchor on a string literal: `claude-cli-grep '("now")'`
+  (Bash tool; PowerShell eats inner quotes — `--pattern-file`), free and ~0.3s. What a RUN does needs
+  quota: `probe:sdk-resume` (`out: 0` on success = silent resume, ~$0.10); what STEERING one does:
+  `probe:sdk-steer [-- --mode now|next|interrupt]`, ~$0.03 — read `terminal_reason`, never the shape
+  (a `"now"` abort is success-shaped, a bare `interrupt()` is `error_during_execution`).
+- Register the gate in BOTH `server/package.json` and `GATES` in `scripts/run-gates.cjs`, else the
+  nightly sweep never runs it; `test:gate-registration` red-flags either omission. Verify with
   `npm run typecheck && npm run test:gates --prefix server`.

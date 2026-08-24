@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getHeapStatistics } from "node:v8";
 import { config } from "./config.js";
+import { buildLabel } from "./buildInfo.js";
 
 // Persistent so a crash is diagnosable regardless of how the process was spawned
 // (the supervisor / script-hub launcher runs it detached and does not capture stdout/stderr).
@@ -103,9 +104,12 @@ function logLifecycle(label: string): void {
  * a second bounce landed 18s after the first (2026-08-08, the lost auto-resume) meant finding a memory
  * high-water note that happened to fire and subtracting its `uptime=` — and that note only exists when RSS
  * crosses a 100MB step, so the evidence was luck rather than a record. Now it is a record.
+ *
+ * It carries WHICH BUILD that boot loaded for the same reason: a stamp file is rewritten by the next build,
+ * so after two deploys nothing on disk can still say what an earlier process was running.
  */
 export function logBoot(): void {
-  logLifecycle("boot");
+  logLifecycle(`boot — build ${buildLabel()}`);
 }
 
 /** What this boot did to the work the previous process left mid-flight — the other half of the same

@@ -21,6 +21,9 @@
 //   • `appliesToPark` keys off the PARK MESSAGE (threads.error), not the run's error: a silent run stamped
 //     `done` pre-fix carries `error: NULL` on its row, so the run error is absent exactly when the park
 //     text is the only place the cause survives.
+//   • More than one feature can cover one park (a capped auto-review is both "reached no verdict" and a
+//     failover gap), so the LATEST-shipping applicable one wins — never array order, which is not a
+//     semantic this table should carry.
 //   • This flags STALE only. A post-fix park is left to the `continuationsSpent` path (the recovery ran
 //     and gave up) or to a manual probe:task-runs — a "post-fix but no budget spent" soft-flag is
 //     deliberately NOT emitted, since the spent marker differs per kind and the ship≠deploy window makes
@@ -55,10 +58,33 @@ const RECOVERY_FEATURES = [
         (run.num_turns === 0 && /QA could not complete/i.test(e))),
   },
   {
+    id: "qaCutoffPerReview",
+    label: "the per-review QA continuation allowance (qaCutoffResumesThisRound)",
+    commit: "748633a", // fix(qa): scope the turn-ceiling continuation allowance to the review, not the task
+    // Keyed on the EXHAUSTED-allowance sentence, which is precisely the wording that makes probe-parks
+    // call such a park "the recovery mechanism ran and gave up". Before this fix the allowance was the
+    // task's, so those spends were routinely made by DIFFERENT reviews and the round that actually parked
+    // had never been woken at all — the mechanism had not run for it, it had been billed for someone
+    // else's. Resuming re-runs it with its own allowance, and (in qaAppliesFixes mode) the editing
+    // ceiling that made it get cut off in the first place — 26d4ac3, same day.
+    applies: (e, run) => run?.role === "qa" && /woken \d+ more times and cut off again each time/i.test(e),
+  },
+  {
     id: "autoReviewRecovery",
     label: "the auto-review recovery (MAX_REVIEW_RECOVERIES)",
     commit: "bc7e87b", // fix(review): recover an auto-review that came back empty instead of re-parking
     applies: (e) => /could\s?n(?:o|['’])t reach a verdict/i.test(e),
+  },
+  {
+    id: "reviewerProviderFailover",
+    label: "the auto-reviewer's failover to z.ai (providerServesRole)",
+    commit: "49960f7", // fix(failover): let the reader and auto-reviewer fail over to z.ai
+    // Keyed on `cap_flagged` — what the RUNNER concluded — never on the park's cap wording, which every
+    // backend phrases differently and which has drifted out from under a hand-copied regex before. A row
+    // with no verdict recorded (null) therefore falls through to the empty-run recovery above, so the
+    // sweep is told nothing rather than told "not a bug".
+    applies: (e, run) =>
+      run?.role === "reviewer" && run.cap_flagged === 1 && /could\s?n(?:o|['’])t reach a verdict/i.test(e),
   },
 ];
 
@@ -74,27 +100,40 @@ function resolveShipDate(commit) {
 
 const isoDate = (d) => (d && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : "—");
 
+/** The applicable feature that shipped LAST, with its resolved ship date — or null when none applies or
+ *  none of their commits resolve (a missing/rewritten SHA stays silent rather than misleading). */
+function latestApplicable(parkError, run) {
+  let winner = null;
+  for (const feat of RECOVERY_FEATURES) {
+    if (!feat.applies(parkError, run)) continue;
+    const shipDate = resolveShipDate(feat.commit);
+    if (!shipDate) continue;
+    if (!winner || shipDate > winner.shipDate) winner = { feat, shipDate };
+  }
+  return winner;
+}
+
+/** The last agent_runs row's own moment, as a Date — or null when it carries no usable timestamp. */
+function runMoment(run) {
+  const ts = run?.ended_at ?? run?.started_at;
+  if (ts == null) return null; // new Date(null) is the epoch, not Invalid Date — guard the raw value
+  const at = new Date(ts);
+  return Number.isNaN(at.getTime()) ? null : at;
+}
+
 /** For a stalled park, the "this predates the fix" annotation — or null when no recovery feature applies,
  *  its ship date can't be resolved, the run has no timestamp, or the run is already from after the fix
  *  (leave those to the continuationsSpent path). `run` is the last agent_runs row (epoch-ms timestamps). */
 function recoveryAnnotationFor(parkError, run) {
-  const e = String(parkError ?? "");
-  const feat = RECOVERY_FEATURES.find((f) => f.applies(e, run));
-  if (!feat) return null;
-  const shipDate = resolveShipDate(feat.commit);
-  if (!shipDate) return null; // commit missing/rewritten — can't judge, stay silent rather than mislead
-  if (!run) return null;
-  const ts = run.ended_at ?? run.started_at;
-  if (ts == null) return null; // new Date(null) is the epoch, not Invalid Date — guard the raw value
-  const runAt = new Date(ts);
-  if (Number.isNaN(runAt.getTime())) return null;
-  if (runAt < shipDate) {
-    return (
-      `stale — last run ${isoDate(runAt)} predates ${feat.label} (${feat.commit.slice(0, 7)}, ${isoDate(shipDate)}); ` +
-      `a Resume exercises the fix, not a bug`
-    );
-  }
-  return null;
+  const runAt = runMoment(run);
+  if (!runAt) return null;
+  const match = latestApplicable(String(parkError ?? ""), run);
+  if (!match || runAt >= match.shipDate) return null;
+  const { feat, shipDate } = match;
+  return (
+    `stale — last run ${isoDate(runAt)} predates ${feat.label} (${feat.commit.slice(0, 7)}, ${isoDate(shipDate)}); ` +
+    `a Resume exercises the fix, not a bug`
+  );
 }
 
 module.exports = { RECOVERY_FEATURES, resolveShipDate, recoveryAnnotationFor };

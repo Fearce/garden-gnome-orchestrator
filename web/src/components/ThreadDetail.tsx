@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
 import { agentName, MODEL_ROLES, repoRoom } from "../types.js";
@@ -7,6 +7,7 @@ import { Elapsed, RoleElapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
+import { useColumnResize } from "./useColumnResize.js";
 import { Markdown } from "./Markdown.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
@@ -403,6 +404,13 @@ export function ThreadDetail() {
   // The auto-review control is live only on a genuine review park: a frozen task resumes itself (there's
   // no finished work to judge yet) and a task already being reviewed shows its progress instead.
   const autoReviewable = canAutoReview(thread);
+  // While a reviewer owns the slot there is no implementor to stop, and one-shot reviewers can't be
+  // interrupted without destroying their verdict — so say what the server will actually do instead.
+  // The two lanes differ, and the text must not blur it: a QA-stage inject is ALSO queued for the
+  // implementor (the QA gate routes it both ways), but an auto-review-stage inject only reaches the
+  // reviewer — nothing on that lane drains the implementor queue, so don't promise a hand-off there.
+  const qaStage = thread.state === "qa";
+  const reviewerOwnsSlot = qaStage || thread.state === "reviewing";
 
   const threadRuns = Object.values(runs).filter((r) => r.threadId === id);
   const impl = threadRuns.filter((r) => r.role === "implementor").sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -474,25 +482,19 @@ export function ThreadDetail() {
     }
   };
 
-  const startResize = (e: ReactMouseEvent) => {
-    e.preventDefault();
-    const onMove = (ev: MouseEvent) => {
-      const max = Math.max(420, window.innerWidth - 480);
-      setDetailWidth(Math.min(Math.max(window.innerWidth - ev.clientX, 360), max));
-    };
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.classList.remove("col-resizing");
-    };
-    document.body.classList.add("col-resizing");
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  };
+  const startResize = useColumnResize(
+    useCallback(
+      (clientX: number) => {
+        const max = Math.max(420, window.innerWidth - 480);
+        setDetailWidth(Math.min(Math.max(window.innerWidth - clientX, 360), max));
+      },
+      [setDetailWidth],
+    ),
+  );
 
   return (
     <section className="detail">
-      <div className="resize-handle" onMouseDown={startResize} title="Drag to resize this panel" />
+      <div className="resize-handle" onPointerDown={startResize} title="Drag to resize this panel" />
       <div className={"detail-head" + (headCollapsed ? " collapsed" : "")}>
         <div className="top">
           <div>
@@ -809,7 +811,15 @@ export function ThreadDetail() {
             className={"btn primary sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("append")}
             disabled={frozen || !msg.trim()}
-            title={frozen ? FROZEN_CONTROL_TOOLTIP : "Send to the implementor now — it uses this on its next step while it keeps working"}
+            title={
+              frozen
+                ? FROZEN_CONTROL_TOOLTIP
+                : qaStage
+                  ? "Send to the reviewer now, and queue it for the implementor to pick up at the next hand-off"
+                  : reviewerOwnsSlot
+                    ? "Send to the auto-reviewer now — it factors this into its verdict"
+                    : "Send to the implementor now — it uses this on its next step while it keeps working"
+            }
           >
             Inject
           </button>
@@ -817,7 +827,15 @@ export function ThreadDetail() {
             className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("interrupt")}
             disabled={frozen || !msg.trim()}
-            title={frozen ? FROZEN_CONTROL_TOOLTIP : "Stop the implementor now and hand it this immediately"}
+            title={
+              frozen
+                ? FROZEN_CONTROL_TOOLTIP
+                : qaStage
+                  ? "Nothing to stop while the reviewer has the task — this goes to the reviewer and is queued for the implementor, same as Inject"
+                  : reviewerOwnsSlot
+                    ? "Nothing to stop while the auto-reviewer has the task — this reaches the reviewer, same as Inject"
+                    : "Stop the implementor now and hand it this immediately"
+            }
           >
             Interrupt &amp; inject
           </button>

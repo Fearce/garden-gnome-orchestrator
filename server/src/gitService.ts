@@ -2,12 +2,13 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
 
-// The shared git-service layer: real git operations (status, per-file diff, log, branch list, current
-// branch, ahead/behind vs upstream, branch checkout) over ARBITRARY task workspaces — the backing for
-// the console's in-task "Changes" surface (the GitHub-Desktop replacement). Distinct from update.ts,
-// whose runGit is hardcoded to the orchestrator's OWN checkout for self-update; this one takes the repo
-// dir as its first argument so it can inspect any repo a task is working in. update.ts can lift its
-// runGit onto this module as a follow-up (its self-update semantics layer on top).
+// The shared git-service READ layer: real git reads (status, per-file diff, log, branch list, current
+// branch, ahead/behind vs upstream) over ARBITRARY task workspaces — the backing for the console's
+// in-task "Changes" surface. Everything here is read-only; the write side (fetch/pull/push/checkout/
+// commit/discard, the repo-level Git console) lives in `git/repoOps.ts`, which reuses this module's
+// hardened `runGit` and its parsers so there is exactly one way the app shells out to git. Distinct from
+// update.ts, whose runGit is hardcoded to the orchestrator's OWN checkout for self-update; this one takes
+// the repo dir as its first argument so it can inspect any repo a task is working in.
 
 const GIT_TIMEOUT_MS = 15_000;
 // Bound a pathological diff/log so a runaway repo can't blow the WS frame or the browser. The per-file
@@ -18,7 +19,7 @@ const LOG_LIMIT = 20;
 // blob doesn't cost a full read just to render "+N" on the row.
 const UNTRACKED_COUNT_CAP = 50_000;
 
-interface GitResult {
+export interface GitResult {
   code: number | null;
   stdout: string;
   stderr: string;
@@ -26,8 +27,10 @@ interface GitResult {
 
 /** Run git in `cwd`, resolving with its exit code + captured output (never rejects). Mirrors update.ts's
  *  runGit env hardening: GIT_TERMINAL_PROMPT=0 so a private remote fails fast instead of hanging on a
- *  credential prompt, GIT_OPTIONAL_LOCKS=0 so a read never races an index lock a concurrent agent holds. */
-function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
+ *  credential prompt, GIT_OPTIONAL_LOCKS=0 so a read never races an index lock a concurrent agent holds.
+ *  Exported for `git/repoOps.ts` (the write-side repo console), so every git surface in the app goes
+ *  through this one hardened, shell-free spawn. */
+export function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
   return new Promise((resolveP) => {
     let stdout = "";
     let stderr = "";
@@ -223,12 +226,6 @@ export interface GitFileDiff {
   truncated: boolean;
 }
 
-export interface CheckoutResult {
-  ok: boolean;
-  branch?: string;
-  error?: string;
-}
-
 const EMPTY_SUMMARY: GitSummary = { isRepo: false, fileCount: 0, added: 0, removed: 0, commitCount: 0, branch: null, unpushed: 0, isVota: false, pushState: "no-remote" };
 
 // ---- helpers ----------------------------------------------------------------------------------------
@@ -264,7 +261,7 @@ function parsePorcelain(z: string): { xy: string; path: string; oldPath?: string
 
 /** Build a path → {added, removed, binary} map from `--numstat` output. Binary files print "-\t-\tpath".
  *  With -z the fields are NUL-separated and a rename prints old\0new after the counts. */
-function parseNumstat(z: string): Map<string, { added: number; removed: number; binary: boolean }> {
+export function parseNumstat(z: string): Map<string, { added: number; removed: number; binary: boolean }> {
   const map = new Map<string, { added: number; removed: number; binary: boolean }>();
   // `--numstat -z`: each record is "added\tremoved\t" then, for a rename, oldpath\0newpath\0, else path\0.
   const tokens = z.split("\0");
@@ -421,11 +418,11 @@ async function collectFiles(repoRoot: string, hasHead: boolean): Promise<GitFile
 // The one commit-log format both the repo-wide and task-scoped logs use: unit-separator-delimited fields
 // so subjects with any punctuation parse cleanly — %H full hash (to test membership in the unpushed set),
 // %h short (display), %an author, %at author epoch seconds, %s subject.
-const COMMIT_LOG_FORMAT = "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s";
+export const COMMIT_LOG_FORMAT = "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s";
 
 /** Parse `git log` output in COMMIT_LOG_FORMAT into rows, tagging each commit local-or-pushed. Without a
  *  remote ref we can't prove push state, so a commit reads as local (an honest "not pushed"). */
-function parseCommitLog(raw: string, unpushedShas: Set<string>, hasRemoteRef: boolean): GitCommit[] {
+export function parseCommitLog(raw: string, unpushedShas: Set<string>, hasRemoteRef: boolean): GitCommit[] {
   const commits: GitCommit[] = [];
   for (const line of raw.split("\n")) {
     const [full, short, author, at, subject] = line.split("\x1f");
@@ -584,7 +581,7 @@ export async function getTaskGitSummary(workspace: string, scope: TaskGitScope):
 
 /** Map a `git diff --name-status` letter to our display status. A rename/copy is "R…"/"C…" with a score
  *  suffix (R100); we key off the first letter. Copies read as additions (a new path appears). */
-function classifyNameStatus(code: string): GitFileStatus {
+export function classifyNameStatus(code: string): GitFileStatus {
   switch (code[0]) {
     case "A": return "added";
     case "D": return "deleted";
@@ -599,7 +596,7 @@ function classifyNameStatus(code: string): GitFileStatus {
 
 /** Parse `git diff --name-status -M -z` into rows. NUL-delimited; a rename/copy entry is
  *  `Rxxx\0<old>\0<new>\0`, so an R/C status consumes the following TWO records (old then new path). */
-function parseNameStatus(z: string): { code: string; path: string; oldPath?: string }[] {
+export function parseNameStatus(z: string): { code: string; path: string; oldPath?: string }[] {
   const parts = z.split("\0").filter((p) => p.length > 0);
   const rows: { code: string; path: string; oldPath?: string }[] = [];
   for (let i = 0; i < parts.length; i++) {
@@ -823,27 +820,14 @@ export async function runReadonlyGit(workspace: string, subcommand: string, args
   };
 }
 
-// ---- branch checkout --------------------------------------------------------------------------------
+// ---- cache invalidation -----------------------------------------------------------------------------
 
-/** Switch the repo to `branch`. The caller (ThreadManager) enforces the safety lock — it refuses while
- *  any agent is live on the repo. Here we just run the checkout and report a graceful result (a dirty
- *  tree that would be overwritten makes git refuse, which we surface rather than force). */
-export async function checkoutBranch(workspace: string, branch: string): Promise<CheckoutResult> {
-  const repoRoot = await resolveRepoRoot(workspace);
-  if (!repoRoot) return { ok: false, error: "Not a git repository." };
-
-  // Validate the branch exists locally so we never accidentally create one or check out arbitrary input.
-  const exists = (await runGit(repoRoot, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`])).code === 0;
-  if (!exists) return { ok: false, error: `No local branch "${branch}".` };
-
-  const res = await runGit(repoRoot, ["checkout", branch]);
-  if (res.code !== 0) {
-    return { ok: false, error: (res.stderr || res.stdout).trim() || "git checkout failed" };
-  }
-  // Bust the summary caches so the chip reflects the new branch immediately. The task cache is keyed by
-  // threadId (not repoRoot), and a checkout changes the repo for every task sharing it, so clear it whole.
-  summaryCache.delete(repoRoot);
+/** Drop every cached git read. Called by `git/repoOps.ts` after any repo-mutating action (checkout,
+ *  pull, commit, discard…) so the per-task chips and drawers reflect the new reality immediately rather
+ *  than up to SUMMARY_TTL_MS later. The task caches are keyed by threadId, not repo root, and one repo is
+ *  shared by many tasks — so they're cleared whole rather than per-repo. */
+export function bustGitCaches(): void {
+  summaryCache.clear();
   taskSummaryCache.clear();
   taskStatusCache.clear();
-  return { ok: true, branch };
 }

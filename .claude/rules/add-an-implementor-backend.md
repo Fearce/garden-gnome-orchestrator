@@ -14,8 +14,14 @@ checklist. `provider-selection-layers.md` covers the routing/balancing comparato
 typechecks fine but silently strands the backend at that layer — the **failover/cap sites
 (steps 8–10) are the ones that hide misses**.
 
-**Grep is the map.** Every `=== "grok"`, `instanceof GrokAgentRun`, `startsWith("grok:")`,
-`GROK_SUB_ID`, `noteGrokCap`, `readGrokUsage` hit needs a peer for your provider. Two flavors:
+**Grep is the map — but it cannot see a policy that names no provider.** Every `=== "grok"`,
+`instanceof GrokAgentRun`, `startsWith("grok:")`, `GROK_SUB_ID`, `noteGrokCap`, `readGrokUsage`
+hit needs a peer for your provider. What that misses is a **role**-keyed Set whose provider
+rationale lives only in its comment: `MCP_DEPENDENT_ROLES` ex-`NO_CLI_FAILOVER` contained no
+provider token at all, so z.ai shipped "keeps the MCP servers for free" while that Set silently
+kept two roles off it for weeks (`49960f7`). Also grep the RATIONALE — `MCP`, `bus`, `text
+bridge`, `adapters can't` — and re-read every hit's comment against what your backend can do.
+Two flavors:
 - **Anthropic-compatible** (z.ai): reuse `AgentRun` via the `buildEnv` base-URL/token branch
   (`ANTHROPIC_BASE_URL`+`ANTHROPIC_AUTH_TOKEN`, drop the Claude OAuth token) + a nominal
   `class XAgentRun extends AgentRun {}` marker. Keeps the bus/office MCP tools, deliverables,
@@ -39,8 +45,10 @@ typechecks fine but silently strands the backend at that layer — the **failove
    Then `resolveImplementorProvider` (auth-gate + cap-exclude + push candidate) and `nextReadyImplementor`.
    The `preferred*`/`spread` comparators handle any provider generically — no per-provider branch there.
 8. `startImplementor` + `runRole` factories. **Resume portability**: an X session id resumes only on X —
-   never cross-resume with Claude/another CLI (`priorImplementorProvider`/`latestQaRun` read the
-   `x:<model>` account-label prefix).
+   never cross-resume with Claude/another CLI (`priorImplementorProvider`/`latestQaRun`/`latestRoleRun`
+   read the `x:<model>` account-label prefix). **The reverse move needs the same audit**: WIDENING a
+   role's provider set invalidates every provider-blind resume that role owns, because "it only ever ran
+   on Claude" was the invariant making a bare session id safe (`resumableReviewSession`, `49960f7`).
 9. **Cap-failover — the trap.** A non-Claude *AgentRun* cap (z.ai) surfaces as `rateLimited`, NOT a CLI
    `.capped`, and has NO sibling Claude account: in `awaitImplementorResult` early-return for `instanceof
    XAgentRun` (else it wrongly fails over to a Claude account), and add it to the `awaitImplementorCompletion`

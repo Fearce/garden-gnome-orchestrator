@@ -2,7 +2,13 @@
 // Run: npx tsx src/tests/officeBridge.test.ts
 
 import assert from "node:assert/strict";
-import { endsWithOpenOfficeMarker, extractOfficeChat, MAX_OFFICE_BODY } from "../agents/officeBridge.js";
+import {
+  endsWithOpenOfficeMarker,
+  endsWithOpenOperatorNoteMarker,
+  extractOfficeChat,
+  extractOperatorNotes,
+  MAX_OFFICE_BODY,
+} from "../agents/officeBridge.js";
 
 // Canonical standalone line (Codex agent_message shape).
 {
@@ -203,6 +209,67 @@ import { endsWithOpenOfficeMarker, extractOfficeChat, MAX_OFFICE_BODY } from "..
   assert.equal(mixed.posts[0]!.body, "claiming A");
   assert.match(mixed.visible, /OFFICE\[team\]:\s*claimi/);
   assert.match(mixed.visible, /mid/);
+}
+
+// CLI backends use a second bridge for the owner-facing note list. The marker is stripped from the
+// transcript and the final ` | https://...` field becomes the click target, not part of the terse text.
+{
+  const raw = "Work is pushed.\nOPERATOR_NOTE: Review PR #42 before merging | https://github.com/acme/repo/pull/42\nThanks.";
+  const { visible, notes } = extractOperatorNotes(raw);
+  assert.deepEqual(notes, [{ body: "Review PR #42 before merging", url: "https://github.com/acme/repo/pull/42" }]);
+  assert.ok(!visible.includes("OPERATOR_NOTE:"));
+  assert.match(visible, /Work is pushed/);
+  assert.match(visible, /Thanks/);
+}
+
+// If a CLI agent simply puts the URL in its short sentence, let OperatorNotes discover it exactly as the
+// real MCP tool does instead of rejecting an otherwise useful note over one missing separator.
+{
+  const { notes } = extractOperatorNotes("OPERATOR_NOTE: PR is ready: https://github.com/acme/repo/pull/43");
+  assert.deepEqual(notes, [{ body: "PR is ready: https://github.com/acme/repo/pull/43" }]);
+}
+
+// Grok's stream may split a marker across chunks. A mid-stream harvest must retain it; a terminal/newline
+// flush can post the complete line. This prevents a partial `review PR` sentence becoming an owner task.
+{
+  const partial = extractOperatorNotes("OPERATOR_NOTE: review PR", { openEnded: false });
+  assert.deepEqual(partial.notes, []);
+  assert.equal(endsWithOpenOperatorNoteMarker(partial.visible), true);
+  const complete = extractOperatorNotes(partial.visible + " #44 | https://github.com/acme/repo/pull/44\n", { openEnded: false });
+  assert.deepEqual(complete.notes, [{ body: "review PR #44", url: "https://github.com/acme/repo/pull/44" }]);
+  assert.equal(endsWithOpenOperatorNoteMarker(complete.visible), false);
+}
+
+// Both runners chain the two extractors in this order — office first, notes over what it left visible.
+// One reply carrying both markers must deliver both and leave neither in the transcript.
+{
+  const raw = [
+    "Pushed the fix.",
+    "OFFICE[team]: releasing officeBridge.ts, all yours",
+    "OPERATOR_NOTE: PR #51 ready to merge | https://github.com/acme/repo/pull/51",
+    "Done.",
+  ].join("\n");
+  const office = extractOfficeChat(raw);
+  const { visible, notes } = extractOperatorNotes(office.visible);
+  assert.deepEqual(
+    office.posts,
+    [{ scope: "project", body: "releasing officeBridge.ts, all yours" }],
+    "the office post survives alongside a note marker",
+  );
+  assert.deepEqual(notes, [{ body: "PR #51 ready to merge", url: "https://github.com/acme/repo/pull/51" }]);
+  assert.ok(!visible.includes("OFFICE[") && !visible.includes("OPERATOR_NOTE:"), "neither marker is left in the transcript");
+  assert.match(visible, /Pushed the fix/);
+  assert.match(visible, /Done\./);
+}
+
+// A junk body is the office bridge's oldest lesson, and the note list inherits it: strip the marker so
+// it can't litter the transcript, but never put an unclickable row on the owner's list.
+{
+  for (const junk of ["OPERATOR_NOTE:\n", "OPERATOR_NOTE: \\n\n", "OPERATOR_NOTE: --- |\n"]) {
+    const { visible, notes } = extractOperatorNotes(junk + "real text");
+    assert.deepEqual(notes, [], `junk body must not post: ${JSON.stringify(junk)}`);
+    assert.ok(!visible.includes("OPERATOR_NOTE"), `junk marker must still be stripped: ${JSON.stringify(junk)}`);
+  }
 }
 
 console.log("All officeBridge extraction checks passed.");

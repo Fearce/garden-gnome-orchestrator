@@ -7,7 +7,7 @@ import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
-import { extractOfficeChat } from "./officeBridge.js";
+import { extractOfficeChat, extractOperatorNotes } from "./officeBridge.js";
 import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 import { formatStructuredRoleFeed, parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
 
@@ -30,6 +30,9 @@ export interface CodexRunConfig {
   /** Codex has no office MCP tools. A standalone `OFFICE[team|office]: ...` line in its assistant
    *  message is intercepted here and posted through the orchestrator's real office chat backend. */
   onOfficeChat?: (scope: ChatScope, body: string) => void;
+  /** Codex has no bus MCP tools. A standalone `OPERATOR_NOTE: <line> | <https://...>` marker is
+   * intercepted and posted through the owner's real note list, then stripped from the transcript. */
+  onOperatorNote?: (body: string, url?: string) => void;
   /** When set, this run is a structured role (planner/researcher/qa) rather than the free-form implementor:
    *  the CLI can't be handed our json_schema tool, so the kickoff instructs it to end with a fenced ```json
    *  block, and its final message is parsed against this schema into `result.structuredOutput`. A parse/shape
@@ -628,12 +631,20 @@ export class CodexAgentRun implements AgentRunLike {
     switch (item.type) {
       case "agent_message":
         if (phase === "completed" && item.text) {
-          const { visible, posts } = extractOfficeChat(item.text);
-          for (const post of posts) {
+          const office = extractOfficeChat(item.text);
+          const { visible, notes } = extractOperatorNotes(office.visible);
+          for (const post of office.posts) {
             try {
               this.cfg.onOfficeChat?.(post.scope, post.body);
             } catch {
               /* best-effort side channel; never fail the Codex turn because office chat failed */
+            }
+          }
+          for (const note of notes) {
+            try {
+              this.cfg.onOperatorNote?.(note.body, note.url);
+            } catch {
+              /* best-effort side channel; never fail the Codex turn because a note post failed */
             }
           }
           if (visible) {

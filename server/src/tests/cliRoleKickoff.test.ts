@@ -22,6 +22,7 @@ function qaKickoff(systemPrompt: string, disallowedTools: string[]): string {
 
 const readOnly = qaKickoff(QA_PROMPT, ["Write", "Edit", "NotebookEdit", "AskUserQuestion"]);
 assert.match(readOnly, /inspect and run checks, but do not edit the implementation/i);
+assert.match(readOnly, /OPERATOR_NOTE: short action \| https:\/\//, "CLI fallback roles must retain the owner-note bridge");
 
 // Run the same shared kickoff builder for both CLI provider labels. The distinction is deliberate:
 // Codex triggered the regression, but Grok uses this exact text path too.

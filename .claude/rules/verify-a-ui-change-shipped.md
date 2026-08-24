@@ -9,58 +9,46 @@ paths:
 
 # Verifying a shipped console UI change (when you do / don't need a browser)
 
-A green build/typecheck does NOT prove the feature works. But you usually DON'T
-need to drive a browser either — climb this ladder and stop once you have enough:
+A green build/typecheck does NOT prove the feature works — but you usually don't need a browser either.
+Climb this ladder, stopping once you have enough:
 
-1. **Deploy freshness** — `npm run health --prefix server`. The "process vs dist"
-   block confirms the :4317 PID started AT/AFTER the dist mtime (fresh build
-   loaded). If stale, deploy via the atomic hub restart before verifying.
-2. **Shipped string** — `grep -oh "<label>" web/dist/assets/*.js | sort | uniq -c`.
-   Proves the label is in the served bundle. Settings rows (ToggleRow/NumberRow)
-   and buttons render their `label`/children UNCONDITIONALLY, so a hit is
-   render-equivalent (the control is on screen whenever its panel opens). NOT
-   proof for dynamically-built or feature-gated text — drive those.
-3. **Server logic** — `npm run test:gates --prefix server` (free, ~9s) for the
-   queue/routing/cap mechanics; add a targeted integration gate for new logic.
+1. **Deploy freshness** — `npm run health --prefix server`: its "process vs dist" block confirms the :4317
+   PID started AT/AFTER the dist mtime. If stale, deploy via the atomic hub restart before verifying.
+2. **Shipped string** — grep the bundle `index.html` actually references, never `assets/*.js` (dist keeps
+   old hashed bundles, so a glob can hit a stale one), from the REPO ROOT (`web/dist` doesn't exist
+   relative to `server/`): `S=$(curl -s :4317/ | grep -o 'assets/index-[^"]*\.js'); grep -c "<label>"
+   web/dist/$S`. Settings rows and buttons render their `label` UNCONDITIONALLY, so a hit is
+   render-equivalent — but NOT proof for dynamically-built or feature-gated text. Drive those.
+3. **Server logic** — `npm run test:gates --prefix server` (free, ~5min) for queue/routing/cap mechanics;
+   add a gate for new logic.
 
-Reserve a real browser drive for genuinely interactive flows (a click that
-mutates state, a round-trip persisting across reload, clipboard, drag). **Drive
-it on a THROWAWAY instance** (recipe: project memory `browser-test-throwaway-
-instance`), never against live prod.
+Reserve a real browser for genuinely interactive flows (a click that mutates state, a round-trip surviving
+reload, clipboard, drag) — on a THROWAWAY instance, and **DON'T hand-roll one**: `scripts/lab-harness.cjs`
+boots/kills/authenticates it (bogus tokens so the boot ping can't start a real 5h window; kills by port
+owner, never by process name). A "lab" is a committed script on top of it that seeds its own state and
+drives one surface — copy the closest of `chip-lab.cjs` (accounts strip), `git-console-lab.cjs` (Git
+console + fixture repo), `tablet-lab.cjs` (both tablet orientations in a TOUCH context),
+`model-select-lab.cjs` (a Settings toggle's round-trip + a server-fed table) and `inject-lab.cjs`
+(state-conditional button labels + a click that must not kill the task). Never against live prod.
+**Read `lab-harness.cjs`'s header first** — selectors, `has-text` vs `text-is`, touch context, clipboard
+permissions and CSS load order are all in there; instance mechanics are in project memory
+`browser-test-throwaway-instance`.
 
-## The line: READING prod is fine, INTERACTING with it is not
-"Never browser-test prod" is about *interaction*, and stopping there sends sweep
-agents off to hand-roll their own script (measured 2026-08-01 — one clicked a card
-on `:4317`). A no-click load — navigate, wait, read the DOM — mutates nothing and
-is the only way to see that the console still boots. Two committed checks do
-exactly that and nothing more: `npm run probe:console` (mounted / WS live / zero
-console errors) and `npm run probe:chips` (chip geometry at 4 widths). Use them
-for a HEALTH read; they are never proof that *your change* works — prod's state is
-not your change's state. Keep both click-free, or they stop being prod-safe.
+**In a lab, wait for the socket's `hello`, not for the shell to mount — and never believe an optimistic
+control.** Everything server-authoritative (settings, accounts, any broadcast collection) renders NEUTRAL
+DEFAULTS until that frame lands, so a check opening on `.topbar` reads "off" and an empty list on a busy
+box — indistinguishable from the feature being broken. `.accounts .acct` is hello-only, so it is the
+signal. And a settings toggle flips its own `aria-checked` BEFORE the round-trip (`store.setSettings` is
+optimistic), so re-reading it proves nothing and reloading straight after races the write: poll the
+instance's own kv row (`waitForPersisted` in `model-select-lab.cjs`) — the claim you actually mean.
 
-## Gotcha: live prod is often modal-blocked — do NOT drive it
-The live console frequently has a pending **director question** (an owner decision
-awaiting Kevin) up as a full-screen `.scrim` + `.modal` (QuestionModal) that
-intercepts ALL pointer events. You MUST NOT dismiss or answer it — it's Kevin's
-call (e.g. a deploy-now/hold for an unrelated task). So an interactive drive
-against `:4317` can be impossible, and force-dismissing the modal to reach
-Settings would silently resolve/kill a real pending question. Use a throwaway
-instance or fall back to steps 1–3. (This is exactly what burned a verify pass on
-the different-provider-QA / per-repo-cap / copy-reference features.)
+## READING prod is fine, INTERACTING with it is not
+"Never browser-test prod" is about *interaction*; stopping there sends agents off to hand-roll a script
+(2026-08-01 — one clicked a card on `:4317`). A no-click load mutates nothing and is the only way to see
+the console still boots: `npm run probe:console` (mounted / WS live / no errors) and `npm run probe:chips`
+(geometry). Keep both click-free, and read them as HEALTH only — prod's state isn't your change's state.
+**Often it can't be driven anyway:** a pending director question sits as a full-screen `.scrim` + `.modal`
+intercepting ALL pointer events, and dismissing it to reach Settings silently kills a real question that
+was the owner's to answer. Use a lab, or steps 1–3 (this burned a verify pass on three features).
 
-## Stable selectors (saves grepping App.tsx / Board.tsx)
-- Settings open: `[aria-label="Open settings"]` (gear); panel
-  `[role="dialog"][aria-label="Settings"]` (also `.settings-pop`).
-- A task row: `.card` (click opens ThreadDetail); title `.closed-card-title`.
-- Buttons: by text — `button:has-text("Copy reference")`. `has-text` is a SUBSTRING
-  match, so adding a button can break an existing selector (strict-mode violation:
-  "Auto-review & mark done" also matches `has-text("Mark done")`) — use
-  `button:text-is("✓ Mark done")` for anything whose label is a substring of another's.
-- State badges are CSS-uppercased (`.detail-head .badge`, `.card` badge): the DOM text
-  reads `AUTO-REVIEW`, so compare case-insensitively, not against the `stateLabel` string.
-- Clipboard in headless chromium: make the context with
-  `permissions:["clipboard-read","clipboard-write"]` AND inject a `writeText`
-  stub (`window.__copied = t`) — `readText()` alone can be gated in headless.
-
-Cross-ref: `e2e-a-pipeline-lane.md` (driving a server-side LANE, no browser);
-project memory `browser-test-throwaway-instance` (throwaway-instance mechanics).
+Cross-ref: `e2e-a-pipeline-lane.md` (driving a server-side LANE, no browser).

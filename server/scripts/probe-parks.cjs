@@ -153,6 +153,13 @@ function continuationsSpent(error) {
   return /cut off again each time/i.test(error ?? "");
 }
 
+/** The one `↳` verdict a sweep acts on by NOT acting, so it is a named constant rather than a literal:
+ *  `nightly-health.cjs` counts these parks and must decide identically to this file. Comparing against the
+ *  exported string keeps the PRECEDENCE in `recoveryLineFor` the single source of truth — health used to
+ *  call `continuationsSpent` directly, which is the pre-65c20d0 ordering, so it kept reporting a dead end
+ *  for the three stale parks this file had already cleared. */
+const DEAD_END_LINE = "its turn-ceiling continuations were already spent — the recovery mechanism ran and gave up";
+
 const hoursAgo = (t) => (t == null ? null : (Date.now() - t) / 3_600_000);
 
 function age(t) {
@@ -171,7 +178,7 @@ function short(s, n) {
 function lastRun(db, threadId) {
   return db
     .prepare(
-      `SELECT role, model, state, error, num_turns, cost_usd, started_at, ended_at
+      `SELECT role, model, state, error, num_turns, cost_usd, started_at, ended_at, cap_flagged
        FROM agent_runs WHERE thread_id = ? ORDER BY started_at DESC LIMIT 1`,
     )
     .get(threadId);
@@ -187,9 +194,17 @@ function lastRun(db, threadId) {
  * exactly the race the capWait guidance warns against.
  */
 function recoveryLineFor(parkClass, error, run) {
-  if (continuationsSpent(error)) return "its turn-ceiling continuations were already spent — the recovery mechanism ran and gave up";
-  if (parkClass !== "stalled") return null;
-  return recoveryAnnotationFor(error, run);
+  // Stale is asked FIRST, because "the mechanism ran and gave up" was routinely untrue of a spent
+  // allowance: until 748633a the budget was the TASK's, so earlier unrelated reviews spent it and the
+  // round that actually parked was never woken once. That is the one annotation a sweep acts on by NOT
+  // acting, and it stranded three tasks. `recoveryAnnotationFor` returns null once the run postdates the
+  // fix, so a genuinely exhausted park still falls through to the hand-off line below.
+  if (parkClass === "stalled") {
+    const stale = recoveryAnnotationFor(error, run);
+    if (stale) return stale;
+  }
+  if (continuationsSpent(error)) return DEAD_END_LINE;
+  return null;
 }
 
 function reportThread(db, t, parkClass) {
@@ -264,4 +279,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { classifyPark, classifyAbandoned, continuationsSpent, recoveryLineFor, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
+module.exports = { classifyPark, classifyAbandoned, continuationsSpent, recoveryLineFor, lastRun, DEAD_END_LINE, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };

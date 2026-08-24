@@ -14,18 +14,27 @@ import {
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
-import type { AgentRun, Role, Thread, ThreadState } from "../types.js";
+import type { AgentRun, BoardView, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
 import { closesInDays, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
 import { ScheduledTasks } from "./ScheduledTasks.js";
+import { OperatorNotes } from "./OperatorNotes.js";
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
 const PIPELINE_ORDER: Role[] = ["planner", "researcher", "implementor", "qa"];
 const PER_PAGE = 15;
+
+// What has to happen before a press on a card becomes a reorder. See the sensor below for why the
+// two differ; read per render rather than at module load so a pointer that changes (a mouse paired
+// with the tablet) is picked up on the next paint.
+const coarsePointerActivation = () =>
+  typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches
+    ? { delay: 250, tolerance: 8 }
+    : { distance: 6 };
 
 // Finished states hidden by the "Show completed tasks" setting. Only the genuinely-done outcomes —
 // review/failed stay visible because they still want the owner's attention.
@@ -169,8 +178,11 @@ export function Board() {
 
   const sensors = useSensors(
     // A small activation distance so a click on the grip still selects nearby UI / opens the card,
-    // and only a deliberate drag starts a reorder.
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    // and only a deliberate drag starts a reorder. A finger has no such spare 6px: the whole card is
+    // the drag activator and the board scrolls vertically through it, so a distance constraint turns
+    // every flick-scroll that begins on a card into a reorder. Touch gets a press-and-hold instead,
+    // with a tolerance so the small drift of a stationary thumb doesn't cancel it.
+    useSensor(PointerSensor, { activationConstraint: coarsePointerActivation() }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const activeThread = activeId ? threads[activeId] : undefined;
@@ -195,12 +207,12 @@ export function Board() {
     </div>
   );
 
-  const schedulesView = boardView === "schedules";
+  const tasksView = boardView === "tasks";
   return (
     <main className={"board" + (frozen ? " frozen" : "")}>
       <div className="board-head">
         <BoardTabs />
-        {!schedulesView ? (
+        {tasksView ? (
           <div className="board-head-right">
             <span className="faint mono" style={{ fontSize: 11 }}>
               {list.length} total
@@ -211,8 +223,10 @@ export function Board() {
           </div>
         ) : null}
       </div>
-      {schedulesView ? (
+      {boardView === "schedules" ? (
         <ScheduledTasks />
+      ) : boardView === "notes" ? (
+        <OperatorNotes />
       ) : (
         <>
           {list.length === 0 ? (
@@ -254,33 +268,38 @@ export function Board() {
   );
 }
 
-/** The board's view switcher: the active view is a heading, the other a button. "Tasks" ⇄ "Scheduled
- *  Tasks" per the owner's spec — click the inactive label to switch panes. */
+/** The board's view switcher: the active view is a heading, the others are buttons you click to switch
+ *  panes. The counts are the point of the inactive labels — the Notes badge is how the owner sees, while
+ *  watching the task board, that something is waiting on them. */
 function BoardTabs() {
   const boardView = useStore((s) => s.boardView);
   const setBoardView = useStore((s) => s.setBoardView);
-  const schedules = useStore((s) => s.schedules.length);
-  const tasksActive = boardView === "tasks";
+  const counts = {
+    tasks: null,
+    notes: useStore((s) => s.notes.length),
+    schedules: useStore((s) => s.schedules.length),
+  };
   return (
     <div className="board-tabs">
-      {tasksActive ? (
-        <h2>Tasks</h2>
-      ) : (
-        <button className="board-tab" onClick={() => setBoardView("tasks")} title="Back to the task board">
-          Tasks
-        </button>
-      )}
-      {tasksActive ? (
-        <button className="board-tab" onClick={() => setBoardView("schedules")} title="View and manage scheduled tasks">
-          Scheduled Tasks
-          {schedules > 0 ? <span className="board-tab-count">{schedules}</span> : null}
-        </button>
-      ) : (
-        <h2>Scheduled Tasks</h2>
+      {BOARD_TABS.map((tab) =>
+        boardView === tab.view ? (
+          <h2 key={tab.view}>{tab.label}</h2>
+        ) : (
+          <button key={tab.view} className={"board-tab bt-" + tab.view} onClick={() => setBoardView(tab.view)} title={tab.title}>
+            {tab.label}
+            {counts[tab.view] ? <span className="board-tab-count">{counts[tab.view]}</span> : null}
+          </button>
+        ),
       )}
     </div>
   );
 }
+
+const BOARD_TABS: { view: BoardView; label: string; title: string }[] = [
+  { view: "tasks", label: "Tasks", title: "Back to the task board" },
+  { view: "notes", label: "Notes", title: "Branches, PRs and reminders waiting on you" },
+  { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },
+];
 
 /** The board sort control: a quiet trigger in the header that opens a listbox of sort options, reusing
  *  the .ws-menu/.ws-opt pattern (downward variant). Self-contained — owns its open state and closes on

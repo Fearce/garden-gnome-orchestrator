@@ -28,6 +28,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
+const { ceilingEconomics } = require("./ceiling-economics.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const DB_PATH = path.resolve(SERVER_DIR, "data", "orchestrator.sqlite");
@@ -217,6 +218,7 @@ function main() {
   for (const r of runs) buckets.get(classifyRun(r)).push(r);
 
   reportVerdict(buckets);
+  reportCeilingEconomics(db, hours);
   reportNeedsHuman(buckets);
   reportCapAgreement(buckets);
   reportRecovery(db, buckets);
@@ -238,6 +240,41 @@ function reportVerdict(buckets) {
       ? `\n  ⚠ ${needsHuman} run(s) need a human look — detailed below. The rest are handled by design.`
       : "\n  ✓ every non-done run is an expected, handled outcome — nothing to fix.",
   );
+}
+
+/**
+ * The verdict above files every turn-ceiling cutoff as benign — correctly, one run at a time — which leaves
+ * the whole class as one green line however large it grows. This asks the question that line cannot: as a
+ * share of each role's runs, and against the previous window of the same length. Reads its own rows over
+ * 2× the window so the two halves are comparable, and reuses `classifyRun` rather than re-deciding what a
+ * cutoff is (a hand-copied classifier drifts — the lesson `cap classifier agreement` below exists for).
+ */
+function reportCeilingEconomics(db, hours) {
+  const halfMs = hours * 3600 * 1000;
+  const boundary = Date.now() - halfMs;
+  const rows = db
+    .prepare(
+      `SELECT role, state, error, cost_usd, num_turns, started_at
+       FROM agent_runs
+       WHERE started_at > ? AND state IN ('done','error','interrupted')`,
+    )
+    .all(boundary - halfMs);
+
+  const roles = {};
+  for (const r of rows) {
+    if (!ROLE_TURN_CEILING[r.role]) continue; // an unbounded role has no ceiling to be the wrong size
+    const half = r.started_at > boundary ? "recent" : "prior";
+    roles[r.role] ??= { recent: { runs: 0, cutoffs: 0, costUsd: 0 }, prior: { runs: 0, cutoffs: 0, costUsd: 0 } };
+    const tally = roles[r.role][half];
+    tally.runs++;
+    if (r.state !== "done" && classifyRun(r) === "cutoff") {
+      tally.cutoffs++;
+      tally.costUsd += r.cost_usd ?? 0;
+    }
+  }
+
+  console.log("\n=== turn-ceiling economics (is a role's ceiling the right size?) ===");
+  for (const line of ceilingEconomics({ roles, hours }).lines) console.log(line);
 }
 
 // Detail only the classes a human must read; the benign ones are summarised by task instead, so a long window

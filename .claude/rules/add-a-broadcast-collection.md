@@ -34,6 +34,12 @@ Conventions that bite:
 - The broadcast is the ONLY source of truth the client trusts — mutations are
   optimism-free (send the command, let the `x` broadcast reconcile). Don't mirror
   state locally on write.
+- **`schema.ts` is one TEMPLATE LITERAL** — a backtick in a `--` SQL comment ends it and
+  the build dies in esbuild with a bare "Expected ;". Write column names unquoted there.
+- **Order on an explicit `seq`, never on `created_at`.** A burst of writes lands inside one
+  millisecond, so a timestamp sort leaves ties that the random uuid `id` then breaks
+  arbitrarily — and any cap/eviction that walks "oldest first" drops the wrong row.
+  `operator_notes` allocates `(SELECT IFNULL(MAX(seq),0)+1 …)` in the insert statement itself.
 - Director MCP tools that touch the collection need the tool NAME registered in
   `agents/toolNames.ts` AND added to `DIRECTOR_TOOLS` (the allowedTools list) — a tool
   the SDK can call but isn't allowlisted silently no-ops.

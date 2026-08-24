@@ -131,6 +131,27 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   updated_at     INTEGER NOT NULL
 );
 
+-- The operator's note list: short pointers agents leave for the owner — a branch to review, a PR to
+-- merge — that they click and then delete. Deliberately NOT keyed to a task: the note outlives the
+-- work (a PR waits for the owner long after the task closes), so thread_id has NO FK and the task's
+-- title/workspace are SNAPSHOT here rather than joined, keeping the note readable after a purge.
+-- seq is the ORDER; created_at is only what the list displays. A burst of posts lands inside one
+-- millisecond, so ordering on the timestamp leaves ties that the random id then breaks arbitrarily —
+-- which is also the order the per-task cap evicts in, so it would drop the wrong note. Bumped on insert
+-- AND on a refresh, so a re-posted link floats to the top of the owner's list the way a new one does.
+CREATE TABLE IF NOT EXISTS operator_notes (
+  id           TEXT PRIMARY KEY,
+  seq          INTEGER NOT NULL,
+  body         TEXT NOT NULL,
+  url          TEXT,
+  thread_id    TEXT,
+  thread_title TEXT,
+  workspace    TEXT,
+  from_role    TEXT,
+  from_name    TEXT,
+  created_at   INTEGER NOT NULL
+);
+
 -- The office: cross-agent chat. A row is one message in a room ('general' or 'repo:<normalized>').
 -- thread_id is nullable (room-level system notices), with NO FK so a row survives its task's purge —
 -- the conversation is the durable record of a collaboration, kept even after the tasks close.
@@ -148,9 +169,35 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at  INTEGER NOT NULL
 );
 
+-- Auto model selection's memory: one row per task whose implementor model was auto-picked, holding the
+-- pick and — once the task settles — how the work turned out. NO FK to threads on purpose: a closed task
+-- is purged after 30 days, and the lesson has to outlive it (same reasoning as chat_messages). Keyed by
+-- thread_id so a retry's fresh pick replaces the old record rather than double-counting the task.
+CREATE TABLE IF NOT EXISTS model_grades (
+  thread_id    TEXT PRIMARY KEY,
+  workspace    TEXT NOT NULL,
+  title        TEXT NOT NULL DEFAULT '',
+  provider     TEXT NOT NULL,
+  model        TEXT NOT NULL,
+  effort       TEXT NOT NULL,
+  reason       TEXT NOT NULL DEFAULT '',
+  outcome      TEXT,
+  score        INTEGER,
+  qa_rounds    INTEGER,
+  cost_usd     REAL,
+  num_turns    INTEGER,
+  duration_ms  INTEGER,
+  ran_models   TEXT,
+  graded_model TEXT,
+  created_at   INTEGER NOT NULL,
+  graded_at    INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_thread     ON agent_runs(thread_id);
+CREATE INDEX IF NOT EXISTS idx_grades_model    ON model_grades(graded_model);
 CREATE INDEX IF NOT EXISTS idx_findings_thread ON findings(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_questions_thread ON questions(thread_id);
 CREATE INDEX IF NOT EXISTS idx_chat_room       ON chat_messages(room, created_at);
+CREATE INDEX IF NOT EXISTS idx_notes_thread    ON operator_notes(thread_id);
 `;

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { Finding } from "../types.js";
 import { apiUrl } from "../lib/base.js";
 import { FileIcon, fileKindOf, isPreviewable, basenameOf } from "./FileIcon.js";
@@ -16,6 +16,8 @@ function copy(text: string): void {
  * small clickable file icon. Clicking opens the inline preview; hovering (or focusing) reveals a
  * popover with the label, filename, description and actions. The popover is an out-of-flow overlay so
  * the strip stays a thin single bar and never pushes into or reflows the activity feed below it.
+ * Without a mouse there is no hover, so the popover is also openable by state — from the ⋯ button
+ * (touch-only) and from the icon of a file that has no preview to open instead.
  * Renders nothing when the task has no deliverables.
  */
 export function Deliverables({ items }: { items: Finding[] }) {
@@ -46,25 +48,47 @@ function DeliverableChip({ d, onView }: { d: Finding; onView: () => void }) {
   const kind = fileKindOf(name);
   const previewable = isPreviewable(kind);
   const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
   const onCopy = () => {
     copy(path);
     setCopied(true);
     setTimeout(() => setCopied(false), 1400);
   };
+  // A tap-opened popover needs a tap-anywhere-else to close it; hover-opened ones close themselves.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [open]);
   const download = apiUrl(`/api/deliverable/${d.id}?download=1`);
   return (
-    <span className="dl-chip">
+    <span className="dl-chip" ref={ref}>
       <button
         className="dl-chip-btn"
-        onClick={previewable ? onView : undefined}
-        // A binary/unknown file can't be previewed, so its icon is a plain marker, not a button action.
+        // A previewable file opens its preview on the first click, on any device. One that can't be
+        // previewed used to be an inert icon — it now opens the popover, where its actions live.
+        onClick={previewable ? onView : () => setOpen((o) => !o)}
         aria-label={d.label ?? name}
         title={d.label ?? name}
         type="button"
       >
         <FileIcon kind={kind} size={19} />
       </button>
-      <span className="dl-pop" role="tooltip">
+      {/* Touch-only: the actions below are otherwise reachable by hover alone. */}
+      <button
+        className="dl-more"
+        onClick={() => setOpen((o) => !o)}
+        aria-label={`Actions for ${d.label ?? name}`}
+        aria-expanded={open}
+        type="button"
+      >
+        ⋯
+      </button>
+      <span className={"dl-pop" + (open ? " open" : "")} role="tooltip">
         <span className="dl-pop-head">
           <span className="dl-pop-icon">
             <FileIcon kind={kind} size={16} />
@@ -77,7 +101,15 @@ function DeliverableChip({ d, onView }: { d: Finding; onView: () => void }) {
         {d.detail ? <span className="dl-pop-desc">{d.detail}</span> : null}
         <span className="dl-pop-actions">
           {previewable && (
-            <button className="btn ghost sm" onClick={onView} type="button" title="Preview the file inline">
+            <button
+              className="btn ghost sm"
+              onClick={() => {
+                setOpen(false);
+                onView();
+              }}
+              type="button"
+              title="Preview the file inline"
+            >
               View
             </button>
           )}

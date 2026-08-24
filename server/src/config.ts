@@ -48,6 +48,8 @@ const googleClientId = process.env.GOOGLE_CLIENT_ID || undefined;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || undefined;
 const authConfigured = !!authPassword || !!(googleClientId && googleClientSecret);
 const exposeBlocked = !localOnly && !authConfigured;
+// Hoisted so the editing-QA ceiling below can default to it: the two are the same class of budget.
+const implementorMaxTurns = Number(process.env.IMPLEMENTOR_MAX_TURNS ?? 100);
 
 export const config = {
   serverRoot,
@@ -276,7 +278,11 @@ export const config = {
   // with subtype "error_max_turns" — an involuntary cutoff, NOT a real finish — at a known point, so
   // the orchestrator can silently warm-resume the session and keep going (the implementor used to
   // hit an unpredictable SDK default mid-task and park on a manual Resume button).
-  implementorMaxTurns: Number(process.env.IMPLEMENTOR_MAX_TURNS ?? 100),
+  implementorMaxTurns,
+  // The same ceiling for QA when it runs in editing mode (`qaAppliesFixes`): that QA doesn't review a
+  // diff, it does implementor-grade work — edits files, builds, runs the suite, commits — so it needs an
+  // implementor-grade budget. Read-only QA keeps its own, much smaller ceiling in `qaConfig`.
+  qaFixMaxTurns: Number(process.env.QA_FIX_MAX_TURNS ?? implementorMaxTurns),
   // Cap on consecutive turn-limit auto-resumes per implementor→QA loop, so a wedged implementor that
   // keeps hitting the ceiling without progressing can't spin forever — it settles to review instead.
   maxAutoResumes: Number(process.env.MAX_AUTO_RESUMES ?? 8),

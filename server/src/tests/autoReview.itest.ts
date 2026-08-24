@@ -32,7 +32,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
-import type { ReviewerOutput } from "../types.js";
+import type { ImplementorProvider, ReviewerOutput } from "../types.js";
 
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
@@ -270,24 +270,41 @@ const CUTOFF = { type: "result", subtype: "error_max_turns", isError: true } as 
  *  and the harness's stub writes no messages either, exactly as such a run doesn't. */
 const EMPTY = { type: "result", subtype: "success", isError: false } as RunOutcome;
 
-/** Drive a SEQUENCE of reviewer outcomes (the shared stub returns one fixed outcome), recording the resume
- *  session each run was given. Also persists the `agent_runs` row the real `runRole` would have written:
+/** What each stubbed reviewer run was asked for: the session to resume, and the backend that resume was
+ *  pinned to. The two must always agree — a session id doesn't travel between backends. */
+interface ReviewerRunLog {
+  resumes: (string | undefined)[];
+  providers: (ImplementorProvider | undefined)[];
+}
+
+/** Drive a SEQUENCE of reviewer outcomes (the shared stub returns one fixed outcome), recording what each
+ *  run was asked to resume. Also persists the `agent_runs` row the real `runRole` would have written:
  *  a continuation resumes the cut-off run's session, so a harness with an empty runs table would silently
- *  prove nothing. The last queued outcome repeats if the code runs more times than the test queued. */
-function stubReviewerRuns(h: Harness, results: RunOutcome[]): (string | undefined)[] {
-  const resumes: (string | undefined)[] = [];
+ *  prove nothing. `account` is the run's persisted account label, i.e. which backend it ran on ("zai:…" for
+ *  a review that failed over; the default is a Claude sub). The last queued outcome repeats if the code runs
+ *  more times than the test queued. */
+function stubReviewerRuns(h: Harness, results: RunOutcome[], account?: string): ReviewerRunLog {
+  const log: ReviewerRunLog = { resumes: [], providers: [] };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = h.mgr as any;
-  internals.runRole = async (thread: { id: string }, role: string, kickoff: string | unknown[], _cfg: unknown, resume?: string): Promise<RunOutcome> => {
+  internals.runRole = async (
+    thread: { id: string },
+    role: string,
+    kickoff: string | unknown[],
+    _cfg: unknown,
+    resume?: string,
+    opts?: { preferredProvider?: ImplementorProvider },
+  ): Promise<RunOutcome> => {
     h.roleCalls.push(role);
     h.kickoffs.push(typeof kickoff === "string" ? kickoff : JSON.stringify(kickoff));
-    resumes.push(resume);
-    const res = results[Math.min(resumes.length - 1, results.length - 1)];
-    const run = h.db.createRun({ threadId: thread.id, role: "reviewer", model: "claude-opus-5" });
+    log.resumes.push(resume);
+    log.providers.push(opts?.preferredProvider);
+    const res = results[Math.min(log.resumes.length - 1, results.length - 1)];
+    const run = h.db.createRun({ threadId: thread.id, role: "reviewer", model: "claude-opus-5", account });
     h.db.updateRun(run.id, { sessionId: REVIEWER_SESSION, state: res?.isError ? "error" : "done", endedAt: Date.now() });
     return res;
   };
-  return resumes;
+  return log;
 }
 
 async function main(): Promise<void> {
@@ -465,7 +482,7 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const id = seedParkedTask(h);
-      const resumes = stubReviewerRuns(h, [...results]);
+      const { resumes } = stubReviewerRuns(h, [...results]);
       await h.mgr.autoReview(id);
       await settle();
       check(`${label} → the reviewer ran ${expect.runs}×`, h.roleCalls.length === expect.runs, JSON.stringify(h.roleCalls));
@@ -490,7 +507,7 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const id = seedParkedTask(h);
-      const resumes = stubReviewerRuns(h, [EMPTY, okResult({ accept: true, summary: "verified on the retry" })]);
+      const { resumes } = stubReviewerRuns(h, [EMPTY, okResult({ accept: true, summary: "verified on the retry" })]);
       await h.mgr.autoReview(id);
       await settle();
       check("the reviewer ran twice: the empty run plus its retry", h.roleCalls.length === 2, JSON.stringify(h.roleCalls));
@@ -519,7 +536,7 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const id = seedParkedTask(h);
-      const resumes = stubReviewerRuns(h, [...results]);
+      const { resumes } = stubReviewerRuns(h, [...results]);
       await h.mgr.autoReview(id);
       await settle();
       // MAX_REVIEW_RECOVERIES (2) recoveries on top of the run the owner's click started.
@@ -533,6 +550,41 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test S: a review that ran on z.ai is continued ON z.ai, or not at all ---------------------------
+  // The reviewer is no longer Claude-only: when every Claude sub is capped it fails over to z.ai (the CLI
+  // backends stay excluded — no in-process MCP bus, so no post_finding/ask_user). That makes its warm
+  // resume provider-specific. A session id doesn't travel between backends, so handing a z.ai session to a
+  // Claude run buys an empty run that burns a recovery, and dropping the resume while keeping the "carry
+  // on" nudge asks a fresh session to continue work it never heard about.
+  console.log("\nTest S — a reviewer that ran on z.ai resumes on z.ai, and starts fresh when z.ai can't take it");
+  for (const [label, zaiReady, expect] of [
+    ["z.ai still available", true, { resume: REVIEWER_SESSION, provider: "zai" as const, continued: true }],
+    ["z.ai capped since", false, { resume: undefined, provider: undefined, continued: false }],
+  ] as const) {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).zaiImplementorReady = (): boolean => zaiReady;
+      const { resumes, providers } = stubReviewerRuns(h, [CUTOFF, okResult({ accept: true, summary: "verified after the cutoff" })], "zai:glm-4.6");
+      await h.mgr.autoReview(id);
+      await settle();
+      check(`${label} → the reviewer ran twice`, h.roleCalls.length === 2, JSON.stringify(h.roleCalls));
+      check(`${label} → the recovery resumed ${expect.resume ?? "nothing"}`, resumes[1] === expect.resume, JSON.stringify(resumes));
+      check(`${label} → and pinned the backend to ${expect.provider ?? "none"}`, providers[1] === expect.provider, JSON.stringify(providers));
+      check(
+        `${label} → the kickoff matches what the session can answer`,
+        (h.kickoffs[1] ?? "").includes("stopped at a per-session turn limit") === expect.continued,
+        (h.kickoffs[1] ?? "").slice(0, 80),
+      );
+      check(`${label} → the recovery still reached a verdict`, h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      const note = h.db.listFindings(id).find((f) => f.summary.startsWith("Auto-review stopped at its turn ceiling"));
+      check(`${label} → the owner is told which recovery ran`, !!note && note.summary.includes("can't be resumed") === !expect.continued, String(note?.summary));
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Test K: the point of the whole change — a hand-back is fixed, re-checked, and finished ---------
   // The task this was built for was blocked by ONE mechanical item the reviewer is forbidden to do
   // itself, and cost the owner a second click plus a second full Opus review to clear.
@@ -541,7 +593,7 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const id = seedParkedTask(h);
-      const resumes = stubReviewerRuns(h, [
+      const { resumes } = stubReviewerRuns(h, [
         okResult({
           accept: false,
           summary: "everything checks out except the report placement",

@@ -77,6 +77,26 @@ export interface ScheduledTask {
   updatedAt: number;
 }
 
+/** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
+export type BoardView = "tasks" | "notes" | "schedules";
+
+/** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
+export const NOTE_MAX_CHARS = 255;
+
+/** One line on the operator's note list: a pointer an agent left for the owner — a branch pushed, a PR
+ *  opened — that they click, act on, and delete. Server-authoritative; mirrors server/src/types.ts. */
+export interface OperatorNote {
+  id: string;
+  body: string;
+  url?: string | null; // the click target (http/https only)
+  threadId?: string | null; // the task that left it; null when the owner or director wrote it
+  threadTitle?: string | null; // snapshot, so the note still reads after that task is purged
+  workspace?: string | null; // snapshot of the repo it came from
+  fromRole?: Role | null; // null for the owner's own note
+  fromName?: string | null; // the agent's office name
+  createdAt: number;
+}
+
 export interface AgentRun {
   id: string;
   threadId: string;
@@ -326,6 +346,7 @@ export interface OrchestratorSettings {
   maxConcurrent: number;
   maxConcurrentPerRepo: number; // max pipelines running at once for a single repo; 0 (default) = unlimited (only the global maxConcurrent applies)
   selfImproveEnabled: boolean; // opt-in (off by default): completed tasks get one extra implementor round that builds the tools/skills/memories the session showed were missing
+  autoModelSelection: boolean; // opt-in (off by default): before the implementor starts, the director picks its model AND effort from every backend dispatchable right now, judging the task + the planner's read of the repo. Every auto-picked task is graded when it settles, and the grades feed the next pick.
   // Token-usage safety limit: opt-in auto-stop when live utilization reaches the threshold. Disabled by
   // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.
   tokenLimitEnabled: boolean;
@@ -394,6 +415,23 @@ export const MODEL_ROLES: Role[] = ["director", "planner", "researcher", "implem
 /** Which model each role runs on, per subscription. Keyed by subscription id — a Claude account id,
  *  "codex", or "default" (the global per-role fallback). Mirrors the server's ModelOverrides. */
 export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
+
+/** The implementor backends (mirrors the server's ImplementorProvider). */
+export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
+
+/** Auto model selection's scoreboard row: how one model has actually performed on auto-picked tasks.
+ *  100 = the task was accepted with no human involvement; each QA fix-round past the first costs 12.
+ *  Averages cover graded tasks whose whole implementation ran on this one model. Mirrors the server. */
+export interface ModelStat {
+  provider: ImplementorProvider;
+  model: string;
+  picks: number;
+  avgScore: number;
+  doneRate: number; // 0-1
+  avgQaRounds: number;
+  avgCostUsd: number;
+  avgMinutes: number;
+}
 
 /** Subscription-id sentinels for the model matrix (mirror the server). */
 export const DEFAULT_SUB_ID = "default";
@@ -506,6 +544,93 @@ export interface GitFileDiff {
   truncated: boolean;
 }
 
+// ---- the repo-level Git console (mirrors server/src/git/repoOps.ts + orchestrator/repoConsole.ts) ----
+
+export interface RepoRef {
+  path: string; // the resolved repo ROOT — the identity every repo command uses
+  name: string;
+  taskCount: number; // tasks in this console living in this repo
+  activeCount: number; // …of which have an agent live in the workspace right now
+  isSelf: boolean; // the orchestrator's own checkout
+  discovered: boolean; // found by scanning the disk, not known from a dispatch
+}
+
+export interface RepoBranch {
+  name: string;
+  current: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  at: number; // epoch ms of the branch tip
+  gone: boolean; // the upstream is configured but no longer on the remote
+}
+
+export interface RepoRemote {
+  name: string;
+  url: string;
+}
+
+/** A task with an agent live in this repo — what the console names before a destructive action. */
+export interface RepoBusyTask {
+  id: string;
+  title: string;
+  state: ThreadState;
+}
+
+export interface RepoState {
+  path: string;
+  name: string;
+  isRepo: boolean;
+  error: string | null;
+  branch: string | null;
+  detached: boolean;
+  branches: RepoBranch[];
+  remoteBranches: string[];
+  remotes: RepoRemote[];
+  upstreamRef: string | null;
+  pushRef: string | null;
+  ahead: number; // commits a Push would send
+  behind: number; // commits a Pull would take
+  isVota: boolean;
+  pushState: PushState;
+  files: GitFile[];
+  commits: GitCommit[];
+  lastFetchAt: number | null;
+  /** Browser URL for the repo on its host, deep-linked to the current branch; null when the remote
+   *  isn't a recognizable web host. */
+  webUrl: string | null;
+  busy: RepoBusyTask[];
+}
+
+export interface RepoCommitDetail {
+  hash: string;
+  fullHash: string;
+  subject: string;
+  body: string;
+  author: string;
+  email: string;
+  at: number;
+  files: GitFile[];
+  isMerge: boolean;
+  error: string | null;
+}
+
+export interface RepoActionResult {
+  ok: boolean;
+  message: string;
+  /** Refused by the live-agent gate rather than by git — the console offers an explicit override. */
+  blocked: boolean;
+}
+
+export type RepoOp =
+  | { action: "fetch"; prune?: boolean }
+  | { action: "pull"; rebase?: boolean }
+  | { action: "push"; setUpstream?: boolean }
+  | { action: "checkout"; branch: string; create?: boolean; from?: string }
+  | { action: "deleteBranch"; branch: string; force?: boolean }
+  | { action: "commit"; summary: string; description?: string; paths: string[] }
+  | { action: "discard"; paths: string[] };
+
 export type ServerEvent =
   | {
       type: "hello";
@@ -524,9 +649,13 @@ export type ServerEvent =
       chatRooms: ChatRoomSummary[];
       nameOverrides: Record<string, string>;
       schedules: ScheduledTask[];
+      modelStats: ModelStat[];
+      notes: OperatorNote[];
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  | { type: "model.stats"; stats: ModelStat[] }
   | { type: "schedules"; schedules: ScheduledTask[] }
+  | { type: "notes"; notes: OperatorNote[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
   | { type: "zai.usage"; usage: ZaiUsageDTO | null }
@@ -541,6 +670,17 @@ export type ServerEvent =
   | { type: "thread.git"; threadId: string; status: GitStatus }
   | { type: "thread.gitSummary"; threadId: string; summary: GitSummary }
   | { type: "thread.gitDiff"; threadId: string; path: string; diff: GitFileDiff }
+  // ---- the repo-level Git console ----
+  // `preferred` = the repo of the task the console was opened from, resolved server-side; null when
+  // no task was open or its workspace isn't a checkout. `forThread` echoes the request so a slow
+  // earlier reply can be discarded.
+  | { type: "repo.list"; repos: RepoRef[]; preferred: string | null; forThread: string | null }
+  | { type: "repo.state"; path: string; state: RepoState }
+  // `commit` echoes which side the diff came from (working tree vs. inside a commit) so the cache can be
+  // keyed without guessing which request a reply answers.
+  | { type: "repo.diff"; path: string; file: string; commit: string | null; diff: GitFileDiff }
+  | { type: "repo.commit"; path: string; detail: RepoCommitDetail }
+  | { type: "repo.result"; path: string; action: string; result: RepoActionResult }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
   // A cancelled task was restarted from scratch: prune its now-deleted runs/findings/feed (keeping the
@@ -598,6 +738,11 @@ export type ClientCommand =
   | { type: "thread.git"; threadId: string }
   | { type: "thread.gitSummary"; threadId: string }
   | { type: "thread.gitDiff"; threadId: string; path: string }
+  | { type: "repo.list"; rescan?: boolean; forThread?: string }
+  | { type: "repo.state"; path: string }
+  | { type: "repo.diff"; path: string; file: string; commit?: string }
+  | { type: "repo.commit"; path: string; hash: string }
+  | { type: "repo.action"; path: string; op: RepoOp; force?: boolean }
   | { type: "director.cancel" }
   | { type: "director.search"; query: string }
   | { type: "chat.history"; room: string; before?: ChatCursor }
@@ -606,6 +751,9 @@ export type ClientCommand =
   | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null } }
   | { type: "schedule.delete"; id: string }
   | { type: "schedule.run"; id: string }
+  | { type: "note.create"; body: string; url?: string }
+  | { type: "note.delete"; id: string }
+  | { type: "note.clear" }
   | { type: "snapshot.request" };
 
 // ---- client-only view models ----

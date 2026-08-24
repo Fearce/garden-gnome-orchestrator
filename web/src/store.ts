@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { apiUrl, wsUrl } from "./lib/base.js";
 import type {
   AccountDTO,
+  BoardView,
   CodexUsageDTO,
   GrokUsageDTO,
   ZaiUsageDTO,
@@ -18,7 +19,14 @@ import type {
   GitStatus,
   GitFileDiff,
   ImageAttachment,
+  RepoActionResult,
+  RepoCommitDetail,
+  RepoOp,
+  RepoRef,
+  RepoState,
   Message,
+  ModelStat,
+  OperatorNote,
   OrchestratorSettings,
   Question,
   Role,
@@ -34,6 +42,12 @@ interface ThreadDraft {
   runId: string;
   role: Role;
   text: string;
+}
+
+/** Cache key for a Git-console diff. A file's working-tree diff and the same file inside a commit are
+ *  different content, so the commit id (when there is one) is part of the key. */
+export function repoDiffKey(file: string, commit: string | null | undefined): string {
+  return commit ? `${commit}:${file}` : file;
 }
 
 interface State {
@@ -103,6 +117,28 @@ interface State {
   gitSummaries: Record<string, GitSummary>;
   gitStatus: Record<string, GitStatus>;
   gitDiffs: Record<string, Record<string, GitFileDiff>>;
+  // The repo-level Git console, keyed by repo root. `repoDiffs` is keyed by repo → diffKey(file, commit)
+  // so a file's working-tree diff and the same file inside a commit never collide. `repoResult` is the
+  // last action's outcome (the activity line); `repoBusy` is true while one is in flight, which is what
+  // disables the action buttons.
+  repos: RepoRef[];
+  /** The repo of the task the console was opened from — what the picker opens on. */
+  repoPreferred: string | null;
+  /** A repo.list request is in flight. The console keeps BOTH the list and the preference from the
+   *  previous time it was opened, so without this it would auto-select from stale data before this
+   *  open's answer — and then keep that stale choice, since auto-selection only happens once. */
+  repoListPending: boolean;
+  /** The `forThread` of the request in flight. The first list costs a disk scan, so the answer to a
+   *  PREVIOUS open can arrive after this one's request; a reply that doesn't echo this is discarded. */
+  repoListFor: string | null;
+  repoStates: Record<string, RepoState>;
+  repoDiffs: Record<string, Record<string, GitFileDiff>>;
+  repoCommits: Record<string, Record<string, RepoCommitDetail>>;
+  repoResult: (RepoActionResult & { action: string; at: number }) | null;
+  repoBusy: boolean;
+  // The op the last `repoAction` sent — what a "Do it anyway" re-issues with force after the live-agent
+  // gate blocked it. Kept in the store rather than the component so it survives a re-render of the panel.
+  repoLastOp: RepoOp | null;
   railHidden: boolean;
   detailWidth: number;
   directorWidth: number;
@@ -129,7 +165,13 @@ interface State {
   // Recurring/scheduled tasks (server-authoritative, broadcast over WS). Managed from the Scheduled Tasks
   // view; `boardView` toggles the center pane between the live task board and that view.
   schedules: ScheduledTask[];
-  boardView: "tasks" | "schedules";
+  // The owner's note list (server-authoritative): short pointers agents leave for them — a branch to
+  // review, a PR to merge — shown in the Notes board view, cleared by the owner one note at a time.
+  notes: OperatorNote[];
+  boardView: BoardView;
+  // Auto model selection's scoreboard: per-model averages over every graded auto-picked task. Rendered
+  // read-only in Settings so the selection loop's learning is visible, and rebroadcast on each grading.
+  modelStats: ModelStat[];
 
   select: (id: string | null) => void;
   // Search the whole director conversation (across every task) for a substring, or clear the search.
@@ -166,6 +208,14 @@ interface State {
   loadGitSummary: (threadId: string) => void;
   loadGitStatus: (threadId: string) => void;
   loadGitDiff: (threadId: string, path: string) => void;
+  // The Git console. `repoAction` marks the console busy until the server's repo.result lands, so the
+  // buttons can't be double-fired against a repo mid-checkout.
+  loadRepos: (rescan?: boolean, forThread?: string | null) => void;
+  loadRepoState: (path: string) => void;
+  loadRepoDiff: (path: string, file: string, commit?: string) => void;
+  loadRepoCommit: (path: string, hash: string) => void;
+  repoAction: (path: string, op: RepoOp, force?: boolean) => void;
+  clearRepoResult: () => void;
   toggleRail: () => void;
   setDetailWidth: (px: number) => void;
   setDirectorWidth: (px: number) => void;
@@ -181,11 +231,15 @@ interface State {
   clearNotice: () => void;
   // Scheduled tasks: switch the center pane, and CRUD the recurring dispatches (server is authoritative —
   // each mutation is optimism-free and reconciled by the `schedules` broadcast).
-  setBoardView: (v: "tasks" | "schedules") => void;
+  setBoardView: (v: BoardView) => void;
   createSchedule: (input: { title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null }) => void;
   updateSchedule: (id: string, patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null }) => void;
   deleteSchedule: (id: string) => void;
   runSchedule: (id: string) => void;
+  // The owner's note list — same optimism-free contract: send, let the `notes` broadcast reconcile.
+  addNote: (body: string, url?: string) => void;
+  deleteNote: (id: string) => void;
+  clearNotes: () => void;
   // Flag that a fresh web build is available (set by version.ts when the served bundle hash changes).
   setUpdateReady: (v: boolean) => void;
   // Record the latest git-update poll result (set by update.ts).
@@ -297,6 +351,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   maxConcurrent: 3,
   maxConcurrentPerRepo: 0,
   selfImproveEnabled: false,
+  autoModelSelection: false,
   tokenLimitEnabled: false,
   tokenLimitPercent: 80,
   autoResumeOnTokenReset: false,
@@ -427,6 +482,16 @@ export const useStore = create<State>((set) => ({
   gitSummaries: {},
   gitStatus: {},
   gitDiffs: {},
+  repos: [],
+  repoPreferred: null,
+  repoListPending: false,
+  repoListFor: null,
+  repoStates: {},
+  repoDiffs: {},
+  repoCommits: {},
+  repoResult: null,
+  repoBusy: false,
+  repoLastOp: null,
   railHidden: lsBool("orch-rail-hidden", false),
   detailWidth: lsNum("orch-detail-w", 480),
   directorWidth: lsNum("orch-rail-w", 384),
@@ -439,6 +504,8 @@ export const useStore = create<State>((set) => ({
   officeRoom: null,
   notice: null,
   schedules: [],
+  notes: [],
+  modelStats: [],
   boardView: "tasks",
 
   select: (id) => {
@@ -531,6 +598,18 @@ export const useStore = create<State>((set) => ({
   loadGitSummary: (threadId) => sendCommand({ type: "thread.gitSummary", threadId }),
   loadGitStatus: (threadId) => sendCommand({ type: "thread.git", threadId }),
   loadGitDiff: (threadId, path) => sendCommand({ type: "thread.gitDiff", threadId, path }),
+  loadRepos: (rescan = false, forThread = null) => {
+    set({ repoListPending: true, repoListFor: forThread, repoPreferred: null });
+    sendCommand({ type: "repo.list", rescan, ...(forThread ? { forThread } : {}) });
+  },
+  loadRepoState: (path) => sendCommand({ type: "repo.state", path }),
+  loadRepoDiff: (path, file, commit) => sendCommand({ type: "repo.diff", path, file, ...(commit ? { commit } : {}) }),
+  loadRepoCommit: (path, hash) => sendCommand({ type: "repo.commit", path, hash }),
+  repoAction: (path, op, force = false) => {
+    set({ repoBusy: true, repoResult: null, repoLastOp: op });
+    sendCommand({ type: "repo.action", path, op, force });
+  },
+  clearRepoResult: () => set({ repoResult: null }),
   toggleRail: () =>
     set((s) => {
       const v = !s.railHidden;
@@ -574,6 +653,13 @@ export const useStore = create<State>((set) => ({
   updateSchedule: (id, patch) => sendCommand({ type: "schedule.update", id, patch }),
   deleteSchedule: (id) => sendCommand({ type: "schedule.delete", id }),
   runSchedule: (id) => sendCommand({ type: "schedule.run", id }),
+  addNote: (body, url) => {
+    const text = body.trim();
+    const link = url?.trim();
+    if (text || link) sendCommand({ type: "note.create", body: text || link!, ...(link ? { url: link } : {}) });
+  },
+  deleteNote: (id) => sendCommand({ type: "note.delete", id }),
+  clearNotes: () => sendCommand({ type: "note.clear" }),
   setUpdateReady: (v) => set({ updateReady: v }),
   setGitUpdate: (v) => set({ gitUpdate: v }),
   applyGitUpdate: async () => {
@@ -703,7 +789,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}), ...(ev.notes ? { notes: ev.notes } : {}) });
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
@@ -731,8 +817,14 @@ function applyEvent(ev: ServerEvent): void {
     case "accounts":
       useStore.setState({ accounts: ev.accounts });
       break;
+    case "notes":
+      useStore.setState({ notes: ev.notes });
+      break;
     case "schedules":
       useStore.setState({ schedules: ev.schedules });
+      break;
+    case "model.stats":
+      useStore.setState({ modelStats: ev.stats });
       break;
     case "chat.message":
       useStore.setState((s) => {
@@ -797,6 +889,38 @@ function applyEvent(ev: ServerEvent): void {
       useStore.setState((s) => ({
         gitDiffs: { ...s.gitDiffs, [ev.threadId]: { ...(s.gitDiffs[ev.threadId] ?? {}), [ev.path]: ev.diff } },
       }));
+      break;
+    case "repo.list":
+      useStore.setState((s) =>
+        // Not the reply to the request in flight — an earlier open's answer, arriving late. Taking it
+        // would auto-select the wrong repo AND clear the pending flag the real answer still needs.
+        ev.forThread !== s.repoListFor ? {} : { repos: ev.repos, repoPreferred: ev.preferred, repoListPending: false },
+      );
+      break;
+    case "repo.state":
+      useStore.setState((s) => ({ repoStates: { ...s.repoStates, [ev.path]: ev.state } }));
+      break;
+    case "repo.diff":
+      useStore.setState((s) => ({
+        repoDiffs: { ...s.repoDiffs, [ev.path]: { ...(s.repoDiffs[ev.path] ?? {}), [repoDiffKey(ev.file, ev.commit)]: ev.diff } },
+      }));
+      break;
+    case "repo.commit":
+      useStore.setState((s) => ({
+        repoCommits: { ...s.repoCommits, [ev.path]: { ...(s.repoCommits[ev.path] ?? {}), [ev.detail.hash]: ev.detail } },
+      }));
+      break;
+    case "repo.result":
+      useStore.setState((s) => {
+        if (!ev.result.ok) return { repoBusy: false, repoResult: { ...ev.result, action: ev.action, at: Date.now() } };
+        // The repo moved, so the per-task Changes surfaces that read the same repo are stale too. The
+        // drawer caches are DROPPED — both re-fetch themselves whenever a drawer/diff is opened. The card
+        // chips are RE-REQUESTED instead of dropped: a chip only fetches its summary on mount, so
+        // clearing it would make every chip on the board disappear until the card remounted.
+        const { [ev.path]: _stale, ...repoDiffs } = s.repoDiffs;
+        for (const threadId of Object.keys(s.gitSummaries)) sendCommand({ type: "thread.gitSummary", threadId });
+        return { repoBusy: false, repoResult: { ...ev.result, action: ev.action, at: Date.now() }, repoDiffs, gitStatus: {}, gitDiffs: {} };
+      });
       break;
     case "thread.upsert":
       useStore.setState((s) => {

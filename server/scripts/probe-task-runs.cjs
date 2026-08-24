@@ -13,9 +13,10 @@
 //   • an auto-review trace: every reviewer hand-back / acceptance finding, and the next run it caused.
 //     This answers the otherwise expensive question "did the reviewer send a fixable issue back to an
 //     implementor, or did it simply re-park the task?" without hand-reading SQLite timestamps.
-//   • a QA-loop heuristic: launches vs. the maxQaRounds setting, and how many QA runs were killed by a
-//     restart (state='interrupted', no verdict) — the signature of the durable-QA-budget drain
-//     (see qaRoundBudget.itest.ts / handoff 2026-07-20). If launches ≫ cap, the loop wasn't bounded.
+//   • a QA-loop check: the durable qaRoundsUsed counter against the maxQaRounds setting — the signature
+//     of the durable-QA-budget drain (see qaRoundBudget.itest.ts / handoff 2026-07-20). QA *launches*
+//     are reconciled separately, because rounds are only one of four things that spend one; the
+//     arithmetic and the reasons live in scripts/qa-loop-check.cjs (gate: test:qa-loop-check).
 //
 // GOTCHA: agent_runs has NO `backend` column — the backend is encoded in `model` (grok-4.5 / gpt-*-sol /
 // claude-*). Don't SELECT backend (SqliteError). `interrupted` = a server restart killed the run
@@ -23,6 +24,7 @@
 
 const path = require("node:path");
 const Database = require("better-sqlite3");
+const { qaLoopReading, roundsCap } = require("./qa-loop-check.cjs");
 
 const arg = process.argv.slice(2).join(" ").trim();
 if (!arg) {
@@ -44,6 +46,15 @@ function short(s, n = 90) {
 }
 function iso(ms) {
   return ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 19) : null;
+}
+// A malformed blob must not take down the whole trail at the last section, after the
+// expensive part has already printed.
+function parseStageOutputs(raw) {
+  try {
+    return JSON.parse(raw || "{}") ?? {};
+  } catch {
+    return {};
+  }
 }
 function dur(a, b) {
   if (!a || !b) return null;
@@ -191,27 +202,40 @@ section("auto-review trace");
 // QA-loop heuristic — the durable-budget drain signature.
 section("QA-loop check");
 {
-  const capRow = db.prepare("SELECT value FROM kv WHERE key = 'setting_max_qa_rounds'").get();
-  const cap = capRow ? Number(capRow.value) : null;
+  const setting = (key) => db.prepare("SELECT value FROM kv WHERE key = ?").get(key)?.value ?? null;
+  // A missing/unreadable cap is no cap at all — see roundsCap. (Number(null) === 0 is finite, so a
+  // naive isFinite check would report "within the 0-round cap", then trip the drain alarm.)
+  const cap = roundsCap(setting("setting_max_qa_rounds"));
+  const appliesFixes = setting("setting_qa_applies_fixes") === "1";
   const qa = runs.filter((r) => r.role === "qa");
   const verdicts = qa.filter((r) => r.state === "done").length;
   const interrupted = qa.filter((r) => r.state === "interrupted").length;
   const errored = qa.filter((r) => r.state === "error").length;
+  // The loop enforces its budget against these durable counters, not against the run rows.
+  const stage = parseStageOutputs(thread.stage_outputs);
   console.log({
     maxQaRoundsSetting: cap,
+    qaAppliesFixes: appliesFixes,
     qaLaunches: qa.length,
+    qaRoundsUsed: stage.qaRoundsUsed ?? null,
+    // The turn-ceiling allowance the review RUNNING NOW still has (it renews on every verdict), as opposed
+    // to the lifetime tally in the arithmetic below. A park at the max is a wedged reviewer, not a long task.
+    qaCutoffResumesThisRound: stage.qaCutoffResumesThisRound ?? null,
     qaVerdicts: verdicts,
     qaKilledByRestart: interrupted,
     qaErrored: errored,
   });
-  if (cap != null && qa.length > cap) {
-    console.log(
-      `  ⚠ ${qa.length} QA launches vs. a ${cap}-round cap — the loop exceeded its budget. With the ` +
-        `durable-qaRoundsUsed fix (44f793b) this is bounded; a higher count on an OLD build is the drain bug.`,
-    );
-  } else {
-    console.log("  ✓ QA launches within the maxQaRounds budget.");
-  }
+  const reading = qaLoopReading({
+    cap,
+    launches: qa.length,
+    roundsUsed: stage.qaRoundsUsed ?? null,
+    cutoffResumes: stage.qaCutoffResumes,
+    silentRetries: stage.qaSilentRetries,
+    capFailovers: qa.filter((r) => r.cap_flagged === 1).length,
+    interrupted,
+    appliesFixes,
+  });
+  for (const line of reading.lines) console.log(line);
 }
 
 db.close();

@@ -20,8 +20,11 @@ Sets, the free-text role arrays, and the pipeline gates, which all compile fine 
    Read-only = `disallowedTools` under `bypassPermissions` (a HARD block), never prompt-only.
 3. `threadManager.ts` — add it to the `StructuredRole` union (`runRole` + `cliRoleKickoff` share it),
    then a `run<Role>()` that calls `runRole` with per-(thread, role) `createBusServer`/`createOfficeServer`.
-4. **`NO_CLI_FAILOVER`** — add the role if it needs in-process MCP tools (`post_finding`, `ask_user`).
-   Codex/Grok have none, so a cap-failover there silently strips the role's only channel.
+4. **`MCP_DEPENDENT_ROLES`** — add the role if it needs in-process MCP tools (`post_finding`, `ask_user`).
+   `providerServesRole` then keeps it off the CLI text-bridge backends (`CLI_BRIDGED_PROVIDERS` — Codex/Grok,
+   which reach the bus only through the runner's string bridge), so a cap-failover never silently strips its
+   only channel. z.ai reuses the Claude SDK and keeps those tools, so it serves these roles — do NOT add it
+   to `CLI_BRIDGED_PROVIDERS`. Gate: `test:provider-serves-role`.
 5. `dropTerminalBookkeeping` + `retryThread` — both iterate a **hand-written role array** for the
    `checkedIn` office keys. Not typed: a miss leaks one Set entry per finished task, forever.
 6. Web mirror: `web/src/types.ts` (`Role` + `ROLE_RANK`), `styles.css` **`--role-<x>`** (`roleColor`
@@ -50,14 +53,14 @@ Sets, the free-text role arrays, and the pipeline gates, which all compile fine 
 1. `server/src/types.ts` — the union, then audit **every set** in `threadManager.ts`: `IN_FLIGHT`,
    `AUTO_RESUME_STATES`, `PRE_IMPLEMENTOR`, `CLOSEABLE`, `DONEABLE`. Plain `ReadonlySet`s — silent.
 2. **`markInterrupted`** — an `IN_FLIGHT` state with no branch is stamped `failed` + "click Resume",
-   which re-enters the implementor pipeline. A state that owns already-finished work needs its own
-   branch restoring where it came from.
+   re-entering the implementor pipeline. A state owning already-finished work needs its own branch.
 3. **The inject/resume gates — the one that actually bites.** `injectThread` and `resumeThread` walk
-   states in order and FALL THROUGH to a cold resume, which spawns an implementor. If a one-shot
-   agent owns the slot in your state, add a gate beside the `qa` ones: hold a `live<Role>` handle
-   (set/cleared in `runRole`, cleared in `cancelThread`/`retryThread`/`forceStopThreadRuns`) and
-   `send` steering to it — never `interrupt()`, which tears a schema-bound one-shot down into a
-   verdict-less error result. Without the gate you get two agents in one slot.
+   states in order and FALL THROUGH to a cold resume, which spawns an implementor — so if a one-shot
+   owns the slot in your state, gate it beside the `qa` ones or you get two agents in one slot: hold a
+   `live<Role>` handle (set/cleared in `runRole`, cleared in `cancelThread`/`retryThread`/
+   `forceStopThreadRuns`) and steer it via `steerStructuredRole` — never `interrupt()`, **nor
+   `priority: "now"`, which IS one**: either aborts a schema-bound role into a verdict-less result the
+   pipeline reads as "could not complete" and parks on (`test:inject-qa`).
 4. Web mirror: `web/src/types.ts`, `Board.tsx` `STATUS_RANK` (a `Record` — the build catches this
    one), and `lib/format.ts` `stateColor` / `stateLabel` / `threadRunning` / `isTerminal` /
    `isDoneable` / `isClosable` (switches with a `default` — all silent).

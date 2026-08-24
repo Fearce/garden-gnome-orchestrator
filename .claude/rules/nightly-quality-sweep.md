@@ -1,16 +1,28 @@
 # Nightly / quality sweep + resume-after-bounce
 
 When the brief is a health/quality sweep ("nightly check", "make sure everything is smooth") or you
-are auto-resumed after an orchestrator restart that already completed, run these eight, in order.
+are auto-resumed after an orchestrator restart that already completed, run `npm run quality`
+(`scripts/quality-sweep.cjs`). It runs the eight steps below in order, **does not stop at the first
+failure** — the point of a sweep is the whole picture, and every step is read-only — and prints a
+per-step verdict at the end. Re-check just the failures with `npm run quality -- <step numbers>`.
+Reading the output is still the job: a green exit says nothing about ladder depth, park counts or DB
+growth, which is what §5, §4 and §8 exist to make you look at.
+**Read that output from `server/data/quality-sweep-last.log`, not from your terminal buffer.** The sweep
+prints ~1500 lines — more than one command can hold — so piping it through `tail` silently discards
+steps 1-6, and re-running those probes to get them back is pure waste. Every run rewrites the transcript
+in full, live, and survives you piping the command itself to `head`. Gate: `test:quality-sweep`.
+The run takes ~10min, so background it and block on the transcript's ONE terminal marker —
+`=== sweep summary ===`. Do not wait on "verdict": individual steps print their own `=== verdict ===`
+headers (step 3 does, at ~40s), so that grep returns mid-sweep and you read a half-finished log.
 
 ## 1. `npm run health --prefix server`
 (`nightly-health.cjs`) — hits `/api/health`, checks `:4317` vs `dist` **and `dist` vs HEAD**, greps live
 reliability symbols, lists dirty git paths, summarizes SQLite parks/caps/stuck runs, and scans `crash.log`
 for real faults vs benign memory high-water notes. Exit 1 = hard fail; a dirty tree alone does **not** fail.
-Read **`dist` vs HEAD** carefully: process-vs-dist can agree while `dist` itself predates HEAD — how a
-feature shipped its web half and sat in prod a full day unbuilt on the server (Stop button, 2026-07-29). It
-compares by CONTENT (`dist/.build-info.json`'s commit vs HEAD's `server/src`, tests excluded); timestamps
-alone would cry wolf every sweep. A warn = `npm run build` + the atomic hub restart.
+**Both build checks compare CONTENT** (a commit + `git diff` over `server/src`, tests excluded); mtimes
+cry wolf. `dist` vs HEAD (`.build-info.json`) can be stale while process-vs-dist agrees — the Stop button
+sat a day unbuilt that way (2026-07-29). Process-vs-dist reads the build the RUNNING process reports
+(`/api/health`→`build`; gate `test:process-build`). Only `stale` = `npm run build` + atomic hub restart.
 
 ## 2. `npm run typecheck && npm run test:gates --prefix server` — health does NOT run the gates
 health greps dist symbols only, so a green one can sit on top of crash-broken gates (a missing
@@ -18,7 +30,12 @@ health greps dist symbols only, so a green one can sit on top of crash-broken ga
 runs every registered FREE gate in ~90s (don't hardcode the count) and exits non-zero on any failure — stubs
 + a throwaway git repo, no `claude` subprocess, no quota. Once, at the end; never gate by gate.
 `test:gate-registration` checks the suite is itself complete: a `test:*` script missing from `GATES`, or a
-`src/tests` file with no script at all, is a failure.
+`src/tests` file with no script at all, is a failure; `test:gates-driver` pins the runner itself.
+It now runs ~5min (two real-git gates), so **background it RAW and watch
+`server/data/gates-last.log`** — the terminal only carries one line per gate, that transcript carries what
+each one printed, and it grows live so `tail -20` names the gate in flight. Never background it through
+`| tail`: the pipe emits nothing until exit, so the output file stays EMPTY for the whole run and a slow
+gate is indistinguishable from a wedged one (paid for twice — 08-12 and 08-17).
 
 ## 3. `npm run probe:run-errors --prefix server` — triage the non-done runs (`-- 168` for 7 days)
 `health`'s `runs 24h: { error: 10 }` is a COUNT, and most non-done runs are expected: a turn-ceiling cutoff,
@@ -33,6 +50,14 @@ health's `non-done reasons:` line. Gate: `test:run-classify`.
 one" means that run did NOT fail over: teach the backend's wording to `providerCapText`, then mirror it
 into `CAP_RE`. The reverse is only noise in this probe. A silent section is not proof — when BOTH are
 blind (the 08-05 case) the row reads `real`, so check `cap_flagged` on any real failure. Gate: `test:cap-flag`.
+**Then read `turn-ceiling economics` — the section that exists because everything above it is too forgiving.**
+A cutoff is filed benign per run, correctly, so the whole class collapses to one green `✓ 218 × turn-ceiling
+cutoff ($3,281)` line however big it grows — and a role whose ceiling is too small produces nothing else.
+QA sat on a read-only role's 60 turns for six weeks after `qaAppliesFixes` made it edit/build/test/commit;
+cutoffs went 1% → 10% of QA runs and no check moved. So this reads the same rows as a RATE per role against
+the previous window: a rate that MULTIPLIED means that role's work outgrew its `maxTurns` in `roles.ts`. A
+high but STEADY rate is not the signal — the implementor is designed to hit its ceiling and warm-resume.
+Gate: `test:ceiling-economics` (real numbers, including the implementor's steady rate as the cry-wolf case).
 
 ## 4. `npm run probe:parks --prefix server` — name the parked AND abandoned tasks
 health's park line is a count too; this is the "read the thread error" it asks for — each task's id, age,
@@ -43,7 +68,10 @@ supervisor owns it, acting manually races it), **unknown** (wording drifted from
 classifier). A stalled park is already tagged **bug or stale** on its `↳` line (`recovery-features.cjs`,
 gate `test:recovery-features`): `stale — … predates <feature> (<sha>); a Resume exercises the fix`, or
 `… continuations already spent — the recovery mechanism ran and gave up`. Trust it, don't re-derive ship
-dates by hand; only a stalled park tagged NEITHER needs a `probe:task-runs` drill. Gate: `test:park-classify`.
+dates by hand; only a stalled park tagged NEITHER needs a `probe:task-runs` drill. **When that drill
+concludes "stale", the answer belongs in `RECOVERY_FEATURES` — not in the report.** An untagged park is
+usually a missing registry row, not a mystery: `e870c68e` was drilled to the same answer on two consecutive
+sweeps before 08-16 added the row that says it once. Gate: `test:park-classify`.
 **Read the second section too — `review` is not the only state waiting on a person.** A restart's casualties
 sit in `failed`, which no sweep step read until 08-10: nine had piled up, two stranded mid-work for two days
 (08-08's own sweep among them) because the auto-resume they were promised died with the process that promised
@@ -61,15 +89,32 @@ it on, so its line carries `credits N%` and a dry pool is `NO ROOM — monthly c
 has already passed has rolled over and counts as free even at 100% (routing agrees) — that is why Grok can
 read `7d 100%` and still be a rung. A reported reset >2× its own period is a backend sentinel, printed but
 never counted down (z.ai answered Jan 2027 for a 5h window). Depth ≤1 is what to act on: a burst then parks.
-One capped/spent backend is normal. Gate: `test:failover-ladder`.
+One capped/spent backend is normal. **That depth is the IMPLEMENTOR's** — the `reach for …` line below it
+gives the MCP-dependent roles (reader/auto-reviewer, which answer only through the in-process bus) their own,
+derived from the live `MCP_DEPENDENT_ROLES`/`CLI_BRIDGED_PROVIDERS`; a `⚠ SHORTER` there means a click can
+park while the depth above says there was room, which is exactly how 08-14's defect hid. `reach UNKNOWN` =
+the parse broke, not "nothing is restricted". Gate: `test:failover-ladder`.
 
 ## 6. `npm run probe:console` — the console still loads (health cannot see this)
 `/api/health` proves the SERVER answers; a bundle that throws on mount or a WS that never connects keeps it
 green over a dead UI. `console-smoke.cjs` asserts the app mounted, `.conn` reads live, and zero console
 errors / failed requests (`-- --shot <png>` saves screenshot evidence for the report). `npm run probe:chips`
-is the separate 4-width chip-clipping check. Both are read-only and **click NOTHING** — that is what makes
+is the separate chip-clipping check: six widths, each measured twice (as the bar looks, then with the socket
+label at its widest), plus a final `bound` line that bisects for where wrapping switches off and fails if one
+row can't fit there — the only part that doesn't depend on which widths got sampled. `-- --explain` prints the
+fit arithmetic when a bound has to move. Both are read-only and **click NOTHING** — that is what makes
 them the only browser checks safe against prod; read `.claude/rules/verify-a-ui-change-shipped.md` before
 extending either, and never hand-roll your own drive against `:4317`.
+**Never gate either one on `networkidle`.** The selected thread pulls a burst of multi-MB `/api/attachment`
+images and the app polls `/api/voice/status`, so idle is data-dependent: it blew the 30s budget mid-sweep on
+08-13 and cleared in 11s on re-run — a red step that says nothing about chips. Wait for the element the check
+actually needs (`.topbar`, `.accounts .acct`), and let a bad width report itself so the others still run.
+**The navigation needs the same defence, and the element wait does not give it.** On a box near 100% CPU
+(live agent runs, a web auto-build) a cold `page.goto` has measured 28s while `/api/health` answered in 1ms,
+so Playwright's default 30s reds one width for a reason unrelated to geometry (08-15, 1440px). Both probes now
+pass an explicit 45s `timeout`, and chips retries the open once on a fresh page (`(nav retried — busy box)`);
+a second failure still FAILS. Check the box (`Get-CimInstance Win32_Processor`) before blaming the server —
+`/api/health` stays at 1–2ms when the orchestrator is healthy.
 
 ## 7. `npm run audit:deps --prefix server && npm run audit:secrets --prefix server` — security hygiene
 `audit:deps` asks npm only about packages deployed to the server (`--omit=dev`) and fails when it finds a
@@ -101,7 +146,9 @@ advisory range days later, and its `minimatch@9.0.9` parent key would have silen
 bump. A dead selector fails; an exact one warns. Unlike a `scripts/*.cjs` fix, a dependency patch **needs a
 deploy** — the old copies stay resident in the running process. `audit:secrets` checks the real gitignored
 `.env` values against both the tracked tree and git history, known token shapes, tracked secret-type files,
-and public-repo basics. Both commands are read-only.
+and public-repo basics. Its WARN-only email check treats `git@github.com` as an SSH user@host, not a mailbox —
+**strip** such a remote from the row rather than dropping the row, or a real address beside one goes unreported
+(`scripts/email-hygiene.cjs`, gate `test:email-hygiene`). Both commands are read-only.
 
 ## 8. `npm run probe:db-size --prefix server` — what the DB is made of, and is any of it waste
 The one watch-item that used to have no probe, so it was tracked in prose — which drifted into being

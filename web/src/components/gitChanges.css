@@ -180,6 +180,15 @@
 .file-status.modified, .file-status.renamed { color: var(--warn); background: color-mix(in oklch, var(--warn) 15%, transparent); }
 .file-status.deleted { color: var(--danger); background: color-mix(in oklch, var(--danger) 15%, transparent); }
 .file-status.conflicted { color: var(--danger); background: color-mix(in oklch, var(--danger) 22%, transparent); }
+/* The glyph's meaning lives in a title= tooltip, which a touch device has no way to show — spell it
+   out beside the letter there instead. The path is the flexible cell, so it absorbs the width. */
+.file-status-full { display: none; }
+@media (hover: none) {
+  .file-status-full {
+    display: inline; flex: 0 0 auto; font-family: var(--font-mono); font-size: 9.5px;
+    letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint);
+  }
+}
 .file-path { flex: 1; min-width: 0; display: flex; align-items: baseline; font-family: var(--font-mono); font-size: 12px; overflow: hidden; }
 .file-dir { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-name { color: var(--text); white-space: nowrap; }
@@ -188,27 +197,21 @@
 .file-del { color: color-mix(in oklch, var(--danger) 82%, var(--text-dim)); }
 .file-binary { color: var(--text-faint); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase; }
 
-/* unified diff */
-.diff { border-top: 1px solid var(--line); background: var(--bg); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55; overflow-x: auto; }
-.diff-loading, .diff-note { padding: 8px 12px; color: var(--text-faint); font-size: 11px; }
-.diff-hunk + .diff-hunk { border-top: 1px solid var(--line); }
-.diff-hunk-head { display: flex; align-items: baseline; gap: 10px; padding: 4px 12px; color: var(--role-researcher); background: color-mix(in oklch, var(--role-researcher) 8%, var(--bg)); }
-.diff-range { flex: 0 0 auto; }
-.diff-label { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.diff-line { display: flex; align-items: baseline; white-space: pre; min-width: max-content; }
-.diff-gutter { flex: 0 0 auto; width: 34px; padding: 0 6px; text-align: right; color: var(--text-faint); opacity: 0.7; user-select: none; }
-.diff-gutter.old { border-right: 1px solid color-mix(in oklch, var(--line) 60%, transparent); }
-.diff-sign { flex: 0 0 auto; width: 16px; text-align: center; color: var(--text-faint); user-select: none; }
-.diff-text { flex: 1; padding-right: 12px; color: var(--text-dim); }
-.diff-line.add { background: color-mix(in oklch, var(--ok) 10%, transparent); }
-.diff-line.add .diff-sign { color: var(--ok); }
-.diff-line.add .diff-text { color: color-mix(in oklch, var(--ok) 22%, var(--text)); }
-.diff-line.del { background: color-mix(in oklch, var(--danger) 11%, transparent); }
-.diff-line.del .diff-sign { color: var(--danger); }
-.diff-line.del .diff-text { color: color-mix(in oklch, var(--danger) 20%, var(--text)); }
+/* Touch density for this surface. It lives here rather than in styles.css's coarse block because
+   this file loads AFTER styles.css: a rule for .changes-chip over there would win only until
+   someone adds a competing height here, and nothing would go red when it stopped. */
+@media (pointer: coarse) and (max-width: 1365.98px) {
+  .changes-chip { min-height: var(--tap-sm); }
+  .git-file-row { min-height: var(--tap); }
+  .git-diff-back { min-height: var(--tap); }
+}
 
-/* ---- narrow viewports: collapse the two panes into one, master→detail with a Back affordance ---- */
-@media (max-width: 760px) {
+/* The unified diff itself lives in diff.css (Diff.tsx) — shared with the repo-level Git console. */
+
+/* ---- narrow viewports: collapse the two panes into one, master→detail with a Back affordance ----
+   Tracks the compact bound in styles.css: a portrait 10" tablet is 800px wide and has no more room
+   for two side-by-side panes than a phone does. */
+@media (max-width: 899.98px) {
   .git-panel { width: 100vw; }
   .git-left { flex-basis: auto; max-width: none; width: 100%; border-right: none; }
   /* No file picked → show the list, hide the diff. A file picked → show the diff, hide the list. */

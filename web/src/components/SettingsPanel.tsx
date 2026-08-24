@@ -139,6 +139,16 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           />
         </Group>
 
+        <Group label="Auto model selection">
+          <ToggleRow
+            label="Auto-select the implementor model"
+            hint="Off (default): the implementor runs on the model configured for its subscription, at the planner's effort. On: before it starts, the director weighs the task and the planner's read of the repo and picks the model AND effort itself — from every backend that can be dispatched right now (Haiku through Opus, Fable, Codex, Grok, GLM). Every auto-picked task is scored when it settles, and those scores are what the next pick reads."
+            on={settings.autoModelSelection}
+            onChange={(v) => setSettings({ autoModelSelection: v })}
+          />
+          <ModelScoreboard enabled={settings.autoModelSelection} />
+        </Group>
+
         <Group label="Director">
           <TextRow
             label="Director name"
@@ -1062,6 +1072,46 @@ const EyeOff = () => (
     <path d="M2 2l20 20" />
   </svg>
 );
+
+/** What each auto-picked model has actually delivered — the evidence the next pick is made from, shown so
+ *  the selection loop isn't a black box. Read-only: the server owns every number. Stays visible after the
+ *  setting is switched off (the history is still worth reading), and disappears only when there's neither. */
+function ModelScoreboard({ enabled }: { enabled: boolean }) {
+  const stats = useStore((s) => s.modelStats);
+  if (!enabled && !stats.length) return null;
+  if (!stats.length)
+    return (
+      <div className="settings-note">
+        No graded tasks yet. Each auto-picked task is scored when it settles — 100 when it's accepted with no human
+        involvement, 12 less for every QA fix-round past the first, 40 when it ends up on your desk — and the averages
+        appear here.
+      </div>
+    );
+  return (
+    <div className="ams-board">
+      <div className="ams-row ams-head">
+        <span>Model</span>
+        <span>Tasks</span>
+        <span>Score</span>
+        <span>Accepted</span>
+        <span>QA</span>
+        <span>Cost</span>
+      </div>
+      {stats.map((s) => (
+        <div className="ams-row" key={`${s.provider}:${s.model}`}>
+          <span className="ams-model" title={`${s.provider} · ${s.avgMinutes} min average`}>
+            {s.model}
+          </span>
+          <span className="mono">{s.picks}</span>
+          <span className="mono">{s.avgScore}</span>
+          <span className="mono">{Math.round(s.doneRate * 100)}%</span>
+          <span className="mono">{s.avgQaRounds}</span>
+          <span className="mono">${s.avgCostUsd.toFixed(2)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function Group({ label, children }: { label: string; children: ReactNode }) {
   return (

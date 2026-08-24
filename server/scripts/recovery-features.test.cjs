@@ -18,7 +18,10 @@ const REPO_DIR = path.resolve(__dirname, "..", "..");
 const DAY = 86_400_000;
 
 // --- the registry is complete and every entry's commit resolves to the fix it claims ----------------
-assert.ok(RECOVERY_FEATURES.length >= 3, "registry should list the QA cutoff, QA silent, and auto-review recoveries");
+assert.ok(
+  RECOVERY_FEATURES.length >= 4,
+  "registry should list the QA cutoff, QA silent, auto-review and reviewer-failover recoveries",
+);
 const ids = new Set();
 for (const f of RECOVERY_FEATURES) {
   assert.ok(!ids.has(f.id), `duplicate registry id ${f.id}`);
@@ -32,7 +35,7 @@ for (const f of RECOVERY_FEATURES) {
   const subj = spawnSync("git", ["show", "-s", "--format=%s", f.commit], { cwd: REPO_DIR, encoding: "utf8" }).stdout.trim();
   assert.match(
     subj,
-    /\b(?:qa|review)\b/i,
+    /\b(?:qa|review\w*|failover|resum\w*|recover\w*)\b/i,
     `commit ${f.commit} (${f.id}) is "${subj}" — doesn't read like the recovery fix it claims to pin`,
   );
 }
@@ -56,6 +59,32 @@ assert.equal(
   "a run after the fix shipped is not stale — leave it to the continuationsSpent path",
 );
 
+// --- an EXHAUSTED cutoff allowance is stale too, and outranks the continuation that spent it ---------
+// Three tasks sat parked reading "the recovery mechanism ran and gave up" when it had not run for them at
+// all: the allowance was the TASK's, so earlier, unrelated reviews had spent it and the round that parked
+// was never woken once. That reads as a dead end — the one annotation a sweep acts on by NOT acting.
+const perReview = RECOVERY_FEATURES.find((f) => f.id === "qaCutoffPerReview");
+const perReviewShip = resolveShipDate(perReview.commit);
+const exhaustedPark =
+  "QA could not complete — Stopped at the per-session turn ceiling (error_max_turns) — an involuntary cutoff, " +
+  "not a crash. It was woken 2 more times and cut off again each time.";
+const exhaustedNote = recoveryAnnotationFor(exhaustedPark, { role: "qa", started_at: perReviewShip.getTime() - 7 * DAY, ended_at: null });
+assert.ok(exhaustedNote, "a spent-allowance park from before the fix should read as stale, not as a dead end");
+assert.match(exhaustedNote, /qaCutoffResumesThisRound/, "the LATEST applicable fix wins — not the continuation feature that predates it");
+assert.match(exhaustedNote, /748633a/);
+assert.equal(
+  recoveryAnnotationFor(exhaustedPark, { role: "qa", started_at: perReviewShip.getTime() + 7 * DAY, ended_at: null }),
+  null,
+  "after the fix, a spent allowance really is spent — leave it to the continuationsSpent path",
+);
+// It must NOT swallow a plain turn-ceiling park: that one has no allowance spent yet, and its own,
+// earlier feature is the correct attribution.
+assert.match(
+  recoveryAnnotationFor(cutoffPark, { role: "qa", started_at: cutoffShip.getTime() - 7 * DAY, ended_at: null }),
+  /a0f4a74/,
+  "a park with no spent-allowance sentence still belongs to qaCutoffResumes",
+);
+
 // --- a silent QA park maps to the empty-run retry feature, not the cutoff continuation ---------------
 const silent = RECOVERY_FEATURES.find((f) => f.id === "qaSilentRetries");
 const silentShip = resolveShipDate(silent.commit);
@@ -74,6 +103,47 @@ const genericSilent = recoveryAnnotationFor("QA could not complete — needs you
 });
 assert.ok(genericSilent, "a generic QA park over a 0-turn run should still map to the silent-retry fix");
 assert.match(genericSilent, /qaSilentRetries/);
+
+// --- a CAPPED auto-review maps to the failover fix, not the older empty-run recovery ----------------
+// The e870c68e shape (2026-08-13): the reviewer died on "You've hit your session limit" in 4s while z.ai
+// was up, and `providerServesRole` (49960f7) is what lets that click fail over instead of parking. Both
+// features match the park text, so the annotation must name the LATER one — and must not depend on where
+// either row sits in the array.
+const failover = RECOVERY_FEATURES.find((f) => f.id === "reviewerProviderFailover");
+assert.ok(failover, "the auto-reviewer's provider-failover recovery should be registered");
+const failoverShip = resolveShipDate(failover.commit);
+const cappedPark =
+  "Auto-review couldn't reach a verdict — You've hit your session limit · resets 2am (Europe/Copenhagen) — still needs your review.";
+const cappedRun = { role: "reviewer", cap_flagged: 1, started_at: failoverShip.getTime() - DAY / 2, ended_at: null };
+
+const cappedNote = recoveryAnnotationFor(cappedPark, cappedRun);
+assert.ok(cappedNote, "a capped auto-review from before the failover fix should read as stale");
+assert.match(cappedNote, /49960f7/);
+assert.doesNotMatch(cappedNote, /bc7e87b/, "the earlier applicable fix must not outrank the one that would have recovered it");
+
+assert.equal(
+  recoveryAnnotationFor(cappedPark, { ...cappedRun, started_at: failoverShip.getTime() + DAY }),
+  null,
+  "a capped auto-review after the failover fix is not stale — drill it",
+);
+
+// The tight half: the predicate keys off the RUNNER's cap verdict, never the park's wording. Without one
+// this is an ordinary no-verdict park that the empty-run recovery answers — and this run postdates it, so
+// the sweep is told nothing rather than told "not a bug".
+assert.equal(
+  recoveryAnnotationFor(cappedPark, { ...cappedRun, cap_flagged: null }),
+  null,
+  "no cap verdict on the run ⇒ fall back to the empty-run recovery, which this run postdates",
+);
+
+// …and the empty-run auto-review park it must still cover, unchanged.
+const emptyReviewShip = resolveShipDate(RECOVERY_FEATURES.find((f) => f.id === "autoReviewRecovery").commit);
+const emptyReviewNote = recoveryAnnotationFor(
+  "Auto-review couldn't reach a verdict — Resumed session produced no output — still needs your review.",
+  { role: "reviewer", started_at: emptyReviewShip.getTime() - 7 * DAY, ended_at: null },
+);
+assert.ok(emptyReviewNote, "an empty auto-review before its own fix should still read as stale");
+assert.match(emptyReviewNote, /bc7e87b/);
 
 // --- a park no recovery feature covers produces no annotation (e.g. a reader stall) -----------------
 const beforeAny = Math.min(...RECOVERY_FEATURES.map((f) => resolveShipDate(f.commit).getTime())) - 7 * DAY;

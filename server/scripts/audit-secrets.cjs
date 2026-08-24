@@ -22,6 +22,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { EMAIL_PATTERN, realEmailLines } = require("./email-hygiene.cjs");
 
 const args = process.argv.slice(2);
 const SCAN_HISTORY = !args.includes("--no-history");
@@ -34,6 +35,10 @@ const SELF_REL = "server/scripts/audit-secrets.cjs";
 // Pathspecs excluded from every scan: built output, deps, and THIS file (it
 // contains the token patterns + key names as literals, which would self-match).
 const EXCLUDES = [":!*/dist/*", ":!*/node_modules/*", `:!${SELF_REL}`];
+
+// The email gate asserts on deliberately real-SHAPED sample addresses, so it is excluded
+// from THAT scan only — the secret-value and token-shape scans still cover it.
+const EMAIL_EXCLUDES = [":!server/scripts/email-hygiene.test.cjs"];
 
 let hardFail = false;
 const notes = [];
@@ -64,8 +69,8 @@ function grepLiteral(value) {
 }
 
 /** Tracked files matching an extended-regex, as "file:line: text" rows. */
-function grepRegex(re) {
-  return git(["grep", "-nI", "-E", "-e", re, "--", ".", ...EXCLUDES]).trim();
+function grepRegex(re, extraExcludes = []) {
+  return git(["grep", "-nI", "-E", "-e", re, "--", ".", ...EXCLUDES, ...extraExcludes]).trim();
 }
 
 /** Commits whose diff ever added/removed a FIXED string (pickaxe). */
@@ -198,10 +203,9 @@ section("machine-specific paths & real emails (WARN only)");
   if (paths.length) warn(`personal absolute path(s) in tracked files:\n${indent(paths.join("\n"))}`);
   else ok("no personal home-dir paths in tracked files (placeholders excluded)");
 
-  // Emails, minus the obvious placeholders and dependency-maintainer addresses in lockfiles.
-  const emails = grepRegex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
-    .split(/\r?\n/)
-    .filter((l) => l && !/example\.com|you@|your-|@types|@anthropic|@fastify|@vitejs|noreply|package-lock\.json|user@|name@/.test(l));
+  // Emails, minus the obvious placeholders, lockfile maintainer addresses, and SSH remote
+  // URLs (`git@github.com` is a user@host, not a mailbox). Gate: test:email-hygiene.
+  const emails = realEmailLines(grepRegex(EMAIL_PATTERN, EMAIL_EXCLUDES));
   if (emails.length) warn(`real-looking email(s) in tracked files:\n${indent(emails.join("\n"))}`);
   else ok("no real-looking emails in tracked files (placeholders/lockfile excluded)");
 }

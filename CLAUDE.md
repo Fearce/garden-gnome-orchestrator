@@ -38,9 +38,11 @@ read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing
 `ask_user`s Kevin about anything only he can decide, then settles the task `done` or hands it back to
 `review` with its reasons — an errored/verdict-less run always re-parks, never accepts (its two involuntary
 stops are recovered first, sharing one in-process budget of 2: a turn-ceiling cutoff continues the session it
-made progress in, an empty run starts the review over). **A hand-back isn't the end of the lane:** the
-reviewer is read-only, so what blocks a task is usually implementor work — an `accept: false` carrying
-concrete `issues` relaunches the implementor with that list (no QA loop; the reviewer is the gate), then
+made progress in — on the backend that holds it, since a review can run on Claude or, when every sub is
+capped, z.ai — and an empty run, or a session whose backend is now capped, starts the review over).
+**A hand-back isn't the end of the lane:** the reviewer is read-only, so what blocks a task is usually
+implementor work — an `accept: false` carrying concrete `issues` relaunches the implementor with that
+list (no QA loop; the reviewer is the gate), then
 warm-resumes the reviewer to re-check and decide again, bounded by the `maxReviewFixRounds` setting
 (default 1, `0` = old behavior). A failed fix round parks, never accepts — a cap there parks WITHOUT the
 `⏳ Auto-resume pending` marker on purpose, since the supervisor would resume it through the QA loop and
@@ -122,6 +124,11 @@ there's NO `backend` column — the backend is encoded in `model`, e.g. `grok-4.
 read, not an inference from absent findings and expiring kv latches; `probe:task-runs` prints it).
 For one task's full trail + per-model cost/turn totals + a QA-loop budget check, run
 `npm run probe:task-runs --prefix server -- <thread-id|title-substring>` (read-only, safe while prod is up).
+Read its QA-loop check as written: the budget is the durable `qaRoundsUsed` vs `maxQaRounds`, NOT the QA
+run count — a turn-ceiling continuation, an empty-run retry and a cap failover each spend a *launch* while
+recovering one *round*, so launches legitimately exceed the cap. And when `qaAppliesFixes` is on (it is, in
+prod), QA edits the tree itself and hands each changed pass to a VERIFIER QA pass, so **many QA runs against
+one implementor run is the designed shape, not a stuck loop** (`.claude/rules/qa-fixes-mode.md`).
 To triage ALL non-done runs in a window instead of one task — which errors are real vs. an expected
 cutoff/cap/retry/restart, and did the handling mechanism actually run — use
 `npm run probe:run-errors --prefix server [-- <hours>]` (its classifier also backs health's `non-done
@@ -159,8 +166,13 @@ Read the run trail to tell causes apart:
   `error` text: it now names the reason (the SDK's `errors`, else the subtype). "Stopped at the
   per-session turn ceiling" is the deliberate role turn ceiling — benign, warm-resumed on the implementor
   path, and several per long task are expected, NOT failures. A QA run cut off the same way is continued
-  too: it warm-resumes the SAME review session with a fresh turn budget, charged to a durable per-task
-  `qaCutoffResumes` (max 2, separate from the QA-round budget), and only parks once that is spent.
+  too: it warm-resumes the SAME review session with a fresh turn budget, charged to a durable **per-review**
+  allowance (`qaCutoffResumesThisRound`, max 2, separate from the QA-round budget) that renews whenever a
+  round reaches a verdict — what it bounds is one WEDGED review, and a round that answered isn't wedged; it
+  parks only once that allowance is spent. `qaCutoffResumes` beside it is the lifetime tally
+  `probe:task-runs` reconciles launches against, not a budget. QA's own
+  ceiling is 60 read-only but implementor-grade in `qaAppliesFixes` mode (`QA_FIX_MAX_TURNS`, default
+  `IMPLEMENTOR_MAX_TURNS`) — an editing QA does the implementor's work, so it gets its budget.
   "Resumed session produced no output" is a run that came back empty (0 turns, $0, no messages — the CLI
   loaded the session and exited without reaching the model). Benign on its own: it is never read as an
   answer on any path whose output GATES the pipeline, and each of those recovers it — the implementor retries
@@ -192,6 +204,52 @@ Read the run trail to tell causes apart:
   `codex app-server` `account/rateLimits/read` ping (`codexUsagePing.ts`), and an IDLE Codex 5h window
   is re-started at its slot by a cheap real wake turn (one-word prompt, `gpt-5.5` low effort — mini
   models 400 on ChatGPT-plan auth; `CODEX_WAKE=off` disables, `CODEX_WAKE_MODEL` overrides).
+
+## Auto model selection (`settings.autoModelSelection`, off by default)
+On, the implementor's model + effort become a per-task judgement: just before the implementor stage,
+`orchestrator/modelSelector.ts` makes ONE cheap structured call on the DIRECTOR's model (the raw OAuth fetch
+the titler uses — `auxToken()`, no agent role, no tools) weighing the brief, the planner's read of the repo,
+the graded history, and the roster of models **dispatchable right now** (each enabled+authed+uncapped
+backend: Claude Haiku→Sonnet→Opus→Fable, Codex, Grok, GLM). The reply is validated against that roster and
+the PROVIDER comes from the matched entry, never the reply, so a hallucinated id can't reach a spawn; two
+unusable replies fall back to normal routing (a dispatch is never blocked). The pick persists in
+`stage_outputs.modelPick` (a resume must land on the same backend — session ids are provider-specific),
+overrides usage routing while that backend is ready, and supplies a model only to the backend it named.
+Effort precedence: `effortOverride` > pick > planner. Retry re-selects (the blob is nulled).
+
+**Every auto-picked task is graded**, else the selection is a coin flip repeated forever.
+`orchestrator/modelGrading.ts` scores it DETERMINISTICALLY at settle (no LLM judging an LLM): `done` 100 /
+`review` 40 / `failed` 0, minus 12 per QA fix-round past the first (cap 36) — so a 4-round finish still
+outranks a first-round hand-off. A cap-park, restart casualty, cancel, or failure before any implementor
+ran is NOT a verdict and is skipped; a task a cap-failover split across two models scores but credits
+neither. Rows live in `model_grades` — keyed by thread, **no FK**, so the lesson outlives the task's 30-day
+purge (like `chat_messages`). `db.modelStats()` aggregates per model, globally and per repo, feeding both
+the next prompt and a read-only scoreboard under the toggle. Gates: `test:model-select` (validator + score)
+and `test:auto-model` (pick→run, effort precedence, routing, grading). `npm run probe:model-picks --prefix
+server [-- <limit> --repo <sub>]` answers "what did it choose, and was that a good call?"; `npm run
+model-lab --prefix server` drives the Settings surface headlessly (own instance, never prod).
+
+## The Git console (the in-app GitHub Desktop)
+The GitHub button beside the gear opens a repo-level git surface: a repository picker, a branch menu
+(switch / create / check out a remote branch as a tracking branch / delete), Fetch · Pull · Push, an
+**Open** link to the repo on its host (derived from the remote, deep-linked to the current branch), a
+ticked-file list with per-file diffs and a commit box, and a History tab that opens any commit's diff.
+**The picker fills itself** — `git/discoverRepos.ts` walks `config.workspaceSearchRoots` (`C:\;D:\`,
+env `WORKSPACE_SEARCH_ROOTS`) for checkouts, async and bounded by depth/count/wall-clock, memoized 10min
+with a Rescan in the menu; the repos actually in use (recent dispatches, task workspaces, this checkout)
+sort above the merely-found ones. Nobody types a path; Browse is the fallback. **It opens on the selected
+task's repo** when one is open (`repoForThread` resolves it server-side, since a workspace is often the
+PARENT of its checkout), else the last repo used here, else the busiest — and an explicit pick always
+wins. Writes live in
+`git/repoOps.ts` (reusing `gitService.ts`'s hardened `runGit` + parsers — that module stays read-only),
+the repo list + safety gate in `orchestrator/repoConsole.ts`, the wire in the `repo.*` WS commands.
+Rules it keeps: **never `--force`, never `--no-verify`**; Pull is fast-forward-only with an explicit
+Pull (rebase) in its caret menu; a **Vota** origin refuses to push (commit-only policy); a checkout /
+pull / discard is **refused while an agent is live in that repo**, naming the tasks, with an explicit
+"Do it anyway" override. Branch names and paths arrive from the client, so they're validated in
+`repoOps` (no leading `-`, no `..`) and always passed after `--`. Gates: `test:repo-ops` (real repos,
+free, no browser) and `npm run git-lab --prefix server` (drives the console in a headless browser
+against its own throwaway instance + fixture repo). Details: `.claude/rules/git-changes-surface.md`.
 
 ## The office (cross-agent chat)
 Concurrent tasks on the same repo would otherwise edit the same files blind. Every running agent is
@@ -243,6 +301,21 @@ path)`, and the task workspace is often the **parent** of this git repo (e.g. wo
 is then NOT found by a repo-relative path. **Pass an ABSOLUTE path** (the containment guard still confines it
 to the workspace) — or save the file at the workspace root. Verify before handing off: the file must sit at
 `join(workspace, path)` (or be absolute and inside the workspace).
+
+## The note list (what's waiting on the owner)
+The **Notes** board tab (count badge) is the owner's own list of branches/PRs waiting on THEM — one
+clickable line each, which they click, act on, and delete. Every thread-scoped role posts via the
+`post_operator_note` bus tool (the director has its own; the owner can add one), and CLI backends, which
+have no bus tools, reach the SAME service through a second text bridge beside the office one — a
+standalone `OPERATOR_NOTE: <line> | <https://…>` the runner strips (`.claude/rules/office-bridge.md`).
+`orchestrator/notes.ts` is stateless over `(Db, EventHub)`, so every caller builds its own instead of
+routing through ThreadManager. Rows: `operator_notes`, **no FK**, task title/workspace SNAPSHOT (a PR
+outlives the task's 30-day purge). **The anti-spam rules ARE the feature** ("255 chars so they cant spam
+me, i hate reading agent yapper"): the body TRUNCATES (never rejects — a long note still carries its
+link), a `url` already listed REFRESHES that row whichever task posts it (one PR = one line, deleted
+once), and a task holds ≤5 (oldest evicted, never refused). The `url` is agent-supplied and becomes an
+`href`, so http(s) is enforced at BOTH ends — service refuses, render degrades to text.
+Gates `test:notes` + `test:office-bridge`; `npm run notes-lab --prefix server`.
 
 ## Before investigating "should we adopt / replace X?"
 Read **`docs/DECISIONS.md`** — the closed-questions register: one row per settled question with its

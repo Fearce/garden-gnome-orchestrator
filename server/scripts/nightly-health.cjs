@@ -7,10 +7,13 @@
 //
 // What a resume-after-orchestrator-bounce agent needs in one command:
 //   • /api/health up?
-//   • dist mtime vs :4317 listener start (stale build shadowing) — but only a
-//     warning when RUNTIME server/src ALSO changed after start; a docs/scripts/
-//     test/probe-only rebuild bumps dist mtimes without any runtime drift, so
-//     it's informational (src/tests + src/tools excluded — see newestSrcMtimeMs).
+//   • is the running process on the code in dist? Compared by BUILD COMMIT — the
+//     process reports which build it loaded (`build` on /api/health) — and, when
+//     that differs from dist, by whether any server/src content actually changed
+//     between the two (see scripts/process-vs-dist.cjs). A process too old to
+//     carry the stamp falls back to the dist-mtime-vs-listener-start heuristic,
+//     which only warns when RUNTIME server/src mtimes ALSO moved after start
+//     (src/tests + src/tools excluded — see newestSrcMtimeMs).
 //   • reliability symbols still present in dist (office/Grok QA path)?
 //   • git dirty files (concurrent teammate WIP — leave alone unless yours)
 //   • thread/run health from SQLite (caps, parks, stuck runs)
@@ -23,8 +26,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const Database = require("better-sqlite3");
+const { classifyProcessBuild } = require("./process-vs-dist.cjs");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
-const { classifyPark, classifyAbandoned, continuationsSpent } = require("./probe-parks.cjs");
+const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, DEAD_END_LINE } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
 
 const args = process.argv.slice(2);
@@ -171,6 +175,38 @@ function distVsHead() {
   return { state: "current", detail: `dist was built from ${short}, whose server/src matches HEAD` };
 }
 
+/** `server/src` files whose content differs between two commits, or null if git cannot compare them.
+ *  Tests and tools are excluded for the same reason `distVsHead` excludes them: they never run in the
+ *  server, so a committed test would report a perfectly deployed process as drifted. */
+function serverSrcDiff(a, b) {
+  try {
+    const out = execFileSync(
+      "git",
+      ["diff", "--name-only", `${a}..${b}`, "--", "server/src", ":(exclude)server/src/tests", ":(exclude)server/src/tools"],
+      { encoding: "utf8", cwd: path.resolve(SERVER, "..") },
+    ).trim();
+    return out ? out.split(/\r?\n/) : [];
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the live process is running the code now in `dist` — see scripts/process-vs-dist.cjs. */
+function processVsDist(runningBuild) {
+  let dist = null;
+  try {
+    dist = JSON.parse(fs.readFileSync(path.join(DIST, ".build-info.json"), "utf8"));
+  } catch {
+    /* classifyProcessBuild reports the missing stamp */
+  }
+  const comparable = runningBuild && runningBuild.commit && dist && dist.commit && runningBuild.commit !== dist.commit;
+  return classifyProcessBuild({
+    running: runningBuild,
+    dist,
+    changedFiles: comparable ? serverSrcDiff(runningBuild.commit, dist.commit) : null,
+  });
+}
+
 function processStartMs(pid) {
   if (!pid) return null;
   try {
@@ -224,6 +260,7 @@ function reportNonDoneReasons(db, since) {
 async function main() {
   // ---- 1) HTTP health ----
   section(`health ${BASE}`);
+  let runningBuild = null;
   try {
     const res = await fetch(`${BASE}/api/health`);
     if (!res.ok) fail(`GET /api/health → HTTP ${res.status}`);
@@ -231,6 +268,7 @@ async function main() {
       const healthJson = await res.json();
       if (healthJson.ok) ok(`ok models=${JSON.stringify(healthJson.models || {})}`);
       else fail(`health.ok is not true: ${JSON.stringify(healthJson)}`);
+      runningBuild = healthJson.build || null;
     }
   } catch (e) {
     fail(`GET /api/health failed: ${e && e.message ? e.message : e}`);
@@ -259,11 +297,18 @@ async function main() {
     if (fs.existsSync(sampleDist)) {
       const distMs = fs.statSync(sampleDist).mtimeMs;
       ok(`dist/agents/grokRunner.js mtime ${new Date(distMs).toISOString()}`);
-      if (startMs && distMs > startMs + 2000) {
+
+      // The process reports the build it loaded, so this is a comparison rather than an inference. Only a
+      // process too old to carry that stamp falls back to the mtimes below.
+      const vsDist = processVsDist(runningBuild);
+      if (vsDist.state === "stale") warn(vsDist.detail);
+      else if (vsDist.state === "dirty-build" || vsDist.state === "unknown") warn(`process vs dist: ${vsDist.detail}`);
+      else if (vsDist.state === "current") ok(`process vs dist: ${vsDist.detail}`);
+      else if (startMs && distMs > startMs + 2000) {
         const srcMs = newestSrcMtimeMs();
         if (srcMs && srcMs > startMs + 2000) {
           warn(
-            "dist is NEWER than the running process start AND server/src changed after start — likely a real stale build (someone needs a restart; if resume note said bounce already happened, re-check)",
+            `${vsDist.detail}; dist is NEWER than the running process start AND server/src changed after start — possibly a stale build. Confirm before restarting: a content-free rebuild and a same-bytes file touch both look like this`,
           );
         } else {
           ok(
@@ -367,12 +412,17 @@ async function main() {
       //     supervisor — worth a human glance, so warn past a 2h threshold.
       //   • stalled — QA, an auto-review or a resume stopped mid-verification. Nothing will come back
       //     for it on its own, so it's a warn; a QA one is split by whether the turn-ceiling continuation
-      //     budget was SPENT ("cut off again each time", from qaParkDetail), which says the mechanism
-      //     ran and gave up rather than the reason being unread.
+      //     budget was genuinely SPENT, which says the mechanism ran and gave up rather than the reason
+      //     being unread. That split defers to `recoveryLineFor` rather than testing the park wording
+      //     directly: a park PREDATING the per-review allowance (748633a) carries the spent marker but was
+      //     never actually woken — earlier unrelated reviews had drained the task-wide budget — so the
+      //     wording alone reported three recoverable tasks as dead ends here for as long as this line
+      //     asked `continuationsSpent` itself. Reusing the probe's precedence is what keeps the sweep's
+      //     step 1 and step 4 from giving opposite verdicts on the same task.
       //   • verdict — the pipeline finished and is asking the owner to decide. By design, never a warn.
       //   • unknown — a park message no class recognizes, i.e. the classification has drifted from
       //     threadManager's wording. Warn, because a silent demotion here hides a stalled task.
-      const reviewRows = db.prepare("SELECT error, updated_at FROM threads WHERE state='review'").all();
+      const reviewRows = db.prepare("SELECT id, error, updated_at FROM threads WHERE state='review'").all();
       const STALE_PARK_MS = 2 * 3600 * 1000;
       const parks = { capWait: 0, stalled: 0, verdict: 0, unknown: 0 };
       let staleAutoResume = 0;
@@ -386,7 +436,7 @@ async function main() {
           if (ageMs > STALE_PARK_MS) staleAutoResume++;
           const ageH = ageMs / 3600000;
           if (ageH > oldestAutoResumeH) oldestAutoResumeH = ageH;
-        } else if (key === "stalled" && continuationsSpent(r.error)) {
+        } else if (key === "stalled" && recoveryLineFor(key, r.error, lastRun(db, r.id)) === DEAD_END_LINE) {
           qaContinuationsSpent++;
         }
       }

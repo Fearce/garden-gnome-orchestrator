@@ -7,6 +7,7 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { AgentEvent, DirectorMessage, ImageAttachment } from "../types.js";
 import type { ThreadManager } from "./threadManager.js";
+import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
 import type { Account } from "../accounts/account.js";
 import { untilReset } from "../accounts/accountManager.js";
@@ -47,6 +48,7 @@ export class Director {
     private readonly db: Db,
     private readonly hub: EventHub,
     private readonly scheduler: Scheduler,
+    private readonly notes: OperatorNotes,
   ) {}
 
   handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice"): void {
@@ -185,7 +187,7 @@ export class Director {
     const director = createDirectorServer(this.api, () => this.pendingImages, (threadId) => {
       this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId);
       this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
-    }, this.scheduler);
+    }, this.scheduler, this.notes);
     const memory = createMemoryServer(this.api.memory);
     const cfg = directorConfig({ director, memory }, this.api.directorName());
     const acct = account ?? this.api.accounts.select().account;

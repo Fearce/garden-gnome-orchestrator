@@ -17,6 +17,10 @@ const {
   BACKENDS,
   HARD_LIMIT_PCT,
   MIRRORED_HEADROOM_TERMS,
+  roleReachPolicy,
+  roleLadderDepth,
+  readThreadManagerSource,
+  PROVIDER_RUNG,
 } = require("./probe-accounts.cjs");
 
 const NOW = Date.parse("2026-07-28T00:00:00.000Z");
@@ -277,6 +281,54 @@ for (const b of BACKENDS) {
     BACKENDS.length,
     "every BACKENDS rung needs its *ProviderCandidate mirrored in MIRRORED_HEADROOM_TERMS, or its doors go unchecked",
   );
+}
+
+// --- per-role reach: the ladder above is the IMPLEMENTOR's, and some roles have a shorter one --------
+// The 2026-08-14 defect lived here for weeks: the reader and auto-reviewer could reach NO alt backend,
+// while every sweep printed one depth covering all roles — so a click that could have run on a live
+// backend burned itself out on a capped sub and nothing in the readout said why. A depth stated for the
+// widest reach reads as everyone's; this half keeps the narrower one derived from the real policy.
+{
+  const src = readThreadManagerSource();
+  assert.ok(src, "the gate must be able to read threadManager.ts — without it the reach check proves nothing");
+
+  const policy = roleReachPolicy(src);
+  assert.ok(
+    policy,
+    "could not parse MCP_DEPENDENT_ROLES / CLI_BRIDGED_PROVIDERS out of threadManager.ts — renamed or reshaped. " +
+      "The probe degrades to 'reach UNKNOWN', so fix the parse rather than leaving the readout blind.",
+  );
+  assert.ok(policy.roles.length > 0, "MCP_DEPENDENT_ROLES parsed as empty — a silent 'no role is restricted' is the flattering misread");
+  assert.ok(policy.providers.length > 0, "CLI_BRIDGED_PROVIDERS parsed as empty — every backend would look able to serve every role");
+
+  // A CLI-bridged backend the readout can't name would quietly stop being excluded from the role depth.
+  for (const p of policy.providers) {
+    assert.ok(PROVIDER_RUNG[p], `threadManager excludes provider '${p}' from the MCP roles, but PROVIDER_RUNG doesn't name its rung`);
+    assert.ok(
+      BACKENDS.some((b) => b.name === PROVIDER_RUNG[p]),
+      `PROVIDER_RUNG maps '${p}' to a rung '${PROVIDER_RUNG[p]}' that isn't in BACKENDS — the exclusion would match nothing`,
+    );
+  }
+  // A role renamed on the server side must not silently drop out of the restricted set.
+  const roleUnion = fs.readFileSync(path.resolve(__dirname, "..", "src", "types.ts"), "utf8").match(/export type Role =([^;]+);/)?.[1] ?? "";
+  for (const r of policy.roles) {
+    assert.ok(roleUnion.includes(`"${r}"`), `MCP_DEPENDENT_ROLES names '${r}', which is not in the Role union — a rename left the policy pointing at nothing`);
+  }
+
+  // A parse failure must read as UNKNOWN, never as "nothing is restricted".
+  assert.equal(roleReachPolicy("const SOMETHING_ELSE = new Set([]);"), null, "an unparseable source returns null so the probe warns instead of reassuring");
+
+  // The arithmetic the readout turns on: an excluded backend that IS available must not count for the
+  // restricted roles. This is exactly 2026-08-13's state (Codex up, z.ai up) read for the reviewer.
+  const rungs = [
+    { name: "Codex", available: true },
+    { name: "Grok", available: false },
+    { name: "z.ai", available: true },
+  ];
+  assert.equal(roleLadderDepth(rungs, 1, []), 3, "with nothing excluded a role sees every available rung");
+  assert.equal(roleLadderDepth(rungs, 1, ["Codex", "Grok"]), 2, "an excluded-but-available rung does not count toward the role's depth");
+  assert.equal(roleLadderDepth(rungs, 1, ["Codex", "Grok", "z.ai"]), 1, "exclude every alt backend and only the Claude subs remain");
+  assert.equal(roleLadderDepth(rungs, 0, ["Codex", "Grok", "z.ai"]), 0, "no subs and no serving backend is a zero-rung role — the state that parks a click");
 }
 
 console.log("failoverLadder: all assertions passed");

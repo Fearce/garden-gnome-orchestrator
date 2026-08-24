@@ -25,7 +25,14 @@ not merely a prompt or permission change.
    across providers.
 4. The task-specific QA kickoff carries the captured auto-push policy. Do not re-read a live setting
    mid-episode: a task that began with auto-push off must remain commit-only through its QA rounds.
-5. The setting remains opt-in. Its persisted default and the browser's fallback default must both be
+5. Budget an editing QA as an IMPLEMENTOR, not as a reviewer — it edits, builds, runs the suite and
+   commits. Its turn ceiling is `config.qaFixMaxTurns`, defaulting to the implementor's. Inheriting the
+   read-only role's 60 showed up only as extra Opus passes, never as a failure: 14% of QA runs died at
+   that ceiling after this mode shipped, against 1% before. Gate: `test:role-ceilings`.
+6. A turn-ceiling continuation allowance is per REVIEW, renewed whenever a round reaches a verdict — every
+   round here is an editing pass long enough to reach the ceiling, so a task-lifetime budget pooled unrelated
+   rounds' cutoffs and denied a later round its FIRST continuation. Gate: `test:qa-budget` N/O.
+7. The setting remains opt-in. Its persisted default and the browser's fallback default must both be
    false; after local/manual testing, reset a production `setting_qa_applies_fixes` row to `0` before
    handoff unless the owner explicitly wants it enabled.
 

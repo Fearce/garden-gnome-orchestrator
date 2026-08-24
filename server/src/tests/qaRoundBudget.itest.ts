@@ -527,6 +527,63 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test N: the continuation allowance belongs to the REVIEW, not to the task --------------------
+  // It was charged against a task-lifetime counter, so cutoffs in unrelated rounds pooled. In QA-fixes
+  // mode — where every round is an editing pass long enough to reach the ceiling — round 1 and round 2
+  // each spending one continuation left round 3's FIRST cutoff with nothing, and the task parked on the
+  // owner mid-verification although no single review had ever failed twice. Four production tasks were
+  // sitting in `review` for exactly this. The budget now resets whenever a round reaches a verdict.
+  console.log("\nTest N — a later round's first cutoff still gets its continuation");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const qaCalls = stubQaRunRole(h, [
+        CUTOFF,
+        verdictResult({ pass: true, summary: "round 1 fixed something", changed: true }),
+        CUTOFF,
+        verdictResult({ pass: true, summary: "round 2 fixed something else", changed: true }),
+        CUTOFF,
+        verdictResult({ pass: true, summary: "nothing left to change", changed: false }),
+      ]);
+      await runLoop(h, id, 4, true);
+      check("every round got its continuation, including the third", qaCalls.length === 6, `calls=${qaCalls.length}`);
+      check("round 3's continuation resumed the cut-off session", qaCalls[5]?.resume === QA_SESSION, String(qaCalls[5]?.resume));
+      check("the task reached a verdict instead of the owner's queue", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      const stage = h.db.getThreadStageOutputs(id);
+      check("the accepting verdict left a full allowance behind", (stage.qaCutoffResumesThisRound ?? 0) === 0, String(stage.qaCutoffResumesThisRound));
+      check("the lifetime tally still counted all three continuations", stage.qaCutoffResumes === 3, String(stage.qaCutoffResumes));
+      check("no continuation was charged as a QA round", stage.qaRoundsUsed === 3, String(stage.qaRoundsUsed));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test O: ...and a renewed allowance is still an allowance --------------------------------------
+  // Loosening a budget is the dangerous direction, so pin the other half: a LATER round that keeps
+  // wedging must stop after its own MAX_QA_CUTOFF_RESUMES, exactly as the first round does in Test I.
+  console.log("\nTest O — a later round that keeps hitting the ceiling is bounded too");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const qaCalls = stubQaRunRole(h, [
+        verdictResult({ pass: true, summary: "round 1 fixed something", changed: true }),
+        CUTOFF,
+        CUTOFF,
+        CUTOFF,
+        CUTOFF,
+      ]);
+      await runLoop(h, id, 4, true);
+      check("round 2 stopped after its own bounded continuations", qaCalls.length === 4, `calls=${qaCalls.length}`);
+      check("its allowance reads as fully spent", h.db.getThreadStageOutputs(id).qaCutoffResumesThisRound === 2, String(h.db.getThreadStageOutputs(id).qaCutoffResumesThisRound));
+      check("the wedged reviewer parked for the owner", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check("the park still says the continuations were spent", !!h.db.getThread(id)?.error?.includes("cut off again each time"), String(h.db.getThread(id)?.error));
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS ✅" : "FAIL ❌"} — ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {
     console.log("Failures:");

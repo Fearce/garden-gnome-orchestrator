@@ -1,0 +1,305 @@
+/* ================================================================================================
+   GIT CONSOLE — the repo-level GitHub Desktop surface (GitConsole.tsx). Its own stylesheet, prefixed
+   `gc-` throughout so it can't collide with the per-task Changes drawer (gitChanges.css) or the app
+   shell. Reuses the app design tokens only; the unified diff itself comes from diff.css.
+
+   Layout is a fixed three-band window: a chrome bar (repo · branch · sync), a one-line activity strip,
+   and a two-pane body that fills the rest. The window never grows — only the panes scroll, each within
+   its own bounds, so a 4000-file diff can't push the commit box off screen.
+   ================================================================================================ */
+
+.gc-scrim { position: fixed; inset: 0; z-index: 70; background: oklch(0 0 0 / 0.55); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.gc-window {
+  width: min(1320px, 100%); height: min(860px, 100%); min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--bg-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2); overflow: hidden;
+  animation: gc-in 0.16s ease-out;
+}
+@keyframes gc-in { from { transform: translateY(8px) scale(0.995); opacity: 0.5; } to { transform: none; opacity: 1; } }
+
+/* ---- chrome bar ---- */
+.gc-topbar {
+  flex: 0 0 auto; display: flex; align-items: stretch; gap: 1px;
+  border-bottom: 1px solid var(--line); background: color-mix(in oklch, var(--bg-2) 55%, transparent);
+}
+.gc-picker { position: relative; min-width: 0; flex: 1 1 0; max-width: 340px; }
+.gc-pick-spacer { flex: 1 1 0; }
+.gc-menu-wrap { position: relative; height: 100%; }
+
+.gc-pick-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 100%; min-height: 54px;
+  padding: 8px 12px; text-align: left; min-width: 0;
+  background: transparent; border: none; border-right: 1px solid var(--line); color: var(--text-dim);
+  transition: background 0.12s, color 0.12s;
+}
+.gc-pick-btn:hover, .gc-pick-btn.on { background: var(--bg-2); color: var(--text); }
+.gc-pick-btn > svg:first-child { flex: 0 0 auto; color: var(--text-faint); }
+.gc-pick-btn:hover > svg:first-child, .gc-pick-btn.on > svg:first-child { color: var(--accent); }
+.gc-pick-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.gc-pick-label { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
+.gc-pick-value { font-size: 13px; font-weight: 550; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-caret { flex: 0 0 auto; color: var(--text-faint); }
+
+/* ---- dropdown menus (repo + branch) ---- */
+.gc-menu {
+  /* Wider than its trigger: these rows carry a full filesystem path under the name. */
+  position: absolute; top: calc(100% + 1px); left: 0; z-index: 5; width: max(430px, 100%); max-width: 560px;
+  display: flex; flex-direction: column; max-height: 460px;
+  background: var(--bg-1); border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  box-shadow: var(--shadow-2); overflow: hidden;
+}
+.gc-menu-head { flex: 0 0 auto; padding: 8px; border-bottom: 1px solid var(--line); }
+.gc-menu-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 4px; }
+.gc-menu-sep {
+  padding: 8px 10px 4px; font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-faint); border-top: 1px solid var(--line); margin-top: 4px;
+}
+.gc-menu-none { padding: 16px 12px; text-align: center; color: var(--text-faint); font-size: 12px; }
+.gc-menu-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; text-align: left;
+  background: transparent; border: none; border-radius: var(--r-sm); color: var(--text-dim); min-width: 0;
+}
+.gc-menu-row:hover:not(:disabled) { background: var(--bg-2); color: var(--text); }
+.gc-menu-row.on { background: color-mix(in oklch, var(--accent) 12%, transparent); color: var(--text); }
+.gc-menu-row:disabled { opacity: 0.55; cursor: default; }
+.gc-menu-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.gc-menu-name { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-menu-path { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.gc-menu-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; }
+.gc-count { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); padding: 1px 6px; border-radius: 100px; background: var(--bg); border: 1px solid var(--line); }
+.gc-menu-action {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 12px;
+  background: transparent; border: none; border-top: 1px solid var(--line); color: var(--text-dim); font-size: 12px; text-align: left;
+}
+.gc-menu-action:hover:not(:disabled) { background: var(--bg-2); color: var(--text); }
+.gc-menu-action svg { color: var(--text-faint); flex: 0 0 auto; }
+/* Rescan + Browse share the footer row; the scan is the primary of the two, so it takes the space. */
+.gc-menu-actions { flex: 0 0 auto; display: flex; border-top: 1px solid var(--line); }
+.gc-menu-actions .gc-menu-action { border-top: none; }
+.gc-menu-actions .gc-menu-action { flex-wrap: nowrap; white-space: nowrap; }
+.gc-menu-actions .gc-menu-action:first-child { flex: 1; }
+.gc-menu-actions .gc-menu-action:last-child { flex: 0 0 auto; border-left: 1px solid var(--line); }
+
+.gc-branch-row { display: flex; align-items: center; gap: 2px; }
+.gc-branch-row .gc-menu-row { flex: 1; min-width: 0; }
+.gc-branch-del {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  background: transparent; border: none; border-radius: var(--r-sm); color: var(--text-faint); opacity: 0;
+}
+.gc-branch-row:hover .gc-branch-del { opacity: 1; }
+/* Without a mouse there is no hover to reveal it, so deleting a branch would be impossible. */
+@media (hover: none) {
+  .gc-branch-del { opacity: 1; }
+}
+.gc-branch-del:hover { color: var(--danger); background: color-mix(in oklch, var(--danger) 14%, transparent); }
+.gc-new-branch { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+.gc-new-branch .gc-filter { flex: 1; }
+
+.gc-filter {
+  width: 100%; padding: 6px 9px; font-family: inherit; font-size: 12.5px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text);
+}
+.gc-filter:focus { outline: none; border-color: color-mix(in oklch, var(--accent) 60%, var(--line)); }
+
+/* ---- tags ---- */
+.gc-tag {
+  flex: 0 0 auto; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 100px; border: 1px solid transparent; white-space: nowrap;
+}
+.gc-tag.self { color: var(--accent); background: color-mix(in oklch, var(--accent) 13%, transparent); border-color: color-mix(in oklch, var(--accent) 32%, transparent); }
+.gc-tag.live { color: var(--role-implementor); background: color-mix(in oklch, var(--role-implementor) 13%, transparent); border-color: color-mix(in oklch, var(--role-implementor) 32%, transparent); }
+.gc-tag.remote, .gc-tag.local { color: var(--text-faint); background: color-mix(in oklch, var(--text-faint) 12%, transparent); border-color: color-mix(in oklch, var(--text-faint) 26%, transparent); }
+.gc-tag.ahead { color: var(--ok); background: color-mix(in oklch, var(--ok) 12%, transparent); }
+.gc-tag.behind { color: var(--warn); background: color-mix(in oklch, var(--warn) 12%, transparent); }
+
+/* ---- sync actions ---- */
+.gc-sync { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 0 12px; margin-left: auto; }
+.gc-btn {
+  display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--text-dim); font-size: 12.5px; white-space: nowrap;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+a.gc-btn { text-decoration: none; }
+.gc-btn:hover:not(:disabled) { background: var(--bg-3); border-color: var(--line-strong); color: var(--text); }
+.gc-btn:disabled { opacity: 0.42; cursor: not-allowed; }
+.gc-btn svg { color: var(--text-faint); flex: 0 0 auto; }
+.gc-btn:hover:not(:disabled) svg { color: var(--text-dim); }
+.gc-btn.primary { background: var(--accent); border-color: var(--accent); color: oklch(0.2 0.02 264); font-weight: 550; }
+.gc-btn.primary:hover:not(:disabled) { background: var(--accent-press); border-color: var(--accent-press); color: oklch(0.2 0.02 264); }
+.gc-btn.primary svg, .gc-btn.primary:hover:not(:disabled) svg { color: currentColor; }
+.gc-btn.danger { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 40%, var(--line)); }
+.gc-btn.danger:hover:not(:disabled) { background: color-mix(in oklch, var(--danger) 16%, transparent); color: var(--danger); }
+.gc-btn.sm { padding: 4px 9px; font-size: 11.5px; }
+.gc-btn.wide { width: 100%; justify-content: center; }
+.gc-btn-count { font-family: var(--font-mono); font-size: 10px; padding: 1px 6px; border-radius: 100px; background: color-mix(in oklch, var(--text) 12%, transparent); }
+.gc-btn.primary .gc-btn-count { background: oklch(0.2 0.02 264 / 0.18); }
+.gc-btn-sub { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); }
+
+/* Split button (Pull · ▾) — one control, two targets, no gap between them. */
+.gc-split { position: relative; display: inline-flex; }
+.gc-split .gc-menu-wrap { height: 100%; }
+.gc-split-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.gc-split-caret { height: 100%; padding: 0 6px; border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: none; }
+.gc-split .gc-menu { left: auto; right: 0; width: 320px; }
+.gc-menu-action { flex-wrap: wrap; }
+.gc-menu-action:disabled { opacity: 0.45; cursor: not-allowed; }
+.gc-menu-hint { flex: 1 0 100%; padding-left: 22px; font-size: 10.5px; color: var(--text-faint); line-height: 1.45; }
+.gc-vota {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 100px;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+  background: color-mix(in oklch, var(--text-faint) 11%, transparent); border: 1px solid color-mix(in oklch, var(--text-faint) 26%, transparent);
+}
+.gc-close { flex: 0 0 auto; align-self: stretch; padding: 0 14px; background: transparent; border: none; border-left: 1px solid var(--line); color: var(--text-faint); font-size: 14px; }
+.gc-close:hover { color: var(--text); background: var(--bg-2); }
+
+/* ---- activity strip ---- */
+.gc-activity {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  font-size: 12px; line-height: 1.45; border-bottom: 1px solid var(--line);
+}
+.gc-activity-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-activity.ok { color: var(--ok); background: color-mix(in oklch, var(--ok) 9%, transparent); }
+.gc-activity.err { color: var(--danger); background: color-mix(in oklch, var(--danger) 10%, transparent); }
+.gc-activity.note { color: var(--warn); background: color-mix(in oklch, var(--warn) 9%, transparent); }
+.gc-activity.busy { color: var(--text-dim); background: var(--bg-2); }
+.gc-activity-x { background: transparent; border: none; color: inherit; opacity: 0.6; font-size: 12px; padding: 0 2px; }
+.gc-activity-x:hover { opacity: 1; }
+.gc-spinner {
+  width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto;
+  border: 2px solid color-mix(in oklch, var(--text-faint) 40%, transparent); border-top-color: var(--accent);
+  animation: gc-spin 0.7s linear infinite;
+}
+@keyframes gc-spin { to { transform: rotate(360deg); } }
+.gc-live-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--role-implementor); animation: gc-pulse 1.6s ease-in-out infinite; }
+@keyframes gc-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+/* ---- body ---- */
+.gc-body { flex: 1; min-height: 0; display: flex; }
+.gc-left { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.gc-tabs { flex: 0 0 auto; display: flex; gap: 4px; padding: 8px 8px 7px; border-bottom: 1px solid var(--line); }
+.gc-tab {
+  display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: var(--r-sm);
+  background: transparent; border: 1px solid transparent; color: var(--text-faint); font-size: 12px;
+}
+.gc-tab:hover { color: var(--text-dim); background: var(--bg-2); }
+.gc-tab.on { color: var(--text); background: var(--bg-2); border-color: var(--line); }
+.gc-tab-count { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); padding: 1px 6px; border-radius: 100px; background: var(--bg); border: 1px solid var(--line); }
+
+.gc-panes { flex: 1; min-height: 0; display: flex; }
+.gc-list-col { flex: 0 0 360px; max-width: 46%; min-width: 0; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: color-mix(in oklch, var(--bg-2) 20%, transparent); }
+.gc-diff-col { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.gc-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px 10px; }
+.gc-empty, .gc-none { padding: 26px 16px; text-align: center; color: var(--text-faint); font-size: 12.5px; line-height: 1.6; }
+.gc-none.pad { flex: 1; display: flex; align-items: center; justify-content: center; }
+
+.gc-list-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.gc-check-all { display: inline-flex; align-items: center; gap: 9px; font-size: 12px; color: var(--text-dim); cursor: pointer; min-width: 0; }
+.gc-link { background: transparent; border: none; color: var(--text-faint); font-size: 11.5px; padding: 2px 4px; border-radius: 4px; }
+.gc-link:hover:not(:disabled) { color: var(--text); background: var(--bg-2); }
+.gc-link.danger:hover:not(:disabled) { color: var(--danger); background: color-mix(in oklch, var(--danger) 14%, transparent); }
+.gc-link:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.gc-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.gc-file { display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: var(--r-sm); border: 1px solid transparent; }
+.gc-file:hover { background: var(--bg-2); }
+.gc-file.viewing { background: var(--bg-2); border-color: var(--line); }
+.gc-file input[type="checkbox"] { flex: 0 0 auto; accent-color: var(--accent); }
+.gc-file-main { flex: 1; min-width: 0; display: flex; align-items: baseline; background: transparent; border: none; padding: 0; text-align: left; font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; }
+.gc-dir { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-name { color: var(--text); white-space: nowrap; }
+.gc-status {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px;
+  border-radius: 4px; font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
+  border: 1px solid transparent;
+}
+.gc-status.added, .gc-status.untracked { color: var(--ok); background: color-mix(in oklch, var(--ok) 13%, transparent); border-color: color-mix(in oklch, var(--ok) 32%, transparent); }
+.gc-status.modified { color: var(--warn); background: color-mix(in oklch, var(--warn) 13%, transparent); border-color: color-mix(in oklch, var(--warn) 32%, transparent); }
+.gc-status.deleted { color: var(--danger); background: color-mix(in oklch, var(--danger) 13%, transparent); border-color: color-mix(in oklch, var(--danger) 32%, transparent); }
+.gc-status.renamed { color: var(--role-planner); background: color-mix(in oklch, var(--role-planner) 13%, transparent); border-color: color-mix(in oklch, var(--role-planner) 32%, transparent); }
+.gc-status.conflicted { color: var(--crit); background: color-mix(in oklch, var(--crit) 15%, transparent); border-color: color-mix(in oklch, var(--crit) 36%, transparent); }
+
+/* ---- commit box ---- */
+.gc-commit { flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px; padding: 10px 12px 12px; border-top: 1px solid var(--line); background: var(--bg-1); }
+.gc-commit-summary, .gc-commit-body {
+  width: 100%; padding: 7px 10px; font-family: inherit; font-size: 12.5px; color: var(--text);
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); resize: none;
+}
+.gc-commit-summary:focus, .gc-commit-body:focus { outline: none; border-color: color-mix(in oklch, var(--accent) 60%, var(--line)); }
+.gc-commit-summary:disabled, .gc-commit-body:disabled { opacity: 0.5; }
+.gc-commit .gc-btn b { font-weight: 650; }
+
+/* ---- diff pane ---- */
+.gc-diff { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.gc-diff-head { flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: color-mix(in oklch, var(--bg-2) 45%, transparent); }
+.gc-diff-path { flex: 1; min-width: 0; display: flex; align-items: baseline; font-family: var(--font-mono); font-size: 12px; overflow: hidden; }
+.gc-diff-stat { flex: 0 0 auto; display: inline-flex; gap: 7px; font-family: var(--font-mono); font-size: 11px; }
+.gc-add { color: color-mix(in oklch, var(--ok) 88%, var(--text)); }
+.gc-del { color: color-mix(in oklch, var(--danger) 82%, var(--text-dim)); }
+.gc-bin { color: var(--text-faint); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase; }
+.gc-diff-scroll { flex: 1; min-height: 0; overflow: auto; }
+.gc-diff-scroll .diff { border-top: none; }
+
+/* ---- history ---- */
+.gc-commits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.gc-commit-row { display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 8px 10px; text-align: left; background: transparent; border: 1px solid transparent; border-radius: var(--r-sm); }
+.gc-commit-row:hover { background: var(--bg-2); }
+.gc-commit-row.on { background: var(--bg-2); border-color: var(--line); }
+.gc-commit-subject { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-commit-meta { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--text-faint); overflow: hidden; }
+.gc-commit-meta .mono { font-family: var(--font-mono); }
+
+.gc-commit-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.gc-detail-head { flex: 0 0 auto; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.gc-detail-subject { font-size: 14px; font-weight: 600; color: var(--text); }
+.gc-detail-body { margin: 7px 0 0; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); white-space: pre-wrap; line-height: 1.5; }
+.gc-detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; font-size: 10.5px; color: var(--text-faint); }
+.gc-detail-meta .mono { font-family: var(--font-mono); }
+.gc-detail-files { flex: 0 0 auto; max-height: 150px; overflow-y: auto; padding: 6px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 1px; }
+.gc-detail-file { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 8px; text-align: left; background: transparent; border: 1px solid transparent; border-radius: var(--r-sm); font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
+.gc-detail-file:hover { background: var(--bg-2); color: var(--text); }
+.gc-detail-file.on { background: var(--bg-2); border-color: var(--line); color: var(--text); }
+.gc-detail-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-commit-detail .gc-diff-scroll, .gc-commit-detail .diff { flex: 1; min-height: 0; overflow: auto; }
+
+/* ---- coarse pointer: the console has its own control vocabulary ----
+   .gc-btn / .gc-tab / .gc-link are not .btn, so styles.css's density block reaches none of them —
+   a ~31px Fetch · Pull · Push row on the surface whose top-bar trigger is already 44px. Kept in
+   this file because it loads after styles.css, so a rule for these over there could be out-ordered. */
+@media (pointer: coarse) and (max-width: 1365.98px) {
+  .gc-btn { min-height: var(--tap); }
+  .gc-btn.sm { min-height: var(--tap-sm); padding: 0 10px; }
+  .gc-pick-btn, .gc-tab, .gc-menu-row, .gc-commit-row { min-height: var(--tap); }
+  /* Sized by padding alone, so a width/height bump has to be explicit. .gc-close is align-self:
+     stretch, which gives it nothing once .gc-topbar wraps onto a short second line. */
+  .gc-close { min-width: var(--tap); min-height: var(--tap); }
+  .gc-split-caret { min-width: var(--tap-sm); padding: 0 10px; }
+  .gc-link { min-height: var(--tap-sm); padding: 0 8px; }
+  .gc-detail-file { min-height: var(--tap); }
+  /* The row is the container, its button is the target: drop the row's vertical padding so the
+     stretched child gets the whole 44px instead of the 24px left inside it. */
+  .gc-file { min-height: var(--tap); padding: 0 8px; }
+  .gc-file-main { align-self: stretch; align-items: center; min-height: var(--tap); }
+  /* 24px (WCAG 2.5.8 AA) rather than 44: one per file row, and the row body beside it is the 44px
+     target for the primary action — a 44px box per checkbox would double the list's height. */
+  .gc-window input[type="checkbox"] { width: 24px; height: 24px; }
+  .gc-branch-del { width: var(--tap-sm); height: var(--tap-sm); }
+  /* 16px is the threshold under which a mobile browser zooms the page in on focus. */
+  .gc-filter, .gc-commit-body { font-size: 16px; min-height: var(--tap-sm); }
+  .gc-commit-summary { font-size: 16px; min-height: var(--tap); }
+}
+
+/* ---- narrow viewports: one column, the diff below the list ----
+   899.98, not 900: `max-width` is inclusive, so at exactly 900px this collapsed the console to one
+   column while the app around it had already switched to the desktop grid (min-width: 900px). */
+@media (max-width: 899.98px) {
+  .gc-scrim { padding: 0; }
+  .gc-window { width: 100%; height: 100%; border-radius: 0; border: none; }
+  .gc-topbar { flex-wrap: wrap; }
+  .gc-picker { max-width: none; flex: 1 1 50%; }
+  .gc-sync { width: 100%; margin-left: 0; padding: 8px 12px; border-top: 1px solid var(--line); overflow-x: auto; }
+  .gc-panes { flex-direction: column; }
+  .gc-list-col { flex: 1 1 auto; max-width: none; border-right: none; border-bottom: 1px solid var(--line); }
+  .gc-diff-col { flex: 1 1 40%; }
+}

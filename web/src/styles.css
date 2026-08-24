@@ -33,6 +33,12 @@
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", monospace;
   --font-serif: "Instrument Serif", Georgia, serif;
 
+  /* Touch targets. Referenced only from inside the coarse-pointer blocks at the bottom of this file,
+     so they're inert on a mouse. 44px is the WCAG 2.5.8 / Android minimum; --tap-sm is for the dense
+     chip clusters (feed filter, pipeline gates) where 44 forces the row to wrap. */
+  --tap: 44px;
+  --tap-sm: 34px;
+
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 14px;
@@ -76,6 +82,10 @@ button { font-family: inherit; cursor: pointer; }
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  /* viewport-fit=cover (index.html) hands the page the area under a display cutout too, so the left
+     and right insets have to be paid back here — they are 0 on every device without one. */
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 /* Global layout helper: a flex child that grows to fill its column and scrolls its own overflow
@@ -97,26 +107,32 @@ button { font-family: inherit; cursor: pointer; }
   min-width: 0;
 }
 
-/* Medium desktop (1280–1699px): five subscription chips (~848px) don't fit beside brand + office +
+/* Medium desktop (1280–1799px): five subscription chips (~848px) don't fit beside brand + office +
    controls. Wrap the accounts strip onto a full-width second row so Grok's 7d/mo meters stay on
-   screen instead of clipped under .app overflow:hidden. From ~1700px the strip fits inline again, so
-   wider viewports keep the single-row layout — re-measure this bound when a chip is added or widened
-   (web/scripts/check-accounts-visible.cjs). */
-@media (max-width: 1699.98px) and (min-width: 769px) {
+   screen instead of clipped under .app overflow:hidden. The bound is measured, not decorative, and
+   measured against the WIDEST state the bar can render: with the socket dropped the fixed items come
+   to 720px which puts the single-row floor at 1748px — the old 1700px bound sat below that, which is
+   how a reconnect used to clip the chips. `npm run probe:chips -- --explain` prints that floor; keep
+   the bound comfortably above it rather than one pixel above. */
+@media (max-width: 1799.98px) and (min-width: 900px) {
   .topbar {
     flex-wrap: wrap;
     row-gap: 6px;
     padding-top: 6px;
     padding-bottom: 6px;
   }
+  /* Last in the bar, so when the row can't hold it the strip is what drops — alone, full width.
+     Which row it lands on is decided by the content, not by this bound: the bound only decides
+     whether dropping is ALLOWED. (Don't add `flex-basis: 100%` to force the second row: the later
+     `.accounts` rule below wins on source order, so it would be inert.) */
   .accounts {
     order: 20;
-    flex: 1 1 100%;
     min-width: 0;
     max-width: 100%;
     overflow-x: auto;
   }
 }
+
 .brand { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
 .build-tag {
   font-family: var(--font-mono); font-size: 9px; line-height: 1; letter-spacing: 0.08em;
@@ -152,6 +168,14 @@ button { font-family: inherit; cursor: pointer; }
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
   -webkit-overflow-scrolling: touch;
+}
+/* Wide desktop (≥1800px): the strip is inline, on a row whose other items are not all fixed — the
+   connection indicator alone swings 41px ("live") to 100px ("reconnecting…"), and the gnome lane
+   grows 46px per live agent. Shrinking is what the chips must never do: it hides usage behind a
+   scrollbar, so the elastic items yield instead. Must stay AFTER the base rule above — an equally
+   specific `.accounts` declaration later in the file wins over one inside a media query. */
+@media (min-width: 1800px) {
+  .accounts { flex-shrink: 0; }
 }
 .acct {
   display: flex; flex-direction: column; gap: 3px; justify-content: center;
@@ -206,6 +230,10 @@ button { font-family: inherit; cursor: pointer; }
 .accounts.frozen .acct-label { color: color-mix(in oklch, var(--frost-strong) 65%, var(--text-dim)); }
 
 /* ---- the office (top-bar gnomes + chatroom) ---- */
+/* `flex: 1` (basis 0) on purpose: the gnome lane is ambient, so it takes leftover room rather than
+   claiming its content's width — sizing it to content makes the task counter wrap and pulls the
+   accounts strip onto a second row whenever agents are live. It overflows its box instead, which is
+   why the strip can't be `overflow: hidden` (that clips the chat bubbles rising out of it). */
 .office { position: relative; flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: center; }
 /* Gnomes stand on the FLOOR of the top bar (its bottom border), not floating mid-air — so bottom-align
    the strip so boots rest just above the divider line. */
@@ -350,9 +378,12 @@ button { font-family: inherit; cursor: pointer; }
   overflow: hidden;
 }
 .workbench.detail-open { grid-template-columns: var(--rail-w, 384px) minmax(320px, 1fr) var(--detail-w, 480px); }
-/* Desktop-only: hiding the director rail + resizable detail — kept out of the mobile
-   single-pane layout (which overrides .workbench at max-width:768px) via min-width. */
-@media (min-width: 769px) {
+/* Desktop-only: hiding the director rail + resizable detail — kept out of the compact
+   single-pane layout (which overrides .workbench at max-width:899.98px) via min-width.
+   This bound MUST track the compact block's: it is the more specific selector (two classes),
+   so a persisted railHidden would out-rank the single-pane override and blank the Director
+   pane, while its bare `1fr` track (min-content minimum) balloons past the viewport. */
+@media (min-width: 900px) {
   .workbench.rail-hidden { grid-template-columns: 1fr; }
   .workbench.rail-hidden.detail-open { grid-template-columns: minmax(320px, 1fr) var(--detail-w, 480px); }
   .workbench.rail-hidden > .rail { display: none; }
@@ -518,6 +549,26 @@ button { font-family: inherit; cursor: pointer; }
   padding: 3px 7px 3px 4px; font-size: 13px; line-height: 1; transition: color 0.12s;
 }
 .repo-chip-x:hover { color: var(--text); }
+
+/* Recent repos as a single dropdown row instead of wrapping chips. Which of the two renders is
+   decided in Director.tsx (see COMPACT_MQ), not here — nine remembered repos wrap to FOUR rows of
+   chips, 162px of a 679px rail, which is what left the transcript 149px on a tablet. So this styling
+   is unconditional: the component only mounts it when the rail cannot afford the chips. */
+.recent-repos-select { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.recent-repos-select .recent-repos-label { flex: 0 0 auto; }
+.repo-select {
+  flex: 1 1 auto; min-width: 0; height: 40px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
+  color: var(--text); font-family: var(--font-mono); font-size: 14px; cursor: pointer;
+}
+.repo-select:focus { outline: none; border-color: var(--accent); }
+.repo-select-x {
+  flex: 0 0 auto; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
+  color: var(--text-faint); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.repo-select-x:active { background: var(--bg-3); color: var(--text); }
+.repo-select-x:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ---- workspace path autocomplete ---- */
 .ws-wrap { position: relative; flex: 1; display: flex; }
@@ -721,6 +772,16 @@ button { font-family: inherit; cursor: pointer; }
 .settings-btn.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); }
 .settings-btn.on svg { transform: rotate(35deg); transition: transform 0.2s; }
 
+/* Git console trigger — same chip geometry as the gear it sits beside, so the pair reads as one group. */
+.git-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--r-sm); cursor: pointer; flex: 0 0 auto;
+  border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint);
+  transition: color 0.12s, border-color 0.12s;
+}
+.git-btn:hover { color: var(--text-dim); border-color: var(--line-strong); }
+.git-btn.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); }
+
 /* ---- settings panel (gear popover) ---- */
 .settings-scrim { position: fixed; inset: 0; z-index: 60; background: oklch(0 0 0 / 0.32); }
 .settings-pop {
@@ -750,6 +811,20 @@ button { font-family: inherit; cursor: pointer; }
 .settings-row-label { font-size: 13px; color: var(--text); font-weight: 500; }
 .settings-row-hint { font-size: 11px; color: var(--text-faint); line-height: 1.4; margin-top: 2px; }
 .settings-note { margin: 4px 16px 2px; font-size: 11px; color: var(--text-faint); line-height: 1.45; }
+
+/* auto model selection — the scoreboard under its toggle */
+.ams-board { margin: 2px 16px 8px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+.ams-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) repeat(5, auto); gap: 12px;
+  align-items: center; padding: 6px 10px; font-size: 11.5px; color: var(--text-dim);
+}
+.ams-row + .ams-row { border-top: 1px solid var(--line); }
+.ams-row > span:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+.ams-head {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-faint); background: var(--bg-2);
+}
+.ams-model { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* toggle switch */
 .switch {
@@ -1188,7 +1263,9 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ---- detail panel ---- */
 .detail { position: relative; border-left: 1px solid var(--line); background: var(--bg-1); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.resize-handle { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px; z-index: 6; cursor: col-resize; }
+/* touch-action:none, mirroring .dl-resize: without it the browser claims a finger drag on the handle
+   as a scroll and the pointermove stream never reaches the resize. */
+.resize-handle { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px; z-index: 6; cursor: col-resize; touch-action: none; }
 .resize-handle::after { content: ""; position: absolute; left: 2px; top: 0; bottom: 0; width: 2px; background: transparent; transition: background 0.12s; }
 .resize-handle:hover::after { background: var(--accent); }
 /* Director rail handle lives on the panel's RIGHT edge (the detail handle is on its left). */
@@ -1399,6 +1476,16 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   box-shadow: var(--shadow-2);
 }
 .dl-chip:hover .dl-pop, .dl-chip:focus-within .dl-pop { display: flex; }
+/* The state-driven twin of the hover rule, for the devices that have no hover. */
+.dl-pop.open { display: flex; }
+/* The ⋯ that opens it by tap. Hidden wherever hover already reveals the popover. */
+.dl-more {
+  display: none; align-items: center; justify-content: center;
+  width: 26px; padding: 0; border: 1px solid var(--line); border-left: none;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--bg-1); color: var(--text-faint); font-size: 15px; line-height: 1; cursor: pointer;
+}
+.dl-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* Transparent bridge across the 6px gap so the cursor can travel chip → popover without :hover dropping. */
 .dl-pop::before { content: ""; position: absolute; top: -6px; left: 0; right: 0; height: 6px; }
 .dl-pop-head { display: flex; align-items: center; gap: 8px; color: var(--accent); min-width: 0; }
@@ -1489,14 +1576,31 @@ body.dl-resizing { user-select: none; }
 
 /* ---- question modal ---- */
 .scrim { position: fixed; inset: 0; background: oklch(0 0 0 / 0.55); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; z-index: 50; }
-.modal { width: min(560px, 92vw); background: var(--bg-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-2); overflow: hidden; }
-.modal .m-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+/* The scrim centers the modal with no height bound of its own, so a long question plus its answer box
+   overflowed the screen with nothing to scroll — on any short viewport, and reliably on a tablet with
+   the soft keyboard open (~470px left). Bound the box and let the body scroll inside it. The dvh twin
+   is dropped whole by a browser that can't parse it, leaving the vh line as the fallback. The variants
+   that declare their own max-height (.changes / .deliverable / .sched-modal) out-specify this. */
+.modal {
+  width: min(560px, 92vw); background: var(--bg-1); border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-2); overflow: hidden;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  display: flex; flex-direction: column;
+}
+/* The head must be allowed to shrink and scroll too. A flex item's default min-height:auto floors it
+   at its content, so a QuestionModal whose QUESTION (which lives in .m-head) is taller than the cap
+   would take the whole box and leave .m-body — the options, the answer box, Submit — squeezed to
+   nothing behind .modal's overflow:hidden, with no scrollbar and no way to dismiss the scrim. Both
+   panes shrinking in proportion keeps the answer controls reachable at any viewport height. */
+.modal .m-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); min-height: 0; overflow-y: auto; }
 .modal.login { width: min(380px, 92vw); }
 /* The logo ships on its own black field, so give the login header a matching black panel and let
    the mark sit on it directly (no blend needed — the backdrops are identical black). */
 .modal.login .login-head { background: #000; padding: 22px 18px; display: flex; justify-content: center; }
 .login-logo { height: 40px; width: auto; display: block; }
-.login-body { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
+/* The login modal's body isn't .m-body, so it needs the same scroll treatment on a short viewport. */
+.login-body { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; min-height: 0; }
 .login-body input {
   background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-sm);
   padding: 9px 11px; font-family: var(--font-mono); font-size: 13px;
@@ -1508,7 +1612,7 @@ body.dl-resizing { user-select: none; }
 .modal h3 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.3; }
 .modal .q-question { font-size: 15px; line-height: 1.45; color: var(--text); gap: 8px; }
 .modal .q-question .md-p { font-weight: 500; }
-.modal .m-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 9px; }
+.modal .m-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 9px; overflow-y: auto; min-height: 0; }
 .opt {
   text-align: left; width: 100%; padding: 11px 13px; border-radius: var(--r-md);
   border: 1px solid var(--line); background: var(--bg-2); color: var(--text); transition: border-color 0.12s, background 0.12s;
@@ -1581,11 +1685,17 @@ body.dl-resizing { user-select: none; }
 .mobile-nav { display: none; }
 
 /* ============================================================
-   Mobile — ≤768px. Single swappable workbench pane, native-feeling
+   Compact — ≤899.98px. Single swappable workbench pane, native-feeling
    bottom tab bar, full-screen detail overlay. Everything lives behind
    the breakpoint so the desktop three-column layout above is untouched.
+
+   The bound is 900, not 768, because a 10" Android tablet held PORTRAIT
+   is an 800px CSS viewport (Lenovo TB328FU: 1920×1200 at dpr 1.5). At 768
+   it fell through to the desktop grid, whose 1184px three-column minimum
+   pushed the detail pane — its ✕ and its inject composer with it — off the
+   right edge of an overflow:hidden shell, with no scrollbar to get there.
    ============================================================ */
-@media (max-width: 768px) {
+@media (max-width: 899.98px) {
   /* topbar (auto, wraps) · workbench (1fr) · bottom nav (auto). The single column is pinned to
      minmax(0, 1fr): an implicit/auto grid column sizes to its widest child's max-content and, with
      .app's overflow:hidden, would balloon the layout wider than the viewport and clip the right edge
@@ -1638,24 +1748,6 @@ body.dl-resizing { user-select: none; }
   .rail-head-actions { flex: 0 0 auto; gap: 6px; }
   .agent-toggles { flex-wrap: nowrap; gap: 4px; }
   .agent-toggle { height: 34px; padding: 0 8px; gap: 4px; }
-
-  /* Recent repos as a single dropdown row (not wrapping chips): a long list otherwise stacked into
-     several rows and ate most of the composer, leaving only ~3 lines of transcript above it. */
-  .recent-repos-select { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .recent-repos-select .recent-repos-label { flex: 0 0 auto; }
-  .repo-select {
-    flex: 1 1 auto; min-width: 0; height: 40px; padding: 0 10px;
-    border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
-    color: var(--text); font-family: var(--font-mono); font-size: 14px; cursor: pointer;
-  }
-  .repo-select:focus { outline: none; border-color: var(--accent); }
-  .repo-select-x {
-    flex: 0 0 auto; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
-    border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
-    color: var(--text-faint); font-size: 20px; line-height: 1; cursor: pointer;
-  }
-  .repo-select-x:active { background: var(--bg-3); color: var(--text); }
-  .repo-select-x:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* Search collapses behind the header icon; its full-width row only appears once opened, giving the
      transcript that row back by default. */
@@ -1760,7 +1852,7 @@ body.dl-resizing { user-select: none; }
   .modal textarea { font-size: 16px; }
 
   /* tap-friendly small buttons — 44px min target, centered content */
-  .btn.sm { min-height: 44px; padding: 0 14px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+  .btn.sm { min-height: 44px; min-width: 44px; padding: 0 14px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
 
   /* changes modal: title + close on one row (QuestionModal/login keep block stacking) */
   .modal.changes .m-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -1925,3 +2017,312 @@ body.dl-resizing { user-select: none; }
 .sched-desc { font-size: 13px; color: var(--text); font-weight: 500; }
 .sched-cronstr { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
 .sched-foot { padding: 12px 18px 16px; border-top: 1px solid var(--line); }
+
+/* ---- the owner's note list (Notes board view) ----
+   An inbox, not a card grid: one dense row per note, newest first, and the tick that clears it is the
+   only strong affordance on the row. The kind icon is the sole colour, so a long list stays calm. */
+.notes-view { display: flex; flex-direction: column; min-height: 0; }
+.notes-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; min-height: 26px; }
+
+.note-compose { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.note-compose input {
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text);
+  font-family: var(--font-sans); font-size: 13px; padding: 8px 10px; min-width: 0;
+}
+.note-compose input:focus { outline: none; border-color: var(--accent); }
+.note-compose input::placeholder { color: var(--text-faint); }
+.note-compose-body { flex: 1 1 auto; }
+.note-compose-url { flex: 0 1 260px; font-family: var(--font-mono) !important; font-size: 12px !important; }
+
+.notes-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.note-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px;
+  transition: border-color 0.14s, background 0.14s;
+}
+.note-row:hover { border-color: var(--line-strong); background: var(--bg-2); }
+
+.note-kind {
+  display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--bg-2); color: var(--text-faint);
+}
+.note-row:hover .note-kind { background: var(--bg-3); }
+.note-row.k-pr .note-kind { color: var(--accent); background: color-mix(in oklch, var(--accent) 14%, var(--bg-2)); }
+.note-row.k-branch .note-kind { color: var(--role-planner); background: color-mix(in oklch, var(--role-planner) 14%, var(--bg-2)); }
+.note-row.k-link .note-kind { color: var(--text-dim); }
+
+.note-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.note-body {
+  font-size: 13.5px; font-weight: 500; color: var(--text); line-height: 1.35; text-decoration: none;
+  overflow-wrap: anywhere;
+}
+a.note-body:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.note-body.plain { font-weight: 400; color: var(--text-dim); }
+
+.note-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: var(--text-faint); }
+.note-link {
+  font-family: var(--font-mono); color: var(--text-dim); max-width: 52ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.note-from { color: var(--text-faint); }
+button.note-from {
+  appearance: none; background: none; border: none; padding: 0; cursor: pointer; font: inherit;
+  color: var(--text-faint); border-bottom: 1px dotted var(--line-strong);
+}
+button.note-from:hover { color: var(--text-dim); }
+.note-age { color: var(--text-faint); white-space: nowrap; }
+
+.note-done {
+  appearance: none; display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto;
+  background: transparent; border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--text-faint); cursor: pointer; transition: color 0.14s, border-color 0.14s, background 0.14s;
+}
+.note-done:hover {
+  color: var(--ok); border-color: color-mix(in oklch, var(--ok) 55%, transparent);
+  background: color-mix(in oklch, var(--ok) 14%, transparent);
+}
+
+/* ==========================================================================================
+   TOUCH / TABLET
+   Three blocks, deliberately the LAST thing in this file. Every rule below overrides a base
+   declaration at the same specificity, so source order is what makes it apply at all — moving
+   any of them above the sections they override silently voids them (this stylesheet has shipped
+   two completely inert declarations that way; see .claude/rules/topbar-accounts-strip.md).
+
+   Nothing here touches a mouse-driven desktop: each block is fenced behind a width band, a
+   `hover` query or a `pointer` query. `pointer`/`hover` describe the PRIMARY input, so a
+   touchscreen laptop — which also has a trackpad — stays on the desktop treatment.
+   ========================================================================================== */
+
+/* ---- 1. Landscape tablet / narrow desktop: two docked columns, detail floats over the board ----
+
+   Two clauses, one band. 900–1183.98px is where the three-column desktop grid stops fitting its
+   own minimum (384 rail + 320 board + 480 detail = 1184), and a COARSE pointer extends that to
+   1365.98 so a 1280×800 tablet held landscape gets the same treatment: docked, its three tracks
+   leave the board a 416px slot with no room for the detail to grow into.
+
+   Floating the detail instead of docking it is what decouples its width from the grid's minimums
+   — that is the point, not an aesthetic. It is absolute inside .workbench rather than fixed to the
+   viewport, so it clears the top bar and the gear / Git / bell stay reachable while it is open, and
+   the board pads itself out from under it so no card is hidden behind it. The min() clamps live
+   INSIDE the query, so the desktop template is untouched and a --rail-w / --detail-w persisted from
+   a large monitor cannot push the board off a tablet's screen. No scrim: this is a pane, not a
+   modal — the rail stays live beside it and its own ✕ is the dismissal. */
+@media (min-width: 900px) and (max-width: 1183.98px),
+       (pointer: coarse) and (min-width: 900px) and (max-width: 1365.98px) {
+  .workbench {
+    position: relative;
+    /* The rail honours a NARROWER persisted width but never a wider one than the screen affords. */
+    --rail-track: clamp(240px, 30vw, var(--rail-w, 384px));
+    /* …and whatever the sheet was dragged to on a monitor, it leaves the board one full lane: 336 is
+       .lanes' own 300px minimum plus .board's 18px of padding either side, so the deck never bursts
+       its column. Both are in vw, not %, so the value means the same thing wherever it is
+       substituted — a percentage would resolve against .board's own column in the padding rule. */
+    --sheet-w: min(var(--detail-w, 480px), calc(100vw - var(--rail-track) - 336px));
+  }
+  .workbench,
+  .workbench.detail-open { grid-template-columns: var(--rail-track) minmax(0, 1fr); }
+  .workbench.rail-hidden,
+  .workbench.rail-hidden.detail-open {
+    grid-template-columns: minmax(0, 1fr);
+    --sheet-w: min(var(--detail-w, 480px), calc(100vw - 336px));
+  }
+
+  .detail {
+    position: absolute; top: 0; right: 0; bottom: 0; left: auto; z-index: 40;
+    width: var(--sheet-w);
+    border-left: 1px solid var(--line-strong); box-shadow: var(--shadow-2);
+  }
+  .workbench.detail-open .board { padding-right: calc(var(--sheet-w) + 18px); }
+  /* Dragging the SHEET's edge would set a width --sheet-w overrides anyway. Scoped to the detail's
+     own handle: the rail's carries the same class, and --rail-track deliberately honours a narrower
+     saved width, which hiding its handle would make unsettable. */
+  .detail > .resize-handle { display: none; }
+
+  /* The director rail had 149px of transcript out of 679 — 22%, no visible conversation at all.
+     The repo dropdown (Director.tsx) removes 122px of wrapped chips; these remove the other 111,
+     and they are the SAME trims the compact band already settled on: the header collapses onto one
+     line with the name truncating, and the search bar hides behind its header icon until tapped. */
+  .rail-head { padding: 8px 12px; }
+  .rail-head-row { flex-wrap: nowrap; gap: 8px; }
+  .rail-head .who { flex: 1 1 auto; }
+  .rail-head-title h2,
+  .rail-head-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rail-head-actions { flex: 0 0 auto; gap: 6px; }
+  .agent-toggles { flex-wrap: nowrap; gap: 4px; }
+  .rail-search-toggle {
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 36px; height: var(--tap-sm); border-radius: var(--r-sm);
+    border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint); cursor: pointer;
+  }
+  .rail-search-toggle.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, var(--line)); }
+  .rail-search { display: none; }
+  .rail-search.open { display: flex; }
+
+  /* A 800px-tall screen cannot afford a 285px header — that left 257px of feed, about three
+     paragraphs. Every byte of the excess is height the 44px density pass added, so give it back
+     WITHOUT shrinking a single target: the action row scrolls sideways instead of wrapping onto a
+     second 44px row (−51px), the two 44px corner buttons come out of the title row's flow so it is
+     title-height again (−42px), and the head's own padding tightens (−8px). */
+  .detail-head { padding: 9px 16px; gap: 6px; }
+  .detail-head .top { position: relative; padding-right: 96px; }
+  .detail-title-actions .close-x { position: absolute; top: 0; right: 0; }
+  .detail-title-actions .head-toggle { right: 48px; }
+  /* Pulling the buttons out of flow narrows the title, which then wrapped to THREE lines and gave
+     back more than it saved. Clamp it to two — the full title is still in the tooltip and in the
+     rename field. Clamped on the inner span so .editable-title keeps its flex row + pencil. */
+  .editable-title-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  /* A button clipped flat at the pane's edge reads as broken; faded, it reads as "more this way".
+     A touch scrollbar is invisible, so this edge is the only affordance the row has. */
+  .detail-controls {
+    flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
+  .detail-controls > * { flex: 0 0 auto; }
+  /* Same treatment the compact band already gives it: eight role chips wrap onto a second row and
+     cost another 45px of feed. Scroll them sideways instead. */
+  .feed-filter { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .feed-filter .fchip { flex: 0 0 auto; }
+  /* The burn strip is a reference row here, not the focus — the same trim the compact band makes. */
+  .acct { padding: 3px 8px; gap: 2px; }
+
+  /* The gear popover anchors 56px below the top of the screen, under a ONE-row top bar — but from
+     900 to 1799 the accounts strip wraps to a second row and it floated over the chips. Dock it as
+     a full-height right-edge sheet, which is also the easier reach with a thumb on the bezel. */
+  .settings-scrim { display: flex; align-items: stretch; justify-content: flex-end; padding: 10px; }
+  .settings-pop { position: static; width: min(420px, 46vw); max-height: none; }
+}
+
+/* ---- 2. No hover: reveal what the mouse-only affordances hide ----
+
+   Unbounded by width on purpose. A control that only appears on :hover is UNREACHABLE without a
+   mouse — a correctness bug at any size, not a density preference. This block only un-hides;
+   sizing is block 3's job. */
+@media (hover: none) {
+  .card .card-dismiss { opacity: 1; }
+  .card.draggable .card-grip { opacity: 1; }
+  .title-edit-hint { opacity: 0.85; }
+
+  /* Download / Copy path live in a hover-only popover — give it a tap trigger, welded to the icon. */
+  .dl-more { display: inline-flex; }
+  .dl-chip-btn { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+  /* …and float it as a bottom-right sheet: .detail is overflow:hidden, so a 244px popover anchored
+     under the chip is clipped inside a ≤480px pane. */
+  .dl-pop {
+    position: fixed; inset: auto 12px 12px auto;
+    width: min(340px, calc(100vw - 24px)); max-width: none;
+  }
+  .dl-pop::before { display: none; }
+}
+
+/* ---- 3. Coarse pointer: density ----
+
+   A fingertip is ~9mm; every control below was sized for a 1px cursor. The upper bound keeps this
+   off large touchscreen displays, where the desktop density is deliberate. The compact band already
+   does all of this below 900px, so a few rules here are copied from it verbatim rather than shared:
+   an extracted block would have to sit after the compact one to win source order, where its
+   geometry would fight the single-pane layout. */
+@media (pointer: coarse) and (max-width: 1365.98px) {
+  /* Top bar. Five 28px squares becoming 44 adds ~80px to row one, so the two purely-referential
+     items go — the build sha is in Settings, and the running count is on the board itself. */
+  .build-tag { display: none; }
+  .stat { display: none; }
+  .bell, .update-badge, .rail-toggle, .settings-btn, .git-btn { width: var(--tap); height: var(--tap); }
+  .gate { width: var(--tap); height: var(--tap); padding: 0; gap: 0; justify-content: center; }
+  .gate > span { display: none; }
+  .settings-x { width: var(--tap); height: var(--tap); font-size: 16px; }
+  /* The chips are a reference row, not a target — only the label is bumped, and only by 1px, since
+     .meter's fixed 15px/30px/44px tracks clip a larger value without widening every chip. */
+  .acct-label { font-size: 11.5px; }
+
+  /* Board + detail. */
+  .card .card-dismiss { top: 6px; right: 6px; width: 32px; height: 32px; font-size: 14px; }
+  /* Stop the browser claiming a tap on a draggable card as a double-tap zoom. */
+  .card.draggable { touch-action: manipulation; }
+  .close-x { width: var(--tap); height: var(--tap); font-size: 20px; }
+  .close-x:active { background: var(--bg-3); color: var(--text); }
+  .agent-toggle { height: var(--tap-sm); padding: 0 10px; }
+  .feed-filter .fchip { min-height: var(--tap-sm); padding: 3px 11px; }
+  .rail-search-clear { width: 32px; height: 32px; font-size: 18px; }
+  .thumb-x { top: -8px; right: -8px; width: 26px; height: 26px; font-size: 15px; }
+  .dl-chip-btn { width: var(--tap); height: var(--tap); }
+  .dl-more { width: 34px; height: var(--tap); }
+  .card-chatroom { width: var(--tap-sm); height: var(--tap-sm); }
+  /* Only renders while 2+ agents share a repo, so it is absent from most measurements — a second
+     agent joining mid-session is what finally surfaced it at 40px. */
+  .office-huddle { height: var(--tap); }
+  /* (.changes-chip is sized in gitChanges.css — that file loads AFTER this one, so a rule for it
+     here would be one stylesheet edit away from silently losing the source-order tie.) */
+  /* The trailing thread-id chip is a desktop reference that ellipsises to nothing in a 480px sheet
+     once the buttons beside it are 44px — the header's "Copy reference" is the real affordance. */
+  .inject-bar .row { gap: 6px; }
+  .inject-bar .row .btn.sm { padding: 0 10px; }
+  .inject-bar .row .inject-row-spacer, .inject-bar .row .inject-id { display: none; }
+  .board-tab { min-height: var(--tap-sm); }
+  .title-edit { min-height: var(--tap-sm); }
+  /* The recent-repo chips only render with 2+ repos remembered, and the ✕ that forgets one was a
+     19px target beside a 20px name. The board's Closed disclosure was 22px. */
+  .repo-chip-pick { min-height: var(--tap-sm); padding: 0 4px 0 10px; }
+  .repo-chip-x { min-height: var(--tap-sm); min-width: var(--tap-sm); padding: 0 8px; }
+  /* The dropdown that replaces those chips on a tablet — 40px is the compact band's mouse-era size. */
+  .repo-select { height: var(--tap); font-size: 16px; }
+  .repo-select-x { width: var(--tap); height: var(--tap); }
+  .closed-toggle { min-height: var(--tap-sm); padding: 4px 8px; }
+  /* Every button, not only the .sm ones: the base .btn is a 32px box built for a cursor. */
+  .btn { min-height: var(--tap); display: inline-flex; align-items: center; justify-content: center; }
+  /* Copied verbatim from the compact band so the two cannot drift. */
+  .btn.sm { min-height: 44px; min-width: 44px; padding: 0 14px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+
+  /* Settings controls. */
+  .switch { width: 52px; height: 30px; }
+  .switch-knob { width: 24px; height: 24px; }
+  .switch.on .switch-knob { transform: translateX(22px); }
+  .stepper button { width: var(--tap); height: var(--tap); font-size: 19px; }
+  .stepper-val { height: var(--tap); font-size: 16px; }
+  .settings-row .text-input { height: var(--tap); font-size: 16px; }
+  /* The handle straddles its pane's edge at -3px, and the pane's own overflow:hidden clips that
+     half away — so a 7px strip is really ~4px of hit-testable area. A cursor finds it; a finger
+     does not. Pull it fully inside and widen it. (The ::after indicator is right-anchored, so it
+     still paints on the border.) */
+  .rail-resize { left: auto; right: 0; width: 16px; }
+  .mode-toggle { height: var(--tap-sm); }
+  .rail-search-input { min-height: var(--tap); }
+  .composer input.ws { min-height: var(--tap); }
+  .segment button { padding: 10px 14px; }
+  /* Two SEPARATE rules: an unknown vendor pseudo-element invalidates the whole selector LIST, so
+     combining these would silently void both thumbs. Do not "tidy" them together. */
+  .slider-range::-webkit-slider-thumb { width: 22px; height: 22px; }
+  .slider-range::-moz-range-thumb { width: 22px; height: 22px; }
+
+  /* Scheduled tasks. */
+  .sched-switch-track { width: 46px; height: 26px; }
+  .sched-switch-thumb { width: 20px; height: 20px; }
+  .sched-switch input:checked + .sched-switch-track .sched-switch-thumb { transform: translateX(20px); }
+  .sched-day { padding: 9px 13px; }
+  .sched-num, .sched-time, .sched-rawcron { font-size: 16px; padding: 9px 10px; }
+  .sched-enable input { width: 20px; height: 20px; }
+
+  /* Notes. The tick is the row's whole point, so it gets a full tap target; the two composer fields
+     can't share one row at tablet widths without the URL box collapsing, so they stack. */
+  .note-done { width: var(--tap); height: var(--tap); }
+  .note-compose { flex-wrap: wrap; }
+  .note-compose-body { flex-basis: 100%; }
+  .note-compose-url { flex: 1 1 auto; }
+
+  /* 16px is the threshold under which mobile browsers zoom the page in on focus. */
+  .composer textarea,
+  .composer input.ws,
+  .inject-bar textarea,
+  .approval-reject textarea,
+  .login-body input,
+  .modal textarea,
+  .rail-search-input,
+  .sched-field input[type="text"],
+  .sched-field input:not([type]),
+  .sched-field .ws-wrap input,
+  .sched-field select,
+  .sched-prompt-input,
+  .note-compose input { font-size: 16px; }
+}

@@ -14,6 +14,7 @@
     "start": "npm run start --prefix server",
     "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix web",
     "health": "npm run health --prefix server",
+    "quality": "node scripts/quality-sweep.cjs",
     "probe:console": "node web/scripts/console-smoke.cjs",
     "probe:chips": "node web/scripts/check-accounts-visible.cjs"
   },
