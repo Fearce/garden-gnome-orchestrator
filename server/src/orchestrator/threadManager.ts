@@ -17,6 +17,7 @@ import { createBusServer } from "../bus/busServer.js";
 import { createGitReadServer } from "../bus/gitReadServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
+import { OperatorNotes } from "./notes.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
 import { modelNote, selectImplementorModel, type ModelCandidate } from "./modelSelector.js";
@@ -55,7 +56,7 @@ import type {
   Role,
   Thread,
 } from "../types.js";
-import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, normalizeWorkspace, repoRoom, resolveCodexEffort, ZAI_SUB_ID } from "../types.js";
+import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveCodexEffort, ZAI_SUB_ID } from "../types.js";
 
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
@@ -2619,6 +2620,9 @@ export class ThreadManager implements OrchestratorApi {
           onOfficeChat: (scope, body) => {
             this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
           },
+          onOperatorNote: (body, url) => {
+            this.postCliOperatorNote(thread, role, body, url);
+          },
         });
       } else if (provider === "grok") {
         accountId = "xai-grok";
@@ -2631,6 +2635,9 @@ export class ThreadManager implements OrchestratorApi {
           outputSchema: cfg.outputFormat?.schema,
           onOfficeChat: (scope, body) => {
             this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
+          },
+          onOperatorNote: (body, url) => {
+            this.postCliOperatorNote(thread, role, body, url);
           },
         });
       } else if (provider === "zai") {
@@ -3208,6 +3215,9 @@ export class ThreadManager implements OrchestratorApi {
         onOfficeChat: (scope, body) => {
           this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
         },
+        onOperatorNote: (body, url) => {
+          this.postCliOperatorNote(thread, "implementor", body, url);
+        },
       });
       // If this run had to self-heal a wedged resume, remember it so every later turn skips the resume
       // attempt (and its 60s watchdog) and goes straight to fresh — resume keeps wedging on this thread.
@@ -3233,6 +3243,9 @@ export class ThreadManager implements OrchestratorApi {
         freshFallback: opts?.freshFallback,
         onOfficeChat: (scope, body) => {
           this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
+        },
+        onOperatorNote: (body, url) => {
+          this.postCliOperatorNote(thread, "implementor", body, url);
         },
       });
       // Reuse the CLI-resume-wedged set (shared by both CLI backends): once a resume self-heals to fresh,
@@ -5474,6 +5487,25 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
+  /** CLI backends cannot reach the in-process bus MCP server, so their runners turn a deliberately
+   * simple `OPERATOR_NOTE:` line into this same service write. Keep the service here instead of a
+   * runner-owned DB write: it is the single place that clips bodies, validates URLs, de-dupes a task's
+   * same link, snapshots list metadata, and broadcasts the authoritative list. */
+  private postCliOperatorNote(thread: Thread, role: Role, body: string, url?: string): void {
+    const result = new OperatorNotes(this.db, this.hub).add({
+      body,
+      url: url ?? null,
+      threadId: thread.id,
+      threadTitle: thread.title,
+      workspace: thread.workspace,
+      fromRole: role,
+      fromName: this.officeName(thread.id, role),
+    });
+    if (!result.ok) {
+      this.hub.log("warn", `Ignored CLI operator note from ${role} on ${thread.id.slice(0, 8)}: ${result.error ?? "invalid note"}`);
+    }
+  }
+
   // ---- the office: cross-agent chat + grouping ----
 
   /** Assigned/picked office names live in one kv JSON map keyed by agentKey(thread, role) — each role
@@ -6438,11 +6470,17 @@ export function cliRoleKickoff(
           "For deliverables: check the git diff / new files yourself — do not call read_findings. Do not invent tool calls.",
         ].join(" ")
       : "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the core role directly; do not invent tool calls.";
+  const cliOperatorNote = [
+    "The CLI can still put one action for the owner on the shared Notes list: if you leave them a branch/PR to review, merge, or approve, emit one standalone line in the exact form `OPERATOR_NOTE: short action | https://...`.",
+    `Keep the action text to ${NOTE_MAX_CHARS} characters, use a real http(s) link, and do not use this bridge for status updates or summaries.`,
+    schema ? "Put that line immediately BEFORE your final schema JSON; the runner strips and posts it." : "Put it at the end of your reply; the runner strips and posts it.",
+  ].join(" ");
   const prelude = [
     `[Temporary provider fallback: run the ${role} role on ${provider}.]`,
     system,
     safety,
     noMcp,
+    cliOperatorNote,
     schemaBlock,
   ]
     .filter(Boolean)

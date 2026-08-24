@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
-import { endsWithOpenOfficeMarker, extractOfficeChat } from "./officeBridge.js";
+import { endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, extractOfficeChat, extractOperatorNotes } from "./officeBridge.js";
 import {
   formatStructuredRoleFeed,
   parseStructuredText,
@@ -37,6 +37,9 @@ export interface GrokRunConfig {
   /** Grok has no office MCP tools. A standalone `OFFICE[team|office]: ...` line in its assistant message
    *  is intercepted here and posted through the orchestrator's real office chat backend. */
   onOfficeChat?: (scope: ChatScope, body: string) => void;
+  /** Grok has no bus MCP tools. A standalone `OPERATOR_NOTE: <line> | <https://...>` marker is
+   * intercepted and posted through the owner's real note list, then stripped from the transcript. */
+  onOperatorNote?: (body: string, url?: string) => void;
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Grok headless takes only a
@@ -571,7 +574,12 @@ export class GrokAgentRun implements AgentRunLike {
     this.harvestOfficePosts({ openEnded: false });
     // Don't append `\n` while an OFFICE marker is still open — that would falsely complete it on the
     // next harvest. Segment separation only applies once the claim body is done.
-    if (this.textBuf && !this.textBuf.endsWith("\n") && !endsWithOpenOfficeMarker(this.textBuf)) {
+    if (
+      this.textBuf &&
+      !this.textBuf.endsWith("\n") &&
+      !endsWithOpenOfficeMarker(this.textBuf) &&
+      !endsWithOpenOperatorNoteMarker(this.textBuf)
+    ) {
       this.textBuf += "\n";
     }
   }
@@ -581,12 +589,20 @@ export class GrokAgentRun implements AgentRunLike {
    *  left in place when `openEnded` is false (mid-segment). */
   private harvestOfficePosts(opts?: { openEnded?: boolean }): void {
     if (!this.textBuf) return;
-    const { visible, posts } = extractOfficeChat(this.textBuf, opts);
-    for (const post of posts) {
+    const office = extractOfficeChat(this.textBuf, opts);
+    const { visible, notes } = extractOperatorNotes(office.visible, opts);
+    for (const post of office.posts) {
       try {
         this.cfg.onOfficeChat?.(post.scope, post.body);
       } catch {
         /* best-effort side channel; never fail the turn because office chat failed */
+      }
+    }
+    for (const note of notes) {
+      try {
+        this.cfg.onOperatorNote?.(note.body, note.url);
+      } catch {
+        /* best-effort side channel; never fail the turn because a note post failed */
       }
     }
     this.textBuf = visible;
