@@ -2,6 +2,7 @@
 paths:
   - web/src/components/SettingsPanel.tsx
   - web/src/components/ThreadDetail.tsx
+  - web/src/components/Director.tsx
   - web/src/components/Board.tsx
   - web/src/App.tsx
   - web/src/styles.css
@@ -33,6 +34,16 @@ console + fixture repo), `tablet-lab.cjs` (both tablet orientations in a TOUCH c
 **Read `lab-harness.cjs`'s header first** — selectors, `has-text` vs `text-is`, touch context, clipboard
 permissions and CSS load order are all in there; instance mechanics are in project memory
 `browser-test-throwaway-instance`.
+
+**A genuinely one-off probe** (a render-count / perf measurement that seeds the store and reads a counter,
+not a reusable surface worth committing) is the one case a scratch `.cjs` is fine. Even then, `require`
+`scripts/lab-harness.cjs`'s exported `loadChromium()` and `authPassword()` rather than hardcoding a
+Playwright path. The implementor brief's `AppData/Roaming/npm/...` path does NOT exist on this box:
+Playwright resolves via `npm root -g` (the npm prefix here is `garden-gnome-orchestrator/server`, so the
+global module tree lives there), which is exactly what `loadChromium()` walks. To seed/inspect zustand
+in such a probe, temporarily expose `window.__useStore = useStore` in the target component, measure, then
+strip it before the final build. If Playwright is ever missing, `node <npm-root-g>/playwright/cli.js
+install chromium` restores the browser binary.
 
 **In a lab, wait for the socket's `hello`, not for the shell to mount — and never believe an optimistic
 control.** Everything server-authoritative (settings, accounts, any broadcast collection) renders NEUTRAL
