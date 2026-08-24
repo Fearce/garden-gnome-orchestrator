@@ -52,6 +52,11 @@ export type SendOpts = { shouldQuery?: boolean; priority?: "now" | "next" | "lat
 
 export type ResultEvent = Extract<AgentEvent, { type: "result" }>;
 
+/** The `terminal_reason` values the CLI stamps on a turn its abort controller killed — the client asked
+ *  for it (a `priority: "now"` message, `interrupt()`, `stop()`), so it is never the run's own verdict.
+ *  These two are the whole set the CLI itself treats as "aborted"; every other reason ends a real turn. */
+const ABORTED_TERMINAL_REASONS = new Set(["aborted_streaming", "aborted_tools"]);
+
 /**
  * The public surface every agent backend exposes to the orchestrator — the seam that lets a Codex
  * CLI run (CodexAgentRun) stand in for a Claude SDK run (AgentRun) at the implementor dispatch
@@ -469,7 +474,13 @@ export class AgentRun implements AgentRunLike {
           costUsd: m.total_cost_usd,
           numTurns: m.num_turns,
         };
-        this.lastResult = evt;
+        // An ABORTED turn is not an outcome. The CLI ends one with subtype "success", is_error false and
+        // an EMPTY `result` — identical, in every field the pipeline reads, to a turn that finished. Only
+        // `terminal_reason` tells them apart (the CLI's own predicate is aborted_streaming || aborted_tools),
+        // so carry that through and never cache it as `lastResult`: an aborted turn must not become the
+        // answer a later `result()` returns, nor the state `finalizeRun` stamps on the row.
+        if (ABORTED_TERMINAL_REASONS.has(m.terminal_reason)) evt.aborted = true;
+        else this.lastResult = evt;
         // Belt-and-suspenders: a cap can also end the run as an error RESULT (subtype
         // error_during_execution carrying a rate-limit message, or is_error + api_error_status 429)
         // rather than a rate_limit_event / assistant error. Flag BEFORE emitting so the awaiting

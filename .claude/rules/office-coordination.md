@@ -38,15 +38,19 @@ is "collaborating" when 2+ distinct task threads are live in it.
   mid-run message into a one-shot planner/QA/reader — it corrupts their structured output
   (same reason `deliverChatToPeers` targets `this.live`). A read-only phase reads the room
   itself; its next implementor phase gets the office note in its kickoff.
-- **Skip the triggering thread as a push recipient.** Its own fresh kickoff already carried
-  the note, and in `startImplementor` `ensureGroup` runs BEFORE `agent.start` — pushing into
-  it would be a pre-start send.
+- **Skip the triggering thread as a push recipient.** Its fresh kickoff already carried the
+  note, and `ensureGroup` runs BEFORE `agent.start` — pushing into it is a pre-start send.
 - **Dedup is durable via `chatThreadInRoom`,** not an in-memory Set — a bounce/auto-resume
   re-announces and re-pings nobody. Tie any new "notify on join" to a member's first room entry.
 - **Office MCP tools stay in `allowedTools` always** (roles.ts). The SDK can't add tools
   mid-query, so a task that starts solo still needs them present for a later mid-run join.
 - **The gnome strip / roster reads `activeRuns`, not chat** (`web/.../Office.tsx`), so a solo
   agent still shows as a walking gnome even though it posts nothing. Don't "fix" that.
+- **`directorChatPost` steers EVERY live implementor in the room at `priority: "now"` — an interrupt.**
+  An aborted turn returns `subtype:"success"`, empty `result`; only `terminal_reason` (`aborted_tools`/
+  `aborted_streaming`) tells it from a finish, so the pipeline read four half-done vota tasks as
+  finished and sent them to QA (2026-08-24). `AgentRun` flags it `aborted`, `awaitTurnResult` awaits
+  the continuation turn: never settle a stage on a turn you aborted (`test:chat-steering`).
 
 ## Test without spawning a real `claude`
 `server/src/tests/officeGating.itest.ts` (gate `test:office-gating`) drives the real office

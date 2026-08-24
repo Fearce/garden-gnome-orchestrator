@@ -593,5 +593,9 @@ export type AgentEvent =
       structuredOutput?: unknown;
       costUsd?: number;
       numTurns?: number;
+      // The turn was ABORTED (owner steering / a pause), not finished. The CLI ends an aborted turn with
+      // a success-shaped, empty result, so without this flag nothing downstream can tell it from a run
+      // that completed — which is how one office-chat post ended every implementor in a repo at once.
+      aborted?: boolean;
     }
   | { type: "error"; message: string };

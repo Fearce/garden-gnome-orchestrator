@@ -3419,6 +3419,22 @@ export class ThreadManager implements OrchestratorApi {
     return this.startImplementor(thread, seed, { effort: opts.effort, account: opts.account });
   }
 
+  /** The implementor's next real turn outcome — skipping any turn the owner's steering ABORTED.
+   *
+   *  Steering a live implementor (an office-chat post, "Interrupt & inject", Pause) aborts its turn in
+   *  flight, and the CLI ends an aborted turn with a success-shaped, empty result. Accepting that as the
+   *  implementor's outcome ended the stage and handed unfinished work to QA — which is how ONE message in
+   *  a repo's chatroom finished off every implementor in that repo at once. The steering that caused the
+   *  abort is already queued as the next turn, so the result to wait for is that turn's.
+   *
+   *  Can't hang: a run that is torn down (or paused with nothing queued and then cancelled) resolves
+   *  through `nextResult`'s `end` handler instead, which never carries an aborted result. */
+  private async awaitTurnResult(run: AgentRunLike, useNext: boolean): Promise<ResultEvent | undefined> {
+    let res = useNext ? await run.nextResult() : await run.result();
+    while (res?.aborted) res = await run.nextResult();
+    return res;
+  }
+
   /**
    * Await the implementor's result, failing over to another account if its account hits a
    * 5h/weekly cap mid-run: relaunch resuming the session (so the work-so-far is preserved),
@@ -3436,7 +3452,7 @@ export class ThreadManager implements OrchestratorApi {
     let accountFailovers = 0;
     let transientFailures = 0;
     while (accountFailovers <= MAX_ACCOUNT_FAILOVERS) {
-      const res = useNext ? await current.nextResult() : await current.result();
+      const res = await this.awaitTurnResult(current, useNext);
       if ((res && !res.isError) || this.cancelled(thread.id)) return res;
 
       // 500/529/overload/transport failures are provider incidents, not quota. Retry the SAME provider
@@ -5641,10 +5657,16 @@ export class ThreadManager implements OrchestratorApi {
     // steering. Claude can consume priority "now" in its streaming query; the batch-oriented Codex
     // runner interrupts its pre-message turn and immediately resumes with this directive. Without that
     // distinction a long Codex turn keeps visibly working on stale context while the user's post is unread.
+    // "now" IS an interrupt, and one post steers every implementor in the room at once — so the trailer
+    // has to say that this is steering, not a hand-off. An implementor that answers the post and ENDS its
+    // turn returns a finished-looking result, which settles its stage and sends the task to QA half-done.
     const where = general ? "the office" : "this repo";
+    const carryOn =
+      "This is steering for the work you're already on, not a hand-off: acknowledge it, apply it, and carry " +
+      "straight on with your task — don't end your turn or stop working because of this message.";
     const push =
       `📣 [${who} (director) → ${general ? "office" : "your team"}] ${text}\n` +
-      `(A directive from ${config.ownerName} to all agents in ${where}. Coordinate among yourselves who takes it — don't all grab it, and don't all assume someone else will — then reply with chat_post so the others know.)`;
+      `(A directive from ${config.ownerName} to all agents in ${where}. Coordinate among yourselves who takes it — don't all grab it, and don't all assume someone else will — then reply with chat_post so the others know. ${carryOn})`;
     const norm = general ? null : normalizeWorkspace(workspace ?? room.replace(/^repo:/, ""));
     let pinged = 0;
     for (const [tid, live] of this.live) {
@@ -5665,7 +5687,8 @@ export class ThreadManager implements OrchestratorApi {
     return (
       `[${this.directorName()} (director) -> ${general ? "office" : "your team"}] ${text}\n` +
       `(A directive from ${config.ownerName} to all agents in ${where}. Coordinate who takes it, then reply with a standalone ` +
-      `${marker}: ... line so the others know.)`
+      `${marker}: ... line so the others know. This is steering for the work you're already on, not a hand-off: apply it and ` +
+      `carry straight on with your task — don't stop working because of this message.)`
     );
   }
 
