@@ -28,8 +28,11 @@ the CLI text bridge see `office-bridge.md`.)
 - **A remote peer is NOT a working-tree peer.** Their edits never appear in `git status`; the collision
   is at the remote. `officeNote`, `remoteChatPush` and `remoteJoinPush` all say so explicitly — don't
   "simplify" them into the local "commit only your own hunks" wording.
-- **Dedup remote chat on the relay's message id.** A room's backlog is replayed on every entry, so a
-  reconnect would otherwise re-persist the whole room (`remoteChatSeen`).
+- **Dedup remote chat on the relay's message id, and keep that guard DURABLE** (`remoteChatSeen`, mirrored
+  into kv). A room's backlog is replayed on every entry — and the first connect after a bounce is an entry,
+  when an in-memory-only set is empty. It shipped as a plain `Set` and re-persisted up to `ROOM_HISTORY`
+  lines per shared room on every deploy, re-pushing them at the auto-resumed implementors as fresh traffic
+  (`cac3a89`). Same lesson as `ensureGroup`'s `chatThreadInRoom` — a "notify once" guard outlives a restart.
 - **Never `ws.close()` a socket that isn't OPEN, and never strip its listeners without leaving an
   `error` sink.** `ws` emits on a close during the handshake, and an unhandled `error` kills the
   process — a revoked device token crashed the whole orchestrator until `closeSocket` handled both.
