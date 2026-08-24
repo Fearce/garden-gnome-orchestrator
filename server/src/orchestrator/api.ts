@@ -62,6 +62,9 @@ export interface RosterEntry {
   role: Role;
   sameRepo: boolean; // shares the caller's workspace — a teammate in the project room
   self: boolean;
+  // Set only for a coworker reached through the Online Office: the machine it is working from. Its
+  // `workspace` is then a repository LABEL, not a path — that path exists on someone else's disk.
+  instance?: string | null;
 }
 
 /**

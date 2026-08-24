@@ -2,6 +2,14 @@
 
 export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" | "reader" | "reviewer";
 
+/** Every role, as a value — for the places a role arrives as a free string from outside this process
+ *  (the Online Office relay carries another instance's role name) and has to be narrowed before use. */
+export const ROLES = ["director", "planner", "researcher", "implementor", "qa", "reader", "reviewer"] as const;
+
+export function isRole(v: string): v is Role {
+  return (ROLES as readonly string[]).includes(v);
+}
+
 /** Dispatch lane. Absent/null = the normal planner→implementor→QA pipeline; 'read' = the cheap
  *  single-agent read-only reader lane (dispatch_read) — one Sonnet reader answers a lookup and escalates
  *  rather than half-answering, no QA. Persisted on the thread so it survives resume and drives the badge. */

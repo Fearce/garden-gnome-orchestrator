@@ -1,0 +1,202 @@
+// Drive the "Online office" settings surface in a real browser, headlessly, against a THROWAWAY
+// orchestrator AND a throwaway relay — never prod, never the real office.
+//
+//   npm run office-lab --prefix server
+//   npm run office-lab --prefix server -- --keep
+//
+// Why a lab and not a bundle grep: joining is a real three-hop round-trip (click → office.join → the
+// relay's HTTP join → a WebSocket → the office.online broadcast the panel reads back), and the roster is
+// rendered ONLY from what another machine reports. A typecheck is silent about every one of those hops.
+// So this boots its own relay on :4359 with a known join code, its own console on :4347 against a temp
+// DATA_DIR, joins for real, then connects a SECOND fake instance to the relay and checks that its agent
+// shows up in the panel and in the top-bar strip. Bogus account tokens (via lab-harness) keep the boot
+// ping from starting a real 5h window; both processes are killed by port owner.
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { spawn } = require("node:child_process");
+const Database = require("better-sqlite3");
+const WebSocket = require("ws");
+const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+
+const PORT = 4347;
+const RELAY_PORT = 4359; // NOT 4349: the console's own HTTPS listener is PORT+2, and a collision there makes the join hit TLS with a plain HTTP request
+const BASE = `http://127.0.0.1:${PORT}`;
+const RELAY = `http://127.0.0.1:${RELAY_PORT}`;
+const JOIN_CODE = "lab-join-code-not-a-real-secret";
+const NAV_TIMEOUT = 45_000; // this box runs near 100% CPU; a cold goto has measured 28s
+
+/** Boot the relay straight from `relay/src` with the server's own tsx — no build step, and the relay
+ *  has exactly one dependency, so there is nothing else to install. */
+async function bootRelay(dataDir) {
+  const child = spawn("npx", ["tsx", path.join(SERVER_ROOT, "..", "relay", "src", "index.ts")], {
+    cwd: SERVER_ROOT,
+    shell: process.platform === "win32",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PORT: String(RELAY_PORT), DATA_DIR: dataDir, JOIN_CODE, ADMIN_TOKEN: "lab-admin", OFFICE_NAME: "Lab Office" },
+  });
+  const log = fs.createWriteStream(path.join(dataDir, "relay.log"));
+  child.stdout.pipe(log);
+  child.stderr.pipe(log);
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      if ((await fetch(`${RELAY}/api/health`)).ok) return child;
+    } catch {
+      /* not listening yet */
+    }
+  }
+  throw new Error(`relay never came up — see ${path.join(dataDir, "relay.log")}`);
+}
+
+/** A second orchestrator, faked: join over HTTP, connect, and advertise one agent. This is the OTHER
+ *  machine — the thing the whole feature exists to make visible. */
+async function joinAsPeer(name, agent) {
+  const res = await fetch(`${RELAY}/api/join`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: JOIN_CODE, name }),
+  });
+  const { token } = await res.json();
+  const ws = new WebSocket(`ws://127.0.0.1:${RELAY_PORT}/ws`, { headers: { authorization: `Bearer ${token}`, "x-office-instance": name } });
+  await new Promise((resolve, reject) => {
+    ws.on("open", resolve);
+    ws.on("error", reject);
+  });
+  ws.send(JSON.stringify({ t: "presence", agents: [agent] }));
+  return ws;
+}
+
+/** Wait for the SERVER to own a kv value. The panel updates from the broadcast, so asserting on the DOM
+ *  alone can pass against a client that never persisted anything. */
+async function waitForKv(dataDir, key, want, timeoutMs = 20_000) {
+  const file = path.join(dataDir, "orchestrator.sqlite");
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    const db = new Database(file, { readonly: true });
+    const row = db.prepare("SELECT value FROM kv WHERE key = ?").get(key);
+    db.close();
+    last = row ? row.value : null;
+    if (want === "any" ? !!last : last === want) return last;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return last;
+}
+
+async function openOfficeSettings(browser) {
+  const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
+  await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
+  await page.goto(`${BASE}/`, { timeout: NAV_TIMEOUT });
+  // Wait for the socket's `hello`, not for the shell: the whole office panel renders neutral "off"
+  // defaults until that frame lands, which is indistinguishable from a broken feature.
+  await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+  await page.click('[aria-label="Open settings"]');
+  await page.waitForSelector('[role="dialog"][aria-label="Settings"]', { timeout: 20_000 });
+  return page;
+}
+
+async function main() {
+  requireBuild();
+  const check = createChecks();
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "office-lab-"));
+  const relayDir = fs.mkdtempSync(path.join(os.tmpdir(), "office-lab-relay-"));
+  const keep = process.argv.includes("--keep");
+  console.log(`office-lab — console ${BASE}, relay ${RELAY} (data ${dataDir})`);
+
+  let relayProc = null;
+  let peer = null;
+  try {
+    relayProc = await bootRelay(relayDir);
+    await boot({ dataDir, port: PORT });
+
+    const browser = await loadChromium().launch();
+    try {
+      const page = await openOfficeSettings(browser);
+      check("the Online office group renders", (await page.locator('.settings-group-label:text-is("Online office")').count()) === 1);
+      check("a fresh console shows the JOIN form, not a status card", (await page.locator(".office-join").count()) === 1);
+
+      // A wrong code must be refused visibly, and must not join.
+      await page.fill('.office-join .office-field:has-text("Relay address") input', RELAY);
+      await page.fill('.office-join .office-field:has-text("Join code") input', "definitely-wrong");
+      await page.fill('.office-join .office-field:has-text("This machine") input', "Lab tower");
+      await page.click('.office-join button:has-text("Join office")');
+      await page.waitForSelector(".notice-banner, .office-join", { timeout: 10_000 });
+      await page.waitForTimeout(1500);
+      check("a wrong join code does not join", (await page.locator(".office-join").count()) === 1);
+      check("…and nothing is persisted", (await waitForKv(dataDir, "online_office_token", "any", 1500)) === null);
+
+      // The real thing.
+      await page.fill('.office-join .office-field:has-text("Join code") input', JOIN_CODE);
+      await page.click('.office-join button:has-text("Join office")');
+      const token = await waitForKv(dataDir, "online_office_token", "any");
+      check("joining persists a device token", !!token, await page.locator(".office-error").allInnerTexts().then((t) => t.join(" | ") || "(no error shown)"));
+      await page.waitForSelector(".office-joined", { timeout: 20_000 });
+      check("the panel switches to the status card", (await page.locator(".office-joined").count()) === 1);
+      await page.waitForSelector(".office-dot.online", { timeout: 20_000 });
+      check("…and reports itself connected", (await page.locator(".office-state").innerText()) === "Connected", await page.locator(".office-state").innerText());
+
+      // Another machine appears.
+      peer = await joinAsPeer("Mikkel's laptop", {
+        key: "t-peer::implementor",
+        name: "Sif",
+        role: "implementor",
+        title: "Rewrite the card exporter",
+        repoKey: "github.com/fearce/card-marker",
+        repoLabel: "Fearce/card-marker",
+      });
+      await page.waitForSelector(".office-roster-row", { timeout: 20_000 });
+      // `.office-roster-who` is CSS-uppercased, so the DOM reads MIKKEL'S LAPTOP — compare case-insensitively.
+      const rosterText = await page.locator(".office-roster").innerText();
+      check("the remote machine is listed by name", rosterText.toLowerCase().includes("mikkel's laptop"), rosterText);
+      check("…with its agent and repo", rosterText.includes("Sif") && rosterText.includes("Fearce/card-marker"), rosterText);
+
+      // The top-bar strip is the at-a-glance surface; it must show the remote machine too.
+      await page.keyboard.press("Escape");
+      await page.waitForSelector(".office-remote", { timeout: 20_000 });
+      check("the top-bar strip shows a remote-machine cluster", (await page.locator(".office-remote").count()) === 1);
+      check("…tagged with the machine's name", (await page.locator(".office-remote-tag").innerText()) === "Mikkel's laptop");
+
+      const shot = path.join(dataDir, "online-office.png");
+      await page.screenshot({ path: shot });
+      console.log(`  screenshot: ${shot}`);
+
+      // Leaving must forget the token — otherwise "Leave" is cosmetic.
+      await page.click('[aria-label="Open settings"]');
+      await page.waitForSelector('[role="dialog"][aria-label="Settings"]', { timeout: 20_000 });
+      await page.click('.office-joined button:has-text("Leave")');
+      const after = await waitForKv(dataDir, "online_office_token", "");
+      check("leaving forgets the device token", after === "", String(after));
+      await page.waitForSelector(".office-join", { timeout: 20_000 });
+      check("…and the join form comes back", (await page.locator(".office-join").count()) === 1);
+
+      await page.close();
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    try {
+      peer?.terminate();
+    } catch {
+      /* already gone */
+    }
+    if (!keep) {
+      killInstance(PORT);
+      killInstance(RELAY_PORT);
+      relayProc?.kill();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      fs.rmSync(relayDir, { recursive: true, force: true });
+    } else {
+      console.log(`  --keep: console on ${BASE}, relay on ${RELAY}; kill with the port owners.`);
+    }
+  }
+  process.exit(check.summary());
+}
+
+main().catch((e) => {
+  console.error(e);
+  killInstance(PORT);
+  killInstance(RELAY_PORT);
+  process.exit(1);
+});

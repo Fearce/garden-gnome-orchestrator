@@ -164,6 +164,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           <VoiceSection />
         </Group>
 
+        <Group label="Online office">
+          <OnlineOfficeSection />
+        </Group>
+
         <Group label="Subscriptions">
           <SubscriptionsSection />
         </Group>
@@ -226,6 +230,162 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           Agent toggles (planner · researcher · QA) live in the top bar — flip them per task before dispatching.
         </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Join or leave the Online Office — the shared relay where agents on OTHER machines working the same
+ * repository show up as coworkers. Two states, deliberately: a join form when this machine has no device
+ * token, and a live status card once it has one. Joining is a one-time exchange of a code for a token, so
+ * the form is what the operator sees once and the card is what they see forever after.
+ */
+function OnlineOfficeSection() {
+  const office = useStore((s) => s.onlineOffice);
+  const join = useStore((s) => s.joinOnlineOffice);
+  const leave = useStore((s) => s.leaveOnlineOffice);
+  const set = useStore((s) => s.setOnlineOffice);
+  const pending = useStore((s) => s.officeJoining);
+  const joinError = useStore((s) => s.officeJoinError);
+  const [url, setUrl] = useState(office.url);
+  const [code, setCode] = useState("");
+  const [name, setName] = useState(office.instanceName);
+
+  // The server is authoritative for both fields; adopt its values whenever they change under us (a
+  // successful join, another browser tab, a reload) without clobbering something being typed.
+  useEffect(() => {
+    setUrl((u) => (u ? u : office.url));
+    setName((n) => (n ? n : office.instanceName));
+  }, [office.url, office.instanceName]);
+  useEffect(() => {
+    if (office.joined) setCode("");
+  }, [office.joined]);
+
+  if (!office.joined) {
+    return (
+      <div className="office-join">
+        <p className="settings-note tight">
+          Host a relay (see <code>relay/README.md</code>) and share its address plus one join code. Everyone pastes both
+          once — from then on this machine holds a device token and reconnects on its own.
+        </p>
+        <label className="office-field">
+          <span>Relay address</span>
+          <input
+            className="text-input"
+            value={url}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="https://office.example.com"
+            onChange={(e) => setUrl(e.target.value)}
+          />
+        </label>
+        <label className="office-field">
+          <span>Join code</span>
+          <input
+            className="text-input"
+            type="password"
+            value={code}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="from whoever runs the office"
+            onChange={(e) => setCode(e.target.value)}
+          />
+        </label>
+        <label className="office-field">
+          <span>This machine</span>
+          <input
+            className="text-input"
+            value={name}
+            spellCheck={false}
+            autoComplete="off"
+            maxLength={40}
+            placeholder="Kevin's tower"
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        {joinError ?? office.error ? <p className="office-error">{joinError ?? office.error}</p> : null}
+        <button
+          className="btn primary sm"
+          disabled={!url.trim() || !code.trim() || pending}
+          onClick={() => join({ url, code, instanceName: name })}
+        >
+          {pending ? "Joining…" : "Join office"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="office-joined">
+      <div className="office-status">
+        <span className={"office-dot " + office.state} />
+        <span className="office-state">{stateWord(office)}</span>
+        <span className="office-url">{office.url.replace(/^https?:\/\//, "")}</span>
+      </div>
+      {office.error ? <p className="office-error">{office.error}</p> : null}
+      <ToggleRow
+        label="Be visible in the office"
+        hint="Off: stay joined but disconnect — your agents are hidden and remote coordination pauses. On: your live agents are advertised to the other machines in the office."
+        on={office.enabled}
+        onChange={(v) => set({ enabled: v })}
+      />
+      <TextRow
+        label="This machine"
+        hint="How the other machines see you in the office roster and on each message your agents send."
+        value={office.instanceName}
+        placeholder="Kevin's tower"
+        maxLength={40}
+        onChange={(v) => set({ instanceName: v })}
+      />
+      <RemoteRoster office={office} />
+      <Row
+        label="Leave the office"
+        hint="Disconnects and forgets this machine's device token. Re-joining needs the join code again."
+        control={
+          <button className="btn sm" onClick={leave}>
+            Leave
+          </button>
+        }
+      />
+    </div>
+  );
+}
+
+function stateWord(office: import("../types.js").OnlineOfficeDTO): string {
+  if (!office.enabled) return "Hidden";
+  if (office.state === "online") return "Connected";
+  if (office.state === "connecting") return "Connecting…";
+  if (office.state === "error") return "Needs attention";
+  return "Offline";
+}
+
+/** Who else is working right now, grouped by machine — the answer to "is my friend on this repo too?". */
+function RemoteRoster({ office }: { office: import("../types.js").OnlineOfficeDTO }) {
+  const byInstance = new Map<string, typeof office.remoteAgents>();
+  for (const a of office.remoteAgents) byInstance.set(a.instanceName, [...(byInstance.get(a.instanceName) ?? []), a]);
+  if (!byInstance.size) {
+    return (
+      <p className="settings-note tight">
+        {office.state === "online" ? "Nobody else has an agent working right now." : "Not connected, so the roster is empty."}
+      </p>
+    );
+  }
+  return (
+    <div className="office-roster">
+      {[...byInstance.entries()].map(([instance, agents]) => (
+        <div className="office-roster-row" key={instance}>
+          <div className="office-roster-who">{instance}</div>
+          <ul>
+            {agents.map((a) => (
+              <li key={`${a.instanceId}:${a.key}`}>
+                <span className="office-roster-name">{a.name}</span>
+                <span className="office-roster-role">{a.role}</span>
+                <span className={"office-roster-repo" + (office.sharedRepos.includes(a.repoLabel) ? " shared" : "")}>{a.repoLabel}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
     </div>
   );
 }

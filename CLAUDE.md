@@ -270,6 +270,20 @@ The office MCP tools stay allowlisted throughout so a mid-run join can coordinat
 add tools mid-query). Dedup is durable via `chatThreadInRoom`, so a restart/auto-resume never re-pings.
 Gate: `test:office-gating`.
 
+## The Online Office (the office, across machines)
+Two people running their own orchestrator on one repo were invisible to each other. **Settings → Online
+office** joins a shared relay (`relay/`, one container on the Sprogbroen box at `office.sprogbroen.dk`):
+each instance advertises its live agents, and agents in the SAME repo become peers — office on,
+`office_look` lists them, `chat_post(scope:"team")` reaches them, a remote line is pushed into the live
+implementor and persisted into the local project room. **The room key is the git REMOTE identity, not the
+workspace path** (`office/repoIdentity.ts`) — `C:\repos\x` and `~/dev/x` are one room; no remote ⇒ folder
+name. Prompts say what makes a remote peer different: their edits never reach your `git status`, so you
+collide at the remote. **Auth is once** — one `JOIN_CODE`, exchanged for a per-machine device token whose
+expiry slides forward on every connect (revoke at `/admin?key=…`). All of it degrades soft: no token,
+relay down, device revoked ⇒ the console says so and local pipelines run as before. Gates
+`test:online-office` + `test:relay-core`, browser `npm run office-lab --prefix server`; traps in
+`.claude/rules/online-office.md`; credentials in `server/data/online-office-credentials.txt` (gitignored).
+
 ## Deliverables (agent-produced files)
 A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the
 right panel. It's a `findings` row with `kind='deliverable'`, a `path` (absolute or workspace-relative)

@@ -10,14 +10,15 @@ paths:
 The office (cross-agent chat) is OFF while a task is alone in its repo — no office
 prose in prompts, no proactive `office_look`/`chat_read`, no general-office check-in.
 It switches ON for everyone the moment a 2nd task joins the repo. This is the fan-out
-to touch for any change to WHEN/HOW agents are told to coordinate. (For the CLI
-`OFFICE[team]:` text-bridge extractor see `office-bridge.md`; this is the gating +
-kickoff-injection + activation layer.)
+for any change to WHEN/HOW agents coordinate. (CLI text bridge: `office-bridge.md`.)
 
 ## Where "office is on" is decided
-`ThreadManager.repoPeers(thread)` (other live agents sharing the workspace) is the
-single gate. `liveAgentThreads()` reads `activeRuns` (the in-process truth); a repo
-is "collaborating" when 2+ distinct task threads are live in it.
+`ThreadManager.repoPeers(thread)` (other live agents working the repo) is the single
+gate. `liveAgentThreads()` reads `activeRuns` (the in-process truth); a repo is
+"collaborating" when 2+ distinct task threads are live in it. **A peer need not be
+local**: `repoPeers` also returns the agents the ONLINE office reports on other
+machines in the same repository, so a task alone in its checkout still gets the note
+(`online-office.md` — remote peers are keyed on the git remote, not the path).
 
 ## The fan-out (miss one → an agent hears about the office when it shouldn't, or not when it should)
 1. `prompts.ts` — the static role prompts carry **NO** office prose. Don't re-add a
@@ -29,9 +30,8 @@ is "collaborating" when 2+ distinct task threads are live in it.
    `startImplementor` + the resume-fresh-fallback). `withTools=false` = CLI text bridge.
 3. `officeCheckIn` — the general-office "👋 here" post is SUPPRESSED while solo (and does
    NOT mark `checkedIn`, so it can still fire later); `ensureGroup` backfills it on grouping.
-4. `ensureGroup` — forms the project room AND is the ON-switch: for each member newly
-   entering the room it backfills the check-in, then `pushOfficeActivation` wakes the
-   already-running implementor incumbents about the joiner(s).
+4. `ensureGroup` — forms the project room AND is the ON-switch: per member newly in the
+   room it backfills the check-in, then `pushOfficeActivation` wakes live incumbents.
 
 ## Invariants that bite
 - **`pushOfficeActivation` targets `this.live` ONLY (live implementors).** NEVER push a

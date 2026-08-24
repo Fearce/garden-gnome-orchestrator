@@ -17,6 +17,7 @@
     "model-lab": "node scripts/model-select-lab.cjs",
     "deploy": "node scripts/deploy.cjs",
     "notes-lab": "node scripts/notes-lab.cjs",
+    "office-lab": "node scripts/office-lab.cjs",
     "tablet-lab": "node scripts/tablet-lab.cjs",
     "test:token-freeze": "tsx src/tests/tokenFreezeResume.itest.ts",
     "test:reader": "tsx src/tests/reader.itest.ts",
@@ -49,6 +50,8 @@
     "test:recovery-features": "node scripts/recovery-features.test.cjs",
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
     "test:office-gating": "tsx src/tests/officeGating.itest.ts",
+    "test:online-office": "tsx src/tests/onlineOffice.itest.ts",
+    "test:relay-core": "tsx ../relay/src/core.test.ts",
     "test:zai-usage": "tsx src/tests/zaiUsage.test.ts",
     "test:zai-cap": "tsx src/tests/zaiCapDetect.test.ts",
     "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",
@@ -106,6 +109,7 @@
     "better-sqlite3": "^12.10.0",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

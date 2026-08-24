@@ -811,6 +811,72 @@ button { font-family: inherit; cursor: pointer; }
 .settings-row-label { font-size: 13px; color: var(--text); font-weight: 500; }
 .settings-row-hint { font-size: 11px; color: var(--text-faint); line-height: 1.4; margin-top: 2px; }
 .settings-note { margin: 4px 16px 2px; font-size: 11px; color: var(--text-faint); line-height: 1.45; }
+.settings-note.tight { margin: 2px 16px 8px; }
+
+/* ---- Online office: the join form, then the live status card ---- */
+.office-join { padding: 2px 16px 12px; display: flex; flex-direction: column; gap: 8px; }
+.office-join .btn { align-self: flex-start; margin-top: 2px; }
+.office-field { display: flex; flex-direction: column; gap: 3px; }
+.office-field > span {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.office-field .text-input {
+  width: 100%; height: 30px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--text); font-size: 13px; padding: 0 10px; outline: none;
+}
+.office-field .text-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
+.office-error { margin: 0 16px; font-size: 11.5px; color: var(--danger); line-height: 1.45; }
+.office-join .office-error { margin: 0; }
+
+.office-status { display: flex; align-items: center; gap: 8px; padding: 6px 16px 8px; }
+.office-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.office-dot.online { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ok) 22%, transparent); }
+.office-dot.connecting { background: var(--warn); }
+.office-dot.error { background: var(--danger); }
+.office-state { font-size: 13px; color: var(--text); font-weight: 500; }
+.office-url { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+
+/* Who else is working, grouped by machine — the answer to "is anyone else on this repo?" */
+.office-roster { margin: 2px 16px 8px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+.office-roster-row { padding: 7px 10px; }
+.office-roster-row + .office-roster-row { border-top: 1px solid var(--line); }
+.office-roster-who {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-faint); margin-bottom: 4px;
+}
+.office-roster ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.office-roster li { display: flex; align-items: baseline; gap: 8px; font-size: 12px; min-width: 0; }
+.office-roster-name { color: var(--text); }
+.office-roster-role { color: var(--text-faint); font-size: 11px; }
+.office-roster-repo {
+  margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A repo THIS machine is also working — the one line in the roster that means "you can collide". */
+.office-roster-repo.shared { color: var(--accent); }
+
+/* The top-bar cluster for one remote machine. Deliberately quieter than a local huddle: the gnomes are
+   smaller and don't pace, because nothing here is happening in this working tree. */
+.office-remote {
+  position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  height: 40px; padding: 0 9px 0 6px; border-radius: 100px;
+  border: 1px dashed var(--line-strong); background: transparent; opacity: 0.82;
+}
+.office-remote:hover { opacity: 1; background: var(--bg-2); }
+.office-remote.shared {
+  border-style: solid; opacity: 1;
+  border-color: color-mix(in oklch, var(--accent) 38%, var(--line));
+  background: color-mix(in oklch, var(--accent) 7%, transparent);
+}
+.office-remote-gnomes { display: inline-flex; }
+.office-remote-gnomes > .gnome { margin-left: -8px; }
+.office-remote-gnomes > .gnome:first-child { margin-left: 0; }
+.office-remote-tag {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.03em; color: var(--text-dim);
+  max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.office-remote.shared .office-remote-tag { color: var(--accent); }
 
 /* auto model selection — the scoreboard under its toggle */
 .ams-board { margin: 2px 16px 8px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }

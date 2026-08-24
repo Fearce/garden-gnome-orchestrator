@@ -1,0 +1,40 @@
+# Runs the Online Office relay as its OWN compose project alongside (but independent of) the Sprogbroen
+# stack on the same host. It publishes no host port: Caddy — which owns 80/443 there — reaches it by
+# container name over Sprogbroen's existing network, so the relay's lifecycle is never entangled with
+# Sprogbroen's CI deploys. Deploy with `deploy.sh`; secrets live in `.env` beside this file.
+
+name: gg-office-relay
+
+services:
+  relay:
+    build: .
+    image: gg-office-relay:latest
+    container_name: gg-office-relay
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 8787
+      DATA_DIR: /data
+    volumes:
+      - relay-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - proxy
+
+networks:
+  # The network Caddy is already on. External, so this project never creates or owns it.
+  proxy:
+    external: true
+    name: sprogbroen-prod_default
+
+volumes:
+  relay-data:

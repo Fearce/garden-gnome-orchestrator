@@ -8,6 +8,7 @@ import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { RepoActionDTO, RepoConsole } from "../orchestrator/repoConsole.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
+import type { OnlineOffice } from "../office/onlineOffice.js";
 import { readCodexUsage } from "../agents/codexUsage.js";
 import { readGrokUsage } from "../agents/grokUsage.js";
 import { readZaiUsage } from "../agents/zaiUsage.js";
@@ -36,6 +37,7 @@ export interface WsContext {
   scheduler: Scheduler;
   notes: OperatorNotes;
   repos: RepoConsole;
+  onlineOffice: OnlineOffice;
 }
 
 const STREAMING_EVENTS = new Set(["agent.delta", "agent.thinking", "director.delta"]);
@@ -79,6 +81,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     schedules: ctx.scheduler.list(),
     modelStats: ctx.db.modelStats(),
     notes: ctx.notes.list(),
+    onlineOffice: ctx.onlineOffice.status(),
   };
 }
 
@@ -283,6 +286,21 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       break;
     case "schedule.run":
       await ctx.scheduler.runNow(cmd.id);
+      break;
+    case "office.join": {
+      // The join code is used here and dropped — only the device token it buys is persisted. The
+      // outcome goes back to the asking socket so the panel can un-busy its button and show why.
+      const url = cmd.url.trim() || ctx.onlineOffice.status().url;
+      const result = await ctx.onlineOffice.join({ url, code: cmd.code, instanceName: cmd.instanceName });
+      send(socket, { type: "office.join.result", ok: result.ok, error: result.error ?? null });
+      break;
+    }
+    case "office.leave":
+      ctx.onlineOffice.leave();
+      break;
+    case "office.set":
+      if (cmd.instanceName !== undefined) ctx.onlineOffice.setInstanceName(cmd.instanceName);
+      if (cmd.enabled !== undefined) ctx.onlineOffice.setEnabled(cmd.enabled);
       break;
     case "note.create": {
       // The owner's own note — no task, no agent behind it (fromRole/fromName stay null).

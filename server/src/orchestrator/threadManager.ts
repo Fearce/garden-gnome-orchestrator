@@ -56,7 +56,10 @@ import type {
   Role,
   Thread,
 } from "../types.js";
-import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveCodexEffort, ZAI_SUB_ID } from "../types.js";
+import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveCodexEffort, ZAI_SUB_ID } from "../types.js";
+import type { LocalAgentSnapshot, OnlineOffice } from "../office/onlineOffice.js";
+import { OFFICE_ROOM as ONLINE_OFFICE_ROOM } from "../office/onlineProtocol.js";
+import type { RelayChat, RelayPresentAgent } from "../office/onlineProtocol.js";
 
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
@@ -447,6 +450,12 @@ type StructuredRole = "planner" | "researcher" | "qa" | "reader" | "reviewer";
 export class ThreadManager implements OrchestratorApi {
   private readonly live = new Map<string, LiveImplementor>();
   private readonly activeRuns = new Map<string, Set<AgentRunLike>>();
+  // The cross-machine office, when the operator has joined one. Null is the normal, fully-working state:
+  // every office path degrades to the local-only behaviour it had before the feature existed.
+  private online: OnlineOffice | null = null;
+  // Relay message ids already persisted locally. A room's backlog is replayed whenever this instance
+  // (re)enters it, so without this a reconnect would duplicate every remote line in the chatroom.
+  private readonly remoteChatSeen = new Set<string>();
   // The implementor backend chosen for each thread at the start of its implementor stage (the hard
   // routing gate). Read by startImplementor's provider factory; survives failover/auto-resume so a
   // task never swaps provider mid-run (which would feed a Claude session id to a Codex resume).
@@ -1070,9 +1079,13 @@ export class ThreadManager implements OrchestratorApi {
       this.activeRuns.set(threadId, set);
     }
     set.add(agent);
+    // The online office advertises this instance's live agents; re-publish the moment the set changes so
+    // a teammate on another machine sees a new worker in seconds instead of at the next presence tick.
+    this.online?.refreshPresence();
   }
   private untrack(threadId: string, agent: AgentRunLike): void {
     this.activeRuns.get(threadId)?.delete(agent);
+    this.online?.refreshPresence();
   }
 
   // ---- OrchestratorApi: reads ----
@@ -5506,6 +5519,92 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
+  // ---- the online office: the same coordination, across machines ----
+
+  /** Wire the cross-machine office in. Attached after construction (index.ts) rather than taken as a
+   *  constructor argument, so every existing harness — and a console running with the office switched
+   *  off — builds a ThreadManager the same way it always did. */
+  attachOnlineOffice(office: OnlineOffice): void {
+    this.online = office;
+  }
+
+  /** The agents this instance advertises to the relay: exactly the live set the local office strip
+   *  shows, named the same way, plus the workspace the relay resolves a repo identity from. */
+  onlineRoster(): LocalAgentSnapshot[] {
+    return this.liveAgentThreads().map((l) => ({
+      key: agentKey(l.threadId, l.role),
+      name: this.officeName(l.threadId, l.role),
+      role: l.role,
+      title: l.title,
+      workspace: l.workspace,
+    }));
+  }
+
+  /**
+   * A coordination line from an agent on someone else's machine. It is persisted into the LOCAL room it
+   * belongs to — so it shows up in the console's chatroom, in `chat_read`, and in the room history that
+   * survives a restart — and then pushed into the live implementors working that repo, exactly like a
+   * local teammate's post. `workspaces` is empty for a repo nobody here is working, in which case the
+   * line still lands in the office room so the console shows the office is alive.
+   */
+  receiveRemoteChat(msg: RelayChat, workspaces: string[]): void {
+    const workspace = workspaces[0] ?? null;
+    const project = msg.room !== ONLINE_OFFICE_ROOM && !!workspace;
+    const senderName = `${msg.senderName} @ ${msg.instanceName}`;
+    // Dedup on the relay's own message id: `history` replays a room's backlog on every (re)entry, and a
+    // reconnect after a dropped socket would otherwise re-persist everything the room already holds.
+    if (this.remoteChatSeen.has(msg.id)) return;
+    this.remoteChatSeen.add(msg.id);
+    if (this.remoteChatSeen.size > 500) {
+      for (const id of [...this.remoteChatSeen].slice(0, 250)) this.remoteChatSeen.delete(id);
+    }
+    const stored = this.db.addChatMessage({
+      room: project ? repoRoom(workspace!) : GENERAL_ROOM,
+      scope: project ? "project" : "general",
+      workspace: project ? workspace : null,
+      threadId: null,
+      runId: null,
+      role: isRole(msg.role) ? msg.role : "implementor",
+      kind: "chat",
+      body: msg.body,
+      senderName,
+    });
+    this.hub.publish({ type: "chat.message", message: stored });
+    if (!project) return;
+    this.pushToRepo(workspace!, (cli) => remoteChatPush(msg, senderName, cli));
+  }
+
+  /** Deliver one push into every live implementor working `workspace`. The builder is called per
+   *  recipient with whether that backend reads the MCP office (Claude/z.ai) or the CLI text bridge. */
+  private pushToRepo(workspace: string, build: (cli: boolean) => string): void {
+    const norm = normalizeWorkspace(workspace);
+    for (const [tid, live] of this.live) {
+      const t = this.db.getThread(tid);
+      if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
+      live.run.send(build(this.isCliOfficeBridge(live.accountId)), { priority: "next" });
+    }
+  }
+
+  /** Agents on another machine just started working a repo this instance is also in. Wake the live
+   *  implementors here the same way `ensureGroup` wakes them for a local joiner — a remote teammate is
+   *  exactly as able to land conflicting commits, and rather harder to notice. */
+  remoteTeammatesJoined(repoLabel: string, workspaces: string[], joiners: RelayPresentAgent[]): void {
+    if (!workspaces.length || !joiners.length) return;
+    const who = joiners.map((j) => `${j.name} (${j.role}) on "${j.title}" from ${j.instanceName}`).join(", ");
+    for (const workspace of workspaces) this.pushToRepo(workspace, (cli) => remoteJoinPush(repoLabel, who, joiners.length, cli));
+    const home = workspaces[0]!;
+    const m = this.db.addChatMessage({
+      room: repoRoom(home),
+      scope: "project",
+      workspace: home,
+      threadId: null,
+      role: "system",
+      kind: "system",
+      body: `🌐 ${who} joined ${repoLabel} from another machine — coordinate here.`,
+    });
+    this.hub.publish({ type: "chat.message", message: m });
+  }
+
   // ---- the office: cross-agent chat + grouping ----
 
   /** Assigned/picked office names live in one kv JSON map keyed by agentKey(thread, role) — each role
@@ -5614,6 +5713,9 @@ export class ThreadManager implements OrchestratorApi {
     // repo — agents don't poll, so without this a teammate's message just sits unread (the bug this
     // fixes). Delivered at the recipient's next turn boundary (priority "next"), like a heads-up finding.
     if (project) this.deliverChatToPeers(m);
+    // …and out to the machines sharing this repository over the internet. Fire-and-forget: the local
+    // copy is already persisted, so a relay that is down must never fail an agent's chat_post.
+    this.online?.postChat({ workspace: project ? workspace : null, body: m.body, senderName: m.senderName ?? input.role, role: input.role });
     return m;
   }
 
@@ -5740,7 +5842,7 @@ export class ThreadManager implements OrchestratorApi {
   officeRoster(threadId: string): RosterEntry[] {
     const me = this.db.getThread(threadId);
     const myNorm = normalizeWorkspace(me?.workspace ?? "");
-    return this.liveAgentThreads().map((l) => ({
+    const local: RosterEntry[] = this.liveAgentThreads().map((l) => ({
       threadId: l.threadId,
       name: this.officeName(l.threadId, l.role),
       title: l.title,
@@ -5749,6 +5851,20 @@ export class ThreadManager implements OrchestratorApi {
       self: l.threadId === threadId,
       sameRepo: l.threadId !== threadId && normalizeWorkspace(l.workspace) === myNorm,
     }));
+    // Coworkers on other machines. `sameRepo` is true only for the ones in the caller's repository —
+    // the relay tells us that by repo IDENTITY, which is the whole point: their path is not ours.
+    const remoteInRepo = new Set(this.online?.remotePeers(me?.workspace ?? "").map((a) => `${a.instanceId}:${a.key}`) ?? []);
+    const remote: RosterEntry[] = (this.online?.status().remoteAgents ?? []).map((a) => ({
+      threadId: `${a.instanceId}:${a.key}`,
+      name: a.name,
+      title: a.title,
+      workspace: a.repoLabel || a.repoKey,
+      role: isRole(a.role) ? a.role : "implementor",
+      self: false,
+      sameRepo: remoteInRepo.has(`${a.instanceId}:${a.key}`),
+      instance: a.instanceName,
+    }));
+    return [...local, ...remote];
   }
 
   /** The threads with a live in-memory agent right now (activeRuns is the in-process truth, kept in
@@ -5770,12 +5886,21 @@ export class ThreadManager implements OrchestratorApi {
     return out;
   }
 
-  /** Other live agents sharing a thread's workspace — the teammates it can collide with. */
-  private repoPeers(thread: Thread): { threadId: string; role: Role; title: string }[] {
+  /** Other live agents working a thread's repository — the teammates it can collide with. Local ones
+   *  share the working tree; ONLINE ones share only the remote, and both are peers for the purpose of
+   *  switching the office on: a remote agent can land a conflicting commit just as easily. */
+  private repoPeers(thread: Thread): { threadId: string; role: Role; title: string; instance?: string }[] {
     const myNorm = normalizeWorkspace(thread.workspace);
-    return this.liveAgentThreads()
+    const local = this.liveAgentThreads()
       .filter((l) => l.threadId !== thread.id && normalizeWorkspace(l.workspace) === myNorm)
       .map((l) => ({ threadId: l.threadId, role: l.role, title: l.title }));
+    const remote = (this.online?.remotePeers(thread.workspace) ?? []).map((a) => ({
+      threadId: `${a.instanceId}:${a.key}`,
+      role: isRole(a.role) ? a.role : ("implementor" as Role),
+      title: a.title,
+      instance: a.instanceName,
+    }));
+    return [...local, ...remote];
   }
 
   /** Called when an agent starts: if 2+ distinct tasks are now live in the same repo, they form a
@@ -5892,16 +6017,23 @@ export class ThreadManager implements OrchestratorApi {
   private officeNote(thread: Thread, role: Role, withTools: boolean): string | undefined {
     const peers = this.repoPeers(thread);
     if (!peers.length) return undefined;
-    const list = peers.map((p) => `• ${p.role} on "${p.title}"`).join("\n");
+    const list = peers
+      .map((p) => `• ${p.role} on "${p.title}"${p.instance ? ` — on ${p.instance}, a DIFFERENT machine (same repo, different checkout)` : ""}`)
+      .join("\n");
     const edits = role === "implementor";
     const how = !withTools
       ? "Coordinate through the CLI office bridge: include a standalone `OFFICE[team]: <short message>` line in your assistant response to claim the files/areas you'll touch, answer teammate messages the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks."
       : edits
         ? "Use the office chat to coordinate: call `office_look`, then `chat_post(scope:\"team\")` to claim the files/areas you'll touch and `chat_read` what they've claimed before editing. Commit only your own hunks."
         : "Coordinate via the office chat: `office_look` to see who's here (address people by name), `chat_read(scope:\"team\")` what they've said, and `chat_post(scope:\"team\")` what you're examining or find that affects them.";
-    const risk = edits
-      ? "You share this workspace, so you can step on each other's changes."
-      : "You share this workspace.";
+    const localPeers = peers.filter((p) => !p.instance).length;
+    const risk = !localPeers
+      ? // Only remote peers: nothing of theirs is in this working tree, so the usual "commit your own
+        // hunks" warning would point at the wrong hazard. The collision is at the remote.
+        "None of them are in YOUR checkout — you meet at the git remote, so pull before you push and keep your commits narrow."
+      : edits
+        ? "You share this workspace, so you can step on each other's changes."
+        : "You share this workspace.";
     return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\n${risk} ${how}`;
   }
 
@@ -6371,6 +6503,40 @@ function reviewerContinueKickoff(): string {
     "Work efficiently; you have a fresh turn budget but not an unlimited one, so prioritise what decides accept-or-hand-back.",
     `Remember: \`accept: true\` marks the task DONE. If you can't finish verifying it, hand it back with what you did and didn't check rather than accepting on a guess.`,
   ].join("\n");
+}
+
+/**
+ * What a live implementor is told when an agent on ANOTHER machine posts into its repo's room.
+ *
+ * The wording carries the one thing that makes a remote teammate different from a local one, and it is
+ * the thing an agent would otherwise get wrong: they are not in this working tree, so `git status` will
+ * never show their edits and claiming a file locally protects nothing. The collision happens at the
+ * remote — they push what this agent is about to pull. `cli` picks the plain-ASCII, text-bridge phrasing
+ * for the Codex/Grok backends, which have no office MCP tools.
+ */
+function remoteChatPush(msg: RelayChat, senderName: string, cli: boolean): string {
+  const head = `[Online office - ${senderName} (${msg.role}), working ${msg.repoLabel ?? "this repo"} on another machine]: ${msg.body}`;
+  const reply = cli
+    ? 'reply with a standalone `OFFICE[team]: ...` line addressed to them'
+    : 'reply with chat_post(scope:"team") — it reaches them';
+  return (
+    `${cli ? head : `🌐 ${head}`}\n` +
+    `(A DIFFERENT machine working the same repository — not a teammate in your checkout, so their edits will never ` +
+    `show in your \`git status\`. You meet at the remote: they push what you'll pull. If this touches your work, ${reply}, ` +
+    `and prefer non-overlapping files.)`
+  );
+}
+
+/** The same warning, for the moment a remote agent first appears in a repo an implementor is already
+ *  working — the cross-machine counterpart of `pushOfficeActivation`. */
+function remoteJoinPush(repoLabel: string, who: string, count: number, cli: boolean): string {
+  const head = `[Online office - ${count > 1 ? "agents" : "an agent"} on another machine joined ${repoLabel}] ${who}.`;
+  const say = cli ? "a standalone `OFFICE[team]: ...` line" : 'chat_post(scope:"team")';
+  return (
+    `${cli ? head : `🌐 ${head}`}\n` +
+    `They work a different checkout of the SAME repository, so you meet at the remote, not in the working tree: pull before ` +
+    `you push, keep your commits narrow, and say what you're taking with ${say} — it reaches them too.`
+  );
 }
 
 /** What the implementor is relaunched with when the auto-reviewer hands a task back. Deliberately shaped

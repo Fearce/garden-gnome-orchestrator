@@ -9,6 +9,7 @@ node_modules/
 # build output
 server/dist/
 web/dist/
+relay/dist/
 *.tsbuildinfo
 
 # runtime state

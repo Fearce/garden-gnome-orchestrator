@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
-import type { ChatMessage, Role } from "../types.js";
-import { agentName, CHAT_PAGE_SIZE, GENERAL_ROOM, normalizeWorkspace, repoRoom } from "../types.js";
+import type { ChatMessage, RelayPresentAgent, Role } from "../types.js";
+import { agentName, CHAT_PAGE_SIZE, GENERAL_ROOM, normalizeWorkspace, repoRoom, ROLES } from "../types.js";
 import { clock, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
@@ -103,6 +103,7 @@ export function Office() {
   const officeRoom = useStore((s) => s.officeRoom);
   const openOffice = useStore((s) => s.openOffice);
   const directorBusy = useStore((s) => s.directorBusy);
+  const onlineOffice = useStore((s) => s.onlineOffice);
   const nameOverrides = useStore((s) => s.nameOverrides);
   const directorName = useStore((s) => s.settings.directorName);
   // A worker's name is per (thread, role) — the running role IS the agent, so the gnome carries that
@@ -138,6 +139,19 @@ export function Office() {
 
   const liveCount = groups.reduce((n, g) => n + g.workers.length, 0);
   const now = useNow(liveCount > 0, 1000);
+
+  // Coworkers reached through the Online Office — grouped by the machine they're on, since that (not a
+  // local path) is what distinguishes them. A repo we're also working is flagged: that's the collision.
+  const remoteMachines = useMemo(() => {
+    const byInstance = new Map<string, { name: string; agents: RelayPresentAgent[]; shared: boolean }>();
+    for (const a of onlineOffice.remoteAgents) {
+      const e = byInstance.get(a.instanceId) ?? { name: a.instanceName, agents: [], shared: false };
+      e.agents.push(a);
+      e.shared = e.shared || onlineOffice.sharedRepos.includes(a.repoLabel);
+      byInstance.set(a.instanceId, e);
+    }
+    return [...byInstance.values()];
+  }, [onlineOffice]);
 
   // Latest message per run and per project room, for the floating bubbles.
   const { byRun, byRoom } = useMemo(() => {
@@ -202,6 +216,25 @@ export function Office() {
             ),
           )
           : null}
+        {remoteMachines.map((m) => (
+          <button
+            key={m.name}
+            className={"office-remote" + (m.shared ? " shared" : "")}
+            onClick={() => openOffice(GENERAL_ROOM)}
+            title={
+              `${m.name} — another machine in the online office:\n` +
+              m.agents.map((a) => `${a.name} (${a.role}) on "${a.title}" in ${a.repoLabel}`).join("\n") +
+              (m.shared ? "\n\nSame repository as you — they push what you'll pull." : "")
+            }
+          >
+            <span className="office-remote-gnomes">
+              {m.agents.slice(0, 3).map((a) => (
+                <Gnome key={`${a.instanceId}:${a.key}`} role={(ROLES as readonly string[]).includes(a.role) ? (a.role as Role) : "implementor"} size={18} />
+              ))}
+            </span>
+            <span className="office-remote-tag">{m.name}</span>
+          </button>
+        ))}
       </div>
       {officeRoom != null ? <OfficePanel /> : null}
     </div>

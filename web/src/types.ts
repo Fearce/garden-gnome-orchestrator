@@ -2,6 +2,10 @@
 
 export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" | "reader" | "reviewer";
 
+/** Every role, as a value — for narrowing a role name that arrived as a free string from outside this
+ *  process (the Online Office carries another machine's role names). Mirrored in server/src/types.ts. */
+export const ROLES = ["director", "planner", "researcher", "implementor", "qa", "reader", "reviewer"] as const;
+
 /** Dispatch lane: undefined/null = the normal pipeline, 'read' = the read-only reader lane (dispatch_read). */
 export type ThreadLane = "read";
 
@@ -631,6 +635,34 @@ export type RepoOp =
   | { action: "commit"; summary: string; description?: string; paths: string[] }
   | { action: "discard"; paths: string[] };
 
+// ---- The Online Office (cross-machine coordination) ----
+// Mirrored from server/src/office/onlineOffice.ts + onlineProtocol.ts.
+
+/** One agent working on somebody else's machine, as the relay reports it. Its `repoLabel` is the shared
+ *  repository identity — the thing two checkouts on two machines agree on, unlike a local path. */
+export interface RelayPresentAgent {
+  key: string;
+  name: string;
+  role: string;
+  title: string;
+  repoKey: string;
+  repoLabel: string;
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface OnlineOfficeDTO {
+  enabled: boolean;
+  url: string;
+  instanceName: string;
+  joined: boolean; // a device token is held — Join has succeeded at least once
+  state: "off" | "connecting" | "online" | "error";
+  error: string | null;
+  connectedAt: number | null;
+  remoteAgents: RelayPresentAgent[];
+  sharedRepos: string[]; // repos this machine and at least one other are both working right now
+}
+
 export type ServerEvent =
   | {
       type: "hello";
@@ -651,7 +683,10 @@ export type ServerEvent =
       schedules: ScheduledTask[];
       modelStats: ModelStat[];
       notes: OperatorNote[];
+      onlineOffice: OnlineOfficeDTO;
     }
+  | { type: "office.online"; office: OnlineOfficeDTO }
+  | { type: "office.join.result"; ok: boolean; error: string | null }
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "model.stats"; stats: ModelStat[] }
   | { type: "schedules"; schedules: ScheduledTask[] }
@@ -751,6 +786,9 @@ export type ClientCommand =
   | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null } }
   | { type: "schedule.delete"; id: string }
   | { type: "schedule.run"; id: string }
+  | { type: "office.join"; url: string; code: string; instanceName: string }
+  | { type: "office.leave" }
+  | { type: "office.set"; enabled?: boolean; instanceName?: string }
   | { type: "note.create"; body: string; url?: string }
   | { type: "note.delete"; id: string }
   | { type: "note.clear" }

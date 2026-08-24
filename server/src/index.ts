@@ -21,6 +21,7 @@ import { Director } from "./orchestrator/director.js";
 import { RepoConsole } from "./orchestrator/repoConsole.js";
 import { OperatorNotes } from "./orchestrator/notes.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
+import { OnlineOffice } from "./office/onlineOffice.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
 import { refreshStatus, getStatus, applyUpdate, startUpdatePoll } from "./update.js";
@@ -123,6 +124,18 @@ async function main(): Promise<void> {
   // own checkout (resolved from server/, so it holds in dev and in the built dist alike) even before any
   // task has been dispatched.
   const repos = new RepoConsole(db, config.serverRoot);
+  // The Online Office: this instance's link to the shared relay, where agents on OTHER machines working
+  // the same repository show up as coworkers. Standalone over (db, hub) + three callbacks into the
+  // manager — off entirely until the operator joins one in Settings.
+  const onlineOffice = new OnlineOffice({
+    db,
+    hub,
+    roster: () => manager.onlineRoster(),
+    onRemoteChat: (msg, workspaces) => manager.receiveRemoteChat(msg, workspaces),
+    onRemoteJoin: (repoLabel, workspaces, joiners) => manager.remoteTeammatesJoined(repoLabel, workspaces, joiners),
+  });
+  manager.attachOnlineOffice(onlineOffice);
+  onlineOffice.start();
   accounts.start();
   scheduler.start();
   // Live pickable-model lists for the Settings dropdowns — needs a subscription token, so start it after
@@ -182,7 +195,7 @@ async function main(): Promise<void> {
     // Pasted images travel inline (base64) in a single prompt.new frame; lift the
     // default ws payload cap so a few screenshots don't get dropped on send.
     await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
-    registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos });
+    registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos, onlineOffice });
 
     // `build` is which dist THIS process loaded, read once at boot — the fact that turns "is the live
     // server running current code?" into a comparison instead of an inference from mtimes.

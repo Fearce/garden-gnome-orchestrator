@@ -26,6 +26,7 @@ import type {
   RepoState,
   Message,
   ModelStat,
+  OnlineOfficeDTO,
   OperatorNote,
   OrchestratorSettings,
   Question,
@@ -168,6 +169,15 @@ interface State {
   // The owner's note list (server-authoritative): short pointers agents leave for them — a branch to
   // review, a PR to merge — shown in the Notes board view, cleared by the owner one note at a time.
   notes: OperatorNote[];
+  // The Online Office: this machine's link to a shared relay, and the agents other machines have working
+  // right now. Server-authoritative — never mirrored locally on write; the `office.online` broadcast is
+  // the only writer. Neutral (off, nobody remote) until the socket's hello lands.
+  onlineOffice: OnlineOfficeDTO;
+  // A join attempt is in flight / why the last one was refused. Kept here rather than in the panel:
+  // the answer arrives as its own `office.join.result` frame, because two attempts with the same wrong
+  // code produce an identical office DTO and a panel watching only that could never un-busy.
+  officeJoining: boolean;
+  officeJoinError: string | null;
   boardView: BoardView;
   // Auto model selection's scoreboard: per-model averages over every graded auto-picked task. Rendered
   // read-only in Settings so the selection loop's learning is visible, and rebroadcast on each grading.
@@ -240,6 +250,11 @@ interface State {
   addNote: (body: string, url?: string) => void;
   deleteNote: (id: string) => void;
   clearNotes: () => void;
+  // The Online Office's three operator actions. Same optimism-free contract as everything else
+  // server-authoritative: send, and let the `office.online` broadcast reconcile.
+  joinOnlineOffice: (input: { url: string; code: string; instanceName: string }) => void;
+  leaveOnlineOffice: () => void;
+  setOnlineOffice: (patch: { enabled?: boolean; instanceName?: string }) => void;
   // Flag that a fresh web build is available (set by version.ts when the served bundle hash changes).
   setUpdateReady: (v: boolean) => void;
   // Record the latest git-update poll result (set by update.ts).
@@ -338,6 +353,21 @@ const saveTaskOrder = (ids: string[]): void => lsSet(TASK_ORDER_KEY, JSON.string
 
 // Until the first `hello` arrives the panel shows these neutral defaults (everything on); the server's
 // real values overwrite them the instant the socket connects.
+/** What the Online Office looks like before the socket's hello lands, and whenever it is switched off.
+ *  Must read as "not joined, nobody remote" — the panel's Join form is what should show on a fresh
+ *  console, not a half-populated connected state. */
+const OFFLINE_OFFICE: OnlineOfficeDTO = {
+  enabled: false,
+  url: "",
+  instanceName: "",
+  joined: false,
+  state: "off",
+  error: null,
+  connectedAt: null,
+  remoteAgents: [],
+  sharedRepos: [],
+};
+
 const DEFAULT_SETTINGS: OrchestratorSettings = {
   plannerEnabled: true,
   researcherEnabled: true,
@@ -505,6 +535,9 @@ export const useStore = create<State>((set) => ({
   notice: null,
   schedules: [],
   notes: [],
+  onlineOffice: OFFLINE_OFFICE,
+  officeJoining: false,
+  officeJoinError: null,
   modelStats: [],
   boardView: "tasks",
 
@@ -660,6 +693,15 @@ export const useStore = create<State>((set) => ({
   },
   deleteNote: (id) => sendCommand({ type: "note.delete", id }),
   clearNotes: () => sendCommand({ type: "note.clear" }),
+  joinOnlineOffice: ({ url, code, instanceName }) => {
+    set({ officeJoining: true, officeJoinError: null });
+    sendCommand({ type: "office.join", url: url.trim(), code: code.trim(), instanceName: instanceName.trim() });
+  },
+  leaveOnlineOffice: () => {
+    set({ officeJoinError: null });
+    sendCommand({ type: "office.leave" });
+  },
+  setOnlineOffice: (patch) => sendCommand({ type: "office.set", ...patch }),
   setUpdateReady: (v) => set({ updateReady: v }),
   setGitUpdate: (v) => set({ gitUpdate: v }),
   applyGitUpdate: async () => {
@@ -789,7 +831,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}), ...(ev.notes ? { notes: ev.notes } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}), ...(ev.notes ? { notes: ev.notes } : {}), ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}) });
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
@@ -816,6 +858,12 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "accounts":
       useStore.setState({ accounts: ev.accounts });
+      break;
+    case "office.online":
+      useStore.setState({ onlineOffice: ev.office });
+      break;
+    case "office.join.result":
+      useStore.setState({ officeJoining: false, officeJoinError: ev.ok ? null : ev.error });
       break;
     case "notes":
       useStore.setState({ notes: ev.notes });

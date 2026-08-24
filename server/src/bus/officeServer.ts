@@ -41,11 +41,16 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
         return { content: [{ type: "text", text: `${youAre}\nYou're the only agent working right now — the office is quiet. No one else to coordinate with.` }] };
       }
       const team = others.filter((r) => r.sameRepo);
-      const lines = others.map(
-        (r) => `- ${r.name} (${r.role}) on "${r.title}" — ${r.workspace}${r.sameRepo ? "  ⟵ SAME REPO as you (teammate)" : ""}`,
-      );
+      const lines = others.map((r) => {
+        const where = r.instance ? `${r.workspace} — on ${r.instance}, ANOTHER MACHINE` : r.workspace;
+        return `- ${r.name} (${r.role}) on "${r.title}" — ${where}${r.sameRepo ? "  ⟵ SAME REPO as you (teammate)" : ""}`;
+      });
+      const remoteTeam = team.filter((r) => r.instance).length;
       const header = team.length
-        ? `⚠️ ${team.length} other agent(s) are in YOUR repo right now — coordinate with them by name via chat_post(scope:"team") before editing shared files.`
+        ? `⚠️ ${team.length} other agent(s) are in YOUR repo right now — coordinate with them by name via chat_post(scope:"team") before editing shared files.` +
+          (remoteTeam
+            ? ` ${remoteTeam} of them work a DIFFERENT CHECKOUT of it on another machine: their edits will never appear in your \`git status\`, so you collide at the remote — pull before you push.`
+            : "")
         : "No one else is in your repo, but here's who's around:";
       return { content: [{ type: "text", text: `${youAre}\n${header}\n${lines.join("\n")}` }] };
     },
@@ -81,9 +86,11 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
       }
       // Tell the poster whether a teammate is actually around — a team post lands live in any
       // implementor sharing this repo, so they'll see it without polling; if none are here it waits.
-      const peers = api.officeRoster(ctx.threadId).filter((r) => r.sameRepo).length;
-      const text = peers
-        ? `Posted to your team room — ${peers} agent(s) are in this repo right now and will see it (it's delivered into the live implementor's session).`
+      const inRepo = api.officeRoster(ctx.threadId).filter((r) => r.sameRepo);
+      const remote = inRepo.filter((r) => r.instance).length;
+      const text = inRepo.length
+        ? `Posted to your team room — ${inRepo.length} agent(s) are in this repo right now and will see it (it's delivered into the live implementor's session)` +
+          (remote ? `, including ${remote} on another machine via the online office.` : ".")
         : "Posted to your team room — no other agent is in this repo right now, so it'll be waiting for whoever joins next (they read the room on arrival).";
       return { content: [{ type: "text", text }] };
     },

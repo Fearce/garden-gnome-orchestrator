@@ -1,0 +1,24 @@
+{
+  "name": "gg-office-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Online Office relay — the small internet-side server that lets orchestrator instances on different machines see each other's agents and coordinate per repository.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx src/core.test.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

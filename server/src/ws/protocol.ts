@@ -6,6 +6,7 @@ import type { ZaiUsageDTO } from "../agents/zaiUsage.js";
 import type { GitFileDiff, GitStatus, GitSummary } from "../gitService.js";
 import type { RepoCommitDetail } from "../git/repoOps.js";
 import type { RepoActionDTO, RepoRef, RepoStateDTO } from "../orchestrator/repoConsole.js";
+import type { OnlineOfficeDTO } from "../office/onlineOffice.js";
 import type {
   AgentRun,
   ChatMessage,
@@ -69,6 +70,7 @@ export type ServerEvent =
       schedules: ScheduledTask[];
       modelStats: ModelStat[];
       notes: OperatorNote[];
+      onlineOffice: OnlineOfficeDTO;
     }
   | { type: "accounts"; accounts: AccountDTO[] }
   // Auto model selection's scoreboard — per-model averages over every graded auto-picked task.
@@ -87,6 +89,13 @@ export type ServerEvent =
   // still-older messages remain to fetch as the user keeps scrolling up.
   | { type: "chat.history"; room: string; messages: ChatMessage[]; hasMore: boolean }
   | { type: "chat.name"; threadId: string; role: Role; name: string }
+  // The Online Office's whole state (connection, this instance's identity, the remote roster),
+  // rebroadcast on every change. Small and bounded — it never carries the device token.
+  | { type: "office.online"; office: OnlineOfficeDTO }
+  // The reply to one `office.join` attempt, sent to the socket that asked. The office's own broadcast
+  // can't stand in for it: a second attempt with the same wrong code produces an identical DTO, so the
+  // panel would have no way to tell "still trying" from "refused again" and its button would stick.
+  | { type: "office.join.result"; ok: boolean; error: string | null }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }
@@ -356,6 +365,18 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // ---- The owner's note list — agents post via the bus tool; these are the owner's own edits ----
   // `body` is bounded generously here and CLIPPED to NOTE_MAX_CHARS by the service, so a paste that
   // overshoots the composer's own limit is still recorded rather than silently dropped at this boundary.
+  // ---- The Online Office (cross-machine coordination) ----
+  // `code` is the one-time join code; it is exchanged for a device token server-side and never stored
+  // or echoed back. An empty `url` reuses the one already saved (the Reconnect case).
+  z.object({
+    type: z.literal("office.join"),
+    url: z.string().max(300),
+    code: z.string().min(1).max(200),
+    instanceName: z.string().max(40),
+  }),
+  z.object({ type: z.literal("office.leave") }),
+  // Go quiet without giving up the device token, and rename this machine as others see it.
+  z.object({ type: z.literal("office.set"), enabled: z.boolean().optional(), instanceName: z.string().max(40).optional() }),
   z.object({ type: z.literal("note.create"), body: z.string().min(1).max(2000), url: z.string().max(600).optional() }),
   z.object({ type: z.literal("note.delete"), id: z.string() }),
   z.object({ type: z.literal("note.clear") }),
