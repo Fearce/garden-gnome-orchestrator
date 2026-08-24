@@ -56,3 +56,8 @@ touched, and a Sprogbroen deploy never restarts the relay.
 `RelayCore` with fake peers: who a message reaches, backlog replay on entering a room, presence
 de-duplication, room-key validation, and that a repo counts as "shared" only when two *different*
 instances are in it.
+
+The gate runs through the server's `tsx`, which type-STRIPS rather than type-checks, so the root
+`npm run typecheck` covers this package too — otherwise a type error here would first surface inside
+`docker build`, on the box, mid-deploy. That needs `npm install --prefix relay` once (the root
+`npm run install:all` does it).

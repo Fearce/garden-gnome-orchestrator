@@ -4,7 +4,7 @@
   "private": true,
   "description": "A director's console for running Claude Code agents — enrich, plan, research, dispatch Opus implementors, inject mid-work.",
   "scripts": {
-    "install:all": "npm install --prefix server && npm install --prefix web",
+    "install:all": "npm install --prefix server && npm install --prefix web && npm install --prefix relay",
     "dev": "concurrently --raw \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "npm run dev --prefix server",
     "dev:web": "npm run dev --prefix web",
@@ -12,7 +12,7 @@
     "serve:server": "npm run serve --prefix server",
     "build": "npm run build --prefix web && npm run build --prefix server",
     "start": "npm run start --prefix server",
-    "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix web",
+    "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix web && npm run typecheck --prefix relay",
     "health": "npm run health --prefix server",
     "quality": "node scripts/quality-sweep.cjs",
     "probe:console": "node web/scripts/console-smoke.cjs",
