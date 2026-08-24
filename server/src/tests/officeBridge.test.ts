@@ -272,4 +272,48 @@ import {
   }
 }
 
+// The two markers GLUED on one line — office first means the office body would otherwise eat the note
+// marker whole, losing the owner's note AND broadcasting its PR link to the chatroom as a claim. Grok
+// withholds the segment-separating newline while an OFFICE marker is open, so this is the common shape,
+// not an exotic one: a separator of "", " " and ". " must all behave like a newline.
+{
+  for (const sep of ["", " ", ". "]) {
+    const raw = `OFFICE[team]: claiming notes.ts${sep}OPERATOR_NOTE: PR #42 ready | https://github.com/acme/repo/pull/42\n`;
+    const office = extractOfficeChat(raw);
+    const { visible, notes } = extractOperatorNotes(office.visible);
+    assert.equal(office.posts.length, 1, `one office post for separator ${JSON.stringify(sep)}`);
+    assert.ok(
+      !office.posts[0]!.body.includes("OPERATOR_NOTE"),
+      `the office body must stop at the note marker (separator ${JSON.stringify(sep)})`,
+    );
+    assert.deepEqual(
+      notes,
+      [{ body: "PR #42 ready", url: "https://github.com/acme/repo/pull/42" }],
+      `the note still lands for separator ${JSON.stringify(sep)}`,
+    );
+    assert.ok(!visible.includes("OPERATOR_NOTE") && !visible.includes("OFFICE["), "neither marker survives");
+  }
+}
+
+// The extractors run CHAINED over one buffer, so each must honour the OTHER's open marker: trimming a
+// buffer that ends inside the other's half-streamed body eats the space the next chunk appends to.
+{
+  // Office marker open, no note marker — the notes pass must not trim the trailing space.
+  const o1 = extractOfficeChat("Working on it.\nOFFICE[team]: claiming db.ts ", { openEnded: false });
+  const n1 = extractOperatorNotes(o1.visible, { openEnded: false });
+  const posts = extractOfficeChat(n1.visible + "and schema.ts\n", { openEnded: true }).posts;
+  assert.deepEqual(posts, [{ scope: "project", body: "claiming db.ts and schema.ts" }], "a streamed office claim keeps its word break");
+
+  // Note marker open, no office marker — the office pass (which runs first) must not trim it either.
+  const o2 = extractOfficeChat("Done.\nOPERATOR_NOTE: review PR ", { openEnded: false });
+  const n2 = extractOperatorNotes(o2.visible, { openEnded: false });
+  assert.deepEqual(n2.notes, [], "a half-streamed note does not post");
+  const finished = extractOperatorNotes(n2.visible + "#42 | https://x.example/p/42\n", { openEnded: true });
+  assert.deepEqual(
+    finished.notes,
+    [{ body: "review PR #42", url: "https://x.example/p/42" }],
+    "a streamed note keeps its word break",
+  );
+}
+
 console.log("All officeBridge extraction checks passed.");
