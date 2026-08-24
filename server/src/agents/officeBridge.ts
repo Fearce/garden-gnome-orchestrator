@@ -135,7 +135,10 @@ export function extractOfficeChat(
 
   // Mid-stream incomplete markers must keep exact trailing text (no trim) so the next token can
   // append. Final/open-ended extractions tidy whitespace for the transcript.
-  const hasOpenMarker = !openEnded && endsWithOpenOfficeMarker(out);
+  // The two extractors run CHAINED over one buffer, so each must respect the OTHER's open marker as
+  // well: trimming a buffer that ends inside the other's half-streamed body eats the trailing space the
+  // next chunk appends to, gluing words together (`claiming db.tsand schema.ts`).
+  const hasOpenMarker = !openEnded && (endsWithOpenOfficeMarker(out) || endsWithOpenOperatorNoteMarker(out));
   const visible = hasOpenMarker
     ? out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
     : out
@@ -192,7 +195,8 @@ export function extractOperatorNotes(
   }
   out += text.slice(cursor);
 
-  const hasOpenMarker = !openEnded && endsWithOpenOperatorNoteMarker(out);
+  // Same both-markers rule as `extractOfficeChat` — see the comment there.
+  const hasOpenMarker = !openEnded && (endsWithOpenOperatorNoteMarker(out) || endsWithOpenOfficeMarker(out));
   const visible = hasOpenMarker
     ? out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
     : out
@@ -299,6 +303,16 @@ function takeOfficeBody(
 
     // Next OFFICE marker — don't swallow it into this body.
     if (startsOfficeMarker(text, i)) {
+      complete = true;
+      break;
+    }
+
+    // An OPERATOR_NOTE marker on the same line ends this body too. The runners extract office chat
+    // FIRST (so a reply carrying both markers delivers both), which means anything this body eats never
+    // reaches `extractOperatorNotes` — and Grok withholds the segment-separating newline while an OFFICE
+    // marker is open, so the two markers arrive glued far more often than they arrive on separate lines.
+    // Without this stop the owner's note is silently lost AND its PR link is broadcast to the chatroom.
+    if (startsOperatorNoteMarker(text, i)) {
       complete = true;
       break;
     }

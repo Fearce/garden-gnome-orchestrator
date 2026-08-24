@@ -60,7 +60,9 @@ export class OperatorNotes {
     if (typeof url === "string" && url.startsWith("!")) return { ok: false, error: url.slice(1) };
 
     const body = normalize(input.body);
-    const clipped = clip(input.body, NOTE_MAX_CHARS) || url || "";
+    // The URL fallback is clipped too: `url` may run to MAX_URL_CHARS, and an unclipped fallback would
+    // put a 600-char "body" on a list whose whole contract is a 255-char one-liner.
+    const clipped = clip(input.body, NOTE_MAX_CHARS) || clip(url ?? "", NOTE_MAX_CHARS) || "";
     if (!clipped) return { ok: false, error: "A note needs a body (or at least a link)." };
     // Only a body the cap actually shortened counts — a note that fell back to its bare link didn't lose
     // anything, and telling the poster otherwise sends it re-writing a note that was already fine.
@@ -125,15 +127,17 @@ export class OperatorNotes {
    *  the next time an agent touches that link, rather than through a boot migration that would delete
    *  notes the owner hasn't read yet. */
   private collapseDuplicates(url: string, keepId: string): number {
+    const key = linkKey(url);
     let dropped = 0;
     for (const n of this.db.listOperatorNotes()) {
-      if (n.url === url && n.id !== keepId && this.db.deleteOperatorNote(n.id)) dropped++;
+      if (n.url && linkKey(n.url) === key && n.id !== keepId && this.db.deleteOperatorNote(n.id)) dropped++;
     }
     return dropped;
   }
 
   private sameLink(url: string): OperatorNote | null {
-    return this.db.listOperatorNotes().find((n) => n.url === url) ?? null;
+    const key = linkKey(url);
+    return this.db.listOperatorNotes().find((n) => !!n.url && linkKey(n.url) === key) ?? null;
   }
 
   /** null when absent; the cleaned absolute URL when usable; an `!`-prefixed error otherwise. The value
@@ -157,6 +161,24 @@ export class OperatorNotes {
 
   private broadcast(): void {
     this.hub.publish({ type: "notes", notes: this.list() });
+  }
+}
+
+/**
+ * The identity of a link for dedupe purposes — "is this the same thing to click?", not "is this the
+ * same string?". `cleanUrl` only normalizes scheme/host CASE, so one PR still made four rows: a copy
+ * from the browser after reading a comment carries `#issuecomment-…`, `gh pr create` prints no trailing
+ * slash where a browser adds one, and http/https are the same resource. Since one PR is meant to be one
+ * line whichever task noted it, those all have to collapse. The stored `url` is untouched — this is only
+ * the comparison key, so the owner still clicks exactly the link an agent posted.
+ */
+function linkKey(url: string): string {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/+$/, "");
+    return `${u.host.toLowerCase().replace(/^www\./, "")}${path}${u.search}`;
+  } catch {
+    return url.trim().toLowerCase();
   }
 }
 
