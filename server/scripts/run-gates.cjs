@@ -33,6 +33,7 @@ const GATES = [
   "test:schedule-detect",
   "test:scheduler",
   "test:notes",
+  "test:deploy-plan",
   "test:api-errors",
   "test:injection",
   "test:auto-title",

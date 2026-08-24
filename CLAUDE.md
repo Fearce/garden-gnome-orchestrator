@@ -86,18 +86,17 @@ How to restart depends on how it's running:
 **Windows (script-hub production deployment):** runs as script-hub id **`claude-orchestrator`** with
 keepAlive armed. Implementor workers are **child processes of this server** (the Agent SDK spawns the
 `claude` CLI — `server/src/agents/runner.ts`), so:
-- **Server change?** `npm run build`, then issue the **atomic** hub restart yourself — it runs
-  server-side in the hub process (PID outside this server's tree), survives the caller being killed
-  mid-restart, and re-arms keepAlive:
-  ```
-  POST http://127.0.0.1:3939/api/restart   body {"id":"claude-orchestrator"}
-  ```
-  Shorthand: `.\launchers\script-hub.ps1 restart claude-orchestrator` (from your process-manager
-  root) — issue it directly. **Siblings mid-edit in this shared checkout?** `npm run build` compiles
-  the DIRTY working tree, so a plain rebuild sweeps their uncommitted, un-QA'd server code into `dist`
-  and live. Deploy your fix WITHOUT theirs by building `dist` from committed HEAD only — recipe in
-  project memory `shared-checkout-concurrent-edits` (git-archive HEAD → temp tree → junction
-  node_modules → `tsc --outDir <real dist>` → restart; then grep-verify your symbol in / their symbol out).
+- **Server change? `npm run deploy --prefix server`** — it builds, stamps, issues the atomic hub restart
+  and verifies a NEW pid came up on HEAD. **Use it instead of building by hand**, because the right build
+  depends on `git status` and gets it wrong in both directions: a plain `npm run build` compiles the DIRTY
+  tree, so it ships a sibling's uncommitted, un-QA'd server code live under your deploy; the HEAD-only
+  archive recipe avoids that but is ten calls and a junction that deletes `server/node_modules` if removed
+  wrong. `deploy` picks per half, on what actually COMPILES in (`server/src` — a dirty lab/doc/probe does
+  not count), names what it excluded, and refuses to rebuild `web/dist` from someone else's WIP.
+  `-- --plan` prints the decision and touches nothing; `-- --verify` (no build, no bounce) answers "is my
+  change live?" and is what the auto-resumed session runs, since the restart kills you. Gate:
+  `test:deploy-plan`. By hand it is `POST http://127.0.0.1:3939/api/restart {"id":"claude-orchestrator"}`
+  (atomic: runs in the hub, outside this server's tree, survives the caller, re-arms keepAlive).
 - **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
   runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.
