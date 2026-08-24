@@ -34,6 +34,7 @@ const GATES = [
   "test:scheduler",
   "test:notes",
   "test:deploy-plan",
+  "test:tree-owner",
   "test:api-errors",
   "test:injection",
   "test:auto-title",
