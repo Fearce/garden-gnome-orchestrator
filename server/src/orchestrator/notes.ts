@@ -51,8 +51,8 @@ export class OperatorNotes {
     return this.db.listOperatorNotes();
   }
 
-  /** Record a note. Re-posting a link the same task already noted refreshes THAT note instead of adding
-   *  a second row for it — an implementor that pushes twice leaves one line, not two. */
+  /** Record a note. A link already on the list refreshes THAT row instead of adding a second one for it —
+   *  whichever task posts it. One clickable thing is one line the owner deletes once. */
   add(input: NoteInput): NoteResult {
     // A poster that wrote the link into the sentence instead of the field still gets a click target —
     // which is how a model naturally writes one, and the only shape a CLI backend's text bridge has.
@@ -66,22 +66,26 @@ export class OperatorNotes {
     // anything, and telling the poster otherwise sends it re-writing a note that was already fine.
     const truncated = body.length > NOTE_MAX_CHARS;
 
-    const existing = url ? this.sameLink(input.threadId ?? null, url) : null;
-    if (existing) {
-      const note = this.db.refreshOperatorNote(existing.id, clipped);
-      this.broadcast();
-      return { ok: true, note: note ?? existing, outcome: "refreshed", truncated };
-    }
-
-    const note = this.db.createOperatorNote({
-      body: clipped,
-      url,
+    const source = {
       threadId: input.threadId ?? null,
       threadTitle: clip(input.threadTitle ?? "", 200) || null,
       workspace: input.workspace ?? null,
       fromRole: input.fromRole ?? null,
       fromName: input.fromName ?? null,
-    });
+    };
+
+    const existing = url ? this.sameLink(url) : null;
+    if (existing) {
+      // The freshest read of that PR is the useful one, so the newest poster takes the row over — three
+      // tasks that touched one branch leave one line, not three the owner has to delete separately.
+      const note = this.db.refreshOperatorNote(existing.id, clipped, source);
+      let evicted = this.collapseDuplicates(url!, existing.id);
+      if (note) evicted += this.trim(note);
+      this.broadcast();
+      return { ok: true, note: note ?? existing, outcome: "refreshed", truncated, evicted };
+    }
+
+    const note = this.db.createOperatorNote({ body: clipped, url, ...source });
     const evicted = this.trim(note);
     this.broadcast();
     this.hub.log("info", `Note for the owner${note.fromName ? ` from ${note.fromName}` : ""}: ${note.body}`);
@@ -116,8 +120,20 @@ export class OperatorNotes {
     return evicted;
   }
 
-  private sameLink(threadId: string | null, url: string): OperatorNote | null {
-    return this.db.listOperatorNotes().find((n) => n.url === url && (n.threadId ?? null) === threadId) ?? null;
+  /** Fold any other rows for the same link into the one being refreshed. Nothing writes duplicates any
+   *  more, so this only ever finds rows left by the per-task dedupe that shipped first — the list heals
+   *  the next time an agent touches that link, rather than through a boot migration that would delete
+   *  notes the owner hasn't read yet. */
+  private collapseDuplicates(url: string, keepId: string): number {
+    let dropped = 0;
+    for (const n of this.db.listOperatorNotes()) {
+      if (n.url === url && n.id !== keepId && this.db.deleteOperatorNote(n.id)) dropped++;
+    }
+    return dropped;
+  }
+
+  private sameLink(url: string): OperatorNote | null {
+    return this.db.listOperatorNotes().find((n) => n.url === url) ?? null;
   }
 
   /** null when absent; the cleaned absolute URL when usable; an `!`-prefixed error otherwise. The value

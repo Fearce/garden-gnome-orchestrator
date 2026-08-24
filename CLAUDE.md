@@ -312,9 +312,10 @@ standalone `OPERATOR_NOTE: <line> | <https://…>` the runner strips (`.claude/r
 routing through ThreadManager. Rows: `operator_notes`, **no FK**, task title/workspace SNAPSHOT (a PR
 outlives the task's 30-day purge). **The anti-spam rules ARE the feature** ("255 chars so they cant spam
 me, i hate reading agent yapper"): the body TRUNCATES (never rejects — a long note still carries its
-link), a `url` re-posted by one task REFRESHES it, and a task holds ≤5 (oldest evicted, never refused).
-The `url` is agent-supplied and becomes an `href`, so http(s) is enforced at BOTH ends — service refuses,
-render degrades to text. Gates `test:notes` + `test:office-bridge`; `npm run notes-lab --prefix server`.
+link), a `url` already listed REFRESHES that row whichever task posts it (one PR = one line, deleted
+once), and a task holds ≤5 (oldest evicted, never refused). The `url` is agent-supplied and becomes an
+`href`, so http(s) is enforced at BOTH ends — service refuses, render degrades to text.
+Gates `test:notes` + `test:office-bridge`; `npm run notes-lab --prefix server`.
 
 ## Before investigating "should we adopt / replace X?"
 Read **`docs/DECISIONS.md`** — the closed-questions register: one row per settled question with its

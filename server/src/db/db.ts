@@ -161,6 +161,10 @@ function rowToScheduledTask(r: Row): ScheduledTask {
 // burst of notes shares one millisecond (see the schema comment).
 const NEXT_NOTE_SEQ = "(SELECT IFNULL(MAX(seq), 0) + 1 FROM operator_notes)";
 
+/** Who a note came from — set on insert and moved over on a refresh, so one row always names its
+ *  current owner rather than whichever task happened to note the link first. */
+type NoteSource = Pick<OperatorNote, "threadId" | "threadTitle" | "workspace" | "fromRole" | "fromName">;
+
 function rowToOperatorNote(r: Row): OperatorNote {
   return {
     id: r.id as string,
@@ -1088,11 +1092,18 @@ export class Db {
   }
 
   /** Rewrite an existing note in place and float it back to the top — how a re-post of the same link
-   *  refreshes its note instead of adding a second row for it. */
-  refreshOperatorNote(id: string, body: string): OperatorNote | null {
+   *  refreshes its note instead of adding a second row for it. The source moves with the text: the row
+   *  is about the link, so it should name whoever last had something to say about it. */
+  refreshOperatorNote(id: string, body: string, source: NoteSource): OperatorNote | null {
     this.raw
-      .prepare(`UPDATE operator_notes SET body = @body, created_at = @createdAt, seq = ${NEXT_NOTE_SEQ} WHERE id = @id`)
-      .run({ id, body, createdAt: now() });
+      .prepare(
+        `UPDATE operator_notes
+            SET body = @body, created_at = @createdAt, seq = ${NEXT_NOTE_SEQ},
+                thread_id = @threadId, thread_title = @threadTitle, workspace = @workspace,
+                from_role = @fromRole, from_name = @fromName
+          WHERE id = @id`,
+      )
+      .run({ id, body, createdAt: now(), ...source });
     const r = this.raw.prepare("SELECT * FROM operator_notes WHERE id = ?").get(id) as Row | undefined;
     return r ? rowToOperatorNote(r) : null;
   }

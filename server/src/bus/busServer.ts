@@ -77,7 +77,7 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
 
 ONE line, max ${NOTE_MAX_CHARS} characters (anything longer is truncated) — it is a to-do line, not a report. Put the branch/PR link in \`url\` so it is one click. Do NOT use this for progress updates, findings, explanations, or a summary of your work: ${config.ownerName} reads this list to find what to click, and prose in it makes the list useless. Discoveries go to \`post_finding\`, produced FILES go to \`post_deliverable\`, questions go to \`ask_user\`, and your final reply is where you explain what you did.
 
-Post at most one or two per task, at the END, once the thing is actually there to review. Re-posting the same \`url\` updates the note you already left instead of adding another line.`,
+Post at most one or two per task, at the END, once the thing is actually there to review. A \`url\` already on the list updates that note instead of adding another line — so if another task already noted the same PR, yours replaces it rather than doubling it.`,
     {
       note: z.string().describe(`The one-line pointer, e.g. "PR #412: fix menu photo ingest — ready to merge". Max ${NOTE_MAX_CHARS} chars.`),
       url: z.string().optional().describe("The link to click — the PR or branch on its host (https://…). Omit only if there genuinely isn't one."),
@@ -97,7 +97,7 @@ Post at most one or two per task, at the END, once the thing is actually there t
         return { content: [{ type: "text", text: `Note not posted: ${result.error}` }], isError: true };
       }
       const extras = [
-        result.outcome === "refreshed" ? "updated the note you'd already left for this link" : null,
+        result.outcome === "refreshed" ? "updated the note already on the list for this link" : null,
         result.truncated ? `truncated to ${NOTE_MAX_CHARS} chars` : null,
         result.evicted ? `dropped this task's ${result.evicted} oldest note(s) — the list keeps your 5 most recent` : null,
       ].filter(Boolean);

@@ -78,8 +78,26 @@ function main(): void {
   check("with the newer text", notes.list()[0]!.body === "branch pushed, tests green now");
   const other = fromTask("different PR", "https://github.com/acme/vota/pull/9");
   check("a different link is a new note", other.outcome === "created" && notes.list().length === 2);
-  const otherTask = notes.add({ body: "same link, other task", url: "https://github.com/acme/vota/pull/9", threadId: "task-9" });
-  check("the same link from ANOTHER task is its own note", otherTask.outcome === "created" && notes.list().length === 3);
+  // One PR is one thing the owner clicks, reviews and deletes. Three tasks that all touched it must not
+  // cost three rows and three deletions — the row is about the LINK, so the newest poster takes it over.
+  const otherTask = notes.add({ body: "same link, other task", url: "https://github.com/acme/vota/pull/9", threadId: "task-9", fromName: "Pax", fromRole: "implementor" });
+  check("the same link from ANOTHER task refreshes the one row", otherTask.outcome === "refreshed" && notes.list().length === 2);
+  check("...and the row now names the newest poster", otherTask.note!.threadId === "task-9" && otherTask.note!.fromName === "Pax");
+  check("...with the newest text", notes.list()[0]!.body === "same link, other task");
+  notes.clear();
+
+  console.log("notes: rows left by the old per-task dedupe fold together on the next post");
+  // Written straight to the Db so they bypass the service — the shape prod already had before the
+  // dedupe went global. Touching that link again must leave ONE row, not heal only the newest pair.
+  const dupUrl = "https://github.com/acme/vota/pull/81";
+  for (const who of ["Vik", "Pax", "Sif"]) {
+    db.createOperatorNote({ body: `${who} on PR 81`, url: dupUrl, threadId: `task-${who}`, threadTitle: null, workspace: null, fromRole: "implementor", fromName: who });
+  }
+  check("three legacy rows for one link", notes.list().length === 3);
+  const healed = notes.add({ body: "PR 81 is ready", url: dupUrl, threadId: "task-new", fromName: "Liv", fromRole: "implementor" });
+  check("a later post collapses them to one row", healed.outcome === "refreshed" && notes.list().length === 1);
+  check("...reporting what it folded away", healed.evicted === 2);
+  check("...and the survivor is the newest note", notes.list()[0]!.body === "PR 81 is ready" && notes.list()[0]!.fromName === "Liv");
   notes.clear();
 
   console.log("notes: a task can't flood the list");
