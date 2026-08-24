@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { apiUrl, wsUrl } from "./lib/base.js";
 import type {
   AccountDTO,
+  BoardView,
   CodexUsageDTO,
   GrokUsageDTO,
   ZaiUsageDTO,
@@ -25,6 +26,7 @@ import type {
   RepoState,
   Message,
   ModelStat,
+  OperatorNote,
   OrchestratorSettings,
   Question,
   Role,
@@ -163,7 +165,10 @@ interface State {
   // Recurring/scheduled tasks (server-authoritative, broadcast over WS). Managed from the Scheduled Tasks
   // view; `boardView` toggles the center pane between the live task board and that view.
   schedules: ScheduledTask[];
-  boardView: "tasks" | "schedules";
+  // The owner's note list (server-authoritative): short pointers agents leave for them — a branch to
+  // review, a PR to merge — shown in the Notes board view, cleared by the owner one note at a time.
+  notes: OperatorNote[];
+  boardView: BoardView;
   // Auto model selection's scoreboard: per-model averages over every graded auto-picked task. Rendered
   // read-only in Settings so the selection loop's learning is visible, and rebroadcast on each grading.
   modelStats: ModelStat[];
@@ -226,11 +231,15 @@ interface State {
   clearNotice: () => void;
   // Scheduled tasks: switch the center pane, and CRUD the recurring dispatches (server is authoritative —
   // each mutation is optimism-free and reconciled by the `schedules` broadcast).
-  setBoardView: (v: "tasks" | "schedules") => void;
+  setBoardView: (v: BoardView) => void;
   createSchedule: (input: { title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null }) => void;
   updateSchedule: (id: string, patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null }) => void;
   deleteSchedule: (id: string) => void;
   runSchedule: (id: string) => void;
+  // The owner's note list — same optimism-free contract: send, let the `notes` broadcast reconcile.
+  addNote: (body: string, url?: string) => void;
+  deleteNote: (id: string) => void;
+  clearNotes: () => void;
   // Flag that a fresh web build is available (set by version.ts when the served bundle hash changes).
   setUpdateReady: (v: boolean) => void;
   // Record the latest git-update poll result (set by update.ts).
@@ -495,6 +504,7 @@ export const useStore = create<State>((set) => ({
   officeRoom: null,
   notice: null,
   schedules: [],
+  notes: [],
   modelStats: [],
   boardView: "tasks",
 
@@ -643,6 +653,13 @@ export const useStore = create<State>((set) => ({
   updateSchedule: (id, patch) => sendCommand({ type: "schedule.update", id, patch }),
   deleteSchedule: (id) => sendCommand({ type: "schedule.delete", id }),
   runSchedule: (id) => sendCommand({ type: "schedule.run", id }),
+  addNote: (body, url) => {
+    const text = body.trim();
+    const link = url?.trim();
+    if (text || link) sendCommand({ type: "note.create", body: text || link!, ...(link ? { url: link } : {}) });
+  },
+  deleteNote: (id) => sendCommand({ type: "note.delete", id }),
+  clearNotes: () => sendCommand({ type: "note.clear" }),
   setUpdateReady: (v) => set({ updateReady: v }),
   setGitUpdate: (v) => set({ gitUpdate: v }),
   applyGitUpdate: async () => {
@@ -772,7 +789,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}), ...(ev.notes ? { notes: ev.notes } : {}) });
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
@@ -799,6 +816,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "accounts":
       useStore.setState({ accounts: ev.accounts });
+      break;
+    case "notes":
+      useStore.setState({ notes: ev.notes });
       break;
     case "schedules":
       useStore.setState({ schedules: ev.schedules });

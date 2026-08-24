@@ -2018,6 +2018,71 @@ body.dl-resizing { user-select: none; }
 .sched-cronstr { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
 .sched-foot { padding: 12px 18px 16px; border-top: 1px solid var(--line); }
 
+/* ---- the owner's note list (Notes board view) ----
+   An inbox, not a card grid: one dense row per note, newest first, and the tick that clears it is the
+   only strong affordance on the row. The kind icon is the sole colour, so a long list stays calm. */
+.notes-view { display: flex; flex-direction: column; min-height: 0; }
+.notes-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; min-height: 26px; }
+
+.note-compose { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.note-compose input {
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text);
+  font-family: var(--font-sans); font-size: 13px; padding: 8px 10px; min-width: 0;
+}
+.note-compose input:focus { outline: none; border-color: var(--accent); }
+.note-compose input::placeholder { color: var(--text-faint); }
+.note-compose-body { flex: 1 1 auto; }
+.note-compose-url { flex: 0 1 260px; font-family: var(--font-mono) !important; font-size: 12px !important; }
+
+.notes-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.note-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px;
+  transition: border-color 0.14s, background 0.14s;
+}
+.note-row:hover { border-color: var(--line-strong); background: var(--bg-2); }
+
+.note-kind {
+  display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--bg-2); color: var(--text-faint);
+}
+.note-row:hover .note-kind { background: var(--bg-3); }
+.note-row.k-pr .note-kind { color: var(--accent); background: color-mix(in oklch, var(--accent) 14%, var(--bg-2)); }
+.note-row.k-branch .note-kind { color: var(--role-planner); background: color-mix(in oklch, var(--role-planner) 14%, var(--bg-2)); }
+.note-row.k-link .note-kind { color: var(--text-dim); }
+
+.note-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.note-body {
+  font-size: 13.5px; font-weight: 500; color: var(--text); line-height: 1.35; text-decoration: none;
+  overflow-wrap: anywhere;
+}
+a.note-body:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.note-body.plain { font-weight: 400; color: var(--text-dim); }
+
+.note-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: var(--text-faint); }
+.note-link {
+  font-family: var(--font-mono); color: var(--text-dim); max-width: 52ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.note-from { color: var(--text-faint); }
+button.note-from {
+  appearance: none; background: none; border: none; padding: 0; cursor: pointer; font: inherit;
+  color: var(--text-faint); border-bottom: 1px dotted var(--line-strong);
+}
+button.note-from:hover { color: var(--text-dim); }
+.note-age { color: var(--text-faint); white-space: nowrap; }
+
+.note-done {
+  appearance: none; display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto;
+  background: transparent; border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--text-faint); cursor: pointer; transition: color 0.14s, border-color 0.14s, background 0.14s;
+}
+.note-done:hover {
+  color: var(--ok); border-color: color-mix(in oklch, var(--ok) 55%, transparent);
+  background: color-mix(in oklch, var(--ok) 14%, transparent);
+}
+
 /* ==========================================================================================
    TOUCH / TABLET
    Three blocks, deliberately the LAST thing in this file. Every rule below overrides a base
@@ -2239,6 +2304,13 @@ body.dl-resizing { user-select: none; }
   .sched-num, .sched-time, .sched-rawcron { font-size: 16px; padding: 9px 10px; }
   .sched-enable input { width: 20px; height: 20px; }
 
+  /* Notes. The tick is the row's whole point, so it gets a full tap target; the two composer fields
+     can't share one row at tablet widths without the URL box collapsing, so they stack. */
+  .note-done { width: var(--tap); height: var(--tap); }
+  .note-compose { flex-wrap: wrap; }
+  .note-compose-body { flex-basis: 100%; }
+  .note-compose-url { flex: 1 1 auto; }
+
   /* 16px is the threshold under which mobile browsers zoom the page in on focus. */
   .composer textarea,
   .composer input.ws,
@@ -2251,5 +2323,6 @@ body.dl-resizing { user-select: none; }
   .sched-field input:not([type]),
   .sched-field .ws-wrap input,
   .sched-field select,
-  .sched-prompt-input { font-size: 16px; }
+  .sched-prompt-input,
+  .note-compose input { font-size: 16px; }
 }

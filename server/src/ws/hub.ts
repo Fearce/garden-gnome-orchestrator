@@ -4,6 +4,7 @@ import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { Director } from "../orchestrator/director.js";
+import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { RepoActionDTO, RepoConsole } from "../orchestrator/repoConsole.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
@@ -33,6 +34,7 @@ export interface WsContext {
   director: Director;
   accounts: AccountManager;
   scheduler: Scheduler;
+  notes: OperatorNotes;
   repos: RepoConsole;
 }
 
@@ -76,6 +78,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     nameOverrides: ctx.manager.officeNameOverrides(),
     schedules: ctx.scheduler.list(),
     modelStats: ctx.db.modelStats(),
+    notes: ctx.notes.list(),
   };
 }
 
@@ -280,6 +283,18 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       break;
     case "schedule.run":
       await ctx.scheduler.runNow(cmd.id);
+      break;
+    case "note.create": {
+      // The owner's own note — no task, no agent behind it (fromRole/fromName stay null).
+      const result = ctx.notes.add({ body: cmd.body, url: cmd.url ?? null });
+      if (!result.ok && result.error) ctx.hub.log("warn", result.error);
+      break;
+    }
+    case "note.delete":
+      ctx.notes.remove(cmd.id);
+      break;
+    case "note.clear":
+      ctx.notes.clear();
       break;
     case "snapshot.request":
       send(socket, buildHello(ctx));

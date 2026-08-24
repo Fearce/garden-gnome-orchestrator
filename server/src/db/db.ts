@@ -20,6 +20,7 @@ import type {
   ModelGrade,
   ModelOutcome,
   ModelStat,
+  OperatorNote,
   Question,
   QuestionOption,
   Role,
@@ -152,6 +153,25 @@ function rowToScheduledTask(r: Row): ScheduledTask {
     lastThreadId: (r.last_thread_id as string | null) ?? null,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
+  };
+}
+
+// The note list's ordering key, allocated in the same statement as the write so it can't race a
+// concurrent post. `seq` is never exposed on the DTO — it exists only to make "newest" exact when a
+// burst of notes shares one millisecond (see the schema comment).
+const NEXT_NOTE_SEQ = "(SELECT IFNULL(MAX(seq), 0) + 1 FROM operator_notes)";
+
+function rowToOperatorNote(r: Row): OperatorNote {
+  return {
+    id: r.id as string,
+    body: r.body as string,
+    url: (r.url as string | null) ?? null,
+    threadId: (r.thread_id as string | null) ?? null,
+    threadTitle: (r.thread_title as string | null) ?? null,
+    workspace: (r.workspace as string | null) ?? null,
+    fromRole: (r.from_role as Role | null) ?? null,
+    fromName: (r.from_name as string | null) ?? null,
+    createdAt: r.created_at as number,
   };
 }
 
@@ -1033,6 +1053,56 @@ export class Db {
 
   deleteScheduledTask(id: string): boolean {
     return this.raw.prepare("DELETE FROM scheduled_tasks WHERE id = ?").run(id).changes > 0;
+  }
+
+  // ---- operator notes (the owner's own review list) ----
+  createOperatorNote(input: Omit<OperatorNote, "id" | "createdAt">): OperatorNote {
+    const n: OperatorNote = {
+      id: newId(),
+      body: input.body,
+      url: input.url ?? null,
+      threadId: input.threadId ?? null,
+      threadTitle: input.threadTitle ?? null,
+      workspace: input.workspace ?? null,
+      fromRole: input.fromRole ?? null,
+      fromName: input.fromName ?? null,
+      createdAt: now(),
+    };
+    this.raw
+      .prepare(
+        `INSERT INTO operator_notes(id, seq, body, url, thread_id, thread_title, workspace, from_role, from_name, created_at)
+         VALUES(@id, ${NEXT_NOTE_SEQ}, @body, @url, @threadId, @threadTitle, @workspace, @fromRole, @fromName, @createdAt)`,
+      )
+      .run(n);
+    return n;
+  }
+
+  /** Newest first — the list is the owner's inbox, so the thing that just landed reads at the top. */
+  listOperatorNotes(): OperatorNote[] {
+    return (this.raw.prepare("SELECT * FROM operator_notes ORDER BY seq DESC").all() as Row[]).map(rowToOperatorNote);
+  }
+
+  /** Oldest first — the order the per-task cap evicts in. */
+  listOperatorNotesForThread(threadId: string): OperatorNote[] {
+    return (this.raw.prepare("SELECT * FROM operator_notes WHERE thread_id = ? ORDER BY seq ASC").all(threadId) as Row[]).map(rowToOperatorNote);
+  }
+
+  /** Rewrite an existing note in place and float it back to the top — how a re-post of the same link
+   *  refreshes its note instead of adding a second row for it. */
+  refreshOperatorNote(id: string, body: string): OperatorNote | null {
+    this.raw
+      .prepare(`UPDATE operator_notes SET body = @body, created_at = @createdAt, seq = ${NEXT_NOTE_SEQ} WHERE id = @id`)
+      .run({ id, body, createdAt: now() });
+    const r = this.raw.prepare("SELECT * FROM operator_notes WHERE id = ?").get(id) as Row | undefined;
+    return r ? rowToOperatorNote(r) : null;
+  }
+
+  deleteOperatorNote(id: string): boolean {
+    return this.raw.prepare("DELETE FROM operator_notes WHERE id = ?").run(id).changes > 0;
+  }
+
+  deleteAllOperatorNotes(): number {
+    return this.raw.prepare("DELETE FROM operator_notes").run().changes;
   }
 
   // ---- auto model selection: picks + their grades ----

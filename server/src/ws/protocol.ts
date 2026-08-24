@@ -14,6 +14,7 @@ import type {
   Finding,
   Message,
   ModelStat,
+  OperatorNote,
   OrchestratorSettings,
   Question,
   Role,
@@ -67,6 +68,7 @@ export type ServerEvent =
       nameOverrides: Record<string, string>;
       schedules: ScheduledTask[];
       modelStats: ModelStat[];
+      notes: OperatorNote[];
     }
   | { type: "accounts"; accounts: AccountDTO[] }
   // Auto model selection's scoreboard — per-model averages over every graded auto-picked task.
@@ -74,6 +76,8 @@ export type ServerEvent =
   | { type: "model.stats"; stats: ModelStat[] }
   // The full scheduled-task list, rebroadcast on every create/update/delete/fire (it's small and bounded).
   | { type: "schedules"; schedules: ScheduledTask[] }
+  // The owner's note list, rebroadcast whole on every post/delete (hard-capped, so it stays small).
+  | { type: "notes"; notes: OperatorNote[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
   | { type: "zai.usage"; usage: ZaiUsageDTO | null }
@@ -349,6 +353,12 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("schedule.delete"), id: z.string() }),
   z.object({ type: z.literal("schedule.run"), id: z.string() }),
+  // ---- The owner's note list — agents post via the bus tool; these are the owner's own edits ----
+  // `body` is bounded generously here and CLIPPED to NOTE_MAX_CHARS by the service, so a paste that
+  // overshoots the composer's own limit is still recorded rather than silently dropped at this boundary.
+  z.object({ type: z.literal("note.create"), body: z.string().min(1).max(2000), url: z.string().max(600).optional() }),
+  z.object({ type: z.literal("note.delete"), id: z.string() }),
+  z.object({ type: z.literal("note.clear") }),
   z.object({ type: z.literal("snapshot.request") }),
 ]);
 

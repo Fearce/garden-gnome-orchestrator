@@ -302,6 +302,18 @@ is then NOT found by a repo-relative path. **Pass an ABSOLUTE path** (the contai
 to the workspace) — or save the file at the workspace root. Verify before handing off: the file must sit at
 `join(workspace, path)` (or be absolute and inside the workspace).
 
+## The note list (what's waiting on the owner)
+The **Notes** board tab (count badge) is the owner's own list of branches/PRs waiting on THEM — one
+clickable line each, which they click, act on, and delete. Agents post via the `post_operator_note` bus
+tool (every thread-scoped role; the director has its own); the owner can add one. `orchestrator/notes.ts`
+is stateless over `(Db, EventHub)`, so each bus server builds its own rather than routing posts through
+ThreadManager. Rows: `operator_notes`, **no FK**, task title/workspace SNAPSHOT on the row (a PR outlives
+the task's 30-day purge). **The anti-spam rules ARE the feature** ("255 chars so they cant spam me, i hate
+reading agent yapper"): the body TRUNCATES (never rejects — a long note still carries its link), the same
+`url` re-posted by one task REFRESHES that note, and a task holds ≤5 (oldest evicted, never refused). The
+agent-supplied `url` becomes an `href`, so http(s) is enforced at BOTH ends — service refuses, render
+degrades to text. Gate `test:notes`; browser `npm run notes-lab --prefix server`.
+
 ## Before investigating "should we adopt / replace X?"
 Read **`docs/DECISIONS.md`** — the closed-questions register: one row per settled question with its
 headline verdict, plus what's genuinely still open. Adding a backend, swapping the harness, and

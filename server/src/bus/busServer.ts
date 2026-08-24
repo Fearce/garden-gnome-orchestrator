@@ -2,7 +2,8 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { OrchestratorApi } from "../orchestrator/api.js";
-import type { Role } from "../types.js";
+import { OperatorNotes } from "../orchestrator/notes.js";
+import { NOTE_MAX_CHARS, type Role } from "../types.js";
 import { BUS_SERVER } from "../agents/toolNames.js";
 import { config } from "../config.js";
 
@@ -18,6 +19,8 @@ export interface BusContext {
  * passes no caller identity into a tool handler.
  */
 export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServerConfig {
+  const notes = new OperatorNotes(api.db, api.hub);
+
   const postFinding = tool(
     "post_finding",
     "Record a discovery on this task's shared blackboard so the director and any other agents on this task can see it. Use it the moment you learn something that changes the plan, blocks progress, or another agent needs to know. A 'critical' finding can interrupt a running implementor.",
@@ -65,6 +68,41 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
         severity: "info", // 'info' never triggers route()'s warning/critical injection
       });
       return { content: [{ type: "text", text: `Deliverable recorded: ${f.label} (${f.path})` }] };
+    },
+  );
+
+  const postOperatorNote = tool(
+    "post_operator_note",
+    `Leave a SHORT pointer on ${config.ownerName}'s note list — the one place they look for work now waiting on THEM personally. Post one when you finish something only they can do next: a branch you pushed for review, a pull request you opened, a change waiting on their approval or merge. They click the link, deal with it, and delete the note.
+
+ONE line, max ${NOTE_MAX_CHARS} characters (anything longer is truncated) — it is a to-do line, not a report. Put the branch/PR link in \`url\` so it is one click. Do NOT use this for progress updates, findings, explanations, or a summary of your work: ${config.ownerName} reads this list to find what to click, and prose in it makes the list useless. Discoveries go to \`post_finding\`, produced FILES go to \`post_deliverable\`, questions go to \`ask_user\`, and your final reply is where you explain what you did.
+
+Post at most one or two per task, at the END, once the thing is actually there to review. Re-posting the same \`url\` updates the note you already left instead of adding another line.`,
+    {
+      note: z.string().describe(`The one-line pointer, e.g. "PR #412: fix menu photo ingest — ready to merge". Max ${NOTE_MAX_CHARS} chars.`),
+      url: z.string().optional().describe("The link to click — the PR or branch on its host (https://…). Omit only if there genuinely isn't one."),
+    },
+    async (args) => {
+      const thread = api.getThread(ctx.threadId);
+      const result = notes.add({
+        body: args.note,
+        url: args.url ?? null,
+        threadId: ctx.threadId,
+        threadTitle: thread?.title ?? null,
+        workspace: thread?.workspace ?? null,
+        fromRole: ctx.role,
+        fromName: api.officeName(ctx.threadId, ctx.role),
+      });
+      if (!result.ok || !result.note) {
+        return { content: [{ type: "text", text: `Note not posted: ${result.error}` }], isError: true };
+      }
+      const extras = [
+        result.outcome === "refreshed" ? "updated the note you'd already left for this link" : null,
+        result.truncated ? `truncated to ${NOTE_MAX_CHARS} chars` : null,
+        result.evicted ? `dropped this task's ${result.evicted} oldest note(s) — the list keeps your 5 most recent` : null,
+      ].filter(Boolean);
+      const suffix = extras.length ? ` (${extras.join("; ")})` : "";
+      return { content: [{ type: "text", text: `On ${config.ownerName}'s note list: ${result.note.body}${suffix}` }] };
     },
   );
 
@@ -145,6 +183,6 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
   return createSdkMcpServer({
     name: BUS_SERVER,
     version: "0.1.0",
-    tools: [postFinding, postDeliverable, readFindings, notifyThread, askUser],
+    tools: [postFinding, postDeliverable, readFindings, notifyThread, askUser, postOperatorNote],
   });
 }

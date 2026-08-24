@@ -98,6 +98,29 @@ export interface ScheduledTask {
   updatedAt: number;
 }
 
+/** The hard ceiling on a note's body, in characters. The whole point of the note list is that it can be
+ *  skimmed in seconds, so this is enforced by TRUNCATION at the write boundary (never a rejection — a
+ *  long note still carries its link). Mirrored in web/src/types.ts and in the bus tool's description. */
+export const NOTE_MAX_CHARS = 255;
+
+/**
+ * One line on the operator's note list: a pointer an agent leaves for the owner — a branch pushed, a PR
+ * opened, something to click, review and then delete. It is NOT a finding (findings are the agents'
+ * shared blackboard, scoped to a task); this list is the owner's own, spans every task, and only they
+ * clear it. Persisted in `operator_notes`; mirrored in web/src/types.ts.
+ */
+export interface OperatorNote {
+  id: string;
+  body: string; // the one-liner, hard-capped at NOTE_MAX_CHARS
+  url?: string | null; // the click target (http/https only) — the branch/PR the note is about
+  threadId?: string | null; // the task that left it; null when the owner or director wrote it
+  threadTitle?: string | null; // snapshot of that task's title, so the note survives the task's purge
+  workspace?: string | null; // snapshot of the repo it came from — which project this is about
+  fromRole?: Role | null; // the agent role that posted it; null for the owner's own note
+  fromName?: string | null; // that agent's office name, so the note reads as "Liv (implementor)"
+  createdAt: number;
+}
+
 export interface AgentRun {
   id: string;
   threadId: string;

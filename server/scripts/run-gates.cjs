@@ -32,6 +32,7 @@ const GATES = [
   "test:grok-usage",
   "test:schedule-detect",
   "test:scheduler",
+  "test:notes",
   "test:api-errors",
   "test:injection",
   "test:auto-title",

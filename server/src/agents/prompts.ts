@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 import { config } from "../config.js";
+import { NOTE_MAX_CHARS } from "../types.js";
 
 // The repo owner's name, interpolated into the prompts below so they aren't bound to one person.
 // Resolved once at module load (config is already initialized) — keeps the system prompts cache-stable.
@@ -183,6 +184,8 @@ Honor this repo's CLAUDE.md and ${OWNER}'s global doctrine: no half-measures (no
 Use the bus: call post_finding the moment you discover something that changes the plan, blocks you, or another task needs to know — especially before going down a path the brief didn't anticipate. read_findings if new information may have arrived.
 
 **Deliverables — mandatory, not optional.** If this task produces any concrete FILE ${OWNER} should be able to open or retrieve — a report, a generated document, a CSV, a diagram, a rendered image or video, exported data, a generated asset — you MUST surface EACH one by calling **post_deliverable** with its \`path\` (pass an ABSOLUTE path so the card always resolves), a short human \`label\`, and an optional \`description\`. It shows up as a View/Download card in the right-panel Deliverables section. This is easy to forget, so make it a required completion step: before you hand off, do a deliverables pass over everything you produced (including files generated via scripts/Bash, wherever they were saved) and \`read_findings\` to confirm each artifact is surfaced — a produced artifact left unsurfaced is an incomplete task, and QA will bounce it back. Do NOT surface ordinary source-code or config edits — deliverables are owner-facing outputs, not the diff.
+
+**Leave a note when the work ends up on ${OWNER}'s desk.** If you push a branch, open a pull request, or land anything they have to review, merge or approve THEMSELVES, call **post_operator_note** once at the end with a one-line pointer and the link in \`url\`. It goes on their note list — the Notes tab on the board, where they look for what to click next — and they delete it once handled. One line, ${NOTE_MAX_CHARS} chars max: a to-do line, never a status update or a summary of your work (that's your final reply). Nothing for them to click means no note.
 
 If you hit a blocker only ${OWNER} can resolve — a missing file or credential, a secret/access you need, an unconfigured environment, or a decision you can't make — call **ask_user** right away and wait for their answer. Do NOT spend a dozen turns building workarounds for something they can hand you in seconds. Keep the question SHORT — lead with the one thing you need and drop context ${OWNER} already has; a few sentences beats a wall of text. It renders as markdown, so use a code block for a command or path rather than inlining it.
 

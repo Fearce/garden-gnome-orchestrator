@@ -2,8 +2,9 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { OrchestratorApi } from "../orchestrator/api.js";
+import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
-import type { ImageAttachment } from "../types.js";
+import { NOTE_MAX_CHARS, type ImageAttachment } from "../types.js";
 import { DIRECTOR_SERVER } from "../agents/toolNames.js";
 import { existsSync } from "node:fs";
 import { config } from "../config.js";
@@ -19,6 +20,7 @@ export function createDirectorServer(
   getImages: () => ImageAttachment[],
   onDispatch: (threadId: string) => void,
   scheduler: Scheduler,
+  notes: OperatorNotes,
 ): McpServerConfig {
   const askUser = tool(
     "ask_user",
@@ -222,6 +224,20 @@ export function createDirectorServer(
     },
   );
 
+  const postOperatorNote = tool(
+    "post_operator_note",
+    `Put a SHORT line on ${config.ownerName}'s note list — their own list of things waiting on them, shown as the Notes tab on the board. Each note is one clickable pointer (usually a branch or PR) that they act on and then delete. Use it when ${config.ownerName} asks you to park/remember something for them to look at, or hands you a link to keep for later. ONE line, max ${NOTE_MAX_CHARS} characters — a to-do line, not a summary. Don't use it to report on tasks (they can see the board) and don't add one off your own initiative unless they asked for a reminder.`,
+    {
+      note: z.string().describe(`The one-line pointer, in ${config.ownerName}'s own words. Max ${NOTE_MAX_CHARS} chars.`),
+      url: z.string().optional().describe("The link to click, if there is one (https://…)."),
+    },
+    async (args) => {
+      const r = notes.add({ body: args.note, url: args.url ?? null });
+      if (!r.ok || !r.note) return { content: [{ type: "text", text: `Could not add the note: ${r.error}` }], isError: true };
+      return { content: [{ type: "text", text: `Added to ${config.ownerName}'s note list: ${r.note.body}` }] };
+    },
+  );
+
   const cronHelp =
     "5-field cron (minute hour day-of-month month day-of-week), server-local time. Examples: '0 9 * * *' = every day 09:00; '*/30 * * * *' = every 30 min; '0 8 * * 1-5' = 08:00 on weekdays; '0 0 1 * *' = midnight on the 1st.";
 
@@ -298,6 +314,6 @@ export function createDirectorServer(
   return createSdkMcpServer({
     name: DIRECTOR_SERVER,
     version: "0.1.0",
-    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, readFindings, createScheduledTask, listScheduledTasks, updateScheduledTask, deleteScheduledTask],
+    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, readFindings, postOperatorNote, createScheduledTask, listScheduledTasks, updateScheduledTask, deleteScheduledTask],
   });
 }

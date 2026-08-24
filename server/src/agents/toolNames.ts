@@ -18,6 +18,7 @@ export const T = {
   readFindings: `mcp__${BUS_SERVER}__read_findings`,
   notifyThread: `mcp__${BUS_SERVER}__notify_thread`,
   busAskUser: `mcp__${BUS_SERVER}__ask_user`,
+  postNote: `mcp__${BUS_SERVER}__post_operator_note`,
   officeLook: `mcp__${OFFICE_SERVER}__office_look`,
   officeSetName: `mcp__${OFFICE_SERVER}__office_set_name`,
   chatPost: `mcp__${OFFICE_SERVER}__chat_post`,
@@ -32,13 +33,14 @@ export const T = {
   inject: `mcp__${DIRECTOR_SERVER}__inject`,
   interruptThread: `mcp__${DIRECTOR_SERVER}__interrupt_thread`,
   readFindingsAll: `mcp__${DIRECTOR_SERVER}__read_findings`,
+  directorPostNote: `mcp__${DIRECTOR_SERVER}__post_operator_note`,
   createScheduledTask: `mcp__${DIRECTOR_SERVER}__create_scheduled_task`,
   listScheduledTasks: `mcp__${DIRECTOR_SERVER}__list_scheduled_tasks`,
   updateScheduledTask: `mcp__${DIRECTOR_SERVER}__update_scheduled_task`,
   deleteScheduledTask: `mcp__${DIRECTOR_SERVER}__delete_scheduled_task`,
 } as const;
 
-export const BUS_TOOLS = [T.postFinding, T.postDeliverable, T.readFindings, T.notifyThread, T.busAskUser];
+export const BUS_TOOLS = [T.postFinding, T.postDeliverable, T.readFindings, T.notifyThread, T.busAskUser, T.postNote];
 export const OFFICE_TOOLS = [T.officeLook, T.officeSetName, T.chatPost, T.chatRead];
 // Read-only tools the reader lane runs with — the codebase-read surface (Read/Grep/Glob are built-in and
 // added alongside these in readerConfig) plus allowlisted git history. No write/edit/shell tool appears
@@ -56,6 +58,7 @@ export const DIRECTOR_TOOLS = [
   T.inject,
   T.interruptThread,
   T.readFindingsAll,
+  T.directorPostNote,
   T.createScheduledTask,
   T.listScheduledTasks,
   T.updateScheduledTask,

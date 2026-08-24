@@ -131,6 +131,27 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   updated_at     INTEGER NOT NULL
 );
 
+-- The operator's note list: short pointers agents leave for the owner — a branch to review, a PR to
+-- merge — that they click and then delete. Deliberately NOT keyed to a task: the note outlives the
+-- work (a PR waits for the owner long after the task closes), so thread_id has NO FK and the task's
+-- title/workspace are SNAPSHOT here rather than joined, keeping the note readable after a purge.
+-- seq is the ORDER; created_at is only what the list displays. A burst of posts lands inside one
+-- millisecond, so ordering on the timestamp leaves ties that the random id then breaks arbitrarily —
+-- which is also the order the per-task cap evicts in, so it would drop the wrong note. Bumped on insert
+-- AND on a refresh, so a re-posted link floats to the top of the owner's list the way a new one does.
+CREATE TABLE IF NOT EXISTS operator_notes (
+  id           TEXT PRIMARY KEY,
+  seq          INTEGER NOT NULL,
+  body         TEXT NOT NULL,
+  url          TEXT,
+  thread_id    TEXT,
+  thread_title TEXT,
+  workspace    TEXT,
+  from_role    TEXT,
+  from_name    TEXT,
+  created_at   INTEGER NOT NULL
+);
+
 -- The office: cross-agent chat. A row is one message in a room ('general' or 'repo:<normalized>').
 -- thread_id is nullable (room-level system notices), with NO FK so a row survives its task's purge —
 -- the conversation is the durable record of a collaboration, kept even after the tasks close.
@@ -178,4 +199,5 @@ CREATE INDEX IF NOT EXISTS idx_findings_thread ON findings(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_questions_thread ON questions(thread_id);
 CREATE INDEX IF NOT EXISTS idx_chat_room       ON chat_messages(room, created_at);
+CREATE INDEX IF NOT EXISTS idx_notes_thread    ON operator_notes(thread_id);
 `;

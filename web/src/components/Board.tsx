@@ -14,13 +14,14 @@ import {
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
-import type { AgentRun, Role, Thread, ThreadState } from "../types.js";
+import type { AgentRun, BoardView, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
 import { closesInDays, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
 import { ScheduledTasks } from "./ScheduledTasks.js";
+import { OperatorNotes } from "./OperatorNotes.js";
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -206,12 +207,12 @@ export function Board() {
     </div>
   );
 
-  const schedulesView = boardView === "schedules";
+  const tasksView = boardView === "tasks";
   return (
     <main className={"board" + (frozen ? " frozen" : "")}>
       <div className="board-head">
         <BoardTabs />
-        {!schedulesView ? (
+        {tasksView ? (
           <div className="board-head-right">
             <span className="faint mono" style={{ fontSize: 11 }}>
               {list.length} total
@@ -222,8 +223,10 @@ export function Board() {
           </div>
         ) : null}
       </div>
-      {schedulesView ? (
+      {boardView === "schedules" ? (
         <ScheduledTasks />
+      ) : boardView === "notes" ? (
+        <OperatorNotes />
       ) : (
         <>
           {list.length === 0 ? (
@@ -265,33 +268,38 @@ export function Board() {
   );
 }
 
-/** The board's view switcher: the active view is a heading, the other a button. "Tasks" ⇄ "Scheduled
- *  Tasks" per the owner's spec — click the inactive label to switch panes. */
+/** The board's view switcher: the active view is a heading, the others are buttons you click to switch
+ *  panes. The counts are the point of the inactive labels — the Notes badge is how the owner sees, while
+ *  watching the task board, that something is waiting on them. */
 function BoardTabs() {
   const boardView = useStore((s) => s.boardView);
   const setBoardView = useStore((s) => s.setBoardView);
-  const schedules = useStore((s) => s.schedules.length);
-  const tasksActive = boardView === "tasks";
+  const counts = {
+    tasks: null,
+    notes: useStore((s) => s.notes.length),
+    schedules: useStore((s) => s.schedules.length),
+  };
   return (
     <div className="board-tabs">
-      {tasksActive ? (
-        <h2>Tasks</h2>
-      ) : (
-        <button className="board-tab" onClick={() => setBoardView("tasks")} title="Back to the task board">
-          Tasks
-        </button>
-      )}
-      {tasksActive ? (
-        <button className="board-tab" onClick={() => setBoardView("schedules")} title="View and manage scheduled tasks">
-          Scheduled Tasks
-          {schedules > 0 ? <span className="board-tab-count">{schedules}</span> : null}
-        </button>
-      ) : (
-        <h2>Scheduled Tasks</h2>
+      {BOARD_TABS.map((tab) =>
+        boardView === tab.view ? (
+          <h2 key={tab.view}>{tab.label}</h2>
+        ) : (
+          <button key={tab.view} className={"board-tab bt-" + tab.view} onClick={() => setBoardView(tab.view)} title={tab.title}>
+            {tab.label}
+            {counts[tab.view] ? <span className="board-tab-count">{counts[tab.view]}</span> : null}
+          </button>
+        ),
       )}
     </div>
   );
 }
+
+const BOARD_TABS: { view: BoardView; label: string; title: string }[] = [
+  { view: "tasks", label: "Tasks", title: "Back to the task board" },
+  { view: "notes", label: "Notes", title: "Branches, PRs and reminders waiting on you" },
+  { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },
+];
 
 /** The board sort control: a quiet trigger in the header that opens a listbox of sort options, reusing
  *  the .ws-menu/.ws-opt pattern (downward variant). Self-contained — owns its open state and closes on

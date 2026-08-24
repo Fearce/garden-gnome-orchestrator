@@ -77,6 +77,26 @@ export interface ScheduledTask {
   updatedAt: number;
 }
 
+/** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
+export type BoardView = "tasks" | "notes" | "schedules";
+
+/** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
+export const NOTE_MAX_CHARS = 255;
+
+/** One line on the operator's note list: a pointer an agent left for the owner — a branch pushed, a PR
+ *  opened — that they click, act on, and delete. Server-authoritative; mirrors server/src/types.ts. */
+export interface OperatorNote {
+  id: string;
+  body: string;
+  url?: string | null; // the click target (http/https only)
+  threadId?: string | null; // the task that left it; null when the owner or director wrote it
+  threadTitle?: string | null; // snapshot, so the note still reads after that task is purged
+  workspace?: string | null; // snapshot of the repo it came from
+  fromRole?: Role | null; // null for the owner's own note
+  fromName?: string | null; // the agent's office name
+  createdAt: number;
+}
+
 export interface AgentRun {
   id: string;
   threadId: string;
@@ -630,10 +650,12 @@ export type ServerEvent =
       nameOverrides: Record<string, string>;
       schedules: ScheduledTask[];
       modelStats: ModelStat[];
+      notes: OperatorNote[];
     }
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "model.stats"; stats: ModelStat[] }
   | { type: "schedules"; schedules: ScheduledTask[] }
+  | { type: "notes"; notes: OperatorNote[] }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
   | { type: "zai.usage"; usage: ZaiUsageDTO | null }
@@ -729,6 +751,9 @@ export type ClientCommand =
   | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null } }
   | { type: "schedule.delete"; id: string }
   | { type: "schedule.run"; id: string }
+  | { type: "note.create"; body: string; url?: string }
+  | { type: "note.delete"; id: string }
+  | { type: "note.clear" }
   | { type: "snapshot.request" };
 
 // ---- client-only view models ----

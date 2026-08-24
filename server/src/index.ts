@@ -19,6 +19,7 @@ import { startZaiUsageMonitor } from "./agents/zaiUsagePing.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
 import { Director } from "./orchestrator/director.js";
 import { RepoConsole } from "./orchestrator/repoConsole.js";
+import { OperatorNotes } from "./orchestrator/notes.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
@@ -113,7 +114,10 @@ async function main(): Promise<void> {
   // Standalone (depends only on manager.dispatch), so scheduled runs use whatever provider/model is
   // active, exactly like a hand-dispatched task. The director can also create/edit schedules via its tools.
   const scheduler = new Scheduler(db, hub, (input) => manager.dispatch(input));
-  const director = new Director(manager, db, hub, scheduler);
+  // The owner's note list. Stateless over (db, hub), so each agent's bus server builds its own rather
+  // than routing every post through this instance; they can't diverge, and the pipeline stays untouched.
+  const notes = new OperatorNotes(db, hub);
+  const director = new Director(manager, db, hub, scheduler, notes);
   // The repo-level Git console (fetch/pull/push/branch/commit over any repo the console knows about).
   // Standalone: Db only, so it never entangles with the pipeline. It always offers the orchestrator's
   // own checkout (resolved from server/, so it holds in dev and in the built dist alike) even before any
@@ -178,7 +182,7 @@ async function main(): Promise<void> {
     // Pasted images travel inline (base64) in a single prompt.new frame; lift the
     // default ws payload cap so a few screenshots don't get dropped on send.
     await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
-    registerWs(app, { db, hub, manager, director, accounts, scheduler, repos });
+    registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos });
 
     // `build` is which dist THIS process loaded, read once at boot — the fact that turns "is the live
     // server running current code?" into a comparison instead of an inference from mtimes.
