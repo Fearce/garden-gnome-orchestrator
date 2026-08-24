@@ -24,6 +24,7 @@ const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { liveness } = require("./compiled-diff.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const REPO = path.resolve(SERVER_DIR, "..");
@@ -226,6 +227,21 @@ function printPlan(plan, commit) {
   for (const p of plan.webBlockers) log(`      blocking: ${p}`);
 }
 
+/** A one-line "and the web half" note, since `web/dist` is static: a web-only change is live once it is
+ *  REBUILT, and a restart would do nothing for it. Silence here would let a web change look deployed. */
+function webNote(webChanged) {
+  if (!webChanged || !webChanged.length) return null;
+  return `  ⚠ ${webChanged.length} web source(s) also changed — run \`npm run build --prefix web\` and reload the browser (web/dist is static; no restart)`;
+}
+
+/**
+ * Answer "is my change running?" by CONTENT, not by commit id.
+ *
+ * A raw SHA comparison called every docs-only, rules-only, scripts-only or test-only commit "NOT
+ * running" — and this check's remedy is a prod restart that tree-kills every in-flight agent. That is
+ * the asymmetry health already learned (`4075fdf`): a check whose remedy is bouncing prod has to be
+ * right. `liveness` is the shared predicate, so the two can no longer disagree.
+ */
 async function verifyOnly(commit) {
   const build = await liveBuild();
   const pid = listenerPid(PORT);
@@ -234,11 +250,28 @@ async function verifyOnly(commit) {
     return 1;
   }
   const live = build.commit ? build.commit.slice(0, 8) : "unstamped";
-  if (build.commit === commit) {
+  const head8 = commit ? commit.slice(0, 8) : "unknown";
+  const v = liveness(build.commit, commit);
+  const web = webNote(v.webChanged);
+
+  if (v.reason === "same-commit") {
     log(`✓ live: build ${live}${build.dirty ? " (dirty)" : ""}, pid ${pid ?? "?"} — matches HEAD`);
     return 0;
   }
-  log(`✗ live: build ${live}, HEAD is ${commit ? commit.slice(0, 8) : "unknown"} — your change is NOT running`);
+  if (v.reason === "no-runtime-change") {
+    log(`✓ live: build ${live}, HEAD is ${head8} — nothing that compiles into the server differs, so your change IS running.`);
+    log(`  (HEAD only moved in docs, rules, scripts, tests or tools — none of which reach dist. No restart needed.)`);
+    if (web) log(web);
+    return 0;
+  }
+  if (v.reason === "unknown") {
+    log(`✗ live: build ${live}, HEAD is ${head8} — git cannot compare them (rebased away?), so this cannot prove your change is running.`);
+    return 1;
+  }
+  const files = v.serverChanged ?? [];
+  log(`✗ live: build ${live}, HEAD is ${head8} — your change is NOT running.`);
+  log(`  ${files.length} runtime server file(s) differ: ${files.slice(0, 3).join(", ")}${files.length > 3 ? ", …" : ""}`);
+  if (web) log(web);
   return 1;
 }
 

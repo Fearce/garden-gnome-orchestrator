@@ -35,6 +35,7 @@
     "test:scheduler": "tsx src/tests/scheduler.test.ts",
     "test:notes": "tsx src/tests/operatorNotes.test.ts",
     "test:deploy-plan": "node scripts/deploy-plan.test.cjs",
+    "test:compiled-diff": "node scripts/compiled-diff.test.cjs",
     "test:tree-owner": "node scripts/tree-owner.test.cjs",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",
     "test:injection": "tsx src/tests/injection.test.ts",

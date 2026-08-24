@@ -19,7 +19,10 @@ Don't restructure it for a one-line fix: lift just the predicate into its own
 `scripts/<x>.cjs` + `scripts/<x>.test.cjs` (the 2026-08-12 email fix did this →
 `email-hygiene.cjs`). **Never hand-copy the predicate into the test** — a mirrored classifier
 drifts, which is exactly what `probe:run-errors`'s `cap classifier agreement` section exists
-to catch.
+to catch. **That includes copying only how the predicate is COMPOSED**: `compiled-diff.test.cjs`
+first built the git pathspec itself from the module's exported parts, so deleting an exclusion
+from the module left all 18 assertions green — the test was still excluding it. Call the exported
+FUNCTION and inject what it needs (a `cwd`, a clock), never re-assemble its inputs.
 
 Register BOTH halves or the sweep never runs it: the `test:*` script in `server/package.json`
 AND the name in `GATES` in `scripts/run-gates.cjs`. `test:gate-registration` fails on either.

@@ -27,6 +27,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const Database = require("better-sqlite3");
 const { classifyProcessBuild } = require("./process-vs-dist.cjs");
+const { serverRuntimeDiff } = require("./compiled-diff.cjs");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
 const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, DEAD_END_LINE } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
@@ -140,24 +141,14 @@ function distVsHead() {
     return { state: "unknown", detail: "dist has no .build-info.json — built before build stamping, or by a bare `tsc`" };
   }
   if (!stamp.commit) return { state: "unknown", detail: "the build recorded no commit (no git at build time)" };
-  const repo = path.resolve(SERVER, "..");
   const short = String(stamp.commit).slice(0, 8);
-  let changed;
-  try {
-    // Two-dot: what server/src looks like at HEAD vs at the built commit. Direction-agnostic on purpose — a
-    // dist built from a LATER commit than HEAD (a checkout back in time) is just as much a mismatch. Tests
-    // and tools are excluded for the same reason newestSrcMtimeMs skips them: they don't run in the server,
-    // so a committed test would otherwise report a perfectly deployed dist as "not live".
-    changed = execFileSync(
-      "git",
-      ["diff", "--name-only", `${stamp.commit}..HEAD`, "--", "server/src", ":(exclude)server/src/tests", ":(exclude)server/src/tools"],
-      { encoding: "utf8", cwd: repo },
-    ).trim();
-  } catch {
+  // Two-dot, direction-agnostic, tests/tools excluded — see `scripts/compiled-diff.cjs`, which is the
+  // single implementation this and `deploy.cjs --verify` both read.
+  const files = serverRuntimeDiff(stamp.commit, "HEAD");
+  if (files === null) {
     return { state: "unknown", detail: `git cannot compare the built commit ${short} to HEAD (unreachable after a rebase?)` };
   }
-  if (changed) {
-    const files = changed.split(/\r?\n/);
+  if (files.length) {
     return {
       state: "stale",
       detail:
@@ -177,19 +168,12 @@ function distVsHead() {
 
 /** `server/src` files whose content differs between two commits, or null if git cannot compare them.
  *  Tests and tools are excluded for the same reason `distVsHead` excludes them: they never run in the
- *  server, so a committed test would report a perfectly deployed process as drifted. */
-function serverSrcDiff(a, b) {
-  try {
-    const out = execFileSync(
-      "git",
-      ["diff", "--name-only", `${a}..${b}`, "--", "server/src", ":(exclude)server/src/tests", ":(exclude)server/src/tools"],
-      { encoding: "utf8", cwd: path.resolve(SERVER, "..") },
-    ).trim();
-    return out ? out.split(/\r?\n/) : [];
-  } catch {
-    return null;
-  }
-}
+ *  server, so a committed test would report a perfectly deployed process as drifted.
+ *
+ *  Shared with `deploy.cjs --verify`, which asks the identical question and used to answer it by
+ *  comparing raw commit ids — calling a docs-only commit "NOT running" and inviting a restart that
+ *  tree-kills every in-flight agent. One implementation, one gate (`test:compiled-diff`). */
+const serverSrcDiff = serverRuntimeDiff;
 
 /** Whether the live process is running the code now in `dist` — see scripts/process-vs-dist.cjs. */
 function processVsDist(runningBuild) {

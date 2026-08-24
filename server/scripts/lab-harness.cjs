@@ -34,6 +34,11 @@
 //     `gitChanges.css` / `gitConsole.css` / `diff.css` land later in the bundle and win ties.
 //   • Don't wrap a lab in `timeout` — it SIGTERMs the whole npm child tree, so `--keep`'s instance dies
 //     with it. Give the Bash call a long timeout, or background it and poll the port.
+//   • `boot()` takes TWO ports: `port` and the HTTPS listener at `port + 2`. A lab that stands up a
+//     COMPANION service (office-lab's relay) must avoid both. Landing on `port + 2` does not fail
+//     loudly — the console's TLS socket answers the companion's plain-HTTP request, and the only clue
+//     is `fetch failed`, whose real reason ("Response does not match the HTTP/1.1 protocol") is on
+//     `e.cause`, never on `e.message`. Always unwrap `cause` before believing a `fetch failed`.
 //
 // The three traps it encodes, all of which bite silently:
 //   • ACCOUNT_i_TOKEN must be BOGUS. A live token makes the boot ping start a REAL 5h window and shift
