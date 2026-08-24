@@ -485,6 +485,7 @@ export class AgentRun implements AgentRunLike {
         // `terminal_reason` tells them apart (the CLI's own predicate is aborted_streaming || aborted_tools),
         // so carry that through and never cache it as `lastResult`: an aborted turn must not become the
         // answer a later `result()` returns, nor the state `finalizeRun` stamps on the row.
+        if (typeof m.terminal_reason === "string") evt.terminalReason = m.terminal_reason;
         if (ABORTED_TERMINAL_REASONS.has(m.terminal_reason)) evt.aborted = true;
         else this.lastResult = evt;
         // Belt-and-suspenders: a cap can also end the run as an error RESULT (subtype

@@ -270,12 +270,22 @@ async function main(): Promise<void> {
     check("an aborted turn is flagged `aborted`", seen[0]?.aborted === true, JSON.stringify(seen[0]));
     check("an aborted turn is NOT cached as the run's result", agent.lastResult === undefined, JSON.stringify(agent.lastResult));
     check("it still carries cost/turns for the run row", seen[0]?.costUsd === 0.008 && seen[0]?.numTurns === 3);
+    // The RAW reason travels beside the derived flag: `aborted` is matched against a hand-copied list, so
+    // a reason the list doesn't know must still be readable rather than costing another paid SDK probe.
+    check("the CLI's verbatim terminal_reason is carried", seen[0]?.terminalReason === "aborted_tools");
 
     agent.handle({ type: "result", subtype: "success", is_error: false, result: "BANANA", terminal_reason: "aborted_streaming" });
     check("the streaming abort reason is covered too", seen[1]?.aborted === true);
 
+    // The shape is NOT the discriminator, which is the whole reason this keys on `terminal_reason`: a
+    // `priority: "now"` abort comes back success-shaped, while a bare `interrupt()` (the Pause control)
+    // comes back `error_during_execution` + is_error — both measured against the real CLI (probe:sdk-steer).
+    agent.handle({ type: "result", subtype: "error_during_execution", is_error: true, result: "", terminal_reason: "aborted_tools" });
+    check("an error-shaped abort is flagged too", seen[2]?.aborted === true, JSON.stringify(seen[2]));
+    check("an error-shaped abort is not cached either", agent.lastResult === undefined);
+
     agent.handle({ type: "result", subtype: "success", is_error: false, result: "BANANA", terminal_reason: "completed" });
-    check("a completed turn is not flagged", !seen[2]?.aborted);
+    check("a completed turn is not flagged", !seen[3]?.aborted);
     check("a completed turn IS cached as the run's result", agent.lastResult?.result === "BANANA");
 
     // `awaitTurnResult` discards an aborted event and waits for the continuation turn. If the owner

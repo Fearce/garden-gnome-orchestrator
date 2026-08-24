@@ -620,5 +620,9 @@ export type AgentEvent =
       // a success-shaped, empty result, so without this flag nothing downstream can tell it from a run
       // that completed — which is how one office-chat post ended every implementor in a repo at once.
       aborted?: boolean;
+      // The CLI's own verbatim reason for ending the turn ("completed", "aborted_tools", "max_turns",
+      // "model_error", …). `aborted` is DERIVED from it against a hand-copied list, so carrying the raw
+      // value is what makes "why wasn't this flagged?" a read rather than another paid SDK probe.
+      terminalReason?: string;
     }
   | { type: "error"; message: string };

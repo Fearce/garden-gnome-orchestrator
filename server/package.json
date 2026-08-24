@@ -82,6 +82,7 @@
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
     "probe:task-runs": "node scripts/probe-task-runs.cjs",
     "probe:sdk-resume": "tsx src/tools/probeSdkResume.ts",
+    "probe:sdk-steer": "tsx src/tools/probeSdkSteer.ts",
     "probe:run-errors": "node scripts/probe-run-errors.cjs",
     "probe:accounts": "node scripts/probe-accounts.cjs",
     "probe:model-picks": "node scripts/probe-model-picks.cjs",

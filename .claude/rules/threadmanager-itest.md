@@ -76,12 +76,11 @@ Both gaps above were this — the differences are exactly where lifecycle bugs l
   if your path can reach `setState(id,"done")`: `announceDone` calls it inside a `void`ed
   promise, so a missing method is an unhandled rejection that kills the whole run.
 - "What does the SDK actually do?" — never reason from the types (several fields have no doc comment).
-  CLI semantics live in the shipped binary, minified, so anchor on a string literal. The grep is free
-  and ~0.3s: `claude-cli-grep '("now")'` (Bash tool; PowerShell eats the inner quotes — `--pattern-file`)
-  is how `priority:"now"` was caught being an `abort("interrupt")` that kills a schema-bound role. What
-  a RUN does (resume budget, reaching the model) needs quota: `npm run probe:sdk-resume --prefix server`
-  — per-resume subtype/turns/output/cost, `out: 0` on success = silent resume, ~$0.10.
-- Register the gate: the `test:*` script in `server/package.json` AND in `GATES` in
-  `server/scripts/run-gates.cjs`, or the nightly sweep never runs it — `test:gate-registration`
-  red-flags both halves of that omission. Verify with
+  CLI semantics live in the minified binary, so anchor on a string literal: `claude-cli-grep '("now")'`
+  (Bash tool; PowerShell eats inner quotes — `--pattern-file`), free and ~0.3s. What a RUN does needs
+  quota: `probe:sdk-resume` (`out: 0` on success = silent resume, ~$0.10); what STEERING one does:
+  `probe:sdk-steer [-- --mode now|next|interrupt]`, ~$0.03 — read `terminal_reason`, never the shape
+  (a `"now"` abort is success-shaped, a bare `interrupt()` is `error_during_execution`).
+- Register the gate in BOTH `server/package.json` and `GATES` in `scripts/run-gates.cjs`, else the
+  nightly sweep never runs it; `test:gate-registration` red-flags either omission. Verify with
   `npm run typecheck && npm run test:gates --prefix server`.
