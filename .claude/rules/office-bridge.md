@@ -27,6 +27,12 @@ text, which the runner intercepts and strips:
   whole value is that every row is worth clicking.
 - **Order matters in the runners**: office extracts FIRST, notes run over what it left
   visible. A reply carrying both markers must deliver both and leave neither behind.
+  Two consequences, both paid for (`f5a7218`): `takeOfficeBody` must STOP at an
+  `OPERATOR_NOTE:` marker — Grok withholds the segment newline while an OFFICE marker
+  is open, so the two arrive GLUED more often than on separate lines, and an office body
+  that eats the note loses the row *and* broadcasts the PR link as a claim. And each
+  extractor's final trim must respect the OTHER's open marker, or it eats the trailing
+  space the next chunk appends to (`claiming db.tsand schema.ts`).
 
 ## Debug
 ```
