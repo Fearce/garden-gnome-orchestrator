@@ -182,6 +182,9 @@ function makeManagerHarness() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = mgr as any;
   const sent: string[] = [];
+  /** Managers created by `restart()`, so their timers can be cleared at dispose. `ThreadManager` is a
+   *  dynamic import here (env must land before config.js evaluates), so it is a value, not a type. */
+  const revived: InstanceType<typeof ThreadManager>[] = [];
 
   return {
     mgr,
@@ -208,8 +211,22 @@ function makeManagerHarness() {
       mgr.attachOnlineOffice(fake as unknown as OnlineOfficeType);
       return posted;
     },
+    /** A fresh ThreadManager over the SAME database — what a server bounce leaves behind. Every
+     *  in-memory guard starts empty here; only what was persisted survives. */
+    restart(): InstanceType<typeof ThreadManager> {
+      if (internals.capSupervisor) clearInterval(internals.capSupervisor);
+      const next = new ThreadManager(db, hub, memory, new StubAccounts() as unknown as AccountManager);
+      revived.push(next);
+      return next;
+    },
     dispose() {
       if (internals.capSupervisor) clearInterval(internals.capSupervisor);
+      for (const m of revived) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const i = m as any;
+        if (i.capSupervisor) clearInterval(i.capSupervisor);
+        if (i.tokenResumeTimer) clearTimeout(i.tokenResumeTimer);
+      }
       db.raw.close();
       rmSync(dir, { recursive: true, force: true });
     },
@@ -423,6 +440,24 @@ async function main(): Promise<void> {
       // The relay replays a room's backlog on every entry, so the SAME id must not land twice.
       h.mgr.receiveRemoteChat(msg, [WS]);
       check("a replayed backlog line is not persisted twice", h.db.listRoomMessages(repoRoom(WS), 50).filter((m) => m.kind === "chat").length === 1);
+
+      // …and a RESTART is an entry too. The relay replays the backlog on the first connect after a
+      // bounce, so an in-memory-only dedup set would re-persist the whole room every time this server
+      // is deployed — and re-push it at the auto-resumed implementors as if it were new traffic.
+      const revived = h.restart();
+      revived.receiveRemoteChat(msg, [WS]);
+      check(
+        "a backlog line replayed after a RESTART is not persisted twice",
+        h.db.listRoomMessages(repoRoom(WS), 50).filter((m) => m.kind === "chat").length === 1,
+        `count=${h.db.listRoomMessages(repoRoom(WS), 50).filter((m) => m.kind === "chat").length}`,
+      );
+      check(
+        "…while a genuinely new line still lands after a restart",
+        (() => {
+          revived.receiveRemoteChat({ ...msg, id: "m-remote-after-restart", body: "rebased onto master" }, [WS]);
+          return h.db.listRoomMessages(repoRoom(WS), 50).some((m) => m.body === "rebased onto master");
+        })(),
+      );
 
       // An office-wide remote line has no repo, so it belongs in the general room.
       h.mgr.receiveRemoteChat({ ...msg, id: "m-remote-2", room: OFFICE_ROOM, body: "morning all" }, []);

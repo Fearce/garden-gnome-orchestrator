@@ -447,15 +447,25 @@ export function providerServesRole(role: Role, provider: ImplementorProvider): b
 /** The roles `runRole` drives: every non-implementor agent, each one-shot and schema-bound. */
 type StructuredRole = "planner" | "researcher" | "qa" | "reader" | "reviewer";
 
+/** Where the remote-chat dedup set is persisted. The relay replays a room's backlog on every entry, and
+ *  a restart is an entry — so this guard has to be durable, not in-memory. */
+const REMOTE_CHAT_SEEN_KV = "online_office_seen_chat";
+/** How many relay message ids to remember. Comfortably above `ROOM_HISTORY` (60) per shared room, so a
+ *  replayed backlog is still recognised after a bounce; trimmed oldest-first. */
+const REMOTE_CHAT_SEEN_MAX = 500;
+
 export class ThreadManager implements OrchestratorApi {
   private readonly live = new Map<string, LiveImplementor>();
   private readonly activeRuns = new Map<string, Set<AgentRunLike>>();
   // The cross-machine office, when the operator has joined one. Null is the normal, fully-working state:
   // every office path degrades to the local-only behaviour it had before the feature existed.
   private online: OnlineOffice | null = null;
-  // Relay message ids already persisted locally. A room's backlog is replayed whenever this instance
-  // (re)enters it, so without this a reconnect would duplicate every remote line in the chatroom.
+  // Relay message ids already persisted locally, mirrored into kv. A room's backlog is replayed whenever
+  // this instance (re)enters it — and the connect after a RESTART is an entry, when an in-memory set is
+  // empty — so the guard outlives the process. Otherwise every bounce re-persisted up to ROOM_HISTORY
+  // lines per shared room AND re-pushed them at the auto-resumed implementors as if they were new.
   private readonly remoteChatSeen = new Set<string>();
+  private remoteChatSeenLoaded = false;
   // The implementor backend chosen for each thread at the start of its implementor stage (the hard
   // routing gate). Read by startImplementor's provider factory; survives failover/auto-resume so a
   // task never swaps provider mid-run (which would feed a Claude session id to a Codex resume).
@@ -5551,13 +5561,16 @@ export class ThreadManager implements OrchestratorApi {
     const workspace = workspaces[0] ?? null;
     const project = msg.room !== ONLINE_OFFICE_ROOM && !!workspace;
     const senderName = `${msg.senderName} @ ${msg.instanceName}`;
-    // Dedup on the relay's own message id: `history` replays a room's backlog on every (re)entry, and a
-    // reconnect after a dropped socket would otherwise re-persist everything the room already holds.
-    if (this.remoteChatSeen.has(msg.id)) return;
-    this.remoteChatSeen.add(msg.id);
-    if (this.remoteChatSeen.size > 500) {
-      for (const id of [...this.remoteChatSeen].slice(0, 250)) this.remoteChatSeen.delete(id);
+    // Dedup on the relay's own message id: `history` replays a room's backlog on every (re)entry — a
+    // reconnect after a dropped socket, and equally the first connect after a restart — so without this
+    // the room's whole backlog would be re-persisted and re-delivered.
+    const seen = this.seenRemoteChat();
+    if (seen.has(msg.id)) return;
+    seen.add(msg.id);
+    if (seen.size > REMOTE_CHAT_SEEN_MAX) {
+      for (const id of [...seen].slice(0, Math.floor(REMOTE_CHAT_SEEN_MAX / 2))) seen.delete(id);
     }
+    this.db.kvSet(REMOTE_CHAT_SEEN_KV, JSON.stringify([...seen]));
     const stored = this.db.addChatMessage({
       room: project ? repoRoom(workspace!) : GENERAL_ROOM,
       scope: project ? "project" : "general",
@@ -5572,6 +5585,22 @@ export class ThreadManager implements OrchestratorApi {
     this.hub.publish({ type: "chat.message", message: stored });
     if (!project) return;
     this.pushToRepo(workspace!, (cli) => remoteChatPush(msg, senderName, cli));
+  }
+
+  /** The remote-chat dedup set, hydrated from kv on first use (Set iteration is insertion order, so the
+   *  ids restored here stay the oldest and are the first trimmed). A corrupt or missing blob simply
+   *  starts empty — dedup degrades to per-process, never throws on an incoming message. */
+  private seenRemoteChat(): Set<string> {
+    if (this.remoteChatSeenLoaded) return this.remoteChatSeen;
+    this.remoteChatSeenLoaded = true;
+    try {
+      const raw = this.db.kvGet(REMOTE_CHAT_SEEN_KV);
+      const ids: unknown = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(ids)) for (const id of ids) if (typeof id === "string") this.remoteChatSeen.add(id);
+    } catch {
+      /* not worth a log: the only cost is that this instance re-dedups from empty */
+    }
+    return this.remoteChatSeen;
   }
 
   /** Deliver one push into every live implementor working `workspace`. The builder is called per
