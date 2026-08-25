@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const assert = require("node:assert/strict");
-const { EMAIL_PATTERN, withoutSshRemotes, realEmailLines } = require("./email-hygiene.cjs");
+const { EMAIL_PATTERN, withoutSshRemotes, withoutUrlUserinfo, realEmailLines } = require("./email-hygiene.cjs");
 
 const rows = (...lines) => lines.join("\n");
 
@@ -29,6 +29,27 @@ assert.equal(
   "do not strip the tail of a longer email local part",
 );
 
+// --- an http(s) remote's userinfo is not a mailbox either ---------------------
+assert.equal(
+  withoutUrlUserinfo("https://someone@github.com/fearce/card-marker.git"),
+  "https://github.com/fearce/card-marker.git",
+);
+assert.equal(
+  withoutUrlUserinfo("https://user:ghp_token@github.com/o/r.git"),
+  "https://github.com/o/r.git",
+  "a userinfo carrying a password is still userinfo",
+);
+assert.equal(
+  withoutUrlUserinfo("someone@github.com"),
+  "someone@github.com",
+  "without the scheme:// prefix it is prose, and prose is where a real leak hides",
+);
+assert.equal(
+  withoutUrlUserinfo("see https://acme.test and mail owner@acme.test"),
+  "see https://acme.test and mail owner@acme.test",
+  "a URL and a mailbox on one line: only a userinfo is removed",
+);
+
 // --- what the audit actually reports -----------------------------------------
 assert.deepEqual(realEmailLines(""), [], "no grep hits is not a finding");
 
@@ -47,6 +68,19 @@ assert.deepEqual(
   [],
 );
 
+// THE 2026-08-25 RECURRENCE, one URL form down: the Online Office (ccd8ff3) put http(s)
+// remotes with a userinfo component into a tracked fixture, and the 08-12 strip only knew
+// the scp-style `git@host:` shape. Same WARN-only cry-wolf failure, so the same rule applies.
+assert.deepEqual(
+  realEmailLines(
+    rows(
+      'server/src/tests/onlineOffice.itest.ts:263:      "https://someone@github.com/fearce/card-marker.git",',
+      'server/src/office/repoIdentity.ts:40:  // https://user:token@gitlab.com/o/r.git normalizes the same way',
+    ),
+  ),
+  [],
+);
+
 // ...but the check still has to DO its job — this is the leak it exists to catch.
 assert.deepEqual(realEmailLines("docs/notes.md:3: ping owner@acme.test about it"), [
   "docs/notes.md:3: ping owner@acme.test about it",
@@ -59,6 +93,9 @@ assert.deepEqual(realEmailLines("docs/notes.md:4: ping git@company.test about it
 // address sharing a line with a remote URL would otherwise be filtered out with it.
 const mixed = 'src/x.ts:9: remote("git@github.com:o/r.git") // owner: owner@acme.test';
 assert.deepEqual(realEmailLines(mixed), [mixed], "a real address beside an SSH remote still reports");
+
+const mixedUrl = 'src/x.ts:9: clone("https://someone@github.com/o/r.git") // owner: owner@acme.test';
+assert.deepEqual(realEmailLines(mixedUrl), [mixedUrl], "a real address beside an http remote still reports");
 
 // --- placeholders stay quiet --------------------------------------------------
 for (const placeholder of [
