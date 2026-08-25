@@ -27,6 +27,7 @@ import type {
   ScheduledTask,
   Severity,
   StageOutputs,
+  TaskSearchHit,
   Thread,
   ThreadLane,
   ThreadState,
@@ -228,6 +229,37 @@ function rowToDirectorMessage(r: Row): DirectorMessage {
 // double-escape a following wildcard.
 function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (c) => "\\" + c);
+}
+
+const containsFold = (text: string, q: string): boolean => text.toLowerCase().includes(q.toLowerCase());
+
+interface RankedTask {
+  thread: Thread;
+  hits: number;
+  metadata: boolean;
+}
+
+/** Strongest match first: a task whose own title or brief says the word is what the search is about,
+ *  then whichever worked the term hardest, then the recent. Recency alone buries the answer — the task
+ *  that actually did the work names the thing hundreds of times and is usually far older than the log
+ *  dumps and office chatter that mention it once. */
+function byRelevance(a: RankedTask, b: RankedTask): number {
+  if (a.metadata !== b.metadata) return a.metadata ? -1 : 1;
+  if (a.hits !== b.hits) return b.hits - a.hits;
+  return b.thread.createdAt - a.thread.createdAt;
+}
+
+// A readable window of `text` around its first match of `q`. Cut here rather than in the browser
+// because the matched row is often a `result` message holding megabytes of tool output, which must
+// never reach the socket; runs of whitespace collapse so a slice of a console dump still reads as one
+// line in a narrow rail. The match itself is left intact — the client re-finds it to highlight it.
+function snippetAround(text: string, q: string, before = 90, after = 240): string {
+  const at = text.toLowerCase().indexOf(q.toLowerCase());
+  const anchor = at < 0 ? 0 : at;
+  const start = Math.max(0, anchor - before);
+  const end = Math.min(text.length, anchor + q.length + after);
+  const slice = text.slice(start, end).replace(/\s+/g, " ").trim();
+  return (start > 0 ? "…" : "") + slice + (end < text.length ? "…" : "");
 }
 
 /** The two tables whose `attachments` JSON column can hold a reference to a stored blob. */
@@ -901,6 +933,86 @@ export class Db {
       )
       .all(`%${escapeLike(q)}%`, limit) as Row[];
     return rows.map(rowToDirectorMessage);
+  }
+
+  /** Tasks whose title, brief or CONVERSATION contains `query` — the other half of the console's
+   *  search. Searching the conversation is the whole point: what the owner remembers a task by is often
+   *  a word an agent coined while working (a project folder it created, a file it generated), which
+   *  appears in neither the prompt that started the task nor the auto-generated title. Ranked by
+   *  `byRelevance`, capped. Match is ASCII case-insensitive, like the director search beside it. */
+  searchTasks(query: string, limit = 40): TaskSearchHit[] {
+    const q = query.trim();
+    if (!q) return [];
+    const like = `%${escapeLike(q)}%`;
+    const messageHits = this.conversationHitCounts(like);
+    const ids = new Set(messageHits.keys());
+    for (const r of this.raw
+      .prepare("SELECT id FROM threads WHERE title LIKE @like ESCAPE '\\' OR brief LIKE @like ESCAPE '\\'")
+      .all({ like }) as Row[])
+      ids.add(r.id as string);
+    if (!ids.size) return [];
+    return this.threadsByIds([...ids])
+      .map((thread) => ({
+        thread,
+        hits: messageHits.get(thread.id) ?? 0,
+        metadata: containsFold(thread.title, q) || containsFold(thread.brief, q),
+      }))
+      .sort(byRelevance)
+      .slice(0, limit)
+      .map((c) => this.taskHit(c.thread, q, like, c.hits));
+  }
+
+  /** Read back the matched threads. Chunked because a common word matches most of the table, and
+   *  ranking has to see them all before anything can be cut to `limit`. */
+  private threadsByIds(ids: string[]): Thread[] {
+    const out: Thread[] = [];
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const rows = this.raw
+        .prepare(`SELECT * FROM threads WHERE id IN (${chunk.map(() => "?").join(",")})`)
+        .all(...chunk) as Row[];
+      out.push(...rows.map(rowToThread));
+    }
+    return out;
+  }
+
+  /** Matching messages per task, from ONE grouped scan of the whole table. That scan is why the search
+   *  is debounced rather than indexed: an FTS mirror of ~100 MB of tool output would cost more storage
+   *  than the ~0.4s it saves, on a database whose growth is already the thing being watched. */
+  private conversationHitCounts(like: string): Map<string, number> {
+    const rows = this.raw
+      .prepare("SELECT thread_id, COUNT(*) n FROM messages WHERE content LIKE ? ESCAPE '\\' GROUP BY thread_id")
+      .all(like) as Row[];
+    return new Map(rows.map((r) => [r.thread_id as string, r.n as number]));
+  }
+
+  /** One hit, showing the most informative evidence available: the owner's own brief, else the task's
+   *  conversation, else nothing — a title-only match is already legible in the highlighted title. */
+  private taskHit(t: Thread, q: string, like: string, messageHits: number): TaskSearchHit {
+    const base = {
+      threadId: t.id,
+      title: t.title,
+      state: t.state,
+      workspace: t.workspace,
+      createdAt: t.createdAt,
+      messageHits,
+    };
+    if (containsFold(t.brief, q)) return { ...base, where: "brief", snippet: snippetAround(t.brief, q) };
+    const message = messageHits ? this.bestMatchingMessage(t.id, like) : null;
+    if (message) return { ...base, where: "conversation", snippet: snippetAround(message, q) };
+    return { ...base, where: "title", snippet: "" };
+  }
+
+  /** The clearest matching message in one task: prose somebody wrote over raw tool traffic, and the
+   *  earliest of those, since a term is usually most explained where it first appears. */
+  private bestMatchingMessage(threadId: string, like: string): string | null {
+    const row = this.raw
+      .prepare(
+        `SELECT content FROM messages WHERE thread_id = ? AND content LIKE ? ESCAPE '\\'
+         ORDER BY (kind = 'text') DESC, created_at ASC LIMIT 1`,
+      )
+      .get(threadId, like) as Row | undefined;
+    return (row?.content as string | undefined) ?? null;
   }
 
   // ---- office chat ----

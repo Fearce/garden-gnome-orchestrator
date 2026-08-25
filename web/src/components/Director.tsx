@@ -6,9 +6,9 @@ import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
-import { CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, codexEffortsForModel, type CodexEffort, type DirectorItem, type DirectorMessage, type Effort, type OrchestratorSettings, type Role } from "../types.js";
+import { CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, codexEffortsForModel, type CodexEffort, type DirectorItem, type DirectorMessage, type Effort, type OrchestratorSettings, type Role, type TaskSearchHit } from "../types.js";
 import { codexModelOptions } from "../lib/models.js";
-import { effortLabel, modelLabel } from "../lib/format.js";
+import { effortLabel, modelLabel, stateColor, stateLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { useColumnResize } from "./useColumnResize.js";
 
@@ -219,9 +219,9 @@ export function Director() {
             <button
               type="button"
               className={"rail-search-toggle" + (searchOpen || searchText ? " on" : "")}
-              aria-label={searchOpen ? "Hide director search" : "Search director messages"}
+              aria-label={searchOpen ? "Hide search" : "Search tasks and the director conversation"}
               aria-expanded={searchOpen || !!searchText}
-              title="Search director messages across all tasks"
+              title="Search tasks and the director conversation"
               onClick={() => {
                 setSearchOpen((o) => {
                   const next = !o;
@@ -249,8 +249,8 @@ export function Director() {
           className="rail-search-input"
           type="search"
           value={searchText}
-          placeholder="Search director messages across all tasks…"
-          aria-label="Search director messages across all tasks"
+          placeholder="Search tasks and the director conversation…"
+          aria-label="Search tasks and the director conversation"
           onChange={(e) => setSearchText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
@@ -770,31 +770,42 @@ const DirectorBubble = memo(function DirectorBubble({ item }: { item: DirectorIt
   );
 });
 
-/** Whole-conversation search results, shown in place of the transcript while a query is active. Each hit
- *  renders a snippet centered on the match so a long director reply stays readable but the match is seen,
- *  plus a jump to the task its turn dispatched (when that task still exists). */
+/** Search results, shown in place of the transcript while a query is active. Two sections: the tasks
+ *  that match — first, because "which task was I doing X in?" is the question that brings anyone here —
+ *  then the director conversation. Each hit renders a snippet centered on the match, so a long reply or
+ *  a screenful of tool output stays readable but the match is seen. */
 function DirectorSearchResults({
   search,
   directorName,
   onGoToTask,
 }: {
-  search: { query: string; results: DirectorMessage[]; searching: boolean };
+  search: { query: string; results: DirectorMessage[]; tasks: TaskSearchHit[]; searching: boolean };
   directorName: string;
   onGoToTask: (threadId: string) => void;
 }) {
-  const { query, results, searching } = search;
+  const { query, results, tasks, searching } = search;
   const threads = useStore((s) => s.threads);
   const count = results.length;
+  const empty = count === 0 && tasks.length === 0;
   return (
-    <div className="ds-results" role="region" aria-label="Director message search results">
+    <div className="ds-results" role="region" aria-label="Search results">
       <div className="ds-status mono">
-        {searching && count === 0 ? "Searching…" : `${count} ${count === 1 ? "match" : "matches"} for “${query}”`}
+        {searching && empty ? "Searching…" : `${resultTally(tasks.length, count)} for “${query}”`}
       </div>
-      {!searching && count === 0 && (
+      {!searching && empty && (
         <div className="faint" style={{ fontSize: 13 }}>
-          No director message across any task contains “{query}”.
+          Nothing in the director conversation, and no task’s title, brief or conversation, contains “{query}”.
         </div>
       )}
+      {tasks.length > 0 && (
+        <>
+          <div className="ds-section mono">Tasks</div>
+          {tasks.map((t) => (
+            <TaskHit key={t.threadId} hit={t} query={query} onGoToTask={onGoToTask} />
+          ))}
+        </>
+      )}
+      {count > 0 && tasks.length > 0 && <div className="ds-section mono">Director conversation</div>}
       {results.map((m) => {
         const task = m.threadId ? threads[m.threadId] : undefined;
         return (
@@ -822,42 +833,105 @@ function DirectorSearchResults({
   );
 }
 
+/** One matching task: click it to open the task, with the evidence for why it matched underneath. The
+ *  snippet arrives pre-windowed from the server — the message behind it is routinely megabytes. */
+function TaskHit({
+  hit,
+  query,
+  onGoToTask,
+}: {
+  hit: TaskSearchHit;
+  query: string;
+  onGoToTask: (threadId: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="ds-task"
+      title={`Open task “${hit.title}”`}
+      onClick={() => onGoToTask(hit.threadId)}
+    >
+      {/* Spans, not divs: flow content inside a <button> is invalid HTML, and the card is a flex
+          column either way. */}
+      <span className="ds-meta">
+        <span className="ds-task-state">
+          <span className="ds-task-pip" style={{ background: stateColor(hit.state) }} />
+          {stateLabel(hit.state)}
+        </span>
+        <span className="ds-date">{resultDate(hit.createdAt)}</span>
+      </span>
+      <span className="ds-task-title">{highlightAll(hit.title, query)}</span>
+      {hit.snippet && <span className="ds-snippet">{highlightAll(hit.snippet, query)}</span>}
+      <span className="ds-task-foot mono">
+        <span className="ds-task-where">{matchLabel(hit)}</span>
+        {hit.workspace && (
+          <span className="ds-task-repo" title={hit.workspace}>
+            {repoLabel(hit.workspace)}
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function resultTally(tasks: number, messages: number): string {
+  const parts: string[] = [];
+  if (tasks) parts.push(plural(tasks, "task"));
+  if (messages) parts.push(plural(messages, "director message"));
+  return parts.length ? parts.join(" · ") : "No matches";
+}
+
+/** Why this task matched, in the owner's terms. The conversation count is kept even when the brief or
+ *  title also matched: it's what tells the task that did the work apart from one that name-dropped it. */
+function matchLabel(hit: TaskSearchHit): string {
+  const conversation = hit.messageHits ? `${plural(hit.messageHits, "message")} in the conversation` : "";
+  if (hit.where === "conversation") return conversation;
+  const site = hit.where === "brief" ? "in the brief" : "in the title";
+  return conversation ? `${site} · ${conversation}` : site;
+}
+
 const resultDate = (ts: number): string =>
   new Date(ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
-// Build a snippet centered on the first case-insensitive match of `q`, wrapping every match inside the
-// window in <mark>. A window (not the full body) keeps long director replies from dominating the list.
-function highlightSnippet(text: string, q: string): ReactNode {
+// Wrap every case-insensitive match of `q` in <mark>. For text that is already the right length — a
+// task title, or a snippet the server has windowed for us.
+function highlightAll(text: string, q: string): ReactNode[] {
   const needle = q.toLowerCase();
-  const first = text.toLowerCase().indexOf(needle);
-  const anchor = first < 0 ? 0 : first;
-  const WINDOW_BEFORE = 90;
-  const WINDOW_AFTER = 240;
-  const start = anchor > WINDOW_BEFORE ? anchor - WINDOW_BEFORE : 0;
-  const end = Math.min(text.length, anchor + needle.length + WINDOW_AFTER);
-  const slice = text.slice(start, end);
-  const sliceLc = slice.toLowerCase();
-
+  const lc = text.toLowerCase();
   const nodes: ReactNode[] = [];
   let i = 0;
-  while (i < slice.length) {
-    const idx = sliceLc.indexOf(needle, i);
+  while (i < text.length) {
+    const idx = needle ? lc.indexOf(needle, i) : -1;
     if (idx < 0) {
-      nodes.push(slice.slice(i));
+      nodes.push(text.slice(i));
       break;
     }
-    if (idx > i) nodes.push(slice.slice(i, idx));
+    if (idx > i) nodes.push(text.slice(i, idx));
     nodes.push(
       <mark key={idx} className="ds-hit">
-        {slice.slice(idx, idx + needle.length)}
+        {text.slice(idx, idx + needle.length)}
       </mark>,
     );
     i = idx + needle.length;
   }
+  return nodes;
+}
+
+// Build a snippet centered on the first case-insensitive match of `q`, with every match inside the
+// window highlighted. A window (not the full body) keeps long director replies from dominating the list.
+function highlightSnippet(text: string, q: string): ReactNode {
+  const first = text.toLowerCase().indexOf(q.toLowerCase());
+  const anchor = first < 0 ? 0 : first;
+  const WINDOW_BEFORE = 90;
+  const WINDOW_AFTER = 240;
+  const start = anchor > WINDOW_BEFORE ? anchor - WINDOW_BEFORE : 0;
+  const end = Math.min(text.length, anchor + q.length + WINDOW_AFTER);
   return (
     <>
       {start > 0 && "…"}
-      {nodes}
+      {highlightAll(text.slice(start, end), q)}
       {end < text.length && "…"}
     </>
   );

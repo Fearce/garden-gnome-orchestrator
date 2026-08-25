@@ -20,6 +20,7 @@ import type {
   Question,
   Role,
   ScheduledTask,
+  TaskSearchHit,
   Thread,
 } from "../types.js";
 
@@ -139,9 +140,10 @@ export type ServerEvent =
   | { type: "director.message"; message: DirectorMessage }
   | { type: "director.tool"; name: string; input: unknown }
   | { type: "director.busy"; busy: boolean }
-  // Reply to a director.search: the whole-conversation matches (newest-first) for `query`. Echoing
+  // Reply to a director.search: everything matching `query`, newest-first — the director-conversation
+  // hits in `messages`, and in `tasks` the tasks whose title, brief or conversation matches. Echoing
   // the query lets the client ignore a stale reply if the operator has since retyped.
-  | { type: "director.results"; query: string; messages: DirectorMessage[] }
+  | { type: "director.results"; query: string; messages: DirectorMessage[]; tasks: TaskSearchHit[] }
   // A dedicated user-facing notification channel (unlike `log`, which the client drops). Used by the
   // token-safety auto-stop (warn) and the token-reset auto-resume (info); the client shows it as a
   // dismissible banner and fires a desktop notify.
@@ -321,8 +323,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // Kills the live run, discards the in-flight turn, and settles the director back to idle; the
   // conversation session is preserved so the next message resumes with full context.
   z.object({ type: z.literal("director.cancel") }),
-  // Search the WHOLE director conversation (across every task) for a substring; replies with
-  // director.results. The snapshot only ships the recent slice, so old mentions need a server query.
+  // Search everything the console holds for a substring — the whole director conversation AND every
+  // task's title, brief and conversation; replies with director.results. All of it needs a server
+  // query: the snapshot ships only the recent director slice and no task conversations at all.
   z.object({ type: z.literal("director.search"), query: z.string().min(1).max(200) }),
   // Fetch one page of an office room's history (the expanded chatroom view / a task's button). Without
   // `before` it's the newest page; with a `before` cursor it's the page just older than it — the client

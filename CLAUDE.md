@@ -318,6 +318,16 @@ is then NOT found by a repo-relative path. **Pass an ABSOLUTE path** (the contai
 to the workspace) — or save the file at the workspace root. Verify before handing off: the file must sit at
 `join(workspace, path)` (or be absolute and inside the workspace).
 
+## Search (the rail's box — it searches TASKS, not just the director)
+It answers "which task was I doing X in?", so it spans each task's **whole conversation**, not only title
++ brief. That scope IS the feature: searching `director_messages` alone returned nothing for "milkshake"
+— dispatched as "Can u make a 3d model of this i can print?" + a photo, the word existed only in what the
+implementor then wrote. A term the owner never typed is the normal case. `db.searchTasks` = one grouped
+`LIKE` scan of `messages` (~0.4s/350k rows; debounced, deliberately NOT FTS — mirroring ~100 MB of tool
+output costs more than it saves on a DB whose growth is the watch-item), ranked metadata → hit count →
+recency (recency alone buries the answer), snippets **windowed server-side** (a `result` row is often
+megabytes). `director.search` replies `messages` + `tasks`. Gate: `test:task-search`.
+
 ## The note list (what's waiting on the owner)
 The **Notes** board tab (count badge) is the owner's own list of branches/PRs waiting on THEM — one
 clickable line each, which they click, act on, and delete. Every thread-scoped role posts via the

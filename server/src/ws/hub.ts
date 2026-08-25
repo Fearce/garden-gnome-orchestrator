@@ -265,7 +265,12 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       ctx.director.cancelTurn();
       break;
     case "director.search":
-      send(socket, { type: "director.results", query: cmd.query, messages: ctx.db.searchDirectorMessages(cmd.query) });
+      send(socket, {
+        type: "director.results",
+        query: cmd.query,
+        messages: ctx.db.searchDirectorMessages(cmd.query),
+        tasks: ctx.db.searchTasks(cmd.query),
+      });
       break;
     case "chat.history": {
       const page = ctx.db.listRoomMessagePage(cmd.room, CHAT_PAGE_SIZE, cmd.before);

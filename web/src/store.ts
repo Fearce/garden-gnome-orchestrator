@@ -34,6 +34,7 @@ import type {
   ScheduledTask,
   ServerEvent,
   SettingsPatch,
+  TaskSearchHit,
   Thread,
 } from "./types.js";
 import { agentKey, GENERAL_ROOM } from "./types.js";
@@ -81,11 +82,11 @@ interface State {
   director: DirectorItem[];
   directorDraft: string;
   directorBusy: boolean;
-  // Director-conversation search — matches span the WHOLE conversation across every task (the snapshot
-  // only carries the recent slice, so old mentions are found via a server query; the server match is
-  // ASCII case-insensitive). Null when the search box is empty/closed; `searching` gates the spinner
-  // between the request and its reply.
-  directorSearch: { query: string; results: DirectorMessage[]; searching: boolean } | null;
+  // Console-wide search — the whole director conversation across every task, plus the tasks whose
+  // title, brief or conversation matches (the snapshot carries only the recent director slice and no
+  // task conversations, so both come from a server query; the server match is ASCII case-insensitive).
+  // Null when the search box is empty/closed; `searching` gates the spinner between request and reply.
+  directorSearch: { query: string; results: DirectorMessage[]; tasks: TaskSearchHit[]; searching: boolean } | null;
   threadFeeds: Record<string, FeedItem[]>;
   threadDrafts: Record<string, ThreadDraft | undefined>;
   // Live reasoning stream (agent.thinking deltas) awaiting its durable agent.reasoning commit — kept
@@ -184,7 +185,7 @@ interface State {
   modelStats: ModelStat[];
 
   select: (id: string | null) => void;
-  // Search the whole director conversation (across every task) for a substring, or clear the search.
+  // Search the whole director conversation and every task (title, brief, conversation), or clear it.
   searchDirector: (query: string) => void;
   clearDirectorSearch: () => void;
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
@@ -553,9 +554,10 @@ export const useStore = create<State>((set) => ({
     }
     // Keep the prior results visible while a new query for the same string is in flight (no flash);
     // a changed query starts empty. The reply reconciles both via the echoed query.
-    set((s) => ({
-      directorSearch: { query: q, results: s.directorSearch?.query === q ? s.directorSearch.results : [], searching: true },
-    }));
+    set((s) => {
+      const same = s.directorSearch?.query === q ? s.directorSearch : null;
+      return { directorSearch: { query: q, results: same?.results ?? [], tasks: same?.tasks ?? [], searching: true } };
+    });
     sendCommand({ type: "director.search", query: q });
   },
   clearDirectorSearch: () => set({ directorSearch: null }),
@@ -1189,7 +1191,7 @@ function applyEvent(ev: ServerEvent): void {
       useStore.setState((s) => {
         // Drop a reply for a query the operator has since retyped or cleared.
         if (!s.directorSearch || s.directorSearch.query !== ev.query) return {};
-        return { directorSearch: { query: ev.query, results: ev.messages, searching: false } };
+        return { directorSearch: { query: ev.query, results: ev.messages, tasks: ev.tasks ?? [], searching: false } };
       });
       break;
     case "notice":

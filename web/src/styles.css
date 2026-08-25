@@ -453,6 +453,30 @@ button { font-family: inherit; cursor: pointer; }
 .ds-goto:hover svg { color: var(--accent); }
 .ds-goto-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ds-goto-gone { align-self: flex-start; margin-top: 2px; font-size: 11px; color: var(--text-faint); font-style: italic; }
+.ds-section {
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint);
+  padding-top: 4px; border-top: 1px solid var(--line);
+}
+.ds-section:first-of-type { padding-top: 0; border-top: 0; }
+.ds-task {
+  display: flex; flex-direction: column; gap: 4px; padding: 9px 11px; border-radius: var(--r-md);
+  background: var(--bg-2); border: 1px solid var(--line); border-left: 2px solid var(--accent);
+  font: inherit; color: inherit; text-align: left; cursor: pointer; width: 100%;
+}
+.ds-task:hover { background: var(--bg-3); border-color: var(--line-strong); border-left-color: var(--accent); }
+.ds-task-state {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint);
+}
+.ds-task-pip { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.ds-task-title { font-size: 13px; font-weight: 500; line-height: 1.4; color: var(--text); word-break: break-word; }
+/* Evidence is scanned, not read — and a matching message is often a base64 blob or a slicer dump, which
+   `overflow-wrap: anywhere` otherwise spreads over a dozen lines. Safe to clamp: the server centres the
+   window 90 chars before the match, so the highlight always lands inside the first two lines. */
+.ds-task .ds-snippet { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ds-task-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--text-faint); }
+.ds-task-where { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-task-repo { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .msg { display: flex; flex-direction: column; gap: 3px; }
 .msg .by { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }

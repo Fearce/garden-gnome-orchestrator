@@ -33,6 +33,7 @@ const GATES = [
   "test:schedule-detect",
   "test:scheduler",
   "test:notes",
+  "test:task-search",
   "test:deploy-plan",
   "test:compiled-diff",
   "test:tree-owner",

@@ -176,6 +176,28 @@ export interface DirectorMessage {
   createdAt: number;
 }
 
+/** Where a task's text matched the search — the server picks the most informative site as the snippet
+ *  source, and the console labels the hit with it. */
+export type TaskMatchSite = "title" | "brief" | "conversation";
+
+/** One task matched by the search box, beside the director-conversation hits. The search spans each
+ *  task's whole conversation and not just its title and brief, because the word the owner remembers a
+ *  task by is often one an agent coined while working — a folder it created, a file it generated. */
+export interface TaskSearchHit {
+  threadId: string;
+  title: string;
+  state: ThreadState;
+  workspace: string;
+  createdAt: number;
+  where: TaskMatchSite;
+  // A window around the first match, cut server-side (a matching tool-output message is often
+  // megabytes). Empty when only the title matched — the highlighted title is the evidence.
+  snippet: string;
+  // Matching messages in the task's conversation: what tells the task that did the work apart from
+  // one that merely mentioned it. 0 for a title/brief-only match.
+  messageHits: number;
+}
+
 export interface Message {
   id: string;
   threadId: string;
@@ -756,9 +778,10 @@ export type ServerEvent =
   | { type: "director.message"; message: DirectorMessage }
   | { type: "director.tool"; name: string; input: unknown }
   | { type: "director.busy"; busy: boolean }
-  // Reply to a director.search: whole-conversation matches (newest-first) for `query`; the echoed
-  // query lets the client drop a stale reply if the operator has retyped since.
-  | { type: "director.results"; query: string; messages: DirectorMessage[] }
+  // Reply to a director.search: everything matching `query`, newest-first — director-conversation hits
+  // in `messages`, matching tasks in `tasks`. The echoed query lets the client drop a stale reply if
+  // the operator has retyped since.
+  | { type: "director.results"; query: string; messages: DirectorMessage[]; tasks: TaskSearchHit[] }
   // A user-facing notification (token-safety auto-stop = warn; token-reset auto-resume = info). Shown as a
   // dismissible banner + desktop notify.
   | { type: "notice"; level: "info" | "warn"; title: string; message: string }

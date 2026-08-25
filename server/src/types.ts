@@ -314,6 +314,30 @@ export interface DirectorMessage {
   createdAt: number;
 }
 
+/** Where a task's text matched the search — the console labels the hit with it, and the server picks
+ *  the most informative one as the snippet source (the owner's own brief beats agent chatter, and a
+ *  title match needs no snippet because the title is rendered highlighted anyway). */
+export type TaskMatchSite = "title" | "brief" | "conversation";
+
+/** One task matched by the console's search box, the other half of a search result beside the director
+ *  conversation. The search spans a task's whole CONVERSATION and not just its title and brief, because
+ *  the word the owner remembers is often one an agent coined mid-run — a project folder, a generated
+ *  file — that appears nowhere in the prompt that started the task. */
+export interface TaskSearchHit {
+  threadId: string;
+  title: string;
+  state: ThreadState;
+  workspace: string;
+  createdAt: number;
+  where: TaskMatchSite;
+  // A window around the first match, cut server-side: a matching `result` message is routinely
+  // megabytes of tool output, which must never reach the socket. Empty for a title-only match.
+  snippet: string;
+  // How many of the task's conversation messages match — the "worked on this a lot" signal that tells
+  // a passing mention apart from the task that actually did the work. 0 for a title/brief-only match.
+  messageHits: number;
+}
+
 export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 
 /** An image the user pasted/dropped, carried inline (base64) from the GUI on send. */
