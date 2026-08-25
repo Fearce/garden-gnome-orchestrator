@@ -51,6 +51,7 @@ const GATES = [
   "test:recovery-features",
   "test:office-bridge",
   "test:office-gating",
+  "test:office-health",
   "test:online-office",
   "test:relay-core",
   "test:zai-usage",

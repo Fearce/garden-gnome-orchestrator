@@ -21,6 +21,13 @@
 //     races the write. Poll the instance's own kv row read-only (`waitForPersisted`, model-select-lab).
 //   • Selectors: gear `[aria-label="Open settings"]` → `[role="dialog"][aria-label="Settings"]`; Git
 //     console `[aria-label="Open Git"]` → `.gc-window`; a task row `.card`; the top bar `.topbar`.
+//   • **Close an overlay the way the app closes it — Escape is not universal.** The office panel
+//     (`.office-panel`, opened from the top-bar strip) has NO key handler: only its `.office-scrim` or
+//     `.close-x` closes it, and that scrim covers the whole app. So an `Escape` that works on the
+//     Settings dialog leaves the office panel open, and every later click is silently eaten by the
+//     scrim — Playwright reports "<div class=office-scrim> intercepts pointer events" and retries for
+//     the full timeout, which reads as a broken selector rather than an unclosed overlay. Click the
+//     real control and `waitForSelector(..., {state:"detached"})` before moving on.
 //   • `has-text` is a SUBSTRING match, so adding a button can break an existing selector (strict-mode
 //     violation: "Auto-review & mark done" also matches `has-text("Mark done")`) — use `text-is` then.
 //   • State badges are CSS-uppercased (`.detail-head .badge`): the DOM reads `AUTO-REVIEW`, so compare

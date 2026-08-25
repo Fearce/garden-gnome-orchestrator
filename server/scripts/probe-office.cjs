@@ -1,0 +1,270 @@
+// Is cross-machine coordination actually WORKING — and is any of this traffic an instance talking to
+// itself? Read-only. Safe while prod is up (WAL + busy_timeout).
+//
+//   node scripts/probe-office.cjs
+//   npm run probe:office --prefix server
+//
+// Why it exists: on 2026-08-25 Kevin reported "we are 2 connected working on the same repo and it doesn't
+// seem like our gnomes are collaborating". The relay was healthy, both machines were on it, and the agents
+// had genuinely exchanged file claims — every surface anyone could check said fine. Diagnosing it meant
+// hand-writing SQLite one-liners and curling the relay, because NOTHING in the sweep looks at the online
+// office at all. The two defects behind it were both invisible-by-construction, and both are checked here:
+//
+//   • The relay handed every instance its OWN agents and its OWN replayed chat back. `applyChat` skipped
+//     the sender for LIVE chat, so the rule looked implemented while three other paths leaked. An instance
+//     receiving itself is not cosmetic: `repoPeers` is the office ON-switch, so every solo agent believed
+//     it had a teammate (itself) and the top bar drew the owner's own machine as a foreign one.
+//   • A room holding a real cross-machine conversation was UNREACHABLE in the console, because every
+//     chatroom surface counted local tasks only and a remote line carries no task.
+//
+// Both are provable from local data alone, which is what makes them checkable every night.
+//
+// GOTCHAS:
+//   • `isCollaborationRoom` is IMPORTED from the built app (`dist/types.js`), never re-implemented here.
+//     A hand-copied predicate is how this repo has been burned before (`CAP_RE`, `MIRRORED_HEADROOM_TERMS`)
+//     — the probe would drift into reporting the room reachable long after the app stopped agreeing.
+//   • The self-echo check is TIME-BOUNDED against the fix. Rows written before it are residue and are
+//     reported as a note, not a failure: a check that cries wolf every night stops being read, and this
+//     one would have gone permanently red on two pre-fix rows sitting in Kevin's vota room forever.
+//   • Never open the DB through `Db` — its constructor RUNS MIGRATIONS. Read-only sqlite only.
+//   • Nothing here prints the device token or the join code. The instance NAME is public (every peer
+//     sees it); the credentials are not, and this output goes into a sweep transcript.
+
+const path = require("node:path");
+const Database = require("better-sqlite3");
+
+const DB_PATH = path.resolve(__dirname, "..", "data", "orchestrator.sqlite");
+
+/**
+ * The sender-filter fix, for the message text only — the BOUNDARY comes from the database.
+ *
+ * A line carrying this instance's own name before the fix is residue; after it, a live regression. The
+ * boundary must therefore be "when did the fixed build first run HERE", and a hardcoded date is not that:
+ * the bug was reported and fixed within one morning, so a date-granularity constant flagged two rows
+ * written ninety minutes before the fix and went red on a healthy office — the exact cry-wolf failure
+ * that makes a nightly check stop being read. `remote_instance_backfill_v1` is the honest boundary: the
+ * fixed build stamps it on its first boot, so it dates itself per machine and needs no maintenance.
+ */
+const SELF_ECHO_FIX = { sha: "4f655c6", when: "2026-08-25", kv: "remote_instance_backfill_v1" };
+
+/** The app's own answer to "is this room a collaboration the console will show?" — imported, never
+ *  re-derived. Returns null when the server hasn't been built, so the caller can say so plainly. */
+function loadIsCollaborationRoom() {
+  try {
+    return require(path.resolve(__dirname, "..", "dist", "types.js")).isCollaborationRoom;
+  } catch {
+    return null;
+  }
+}
+
+function openDb() {
+  const db = new Database(DB_PATH, { readonly: true });
+  db.pragma("busy_timeout = 5000");
+  return db;
+}
+
+function readConfig(db) {
+  const kv = (key) => db.prepare("SELECT value FROM kv WHERE key = ?").get(key)?.value ?? "";
+  return {
+    enabled: kv("online_office_enabled") === "1",
+    url: kv("online_office_url"),
+    name: kv("online_office_name"),
+    joined: !!kv("online_office_token"), // presence only — the token itself is never read out
+    // When the fixed build first booted here. Absent = it never has, so nothing below can be a regression.
+    fixAt: Number(kv(SELF_ECHO_FIX.kv)) || null,
+  };
+}
+
+/**
+ * Split every project-room line that names a machine into the three things worth knowing apart.
+ * Exported for the gate: this is the whole judgement, and it is what has to keep working.
+ */
+function classifyOfficeRows({ rows, selfName, fixAt }) {
+  const out = { liveEcho: [], residue: [], unstamped: [] };
+  for (const r of rows) {
+    const stamped = r.remote_instance ?? null;
+    const fromName = senderMachine(r.sender_name);
+    const machine = stamped || fromName;
+    if (!machine) continue;
+    if (selfName && machine === selfName) {
+      // This instance receiving its own traffic. Before the fix that was the bug; after it, a regression.
+      // With no boundary (the fixed build has never booted here) nothing can be called a regression yet.
+      (fixAt && r.created_at >= fixAt ? out.liveEcho : out.residue).push(r);
+    } else if (!stamped) {
+      // Genuinely remote, but nothing recorded the machine — so it counts toward no room's participants.
+      out.unstamped.push(r);
+    }
+  }
+  return out;
+}
+
+/** "Sif @ Mikkel's laptop" -> "Mikkel's laptop". The stamp `receiveRemoteChat` has always written into
+ *  sender_name, and the only recoverable machine on rows predating the `remote_instance` column. */
+function senderMachine(senderName) {
+  const at = typeof senderName === "string" ? senderName.indexOf(" @ ") : -1;
+  return at < 0 ? null : senderName.slice(at + 3);
+}
+
+/** Every project room a machine other than this one has spoken in, with the app's own reachability
+ *  verdict. A room here that the console will NOT show is the "invisible conversation" defect. */
+function crossMachineRooms(db, selfName, isCollaborationRoom) {
+  const rows = db
+    .prepare(
+      `SELECT room,
+              MAX(workspace) AS workspace,
+              MAX(created_at) AS last_at,
+              GROUP_CONCAT(DISTINCT thread_id) AS thread_ids
+         FROM chat_messages
+        WHERE scope = 'project'
+        GROUP BY room`,
+    )
+    .all();
+  const machines = new Map();
+  for (const m of db
+    .prepare(
+      `SELECT room, remote_instance FROM chat_messages
+        WHERE scope = 'project' AND remote_instance IS NOT NULL
+        GROUP BY room, remote_instance`,
+    )
+    .all()) {
+    machines.set(m.room, [...(machines.get(m.room) ?? []), m.remote_instance]);
+  }
+  return rows
+    .map((r) => {
+      const remoteInstances = (machines.get(r.room) ?? []).filter((n) => n !== selfName);
+      const threadIds = String(r.thread_ids ?? "").split(",").filter(Boolean);
+      return {
+        room: r.room,
+        workspace: r.workspace ?? "",
+        lastAt: r.last_at,
+        threadIds,
+        remoteInstances,
+        reachable: isCollaborationRoom ? isCollaborationRoom({ threadIds, remoteInstances }) : null,
+      };
+    })
+    .filter((r) => r.remoteInstances.length)
+    .sort((a, b) => b.lastAt - a.lastAt);
+}
+
+/** The relay's PUBLIC health endpoint — no admin key, so this works from any checkout. Unreachable is a
+ *  note, never a failure: the whole feature is designed to degrade soft when the relay is down. */
+async function relayHealth(url) {
+  if (!url) return null;
+  try {
+    const res = await fetch(`${url.replace(/\/+$/, "")}/api/health`, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    return await res.json();
+  } catch (e) {
+    const err = e;
+    return { error: err.cause?.message || err.message };
+  }
+}
+
+const ago = (ms) => {
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+};
+
+/** The verdict, separated from the printing so the gate can assert on it. */
+function verdictFor({ echo, rooms }) {
+  const problems = [];
+  if (echo.liveEcho.length) {
+    problems.push(
+      `${echo.liveEcho.length} line(s) since ${SELF_ECHO_FIX.when} carry THIS instance's own name — ` +
+        `the sender filter has regressed on one of: relay roster, relay history replay, client presence, client chat`,
+    );
+  }
+  const hidden = rooms.filter((r) => r.reachable === false);
+  if (hidden.length) {
+    problems.push(
+      `${hidden.length} room(s) hold a cross-machine conversation the console will NOT show — ` +
+        `${hidden.map((r) => r.room).join(", ")}`,
+    );
+  }
+  return { ok: problems.length === 0, problems };
+}
+
+async function main() {
+  const db = openDb();
+  const cfg = readConfig(db);
+  const isCollaborationRoom = loadIsCollaborationRoom();
+
+  console.log("=== online office ===");
+  if (!cfg.joined) {
+    console.log("  not joined — Settings → Online office. Nothing to check; local pipelines are unaffected.");
+    db.close();
+    process.exit(0);
+  }
+  console.log(`  joined as "${cfg.name}" → ${cfg.url}${cfg.enabled ? "" : "   (presence switched OFF)"}`);
+  const health = await relayHealth(cfg.url);
+  if (!health) console.log("  relay: no address recorded");
+  else if (health.error) console.log(`  relay: UNREACHABLE (${health.error}) — the office degrades soft; local work is unaffected`);
+  else {
+    console.log(
+      `  relay: ${health.instancesOnline} instance(s) online, ${health.agentsOnline} agent(s), ` +
+        `${health.sharedRepos} shared repo(s), ${health.members} member machine(s)`,
+    );
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT id, room, sender_name, remote_instance, created_at FROM chat_messages
+        WHERE scope = 'project' AND thread_id IS NULL`,
+    )
+    .all();
+  const echo = classifyOfficeRows({ rows, selfName: cfg.name, fixAt: cfg.fixAt });
+
+  console.log("\n=== self-echo check ===");
+  if (echo.liveEcho.length) {
+    console.log(`  ✗ ${echo.liveEcho.length} line(s) stamped with this instance's own name ("${cfg.name}") AFTER the fix:`);
+    for (const r of echo.liveEcho.slice(0, 8)) console.log(`      ${r.room}  ${r.sender_name ?? "(system)"}  ${ago(r.created_at)}`);
+    console.log(`    An instance must never receive what it sent. See .claude/rules/online-office.md.`);
+  } else if (!cfg.fixAt) {
+    console.log(`  ⚠ the fixed build (${SELF_ECHO_FIX.sha}) has never booted here, so no line can be judged a regression yet.`);
+  } else {
+    console.log(`  ✓ nothing carries this instance's own name since the echo fix ran here (${SELF_ECHO_FIX.sha}, ${ago(cfg.fixAt)})`);
+  }
+  if (echo.residue.length) {
+    const rooms = [...new Set(echo.residue.map((r) => r.room))];
+    console.log(`  ↳ ${echo.residue.length} pre-fix row(s) remain in ${rooms.join(", ")} — residue the bug wrote, deliberately`);
+    console.log(`    left uncounted by the backfill (stamping them would rebuild the phantom teammate in the data).`);
+  }
+  if (echo.unstamped.length) {
+    console.log(`  ⚠ ${echo.unstamped.length} genuinely-remote line(s) carry no machine stamp — they count toward no room's`);
+    console.log(`    participants, so their room can go unreachable. Check receiveRemoteChat still sets remoteInstance.`);
+  }
+
+  console.log("\n=== cross-machine rooms ===");
+  const rooms = crossMachineRooms(db, cfg.name, isCollaborationRoom);
+  if (isCollaborationRoom === null) {
+    console.log("  (server not built — run `npm run build --prefix server` to get the reachability verdict)");
+  }
+  if (!rooms.length) {
+    console.log("  none — no other machine has spoken in a repo room here.");
+  }
+  for (const r of rooms) {
+    const reach = r.reachable === null ? "reachability unknown" : r.reachable ? "reachable ✓" : "NOT REACHABLE ✗";
+    console.log(
+      `  ${r.room}\n      ${r.threadIds.length} local task(s) · ${r.remoteInstances.length} machine(s) ` +
+        `(${r.remoteInstances.join(", ")}) · last ${ago(r.lastAt)} · ${reach}`,
+    );
+  }
+
+  const verdict = verdictFor({ echo, rooms });
+  console.log("\n=== verdict ===");
+  if (verdict.ok) console.log("  ✓ the online office is two-way: nothing is echoing back, every cross-machine room is reachable");
+  else for (const p of verdict.problems) console.log(`  ✗ ${p}`);
+  db.close();
+  process.exit(verdict.ok ? 0 : 1);
+}
+
+module.exports = { SELF_ECHO_FIX, classifyOfficeRows, senderMachine, verdictFor };
+
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

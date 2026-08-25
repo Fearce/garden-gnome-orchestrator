@@ -164,6 +164,16 @@ reuses them, so don't propose a `VACUUM` (exclusive lock on a live DB, buys only
 itself is never a failure — once nothing is duplicated, shrinking further is Kevin's retention DECISION.
 Gate: `test:db-size`.
 
+## 9. `npm run probe:office --prefix server` — is the online office two-way, or talking to itself
+No other step can see cross-machine coordination: it lives half in a relay on another box, and its failure
+mode is that everything looks BUSY. On 08-25 the relay was healthy, both machines on it, traffic real —
+while each instance also received its OWN agents and replayed chat (so every solo agent had a teammate:
+itself, via `repoPeers`) and the room the two actually shared was unreachable in the console. Both are
+provable locally, so both are checked: a line carrying THIS instance's name, and a cross-machine room the
+app's own `isCollaborationRoom` (imported from `dist`, never re-implemented) won't show. A `↳ pre-fix
+row(s)` line is a NOTE — the boundary is the kv stamp the fixed build writes on first boot, so residue the
+bug wrote can't red a healthy office forever. Gate: `test:office-health`.
+
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already completed — only verify live `dist` + health.
 - **Do NOT `git add -A`** when `health` lists dirty paths; those are usually a concurrent implementor's WIP
