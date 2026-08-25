@@ -19,13 +19,14 @@ Comment out your change, run the gate, require RED, restore. Commit `70c2f84` sh
 gaps that made it a no-op in production; its tests passed, and only the revert-check
 (`5a618cc`) found them. One minute, and it is the difference between a gate and a decoration.
 
-**Revert with the Edit tool, and confirm the file actually changed before believing GREEN.**
-A scripted revert that silently edits nothing turns this check inside out: the gate passes,
-and you read that as "my fix isn't load-bearing" when it means "I never removed it". Twice in
-one session (2026-08-17) — `python3 - <<EOF` is not a program on this box (the Microsoft Store
-alias prints its ad to stdout and exits 0), and a `node -e` string replace missed on escaping.
-Both printed nothing alarming. `cp <file> /tmp/x.bak` first, then `diff` after the revert AND
-after the restore — the second diff is what proves you put it back byte-identical.
+**Revert with the Edit tool, and `diff` the file before believing either colour.** A scripted
+revert lies in BOTH directions. It edits nothing and the gate passes, which reads as "my fix isn't
+load-bearing" but means "I never removed it" — twice on 2026-08-17 (`python3 - <<EOF` is the
+Microsoft Store alias here: prints its ad, exits 0; a `node -e` replace missed on escaping). Or it
+edits to garbage and the gate dies on a `SyntaxError` — red, but for a reason that says nothing
+about your fix, and the more convincing lie because red is what you were hoping for (2026-08-25).
+So: `cp <file> /tmp/x.bak`, `diff` after the revert, read the ASSERTION message rather than the
+exit code, and `diff` again after restoring to prove it went back byte-identical.
 
 ## Trap: your stub hands the code a state production never has
 
