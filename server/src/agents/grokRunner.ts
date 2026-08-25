@@ -375,7 +375,7 @@ export class GrokAgentRun implements AgentRunLike {
     const env: NodeJS.ProcessEnv = withAgentToolPath({ ...process.env, GROK_HOME: config.grok.home, GROK_DISABLE_AUTOUPDATER: "1" });
     let child: ChildProcess;
     try {
-      child = spawn(config.grok.bin, args, { cwd: this.cfg.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(config.grok.bin, args, { cwd: this.cfg.cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     } catch (err) {
       this.turnStarting = false;
       this.turnActive = false;

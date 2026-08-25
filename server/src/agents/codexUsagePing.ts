@@ -75,7 +75,7 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
 
   let child: ChildProcess;
   try {
-    child = spawn(process.execPath, [config.codex.binJs, "app-server"], { env, stdio: ["pipe", "pipe", "ignore"] });
+    child = spawn(process.execPath, [config.codex.binJs, "app-server"], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
   } catch {
     return null;
   }
@@ -192,7 +192,7 @@ export async function codexWakeTurn(apiKey: string | undefined, model: string, t
   return new Promise((resolve) => {
     let child: ChildProcess;
     try {
-      child = spawn(process.execPath, args, { cwd: config.codex.home, env, stdio: ["pipe", "pipe", "ignore"] });
+      child = spawn(process.execPath, args, { cwd: config.codex.home, env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
     } catch {
       resolve(false);
       return;

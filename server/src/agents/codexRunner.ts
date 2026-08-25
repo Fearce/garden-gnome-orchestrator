@@ -493,7 +493,7 @@ export class CodexAgentRun implements AgentRunLike {
     else delete env.OPENAI_API_KEY;
     let child: ChildProcess;
     try {
-      child = spawn(process.execPath, [config.codex.binJs, ...args], { cwd: this.cfg.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(process.execPath, [config.codex.binJs, ...args], { cwd: this.cfg.cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     } catch (err) {
       this.turnStarting = false;
       this.turnActive = false;
