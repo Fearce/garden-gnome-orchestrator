@@ -327,6 +327,10 @@ implementor then wrote. A term the owner never typed is the normal case. `db.sea
 output costs more than it saves on a DB whose growth is the watch-item), ranked metadata → hit count →
 recency (recency alone buries the answer), snippets **windowed server-side** (a `result` row is often
 megabytes). `director.search` replies `messages` + `tasks`. Gate: `test:task-search`.
+Triage side — "where in the DB does this word live?", to read BEFORE placing a missing-text bug:
+`npm run probe:text --prefix server -- <text>` gives every table holding it (incl. findings/chat/notes),
+rolled up per task, plus whether the DIRECTOR ever said it (no ⇒ an agent coined it — the normal case).
+Read-only, grep exit codes. Gate: `test:probe-text`.
 
 ## The note list (what's waiting on the owner)
 The **Notes** board tab (count badge) is the owner's own list of branches/PRs waiting on THEM — one

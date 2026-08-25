@@ -39,6 +39,12 @@ Delete the script and the temp dir when finished — it isn't a repeatable test,
 - **Proof of losslessness before touching 300 MB of Kevin's data**, which is what made deploying it a
   non-event rather than a gamble.
 
+## The same snapshot answers "does my new QUERY work on real data?"
+
+`searchTasks` was rehearsed this way — no synthetic gate shows that recency-ranking buries the answer
+under newer log dumps, or that a real hit costs 0.4s. **Only when you need real `Db` CODE**: a plain
+read wants `new Database(path, {readonly:true})` and no snapshot; `new Db(path)` runs `migrate()`.
+
 ## Gotchas
 
 - The snapshot is also a compaction (`VACUUM INTO` drops free pages), so it is SMALLER than the live
