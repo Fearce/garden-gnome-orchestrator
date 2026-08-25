@@ -55,8 +55,9 @@ const clip = (s: unknown, n: number): string => (typeof s === "string" ? s.repla
  * The Online Office's routing brain: who is online, which repos they are in, and who each chat line
  * reaches. Deliberately free of transport, storage and clock concerns — the relay process wires those in.
  *
- * Two rules shape everything here. A message to the office room reaches every OTHER instance (never the
- * sender, which already has its own copy locally). A message to a repo room reaches only the instances
+ * Two rules shape everything here. **Nothing an instance sent ever comes back to it** — not live chat,
+ * not replayed history, not its own agents in a roster — because it already holds that locally and an
+ * echo reads as a coworker on another machine. And a message to a repo room reaches only the instances
  * that currently have an agent in that repository — so two people working unrelated repos never see each
  * other's coordination chatter, which is the whole point of keying rooms on repo identity.
  */
@@ -85,8 +86,8 @@ export class RelayCore {
       protocol: RELAY_PROTOCOL,
       instanceId: peer.instanceId,
       instanceName: peer.instanceName,
-      presence: this.roster(),
-      recent: this.history.recent(OFFICE_ROOM),
+      presence: this.rosterFor(peer.instanceId),
+      recent: this.othersOnly(this.history.recent(OFFICE_ROOM), peer.instanceId),
     });
     this.broadcastPresence();
   }
@@ -139,7 +140,7 @@ export class RelayCore {
     st.agents = clean;
     st.rooms = rooms;
     for (const room of entered) {
-      const messages = this.history.recent(room);
+      const messages = this.othersOnly(this.history.recent(room), st.peer.instanceId);
       if (messages.length) st.peer.send({ t: "history", room, messages });
     }
     if (changed) this.broadcastPresence();
@@ -170,13 +171,29 @@ export class RelayCore {
     return null;
   }
 
-  /** Every agent every connected instance is reporting, stamped with its instance. */
+  /** Every agent every connected instance is reporting, stamped with its instance. The status pages want
+   *  this whole picture; an instance never does — see `rosterFor`. */
   roster(): RelayPresentAgent[] {
     const out: RelayPresentAgent[] = [];
     for (const st of this.peers.values()) {
       for (const a of st.agents) out.push({ ...a, instanceId: st.peer.instanceId, instanceName: st.peer.instanceName });
     }
     return out;
+  }
+
+  /** The roster as ONE instance must see it: everyone but itself. An instance already knows its own
+   *  agents — handing them back makes it treat its own workers as coworkers on another machine, which
+   *  is not a cosmetic duplicate: peers are what switch the office on, so a lone agent would be told it
+   *  has a teammate (itself) and every "someone joined" push would be about itself. */
+  rosterFor(instanceId: string): RelayPresentAgent[] {
+    return this.roster().filter((a) => a.instanceId !== instanceId);
+  }
+
+  /** The same rule for replayed chat. A room's backlog holds the entering instance's OWN lines, and
+   *  unlike live chat (which skips the sender in `applyChat`) a replay has no sender to skip — so
+   *  without this an instance re-imports its own posts as a remote teammate's, on every reconnect. */
+  private othersOnly(messages: RelayChat[], instanceId: string): RelayChat[] {
+    return messages.filter((m) => m.instanceId !== instanceId);
   }
 
   /** The connected instances, for the status page and `/api/health`. */
@@ -207,7 +224,9 @@ export class RelayCore {
   }
 
   private broadcastPresence(): void {
-    const agents = this.roster();
-    for (const st of this.peers.values()) st.peer.send({ t: "presence", agents });
+    const all = this.roster();
+    for (const st of this.peers.values()) {
+      st.peer.send({ t: "presence", agents: all.filter((a) => a.instanceId !== st.peer.instanceId) });
+    }
   }
 }

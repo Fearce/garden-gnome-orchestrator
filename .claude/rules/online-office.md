@@ -1,10 +1,9 @@
 # The Online Office (coordination across machines)
 
-The local office groups agents by `normalizeWorkspace(thread.workspace)` — a filesystem path. The
-ONLINE office groups them by **repository identity**, because two people's checkouts of the same
-repo have different paths and the same remote. Read this before touching anything under
-`server/src/office/` or `relay/`. (For the LOCAL gating fan-out see `office-coordination.md`; for
-the CLI text bridge see `office-bridge.md`.)
+The local office groups agents by `normalizeWorkspace(thread.workspace)` — a path. The ONLINE office
+groups them by **repository identity**: two checkouts of one repo share a remote, never a path. Read
+this before touching `server/src/office/` or `relay/`. (Local gating: `office-coordination.md`; the
+CLI text bridge: `office-bridge.md`.)
 
 ## The pieces
 - `relay/` — a standalone one-dependency (`ws`) service, deployed to the Sprogbroen Hetzner box as its
@@ -14,17 +13,26 @@ the CLI text bridge see `office-bridge.md`.)
   `host/owner/repo`. No remote ⇒ `name:<folder>`. **This is the hinge**: get it wrong and nobody groups.
 - `server/src/office/onlineOffice.ts` — one authenticated socket. Standalone over `(Db, EventHub)` +
   three callbacks; NEVER imports ThreadManager (same rule as `notes.ts`/`scheduler.ts`).
-- ThreadManager touches five places only: `repoPeers` (remote agents are peers), `officeRoster`,
-  `chatPost` (fans out), `receiveRemoteChat`, `remoteTeammatesJoined`.
+- ThreadManager touches five places: `repoPeers`, `officeRoster`, `chatPost`, `receiveRemoteChat`, `remoteTeammatesJoined`.
 
 ## Rules that bite
+- **Nothing an instance sent may come back to it — presence, live chat AND replayed history.** Only live
+  chat was guarded, so `roster()` handed each instance its own agents and the room replay its own lines.
+  Not cosmetic: `repoPeers` is the office ON-switch, so a solo agent had a teammate (itself), joins
+  announced its own workers, and the top bar drew the owner's machine as a foreign one. Relay:
+  `rosterFor` + `othersOnly`. The receiver refuses self-stamped frames too (`isSelf`) — the relay is
+  shared, on someone else's deploy cadence. Gates: `test:relay-core`, `test:online-office`.
+- **A cross-machine room has NO local participant until your own agent replies.** Chatroom surfaces gate
+  on `isCollaborationRoom` (`types.ts` + web mirror), never `threadIds.length >= 2`: a project room only
+  exists here for a repo this machine works, so one remote machine in it IS the collaboration. Counting
+  local threads hid the tab and the Chatroom button entirely. The count is `chat_messages.remote_instance`,
+  stamped by `receiveRemoteChat` and `remoteTeammatesJoined` (which announces once per MACHINE for that).
 - **`server/src/office/onlineProtocol.ts` is a byte-for-byte copy of `relay/src/protocol.ts`.** Change
   one, change the other, and bump `RELAY_PROTOCOL` for anything not backward-compatible — both ends
   refuse a mismatch at the handshake rather than dropping frames silently.
-- **`repoIdentity` is async (it shells out to git); the office gate is sync.** `remotePeers` therefore
-  answers from a cache and warms a miss in the background. That is deliberate: a git read must never
-  block `officeNote`. The self-healing part is that a presence change re-fires `onRemoteJoin`, so a
-  teammate discovered a tick late still wakes the live implementor.
+- **`repoIdentity` is async (it shells out to git); the office gate is sync.** `remotePeers` answers from
+  a cache and warms a miss in the background — a git read must never block `officeNote`. A presence change
+  re-fires `onRemoteJoin`, so a teammate found a tick late still wakes the live implementor.
 - **A remote peer is NOT a working-tree peer.** Their edits never appear in `git status`; the collision
   is at the remote. `officeNote`, `remoteChatPush` and `remoteJoinPush` all say so explicitly — don't
   "simplify" them into the local "commit only your own hunks" wording.
@@ -36,8 +44,7 @@ the CLI text bridge see `office-bridge.md`.)
 - **Never `ws.close()` a socket that isn't OPEN, and never strip its listeners without leaving an
   `error` sink.** `ws` emits on a close during the handshake, and an unhandled `error` kills the
   process — a revoked device token crashed the whole orchestrator until `closeSocket` handled both.
-- **The device token is never broadcast.** `OnlineOfficeDTO` carries `joined`, not the token; the join
-  code is used once in the hub handler and dropped.
+- **The device token is never broadcast.** `OnlineOfficeDTO` carries `joined`; the join code is used once.
 
 ## Deploying / operating
 `relay/deploy.sh` ships the source and rebuilds on the box (`~/gg-office-relay`; the `deploy` user has
@@ -48,6 +55,6 @@ editing it on the server breaks their next deploy. The join code + admin key are
 
 ## Verify
 `npm run test:online-office --prefix server` (client ↔ a fake relay, real git repos, real ThreadManager)
-and `npm run test:relay-core --prefix server` (routing with fake peers). Both free. For the Settings
-surface, `npm run office-lab --prefix server` drives Join → roster → Leave headlessly against its own
-throwaway instance and its own throwaway relay — never prod.
+and `npm run test:relay-core --prefix server` (routing with fake peers). Both free. `npm run office-lab
+--prefix server` drives Join → roster → the cross-machine room → Leave headlessly, against its own
+throwaway console AND its own throwaway relay — never prod.

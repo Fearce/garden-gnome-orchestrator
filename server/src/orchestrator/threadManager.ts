@@ -121,6 +121,13 @@ function sanitizeAccountEffortCaps(input: Record<string, Effort>): Record<string
   return out;
 }
 
+/** Bucket remote agents by the machine they work on — the unit the office announces and counts in. */
+function byInstance(agents: RelayPresentAgent[]): Map<string, RelayPresentAgent[]> {
+  const out = new Map<string, RelayPresentAgent[]>();
+  for (const a of agents) out.set(a.instanceName, [...(out.get(a.instanceName) ?? []), a]);
+  return out;
+}
+
 type ResultEvent = Extract<AgentEvent, { type: "result" }>;
 type Acct = { id: string; label: string; token: string | undefined };
 import type {
@@ -5597,6 +5604,7 @@ export class ThreadManager implements OrchestratorApi {
       kind: "chat",
       body: msg.body,
       senderName,
+      remoteInstance: msg.instanceName,
     });
     this.hub.publish({ type: "chat.message", message: stored });
     if (!project) return;
@@ -5635,19 +5643,26 @@ export class ThreadManager implements OrchestratorApi {
    *  exactly as able to land conflicting commits, and rather harder to notice. */
   remoteTeammatesJoined(repoLabel: string, workspaces: string[], joiners: RelayPresentAgent[]): void {
     if (!workspaces.length || !joiners.length) return;
-    const who = joiners.map((j) => `${j.name} (${j.role}) on "${j.title}" from ${j.instanceName}`).join(", ");
-    for (const workspace of workspaces) this.pushToRepo(workspace, (cli) => remoteJoinPush(repoLabel, who, joiners.length, cli));
     const home = workspaces[0]!;
-    const m = this.db.addChatMessage({
-      room: repoRoom(home),
-      scope: "project",
-      workspace: home,
-      threadId: null,
-      role: "system",
-      kind: "system",
-      body: `🌐 ${who} joined ${repoLabel} from another machine — coordinate here.`,
-    });
-    this.hub.publish({ type: "chat.message", message: m });
+    // One announcement per MACHINE, not per joiner: the room's participant count is a count of machines,
+    // so a batch spanning two of them has to leave a row stamped with each — otherwise the second machine
+    // is invisible to `isCollaborationRoom` until one of its agents happens to speak.
+    for (const [instanceName, list] of byInstance(joiners)) {
+      const who = list.map((j) => `${j.name} (${j.role}) on "${j.title}"`).join(", ");
+      const line = `${who} from ${instanceName}`;
+      for (const workspace of workspaces) this.pushToRepo(workspace, (cli) => remoteJoinPush(repoLabel, line, list.length, cli));
+      const m = this.db.addChatMessage({
+        room: repoRoom(home),
+        scope: "project",
+        workspace: home,
+        threadId: null,
+        role: "system",
+        kind: "system",
+        body: `🌐 ${line} joined ${repoLabel} from another machine — coordinate here.`,
+        remoteInstance: instanceName,
+      });
+      this.hub.publish({ type: "chat.message", message: m });
+    }
   }
 
   // ---- the office: cross-agent chat + grouping ----

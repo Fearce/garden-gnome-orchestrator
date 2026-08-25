@@ -218,6 +218,7 @@ export interface ChatMessage {
   kind: "chat" | "system";
   body: string;
   senderName?: string | null; // the gnome name the sender went by (stamped at post time)
+  remoteInstance?: string | null; // set when the line came from another machine's orchestrator (its name)
   createdAt: number;
 }
 
@@ -258,9 +259,20 @@ export function gnomeName(threadId: string, role: Role): string {
 export interface ChatRoomSummary {
   room: string;
   workspace: string;
-  threadIds: string[]; // distinct tasks that have participated (sent or were announced into the room)
+  threadIds: string[]; // distinct LOCAL tasks that have participated (sent or were announced into the room)
+  remoteInstances: string[]; // distinct other machines whose agents have participated (Online Office)
   messageCount: number;
   lastAt: number;
+}
+
+/** Whether a project room is a real collaboration — the test the console gates its chatroom surfaces on.
+ *  Among purely local tasks it takes two. But a project room only exists HERE for a repo this machine is
+ *  working (a remote line for a repo we don't have lands in the general room instead), so one machine on
+ *  the far side of the Online Office is already a collaboration — and it may be the only party that has
+ *  spoken yet, our own task having not replied. Gating on local `threadIds` alone hid every cross-machine
+ *  conversation behind a tab that never appeared. */
+export function isCollaborationRoom(r: Pick<ChatRoomSummary, "threadIds" | "remoteInstances">): boolean {
+  return r.remoteInstances.length > 0 || r.threadIds.length >= 2;
 }
 
 /** Normalize a workspace path to a stable room/grouping key — lowercased, forward slashes, no trailing

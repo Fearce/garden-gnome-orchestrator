@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   kind        TEXT NOT NULL DEFAULT 'chat',
   body        TEXT NOT NULL,
   sender_name TEXT,
+  remote_instance TEXT,
   created_at  INTEGER NOT NULL
 );
 

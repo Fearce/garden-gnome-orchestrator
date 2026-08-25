@@ -191,6 +191,7 @@ function rowToChat(r: Row): ChatMessage {
     kind: r.kind as ChatMessage["kind"],
     body: r.body as string,
     senderName: (r.sender_name as string | null) ?? null,
+    remoteInstance: (r.remote_instance as string | null) ?? null,
     createdAt: r.created_at as number,
   };
 }
@@ -273,6 +274,7 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN lane TEXT",
       "ALTER TABLE attachments ADD COLUMN sha256 TEXT",
       "ALTER TABLE agent_runs ADD COLUMN cap_flagged INTEGER",
+      "ALTER TABLE chat_messages ADD COLUMN remote_instance TEXT",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -883,6 +885,7 @@ export class Db {
     kind?: ChatMessage["kind"];
     body: string;
     senderName?: string | null;
+    remoteInstance?: string | null;
   }): ChatMessage {
     const m: ChatMessage = {
       id: newId(),
@@ -895,12 +898,13 @@ export class Db {
       kind: input.kind ?? "chat",
       body: input.body,
       senderName: input.senderName ?? null,
+      remoteInstance: input.remoteInstance ?? null,
       createdAt: now(),
     };
     this.raw
       .prepare(
-        `INSERT INTO chat_messages(id, room, scope, workspace, thread_id, run_id, role, kind, body, sender_name, created_at)
-         VALUES(@id, @room, @scope, @workspace, @threadId, @runId, @role, @kind, @body, @senderName, @createdAt)`,
+        `INSERT INTO chat_messages(id, room, scope, workspace, thread_id, run_id, role, kind, body, sender_name, remote_instance, created_at)
+         VALUES(@id, @room, @scope, @workspace, @threadId, @runId, @role, @kind, @body, @senderName, @remoteInstance, @createdAt)`,
       )
       .run(m);
     return m;
@@ -970,12 +974,26 @@ export class Db {
          ORDER BY last_at DESC`,
       )
       .all() as Row[];
+    // Machine names are free text and can contain a comma, so they are collected by their own grouped
+    // query rather than folded into the GROUP_CONCAT above.
+    const remoteByRoom = new Map<string, string[]>();
+    for (const r of this.raw
+      .prepare(
+        `SELECT room, remote_instance FROM chat_messages
+         WHERE scope = 'project' AND remote_instance IS NOT NULL
+         GROUP BY room, remote_instance`,
+      )
+      .all() as Row[]) {
+      const room = r.room as string;
+      remoteByRoom.set(room, [...(remoteByRoom.get(room) ?? []), r.remote_instance as string]);
+    }
     return rows.map((r) => ({
       room: r.room as string,
       workspace: (r.workspace as string | null) ?? "",
       threadIds: String(r.thread_ids ?? "")
         .split(",")
         .filter(Boolean),
+      remoteInstances: remoteByRoom.get(r.room as string) ?? [],
       messageCount: r.message_count as number,
       lastAt: r.last_at as number,
     }));

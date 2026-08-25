@@ -146,6 +146,62 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
   assert.equal(presences(mikkel.drain()).length, 1);
 }
 
+// An instance is never handed its OWN agents. It already has them, and a console that receives them
+// treats its own workers as coworkers on another machine — which is not cosmetic: a peer is what switches
+// the office on, so every lone agent would believe it had a teammate (itself).
+{
+  const core = newCore();
+  const kevin = fakePeer("i-kevin", "Kevin");
+  const mikkel = fakePeer("i-mikkel", "Mikkel");
+  core.attach(kevin);
+  core.attach(mikkel);
+  kevin.drain();
+  mikkel.drain();
+  core.onFrame(kevin.connId, { t: "presence", agents: [agent()] });
+
+  const toKevin = presences(kevin.drain()).pop();
+  assert.deepEqual(toKevin!.t === "presence" && toKevin!.agents, [], "an instance must not see itself in the roster");
+  const toMikkel = presences(mikkel.drain()).pop();
+  assert.equal(toMikkel!.t === "presence" && toMikkel!.agents.length, 1, "…while everyone else sees it");
+  assert.equal(core.roster().length, 1, "the status page still sees the whole picture");
+
+  // The same rule on the welcome frame — a joiner's first roster comes from there, not a broadcast.
+  const late = fakePeer("i-kevin", "Kevin");
+  Object.assign(late, { connId: "conn-kevin-late" });
+  core.attach(late);
+  const welcome = late.sent.find((f) => f.t === "welcome");
+  assert.deepEqual(welcome!.t === "welcome" && welcome!.presence, [], "a reconnecting instance is not welcomed with itself");
+}
+
+// Nor its own chat, when a room's backlog is replayed. Live chat skips the sender in applyChat, but a
+// replay has no sender to skip — so without this an instance re-imports its own posts as a teammate's
+// every time it enters a room, which includes the first connect after every restart.
+{
+  const core = newCore();
+  const room = relayRepoRoom("github.com/fearce/card-marker");
+  const kevin = fakePeer("i-kevin", "Kevin");
+  const mikkel = fakePeer("i-mikkel", "Mikkel");
+  core.attach(kevin);
+  core.attach(mikkel);
+  // Both are in the repo room, and each says one thing.
+  core.onFrame(kevin.connId, { t: "presence", agents: [agent()] });
+  core.onFrame(mikkel.connId, { t: "presence", agents: [agent({ key: "t9::implementor" })] });
+  core.onFrame(kevin.connId, { t: "chat", room, body: "I'll take parser.ts", senderName: "Rune", role: "implementor" });
+  core.onFrame(mikkel.connId, { t: "chat", room, body: "taking exporter.ts", senderName: "Sif", role: "implementor" });
+
+  // Kevin reconnects and re-enters the room: the replay must hold Mikkel's line and NOT his own.
+  const again = { ...fakePeer("i-kevin", "Kevin"), connId: "conn-kevin-again" };
+  core.attach(again);
+  core.onFrame(again.connId, { t: "presence", agents: [agent()] });
+  const replay = again.sent.find((f) => f.t === "history");
+  assert.ok(replay && replay.t === "history", "the room's backlog is replayed on entry");
+  assert.deepEqual(
+    replay.messages.map((m) => m.senderName),
+    ["Sif"],
+    "a replayed backlog carries only the OTHER instances' lines",
+  );
+}
+
 // A departing instance drops out of everyone's roster.
 {
   const core = newCore();

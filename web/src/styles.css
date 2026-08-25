@@ -291,9 +291,15 @@ button { font-family: inherit; cursor: pointer; }
   50%      { box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 14%, transparent); }
 }
 .office-huddle:hover { background: color-mix(in oklch, var(--accent) 16%, var(--bg-2)); }
+/* A huddle spanning the online office: same repository, two working trees. Dashed so the boundary is
+   visible without splitting the group — they ARE collaborating, they just aren't in this checkout. */
+.office-huddle.cross-machine { border-style: dashed; }
 .office-huddle-gnomes { display: inline-flex; }
-.office-huddle-gnomes > .gnome { margin-left: -9px; } /* overlap so they read as a huddle */
-.office-huddle-gnomes > .gnome:first-child { margin-left: 0; }
+.office-huddle-gnomes > .gnome,
+.office-huddle-gnomes > .office-huddle-remote { margin-left: -9px; } /* overlap so they read as a huddle */
+.office-huddle-gnomes > :first-child { margin-left: 0; }
+/* The far-machine half of a huddle: present and standing with the others, but visibly not local. */
+.office-huddle-remote { display: inline-flex; opacity: 0.6; filter: saturate(0.55); }
 /* Huddled agents stand still together — a party in session reads as gathered, not marching. Only a LONE
    active agent paces (see .office-pacer). Deliberately no per-gnome motion here. */
 .office-huddle-tag {
@@ -349,6 +355,9 @@ button { font-family: inherit; cursor: pointer; }
 .office-msg-role { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; font-weight: 600; }
 .office-msg-kind { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); }
 .office-msg-task { font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A line that crossed the internet, from an agent on someone else's machine. */
+.office-msg-remote { font-size: 9.5px; line-height: 1; flex: 0 0 auto; cursor: help; }
+.office-msg.remote { border-left: 2px solid color-mix(in oklch, var(--accent) 45%, transparent); padding-left: 6px; margin-left: -8px; }
 .office-msg-ts { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); flex: 0 0 auto; }
 .office-msg-body { font-size: 13px; line-height: 1.45; color: var(--text); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
 
@@ -856,19 +865,15 @@ button { font-family: inherit; cursor: pointer; }
 /* A repo THIS machine is also working — the one line in the roster that means "you can collide". */
 .office-roster-repo.shared { color: var(--accent); }
 
-/* The top-bar cluster for one remote machine. Deliberately quieter than a local huddle: the gnomes are
-   smaller and don't pace, because nothing here is happening in this working tree. */
+/* The top-bar cluster for one remote machine working repos WE aren't — a machine sharing a repo with us
+   stands in that repo's huddle instead. Deliberately quieter than a huddle: the gnomes are smaller and
+   don't pace, because nothing here is happening in this working tree. */
 .office-remote {
   position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
   height: 40px; padding: 0 9px 0 6px; border-radius: 100px;
   border: 1px dashed var(--line-strong); background: transparent; opacity: 0.82;
 }
 .office-remote:hover { opacity: 1; background: var(--bg-2); }
-.office-remote.shared {
-  border-style: solid; opacity: 1;
-  border-color: color-mix(in oklch, var(--accent) 38%, var(--line));
-  background: color-mix(in oklch, var(--accent) 7%, transparent);
-}
 .office-remote-gnomes { display: inline-flex; }
 .office-remote-gnomes > .gnome { margin-left: -8px; }
 .office-remote-gnomes > .gnome:first-child { margin-left: 0; }
@@ -876,7 +881,6 @@ button { font-family: inherit; cursor: pointer; }
   font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.03em; color: var(--text-dim);
   max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.office-remote.shared .office-remote-tag { color: var(--accent); }
 
 /* auto model selection — the scoreboard under its toggle */
 .ams-board { margin: 2px 16px 8px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }

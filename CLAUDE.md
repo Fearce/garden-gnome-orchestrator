@@ -275,7 +275,10 @@ Two people running their own orchestrator on one repo were invisible to each oth
 office** joins a shared relay (`relay/`, one container on the Sprogbroen box at `office.sprogbroen.dk`):
 each instance advertises its live agents, and agents in the SAME repo become peers — office on,
 `office_look` lists them, `chat_post(scope:"team")` reaches them, a remote line is pushed into the live
-implementor and persisted into the local project room. **The room key is the git REMOTE identity, not the
+implementor and persisted into the local project room, which the console shows as a chatroom tab + ONE
+top-bar huddle (`isCollaborationRoom` — a remote machine counts before any local task speaks). Nothing an
+instance sends echoes back to it: presence, chat and replayed history are sender-filtered at BOTH ends —
+an echo made a solo agent look like it had a teammate. **The room key is the git REMOTE identity, not the
 workspace path** (`office/repoIdentity.ts`) — `C:\repos\x` and `~/dev/x` are one room; no remote ⇒ folder
 name. Prompts say what makes a remote peer different: their edits never reach your `git status`, so you
 collide at the remote. **Auth is once** — one `JOIN_CODE`, exchanged for a per-machine device token whose

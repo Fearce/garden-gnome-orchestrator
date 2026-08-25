@@ -213,6 +213,7 @@ export interface ChatMessage {
   kind: "chat" | "system";
   body: string;
   senderName?: string | null;
+  remoteInstance?: string | null; // set when the line came from another machine's orchestrator (its name)
   createdAt: number;
 }
 
@@ -251,8 +252,17 @@ export interface ChatRoomSummary {
   room: string;
   workspace: string;
   threadIds: string[];
+  remoteInstances: string[]; // distinct other machines whose agents have participated (Online Office)
   messageCount: number;
   lastAt: number;
+}
+
+/** Whether a project room is a real collaboration — the test every chatroom surface gates on. Among
+ *  purely local tasks it takes two; one machine on the far side of the Online Office is already one,
+ *  since a project room only exists here for a repo this machine works — and that machine may be the
+ *  only party that has spoken yet. Mirrored from server/src/types.ts. */
+export function isCollaborationRoom(r: Pick<ChatRoomSummary, "threadIds" | "remoteInstances">): boolean {
+  return r.remoteInstances.length > 0 || r.threadIds.length >= 2;
 }
 
 export const GENERAL_ROOM = "general";
@@ -660,7 +670,16 @@ export interface OnlineOfficeDTO {
   error: string | null;
   connectedAt: number | null;
   remoteAgents: RelayPresentAgent[];
-  sharedRepos: string[]; // repos this machine and at least one other are both working right now
+  sharedRepos: SharedRepo[]; // repos this machine and at least one other are both working right now
+}
+
+/** A repository whose work is split across machines. `workspaces` are the LOCAL checkouts that resolve to
+ *  it — what lets the office strip stand a remote agent next to the local worker it collides with, which
+ *  a repo label alone cannot do: the two sides agree on the remote, never on the path. */
+export interface SharedRepo {
+  repoKey: string;
+  repoLabel: string;
+  workspaces: string[];
 }
 
 export type ServerEvent =

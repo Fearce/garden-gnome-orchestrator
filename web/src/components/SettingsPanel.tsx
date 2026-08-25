@@ -380,7 +380,9 @@ function RemoteRoster({ office }: { office: import("../types.js").OnlineOfficeDT
               <li key={`${a.instanceId}:${a.key}`}>
                 <span className="office-roster-name">{a.name}</span>
                 <span className="office-roster-role">{a.role}</span>
-                <span className={"office-roster-repo" + (office.sharedRepos.includes(a.repoLabel) ? " shared" : "")}>{a.repoLabel}</span>
+                <span className={"office-roster-repo" + (office.sharedRepos.some((r) => r.repoKey === a.repoKey) ? " shared" : "")}>
+                  {a.repoLabel}
+                </span>
               </li>
             ))}
           </ul>

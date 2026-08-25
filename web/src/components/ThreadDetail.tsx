@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
 import type { AgentRun, FeedItem, Role } from "../types.js";
-import { agentName, MODEL_ROLES, repoRoom } from "../types.js";
+import { agentName, isCollaborationRoom, MODEL_ROLES, repoRoom } from "../types.js";
 import { canAutoReview, clock, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Elapsed, RoleElapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
@@ -253,12 +253,12 @@ export function ThreadDetail() {
   const nameOverrides = useStore((s) => s.nameOverrides);
   const directorName = useStore((s) => s.settings.directorName);
   const showAgentModel = useStore((s) => s.settings.showAgentModel);
-  // The project chatroom for THIS task's repo, if one exists (≥2 tasks ever collaborated here —
+  // The project chatroom for THIS task's repo, if one exists (≥2 participants ever collaborated here —
   // possibly in a PAST task, since the room persists). Repo-keyed so a fresh task on a repo with
   // prior history also gets the button to read the old chatter; invisible on repos that never collaborated.
   const chatRoom = useStore((s) => {
     const t = s.selectedThreadId ? s.threads[s.selectedThreadId] : undefined;
-    return t ? s.chatRooms.find((r) => r.room === repoRoom(t.workspace) && r.threadIds.length >= 2) : undefined;
+    return t ? s.chatRooms.find((r) => r.room === repoRoom(t.workspace) && isCollaborationRoom(r)) : undefined;
   });
   const setDetailWidth = useStore((s) => s.setDetailWidth);
   const pendingPlan = useStore((s) => (s.selectedThreadId ? s.pendingPlans[s.selectedThreadId] : undefined));

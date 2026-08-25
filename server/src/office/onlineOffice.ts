@@ -16,8 +16,17 @@ export interface OnlineOfficeDTO {
   connectedAt: number | null;
   /** Agents on OTHER machines, as last reported by the relay. */
   remoteAgents: RelayPresentAgent[];
-  /** Repo labels this instance and at least one other are both working right now. */
-  sharedRepos: string[];
+  /** Repositories this instance and at least one other machine are both working right now. */
+  sharedRepos: SharedRepo[];
+}
+
+/** A repository whose work is split across machines — the collaboration the office exists for. The local
+ *  `workspaces` are what let the console line a remote agent up with the checkout it collides with, which
+ *  a repo label alone cannot do: the two sides agree on the remote, never on the path. */
+export interface SharedRepo {
+  repoKey: string;
+  repoLabel: string;
+  workspaces: string[];
 }
 
 /** One local agent the instance advertises, before its repo identity is resolved. */
@@ -184,7 +193,7 @@ export class OnlineOffice {
       error: this.error,
       connectedAt: this.connectedAt,
       remoteAgents: this.remote,
-      sharedRepos: this.sharedRepoLabels(),
+      sharedRepos: this.sharedReposNow(),
     };
   }
 
@@ -281,6 +290,9 @@ export class OnlineOffice {
           this.closeSocket();
           return;
         }
+        // The relay is the authority on which instance this connection is; a token re-issued under a new
+        // id would otherwise leave the self-filter below matching nothing.
+        if (frame.instanceId) this.deps.db.kvSet(KV.instanceId, frame.instanceId);
         this.applyPresence(frame.presence);
         return;
       case "presence":
@@ -303,18 +315,30 @@ export class OnlineOffice {
   }
 
   private deliverChat(msg: RelayChat): void {
+    if (this.isSelf(msg.instanceId)) return;
     const mine = this.deps.roster().map((a) => a.workspace);
     const workspaces = [...new Set(this.workspacesForRoom(msg.room, mine))];
     this.deps.onRemoteChat(msg, workspaces);
+  }
+
+  /** Whether a frame came from THIS instance. The relay already withholds an instance's own traffic, but
+   *  the relay is shared infrastructure on someone else's deploy cadence — and the cost of trusting it is
+   *  not a duplicate row: a self-echo makes a solo agent look like it has a teammate, which is the switch
+   *  that turns the whole office on. So the receiving side refuses it too, and an unknown id (never
+   *  joined, or the welcome frame not yet in) is treated as someone else, never as self. */
+  private isSelf(instanceId: string): boolean {
+    const mine = this.deps.db.kvGet(KV.instanceId) ?? "";
+    return !!mine && instanceId === mine;
   }
 
   /** Fold a new remote roster in, and tell the caller about agents that just appeared in a repo THIS
    *  instance is also working — the cross-machine equivalent of `ensureGroup`'s activation push. */
   private applyPresence(agents: RelayPresentAgent[]): void {
     const before = new Set(this.remote.map((a) => `${a.instanceId}:${a.key}`));
-    this.remote = agents;
+    this.remote = agents.filter((a) => !this.isSelf(a.instanceId));
     this.broadcast();
-    const joiners = agents.filter((a) => !before.has(`${a.instanceId}:${a.key}`));
+    // Diff against the FILTERED roster — a joiner is only ever someone else's agent.
+    const joiners = this.remote.filter((a) => !before.has(`${a.instanceId}:${a.key}`));
     if (!joiners.length) return;
     const mine = this.deps.roster();
     const byRepo = new Map<string, RelayPresentAgent[]>();
@@ -400,9 +424,17 @@ export class OnlineOffice {
 
   // ---- state ----------------------------------------------------------------------------------------
 
-  private sharedRepoLabels(): string[] {
-    const mine = new Set(this.deps.roster().map((a) => this.identityFor(a.workspace)?.key).filter(Boolean));
-    return [...new Set(this.remote.filter((a) => mine.has(a.repoKey)).map((a) => a.repoLabel || a.repoKey))];
+  private sharedReposNow(): SharedRepo[] {
+    const remoteKeys = new Set(this.remote.map((a) => a.repoKey));
+    const byKey = new Map<string, SharedRepo>();
+    for (const a of this.deps.roster()) {
+      const id = this.identityFor(a.workspace);
+      if (!id || !remoteKeys.has(id.key)) continue;
+      const e = byKey.get(id.key) ?? { repoKey: id.key, repoLabel: id.label, workspaces: [] };
+      if (!e.workspaces.includes(a.workspace)) e.workspaces.push(a.workspace);
+      byKey.set(id.key, e);
+    }
+    return [...byKey.values()];
   }
 
   private setState(state: OnlineOfficeDTO["state"], error: string | null): void {

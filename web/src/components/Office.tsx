@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
-import type { ChatMessage, RelayPresentAgent, Role } from "../types.js";
-import { agentName, CHAT_PAGE_SIZE, GENERAL_ROOM, normalizeWorkspace, repoRoom, ROLES } from "../types.js";
+import type { ChatMessage, ChatRoomSummary, RelayPresentAgent, Role, SharedRepo } from "../types.js";
+import { agentName, CHAT_PAGE_SIZE, GENERAL_ROOM, isCollaborationRoom, normalizeWorkspace, repoRoom, ROLES } from "../types.js";
 import { clock, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
@@ -18,13 +18,16 @@ interface Worker {
   workspace: string;
 }
 
-// A cluster of workers in the same repo. A `room` (≥2 distinct tasks) is a real project chatroom —
-// the gnomes stand still together; a lone worker paces on its own.
+// A cluster of agents in the same repo. A `room` is a real project chatroom — the gnomes stand still
+// together; a lone worker paces on its own. Membership is by REPOSITORY, not by machine: a teammate
+// reached through the Online Office works the same repo from another checkout and can land the same
+// conflicting commit, so they huddle here too rather than in a separate box off to the side.
 interface Group {
   key: string;
   workspace: string;
-  room: string | null; // repo room key when ≥2 tasks share the repo, else null (solo, general only)
+  room: string | null; // repo room key when ≥2 agents share the repo, else null (solo, general only)
   workers: Worker[];
+  remotes: RelayPresentAgent[];
 }
 
 // How long a freshly-posted message floats as a bubble above its gnome.
@@ -72,6 +75,31 @@ function Pacer({ role, active }: { role: Role; active: boolean }) {
   );
 }
 
+const roleOf = (r: string): Role => ((ROLES as readonly string[]).includes(r) ? (r as Role) : "implementor");
+
+/** The hover text for a huddle. It names the remote half explicitly, by machine: "who is in this repo
+ *  with me, and are they somewhere my `git status` can see?" is the whole question the strip answers. */
+function huddleTitle(g: Group, nameOf: (w: Worker) => string): string {
+  const here = g.workers.map(nameOf).join(", ");
+  if (!g.remotes.length) return `${here} collaborating in ${leaf(g.workspace)} — click to open their chatroom`;
+  const there = [...new Set(g.remotes.map((a) => a.instanceName))]
+    .map((inst) => `${g.remotes.filter((a) => a.instanceName === inst).map((a) => a.name).join(", ")} on ${inst}`)
+    .join("; ");
+  return (
+    `${here} in ${leaf(g.workspace)}, working with ${there} through the online office.\n` +
+    `They have their own checkout — their commits reach you at the remote, not in your working tree.\n` +
+    `Click to open the shared chatroom.`
+  );
+}
+
+/** Hover text for a project-room tab: the repo, and who is in it — naming the other machines, since
+ *  "N tasks" is meaningless for a room whose participants are all somewhere else. */
+function roomTabTitle(r: ChatRoomSummary): string {
+  const parts = [`${r.threadIds.length} task${r.threadIds.length === 1 ? "" : "s"} here`];
+  if (r.remoteInstances.length) parts.push(`${r.remoteInstances.join(", ")} (online office)`);
+  return `${r.workspace} · ${parts.join(" · ")}`;
+}
+
 function leaf(p: string): string {
   const norm = p.replace(/[\\/]+$/, "");
   const i = Math.max(norm.lastIndexOf("\\"), norm.lastIndexOf("/"));
@@ -112,7 +140,16 @@ export function Office() {
   const nameOf = (threadId: string, role: Role) =>
     role === "director" ? directorName : agentName(nameOverrides, threadId, role);
 
-  // One worker per active task (latest active run wins), then grouped by normalized repo.
+  // Which local workspaces belong to a repository someone else is also working right now. The server
+  // resolves that (a repo identity is a git read); the client only joins the two lists.
+  const sharedByWorkspace = useMemo(() => {
+    const out = new Map<string, SharedRepo>();
+    for (const r of onlineOffice.sharedRepos) for (const ws of r.workspaces) out.set(normalizeWorkspace(ws), r);
+    return out;
+  }, [onlineOffice.sharedRepos]);
+
+  // One worker per active task (latest active run wins), grouped by normalized repo, then joined with the
+  // remote agents working that same repository.
   const groups = useMemo<Group[]>(() => {
     const perThread = new Map<string, Worker>();
     for (const r of [...runs].sort((a, b) => a.startedAt - b.startedAt)) {
@@ -128,30 +165,37 @@ export function Office() {
       else byRepo.set(k, [w]);
     }
     return [...byRepo.entries()]
-      .map(([k, workers]) => ({
-        key: k,
-        workspace: workers[0]!.workspace,
-        room: workers.length >= 2 ? repoRoom(workers[0]!.workspace) : null,
-        workers,
-      }))
+      .map(([k, workers]) => {
+        const shared = sharedByWorkspace.get(k);
+        const remotes = shared ? onlineOffice.remoteAgents.filter((a) => a.repoKey === shared.repoKey) : [];
+        return {
+          key: k,
+          workspace: workers[0]!.workspace,
+          room: workers.length + remotes.length >= 2 ? repoRoom(workers[0]!.workspace) : null,
+          workers,
+          remotes,
+        };
+      })
       .sort((a, b) => (b.room ? 1 : 0) - (a.room ? 1 : 0) || a.key.localeCompare(b.key));
-  }, [runs, threads]);
+  }, [runs, threads, sharedByWorkspace, onlineOffice.remoteAgents]);
 
   const liveCount = groups.reduce((n, g) => n + g.workers.length, 0);
   const now = useNow(liveCount > 0, 1000);
 
-  // Coworkers reached through the Online Office — grouped by the machine they're on, since that (not a
-  // local path) is what distinguishes them. A repo we're also working is flagged: that's the collision.
+  // Coworkers reached through the Online Office who are NOT already standing in one of the huddles above
+  // — i.e. working repos this machine isn't. Grouped by machine, since with no shared repo that (not a
+  // path we don't have) is all that distinguishes them.
   const remoteMachines = useMemo(() => {
-    const byInstance = new Map<string, { name: string; agents: RelayPresentAgent[]; shared: boolean }>();
+    const huddled = new Set(groups.flatMap((g) => g.remotes.map((a) => `${a.instanceId}:${a.key}`)));
+    const byInstance = new Map<string, { name: string; agents: RelayPresentAgent[] }>();
     for (const a of onlineOffice.remoteAgents) {
-      const e = byInstance.get(a.instanceId) ?? { name: a.instanceName, agents: [], shared: false };
+      if (huddled.has(`${a.instanceId}:${a.key}`)) continue;
+      const e = byInstance.get(a.instanceId) ?? { name: a.instanceName, agents: [] };
       e.agents.push(a);
-      e.shared = e.shared || onlineOffice.sharedRepos.includes(a.repoLabel);
       byInstance.set(a.instanceId, e);
     }
     return [...byInstance.values()];
-  }, [onlineOffice]);
+  }, [onlineOffice.remoteAgents, groups]);
 
   // Latest message per run and per project room, for the floating bubbles.
   const { byRun, byRoom } = useMemo(() => {
@@ -188,13 +232,20 @@ export function Office() {
             g.room ? (
               <button
                 key={g.key}
-                className="office-huddle"
+                className={"office-huddle" + (g.remotes.length ? " cross-machine" : "")}
                 onClick={() => openOffice(g.room!)}
-                title={`${g.workers.map((w) => nameOf(w.threadId, w.role)).join(", ")} collaborating in ${leaf(g.workspace)} — click to open their chatroom`}
+                title={huddleTitle(g, (w) => nameOf(w.threadId, w.role))}
               >
                 <span className="office-huddle-gnomes">
                   {g.workers.slice(0, 4).map((w) => (
                     <Gnome key={w.threadId} role={w.role} size={20} />
+                  ))}
+                  {/* Teammates from another machine stand in the same huddle — dimmed, because nothing
+                      they do lands in this working tree until someone pushes. */}
+                  {g.remotes.slice(0, 3).map((a) => (
+                    <span className="office-huddle-remote" key={`${a.instanceId}:${a.key}`}>
+                      <Gnome role={roleOf(a.role)} size={20} />
+                    </span>
                   ))}
                 </span>
                 <span className="office-huddle-tag">{leaf(g.workspace)}</span>
@@ -219,17 +270,16 @@ export function Office() {
         {remoteMachines.map((m) => (
           <button
             key={m.name}
-            className={"office-remote" + (m.shared ? " shared" : "")}
+            className="office-remote"
             onClick={() => openOffice(GENERAL_ROOM)}
             title={
-              `${m.name} — another machine in the online office:\n` +
-              m.agents.map((a) => `${a.name} (${a.role}) on "${a.title}" in ${a.repoLabel}`).join("\n") +
-              (m.shared ? "\n\nSame repository as you — they push what you'll pull." : "")
+              `${m.name} — another machine in the online office, working repos you aren't:\n` +
+              m.agents.map((a) => `${a.name} (${a.role}) on "${a.title}" in ${a.repoLabel}`).join("\n")
             }
           >
             <span className="office-remote-gnomes">
               {m.agents.slice(0, 3).map((a) => (
-                <Gnome key={`${a.instanceId}:${a.key}`} role={(ROLES as readonly string[]).includes(a.role) ? (a.role as Role) : "implementor"} size={18} />
+                <Gnome key={`${a.instanceId}:${a.key}`} role={roleOf(a.role)} size={18} />
               ))}
             </span>
             <span className="office-remote-tag">{m.name}</span>
@@ -311,8 +361,10 @@ function OfficePanel() {
     if (el.scrollTop < 80 && hasMore && !loading) loadMoreRoom(officeRoom);
   };
 
-  // Project rooms (≥2 participants) are the real collaborations worth a tab; the general room is always shown.
-  const projectRooms = rooms.filter((r) => r.threadIds.length >= 2);
+  // Project rooms with ≥2 participants are the real collaborations worth a tab; the general room is
+  // always shown. A participant may be a machine on the far side of the online office — see
+  // isCollaborationRoom.
+  const projectRooms = rooms.filter(isCollaborationRoom);
 
   const send = () => {
     const text = draft.trim();
@@ -335,9 +387,11 @@ function OfficePanel() {
                 key={r.room}
                 className={"office-tab" + (officeRoom === r.room ? " on" : "")}
                 onClick={() => open(r.room)}
-                title={`${r.workspace} · ${r.threadIds.length} tasks`}
+                title={roomTabTitle(r)}
               >
-                {leaf(r.workspace)} <span className="office-tab-n">{r.threadIds.length}</span>
+                {/* Participants, not local tasks: a room whose conversation is entirely cross-machine has
+                    no local task in it and used to render a bare "0". */}
+                {leaf(r.workspace)} <span className="office-tab-n">{r.threadIds.length + r.remoteInstances.length}</span>
               </button>
             ))}
           </div>
@@ -407,7 +461,7 @@ function OfficeMsg({ m, title, name }: { m: ChatMessage; title?: string; name?: 
   }
   const role = m.role as Role;
   return (
-    <div className="office-msg" style={{ "--role": roleColor(role) } as CSSProperties}>
+    <div className={"office-msg" + (m.remoteInstance ? " remote" : "")} style={{ "--role": roleColor(role) } as CSSProperties}>
       <Gnome role={role} size={22} />
       <div className="office-msg-main">
         <div className="office-msg-head">
@@ -415,6 +469,9 @@ function OfficeMsg({ m, title, name }: { m: ChatMessage; title?: string; name?: 
             {name ?? role}
           </span>
           <span className="office-msg-kind">{role}</span>
+          {/* The sender name already reads "Rune @ Mikkel's box"; this is the at-a-glance marker that the
+              line crossed the internet, so a room's cross-machine half is visible without reading names. */}
+          {m.remoteInstance ? <span className="office-msg-remote" title={`From ${m.remoteInstance} — another machine`}>🌐</span> : null}
           {title ? <span className="office-msg-task">on “{trim(title, 32)}”</span> : null}
           <span className="office-msg-ts">{clock(m.createdAt)}</span>
         </div>

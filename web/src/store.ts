@@ -798,19 +798,30 @@ const CHAT_CAP = 1500;
 const ROOM_CAP = 800;
 
 /** Fold a live project-room message into the room roll-up: bump count/lastAt and register a new
- *  participant task. (General-room messages aren't per-task collaborations, so they don't roll up.) */
+ *  participant — a local task, or the machine an Online Office line came from. (General-room messages
+ *  aren't per-task collaborations, so they don't roll up.) Registering the remote machine here is what
+ *  makes a cross-machine room's chatroom tab appear as it happens rather than only after a reload. */
 function upsertRoom(rooms: ChatRoomSummary[], m: ChatMessage): ChatRoomSummary[] {
   if (m.scope !== "project") return rooms;
   const i = rooms.findIndex((r) => r.room === m.room);
   if (i < 0) {
     return [
-      { room: m.room, workspace: m.workspace ?? "", threadIds: m.threadId ? [m.threadId] : [], messageCount: 1, lastAt: m.createdAt },
+      {
+        room: m.room,
+        workspace: m.workspace ?? "",
+        threadIds: m.threadId ? [m.threadId] : [],
+        remoteInstances: m.remoteInstance ? [m.remoteInstance] : [],
+        messageCount: 1,
+        lastAt: m.createdAt,
+      },
       ...rooms,
     ];
   }
   const cur = rooms[i]!;
   const threadIds = m.threadId && !cur.threadIds.includes(m.threadId) ? [...cur.threadIds, m.threadId] : cur.threadIds;
-  const next = { ...cur, threadIds, messageCount: cur.messageCount + 1, lastAt: Math.max(cur.lastAt, m.createdAt) };
+  const remoteInstances =
+    m.remoteInstance && !cur.remoteInstances.includes(m.remoteInstance) ? [...cur.remoteInstances, m.remoteInstance] : cur.remoteInstances;
+  const next = { ...cur, threadIds, remoteInstances, messageCount: cur.messageCount + 1, lastAt: Math.max(cur.lastAt, m.createdAt) };
   return [next, ...rooms.slice(0, i), ...rooms.slice(i + 1)];
 }
 

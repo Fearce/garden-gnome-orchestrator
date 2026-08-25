@@ -43,7 +43,7 @@ const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { OnlineOffice, normalizeRelayUrl } = await import("../office/onlineOffice.js");
 const { forgetRepoIdentity, normalizeRemote, remoteLabel, repoIdentity } = await import("../office/repoIdentity.js");
 const { OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } = await import("../office/onlineProtocol.js");
-const { GENERAL_ROOM, repoRoom } = await import("../types.js");
+const { GENERAL_ROOM, isCollaborationRoom, repoRoom } = await import("../types.js");
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
 let passed = 0;
@@ -340,12 +340,30 @@ async function main(): Promise<void> {
       check("…naming the repo and our local workspace", joins[0]?.repoLabel === "Fearce/card-marker" && joins[0]?.workspaces[0] === workspace);
       check("…and shows up as a remote peer for that workspace", office.remotePeers(workspace).length === 1);
       check("…but not for a workspace we don't have", office.remotePeers("C:/nowhere").length === 0);
-      check("the status DTO names the shared repo", office.status().sharedRepos.includes("Fearce/card-marker"));
+      const shared = office.status().sharedRepos;
+      check("the status DTO names the shared repo", shared.length === 1 && shared[0]!.repoLabel === "Fearce/card-marker", JSON.stringify(shared));
+      check("…and the LOCAL checkout of it, so the console can pair them up", shared[0]?.workspaces[0] === workspace, JSON.stringify(shared[0]?.workspaces));
 
       // The same roster again must NOT re-announce — presence is pushed on a timer.
       relay.push({ t: "presence", agents: [remoteAgent()] });
       await sleep(120);
       check("an unchanged remote roster announces nobody twice", joins.length === 1, `joins=${joins.length}`);
+
+      // A relay that hands this instance its OWN agents back (an older relay, or one that regressed):
+      // the receiving side must refuse them. Left in, a lone agent believes it has a teammate — itself —
+      // and the office switches on for every solo task in the repo.
+      relay.push({ t: "presence", agents: [remoteAgent(), remoteAgent({ instanceId: "inst-local", instanceName: "Kevin's tower", key: "t1::implementor", name: "Rune" })] });
+      await sleep(120);
+      check("an echo of our OWN agent is not taken as a remote peer", office.status().remoteAgents.every((a) => a.instanceId !== "inst-local"), JSON.stringify(office.status().remoteAgents.map((a) => a.instanceId)));
+      check("…and is not announced as someone joining", joins.length === 1, `joins=${joins.length}`);
+      check("…while the genuine remote agent is still there", office.remotePeers(workspace).length === 1);
+
+      relay.push({
+        t: "chat",
+        msg: { id: "self-1", room: relayRepoRoom("github.com/fearce/card-marker"), body: "I'll take parser.ts", senderName: "Rune", role: "implementor", instanceId: "inst-local", instanceName: "Kevin's tower", repoLabel: "Fearce/card-marker", at: Date.now() },
+      });
+      await sleep(120);
+      check("an echo of our OWN chat line is dropped, not re-imported as a teammate's", chats.length === 0, JSON.stringify(chats.map((c) => c.msg.id)));
 
       // Inbound chat is routed to the local workspace behind that repo key.
       const room = relayRepoRoom("github.com/fearce/card-marker");
@@ -468,6 +486,32 @@ async function main(): Promise<void> {
       h.mgr.remoteTeammatesJoined("Fearce/card-marker", [WS], [remoteAgent({ key: "t-remote-2::qa", role: "qa", name: "Tor" })]);
       check("a remote joiner wakes the live implementor", h.sent.some((s) => s.includes("Tor") && s.includes("Mikkel's laptop")), JSON.stringify(h.sent));
       check("…and is recorded in the project room", h.db.listRoomMessages(repoRoom(WS), 50).some((m) => m.kind === "system" && m.body.includes("Tor")));
+
+      // The room is only REACHABLE in the console if it counts as a collaboration. This one holds a real
+      // cross-machine conversation and yet NO local thread has spoken in it — our own agent hasn't
+      // replied — so a rule counting local participants hides it behind a tab that never appears.
+      const summary = h.db.listProjectRooms().find((r) => r.room === repoRoom(WS));
+      check("the room records the machines that took part", summary?.remoteInstances.length === 1 && summary.remoteInstances[0] === "Mikkel's laptop", JSON.stringify(summary));
+      check("…and no local task has spoken in it yet", summary?.threadIds.length === 0, JSON.stringify(summary?.threadIds));
+      check("…yet it IS a collaboration: the room only exists here because we work this repo", !!summary && isCollaborationRoom(summary));
+      check(
+        "…while a room only this machine ever spoke in is not",
+        (() => {
+          const solo = h.thread("Alone here", "C:/repos/solo");
+          h.mgr.chatPost({ threadId: solo.id, role: "implementor", scope: "project", body: "just me" });
+          const s = h.db.listProjectRooms().find((r) => r.room === repoRoom("C:/repos/solo"));
+          return !!s && s.remoteInstances.length === 0 && !isCollaborationRoom(s);
+        })(),
+      );
+
+      // Two machines arriving in one presence diff must leave a row per machine, or the second is
+      // invisible to that count until one of its agents happens to speak.
+      h.mgr.remoteTeammatesJoined("Fearce/card-marker", [WS], [
+        remoteAgent({ key: "t-r3::implementor", name: "Ilse", instanceId: "inst-ada", instanceName: "Ada's box" }),
+        remoteAgent({ key: "t-r4::implementor", name: "Bo", instanceId: "inst-bo", instanceName: "Bo's box" }),
+      ]);
+      const after = h.db.listProjectRooms().find((r) => r.room === repoRoom(WS));
+      check("a joint arrival from two machines is recorded per machine", after?.remoteInstances.length === 3, JSON.stringify(after?.remoteInstances));
     } finally {
       h.dispose();
     }

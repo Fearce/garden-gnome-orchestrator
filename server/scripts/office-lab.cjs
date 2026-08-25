@@ -26,6 +26,8 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const RELAY = `http://127.0.0.1:${RELAY_PORT}`;
 const JOIN_CODE = "lab-join-code-not-a-real-secret";
 const NAV_TIMEOUT = 45_000; // this box runs near 100% CPU; a cold goto has measured 28s
+const LAB_REPO = "C:/lab/card-marker"; // a workspace the seeded cross-machine room belongs to
+const LAB_REPO_LEAF = "card-marker";
 
 /** Boot the relay straight from `relay/src` with the server's own tsx — no build step, and the relay
  *  has exactly one dependency, so there is nothing else to install. */
@@ -66,6 +68,32 @@ async function joinAsPeer(name, agent) {
   });
   ws.send(JSON.stringify({ t: "presence", agents: [agent] }));
   return ws;
+}
+
+/** Seed a project room holding a conversation that came from ANOTHER machine, with no local task having
+ *  spoken in it — the exact shape of a real cross-machine room before your own agent replies, and the one
+ *  that used to be unreachable: the chatroom tab was gated on local participants only, so a room whose
+ *  whole conversation is remote never got a tab and the owner saw nothing. */
+function seedRemoteConversation(dataDir, workspace) {
+  const db = new Database(path.join(dataDir, "orchestrator.sqlite"));
+  const room = `repo:${workspace.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()}`;
+  const add = db.prepare(
+    `INSERT INTO chat_messages(id, room, scope, workspace, thread_id, run_id, role, kind, body, sender_name, remote_instance, created_at)
+     VALUES(@id, @room, 'project', @workspace, NULL, NULL, @role, @kind, @body, @senderName, @remoteInstance, @createdAt)`,
+  );
+  const at = Date.now() - 60_000;
+  add.run({
+    id: "lab-remote-join", room, workspace, role: "system", kind: "system",
+    body: "🌐 Sif (implementor) on \"Rewrite the card exporter\" from Mikkel's laptop joined Fearce/card-marker from another machine — coordinate here.",
+    senderName: null, remoteInstance: "Mikkel's laptop", createdAt: at,
+  });
+  add.run({
+    id: "lab-remote-chat", room, workspace, role: "implementor", kind: "chat",
+    body: "I'm holding exporter.ts and its tests — leave those to me.",
+    senderName: "Sif @ Mikkel's laptop", remoteInstance: "Mikkel's laptop", createdAt: at + 1000,
+  });
+  db.close();
+  return room;
 }
 
 /** Wait for the SERVER to own a kv value. The panel updates from the broadcast, so asserting on the DOM
@@ -161,6 +189,32 @@ async function main() {
       const shot = path.join(dataDir, "online-office.png");
       await page.screenshot({ path: shot });
       console.log(`  screenshot: ${shot}`);
+
+      // The conversation itself has to be REACHABLE, which is the half a roster can't show: a room whose
+      // only participants are on another machine has no local task in it, and the chatroom tab used to be
+      // gated on exactly that count — so the cross-machine talk happened where the owner could not see it.
+      const room = seedRemoteConversation(dataDir, LAB_REPO);
+      await page.reload({ timeout: NAV_TIMEOUT });
+      await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+      await page.click(".office-strip .office-director");
+      await page.waitForSelector(".office-panel", { timeout: 20_000 });
+      const tabs = await page.locator(".office-tab").allInnerTexts();
+      check("a room whose whole conversation is remote still gets a chatroom tab", tabs.some((t) => t.includes(LAB_REPO_LEAF)), JSON.stringify(tabs));
+      check("…counting the remote machine as a participant, not a bare 0", tabs.some((t) => t.includes(LAB_REPO_LEAF) && /\b1\b/.test(t)), JSON.stringify(tabs));
+
+      await page.click(`.office-tab:has-text("${LAB_REPO_LEAF}")`);
+      await page.waitForSelector(".office-msg", { timeout: 20_000 });
+      check("…and opening it shows the remote agent's line", (await page.locator(".office-msgs").innerText()).includes("holding exporter.ts"));
+      check("…attributed to the agent AND its machine", (await page.locator(".office-msg-role").first().innerText()).includes("Mikkel's laptop"));
+      check("…marked as having crossed the internet", (await page.locator(".office-msg.remote .office-msg-remote").count()) === 1);
+
+      const roomShot = path.join(dataDir, "cross-machine-room.png");
+      await page.screenshot({ path: roomShot });
+      console.log(`  screenshot: ${roomShot}`);
+      // The office panel has no Escape handler — its scrim covers the whole app, so it must be closed
+      // properly or every later click lands on the scrim instead of the control it names.
+      await page.click(".office-panel .close-x");
+      await page.waitForSelector(".office-panel", { state: "detached", timeout: 10_000 });
 
       // Leaving must forget the token — otherwise "Leave" is cosmetic.
       await page.click('[aria-label="Open settings"]');
