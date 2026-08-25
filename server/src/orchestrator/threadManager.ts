@@ -54,6 +54,7 @@ import type {
   ResearchOutput,
   ReviewerOutput,
   Role,
+  StageOutputs,
   Thread,
 } from "../types.js";
 import { agentKey, CODEX_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveCodexEffort, ZAI_SUB_ID } from "../types.js";
@@ -2997,7 +2998,7 @@ export class ThreadManager implements OrchestratorApi {
     );
     const verdict = res?.structuredOutput as QaOutput | undefined;
     if (verdict) {
-      this.renewQaCutoffAllowance(thread.id);
+      this.renewQaRecoveryAllowances(thread.id);
       return verdict;
     }
     // An empty run is NOT a review that found nothing — it never reached the model at all. Checked before
@@ -3020,28 +3021,38 @@ export class ThreadManager implements OrchestratorApi {
     return [lastQa?.error?.trim() || undefined, ...this.qaRecoveryNotes(threadId)].filter(Boolean).join(" ") || undefined;
   }
 
-  /** What was already tried to get a verdict out of this task's reviewer, for the park message. Each budget
-   *  only reads as spent once exhausted — a task that recovered on its last attempt never parks at all. */
+  /** What was already tried to get a verdict out of THIS review, for the park message. Both budgets are read
+   *  per-review rather than per-task, so a note only appears when the mechanism it names actually ran for the
+   *  round that parked — a spend an earlier round made and recovered from is not something to tell the owner
+   *  about this one. Each reads as spent only once exhausted; a round that recovers never parks at all. */
   private qaRecoveryNotes(threadId: string): string[] {
     const stage = this.db.getThreadStageOutputs(threadId);
     const notes: string[] = [];
     if ((stage.qaCutoffResumesThisRound ?? 0) >= MAX_QA_CUTOFF_RESUMES)
       notes.push(`It was woken ${MAX_QA_CUTOFF_RESUMES} more times and cut off again each time.`);
-    if ((stage.qaSilentRetries ?? 0) >= MAX_QA_SILENT_RETRIES)
-      notes.push("A review in this task also came back empty without reaching the model, and was already restarted on a fresh session.");
+    if ((stage.qaSilentRetriesThisRound ?? 0) >= MAX_QA_SILENT_RETRIES)
+      notes.push("This review also came back empty without reaching the model, and was already restarted on a fresh session.");
     return notes;
   }
 
   /**
-   * Give the next review a full continuation allowance. Called the moment a round produces a verdict,
-   * which is the proof that the reviewer is not wedged — the only failure `MAX_QA_CUTOFF_RESUMES` exists
-   * to stop. Without this the allowance was the TASK's, so cutoffs in unrelated rounds pooled: a task
-   * whose round 1 and round 3 each needed one continuation had none left for round 5, and that round's
-   * first cutoff parked it on the owner mid-verification with a paid Opus review thrown away.
+   * Give the next review a full recovery allowance for BOTH involuntary stops. Called the moment a round
+   * produces a verdict, which is the proof that the reviewer is not wedged — the only failure these budgets
+   * exist to stop. Without it each allowance is the TASK's, so spends in unrelated rounds pool: a task whose
+   * round 1 and round 3 each needed one continuation had none left for round 5, and that round's first
+   * cutoff parked it on the owner mid-verification with a paid Opus review thrown away.
+   *
+   * The empty-run budget renews here for exactly the same reason, and shipped without it: `7d776461`'s
+   * round-3 continuation came back empty, its fresh retry then reached a verdict, and the round two
+   * verdicts later was refused its own first retry and parked — over a recovery that had worked.
    */
-  private renewQaCutoffAllowance(threadId: string): void {
-    if ((this.db.getThreadStageOutputs(threadId).qaCutoffResumesThisRound ?? 0) === 0) return;
-    this.db.updateThreadStageOutputs(threadId, { qaCutoffResumesThisRound: 0 });
+  private renewQaRecoveryAllowances(threadId: string): void {
+    const stage = this.db.getThreadStageOutputs(threadId);
+    const patch: Partial<StageOutputs> = {};
+    if ((stage.qaCutoffResumesThisRound ?? 0) !== 0) patch.qaCutoffResumesThisRound = 0;
+    if ((stage.qaSilentRetriesThisRound ?? 0) !== 0) patch.qaSilentRetriesThisRound = 0;
+    if (Object.keys(patch).length === 0) return;
+    this.db.updateThreadStageOutputs(threadId, patch);
   }
 
   /**
@@ -3092,15 +3103,20 @@ export class ThreadManager implements OrchestratorApi {
   private async retrySilentQa(thread: Thread, opts: QaRoundOpts): Promise<QaOutput | undefined> {
     this.markSilentRun(thread.id, "qa");
     if (this.cancelled(thread.id)) return undefined;
-    const used = this.db.getThreadStageOutputs(thread.id).qaSilentRetries ?? 0;
-    if (used >= MAX_QA_SILENT_RETRIES) return undefined;
-    // Spent BEFORE the retry, so a restart landing mid-retry still counts it.
-    this.db.updateThreadStageOutputs(thread.id, { qaSilentRetries: used + 1 });
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    const usedThisRound = stage.qaSilentRetriesThisRound ?? 0;
+    if (usedThisRound >= MAX_QA_SILENT_RETRIES) return undefined;
+    // Spent BEFORE the retry, so a restart landing mid-retry still counts it. The lifetime tally is what
+    // reconciles this task's QA launches; the per-review allowance is what the budget is enforced against.
+    this.db.updateThreadStageOutputs(thread.id, {
+      qaSilentRetries: (stage.qaSilentRetries ?? 0) + 1,
+      qaSilentRetriesThisRound: usedThisRound + 1,
+    });
     this.postFinding({
       threadId: thread.id,
       fromRole: "qa",
       summary: "QA came back empty without reviewing anything — starting the review fresh",
-      detail: `The review session returned without ever reaching the model (0 turns, $0), so nothing was verified. Re-running it on a fresh session (retry ${used + 1} of ${MAX_QA_SILENT_RETRIES}).`,
+      detail: `The review session returned without ever reaching the model (0 turns, $0), so nothing was verified. Re-running it on a fresh session (retry ${usedThisRound + 1} of ${MAX_QA_SILENT_RETRIES} for this review).`,
       severity: "note",
     });
     // Fresh, and no longer a continuation: a new session holds none of the cut-off review's context, so it

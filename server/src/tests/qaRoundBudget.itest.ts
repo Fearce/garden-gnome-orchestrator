@@ -584,6 +584,58 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test P: the empty-run allowance belongs to the REVIEW too -------------------------------------
+  // The same defect as Test N, in the other recovery budget, and it shipped a month longer: `7d776461`
+  // spent its one silent retry on a round-3 continuation that came back empty, that retry WORKED, and the
+  // round two verdicts later was refused its own first retry and parked — over a recovery that succeeded.
+  console.log("\nTest P — a round that recovered from an empty run doesn't spend a later round's retry");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const qaCalls = stubQaRunRole(h, [
+        SILENT,
+        verdictResult({ pass: true, summary: "round 1 fixed something", changed: true }),
+        SILENT,
+        verdictResult({ pass: true, summary: "nothing left to change", changed: false }),
+      ]);
+      await runLoop(h, id, 4, true);
+      check("both rounds got their own fresh retry", qaCalls.length === 4, `calls=${qaCalls.length}`);
+      check("round 2's retry started a FRESH session", qaCalls[3]?.resume === undefined, String(qaCalls[3]?.resume));
+      check("the task reached a verdict instead of the owner's queue", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      const stage = h.db.getThreadStageOutputs(id);
+      check("the accepting verdict left a full allowance behind", (stage.qaSilentRetriesThisRound ?? 0) === 0, String(stage.qaSilentRetriesThisRound));
+      check("the lifetime tally still counted both retries", stage.qaSilentRetries === 2, String(stage.qaSilentRetries));
+      check("no retry was charged as a QA round", stage.qaRoundsUsed === 2, String(stage.qaRoundsUsed));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test Q: ...and a renewed empty-run allowance is still an allowance ----------------------------
+  // Loosening a budget is the dangerous direction, so pin the other half exactly as Test O does for the
+  // continuations: a LATER round that keeps coming back empty must still stop after its own single retry.
+  console.log("\nTest Q — a later round that keeps coming back empty is bounded too");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const qaCalls = stubQaRunRole(h, [
+        verdictResult({ pass: true, summary: "round 1 fixed something", changed: true }),
+        SILENT,
+        SILENT,
+        SILENT,
+      ]);
+      await runLoop(h, id, 4, true);
+      check("round 2 stopped after its own single retry", qaCalls.length === 3, `calls=${qaCalls.length}`);
+      check("its allowance reads as fully spent", h.db.getThreadStageOutputs(id).qaSilentRetriesThisRound === 1, String(h.db.getThreadStageOutputs(id).qaSilentRetriesThisRound));
+      check("the wedged reviewer parked for the owner", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check("the park still says the fresh retry was already tried", !!h.db.getThread(id)?.error?.includes("restarted on a fresh session"), String(h.db.getThread(id)?.error));
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS ✅" : "FAIL ❌"} — ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {
     console.log("Failures:");

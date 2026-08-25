@@ -483,6 +483,12 @@ export interface StageOutputs {
   qaSilentRetries?: number; // fresh-session retries spent after a QA run came back EMPTY (a warm --resume that
   // never reached the model: 0 turns, $0, no output). Also charged separately, and durable for the same
   // reason — a restart landing mid-retry must not hand the task an unbounded supply of full Opus reviews.
+  // Counts the task's LIFETIME, which is what reconciles its QA launches; the budget is the field below.
+  qaSilentRetriesThisRound?: number; // the same retries, but only those spent on the review currently running
+  // — zeroed the moment a round reaches a verdict, for the reason qaCutoffResumesThisRound exists. An empty
+  // run is a property of ONE review too: a round whose retry WORKED still spent the lifetime count, so a
+  // later round's first empty run was denied the retry and parked the task although no single review had
+  // ever come back empty twice. Every value it holds is also inside qaSilentRetries, never on top of it.
 }
 
 /**
