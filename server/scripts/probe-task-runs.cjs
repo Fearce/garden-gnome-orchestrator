@@ -218,9 +218,10 @@ section("QA-loop check");
     qaAppliesFixes: appliesFixes,
     qaLaunches: qa.length,
     qaRoundsUsed: stage.qaRoundsUsed ?? null,
-    // The turn-ceiling allowance the review RUNNING NOW still has (it renews on every verdict), as opposed
-    // to the lifetime tally in the arithmetic below. A park at the max is a wedged reviewer, not a long task.
+    // The allowances the review RUNNING NOW still has (both renew on every verdict), as opposed to the
+    // lifetime tallies in the arithmetic below. A park at either max is a wedged reviewer, not a long task.
     qaCutoffResumesThisRound: stage.qaCutoffResumesThisRound ?? null,
+    qaSilentRetriesThisRound: stage.qaSilentRetriesThisRound ?? null,
     qaVerdicts: verdicts,
     qaKilledByRestart: interrupted,
     qaErrored: errored,
@@ -231,6 +232,8 @@ section("QA-loop check");
     roundsUsed: stage.qaRoundsUsed ?? null,
     cutoffResumes: stage.qaCutoffResumes,
     silentRetries: stage.qaSilentRetries,
+    cutoffResumesThisRound: stage.qaCutoffResumesThisRound,
+    silentRetriesThisRound: stage.qaSilentRetriesThisRound,
     capFailovers: qa.filter((r) => r.cap_flagged === 1).length,
     interrupted,
     appliesFixes,

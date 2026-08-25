@@ -29,7 +29,7 @@ const Database = require("better-sqlite3");
 const { classifyProcessBuild } = require("./process-vs-dist.cjs");
 const { serverRuntimeDiff } = require("./compiled-diff.cjs");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
-const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, DEAD_END_LINE } = require("./probe-parks.cjs");
+const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, isDeadEndLine } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
 
 const args = process.argv.slice(2);
@@ -395,9 +395,11 @@ async function main() {
       //     any backend frees up. One sitting for hours means a persistent full cap wave OR a wedged
       //     supervisor — worth a human glance, so warn past a 2h threshold.
       //   • stalled — QA, an auto-review or a resume stopped mid-verification. Nothing will come back
-      //     for it on its own, so it's a warn; a QA one is split by whether the turn-ceiling continuation
-      //     budget was genuinely SPENT, which says the mechanism ran and gave up rather than the reason
-      //     being unread. That split defers to `recoveryLineFor` rather than testing the park wording
+      //     for it on its own, so it's a warn; a QA one is split by whether one of its recovery budgets
+      //     (a turn-ceiling continuation or an empty-run retry) was genuinely SPENT, which says the
+      //     mechanism ran and gave up rather than the reason being unread. Both count, via
+      //     `isDeadEndLine` — knowing only the continuations left an empty-run dead end reported as an
+      //     unread reason. That split defers to `recoveryLineFor` rather than testing the park wording
       //     directly: a park PREDATING the per-review allowance (748633a) carries the spent marker but was
       //     never actually woken — earlier unrelated reviews had drained the task-wide budget — so the
       //     wording alone reported three recoverable tasks as dead ends here for as long as this line
@@ -410,7 +412,7 @@ async function main() {
       const STALE_PARK_MS = 2 * 3600 * 1000;
       const parks = { capWait: 0, stalled: 0, verdict: 0, unknown: 0 };
       let staleAutoResume = 0;
-      let qaContinuationsSpent = 0;
+      let qaDeadEnds = 0;
       let oldestAutoResumeH = 0;
       for (const r of reviewRows) {
         const key = classifyPark(r.error).key;
@@ -420,8 +422,8 @@ async function main() {
           if (ageMs > STALE_PARK_MS) staleAutoResume++;
           const ageH = ageMs / 3600000;
           if (ageH > oldestAutoResumeH) oldestAutoResumeH = ageH;
-        } else if (key === "stalled" && recoveryLineFor(key, r.error, lastRun(db, r.id)) === DEAD_END_LINE) {
-          qaContinuationsSpent++;
+        } else if (key === "stalled" && isDeadEndLine(recoveryLineFor(key, r.error, lastRun(db, r.id)))) {
+          qaDeadEnds++;
         }
       }
       const NAME_THEM = "name them with: npm run probe:parks --prefix server";
@@ -433,7 +435,7 @@ async function main() {
         ok(`${parks.capWait} auto-resume-pending park(s) (oldest ${oldestAutoResumeH.toFixed(1)}h) — within normal supervisor window`);
       }
       if (parks.stalled) {
-        const spent = qaContinuationsSpent ? `, ${qaContinuationsSpent} after the turn-ceiling continuations were spent (mechanism ran, reviewer still couldn't finish)` : "";
+        const spent = qaDeadEnds ? `, ${qaDeadEnds} after a QA recovery budget was spent (mechanism ran, reviewer still couldn't finish)` : "";
         warn(`${parks.stalled} thread(s) parked mid-pipeline — QA/auto-review/resume couldn't finish${spent}; ${NAME_THEM}`);
       }
       if (parks.unknown) warn(`${parks.unknown} park(s) with text no class recognizes — ${NAME_THEM}`);

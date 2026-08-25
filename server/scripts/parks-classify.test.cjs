@@ -16,7 +16,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { classifyPark, classifyAbandoned, continuationsSpent, recoveryLineFor, DEAD_END_LINE, PARK_CLASSES, ABANDON_CLASSES } = require("./probe-parks.cjs");
+const { classifyPark, classifyAbandoned, spentRecoveryBudget, recoveryLineFor, isDeadEndLine, PARK_CLASSES, ABANDON_CLASSES } = require("./probe-parks.cjs");
 const { resolveShipDate } = require("./recovery-features.cjs");
 
 const cls = (err) => classifyPark(err).key;
@@ -75,14 +75,33 @@ assert.equal(cls("Something nobody has written yet"), "unknown", "unrecognized t
 assert.equal(PARK_CLASSES.at(-1).key, "unknown", "the catch-all must stay last, or it swallows the real classes");
 assert.equal(PARK_CLASSES.filter((c) => !c.human).length, 1, "capWait is the only class not waiting on a human");
 
-// --- the continuation-budget flag health prints alongside a QA park ----------------------------------
+// --- the spent-budget flag health prints alongside a QA park -----------------------------------------
+// QA has TWO exhaustible recovery budgets and this predicate knew only the turn-ceiling one, so an
+// empty-run dead end got no `↳` line and read as an unread reason worth hand-drilling (7d776461).
 assert.equal(
-  continuationsSpent("QA could not complete — It was woken 2 more times and cut off again each time."),
-  true,
+  spentRecoveryBudget("QA could not complete — It was woken 2 more times and cut off again each time."),
+  "cutoff",
   "a spent continuation budget means the mechanism ran and gave up — a real hand-off, not a retry candidate",
 );
-assert.equal(continuationsSpent("QA could not complete — needs your review."), false);
-assert.equal(continuationsSpent(null), false, "a NULL error must not throw");
+assert.equal(
+  spentRecoveryBudget("QA could not complete — This review also came back empty without reaching the model, and was already restarted on a fresh session."),
+  "silent",
+  "a spent empty-run budget is a hand-off for the same reason",
+);
+assert.equal(
+  spentRecoveryBudget("QA could not complete — A review in this task also came back empty without reaching the model, and was already restarted on a fresh session."),
+  "silent",
+  "the pre-f693278 wording is still in the table — a classifier that only knows today's sentence re-opens the hole",
+);
+assert.equal(
+  spentRecoveryBudget("QA could not complete — It was woken 2 more times and cut off again each time. This review also came back empty … restarted on a fresh session."),
+  "cutoff",
+  "a park that spent both reports the continuations, matching the order qaRecoveryNotes writes them",
+);
+assert.equal(spentRecoveryBudget("QA could not complete — needs your review."), null);
+assert.equal(spentRecoveryBudget(null), null, "a NULL error must not throw");
+assert.equal(isDeadEndLine("something else entirely"), false, "only the exported verdicts count as dead ends");
+assert.equal(isDeadEndLine(null), false, "a park with no `↳` line at all is not a dead end");
 
 // --- the `↳` recovery line, and the class it is scoped to --------------------------------------------
 // A cap-parked QA task can carry a turn-ceiling run (cut off, then capped before the continuation ran).
@@ -126,6 +145,22 @@ assert.match(
   "after the fix it really is exhausted — the hand-off line must still be reachable",
 );
 
+// The empty-run budget has the same two-sided story, and it is one release behind: its per-review fix is
+// f693278, so a park from before that spent an allowance an EARLIER round had drained. Same precedence.
+const silentPark =
+  "QA could not complete — Resumed session produced no output. A review in this task also came back empty without reaching the model, and was already restarted on a fresh session.";
+const silentShip = resolveShipDate("f693278").getTime();
+assert.match(
+  recoveryLineFor("stalled", silentPark, { role: "qa", num_turns: 0, started_at: silentShip - 86_400_000, ended_at: null }) ?? "",
+  /stale — .*predates/,
+  "a spent empty-run allowance from before the per-review fix is stale, not a dead end",
+);
+assert.match(
+  recoveryLineFor("stalled", silentPark, { role: "qa", num_turns: 0, started_at: silentShip + 86_400_000, ended_at: null }) ?? "",
+  /empty-run retry was already spent/,
+  "after the fix it really is exhausted — this hand-off line must be reachable too",
+);
+
 // The sweep asks this question TWICE — `probe:parks` (step 4) names each park, `nightly-health` (step 1)
 // counts them — and step 1 is the one read first. When health tested the park wording itself it kept
 // reporting the three stale tasks above as dead ends after probe:parks had already cleared them, so the
@@ -133,19 +168,19 @@ assert.match(
 // `test:failover-ladder` pins probe:accounts to the live headroom terms.
 const healthSrc = fs.readFileSync(path.join(__dirname, "nightly-health.cjs"), "utf8");
 assert.equal(
-  recoveryLineFor("stalled", spentPark, { role: "qa", num_turns: 61, started_at: perReviewShip + 86_400_000, ended_at: null }),
-  DEAD_END_LINE,
-  "DEAD_END_LINE must be the very string recoveryLineFor returns — health compares against it by identity",
+  isDeadEndLine(recoveryLineFor("stalled", spentPark, { role: "qa", num_turns: 61, started_at: perReviewShip + 86_400_000, ended_at: null })),
+  true,
+  "DEAD_END_LINES must hold the very strings recoveryLineFor returns — health recognizes them by identity",
 );
 assert.match(
   healthSrc,
-  /recoveryLineFor\((?:[^()]|\([^()]*\))*\)\s*===\s*DEAD_END_LINE/,
+  /isDeadEndLine\(\s*recoveryLineFor\(/,
   "nightly-health must route its dead-end count through recoveryLineFor, not re-derive it",
 );
 assert.doesNotMatch(
   healthSrc,
-  /continuationsSpent\s*\(/,
-  "nightly-health calling continuationsSpent directly is the pre-65c20d0 precedence — it ignores the stale registry",
+  /spentRecoveryBudget\s*\(/,
+  "nightly-health calling spentRecoveryBudget directly is the pre-65c20d0 precedence — it ignores the stale registry",
 );
 
 // --- the other state that waits on a person: threads abandoned in `failed` ---------------------------

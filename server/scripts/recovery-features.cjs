@@ -70,6 +70,17 @@ const RECOVERY_FEATURES = [
     applies: (e, run) => run?.role === "qa" && /woken \d+ more times and cut off again each time/i.test(e),
   },
   {
+    id: "qaSilentPerReview",
+    label: "the per-review QA empty-run allowance (qaSilentRetriesThisRound)",
+    commit: "f693278", // fix(qa): the empty-run retry belongs to the review, not to the task
+    // The empty-run twin of qaCutoffPerReview, and keyed the same way — on the EXHAUSTED-allowance
+    // sentence, which is the wording that makes probe-parks call such a park a dead end. Before this fix
+    // the allowance was the task's, so a round whose retry SUCCEEDED still spent it and a later round was
+    // refused its own first one; the mechanism had not run for the park it is blamed on. Resuming re-runs
+    // that round with an allowance of its own.
+    applies: (e, run) => run?.role === "qa" && /restarted on a fresh session/i.test(e),
+  },
+  {
     id: "autoReviewRecovery",
     label: "the auto-review recovery (MAX_REVIEW_RECOVERIES)",
     commit: "bc7e87b", // fix(review): recover an auto-review that came back empty instead of re-parking

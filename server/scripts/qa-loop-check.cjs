@@ -65,6 +65,9 @@ const QA_DURABLE_COUNTERS = {
   // the budget the loop enforces; qaCutoffResumes above is the lifetime tally the arithmetic reconciles
   // against. Adding both would invent a launch for every continuation.
   qaCutoffResumesThisRound: { input: "cutoffResumesThisRound", recoversRound: false, label: "continuation(s) on the current review" },
+  // The same relationship for the empty-run budget: a subset of qaSilentRetries, re-counted for the review
+  // running right now and zeroed when one reaches a verdict. Counting it would invent a launch per retry.
+  qaSilentRetriesThisRound: { input: "silentRetriesThisRound", recoversRound: false, label: "empty-run retry(ies) on the current review" },
 };
 
 /**

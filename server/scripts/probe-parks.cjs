@@ -147,18 +147,31 @@ function classifyAbandoned(error) {
   return ABANDON_CLASSES.find((c) => c.match(err)) ?? ABANDON_CLASSES[ABANDON_CLASSES.length - 1];
 }
 
-/** Whether a QA park already spent its turn-ceiling continuation budget — i.e. the recovery mechanism ran
- *  and still couldn't finish, which is a genuine hand-off rather than a reason to just retry it. */
-function continuationsSpent(error) {
-  return /cut off again each time/i.test(error ?? "");
+/** Which QA recovery budget a park says was exhausted — i.e. the mechanism ran and still couldn't finish,
+ *  a genuine hand-off rather than a reason to just retry it — or null when it names neither. QA has TWO
+ *  such budgets and this only knew the turn-ceiling one, so an empty-run exhaustion got no `↳` line at all
+ *  and cost the sweep a hand-drill (7d776461, 2026-08-25). Checked in the order `qaRecoveryNotes` writes
+ *  them, so a park that spent both reports the continuations. */
+function spentRecoveryBudget(error) {
+  const e = error ?? "";
+  if (/cut off again each time/i.test(e)) return "cutoff";
+  // Matches the pre-f693278 wording too ("A review in this task also came back empty …"): those parks are
+  // still in the table, and a classifier that only knows the current sentence re-opens the same hole.
+  if (/restarted on a fresh session/i.test(e)) return "silent";
+  return null;
 }
 
-/** The one `↳` verdict a sweep acts on by NOT acting, so it is a named constant rather than a literal:
- *  `nightly-health.cjs` counts these parks and must decide identically to this file. Comparing against the
- *  exported string keeps the PRECEDENCE in `recoveryLineFor` the single source of truth — health used to
- *  call `continuationsSpent` directly, which is the pre-65c20d0 ordering, so it kept reporting a dead end
- *  for the three stale parks this file had already cleared. */
-const DEAD_END_LINE = "its turn-ceiling continuations were already spent — the recovery mechanism ran and gave up";
+/** The `↳` verdicts a sweep acts on by NOT acting — one per exhaustible budget, because WHICH mechanism
+ *  gave up is the part a reader acts on. Named constants rather than literals: `nightly-health.cjs` counts
+ *  these parks and must decide identically to this file. Comparing against the exported strings keeps the
+ *  PRECEDENCE in `recoveryLineFor` the single source of truth — health used to test the park wording
+ *  directly, so it kept reporting a dead end for the three stale parks this file had already cleared. */
+const DEAD_END_LINES = Object.freeze({
+  cutoff: "its turn-ceiling continuations were already spent — the recovery mechanism ran and gave up",
+  silent: "its empty-run retry was already spent — the review was restarted fresh and came back empty again",
+});
+
+const isDeadEndLine = (line) => line != null && Object.values(DEAD_END_LINES).includes(line);
 
 const hoursAgo = (t) => (t == null ? null : (Date.now() - t) / 3_600_000);
 
@@ -203,8 +216,8 @@ function recoveryLineFor(parkClass, error, run) {
     const stale = recoveryAnnotationFor(error, run);
     if (stale) return stale;
   }
-  if (continuationsSpent(error)) return DEAD_END_LINE;
-  return null;
+  const spent = spentRecoveryBudget(error);
+  return spent ? DEAD_END_LINES[spent] : null;
 }
 
 function reportThread(db, t, parkClass) {
@@ -279,4 +292,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { classifyPark, classifyAbandoned, continuationsSpent, recoveryLineFor, lastRun, DEAD_END_LINE, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
+module.exports = { classifyPark, classifyAbandoned, spentRecoveryBudget, recoveryLineFor, lastRun, isDeadEndLine, DEAD_END_LINES, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
