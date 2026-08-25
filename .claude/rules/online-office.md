@@ -23,10 +23,10 @@ CLI text bridge: `office-bridge.md`.)
   `rosterFor` + `othersOnly`. The receiver refuses self-stamped frames too (`isSelf`) — the relay is
   shared, on someone else's deploy cadence. Gates: `test:relay-core`, `test:online-office`.
 - **A cross-machine room has NO local participant until your own agent replies.** Chatroom surfaces gate
-  on `isCollaborationRoom` (`types.ts` + web mirror), never `threadIds.length >= 2`: a project room only
-  exists here for a repo this machine works, so one remote machine in it IS the collaboration. Counting
-  local threads hid the tab and the Chatroom button entirely. The count is `chat_messages.remote_instance`,
-  stamped by `receiveRemoteChat` and `remoteTeammatesJoined` (which announces once per MACHINE for that).
+  on `isCollaborationRoom` (`types.ts` + web mirror), never `threadIds.length >= 2` — a project room exists
+  here only for a repo this machine works, so one remote machine in it IS the collaboration. It counts
+  `chat_messages.remote_instance` (stamped per MACHINE, backfilled from `sender_name` for older rows —
+  skipping this instance's OWN name, else the self-echo above becomes a phantom teammate in the data).
 - **`server/src/office/onlineProtocol.ts` is a byte-for-byte copy of `relay/src/protocol.ts`.** Change
   one, change the other, and bump `RELAY_PROTOCOL` for anything not backward-compatible — both ends
   refuse a mismatch at the handshake rather than dropping frames silently.

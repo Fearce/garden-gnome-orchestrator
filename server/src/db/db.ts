@@ -286,7 +286,36 @@ export class Db {
     // SCHEMA runs, and exec(SCHEMA) is unguarded — the failed index would abort boot.
     this.raw.exec("CREATE INDEX IF NOT EXISTS idx_attachments_content ON attachments(sha256, name, media_type)");
     this.backfillDirectorThreadLinks();
+    this.backfillRemoteChatInstances();
     this.dedupeAttachmentBlobs();
+  }
+
+  /**
+   * One-time: recover which machine each pre-existing cross-machine line came from. Before
+   * `remote_instance` existed the machine was recorded only inside `sender_name` ("Sif @ Mikkel's box"),
+   * so every room whose conversation predates the column reads as having no remote participant — and
+   * stays hidden behind a chatroom tab that never appears, which is the whole defect the column fixes.
+   *
+   * Rows whose machine is THIS instance are deliberately skipped. They are the self-echo the relay used
+   * to hand back, and counting them would rebuild the phantom teammate the echo fix just removed: a repo
+   * only ever worked here would start reading as a cross-machine collaboration.
+   */
+  private backfillRemoteChatInstances(): void {
+    if (this.kvGet("remote_instance_backfill_v1")) return;
+    const self = this.kvGet("online_office_name") ?? "";
+    this.raw.transaction(() => {
+      this.raw
+        .prepare(
+          `UPDATE chat_messages
+              SET remote_instance = substr(sender_name, instr(sender_name, ' @ ') + 3)
+            WHERE scope = 'project' AND kind = 'chat'
+              AND thread_id IS NULL AND remote_instance IS NULL
+              AND instr(sender_name, ' @ ') > 0
+              AND substr(sender_name, instr(sender_name, ' @ ') + 3) <> @self`,
+        )
+        .run({ self });
+      this.kvSet("remote_instance_backfill_v1", String(now()));
+    })();
   }
 
   // One-time: attribute each pre-existing director message to the task its turn dispatched, so the

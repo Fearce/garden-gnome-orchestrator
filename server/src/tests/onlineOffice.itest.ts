@@ -535,6 +535,50 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test G: the rooms that already held a cross-machine conversation ------------------------------
+  console.log("\nTest G — a room whose remote lines predate the remote_instance column");
+  {
+    const dir = mkdtempSync(join(tmpdir(), "online-office-backfill-"));
+    const file = join(dir, "orchestrator.sqlite");
+    try {
+      const seed = new Db(file);
+      seed.kvSet("online_office_name", "Kevin"); // what THIS machine is called in the office
+      const legacy = (id: string, room: string, senderName: string) =>
+        seed.raw
+          .prepare(
+            `INSERT INTO chat_messages(id, room, scope, workspace, thread_id, run_id, role, kind, body, sender_name, remote_instance, created_at)
+             VALUES(@id, @room, 'project', @ws, NULL, NULL, 'implementor', 'chat', 'taking exporter.ts', @senderName, NULL, 1)`,
+          )
+          .run({ id, room, ws: "C:/repos/card-marker", senderName });
+      legacy("legacy-remote", repoRoom("C:/repos/card-marker"), "Sif @ Mikkel's laptop");
+      legacy("legacy-self", repoRoom("C:/vota"), "Juni @ Kevin"); // written by the self-echo, before it was fixed
+      seed.raw.prepare("DELETE FROM kv WHERE key = 'remote_instance_backfill_v1'").run();
+      seed.raw.close();
+
+      const migrated = new Db(file); // the constructor IS the migration
+      const rooms = migrated.listProjectRooms();
+      const card = rooms.find((r) => r.room === repoRoom("C:/repos/card-marker"));
+      const vota = rooms.find((r) => r.room === repoRoom("C:/vota"));
+      check("a line from another machine recovers its machine from the sender stamp", card?.remoteInstances[0] === "Mikkel's laptop", JSON.stringify(card));
+      check("…so the room becomes a reachable collaboration", !!card && isCollaborationRoom(card));
+      check(
+        "…while a line the self-echo wrote is NOT counted as a remote machine",
+        vota?.remoteInstances.length === 0 && !isCollaborationRoom(vota!),
+        JSON.stringify(vota),
+      );
+      check("…and its message text is untouched", migrated.listRoomMessages(repoRoom("C:/vota"), 10)[0]?.body === "taking exporter.ts");
+
+      // Re-opening must be a no-op, or the scan runs on every boot forever.
+      const flag = migrated.kvGet("remote_instance_backfill_v1");
+      migrated.raw.close();
+      const again = new Db(file);
+      check("the backfill is one-time", again.kvGet("remote_instance_backfill_v1") === flag, `${flag} → ${again.kvGet("remote_instance_backfill_v1")}`);
+      again.raw.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
   console.log(`\n=== ${passed} passed, ${failed} failed ===`);
   if (failed) {
     for (const f of failures) console.log(`  • ${f}`);
