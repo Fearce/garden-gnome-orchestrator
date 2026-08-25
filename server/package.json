@@ -56,6 +56,7 @@
     "test:zai-usage": "tsx src/tests/zaiUsage.test.ts",
     "test:zai-cap": "tsx src/tests/zaiCapDetect.test.ts",
     "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",
+    "test:qa-budget-scope": "node scripts/qa-budget-scope.test.cjs",
     "test:inject-qa": "tsx src/tests/injectDuringQa.itest.ts",
     "test:chat-steering": "tsx src/tests/chatSteering.itest.ts",
     "test:auto-review": "tsx src/tests/autoReview.itest.ts",

@@ -60,6 +60,7 @@ const GATES = [
   "test:reader",
   "test:token-freeze",
   "test:qa-budget",
+  "test:qa-budget-scope",
   "test:inject-qa",
   "test:chat-steering",
   "test:auto-review",
