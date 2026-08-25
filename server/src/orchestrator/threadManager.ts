@@ -2272,7 +2272,7 @@ export class ThreadManager implements OrchestratorApi {
     if (!t) return { diff: "", log: "(no such task)" };
     const run = (args: string[]): Promise<string> =>
       new Promise((res) =>
-        execFile("git", ["-C", t.workspace, "--no-pager", ...args], { maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) =>
+        execFile("git", ["-C", t.workspace, "--no-pager", ...args], { maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) =>
           res(stdout || stderr || (err ? err.message : "")),
         ),
       );
@@ -3942,7 +3942,7 @@ export class ThreadManager implements OrchestratorApi {
   ): Promise<string> {
     const git = (args: string[]): Promise<string> =>
       new Promise((res) =>
-        execFile("git", ["-C", thread.workspace, "--no-pager", ...args], { maxBuffer: 8 * 1024 * 1024 }, (err, out, errOut) =>
+        execFile("git", ["-C", thread.workspace, "--no-pager", ...args], { maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, out, errOut) =>
           res((out || errOut || (err ? err.message : "")).trim()),
         ),
       );
