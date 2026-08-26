@@ -441,11 +441,10 @@ const CLOSEABLE: ReadonlySet<Thread["state"]> = new Set(["done", "failed", "canc
 // resume settled here with no QA loop) and 'paused' are work the owner can sign off on directly — the
 // pipeline's own only-QA-marks-done rule never applies to these, so without this they'd be stuck.
 const DONEABLE: ReadonlySet<Thread["state"]> = new Set(["review", "paused"]);
-// Structured roles whose only channel to the owner IS the in-process MCP bus: the reader posts its whole
-// answer as a finding on a harness-enforced read-only surface, and the auto-reviewer decides a task's fate
-// through post_finding AND ask_user (one that silently lost its way to ask would decide blind). They may
-// only run on a backend that actually serves those tools.
-const MCP_DEPENDENT_ROLES: ReadonlySet<Role> = new Set(["reader", "reviewer"]);
+// Reader results reach the owner only through the in-process MCP bus (`post_finding`). A reviewer's
+// schema-validated verdict is recorded by ThreadManager, so CLI fallbacks can safely review; their
+// kickoff requires any owner-dependent decision to return `accept:false`, never a guessed acceptance.
+const MCP_DEPENDENT_ROLES: ReadonlySet<Role> = new Set(["reader"]);
 // Backends that reach the bus/office through the runner's `OFFICE[...]` TEXT bridge instead of real MCP
 // servers, so the tools above simply aren't there. z.ai is deliberately NOT one: it drives the same Claude
 // SDK against an Anthropic-compatible endpoint and keeps the MCP servers and structured output `makeCfg`
@@ -6871,7 +6870,9 @@ export function cliRoleKickoff(
           "Complete the core QA review directly: inspect git, run checks/browser tests yourself, and emit the final schema JSON.",
           "For deliverables: check the git diff / new files yourself — do not call read_findings. Do not invent tool calls.",
         ].join(" ")
-      : "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the core role directly; do not invent tool calls.";
+      : role === "reviewer"
+        ? "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the review directly; do not invent tool calls. If accepting depends on an owner decision you cannot ask for here, return accept:false with that decision as a concrete issue; never accept on a guess."
+        : "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the core role directly; do not invent tool calls.";
   const cliOperatorNote = [
     "The CLI can still put one action for the owner on the shared Notes list: if you leave them a branch/PR to review, merge, or approve, emit one standalone line in the exact form `OPERATOR_NOTE: short action | https://...`.",
     `Keep the action text to ${NOTE_MAX_CHARS} characters, use a real http(s) link, and do not use this bridge for status updates or summaries.`,
