@@ -36,6 +36,7 @@ async function bootRelay(dataDir) {
     cwd: SERVER_ROOT,
     shell: process.platform === "win32",
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
     env: { ...process.env, PORT: String(RELAY_PORT), DATA_DIR: dataDir, JOIN_CODE, ADMIN_TOKEN: "lab-admin", OFFICE_NAME: "Lab Office" },
   });
   const log = fs.createWriteStream(path.join(dataDir, "relay.log"));

@@ -100,6 +100,7 @@ async function boot({ dataDir, port, env = {} }) {
   const child = spawn(process.execPath, [path.join(SERVER_ROOT, "dist", "index.js")], {
     cwd: SERVER_ROOT,
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
     env: {
       ...process.env,
       DATA_DIR: dataDir,

@@ -126,7 +126,7 @@ function runGate(gate, log) {
   return new Promise((resolve) => {
     const started = Date.now();
     let output = "";
-    const child = spawn("npm", ["run", gate], { cwd: SERVER_DIR, stdio: ["ignore", "pipe", "pipe"], shell: win });
+    const child = spawn("npm", ["run", gate], { cwd: SERVER_DIR, stdio: ["ignore", "pipe", "pipe"], shell: win, windowsHide: true });
     const take = (chunk) => {
       const text = chunk.toString();
       output += text;

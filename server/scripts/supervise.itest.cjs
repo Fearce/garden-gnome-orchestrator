@@ -35,6 +35,7 @@ const superviseScript = path.join(__dirname, "supervise.cjs");
 async function runSupervisor({ dataDir, childScript, runMs }) {
   const proc = spawn(process.execPath, [superviseScript], {
     cwd: path.resolve(__dirname, ".."),
+    windowsHide: true,
     env: {
       ...process.env,
       DATA_DIR: dataDir,
