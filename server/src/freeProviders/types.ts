@@ -107,8 +107,10 @@ export interface ProviderCapabilities {
   tools: boolean | "model-dependent";
   exactUsage: boolean;
   localEstimate: boolean;
-  taskRouting: false;
+  taskRouting: boolean;
 }
+
+export type FreeProviderTaskRole = "planner" | "reader";
 
 export interface FreeProviderDTO {
   id: FreeProviderId;
@@ -136,7 +138,7 @@ export interface FreeProviderDTO {
   usage: ProviderUsageSnapshot;
   capabilities: ProviderCapabilities;
   billingWarning: string;
-  routing: { eligible: false; reason: string };
+  routing: { eligible: boolean; reason: string; roles: FreeProviderTaskRole[] };
 }
 
 export interface ProviderCredentials {
@@ -155,6 +157,8 @@ export interface ProviderMessage {
   content: string;
   toolCallId?: string;
   toolName?: string;
+  /** Assistant-side calls must be replayed before their tool results on the next completion request. */
+  toolCalls?: NormalizedToolCall[];
 }
 
 export interface NormalizedCompletionRequest {
@@ -168,6 +172,9 @@ export interface NormalizedToolCall {
   id: string;
   name: string;
   arguments: string;
+  /** Adapter-private, opaque continuity data. It is replayed only by the originating adapter and is
+   * never exposed to the tool executor, event feed, logs, REST DTOs, or persisted usage ledger. */
+  providerMetadata?: Record<string, unknown>;
 }
 
 export interface CompletionUsage {

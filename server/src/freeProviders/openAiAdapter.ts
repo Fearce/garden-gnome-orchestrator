@@ -23,6 +23,8 @@ export interface OpenAiCompatibleOptions {
   normalizeModels(body: unknown): ProviderModel[];
   decorateRequest?(body: UnknownRecord): UnknownRecord;
   accountUsage?(credentials: ProviderCredentials): Promise<Partial<ProviderUsageSnapshot> | null>;
+  /** Hosted prototype endpoints may queue cold models longer than the generic 20-second request cap. */
+  completionTimeoutMs?: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -77,11 +79,21 @@ export function parseOpenAiToolCalls(value: unknown): NormalizedToolCall[] {
 function requestBody(input: NormalizedCompletionRequest, stream: boolean): UnknownRecord {
   const body: UnknownRecord = {
     model: input.model,
-    messages: input.messages.map((message) => ({
-      role: message.role,
-      content: message.content,
-      ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
-    })),
+    messages: input.messages.map((message) => {
+      const output: UnknownRecord = {
+        role: message.role,
+        content: message.content,
+        ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
+      };
+      if (message.role === "assistant" && message.toolCalls?.length) {
+        output.tool_calls = message.toolCalls.map((call) => ({
+          id: call.id,
+          type: "function",
+          function: { name: call.name, arguments: call.arguments },
+        }));
+      }
+      return output;
+    }),
     stream,
   };
   if (input.maxOutputTokens != null) body.max_tokens = input.maxOutputTokens;
@@ -141,7 +153,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     const response = await requestJson<unknown>(
       this.options.completionUrl(credentials),
       { method: "POST", headers, body: JSON.stringify(body) },
-      { fetchImpl: this.options.fetchImpl, secrets: credentials.apiKey ? [credentials.apiKey] : [] },
+      { fetchImpl: this.options.fetchImpl, secrets: credentials.apiKey ? [credentials.apiKey] : [], timeoutMs: this.options.completionTimeoutMs },
     );
     return normalizedCompletion(response.body, response.headers, input.model);
   }
@@ -154,7 +166,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     const response = await providerFetch(
       this.options.completionUrl(credentials),
       { method: "POST", headers, body: JSON.stringify(body) },
-      { fetchImpl: this.options.fetchImpl, secrets },
+      { fetchImpl: this.options.fetchImpl, secrets, timeoutMs: this.options.completionTimeoutMs },
     );
     if (!response.ok) await throwProviderResponse(response, secrets);
 

@@ -134,10 +134,10 @@ function commonPrefixLen(a: string, b: string): number {
 export const GIT_READ_SUBCOMMANDS = ["log", "show", "status", "diff"] as const;
 export type GitReadSubcommand = (typeof GIT_READ_SUBCOMMANDS)[number];
 
-// Even a read-only subcommand has a couple of args that escape read-only-ness: `git diff --output=<f>`
-// writes the diff to a FILE, and `--ext-diff` runs an external diff driver (arbitrary configured command).
-// Reject those so the reader can't turn a "read" into a write or a shell-out.
-const GIT_READ_ARG_DENY = /^(--output(=|$)|-o$|--ext-diff$)/;
+// Even a read-only subcommand has args that escape the repo/read-only boundary: `--output` writes,
+// external/textconv diff drivers execute configured programs, and `diff --no-index` accepts arbitrary
+// filesystem paths outside the resolved repository. Reject them before git sees the request.
+const GIT_READ_ARG_DENY = /^(--output(=|$)|-o$|--ext-diff$|--textconv$|--no-index$)/;
 
 export interface GitReadResult {
   ok: boolean;

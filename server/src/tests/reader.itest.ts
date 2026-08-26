@@ -101,6 +101,8 @@ async function testGitAllowlist(): Promise<void> {
   check("rejects diff --output=f", !validateGitRead("diff", ["--output=/tmp/x"]).ok);
   check("rejects diff -o f", !validateGitRead("diff", ["-o", "/tmp/x"]).ok);
   check("rejects diff --ext-diff", !validateGitRead("diff", ["--ext-diff"]).ok);
+  check("rejects diff --textconv", !validateGitRead("diff", ["--textconv"]).ok);
+  check("rejects diff --no-index path escape", !validateGitRead("diff", ["--no-index", "../outside", "hello.txt"]).ok);
   check("still accepts diff --stat", validateGitRead("diff", ["--stat"]).ok);
 
   // ---- runReadonlyGit against a REAL throwaway repo ----

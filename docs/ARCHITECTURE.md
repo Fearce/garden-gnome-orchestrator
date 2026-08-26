@@ -64,11 +64,11 @@ Model + tool policy per role:
 | Role        | Model            | permissionMode | Tools |
 |-------------|------------------|----------------|-------|
 | Director    | claude-sonnet-4-6| bypassPermissions | memory (search_memory/read_memory) + orchestration MCP only — **no Read/Grep/Glob/Bash** |
-| Planner     | claude-opus-4-8  | plan           | Read/Grep/Glob, bus(post_finding) — **owns codebase reading**; routes to researcher or implementor |
+| Planner     | eligible free pool → configured paid backend | provider-specific | Read/Grep/Glob — **owns codebase reading**; routes to researcher or implementor. The free harness has no write/shell/network surface and falls back on any failure. |
 | Researcher  | claude-sonnet-4-6| plan           | WebSearch/WebFetch, memory, bus — **no Read/Grep/Glob** (external info only; the planner reads the repo) |
 | Implementor | claude-opus-4-8  | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
 | QA          | claude-opus-4-8  | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); sole role that can mark a task done |
-| Reader      | claude-sonnet-4-6| bypassPermissions | Read/Grep/Glob + `git_read` (allowlisted log/show/status/diff, **no Bash**), bus/office — **no Write/Edit/Bash/web** (§5, the read-only `dispatch_read` lane); answers a lookup, no QA |
+| Reader      | eligible free pool → configured paid backend | provider-specific | Read/Grep/Glob + `git_read` (allowlisted log/show/status/diff, **no Bash**) + `post_finding` — **no Write/Edit/Bash/web** (§5, the read-only `dispatch_read` lane); answers a lookup, no QA |
 | Reviewer    | claude-opus-4-8  | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests, browser-drives UI), bus incl. **`ask_user`** — **no Write/Edit** (§5, the on-demand auto-review); accepts a parked task as done in the owner's place, or hands it back |
 
 The **reader** is the same harness-level enforcement as QA — under `bypassPermissions` the
@@ -77,7 +77,15 @@ makes them un-invokable even though the model runs unsupervised (`readerConfig`,
 It gets read-only git history without a shell via the `git` MCP server's single `git_read` tool
 (`bus/gitReadServer.ts` → `gitService.runReadonlyGit`, allowlist `log`/`show`/`status`/`diff`).
 
-The **director only directs** — it has no filesystem or shell tools, so it cannot
+Planner and reader first attempt the **free task pool** (`freeProviders/agentRun.ts`). That provider-neutral
+loop exposes only fixed read tools, resolves real paths inside the task workspace, replays normalized
+assistant tool calls/results across OpenAI-compatible, Gemini, and Cohere transports, validates the role's
+JSON schema, and records every call in the provider quota ledger. Eligibility is fail-closed: the enabled,
+freshly revalidated free model must have explicit live or narrowly allowlisted official tool support and visible remaining quota. An error or
+missing reader finding records the free run and immediately continues through the unchanged paid-provider
+`runRole` ladder. It never serves researcher, implementor, QA, or reviewer.
+
+The **director only directs** — it has no writable filesystem or shell path, so it cannot
 investigate a repo itself; any "figure out / debug / why is X" request is forced into
 a `dispatch`. Memory recall goes through the scoped `search_memory` / `read_memory` MCP
 tools (memory dir only), never a generic `Read`.

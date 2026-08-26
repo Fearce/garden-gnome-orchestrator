@@ -67,6 +67,21 @@ function boolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+function booleanish(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string" && /^(?:true|false)$/i.test(value)) return value.toLowerCase() === "true";
+  return undefined;
+}
+
+function property(value: UnknownRecord, id: string): unknown {
+  const properties = Array.isArray(value.properties) ? value.properties : [];
+  for (const raw of properties) {
+    const item = record(raw);
+    if (item?.property_id === id) return item.value;
+  }
+  return undefined;
+}
+
 function idOf(value: UnknownRecord): string {
   const id = value.id ?? value.name ?? value.model;
   return typeof id === "string" ? id.replace(/^models\//, "") : "";
@@ -78,13 +93,13 @@ function displayName(value: UnknownRecord, id: string): string {
 }
 
 function contextWindow(value: UnknownRecord): number | undefined {
-  return finite(value.context_window ?? value.context_length ?? value.max_context_length ?? value.inputTokenLimit);
+  return finite(value.context_window ?? value.context_length ?? value.max_context_length ?? value.inputTokenLimit ?? property(value, "context_window"));
 }
 
 function capability(value: UnknownRecord, key: string): boolean | undefined {
   const capabilities = record(value.capabilities);
   const features = Array.isArray(value.supported_features) ? value.supported_features : Array.isArray(value.features) ? value.features : [];
-  const direct = boolean(capabilities?.[key] ?? value[key]);
+  const direct = booleanish(capabilities?.[key] ?? value[key] ?? property(value, key));
   if (direct != null) return direct;
   return features.some((feature) => typeof feature === "string" && feature.toLowerCase().includes(key.toLowerCase())) || undefined;
 }
@@ -120,7 +135,9 @@ export function normalizeGroqModels(body: unknown): ProviderModel[] {
       displayName: displayName(value, id),
       contextWindow: contextWindow(value),
       supportsStreaming: true,
-      supportsTools: capability(value, "tool_use") ?? null,
+      // Groq's model endpoint omits capability fields; its official tool-use matrix explicitly lists
+      // every model in GGO's narrower free-plan allowlist (verified 2026-08-26).
+      supportsTools: capability(value, "tool_use") ?? (GROQ_FREE_MODELS.has(id) ? true : null),
       isFree: eligible,
       freeStatusSource: eligible ? "published" as const : "unknown" as const,
       ineligibleReason: eligible ? undefined : "Not in GGO's currently verified Groq free-plan allowlist.",
@@ -221,7 +238,7 @@ export function normalizeCloudflareModels(body: unknown): ProviderModel[] {
     const taskName = String(task?.name ?? value.task ?? "");
     if (taskName && !/(text generation|text-generation|chat)/i.test(taskName)) return [];
     const rate = WORKERS_AI_NEURON_RATES[id];
-    const paidOnly = WORKERS_AI_PAID_ONLY.has(id);
+    const paidOnly = WORKERS_AI_PAID_ONLY.has(id) || booleanish(property(value, "require_workers_paid")) === true;
     const eligible = !!rate && !paidOnly;
     return [{
       providerId: "cloudflare" as const,
@@ -229,7 +246,7 @@ export function normalizeCloudflareModels(body: unknown): ProviderModel[] {
       displayName: displayName(value, id),
       contextWindow: contextWindow(value),
       supportsStreaming: true,
-      supportsTools: capability(value, "tools") ?? null,
+      supportsTools: capability(value, "tools") ?? capability(value, "function_calling") ?? null,
       isFree: eligible,
       freeStatusSource: eligible || paidOnly ? "published" as const : "unknown" as const,
       unitsPerMillionInput: rate?.input,
@@ -245,6 +262,7 @@ export function normalizeCloudflareModels(body: unknown): ProviderModel[] {
 
 const CODING_MODEL = /(?:coder|code|gpt-oss|nemotron|deepseek|glm|qwen|mistral|llama|kimi|granite)/i;
 const NON_CHAT_MODEL = /(?:embed|rerank|reward|guard|moderation|ocr|speech|audio|whisper|diffusion)/i;
+const NVIDIA_DOCUMENTED_TOOL_MODELS = new Set(["openai/gpt-oss-120b", "openai/gpt-oss-20b"]);
 
 export function normalizeNvidiaModels(body: unknown): ProviderModel[] {
   return arrayAt(body).flatMap((raw) => {
@@ -258,7 +276,9 @@ export function normalizeNvidiaModels(body: unknown): ProviderModel[] {
       displayName: displayName(value, id),
       contextWindow: contextWindow(value),
       supportsStreaming: true,
-      supportsTools: capability(value, "tools") ?? capability(value, "tool_use") ?? null,
+      // build.nvidia.com's hosted model cards explicitly advertise tool use for GPT-OSS, while the
+      // generic /models payload does not expose per-model capabilities.
+      supportsTools: capability(value, "tools") ?? capability(value, "tool_use") ?? (NVIDIA_DOCUMENTED_TOOL_MODELS.has(id) ? true : null),
       isFree: true,
       freeStatusSource: "provider" as const,
     }];
@@ -352,6 +372,7 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
     completionUrl: () => "https://integrate.api.nvidia.com/v1/chat/completions",
     headers: authHeaders,
     normalizeModels: normalizeNvidiaModels,
+    completionTimeoutMs: 60_000,
     fetchImpl,
   });
   const huggingface = new OpenAiCompatibleAdapter({
@@ -379,7 +400,7 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
       optionalCredential: false,
       needsAccountId: false,
       envKey: "GROQ_API_KEY",
-      billingWarning: "Manual probes only. Groq plan/billing state is account-wide; GGO never falls through to another model.",
+      billingWarning: "Confirm this key belongs to Groq's Free plan. GGO pins an official free-plan model and never swaps to a paid model.",
       usage: { quotaKind: "mixed", window: "day", timeZone: "UTC", unit: "requests", localEstimate: true, summary: "Local requests until Groq returns exact request/day and token/minute headers." },
       adapter: groq,
       preferredModels: ["openai/gpt-oss-120b", "qwen/qwen3.6-27b", "openai/gpt-oss-20b"],
@@ -398,7 +419,7 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
       optionalCredential: true,
       needsAccountId: false,
       envKey: "KILO_API_KEY",
-      billingWarning: "Only live zero-priced free routes are eligible; the catalog is rechecked before each manual probe.",
+      billingWarning: "Only live zero-priced free routes are eligible; the catalog is rechecked before every probe and routed task.",
       usage: { quotaKind: "requests", window: "rolling", timeZone: "UTC", limit: 200, unit: "free requests", localEstimate: true, summary: "Rolling-hour estimate for calls from this GGO instance; the real limit is shared by IP." },
       adapter: kilo,
       preferredModels: ["kilo-auto/free"],
@@ -417,7 +438,7 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
       optionalCredential: false,
       needsAccountId: false,
       envKey: "MISTRAL_API_KEY",
-      billingWarning: "Mistral does not expose a reliable remaining-credit value here. Confirm the workspace is in Free mode; probes are never automatic.",
+      billingWarning: "Mistral does not expose a reliable remaining-credit value here. Confirm the workspace is in Free mode before enabling task routing.",
       usage: { quotaKind: "credits-usd", window: "month", timeZone: "UTC", limit: 10, unit: "USD credit", localEstimate: true, summary: "The $10 allowance is published; GGO's ledger uses calendar months while the workspace balance stays authoritative in Mistral Console." },
       adapter: mistral,
       preferredModels: ["codestral-latest", "devstral-small-latest", "mistral-small-latest"],
@@ -437,7 +458,7 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
       needsAccountId: true,
       envKey: "CLOUDFLARE_API_TOKEN",
       envAccountId: "CLOUDFLARE_ACCOUNT_ID",
-      billingWarning: "GGO excludes documented paid-only and unverified models. Neurons are estimated from published model rates and response tokens.",
+      billingWarning: "Use a Workers Free account to prevent overage billing. GGO excludes paid-only models and estimates only this instance's Neurons; other account usage is not visible.",
       usage: { quotaKind: "neurons", window: "day", timeZone: "UTC", limit: 10_000, unit: "neurons", localEstimate: true, summary: "Local estimate; account-wide Cloudflare usage outside GGO is not visible." },
       adapter: cloudflare,
       preferredModels: ["@cf/qwen/qwen2.5-coder-32b-instruct", "@cf/openai/gpt-oss-120b", "@cf/zai-org/glm-4.7-flash"],
@@ -456,7 +477,7 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
       optionalCredential: false,
       needsAccountId: false,
       envKey: "NVIDIA_API_KEY",
-      billingWarning: "Hosted NIM Developer Program access is for development/testing, not production. GGO shows no invented remaining quota and sends probes only on confirmation.",
+      billingWarning: "Hosted NIM Developer Program access is for development/testing, not production. GGO records bounded planner/reader traffic but invents no remaining cap.",
       usage: { quotaKind: "prototype", window: "dynamic", timeZone: "UTC", unit: "prototype requests", localEstimate: true, summary: "Free prototyping access; NVIDIA does not publish a machine-readable numeric allowance here. GGO records its own request/token evidence only." },
       adapter: nvidia,
       preferredModels: ["qwen/qwen3-coder-480b-a35b-instruct", "openai/gpt-oss-120b", "nvidia/llama-3.3-nemotron-super-49b-v1.5"],
@@ -475,7 +496,7 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
       optionalCredential: false,
       needsAccountId: false,
       envKey: "HF_TOKEN",
-      billingWarning: "The chip estimates only calls from this GGO. Provider keys configured in Hugging Face can bill those providers directly; explicit probes use an exact catalog provider and never auto-fail over.",
+      billingWarning: "The chip estimates only calls from this GGO. Remove Hugging Face BYOK provider keys to avoid direct provider billing; GGO pins one catalog route and never swaps upstreams.",
       usage: { quotaKind: "credits-usd", window: "month", timeZone: "UTC", limit: 0.1, unit: "USD credit", localEstimate: true, summary: "Calendar-month estimate using live per-provider catalog prices and GGO token usage; Hugging Face billing is authoritative." },
       adapter: huggingface,
       preferredModels: ["openai/gpt-oss-120b:deepinfra", "Qwen/Qwen3-Coder-480B-A35B-Instruct:novita", "zai-org/GLM-5.2:deepinfra"],
@@ -500,7 +521,7 @@ export function createProviderRegistry(fetchImpl?: typeof fetch): ProviderDefini
     optionalCredential: false,
     needsAccountId: false,
     envKey: "GEMINI_API_KEY",
-    billingWarning: "Only currently verified free-tier Flash models are eligible. Limits are project-wide and dynamic; probes are manual only.",
+    billingWarning: "Use an unbilled AI Studio project for a hard no-spend boundary. Only currently verified free-tier Flash models are eligible.",
     usage: { quotaKind: "mixed", window: "day", timeZone: "America/Los_Angeles", unit: "requests", localEstimate: true, summary: "Local request/token count; Google exposes exact active limits in AI Studio, not this API response." },
     adapter: new GeminiAdapter(fetchImpl),
     preferredModels: ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
@@ -519,7 +540,7 @@ export function createProviderRegistry(fetchImpl?: typeof fetch): ProviderDefini
     optionalCredential: false,
     needsAccountId: false,
     envKey: "COHERE_API_KEY",
-    billingWarning: "GGO cannot identify key type. Confirm this is an evaluation key; only explicit probes are enabled.",
+    billingWarning: "GGO cannot identify key type. Confirm this is an evaluation key before enabling task routing.",
     usage: { quotaKind: "requests", window: "month", timeZone: "UTC", limit: 1_000, unit: "API calls", localEstimate: true, summary: "Calendar-month estimate from calls made by this GGO instance; Cohere does not expose account-wide remaining calls here." },
     adapter: new CohereAdapter(fetchImpl),
     preferredModels: ["north-mini-code", "command-a-03-2025", "command-r7b-12-2024"],

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { FreeProviderTaskSession } from "./agentRun.js";
 import { redactProviderText } from "./http.js";
 import { credentialFingerprint, UsageLedger, type KvStore } from "./ledger.js";
 import { createProviderRegistry, type ProviderDefinition } from "./registry.js";
@@ -8,6 +9,9 @@ import {
   ProviderRequestError,
   type FreeProviderDTO,
   type FreeProviderId,
+  type FreeProviderTaskRole,
+  type NormalizedCompletion,
+  type NormalizedCompletionRequest,
   type ProviderCredentials,
   type ProviderHealth,
   type ProviderModel,
@@ -55,13 +59,25 @@ export interface ProviderProbeResult {
   };
 }
 
+export interface FreeProviderRoutingDTO {
+  enabled: boolean;
+  active: boolean;
+  roles: FreeProviderTaskRole[];
+  eligibleProviders: number;
+  eligibleProviderIds: FreeProviderId[];
+  reason: string;
+}
+
 const CONFIG_PREFIX = "free_ai_provider_config_v1_";
 const MODEL_PREFIX = "free_ai_provider_models_v1_";
 const HEALTH_PREFIX = "free_ai_provider_health_v1_";
 const USAGE_PREFIX = "free_ai_provider_remote_usage_v1_";
 const FINGERPRINT_SALT_KEY = "free_ai_provider_fingerprint_salt_v1";
+const ROUTING_CONFIG_KEY = "free_ai_provider_routing_v1";
 const MODEL_CACHE_MAX = 500;
 const REFRESH_MS = 6 * 60 * 60_000;
+const ROUTING_FAILURE_COOLDOWN_MS = 10 * 60_000;
+const ROUTING_ROLES: FreeProviderTaskRole[] = ["planner", "reader"];
 
 function parseJson<T>(raw: string | null): T | null {
   if (!raw) return null;
@@ -137,12 +153,28 @@ export function chooseFreeModel(definition: ProviderDefinition, models: Provider
   return free.sort((a, b) => a.displayName.localeCompare(b.displayName))[0] ?? null;
 }
 
+/** Task routing is stricter than probing: an explicit tool-capability signal is mandatory. */
+export function chooseFreeTaskModel(definition: ProviderDefinition, models: ProviderModel[], selected?: string): ProviderModel | null {
+  const capable = models.filter((model) => model.isFree && !model.ineligibleReason && model.supportsTools === true);
+  if (selected) {
+    const exact = capable.find((model) => model.id === selected);
+    if (exact) return exact;
+  }
+  for (const preferred of definition.preferredModels) {
+    const exact = capable.find((model) => model.id === preferred);
+    if (exact) return exact;
+  }
+  return capable.sort((a, b) => (b.contextWindow ?? 0) - (a.contextWindow ?? 0) || a.displayName.localeCompare(b.displayName))[0] ?? null;
+}
+
 export class FreeProviderService {
   private readonly definitions: ProviderDefinition[];
   private readonly byId: Map<FreeProviderId, ProviderDefinition>;
   private readonly ledger: UsageLedger;
   private readonly salt: string;
   private readonly refreshes = new Map<FreeProviderId, Promise<FreeProviderDTO>>();
+  private readonly routingLeases = new Map<FreeProviderId, number>();
+  private readonly routingCooldowns = new Map<FreeProviderId, { until: number; reason: string }>();
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -160,19 +192,25 @@ export class FreeProviderService {
 
   start(): void {
     if (this.refreshTimer) return;
-    this.refreshTimer = setInterval(() => {
-      for (const definition of this.definitions) {
-        const { config, credentials } = this.context(definition);
-        if (!config.enabled || !this.hasRequiredCredentials(definition, credentials)) continue;
-        void this.refresh(definition.id).catch(() => undefined);
-      }
-    }, REFRESH_MS);
+    // Revalidate saved connections once after boot so a fixed adapter/self-healed credential does not
+    // remain stuck in yesterday's error state until the six-hour timer or a manual Settings click.
+    const bootRefresh = setTimeout(() => this.refreshConfigured(), 750);
+    bootRefresh.unref?.();
+    this.refreshTimer = setInterval(() => this.refreshConfigured(), REFRESH_MS);
     this.refreshTimer.unref?.();
   }
 
   stop(): void {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = null;
+  }
+
+  private refreshConfigured(): void {
+    for (const definition of this.definitions) {
+      const { config, credentials } = this.context(definition);
+      if (!config.enabled || !this.hasRequiredCredentials(definition, credentials)) continue;
+      void this.refresh(definition.id).catch(() => undefined);
+    }
   }
 
   has(id: string): id is FreeProviderId {
@@ -185,6 +223,71 @@ export class FreeProviderService {
 
   get(id: FreeProviderId): FreeProviderDTO {
     return this.dto(this.requireDefinition(id));
+  }
+
+  routingStatus(): FreeProviderRoutingDTO {
+    const enabled = this.routingEnabled();
+    const eligibleProviderIds = enabled
+      ? this.definitions.filter((definition) => this.routingDecision(definition).eligible).map((definition) => definition.id)
+      : [];
+    return {
+      enabled,
+      active: enabled && eligibleProviderIds.length > 0,
+      roles: [...ROUTING_ROLES],
+      eligibleProviders: eligibleProviderIds.length,
+      eligibleProviderIds,
+      reason: !enabled
+        ? "Free task routing is off. Connections and quota checks remain available."
+        : eligibleProviderIds.length
+          ? `${eligibleProviderIds.length} connected provider${eligibleProviderIds.length === 1 ? "" : "s"} can run planning and read-only lookup tasks; every failure falls back to the existing paid backend.`
+          : "No enabled, validated free model currently reports the tool support required by the read-only task harness.",
+    };
+  }
+
+  setRoutingEnabled(enabled: boolean): FreeProviderRoutingDTO {
+    this.store.kvSet(ROUTING_CONFIG_KEY, JSON.stringify({ enabled }));
+    return this.routingStatus();
+  }
+
+  /**
+   * Reserve the least-used eligible provider and revalidate its live free catalog before inference.
+   * A null lease is an ordinary safe fallback signal: runRole continues on its existing backend.
+   */
+  async openTaskSession(role: FreeProviderTaskRole): Promise<FreeProviderTaskSession | null> {
+    if (!ROUTING_ROLES.includes(role) || !this.routingEnabled()) return null;
+    const attempted = new Set<FreeProviderId>();
+    while (attempted.size < this.definitions.length) {
+      const candidate = this.routingCandidates(attempted)[0];
+      if (!candidate) return null;
+      attempted.add(candidate.definition.id);
+      try {
+        // Catalog validation is non-inference and is the hard no-paid-spill circuit breaker.
+        await this.refresh(candidate.definition.id);
+      } catch {
+        continue;
+      }
+      const fresh = this.routingDecision(candidate.definition);
+      if (!fresh.eligible || !fresh.model) continue;
+      const { credentials, fingerprint } = this.context(candidate.definition);
+      const providerId = candidate.definition.id;
+      this.routingLeases.set(providerId, (this.routingLeases.get(providerId) ?? 0) + 1);
+      let closed = false;
+      return {
+        target: { providerId, providerName: candidate.definition.displayName, model: fresh.model.id },
+        complete: (request) => this.completeTask(candidate.definition, credentials, fingerprint, fresh.model!, request),
+        markHarnessFailure: (reason) => {
+          this.routingCooldowns.set(providerId, { until: Date.now() + ROUTING_FAILURE_COOLDOWN_MS, reason: redactProviderText(reason, [credentials.apiKey ?? "", credentials.accountId ?? ""]) });
+        },
+        close: () => {
+          if (closed) return;
+          closed = true;
+          const remaining = Math.max(0, (this.routingLeases.get(providerId) ?? 1) - 1);
+          if (remaining) this.routingLeases.set(providerId, remaining);
+          else this.routingLeases.delete(providerId);
+        },
+      };
+    }
+    return null;
   }
 
   update(id: FreeProviderId, rawPatch: ProviderConfigPatch): FreeProviderDTO {
@@ -243,7 +346,8 @@ export class FreeProviderService {
       const models = await definition.adapter.listModels(credentials);
       const normalized = this.cleanModels(definition, models);
       this.writeModels(definition, fingerprint, normalized);
-      const selected = chooseFreeModel(definition, normalized, config.selectedModel);
+      const selected = (this.routingEnabled() ? chooseFreeTaskModel(definition, normalized, config.selectedModel) : null) ??
+        chooseFreeModel(definition, normalized, config.selectedModel);
       if (!selected) {
         throw new ProviderRequestError(
           `Connected, but none of the ${normalized.length} discovered models is currently verified as free. No request was sent.`,
@@ -257,7 +361,9 @@ export class FreeProviderService {
       }
       this.writeHealth(definition, credentials, {
         state: "ready",
-        message: `${normalized.filter((model) => model.isFree && !model.ineligibleReason).length} verified free model${normalized.filter((model) => model.isFree && !model.ineligibleReason).length === 1 ? "" : "s"} ready for manual probes. Task routing remains off.`,
+        message: selected.supportsTools === true
+          ? `${normalized.filter((model) => model.isFree && !model.ineligibleReason).length} verified free model${normalized.filter((model) => model.isFree && !model.ineligibleReason).length === 1 ? "" : "s"}; ${selected.displayName} is ready for free planning and read-only lookup tasks.`
+          : `${normalized.filter((model) => model.isFree && !model.ineligibleReason).length} verified free model${normalized.filter((model) => model.isFree && !model.ineligibleReason).length === 1 ? "" : "s"}. The selected model does not explicitly report tool support, so task routing stays fail-closed.`,
         checkedAt: new Date().toISOString(),
       });
       return this.dto(definition);
@@ -298,38 +404,10 @@ export class FreeProviderService {
         ],
         maxOutputTokens: 16,
       });
-      const estimatedUnits = definition.id === "cloudflare"
-        ? ((completion.usage.inputTokens ?? 0) * (selected.unitsPerMillionInput ?? 0) +
-            (completion.usage.outputTokens ?? 0) * (selected.unitsPerMillionOutput ?? 0)) / 1_000_000
-        : undefined;
-      const providerCostUsd = completion.usage.costUsd ?? (definition.id === "huggingface"
-        ? ((completion.usage.inputTokens ?? 0) * (selected.inputPricePerMillion ?? 0) +
-            (completion.usage.outputTokens ?? 0) * (selected.outputPricePerMillion ?? 0)) / 1_000_000
-        : undefined);
-      this.ledger.record({
-        providerId: id,
-        accountFingerprint: fingerprint,
-        modelId: selected.id,
-        responseStatus: "ok",
-        inputTokens: completion.usage.inputTokens,
-        outputTokens: completion.usage.outputTokens,
-        providerCostUsd,
-        estimatedUnits,
-        freeClass: definition.tierKind,
-        window: definition.usage.window,
-        timeZone: definition.usage.timeZone,
-      });
-      if (completion.rateLimit) {
-        this.writeRemoteUsage(definition, fingerprint, {
-          ...(this.readRemoteUsage(definition, fingerprint) ?? {}),
-          rateLimit: completion.rateLimit,
-          source: "response-header",
-          checkedAt: new Date().toISOString(),
-        });
-      }
+      this.recordCompletion(definition, fingerprint, selected, completion);
       this.writeHealth(definition, credentials, {
         state: "ready",
-        message: `Probe succeeded on ${completion.model}${completion.upstreamProvider ? ` via ${completion.upstreamProvider}` : ""}. Automatic task routing remains off.`,
+        message: `Probe succeeded on ${completion.model}${completion.upstreamProvider ? ` via ${completion.upstreamProvider}` : ""}.${selected.supportsTools === true ? " This model is eligible for the free read-only task pool." : " Task routing still requires explicit catalog tool support."}`,
         checkedAt: new Date().toISOString(),
       });
       const latencyMs = Date.now() - started;
@@ -348,16 +426,7 @@ export class FreeProviderService {
       };
     } catch (error) {
       const normalized = this.asProviderError(error, credentials);
-      this.ledger.record({
-        providerId: id,
-        accountFingerprint: fingerprint,
-        modelId: selected.id,
-        requestCount: 0,
-        responseStatus: normalized.kind === "rate-limit" || normalized.kind === "billing" ? "rejected" : "failed",
-        freeClass: definition.tierKind,
-        window: definition.usage.window,
-        timeZone: definition.usage.timeZone,
-      });
+      this.recordFailure(definition, fingerprint, selected, normalized);
       this.writeHealth(definition, credentials, {
         state: stateForProviderError(normalized),
         message: normalized.message,
@@ -477,6 +546,138 @@ export class FreeProviderService {
     this.store.kvSet(`${CONFIG_PREFIX}${id}`, JSON.stringify({ ...config, selectedModel }));
   }
 
+  private routingEnabled(): boolean {
+    const stored = parseJson<{ enabled?: unknown }>(this.store.kvGet(ROUTING_CONFIG_KEY));
+    // Credentials may belong to a paid-capable project even when its selected model is free. Never
+    // turn an old connection-lab credential into autonomous traffic without a persisted owner opt-in.
+    return stored?.enabled === true;
+  }
+
+  private routingDecision(definition: ProviderDefinition): { eligible: boolean; reason: string; model?: ProviderModel } {
+    const { config, credentials, fingerprint } = this.context(definition);
+    if (!this.routingEnabled()) return { eligible: false, reason: "The free task pool is turned off." };
+    if (!config.enabled) return { eligible: false, reason: "Provider connection is disabled." };
+    if (!this.hasRequiredCredentials(definition, credentials)) return { eligible: false, reason: this.missingCredentialMessage(definition, credentials) };
+    const health = this.readHealth(definition, credentials);
+    if (health?.state !== "ready") return { eligible: false, reason: health?.message ?? "Validate the provider before routing tasks." };
+    const cooldown = this.routingCooldowns.get(definition.id);
+    if (cooldown && cooldown.until > Date.now()) {
+      return { eligible: false, reason: `Temporarily resting this model after a harness failure: ${cooldown.reason}` };
+    }
+    if (cooldown) this.routingCooldowns.delete(definition.id);
+    const models = this.readModels(definition, fingerprint)?.models ?? [];
+    const model = chooseFreeModel(definition, models, config.selectedModel);
+    if (!model) return { eligible: false, reason: "No currently verified free model is selected." };
+    if (model.supportsTools !== true) return { eligible: false, reason: `${model.displayName} does not explicitly report tool support; routing fails closed.` };
+    if (model.contextWindow != null && model.contextWindow < 16_000) return { eligible: false, reason: `${model.displayName}'s context window is too small for repository planning.` };
+    const usage = this.usage(definition, fingerprint);
+    if (usage.remaining != null && usage.remaining <= 0) return { eligible: false, reason: "The visible free allowance is exhausted." };
+    return { eligible: true, reason: `${model.displayName} can run planner and read-only reader tasks with automatic paid-backend fallback.`, model };
+  }
+
+  private routingCandidates(exclude: ReadonlySet<FreeProviderId>): Array<{ definition: ProviderDefinition; score: number }> {
+    return this.definitions
+      .filter((definition) => !exclude.has(definition.id) && this.routingDecision(definition).eligible)
+      .map((definition) => {
+        const { fingerprint } = this.context(definition);
+        const requests = this.ledger.aggregate({
+          providerId: definition.id,
+          accountFingerprint: fingerprint,
+          window: definition.usage.window,
+          timeZone: definition.usage.timeZone,
+        }).requests;
+        // An in-flight lease is deliberately expensive so simultaneous tasks spread across accounts.
+        return { definition, score: requests + (this.routingLeases.get(definition.id) ?? 0) * 1_000 };
+      })
+      .sort((a, b) => a.score - b.score || a.definition.id.localeCompare(b.definition.id));
+  }
+
+  private async completeTask(
+    definition: ProviderDefinition,
+    credentials: ProviderCredentials,
+    fingerprint: string,
+    model: ProviderModel,
+    request: Omit<NormalizedCompletionRequest, "model">,
+  ): Promise<NormalizedCompletion> {
+    // A task session is deliberately bound to the credential set it leased. If the owner rotates or
+    // removes that credential while a model is between tool calls, never send the next turn with the
+    // stale secret captured by the closure.
+    if (this.context(definition).fingerprint !== fingerprint) {
+      throw new ProviderRequestError("The provider credential changed during this task; retrying through the normal fallback path.", "invalid-configuration");
+    }
+    const current = this.routingDecision(definition);
+    if (!current.eligible || current.model?.id !== model.id) {
+      throw new ProviderRequestError(current.reason || "The free model is no longer routing-eligible.", "invalid-model");
+    }
+    try {
+      const completion = await definition.adapter.complete(credentials, { ...request, model: model.id });
+      this.recordCompletion(definition, fingerprint, model, completion);
+      this.writeHealth(definition, credentials, {
+        state: "ready",
+        message: `Free task request succeeded on ${completion.model}${completion.upstreamProvider ? ` via ${completion.upstreamProvider}` : ""}. Planner/read-only routing is active.`,
+        checkedAt: new Date().toISOString(),
+      });
+      this.logProbe({ event: "task", provider: definition.id, model: completion.model, upstreamProvider: completion.upstreamProvider, requestId: completion.requestId, usage: completion.usage });
+      return completion;
+    } catch (error) {
+      const normalized = this.asProviderError(error, credentials);
+      this.recordFailure(definition, fingerprint, model, normalized);
+      this.writeHealth(definition, credentials, {
+        state: stateForProviderError(normalized),
+        message: normalized.message,
+        checkedAt: new Date().toISOString(),
+        httpStatus: normalized.status,
+        retryAt: normalized.retryAt,
+      });
+      throw normalized;
+    }
+  }
+
+  private recordCompletion(definition: ProviderDefinition, fingerprint: string, model: ProviderModel, completion: NormalizedCompletion): void {
+    const estimatedUnits = definition.id === "cloudflare"
+      ? ((completion.usage.inputTokens ?? 0) * (model.unitsPerMillionInput ?? 0) +
+          (completion.usage.outputTokens ?? 0) * (model.unitsPerMillionOutput ?? 0)) / 1_000_000
+      : undefined;
+    const providerCostUsd = completion.usage.costUsd ?? (definition.id === "huggingface"
+      ? ((completion.usage.inputTokens ?? 0) * (model.inputPricePerMillion ?? 0) +
+          (completion.usage.outputTokens ?? 0) * (model.outputPricePerMillion ?? 0)) / 1_000_000
+      : undefined);
+    this.ledger.record({
+      providerId: definition.id,
+      accountFingerprint: fingerprint,
+      modelId: model.id,
+      responseStatus: "ok",
+      inputTokens: completion.usage.inputTokens,
+      outputTokens: completion.usage.outputTokens,
+      providerCostUsd,
+      estimatedUnits,
+      freeClass: definition.tierKind,
+      window: definition.usage.window,
+      timeZone: definition.usage.timeZone,
+    });
+    if (completion.rateLimit) {
+      this.writeRemoteUsage(definition, fingerprint, {
+        ...(this.readRemoteUsage(definition, fingerprint) ?? {}),
+        rateLimit: completion.rateLimit,
+        source: "response-header",
+        checkedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  private recordFailure(definition: ProviderDefinition, fingerprint: string, model: ProviderModel, error: ProviderRequestError): void {
+    this.ledger.record({
+      providerId: definition.id,
+      accountFingerprint: fingerprint,
+      modelId: model.id,
+      requestCount: 0,
+      responseStatus: error.kind === "rate-limit" || error.kind === "billing" ? "rejected" : "failed",
+      freeClass: definition.tierKind,
+      window: definition.usage.window,
+      timeZone: definition.usage.timeZone,
+    });
+  }
+
   private usage(definition: ProviderDefinition, fingerprint: string): ProviderUsageSnapshot {
     const policy = definition.usage;
     const aggregate = this.ledger.aggregate({
@@ -565,6 +766,7 @@ export class FreeProviderService {
         ? { state: "awaiting-auth", message: this.missingCredentialMessage(definition, credentials), checkedAt: null }
         : savedHealth ?? { state: "awaiting-validation", message: "Ready to validate credentials and discover models without an inference request.", checkedAt: null };
     const usage = this.usage(definition, fingerprint);
+    const routing = this.routingDecision(definition);
     usage.displayLabel = formatUsageChip({ usage, state: health.state, configured, optionalCredential: definition.optionalCredential });
     return {
       id: definition.id,
@@ -596,12 +798,13 @@ export class FreeProviderService {
         tools: "model-dependent",
         exactUsage: definition.id === "groq",
         localEstimate: true,
-        taskRouting: false,
+        taskRouting: true,
       },
       billingWarning: definition.billingWarning,
       routing: {
-        eligible: false,
-        reason: "Connection lab only: plain inference APIs are not a proven GGO coding-agent harness, so they cannot enter task routing or failover yet.",
+        eligible: routing.eligible,
+        reason: routing.reason,
+        roles: [...ROUTING_ROLES],
       },
     };
   }

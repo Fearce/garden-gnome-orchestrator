@@ -67,13 +67,28 @@ function requestBody(input: NormalizedCompletionRequest, stream: boolean): Unkno
   const body: UnknownRecord = {
     model: input.model,
     stream,
-    messages: input.messages.map((message) => message.role === "tool"
-      ? {
+    messages: input.messages.map((message) => {
+      if (message.role === "tool") {
+        return {
           role: "tool",
           tool_call_id: message.toolCallId ?? "tool-call",
           content: [{ type: "document", document: { data: message.content } }],
-        }
-      : { role: message.role, content: message.content }),
+        };
+      }
+      return {
+        role: message.role,
+        content: message.content,
+        ...(message.role === "assistant" && message.toolCalls?.length
+          ? {
+              tool_calls: message.toolCalls.map((call) => ({
+                id: call.id,
+                type: "function",
+                function: { name: call.name, arguments: call.arguments },
+              })),
+            }
+          : {}),
+      };
+    }),
   };
   if (input.maxOutputTokens != null) body.max_tokens = input.maxOutputTokens;
   if (input.tools?.length) {

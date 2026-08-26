@@ -47,34 +47,85 @@ function textOf(parts: unknown[]): string {
 
 function toolCallsOf(parts: unknown[]): NormalizedToolCall[] {
   return parts.flatMap((part, index) => {
-    const fn = record(record(part)?.functionCall);
+    const item = record(part);
+    const fn = record(item?.functionCall);
     const name = typeof fn?.name === "string" ? fn.name : "";
     if (!name) return [];
+    const thoughtSignature = typeof item?.thoughtSignature === "string"
+      ? item.thoughtSignature
+      : typeof item?.thought_signature === "string"
+        ? item.thought_signature
+        : undefined;
     return [{
       id: typeof fn?.id === "string" ? fn.id : `gemini-call-${index}`,
       name,
       arguments: JSON.stringify(record(fn?.args) ?? {}),
+      providerMetadata: thoughtSignature ? { geminiThoughtSignature: thoughtSignature } : undefined,
     }];
   });
 }
 
+/** Gemini function declarations use an OpenAPI subset, not full JSON Schema. The generateContent
+ * endpoint currently rejects `additionalProperties` even though structured-output schemas accept it. */
+function functionParameters(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(functionParameters);
+  const item = record(value);
+  if (!item) return value;
+  return Object.fromEntries(
+    Object.entries(item)
+      .filter(([key]) => key !== "additionalProperties")
+      .map(([key, nested]) => [key, functionParameters(nested)]),
+  );
+}
+
 function apiBody(input: NormalizedCompletionRequest): UnknownRecord {
   const systems = input.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
-  const contents = input.messages.filter((message) => message.role !== "system").map((message) => {
+  const conversation = input.messages.filter((message) => message.role !== "system");
+  const contents: UnknownRecord[] = [];
+  conversation.forEach((message, index) => {
     if (message.role === "tool") {
-      return {
-        role: "user",
-        parts: [{ functionResponse: { id: message.toolCallId, name: message.toolName ?? message.toolCallId ?? "tool", response: { result: message.content } } }],
-      };
+      const part = { functionResponse: { id: message.toolCallId, name: message.toolName ?? message.toolCallId ?? "tool", response: { result: message.content } } };
+      // Gemini expects results for parallel calls in one user content block, in the same order as the
+      // preceding model parts. Consecutive normalized tool messages represent exactly that group.
+      const previous = conversation[index - 1];
+      const priorContent = contents[contents.length - 1];
+      if (previous?.role === "tool" && Array.isArray(priorContent?.parts)) priorContent.parts.push(part);
+      else contents.push({ role: "user", parts: [part] });
+      return;
     }
-    return { role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.content }] };
+    if (message.role === "assistant") {
+      contents.push({
+        role: "model",
+        parts: [
+          ...(message.content ? [{ text: message.content }] : []),
+          ...(message.toolCalls ?? []).map((call) => ({
+            functionCall: {
+              id: call.id,
+              name: call.name,
+              args: (() => {
+                try {
+                  return JSON.parse(call.arguments) as unknown;
+                } catch {
+                  return {};
+                }
+              })(),
+            },
+            ...(typeof call.providerMetadata?.geminiThoughtSignature === "string"
+              ? { thoughtSignature: call.providerMetadata.geminiThoughtSignature }
+              : {}),
+          })),
+        ],
+      });
+      return;
+    }
+    contents.push({ role: "user", parts: [{ text: message.content }] });
   });
   const body: UnknownRecord = { contents };
   if (systems) body.systemInstruction = { parts: [{ text: systems }] };
   if (input.maxOutputTokens != null) body.generationConfig = { maxOutputTokens: input.maxOutputTokens };
   if (input.tools?.length) {
     body.tools = [{
-      functionDeclarations: input.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
+      functionDeclarations: input.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: functionParameters(tool.parameters) })),
     }];
   }
   return body;

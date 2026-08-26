@@ -41,7 +41,16 @@ export function registerFreeProviderRoutes(app: FastifyInstance, service: FreePr
   app.get("/api/free-providers", async (req, reply) => {
     if (!requireAuth(req, reply, isAuthed)) return;
     reply.header("cache-control", "no-store");
-    return { providers: service.list() };
+    return { providers: service.list(), routing: service.routingStatus() };
+  });
+
+  app.put<{ Body: { enabled?: unknown } }>("/api/free-providers/routing", async (req, reply) => {
+    if (!requireAuth(req, reply, isAuthed)) return;
+    reply.header("cache-control", "no-store");
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body) || typeof req.body.enabled !== "boolean") {
+      return sendError(reply, new ProviderRequestError("Expected { enabled: boolean }.", "invalid-configuration"));
+    }
+    return { routing: service.setRoutingEnabled(req.body.enabled), providers: service.list() };
   });
 
   app.put<{ Params: { id: string }; Body: ProviderConfigPatch }>("/api/free-providers/:id", async (req, reply) => {
@@ -51,7 +60,8 @@ export function registerFreeProviderRoutes(app: FastifyInstance, service: FreePr
       if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
         throw new ProviderRequestError("Expected a JSON configuration object.", "invalid-configuration");
       }
-      return { provider: service.update(providerId(service, req.params.id), req.body) };
+      const provider = service.update(providerId(service, req.params.id), req.body);
+      return { provider, routing: service.routingStatus() };
     } catch (error) {
       return sendError(reply, error);
     }
@@ -61,7 +71,8 @@ export function registerFreeProviderRoutes(app: FastifyInstance, service: FreePr
     if (!requireAuth(req, reply, isAuthed)) return;
     reply.header("cache-control", "no-store");
     try {
-      return { provider: await service.refresh(providerId(service, req.params.id)) };
+      const provider = await service.refresh(providerId(service, req.params.id));
+      return { provider, routing: service.routingStatus() };
     } catch (error) {
       return sendError(reply, error);
     }
@@ -71,7 +82,7 @@ export function registerFreeProviderRoutes(app: FastifyInstance, service: FreePr
     if (!requireAuth(req, reply, isAuthed)) return;
     reply.header("cache-control", "no-store");
     try {
-      return await service.probe(providerId(service, req.params.id));
+      return { ...await service.probe(providerId(service, req.params.id)), routing: service.routingStatus() };
     } catch (error) {
       return sendError(reply, error);
     }

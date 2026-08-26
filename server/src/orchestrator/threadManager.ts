@@ -29,6 +29,8 @@ import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import { DiscordNotifier, parseChannelId, type OwnerNotice } from "./discordNotify.js";
 import { config, fallbackModelFor } from "../config.js";
+import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
+import type { FreeProviderService } from "../freeProviders/service.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -597,6 +599,7 @@ export class ThreadManager implements OrchestratorApi {
     readonly hub: EventHub,
     readonly memory: MemoryService,
     readonly accounts: AccountManager,
+    readonly freeProviders?: FreeProviderService,
   ) {
     this.modelCatalog = new ModelCatalog(
       db,
@@ -2646,6 +2649,94 @@ export class ThreadManager implements OrchestratorApi {
     return this.latestQaRun(threadId)?.sessionId;
   }
 
+  /**
+   * Give one bounded read-only stage to the authenticated free pool before spending a subscription
+   * turn. This is deliberately outside the paid-provider loop: any unavailable model, malformed result,
+   * quota rejection, tool failure, or outage records a failed free run and returns control to the exact
+   * Claude/Codex/Grok/z.ai selection and failover path that already existed.
+   */
+  private async tryFreeStructuredRole(
+    thread: Thread,
+    role: "planner" | "reader",
+    kickoff: string,
+    makeCfg: (ctx: { token: string | undefined; resume?: string; runId: string }) => AgentRunConfig,
+  ): Promise<ResultEvent | undefined> {
+    if (!this.freeProviders || this.cancelled(thread.id)) return undefined;
+    const session = await this.freeProviders.openTaskSession(role).catch(() => null);
+    if (!session) return undefined;
+
+    const run = this.db.createRun({
+      threadId: thread.id,
+      role,
+      model: session.target.model,
+      account: `free:${session.target.providerId}`,
+    });
+    this.emitRun(run.id);
+    const cfg = makeCfg({ token: undefined, runId: run.id });
+    if (typeof cfg.systemPrompt !== "string" || !cfg.outputFormat?.schema) {
+      session.close();
+      this.db.updateRun(run.id, { state: "error", error: "Role is not compatible with the bounded free-provider harness.", endedAt: Date.now() });
+      this.emitRun(run.id);
+      return undefined;
+    }
+
+    const agent = new FreeProviderAgentRun(session, role, cfg, {
+      postFinding: ({ summary, detail, severity }) => {
+        const finding = this.postFinding({
+          threadId: thread.id,
+          fromRole: role,
+          fromRunId: run.id,
+          summary,
+          detail: detail ?? null,
+          severity,
+        });
+        return `Finding recorded (${finding.severity}): ${finding.summary}`;
+      },
+    });
+    this.wireRun(agent, thread.id, run.id, role, `free:${session.target.providerId}`);
+    this.track(thread.id, agent);
+    this.officeCheckIn(thread.id, role);
+    this.ensureGroup(thread.id);
+    if (role === "planner") this.liveRole.set(thread.id, agent);
+    agent.start(kickoff);
+    let result = await agent.result();
+    if (role === "planner" && result && !result.isError) result = await this.drainDirectorNotes(thread, agent, result);
+    if (role === "planner") this.liveRole.delete(thread.id);
+
+    // A reader's structured `answered:true` is not enough: its finding is the actual user-facing answer.
+    // Fail over if a model skipped the side effect instead of falsely settling the task as answered.
+    if (role === "reader" && result && !result.isError) {
+      const posted = this.db.listFindings(thread.id).some((finding) => finding.fromRunId === run.id);
+      if (!posted) {
+        result = {
+          type: "result",
+          subtype: "error_free_provider",
+          isError: true,
+          result: "The free reader returned a disposition without posting its answer finding.",
+          errors: ["The free reader returned a disposition without posting its answer finding."],
+          costUsd: result.costUsd,
+          numTurns: result.numTurns,
+        };
+        session.markHarnessFailure(result.result ?? "Reader finding missing.");
+      }
+    }
+
+    await agent.stop();
+    this.untrack(thread.id, agent);
+    this.finishRun(run.id, result, agent);
+    if (result && !result.isError) return result;
+
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: role,
+      fromRunId: run.id,
+      summary: `${session.target.providerName} could not finish the free ${role} run — falling back automatically`,
+      detail: result ? runErrorText(result) : "The free-provider run ended without a result.",
+      severity: "note",
+    });
+    return undefined;
+  }
+
   /** Run a one-shot role to a result. Usage caps switch Claude accounts as before. Transient provider
    *  failures retry three times, then planner/researcher/QA can continue on an enabled CLI backend.
    *  `opts.preferredProvider` starts the role on a CLI backend (e.g. warm-resuming a prior Grok QA
@@ -2658,6 +2749,16 @@ export class ThreadManager implements OrchestratorApi {
     initialResume?: string,
     opts?: { preferredProvider?: ImplementorProvider; forcedProvider?: ImplementorProvider },
   ): Promise<ResultEvent | undefined> {
+    if (
+      (role === "planner" || role === "reader") &&
+      typeof kickoff === "string" &&
+      !initialResume &&
+      !opts?.preferredProvider &&
+      !opts?.forcedProvider
+    ) {
+      const freeResult = await this.tryFreeStructuredRole(thread, role, kickoff, makeCfg);
+      if (freeResult) return freeResult;
+    }
     let acct = this.dispatchAccount();
     let resume: string | undefined = initialResume;
     let message: string | unknown[] = kickoff;

@@ -70,12 +70,27 @@ interface FreeProvider {
   health: { state: ProviderState; message: string; checkedAt: string | null; retryAt?: string };
   usage: UsageSnapshot;
   billingWarning: string;
-  routing: { eligible: false; reason: string };
+  routing: { eligible: boolean; reason: string; roles: Array<"planner" | "reader"> };
+}
+
+interface RoutingStatus {
+  enabled: boolean;
+  active: boolean;
+  roles: Array<"planner" | "reader">;
+  eligibleProviders: number;
+  eligibleProviderIds: string[];
+  reason: string;
 }
 
 interface ProviderResponse {
   provider: FreeProvider;
+  routing?: RoutingStatus;
   response?: { text: string; model: string; upstreamProvider?: string; inputTokens?: number; outputTokens?: number; latencyMs: number };
+}
+
+interface ProviderSnapshot {
+  providers: FreeProvider[];
+  routing: RoutingStatus;
 }
 
 // Keep retired connections out of the console during rolling deployments where the static
@@ -86,7 +101,7 @@ const STATE_LABEL: Record<ProviderState, string> = {
   disabled: "Disabled",
   "awaiting-auth": "Awaiting auth",
   "awaiting-validation": "Needs validation",
-  ready: "Ready to probe",
+  ready: "Connected",
   "auth-error": "Auth rejected",
   misconfigured: "Needs attention",
   "quota-exhausted": "Quota exhausted",
@@ -155,6 +170,9 @@ function replaceProvider(providers: FreeProvider[], provider: FreeProvider): Fre
 
 export function FreeProviders() {
   const [providers, setProviders] = useState<FreeProvider[]>([]);
+  const [routing, setRouting] = useState<RoutingStatus | null>(null);
+  const [routingBusy, setRoutingBusy] = useState(false);
+  const [routingError, setRoutingError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<Record<string, string>>({});
@@ -166,17 +184,25 @@ export function FreeProviders() {
 
   useEffect(() => {
     let live = true;
-    void jsonRequest<{ providers: FreeProvider[] }>("/api/free-providers")
+    const refreshSnapshot = () => jsonRequest<ProviderSnapshot>("/api/free-providers")
       .then((body) => {
-        if (live) setProviders(activeProviders(body.providers));
+        if (!live) return;
+        setProviders(activeProviders(body.providers));
+        setRouting(body.routing);
+        setLoadError(null);
       })
       .catch((error: unknown) => {
         if (live) setLoadError(error instanceof Error ? error.message : "Could not load providers.");
-      })
-      .finally(() => {
-        if (live) setLoading(false);
       });
-    return () => { live = false; };
+    void refreshSnapshot().finally(() => {
+      if (live) setLoading(false);
+    });
+    // This local GET consumes no provider quota; refresh chips while free tasks are running.
+    const timer = window.setInterval(() => { void refreshSnapshot(); }, 15_000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
   }, []);
 
   const readyCount = useMemo(() => providers.filter((provider) => provider.health.state === "ready").length, [providers]);
@@ -188,6 +214,7 @@ export function FreeProviders() {
     try {
       const result = await work();
       setProviders((current) => replaceProvider(current, result.provider));
+      if (result.routing) setRouting(result.routing);
       setMessages((current) => ({ ...current, [provider.id]: success(result) }));
       return result;
     } catch (error) {
@@ -196,8 +223,9 @@ export function FreeProviders() {
       // exhausted, rate-limited, outage). Re-read it so the status dot and quota chip update now,
       // rather than only after closing and reopening Settings.
       try {
-        const latest = await jsonRequest<{ providers: FreeProvider[] }>("/api/free-providers");
+        const latest = await jsonRequest<ProviderSnapshot>("/api/free-providers");
         setProviders(activeProviders(latest.providers));
+        setRouting(latest.routing);
       } catch {
         // Preserve the actionable error from the operation; a second fetch failure adds no value.
       }
@@ -264,6 +292,24 @@ export function FreeProviders() {
     );
   };
 
+  const toggleRouting = async (enabled: boolean) => {
+    setRoutingBusy(true);
+    setRoutingError(null);
+    try {
+      const next = await jsonRequest<ProviderSnapshot>("/api/free-providers/routing", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      setProviders(activeProviders(next.providers));
+      setRouting(next.routing);
+    } catch (error) {
+      setRoutingError(error instanceof Error ? error.message : "Could not update free task routing.");
+    } finally {
+      setRoutingBusy(false);
+    }
+  };
+
   if (loading) return <p className="free-provider-empty">Loading provider connections…</p>;
   if (loadError) return <p className="free-provider-empty bad">Provider connections unavailable: {loadError}</p>;
 
@@ -271,10 +317,16 @@ export function FreeProviders() {
     <div className="free-providers">
       <div className="free-provider-intro">
         <div>
-          <strong>Connection lab</strong>
-          <span>{readyCount} of {providers.length} validated</span>
+          <strong>Free task pool</strong>
+          <span>{readyCount} connected · {routing?.eligibleProviders ?? 0} routing-ready</span>
         </div>
-        <p>Credentials, live free-model discovery, quota visibility, and explicit one-request probes. These API connectors cannot enter task routing or paid failover.</p>
+        <label className="free-provider-toggle">
+          <input type="checkbox" checked={routing?.enabled ?? false} disabled={routingBusy || !routing} onChange={(event) => void toggleRouting(event.target.checked)} />
+          <span aria-hidden="true" />
+          Use free pool for planning & read-only lookups
+        </label>
+        <p>{routing?.reason ?? "Checking routing readiness…"} Provider/model eligibility is rechecked before every task; implementation, research, and QA remain on the existing coding-agent backends.</p>
+        {routingError ? <p className="free-provider-message bad" role="alert">{routingError}</p> : null}
       </div>
 
       {providers.map((provider) => {
@@ -379,7 +431,7 @@ export function FreeProviders() {
 
               {eligible.length ? (
                 <label className="free-provider-model">
-                  <span>Probe model</span>
+                  <span>Free model</span>
                   <select value={provider.selectedModel ?? ""} disabled={!!pending} onChange={(event) => void selectModel(provider, event.target.value)}>
                     {eligible.map((model) => (
                       <option value={model.id} key={model.id}>{model.displayName}{model.contextWindow ? ` · ${compact(model.contextWindow)} ctx` : ""}{model.supportsTools ? " · tools" : ""}</option>
@@ -389,7 +441,7 @@ export function FreeProviders() {
               ) : null}
 
               <div className="free-provider-warning">
-                <strong>No paid fallback</strong>
+                <strong>Free-boundary guard</strong>
                 <span>{provider.billingWarning}</span>
               </div>
 
@@ -412,7 +464,9 @@ export function FreeProviders() {
 
               {errors[provider.id] ? <p className="free-provider-message bad" role="alert">{errors[provider.id]}</p> : null}
               {messages[provider.id] ? <p className="free-provider-message ok" aria-live="polite">{messages[provider.id]}</p> : null}
-              <p className="free-provider-routing">Task routing locked · {provider.routing.reason}</p>
+              <p className="free-provider-routing">
+                {provider.routing.eligible ? `In free task pool · ${provider.routing.roles.join(" + ")}` : "Not routed"} · {provider.routing.reason}
+              </p>
             </div>
           </details>
         );

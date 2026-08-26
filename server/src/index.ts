@@ -107,7 +107,7 @@ async function main(): Promise<void> {
   hub.subscribe((e) => {
     if (e.type === "accounts") publishAccountUsage(accounts.usageSnapshot());
   });
-  const manager = new ThreadManager(db, hub, memory, accounts);
+  const manager = new ThreadManager(db, hub, memory, accounts, freeProviders);
   // Crash records should show what the pipeline was DOING when it died, and a slow memory climb should be
   // visible in the log BEFORE an OOM abort — the two things missing when crashes vanished without a trace.
   registerCrashContext("active-work", () => manager.describeActiveWork());
