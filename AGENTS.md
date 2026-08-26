@@ -68,14 +68,13 @@ How to restart depends on how it's running:
 **Windows (script-hub production deployment):** runs as script-hub id **`claude-orchestrator`** with
 keepAlive armed. Implementor workers are **child processes of this server** (the Agent SDK spawns the
 `Codex` CLI — `server/src/agents/runner.ts`), so:
-- **Server change?** `npm run build`, then issue the **atomic** hub restart yourself — it runs
-  server-side in the hub process (PID outside this server's tree), survives the caller being killed
-  mid-restart, and re-arms keepAlive:
-  ```
-  POST http://127.0.0.1:3939/api/restart   body {"id":"claude-orchestrator"}
-  ```
-  Shorthand: `.\launchers\script-hub.ps1 restart claude-orchestrator` (from your process-manager
-  root) — issue it directly.
+- **Server change? `npm run deploy --prefix server`** - it selects the safe build path, stamps the
+  artifact, issues the atomic hub restart, and verifies a NEW process is running HEAD. **Use it instead
+  of building by hand:** a plain build compiles the shared working tree and can ship another agent's
+  uncommitted server code. `npm run deploy --prefix server -- --plan` is read-only; after the restart
+  auto-resumes this worker, `npm run deploy --prefix server -- --verify` confirms the live artifact without
+  bouncing the server again. The script uses the atomic hub restart internally, so it survives the caller
+  being killed mid-restart and re-arms keepAlive.
 - **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
   runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.
