@@ -8,6 +8,7 @@ import { config } from "./config.js";
 import { buildInfo } from "./buildInfo.js";
 import { installCrashGuards, logBoot, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
 import { Db } from "./db/db.js";
+import { startSearchIndexBackfill } from "./db/searchIndex.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
 import { AccountManager, type PersistedAccountUsage } from "./accounts/accountManager.js";
@@ -144,6 +145,10 @@ async function main(): Promise<void> {
   startWebAutoBuild();
   // Poll git for new upstream commits so the console can surface a quiet "update available" badge.
   startUpdatePoll();
+  // One-time on an existing database: walk `messages` into the trigram search index, a few hundred
+  // rows at a time so agent output keeps streaming while it runs. Search stays available throughout
+  // (it falls back to the old full scan), and a bounce mid-walk resumes from the persisted cursor.
+  startSearchIndexBackfill(db, (message) => hub.publish({ type: "log", level: "info", message }));
 
   // Codex usage: rollout-file snapshots from real runs (cheap 30s poll) PLUS a periodic live read via
   // the codex app-server's account/rateLimits/read RPC — free (no model turn), so the 5h/weekly meters

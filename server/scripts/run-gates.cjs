@@ -39,6 +39,7 @@ const GATES = [
   "test:scheduler",
   "test:notes",
   "test:task-search",
+  "test:search-index",
   "test:probe-text",
   "test:deploy-plan",
   "test:compiled-diff",

@@ -83,6 +83,29 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at  INTEGER NOT NULL
 );
 
+-- Substring index over messages.content, so the console's search stops being a full table scan of
+-- ~105 MB of tool output. Trigram is the only tokenizer that can serve the LIKE '%q%' semantics the
+-- search has always had — a word tokenizer measured 3.5x smaller but silently lost results ("shake"
+-- found 19 of the 479 messages containing it). contentless (content='') keeps only the index, adding
+-- no second copy of the text; detail=none drops the position lists, which is the difference between
+-- 1.35x and 3.57x the size of the indexed text for identical answers.
+--
+-- contentless_delete is load-bearing, not a tuning knob: it makes "delete rowid N" a tombstone rather
+-- than a subtraction of N's tokens, so removing a row the backfill has not reached yet is harmless.
+-- The external-content form would corrupt the index in exactly that window. Deletes are therefore
+-- safe from the first boot, which is why this trigger ships here while the two that ADD rows are
+-- installed only once the backfill is complete (searchIndex.ts) — an insert during the backfill
+-- would race the walk and double-index the row. (columnsize=0 would shrink it further but SQLite
+-- refuses it alongside contentless_delete.)
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+  content, content='', contentless_delete=1, tokenize='trigram', detail='none'
+);
+
+-- Fires for the thread-purge path too: a FK ON DELETE CASCADE does run delete triggers on the child.
+CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+  DELETE FROM messages_fts WHERE rowid = old.rowid;
+END;
+
 -- thread_id links a message's conversation turn to the task it dispatched (for the search's "go to
 -- task" jump). Nullable, and deliberately NO FK: the director conversation is durable, so a message
 -- survives its task's purge — a dangling link just means the UI hides the jump.

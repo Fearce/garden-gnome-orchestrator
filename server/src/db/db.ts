@@ -3,6 +3,14 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
+import {
+  BACKFILL_CHUNK,
+  FTS_CURSOR_KEY,
+  FTS_READY_KEY,
+  FTS_WRITE_TRIGGERS,
+  trigramMatchExpr,
+  type BackfillStep,
+} from "./searchIndex.js";
 import type {
   AgentRun,
   AgentRunState,
@@ -273,6 +281,9 @@ interface RefRow {
 
 export class Db {
   readonly raw: Database.Database;
+
+  /** Latched once the trigram index covers every message; only ever flips false->true. */
+  private ftsReady = false;
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true });
@@ -944,7 +955,8 @@ export class Db {
     const q = query.trim();
     if (!q) return [];
     const like = `%${escapeLike(q)}%`;
-    const messageHits = this.conversationHitCounts(like);
+    const match = this.conversationMatchExpr(q);
+    const messageHits = this.conversationHitCounts(like, match);
     const ids = new Set(messageHits.keys());
     for (const r of this.raw
       .prepare("SELECT id FROM threads WHERE title LIKE @like ESCAPE '\\' OR brief LIKE @like ESCAPE '\\'")
@@ -959,7 +971,21 @@ export class Db {
       }))
       .sort(byRelevance)
       .slice(0, limit)
-      .map((c) => this.taskHit(c.thread, q, like, c.hits));
+      .map((c) => this.taskHit(c.thread, q, like, match, c.hits));
+  }
+
+  /** True once every message is in the trigram index, so a search may use it. Cached because it only
+   *  ever flips once, on the boot that finishes the backfill, and a search would otherwise re-read it
+   *  on every keystroke. */
+  searchIndexReady(): boolean {
+    if (!this.ftsReady) this.ftsReady = this.kvGet(FTS_READY_KEY) !== null;
+    return this.ftsReady;
+  }
+
+  /** The index expression for this query, or null when the search must fall back to the full scan:
+   *  a query too short to have a trigram, or an index still being built. */
+  private conversationMatchExpr(q: string): string | null {
+    return this.searchIndexReady() ? trigramMatchExpr(q) : null;
   }
 
   /** Read back the matched threads. Chunked because a common word matches most of the table, and
@@ -976,19 +1002,32 @@ export class Db {
     return out;
   }
 
-  /** Matching messages per task, from ONE grouped scan of the whole table. That scan is why the search
-   *  is debounced rather than indexed: an FTS mirror of ~100 MB of tool output would cost more storage
-   *  than the ~0.4s it saves, on a database whose growth is already the thing being watched. */
-  private conversationHitCounts(like: string): Map<string, number> {
-    const rows = this.raw
-      .prepare("SELECT thread_id, COUNT(*) n FROM messages WHERE content LIKE ? ESCAPE '\\' GROUP BY thread_id")
-      .all(like) as Row[];
+  /** Matching messages per task. `messages.content` is ~105 MB of tool output and a leading-wildcard
+   *  LIKE can use no ordinary index, so this used to re-read the whole table on every keystroke —
+   *  ~0.6s with the pages cached and ~30s without, all of it blocking the server's only thread.
+   *  The trigram index narrows it to candidates first; the same LIKE then re-checks each one, so the
+   *  answer is unchanged. Falls back to the scan when `match` is null (short query / index not built). */
+  private conversationHitCounts(like: string, match: string | null): Map<string, number> {
+    const rows = (
+      match === null
+        ? this.raw
+            .prepare("SELECT thread_id, COUNT(*) n FROM messages WHERE content LIKE ? ESCAPE '\\' GROUP BY thread_id")
+            .all(like)
+        : this.raw
+            .prepare(
+              `SELECT m.thread_id, COUNT(*) n FROM messages_fts
+                 JOIN messages m ON m.rowid = messages_fts.rowid
+                WHERE messages_fts MATCH ? AND m.content LIKE ? ESCAPE '\\'
+                GROUP BY m.thread_id`,
+            )
+            .all(match, like)
+    ) as Row[];
     return new Map(rows.map((r) => [r.thread_id as string, r.n as number]));
   }
 
   /** One hit, showing the most informative evidence available: the owner's own brief, else the task's
    *  conversation, else nothing — a title-only match is already legible in the highlighted title. */
-  private taskHit(t: Thread, q: string, like: string, messageHits: number): TaskSearchHit {
+  private taskHit(t: Thread, q: string, like: string, match: string | null, messageHits: number): TaskSearchHit {
     const base = {
       threadId: t.id,
       title: t.title,
@@ -998,21 +1037,69 @@ export class Db {
       messageHits,
     };
     if (containsFold(t.brief, q)) return { ...base, where: "brief", snippet: snippetAround(t.brief, q) };
-    const message = messageHits ? this.bestMatchingMessage(t.id, like) : null;
+    const message = messageHits ? this.bestMatchingMessage(t.id, like, match) : null;
     if (message) return { ...base, where: "conversation", snippet: snippetAround(message, q) };
     return { ...base, where: "title", snippet: "" };
   }
 
   /** The clearest matching message in one task: prose somebody wrote over raw tool traffic, and the
-   *  earliest of those, since a term is usually most explained where it first appears. */
-  private bestMatchingMessage(threadId: string, like: string): string | null {
-    const row = this.raw
-      .prepare(
-        `SELECT content FROM messages WHERE thread_id = ? AND content LIKE ? ESCAPE '\\'
-         ORDER BY (kind = 'text') DESC, created_at ASC LIMIT 1`,
-      )
-      .get(threadId, like) as Row | undefined;
+   *  earliest of those, since a term is usually most explained where it first appears. Indexed like
+   *  the hit counts, and for the same reason — this runs once per returned hit, so on the scan path a
+   *  busy task's whole conversation was re-read up to `limit` more times. */
+  private bestMatchingMessage(threadId: string, like: string, match: string | null): string | null {
+    const ORDER = "ORDER BY (m.kind = 'text') DESC, m.created_at ASC LIMIT 1";
+    const row = (
+      match === null
+        ? this.raw
+            .prepare(`SELECT m.content FROM messages m WHERE m.thread_id = ? AND m.content LIKE ? ESCAPE '\\' ${ORDER}`)
+            .get(threadId, like)
+        : this.raw
+            .prepare(
+              `SELECT m.content FROM messages_fts
+                 JOIN messages m ON m.rowid = messages_fts.rowid
+                WHERE messages_fts MATCH ? AND m.thread_id = ? AND m.content LIKE ? ESCAPE '\\' ${ORDER}`,
+            )
+            .get(match, threadId, like)
+    ) as Row | undefined;
     return (row?.content as string | undefined) ?? null;
+  }
+
+  // ---- search index maintenance ----
+
+  /**
+   * One turn of the backfill walk: index the next `chunk` messages by rowid and advance the persisted
+   * cursor. When the walk runs out of rows it finalizes — in a SINGLE transaction it sweeps up anything
+   * added since the last chunk, installs the two triggers that maintain the index from then on, and
+   * marks it ready. Atomic on purpose: it is the only moment at which a message could be inserted by
+   * neither the walk nor a trigger, so nothing may run between the sweep and the trigger.
+   */
+  backfillSearchIndexChunk(chunk = BACKFILL_CHUNK): BackfillStep {
+    if (this.searchIndexReady()) return { indexed: 0, done: true };
+    const cursor = Number(this.kvGet(FTS_CURSOR_KEY) ?? 0);
+    const upto = (
+      this.raw
+        .prepare("SELECT MAX(rowid) m FROM (SELECT rowid FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?)")
+        .get(cursor, chunk) as Row
+    ).m as number | null;
+
+    if (upto === null) {
+      this.raw.transaction(() => {
+        this.raw.prepare("INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages WHERE rowid > ?").run(cursor);
+        this.raw.exec(FTS_WRITE_TRIGGERS);
+        this.kvSet(FTS_READY_KEY, String(now()));
+      })();
+      this.ftsReady = true;
+      return { indexed: 0, done: true };
+    }
+
+    const indexed = this.raw.transaction(() => {
+      const info = this.raw
+        .prepare("INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages WHERE rowid > ? AND rowid <= ?")
+        .run(cursor, upto);
+      this.kvSet(FTS_CURSOR_KEY, String(upto));
+      return info.changes;
+    })();
+    return { indexed, done: false };
   }
 
   // ---- office chat ----
