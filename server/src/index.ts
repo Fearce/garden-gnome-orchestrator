@@ -617,9 +617,8 @@ async function main(): Promise<void> {
     const watchWarning = underWatch
       ? "  ⚠ running under tsx watch — editing server/src restarts the server and KILLS in-flight tasks; use `npm run serve` for live pipelines"
       : "";
-    // Script Hub may not drain a supervised child's stdout while it is under pressure.  Do not turn
-    // the post-listen startup banner into an event-loop stall; build/health endpoints carry this data.
-    void (
+    // eslint-disable-next-line no-console
+    console.log(
       [
         ``,
         `  GG Orchestrator server`,
@@ -637,11 +636,9 @@ async function main(): Promise<void> {
         ``,
       ]
         .filter((l) => l !== "")
-        .join("\n")
+        .join("\n"),
     );
-    // Keep the control plane available even when an optional monitor is slow or wedged. These services
-    // are observability/refresh conveniences; dispatch itself is already fully initialized above.
-    // They can be restored one-by-one once the offending startup probe is identified.
+    startBackgroundServices();
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("Failed to start server:", err);
