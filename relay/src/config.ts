@@ -21,10 +21,24 @@ export const config = {
   tokenTtlMs: num(process.env.TOKEN_TTL_DAYS, 180) * 24 * 60 * 60 * 1000,
   /** Wrong join codes tolerated from one address per hour before it is refused outright. */
   joinAttemptsPerHour: num(process.env.JOIN_ATTEMPTS_PER_HOUR, 10),
+  /** How long an owner session cookie lasts before `/admin?key=…` has to be opened again. */
+  adminSessionMs: num(process.env.ADMIN_SESSION_HOURS, 12) * 60 * 60 * 1000,
+  /** Reverse-proxy hops in front of the relay that append to `X-Forwarded-For`. Exactly one in the
+   *  documented deployment (Caddy). It is a count, not a list, because it is the only thing the address
+   *  resolver needs: everything to the LEFT of that many entries was written by a caller, not a proxy. */
+  trustedProxyHops: num(process.env.TRUSTED_PROXY_HOPS, 1),
 };
+
+/** Codes shipped in `.env.example` or typed as a stand-in. `deploy.sh` seeds `.env` from the example on a
+ *  fresh host, so without this a first deploy would start a fully working office whose join code is a
+ *  literal string in a public repository — and the length check alone waves the placeholder through. */
+const PLACEHOLDER = /change[-_ ]?me|^(?:changeme|placeholder|example|password|secret|test|todo|xxx+)$/i;
 
 export function assertConfigured(): void {
   if (config.joinCode.length < 8) {
     throw new Error("JOIN_CODE must be set to at least 8 characters — refusing to run an office anyone can walk into.");
+  }
+  if (PLACEHOLDER.test(config.joinCode)) {
+    throw new Error("JOIN_CODE is still a placeholder — set it to 20+ random characters before starting the relay.");
   }
 }

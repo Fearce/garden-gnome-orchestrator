@@ -60,6 +60,7 @@
     "test:office-gating": "tsx src/tests/officeGating.itest.ts",
     "test:online-office": "tsx src/tests/onlineOffice.itest.ts",
     "test:relay-core": "tsx ../relay/src/core.test.ts",
+    "test:relay-access": "tsx ../relay/src/access.test.ts",
     "test:zai-usage": "tsx src/tests/zaiUsage.test.ts",
     "test:zai-cap": "tsx src/tests/zaiCapDetect.test.ts",
     "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",

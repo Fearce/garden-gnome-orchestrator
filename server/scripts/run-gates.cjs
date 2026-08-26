@@ -63,6 +63,7 @@ const GATES = [
   "test:office-health",
   "test:online-office",
   "test:relay-core",
+  "test:relay-access",
   "test:zai-usage",
   "test:zai-cap",
   "test:structured",

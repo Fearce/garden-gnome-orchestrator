@@ -19,6 +19,7 @@ stale, correct it in place and update its row.
 | What happens on a **token freeze** mid-task? | **Rate-limit/usage-cap handling is robust and self-healing** (4-signal detection → account failover → cap-park → 120 s auto-resume). **529 is deliberately left to the SDK.** Context-window-exceeded is the one real gap — see Open below. | [`../TOKEN_FREEZE_FINDINGS.md`](../TOKEN_FREEZE_FINDINGS.md) |
 | Does **freeze → reset → auto-resume** actually work end-to-end? | **Yes, proven.** 26/26 assertions against the real `ThreadManager`, with a negative control that fails if resume regresses to a cold restart. No bug existed; it had just never been exercised. | [`token-freeze-resume-test.md`](token-freeze-resume-test.md) · `npm run test:token-freeze` |
 | Why did **thread history disappear** in the feed? | **Two symptoms, one root cause (fixed); the third was not a bug.** | [`diagnosis-thread-history.md`](diagnosis-thread-history.md) |
+| Is it safe that **`office.sprogbroen.dk` is fully public**? | **Yes — being reachable was never the risk.** Anonymous callers get three counts; every surface naming a person, repo or message is behind a 190-bit admin key or a 256-bit device token. The real defect was the *deploy path*: a fresh host started an office whose join code is published in this repo. Fixed, with four hardening gaps. | [`relay-public-exposure-review.md`](relay-public-exposure-review.md) · `npm run test:relay-access` |
 
 ## Genuinely still open
 

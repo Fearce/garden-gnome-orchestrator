@@ -23,7 +23,22 @@ ssh_do "mkdir -p \"$DIR\""
 tar -C "$here" -czf - package.json package-lock.json tsconfig.json Dockerfile docker-compose.yml .env.example src \
   | ssh_do "tar -C \"$DIR\" -xzf -"
 
-ssh_do "cd \"$DIR\" && [ -f .env ] || { cp .env.example .env; echo '!! .env created from the example — set JOIN_CODE before anyone can join.'; }"
+# A fresh host has no .env. Seed it, but do NOT go on to start the stack: the example carries no join
+# code, and starting an office whose code came out of a public repository is the one failure that cannot
+# be undone by fixing it afterwards. The operator sets the code and re-runs.
+if ! ssh_do "cd \"$DIR\" && [ -f .env ]"; then
+  ssh_do "cd \"$DIR\" && cp .env.example .env"
+  cat <<EOF
+
+!! .env created from the example on ${HOST}, and nothing was started.
+   Set JOIN_CODE (20+ random characters) and ADMIN_TOKEN, then run this script again:
+
+     ssh -i "$KEY" $HOST 'cd $DIR && nano .env'
+
+EOF
+  exit 1
+fi
+
 ssh_do "cd \"$DIR\" && docker compose up -d --build"
 ssh_do "cd \"$DIR\" && docker compose ps"
 

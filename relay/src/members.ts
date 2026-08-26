@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { sanitizeName } from "./access.js";
 import { JsonFile } from "./jsonFile.js";
 
 /** One orchestrator instance that has joined the office. The raw token is shown exactly once, at join;
@@ -48,7 +49,7 @@ export class MemberStore {
     const token = randomBytes(32).toString("base64url");
     const member: Member = {
       id: randomBytes(8).toString("hex"),
-      name: name.trim().slice(0, 40) || "an orchestrator",
+      name: sanitizeName(name) || "an orchestrator",
       tokenHash: sha256(token),
       createdAt: Date.now(),
       lastSeenAt: Date.now(),
@@ -77,7 +78,7 @@ export class MemberStore {
    *  changing it in Settings takes effect on the next reconnect. */
   rename(id: string, name: string): void {
     const member = this.members.find((m) => m.id === id);
-    const clean = name.trim().slice(0, 40);
+    const clean = sanitizeName(name);
     if (!member || !clean || member.name === clean) return;
     member.name = clean;
     this.persist();

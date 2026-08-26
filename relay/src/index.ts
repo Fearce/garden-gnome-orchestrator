@@ -1,7 +1,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
+import {
+  ADMIN_COOKIE,
+  AdminSessions,
+  JoinThrottle,
+  SECURITY_HEADERS,
+  clientIp,
+  cookieValue,
+  sanitizeName,
+  secretEquals,
+} from "./access.js";
 import { assertConfigured, config } from "./config.js";
 import { RelayCore } from "./core.js";
 import { PersistedHistory } from "./history.js";
@@ -15,22 +24,15 @@ assertConfigured();
 const history = new PersistedHistory(join(config.dataDir, "history.json"));
 const members = new MemberStore(join(config.dataDir, "members.json"), config.tokenTtlMs);
 const core = new RelayCore({ history });
+const joins = new JoinThrottle(config.joinAttemptsPerHour);
+const adminSessions = new AdminSessions(config.adminSessionMs);
 
 // ---- helpers ----------------------------------------------------------------------------------------
 
-/** Compare two secrets without leaking their length or a prefix match through timing. */
-function secretEquals(a: string, b: string): boolean {
-  const x = Buffer.from(a);
-  const y = Buffer.from(b);
-  return x.length === y.length && x.length > 0 && timingSafeEqual(x, y);
-}
-
-/** The client's address as Caddy reports it. The relay only ever sits behind the reverse proxy on the
- *  box, so the forwarded header is the real one; the socket address would be the proxy for everybody. */
-function clientIp(req: IncomingMessage): string {
-  const fwd = req.headers["x-forwarded-for"];
-  const first = Array.isArray(fwd) ? fwd[0] : fwd?.split(",")[0];
-  return (first ?? req.socket.remoteAddress ?? "unknown").trim();
+/** The address to hold accountable, resolved by `access.ts` rather than read straight off the header —
+ *  `X-Forwarded-For` is client-supplied and the join throttle is the only brute-force defence there is. */
+function callerIp(req: IncomingMessage): string {
+  return clientIp(req.socket.remoteAddress, req.headers["x-forwarded-for"], config.trustedProxyHops);
 }
 
 /** Bearer token from the Authorization header. The token never travels in the URL: Caddy logs request
@@ -40,47 +42,33 @@ function bearer(req: IncomingMessage): string {
   return typeof raw === "string" && raw.startsWith("Bearer ") ? raw.slice(7).trim() : "";
 }
 
-const joinAttempts = new Map<string, number[]>();
-
-/** True when this address has burned through its hourly allowance of wrong join codes. */
-function joinRateLimited(ip: string): boolean {
-  const cutoff = Date.now() - 3600_000;
-  const recent = (joinAttempts.get(ip) ?? []).filter((t) => t > cutoff);
-  joinAttempts.set(ip, recent);
-  return recent.length >= config.joinAttemptsPerHour;
-}
-
-function noteJoinAttempt(ip: string): void {
-  joinAttempts.set(ip, [...(joinAttempts.get(ip) ?? []), Date.now()]);
+function send(res: ServerResponse, code: number, type: string, body: string, extra: Record<string, string> = {}): void {
+  res.writeHead(code, { ...SECURITY_HEADERS, "content-type": type, ...extra });
+  res.end(body);
 }
 
 function sendJson(res: ServerResponse, code: number, body: unknown): void {
-  const text = JSON.stringify(body);
-  res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-  res.end(text);
+  send(res, code, "application/json; charset=utf-8", JSON.stringify(body));
 }
 
-function sendHtml(res: ServerResponse, code: number, html: string): void {
-  res.writeHead(code, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-  res.end(html);
+function sendHtml(res: ServerResponse, code: number, html: string, extra: Record<string, string> = {}): void {
+  send(res, code, "text/html; charset=utf-8", html, extra);
 }
 
-/** Read a small JSON request body. Anything past the cap is refused rather than buffered — the only
- *  POST the relay accepts carries two short strings. */
+/** Read a small JSON request body. Anything past the cap DESTROYS the request rather than draining it —
+ *  the only POST the relay accepts carries two short strings, so a caller still streaming at that point
+ *  is spending our memory and connection budget on purpose. */
 function readJsonBody(req: IncomingMessage, cap = 8192): Promise<Record<string, unknown> | null> {
   return new Promise((resolveBody) => {
     let raw = "";
-    let over = false;
     req.on("data", (chunk: Buffer) => {
-      if (over) return;
       raw += chunk.toString("utf8");
-      if (raw.length > cap) {
-        over = true;
-        raw = "";
-      }
+      if (raw.length <= cap) return;
+      raw = "";
+      req.destroy();
+      resolveBody(null);
     });
     req.on("end", () => {
-      if (over) return resolveBody(null);
       try {
         const v = JSON.parse(raw) as unknown;
         resolveBody(v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
@@ -89,6 +77,7 @@ function readJsonBody(req: IncomingMessage, cap = 8192): Promise<Record<string, 
       }
     });
     req.on("error", () => resolveBody(null));
+    req.on("close", () => resolveBody(null));
   });
 }
 
@@ -103,12 +92,35 @@ function statusView(admin: boolean) {
   };
 }
 
-/** Admin surfaces accept the key as a header (for the API) or `?key=` (so the owner can just open the
- *  page on a phone). Disabled outright when no ADMIN_TOKEN is configured — a blank key must never pass. */
-function isAdmin(req: IncomingMessage, url: URL): boolean {
+/**
+ * Does this request carry the admin key itself? Header (for the API) or `?key=` (so the owner can just
+ * open the page on a phone). Disabled outright when no ADMIN_TOKEN is configured — a blank key must
+ * never pass.
+ */
+function hasAdminKey(req: IncomingMessage, url: URL): boolean {
   if (!config.adminToken) return false;
   const header = bearer(req) || String(req.headers["x-admin-token"] ?? "");
   return secretEquals(header, config.adminToken) || secretEquals(url.searchParams.get("key") ?? "", config.adminToken);
+}
+
+/**
+ * Admin access for a READ. The owner-session cookie counts here, so a browser that traded `?key=` for a
+ * cookie keeps working without the credential in every subsequent URL.
+ *
+ * Mutations deliberately do NOT accept it and call `hasAdminKey` directly: a cookie that authorises
+ * `DELETE /api/members/:id` would make revocation forgeable from any page the owner happens to visit,
+ * and the documented way to revoke is already an explicit `x-admin-token` header.
+ */
+function isAdminRead(req: IncomingMessage, url: URL): boolean {
+  if (!config.adminToken) return false;
+  return hasAdminKey(req, url) || adminSessions.valid(cookieValue(req.headers.cookie, ADMIN_COOKIE));
+}
+
+/** `Set-Cookie` for a freshly minted owner session. Host-only, unreadable from script, and not sent on
+ *  any cross-site navigation — the relay is opened directly, never linked into. */
+function adminCookieHeader(id: string): string {
+  const maxAge = Math.floor(config.adminSessionMs / 1000);
+  return `${ADMIN_COOKIE}=${id}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Strict`;
 }
 
 // ---- HTTP -------------------------------------------------------------------------------------------
@@ -119,6 +131,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (req.method === "GET" && path === "/api/health") {
     const online = core.online();
+    // The same three counts the public page shows, and no more: how many devices have EVER joined is a
+    // membership fact, and membership facts live behind the admin key.
     return sendJson(res, 200, {
       ok: true,
       office: config.officeName,
@@ -126,18 +140,18 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       instancesOnline: online.length,
       agentsOnline: online.reduce((n, o) => n + o.agents, 0),
       sharedRepos: core.sharedRepos().length,
-      members: members.list().length,
+      ...(isAdminRead(req, url) ? { members: members.list().length } : {}),
       uptimeSec: Math.round(process.uptime()),
     });
   }
 
   if (req.method === "POST" && path === "/api/join") {
-    const ip = clientIp(req);
-    if (joinRateLimited(ip)) return sendJson(res, 429, { error: "Too many join attempts — wait an hour and try again." });
+    const ip = callerIp(req);
+    if (joins.limited(ip)) return sendJson(res, 429, { error: "Too many join attempts — wait an hour and try again." });
     const body = await readJsonBody(req);
     const code = String(body?.code ?? "");
     if (!secretEquals(code, config.joinCode)) {
-      noteJoinAttempt(ip);
+      joins.record(ip);
       console.warn(`[relay] rejected join from ${ip}`);
       return sendJson(res, 401, { error: "That join code isn't right." });
     }
@@ -154,7 +168,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (req.method === "DELETE" && path.startsWith("/api/members/")) {
-    if (!isAdmin(req, url)) return sendJson(res, 401, { error: "admin key required" });
+    if (!hasAdminKey(req, url)) return sendJson(res, 401, { error: "admin key required" });
     const id = path.slice("/api/members/".length);
     const removed = members.remove(id);
     if (removed) console.log(`[relay] revoked member ${id}`);
@@ -162,12 +176,21 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (req.method === "GET" && path === "/api/members") {
-    if (!isAdmin(req, url)) return sendJson(res, 401, { error: "admin key required" });
+    if (!isAdminRead(req, url)) return sendJson(res, 401, { error: "admin key required" });
     return sendJson(res, 200, { members: members.list(), online: core.online() });
   }
 
   if (req.method === "GET" && path === "/admin") {
-    if (!isAdmin(req, url)) return sendHtml(res, 401, publicPage(statusView(false)));
+    // A key in the URL is traded once for a session cookie and redirected away, so it stops appearing in
+    // the address bar, the browser's history and every subsequent proxy log line. A curl with the header
+    // is answered directly — no redirect, no cookie to keep.
+    if (config.adminToken && url.searchParams.has("key") && hasAdminKey(req, url)) {
+      return send(res, 303, "text/plain; charset=utf-8", "", {
+        location: "/admin",
+        "set-cookie": adminCookieHeader(adminSessions.mint()),
+      });
+    }
+    if (!isAdminRead(req, url)) return sendHtml(res, 401, publicPage(statusView(false)));
     return sendHtml(res, 200, adminPage(statusView(true)));
   }
 
@@ -182,6 +205,15 @@ const server = createServer((req, res) => {
     if (!res.headersSent) sendJson(res, 500, { error: "internal error" });
   });
 });
+
+// Node's defaults give an anonymous caller five minutes of held connection per request. Every route here
+// answers in milliseconds from a body of at most a few hundred bytes, so a request that takes longer is
+// a slow-loris, not a user. The three must stay in this order — a `headersTimeout` at or below
+// `keepAliveTimeout` closes a reused connection mid-request. An established WebSocket is unaffected: the
+// socket leaves the HTTP server's bookkeeping at the upgrade, which the gate holds one open to prove.
+server.keepAliveTimeout = 5_000;
+server.headersTimeout = 10_000;
+server.requestTimeout = 15_000;
 
 // ---- WebSocket --------------------------------------------------------------------------------------
 
@@ -201,10 +233,10 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  const nameHeader = String(req.headers["x-office-instance"] ?? "");
+  const nameHeader = sanitizeName(String(req.headers["x-office-instance"] ?? ""));
   if (nameHeader) members.rename(member.id, nameHeader);
   wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit("connection", ws, req, { id: member.id, name: nameHeader.trim().slice(0, 40) || member.name });
+    wss.emit("connection", ws, req, { id: member.id, name: nameHeader || member.name });
   });
 });
 
