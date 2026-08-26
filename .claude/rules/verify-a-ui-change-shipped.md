@@ -4,8 +4,10 @@ paths:
   - web/src/components/ThreadDetail.tsx
   - web/src/components/Director.tsx
   - web/src/components/Board.tsx
+  - web/src/components/FreeProviders.tsx
   - web/src/App.tsx
   - web/src/styles.css
+  - server/src/freeProviders/**
 ---
 
 # Verifying a shipped console UI change (when you do / don't need a browser)
@@ -58,6 +60,10 @@ instance's own kv row (`waitForPersisted` in `model-select-lab.cjs`) — the cla
 (2026-08-01 — one clicked a card on `:4317`). A no-click load mutates nothing and is the only way to see
 the console still boots: `npm run probe:console` (mounted / WS live / no errors) and `npm run probe:chips`
 (geometry). Keep both click-free, and read them as HEALTH only — prod's state isn't your change's state.
+For the free-provider registry, `npm run probe:providers -- --expect-provider-ids <csv> --forbid-provider-ids
+<csv> --expect-provider-count <n>` also reads authenticated readiness and proves the served entry bundle is
+the local build, without clicking or exposing credentials. It deliberately separates stale server code from
+a current static client; see `docs/free-ai-provider-connections.md` for the current eight-provider invocation.
 **Often it can't be driven anyway:** a pending director question sits as a full-screen `.scrim` + `.modal`
 intercepting ALL pointer events, and dismissing it to reach Settings silently kills a real question that
 was the owner's to answer. Use a lab, or steps 1–3 (this burned a verify pass on three features).

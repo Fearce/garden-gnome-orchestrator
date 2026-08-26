@@ -42,6 +42,16 @@ Provider prerequisites:
 
 Environment fallbacks are also supported: `GEMINI_API_KEY`, `GROQ_API_KEY`, `KILO_API_KEY`, `MISTRAL_API_KEY`, `COHERE_API_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `NVIDIA_API_KEY`, and `HF_TOKEN`. A stored UI credential wins over the environment. **Forget stored key** removes only the database value; an environment key remains active and is labelled as such.
 
+## Verify the deployed connections
+
+From the repository root, run the read-only live probe after changing the provider registry or rebuilding the console:
+
+```powershell
+npm run probe:providers -- --expect-provider-ids gemini,groq,kilo,mistral,cohere,cloudflare,nvidia,huggingface --forbid-provider-ids openrouter --expect-provider-count 8
+```
+
+The probe logs in with `AUTH_PASSWORD` without printing it, reads provider readiness from the authenticated API, opens the console without clicking or mutating production state, and verifies that the entry bundle served on `:4317` is the current local `web/dist` bundle. It fails separately for a stale server registry, a forbidden/extra provider, a missing provider, or a stale static bundle, so a working web card cannot be mistaken for server code that has not reloaded.
+
 ## Security and failure behavior
 
 - Provider routes are behind the existing GGO session authentication.
