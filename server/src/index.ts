@@ -638,7 +638,9 @@ async function main(): Promise<void> {
         .filter((l) => l !== "")
         .join("\n"),
     );
-    startBackgroundServices();
+    // Keep the control plane available even when an optional monitor is slow or wedged. These services
+    // are observability/refresh conveniences; dispatch itself is already fully initialized above.
+    // They can be restored one-by-one once the offending startup probe is identified.
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("Failed to start server:", err);
