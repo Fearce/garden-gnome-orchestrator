@@ -108,6 +108,12 @@ export const config = {
   // the extra cost/window budget is negligible; FAST_ACCOUNT_PING_MS overrides the 30s default.
   fastAccountPingMs: Number(process.env.FAST_ACCOUNT_PING_MS ?? 30_000),
   notifyWebhookUrl: process.env.NOTIFY_WEBHOOK_URL || undefined,
+  // Discord phone notifications (Settings → Phone notifications). Both are env FALLBACKS: the settings
+  // panel writes its own values to kv, which win. The token is a bot token, never a webhook URL.
+  discord: {
+    botToken: process.env.DISCORD_BOT_TOKEN || undefined,
+    channelId: process.env.DISCORD_CHANNEL_ID || undefined,
+  },
   models: {
     director: "claude-sonnet-4-6",
     planner: "claude-opus-4-8",

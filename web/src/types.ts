@@ -421,6 +421,12 @@ export interface OrchestratorSettings {
   zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (100 = off): above it, tasks route off z.ai
   zaiKeyPresent: boolean; // read-only: an API key is stored (raw key never reaches the client)
   zaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
+  // Phone notifications: post to a Discord channel when a task settles done, needs your input (a review
+  // park or an agent's question), or fails. Pipeline chatter is never posted.
+  discordNotify: boolean;
+  discordChannelId: string; // the channel notices go to (a pasted link is reduced to its id server-side); empty falls back to the server's DISCORD_CHANNEL_ID
+  discordTokenPresent: boolean; // read-only: a bot token is stored (raw token never reaches the client)
+  discordTokenLast4?: string | null; // read-only: last 4 chars for the masked field
   // Composer state persisted server-side (survives across the HTTP/HTTPS surfaces, which don't share
   // localStorage): the skip-director mode, the recent-repo chip cap, and the recent-repo list itself.
   skipDirector: boolean;
@@ -486,6 +492,8 @@ export type SettingsPatch = Partial<
     | "grokAccount"
     | "zaiKeyPresent"
     | "zaiKeyLast4"
+    | "discordTokenPresent"
+    | "discordTokenLast4"
     | "xhighEnabled"
     | "modelDefaults"
     | "claudeModels"
@@ -493,7 +501,7 @@ export type SettingsPatch = Partial<
     | "grokModels"
     | "zaiModels"
   >
-> & { openaiApiKey?: string; zaiApiKey?: string };
+> & { openaiApiKey?: string; zaiApiKey?: string; discordBotToken?: string };
 
 /** Flagship Codex models suggested when the live list hasn't loaded yet (most-capable first). */
 export const CODEX_MODELS = [
@@ -742,6 +750,7 @@ export type ServerEvent =
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }
   | { type: "codex.test.result"; ok: boolean; message: string }
+  | { type: "discord.test.result"; ok: boolean; message: string }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.git"; threadId: string; status: GitStatus }
   | { type: "thread.gitSummary"; threadId: string; summary: GitSummary }
@@ -809,6 +818,7 @@ export type ClientCommand =
   | { type: "approval.set"; on: boolean }
   | { type: "settings.set"; settings: SettingsPatch }
   | { type: "codex.test"; apiKey?: string }
+  | { type: "discord.test" }
   | { type: "account.set"; id: string; enabled: boolean }
   | { type: "account.setSafety"; id: string; weeklySafetyPct: number }
   | { type: "thread.changes"; threadId: string }

@@ -418,9 +418,14 @@ Three controls that make the console a hands-off, anywhere replacement for the C
 
 - **Notifications** (`web/src/lib/notify.ts`, opt-in via the topbar bell). On a
   `question.ask` (a task needs you) or a thread reaching done/review/failed, fire
-  a Web `Notification` + a short Web-Audio chime — so you don't watch the tab. The
-  server also pings an external webhook on those events if `NOTIFY_WEBHOOK_URL` is
-  set (`ThreadManager.notifyExternal`), for when you're away from the machine.
+  a Web `Notification` + a short Web-Audio chime — so you don't watch the tab. For
+  when you're away from the machine the server pings the same events outward:
+  an external webhook if `NOTIFY_WEBHOOK_URL` is set, and — with Settings → **Phone
+  notifications** on — a Discord message via a bot token
+  (`orchestrator/discordNotify.ts`). The two sinks are deliberately not the same
+  set: `ThreadManager.notifyOwner` feeds Discord and carries only what the owner
+  acts on (done · needs-input · failed), while plain `notifyExternal` also carries
+  pipeline chatter (cap failover, auto-resume) that must never reach a phone.
 - **Access auth** (`server/src/auth.ts`). A **password and/or Google sign-in**, both valid
   when configured — each mints the same HMAC-signed (`email|exp`) httpOnly session cookie, and
   `isAuthed` accepts that one cookie. `authRequired()` is true if either method is set; the `/ws`

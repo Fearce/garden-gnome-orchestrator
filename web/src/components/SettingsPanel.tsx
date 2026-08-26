@@ -164,6 +164,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           <VoiceSection />
         </Group>
 
+        <Group label="Phone notifications">
+          <PhoneNotificationsSection />
+        </Group>
+
         <Group label="Online office">
           <OnlineOfficeSection />
         </Group>
@@ -231,6 +235,99 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         </p>
       </div>
     </div>
+  );
+}
+
+/**
+ * Post to a Discord channel when a task finishes, needs you, or fails — so the console can reach a phone.
+ * The bot token is write-only (typed here, stored server-side, never read back), so the field shows a
+ * masked placeholder once one is stored. "Send test" is the only way to prove the whole chain — token,
+ * channel, and the bot's permission to post there — without waiting for a task to settle.
+ */
+function PhoneNotificationsSection() {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const testDiscord = useStore((s) => s.testDiscord);
+  const result = useStore((s) => s.discordTest);
+  const testing = useStore((s) => s.discordTesting);
+  const [tokenDraft, setTokenDraft] = useState("");
+  const [reveal, setReveal] = useState(false);
+
+  const configured = settings.discordTokenPresent && !!settings.discordChannelId;
+  const saveToken = () => {
+    if (!tokenDraft.trim()) return;
+    setSettings({ discordBotToken: tokenDraft.trim() });
+    setTokenDraft("");
+    setReveal(false);
+  };
+
+  return (
+    <>
+      <ToggleRow
+        label="Post to Discord"
+        hint="Off (default): nothing is posted. On: a message the moment a task finishes, parks for your review, asks you a question, or fails — so it reaches your phone. Routine pipeline events (cap failover, auto-resume) are never posted."
+        on={settings.discordNotify}
+        onChange={(v) => setSettings({ discordNotify: v })}
+      />
+      <TextRow
+        label="Channel ID"
+        hint="The Discord channel to post in — right-click it → Copy Channel ID, or just paste the channel's link."
+        value={settings.discordChannelId}
+        placeholder="1542104062156079144"
+        // Long enough for a pasted channel LINK; the server lifts the id out of whatever arrives. A
+        // 32-char cap silently truncated a paste to "https://discord.com/channels/142" and stored "142".
+        maxLength={200}
+        onChange={(v) => setSettings({ discordChannelId: v })}
+      />
+
+      <div className="sub-field">
+        <label className="sub-label">Bot token</label>
+        <div className="key-input">
+          <input
+            type={reveal ? "text" : "password"}
+            value={tokenDraft}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder={settings.discordTokenPresent ? `••••••••${settings.discordTokenLast4 ?? ""}` : "your Discord bot token"}
+            onChange={(e) => setTokenDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") saveToken();
+            }}
+          />
+          <button
+            type="button"
+            className="key-eye"
+            aria-label={reveal ? "Hide token" : "Reveal token"}
+            title={reveal ? "Hide" : "Reveal"}
+            onClick={() => setReveal((r) => !r)}
+          >
+            {reveal ? <EyeOff /> : <Eye />}
+          </button>
+        </div>
+        <div className="sub-actions">
+          <button className="sub-btn primary" disabled={!tokenDraft.trim()} onClick={saveToken}>
+            {settings.discordTokenPresent ? "Replace token" : "Save token"}
+          </button>
+          <button className="sub-btn" disabled={testing || !configured} onClick={testDiscord}>
+            {testing ? "Sending…" : "Send test"}
+          </button>
+          {settings.discordTokenPresent && (
+            <button className="sub-btn ghost" onClick={() => setSettings({ discordBotToken: "" })}>
+              Remove
+            </button>
+          )}
+        </div>
+        {result && <div className={"sub-msg" + (result.ok ? " ok" : " bad")}>{result.message}</div>}
+        {!result && !configured && (
+          <div className="sub-msg dim">
+            {settings.discordTokenPresent ? "Token stored — add the channel ID above." : "Paste a bot token that can post in that channel."}
+          </div>
+        )}
+        {!result && configured && (
+          <div className="sub-msg dim">Token stored (••••{settings.discordTokenLast4 ?? ""}). Send a test to confirm it reaches your phone.</div>
+        )}
+      </div>
+    </>
   );
 }
 

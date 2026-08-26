@@ -101,6 +101,7 @@ export type ServerEvent =
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }
   | { type: "codex.test.result"; ok: boolean; message: string }
+  | { type: "discord.test.result"; ok: boolean; message: string }
   | { type: "thread.changes"; threadId: string; diff: string; log: string }
   | { type: "thread.git"; threadId: string; status: GitStatus }
   | { type: "thread.gitSummary"; threadId: string; summary: GitSummary }
@@ -241,6 +242,14 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         // Write-only: the raw OpenAI key is accepted here and stored server-side, never echoed back.
         // An empty string clears it. The broadcast OrchestratorSettings carries only hasOpenaiKey/last4.
         openaiApiKey: z.string().max(300),
+        // Phone notifications — a Discord message when a task finishes, needs you, or fails.
+        discordNotify: z.boolean(),
+        // Bounded for a pasted channel LINK, not just a bare id — the server lifts the id out of it.
+        discordChannelId: z.string().max(200),
+        // Write-only: the raw Discord bot token is accepted here and stored server-side, never echoed
+        // back. An empty string clears it (falls back to DISCORD_BOT_TOKEN). The broadcast carries only
+        // discordTokenPresent/last4.
+        discordBotToken: z.string().max(200),
         // Composer state, persisted server-side so it survives across the HTTP/HTTPS surfaces.
         skipDirector: z.boolean(),
         showComposerPickers: z.boolean(),
@@ -268,6 +277,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   }),
   // Validate the stored (or just-typed) OpenAI key against the API; replies with codex.test.result.
   z.object({ type: z.literal("codex.test"), apiKey: z.string().max(300).optional() }),
+  // Post a test message to the configured Discord channel; replies with discord.test.result.
+  z.object({ type: z.literal("discord.test") }),
   // Toggle a Claude account in/out of the dispatch+failover rotation (per-account subscription switch).
   z.object({ type: z.literal("account.set"), id: z.string(), enabled: z.boolean() }),
   // Set a Claude account's soft weekly-safety ceiling (1-100; 100 = off): above it, new tasks route to another sub.

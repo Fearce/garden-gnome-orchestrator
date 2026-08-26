@@ -99,6 +99,8 @@ interface State {
   // Latest Codex "Test connection" verdict (null until a test runs). Cleared while a test is in flight.
   codexTest: { ok: boolean; message: string } | null;
   codexTesting: boolean;
+  discordTest: { ok: boolean; message: string } | null;
+  discordTesting: boolean;
   // Client-only view settings, persisted in localStorage under `director_settings` — they only change
   // what this browser shows, so they never round-trip to the server.
   showCompleted: boolean;
@@ -207,6 +209,7 @@ interface State {
   setApproval: (on: boolean) => void;
   setSettings: (patch: SettingsPatch) => void;
   testCodex: (apiKey?: string) => void;
+  testDiscord: () => void;
   setAccountEnabled: (id: string, enabled: boolean) => void;
   setAccountWeeklySafety: (id: string, weeklySafetyPct: number) => void;
   setShowCompleted: (v: boolean) => void;
@@ -409,6 +412,10 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   zaiKeyPresent: false,
   zaiKeyLast4: null,
   zaiModels: [],
+  discordNotify: false,
+  discordChannelId: "",
+  discordTokenPresent: false,
+  discordTokenLast4: null,
   skipDirector: false,
   showComposerPickers: false,
   showAgentModel: true,
@@ -503,6 +510,8 @@ export const useStore = create<State>((set) => ({
   settings: DEFAULT_SETTINGS,
   codexTest: null,
   codexTesting: false,
+  discordTest: null,
+  discordTesting: false,
   showCompleted: loadViewSettings().showCompleted,
   verbosity: loadViewSettings().verbosity,
   taskSort: loadViewSettings().taskSort,
@@ -585,13 +594,17 @@ export const useStore = create<State>((set) => ({
   setSettings: (patch) => {
     // Reflect the writable view fields locally at once; the raw key is write-only and never held in
     // client state (the server confirms it via hasOpenaiKey/openaiKeyLast4 on its settings broadcast).
-    const { openaiApiKey: _key, ...local } = patch;
+    const { openaiApiKey: _key, discordBotToken: _bot, ...local } = patch;
     set((s) => ({ settings: { ...s.settings, ...local } }));
     sendCommand({ type: "settings.set", settings: patch });
   },
   testCodex: (apiKey) => {
     set({ codexTesting: true, codexTest: null });
     sendCommand({ type: "codex.test", apiKey: apiKey?.trim() || undefined });
+  },
+  testDiscord: () => {
+    set({ discordTesting: true, discordTest: null });
+    sendCommand({ type: "discord.test" });
   },
   setAccountEnabled: (id, enabled) => {
     // Optimistic: flip the strip locally; the server's `accounts` broadcast confirms (and snaps back
@@ -936,6 +949,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "codex.test.result":
       useStore.setState({ codexTest: { ok: ev.ok, message: ev.message }, codexTesting: false });
+      break;
+    case "discord.test.result":
+      useStore.setState({ discordTest: { ok: ev.ok, message: ev.message }, discordTesting: false });
       break;
     case "thread.changes":
       useStore.setState((s) => ({ threadChanges: { ...s.threadChanges, [ev.threadId]: { diff: ev.diff, log: ev.log } } }));

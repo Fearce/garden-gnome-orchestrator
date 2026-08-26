@@ -90,7 +90,8 @@ Beyond the pipeline, the board gives you:
   leaving the console, and paste/drop **images** into any prompt for the agents to
   see via vision.
 - **Anywhere access** — password or Google sign-in gates the LAN listener, with
-  opt-in browser + webhook notifications when a task needs you or finishes.
+  opt-in browser, **Discord** and webhook notifications when a task finishes,
+  needs your input, or fails — so it reaches your phone while you're away.
 
 ## Runtime model — zero metered API credits
 

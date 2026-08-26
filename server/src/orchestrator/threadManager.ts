@@ -27,6 +27,7 @@ import { validRepoPath } from "../git/repoOps.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
+import { DiscordNotifier, parseChannelId, type OwnerNotice } from "./discordNotify.js";
 import { config, fallbackModelFor } from "../config.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -175,6 +176,8 @@ export type SettingsPatch = Partial<
     | "grokAccount"
     | "zaiKeyPresent"
     | "zaiKeyLast4"
+    | "discordTokenPresent"
+    | "discordTokenLast4"
     | "xhighEnabled"
     | "modelDefaults"
     | "claudeModels"
@@ -182,7 +185,7 @@ export type SettingsPatch = Partial<
     | "grokModels"
     | "zaiModels"
   >
-> & { openaiApiKey?: string; zaiApiKey?: string };
+> & { openaiApiKey?: string; zaiApiKey?: string; discordBotToken?: string };
 
 /** The slice of operator settings the implementor→QA stage needs, captured at pipeline start. */
 interface PipeOpts {
@@ -586,6 +589,8 @@ export class ThreadManager implements OrchestratorApi {
   private zaiCapUntil: number | undefined;
   // Owns the live pickable-model lists (Settings dropdowns). Rebroadcasts settings when a list changes.
   private readonly modelCatalog: ModelCatalog;
+  // Posts the owner's phone notifications (task done / needs you / failed) to their Discord channel.
+  private readonly discord: DiscordNotifier;
 
   constructor(
     readonly db: Db,
@@ -598,6 +603,11 @@ export class ThreadManager implements OrchestratorApi {
       accounts,
       () => this.openaiApiKey(),
       () => this.hub.publish({ type: "settings", settings: this.settings() }),
+    );
+    // Reads its config lazily on every notice, so flipping the toggle applies to tasks already running.
+    this.discord = new DiscordNotifier(
+      () => ({ enabled: this.settingBool("setting_discord_notify", false), token: this.discordBotToken(), channelId: this.discordChannelId() }),
+      (level, message) => this.hub.log(level, message),
     );
     this.markInterrupted();
     this.applyAccountEnabled();
@@ -1148,14 +1158,18 @@ export class ThreadManager implements OrchestratorApi {
       multiSelect: input.multiSelect,
     });
     // A task-scoped question pauses the task into awaiting_user; restore on answer.
-    if (input.threadId) {
-      const t = this.db.getThread(input.threadId);
-      if (t && t.state !== "awaiting_user") {
-        this.awaitingPrev.set(q.id, t.state);
-        this.setState(input.threadId, "awaiting_user");
-      }
+    const t = input.threadId ? this.db.getThread(input.threadId) : undefined;
+    if (input.threadId && t && t.state !== "awaiting_user") {
+      this.awaitingPrev.set(q.id, t.state);
+      this.setState(input.threadId, "awaiting_user");
     }
-    this.notifyExternal(`🔔 needs you: ${input.header} — ${input.question}`);
+    // The director asks questions of its own, with no task behind them — then the header IS the subject.
+    this.notifyOwner(`🔔 needs you: ${input.header} — ${input.question}`, {
+      kind: "input",
+      title: t?.title ?? input.header,
+      detail: t ? `${input.header} — ${input.question}` : input.question,
+      repo: t?.workspace,
+    });
     this.hub.publish({ type: "question.ask", question: q });
     return new Promise<string>((resolve) => {
       const timer = setTimeout(() => {
@@ -1285,6 +1299,10 @@ export class ThreadManager implements OrchestratorApi {
       zaiKeyPresent: !!this.zaiApiKey(),
       zaiKeyLast4: this.zaiKeyLast4(),
       zaiModels: this.pickableZaiModels(),
+      discordNotify: this.settingBool("setting_discord_notify", false),
+      discordChannelId: this.discordChannelId(),
+      discordTokenPresent: !!this.discordBotToken(),
+      discordTokenLast4: this.discordTokenLast4(),
       skipDirector: this.settingBool("setting_skip_director", false),
       showComposerPickers: this.settingBool("setting_show_composer_pickers", false),
       showAgentModel: this.settingBool("setting_show_agent_model", true),
@@ -1633,6 +1651,34 @@ export class ThreadManager implements OrchestratorApi {
     return k && k.length >= 4 ? k.slice(-4) : null;
   }
 
+  /** The Discord bot token used for phone notifications: the kv-stored UI value if present, else the
+   *  server/.env fallback. NEVER broadcast — only its presence + last 4 chars leave the server. */
+  private discordBotToken(): string | undefined {
+    return this.db.kvGet("discord_bot_token")?.trim() || config.discord.botToken;
+  }
+
+  /** The channel notices are posted to — the operator's value, else the env fallback, else empty. The
+   *  env value is parsed too: an unset/garbled DISCORD_CHANNEL_ID must read as NO channel, or the panel
+   *  offers a Send test that cannot work and every notice 404s against a nonsense id. */
+  private discordChannelId(): string {
+    return this.db.kvGet("setting_discord_channel_id")?.trim() || parseChannelId(config.discord.channelId ?? "");
+  }
+
+  /** Last 4 chars of the stored bot token for the masked settings field. */
+  private discordTokenLast4(): string | null {
+    const t = this.discordBotToken();
+    return t && t.length >= 4 ? t.slice(-4) : null;
+  }
+
+  /** Send a test Discord message with the settings exactly as they stand — the panel's "Send test"
+   *  button, so the owner can confirm it reaches their phone without waiting for a task to settle. */
+  async testDiscordNotification(): Promise<{ ok: boolean; message: string }> {
+    const result = await this.discord.test();
+    return result.ok
+      ? { ok: true, message: "Sent — check your phone." }
+      : { ok: false, message: result.message };
+  }
+
   /** Per-Claude-account MAX reasoning-effort caps ({accountId → effort}), parsed from kv. The
    *  director/planner still chooses the per-task effort; this only caps it so a heavy tier never runs on a
    *  sub the operator wants kept cheap. A corrupt/absent value degrades to an empty map (uncapped). */
@@ -1731,6 +1777,13 @@ export class ThreadManager implements OrchestratorApi {
     // Write-only z.ai key: store the trimmed value, or clear it (empty string) so settings() falls back to
     // the env key. The raw key is never returned to clients — only zaiKeyPresent/last4 are.
     if (patch.zaiApiKey !== undefined) this.db.kvSet("zai_api_key", patch.zaiApiKey.trim());
+    if (patch.discordNotify !== undefined) this.db.kvSet("setting_discord_notify", patch.discordNotify ? "1" : "0");
+    // A pasted channel LINK or `<#id>` mention is the common paste; stored verbatim it 404s on every
+    // notice, so the id is lifted out of whichever shape arrived.
+    if (patch.discordChannelId !== undefined) this.db.kvSet("setting_discord_channel_id", parseChannelId(patch.discordChannelId));
+    // Write-only bot token: stored server-side, never echoed back (only discordTokenPresent/last4 are).
+    // An empty string clears it, falling back to DISCORD_BOT_TOKEN.
+    if (patch.discordBotToken !== undefined) this.db.kvSet("discord_bot_token", patch.discordBotToken.trim());
     if (patch.modelOverrides !== undefined) this.db.kvSet("setting_model_overrides", JSON.stringify(sanitizeModelOverrides(patch.modelOverrides)));
     if (patch.accountEffortCaps !== undefined) this.db.kvSet("setting_account_effort_caps", JSON.stringify(sanitizeAccountEffortCaps(patch.accountEffortCaps)));
     // Write-only key: store the trimmed value, or clear it (empty string) so settings() falls back to
@@ -2293,13 +2346,15 @@ export class ThreadManager implements OrchestratorApi {
     if (!t) return;
     this.hub.publish({ type: "thread.upsert", thread: t });
     if (state === "done") {
-      this.notifyExternal(`✓ done: "${t.title}"`);
+      this.notifyOwner(`✓ done: "${t.title}"`, { kind: "done", title: t.title, repo: t.workspace });
       void this.announceDone(t);
     }
     // A cap-park lands in 'review' too, but it's auto-handled by the supervisor — don't ping "needs your
     // review" (misleading, and it would re-fire every time a re-capping task re-parks).
-    else if (state === "review" && !(t.error ?? "").startsWith(CAP_PARK_PREFIX)) this.notifyExternal(`⚠ needs your review: "${t.title}"`);
-    else if (state === "failed") this.notifyExternal(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`);
+    else if (state === "review" && !(t.error ?? "").startsWith(CAP_PARK_PREFIX))
+      this.notifyOwner(`⚠ needs your review: "${t.title}"`, { kind: "input", title: t.title, detail: t.error, repo: t.workspace });
+    else if (state === "failed")
+      this.notifyOwner(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`, { kind: "failed", title: t.title, detail: t.error, repo: t.workspace });
     // Truly-terminal states never resume under the same in-memory identity, so drop the per-thread
     // bookkeeping that must outlive the pipeline LOOP (so a parked task can still resume) but has no
     // reason to outlive the process. Deliberately EXCLUDES 'failed' (a transient state the pipeline
@@ -2366,6 +2421,15 @@ export class ThreadManager implements OrchestratorApi {
           ? `every account — Claude subscriptions and ${cliLabel} — was rate-limited mid-task`
           : "every Claude subscription was rate-limited mid-task";
     return `${CAP_PARK_PREFIX} — ${scope}.${when} It will resume automatically when one frees up (no manual Resume needed).`;
+  }
+
+  /** An event the OWNER personally cares about: a task finished, needs their input, or failed. Goes to
+   *  the webhook like any other ping AND — when the toggle is on — to their Discord channel, so it
+   *  reaches their phone. Everything else notifyExternal carries is pipeline chatter (cap failover,
+   *  account resume) and stays off the phone deliberately; use plain notifyExternal for those. */
+  private notifyOwner(text: string, notice: OwnerNotice): void {
+    this.notifyExternal(text);
+    this.discord.notify(notice);
   }
 
   /** One-line ping to an external webhook (Discord etc.) when configured — for when you're away from the tab. */

@@ -194,6 +194,11 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       send(socket, { type: "codex.test.result", ok: result.ok, message: result.message });
       break;
     }
+    case "discord.test": {
+      const result = await ctx.manager.testDiscordNotification();
+      send(socket, { type: "discord.test.result", ok: result.ok, message: result.message });
+      break;
+    }
     case "account.set":
       ctx.manager.setAccountEnabled(cmd.id, cmd.enabled);
       break;

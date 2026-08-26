@@ -586,6 +586,11 @@ export interface OrchestratorSettings {
   zaiKeyPresent: boolean; // read-only — an API key is stored (env or kv); the raw key is never broadcast
   zaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
   zaiModels: string[]; // read-only: pickable z.ai GLM model ids (curated ∪ selected)
+  // ---- Phone notifications: post to a Discord channel when a task finishes or needs you ----
+  discordNotify: boolean; // off (default) → nothing is posted; on → a Discord message when a task settles done, needs your input (a review park or an agent's question), or fails. Pipeline chatter (cap failover, auto-resume) is never posted.
+  discordChannelId: string; // the Discord channel the notices go to — accepts a bare id, a channel link or a <#id> mention, stored as the id; empty falls back to DISCORD_CHANNEL_ID
+  discordTokenPresent: boolean; // read-only — a bot token is stored (env or kv); the raw token is never broadcast
+  discordTokenLast4?: string | null; // read-only — last 4 chars of the stored token, for the masked field
   // ---- Composer state, persisted server-side (not localStorage) so it survives across the HTTP and
   //      HTTPS surfaces the console is served on — the two origins don't share localStorage. ----
   skipDirector: boolean; // composer's skip-director mode — persists so "on" stays on next time it opens

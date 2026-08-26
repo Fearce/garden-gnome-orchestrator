@@ -348,6 +348,19 @@ same thing to click), and a task holds ≤5 (oldest evicted, never refused). The
 and becomes an `href`, so http(s) is enforced at BOTH ends — service refuses, render degrades to text.
 Gates `test:notes` + `test:office-bridge`; `npm run notes-lab --prefix server`.
 
+## Phone notifications (Settings → Phone notifications, off by default)
+On, a Discord message when a task settles **done**, needs the owner's **input** (a review park or an
+`ask_user`), or **fails**. `orchestrator/discordNotify.ts` is standalone (config getter + log callback, no
+ThreadManager), reads config LIVE per notice so the toggle applies mid-task, and posts to Discord's REST
+API with a BOT token, not a webhook. **`notifyOwner` posts to Discord, plain `notifyExternal` does not** —
+that split IS the feature: a cap-park (the supervisor resumes it itself) and every failover/resume line
+stay off the phone, or the channel stops being read. Route a new owner-facing event through `notifyOwner`.
+Two invariants: the push preview is built from `content`, so the essential line lives there and the embed
+only carries detail/repo (an embed-only message previews as "sent an embed"); and sends are **serialized**,
+since a settling burst fired in parallel earns a 429 each. Token + channel are write-only settings over
+`DISCORD_BOT_TOKEN`/`DISCORD_CHANNEL_ID`; only `discordTokenPresent`/`last4` are broadcast, and **Send
+test** is the one way to prove token + channel + post permission at once. Gate: `test:discord-notify`.
+
 ## Before investigating "should we adopt / replace X?"
 Read **`docs/DECISIONS.md`** — the closed-questions register: one row per settled question with its
 headline verdict, plus what's genuinely still open. Adding a backend, swapping the harness, and
