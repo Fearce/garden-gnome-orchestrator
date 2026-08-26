@@ -6,7 +6,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "n
 import { isAbsolute, join, dirname, basename, extname, relative } from "node:path";
 import { config } from "./config.js";
 import { buildInfo } from "./buildInfo.js";
-import { installCrashGuards, logBoot, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
+import { installCrashGuards, logBoot, logCrash, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
 import { Db } from "./db/db.js";
 import { startSearchIndexBackfill } from "./db/searchIndex.js";
 import { EventHub } from "./events.js";
@@ -139,54 +139,64 @@ async function main(): Promise<void> {
     onRemoteJoin: (repoLabel, workspaces, joiners) => manager.remoteTeammatesJoined(repoLabel, workspaces, joiners),
   });
   manager.attachOnlineOffice(onlineOffice);
-  onlineOffice.start();
-  accounts.start();
-  scheduler.start();
-  // Live pickable-model lists for the Settings dropdowns — needs a subscription token, so start it after
-  // the account manager. Boot-fetches from the provider models endpoints, then refreshes on a slow timer.
-  manager.startModelCatalog();
-  freeProviders.start();
-  startWebAutoBuild();
-  // Poll git for new upstream commits so the console can surface a quiet "update available" badge.
-  startUpdatePoll();
-  // One-time on an existing database: walk `messages` into the trigram search index, a few hundred
-  // rows at a time so agent output keeps streaming while it runs. Search stays available throughout
-  // (it falls back to the old full scan), and a bounce mid-walk resumes from the persisted cursor.
-  startSearchIndexBackfill(db, (message) => hub.publish({ type: "log", level: "info", message }));
-
-  // Codex usage: rollout-file snapshots from real runs (cheap 30s poll) PLUS a periodic live read via
-  // the codex app-server's account/rateLimits/read RPC — free (no model turn), so the 5h/weekly meters
-  // and reset countdowns stay current even when Codex hasn't run for hours (the old "stuck at 13%").
-  // The stagger also makes the monitor WAKE an idle Codex 5h window with a cheap real turn at Codex's
-  // slot, so its resets keep rolling interleaved with the Claude subs'.
-  startCodexUsageMonitor(hub, {
-    apiKey: () => manager.openaiApiKey(),
-    configured: () => {
-      const s = manager.settings();
-      return s.codexEnabled || s.hasOpenaiKey || s.codexChatgptLogin;
-    },
-    stagger,
-    runModel: () => manager.settings().codexModel,
-  });
-
-  // Grok usage: log tail (weekly SuperGrok %) + HTTP billing (monthly credits) + winpty `/usage show`
-  // fallback. Broadcasts `grok.usage` whenever identity/meters change so the top-bar chip stays live.
-  startGrokUsageMonitor(hub, {
-    configured: () => {
-      const s = manager.settings();
-      return s.grokEnabled || s.grokSignedIn;
-    },
-  });
-
-  // z.ai usage: a cheap HTTP GET to the GLM Coding Plan's quota endpoint (5h + weekly windows + plan tier),
-  // no model turn. Broadcasts `zai.usage` whenever the meters change so the top-bar chip stays live.
-  startZaiUsageMonitor(hub, {
-    apiKey: () => manager.zaiApiKey(),
-    configured: () => {
-      const s = manager.settings();
-      return s.zaiEnabled || s.zaiKeyPresent;
-    },
-  });
+  /**
+   * None of these services is required to accept an HTTP/WebSocket connection.  In particular, some
+   * immediately inspect local CLI logs, git state, or a large SQLite table; doing that before `listen()`
+   * made a slow host look like the console was entirely down (the dashboard proxy got ECONNREFUSED).
+   *
+   * Start them after the listeners are live, one event-loop turn apart.  The stagger both gets the
+   * operator back into the console promptly and prevents one optional monitor from monopolising boot.
+   */
+  const startBackgroundServices = (): void => {
+    const starters: Array<() => void> = [
+      () => onlineOffice.start(),
+      () => accounts.start(),
+      () => scheduler.start(),
+      () => manager.startModelCatalog(),
+      () => freeProviders.start(),
+      () => startUpdatePoll(),
+      () => startSearchIndexBackfill(db, (message) => hub.publish({ type: "log", level: "info", message })),
+      () =>
+        startCodexUsageMonitor(hub, {
+          apiKey: () => manager.openaiApiKey(),
+          configured: () => {
+            const s = manager.settings();
+            return s.codexEnabled || s.hasOpenaiKey || s.codexChatgptLogin;
+          },
+          stagger,
+          runModel: () => manager.settings().codexModel,
+        }),
+      () =>
+        startGrokUsageMonitor(hub, {
+          configured: () => {
+            const s = manager.settings();
+            return s.grokEnabled || s.grokSignedIn;
+          },
+        }),
+      () =>
+        startZaiUsageMonitor(hub, {
+          apiKey: () => manager.zaiApiKey(),
+          configured: () => {
+            const s = manager.settings();
+            return s.zaiEnabled || s.zaiKeyPresent;
+          },
+        }),
+      () => startWebAutoBuild(),
+    ];
+    let index = 0;
+    const startNext = (): void => {
+      const start = starters[index++];
+      if (!start) return;
+      try {
+        start();
+      } catch (error) {
+        logCrash("background service startup", error);
+      }
+      if (index < starters.length) setTimeout(startNext, 0).unref?.();
+    };
+    // Give the event loop a chance to accept the first dashboard connection before optional work begins.
+    setTimeout(startNext, 2_000).unref?.();
+  };
 
   // Shared across both listeners so the per-IP wrong-password cooldown can't be
   // sidestepped by alternating between the HTTP and HTTPS ports.
@@ -628,6 +638,7 @@ async function main(): Promise<void> {
         .filter((l) => l !== "")
         .join("\n"),
     );
+    startBackgroundServices();
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("Failed to start server:", err);
