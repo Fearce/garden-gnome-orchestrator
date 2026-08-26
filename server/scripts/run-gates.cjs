@@ -77,6 +77,7 @@ const GATES = [
   "test:crashlog",
   "test:leak-bookkeeping",
   "test:attachment-dedupe",
+  "test:image-limit",
   "test:stale-gnomes",
   "test:git",
   "test:repo-ops",

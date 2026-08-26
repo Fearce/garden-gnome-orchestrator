@@ -75,6 +75,7 @@
     "test:crashlog": "tsx src/tests/crashLog.itest.ts",
     "test:leak-bookkeeping": "tsx src/tests/threadBookkeepingLeak.itest.ts",
     "test:attachment-dedupe": "tsx src/tests/attachmentDedupe.test.ts",
+    "test:image-limit": "tsx src/tests/imageLimit.test.ts",
     "test:pdf-parse": "tsx src/tests/pdfParse.test.ts",
     "test:stale-gnomes": "tsx src/tests/staleGnomeCleanup.itest.ts",
     "test:git": "tsx src/tests/gitService.itest.ts",

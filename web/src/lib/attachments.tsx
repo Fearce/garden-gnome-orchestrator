@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { AttachmentRef, ImageAttachment } from "../types.js";
+import { useStore } from "../store.js";
 import { apiUrl } from "./base.js";
 
 export const MAX_IMAGES = 8;
-export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** The API's per-image ceiling, measured on the BASE64 payload the model receives. */
+export const MAX_IMAGE_BASE64_BYTES = 5 * 1024 * 1024;
+/** …and the size of a FILE that encodes to it — base64 is 4 characters per 3 bytes, so a picture is 4/3
+ *  of itself on the wire. Checking the file against the API's own 5MB number is the bug this constant
+ *  exists to prevent: it let every image between 3.75MB and 5MB through to be rejected mid-run, killing
+ *  the task that carried it (2026-08-26 — one $8 implementor run, and four such images already stored). */
+export const MAX_IMAGE_BYTES = Math.floor((MAX_IMAGE_BASE64_BYTES * 3) / 4);
 const OK_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 export function attachmentUrl(ref: AttachmentRef): string {
@@ -15,8 +22,13 @@ function previewUrl(a: ImageAttachment): string {
   return `data:${a.mediaType};base64,${a.dataBase64}`;
 }
 
-async function fileToAttachment(f: File): Promise<ImageAttachment | null> {
-  if (!OK_TYPES.has(f.type) || f.size > MAX_IMAGE_BYTES) return null;
+/** Why a file didn't become an attachment, so the composer can say so — a picture that simply never
+ *  appears reads as a broken paste, and the operator sends the prompt believing the agent can see it. */
+type Rejection = "type" | "size";
+
+async function fileToAttachment(f: File): Promise<ImageAttachment | Rejection> {
+  if (!OK_TYPES.has(f.type)) return "type";
+  if (f.size > MAX_IMAGE_BYTES) return "size";
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(String(r.result));
@@ -24,8 +36,20 @@ async function fileToAttachment(f: File): Promise<ImageAttachment | null> {
     r.readAsDataURL(f);
   });
   const comma = dataUrl.indexOf(",");
-  if (comma < 0) return null;
+  if (comma < 0) return "type";
   return { name: f.name || "image", mediaType: f.type, dataBase64: dataUrl.slice(comma + 1) };
+}
+
+const MAX_IMAGE_MB = (MAX_IMAGE_BYTES / (1024 * 1024)).toFixed(1);
+
+/** One banner covering everything a drop/paste threw away, in the operator's terms (the size of the file
+ *  they picked, not of the payload it encodes to). */
+function rejectionNotice(size: number, type: number): { level: "warn"; title: string; message: string } | null {
+  const parts: string[] = [];
+  if (size) parts.push(`${size} image${size === 1 ? " is" : "s are"} over the ${MAX_IMAGE_MB} MB limit`);
+  if (type) parts.push(`${type} file${type === 1 ? " is" : "s are"} not a PNG, JPEG, GIF or WebP`);
+  if (!parts.length) return null;
+  return { level: "warn", title: "Not attached", message: `${parts.join(", and ")} — resend a smaller or converted copy.` };
 }
 
 export interface AttachmentsApi {
@@ -42,8 +66,8 @@ export interface AttachmentsApi {
   };
 }
 
-/** Paste / drag-drop / file-pick image attachments for a composer. Silently drops
- *  non-image or oversized files and caps the count. */
+/** Paste / drag-drop / file-pick image attachments for a composer. Rejects non-image or oversized files
+ *  with a banner saying which and why, and caps the count. */
 export function useAttachments(): AttachmentsApi {
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -51,11 +75,17 @@ export function useAttachments(): AttachmentsApi {
   const addFiles = useCallback((files: FileList | File[]) => {
     void (async () => {
       const next: ImageAttachment[] = [];
+      let size = 0;
+      let type = 0;
       for (const f of Array.from(files)) {
         const a = await fileToAttachment(f);
-        if (a) next.push(a);
+        if (a === "size") size++;
+        else if (a === "type") type++;
+        else next.push(a);
       }
       if (next.length) setImages((cur) => [...cur, ...next].slice(0, MAX_IMAGES));
+      const notice = rejectionNotice(size, type);
+      if (notice) useStore.setState({ notice });
     })();
   }, []);
 
