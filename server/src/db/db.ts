@@ -1035,18 +1035,33 @@ export class Db {
    * Count and quote come from ONE pass because they used to come from 41. Picking the message to quote
    * was a separate per-task query, and the tasks a common word returns are by definition the ones that
    * said it most — the biggest conversations in the database — so those 40 follow-up reads cost another
-   * 27 seconds. A window function ranks each task's matches while the pass that counts them is already
-   * running; only the ~40 rows actually returned are then read for their text.
+   * 27 seconds. Do not use a window function here: it sorts EVERY matching message within its task
+   * before it can emit one row. On the real corpus, a common term still took 17 seconds after the FTS
+   * lookup solely because of that sort. Instead, group each task once and join its chosen timestamp back
+   * to the materialized candidate set. Only the ~40 rows actually returned are then read for their text.
    */
   private conversationHits(like: string, plan: ConversationPlan): Map<string, ConversationHit> {
     if (plan.via === "none") return new Map();
-    const ranked = `SELECT tid, n, rid FROM (
-        SELECT m.thread_id AS tid, m.rowid AS rid,
-               COUNT(*) OVER (PARTITION BY m.thread_id) AS n,
-               ROW_NUMBER() OVER (PARTITION BY m.thread_id
-                                  ORDER BY (m.kind = 'text') DESC, m.created_at ASC) AS rn
+    // `MATERIALIZED` is important: the FTS + exact-LIKE filter is the expensive part, and this query
+    // reads the candidate set once to group it and once to retrieve each group's best row. Without it,
+    // SQLite may repeat the virtual-table search for the join.
+    const ranked = `WITH candidates AS MATERIALIZED (
+        SELECT m.thread_id AS tid, m.rowid AS rid, m.kind AS kind, m.created_at AS created_at
           FROM %SOURCE%
-      ) WHERE rn = 1`;
+      ), grouped AS (
+        SELECT tid,
+               COUNT(*) AS n,
+               COALESCE(MIN(CASE WHEN kind = 'text' THEN created_at END), MIN(created_at)) AS best_created_at,
+               MAX(kind = 'text') AS has_text
+          FROM candidates
+         GROUP BY tid
+      )
+      SELECT g.tid, g.n, MIN(c.rid) AS rid
+        FROM grouped g
+        JOIN candidates c ON c.tid = g.tid
+                         AND c.created_at = g.best_created_at
+                         AND (g.has_text = 0 OR c.kind = 'text')
+       GROUP BY g.tid, g.n`;
     const rows = (
       plan.via === "scan"
         ? this.raw.prepare(ranked.replace("%SOURCE%", "messages m WHERE m.content LIKE ? ESCAPE '\\'")).all(like)
