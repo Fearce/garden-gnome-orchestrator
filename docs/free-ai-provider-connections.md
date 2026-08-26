@@ -1,6 +1,6 @@
 # Free AI provider connections
 
-GG Orchestrator now has an authentication and inference connection lab for nine providers with recurring free access or recurring free account credit. Open **Settings → Free AI connections** to use it. No code or environment-file edit is required.
+GG Orchestrator now has an authentication and inference connection lab for eight providers with recurring free access or recurring free account credit. Open **Settings → Free AI connections** to use it. No code or environment-file edit is required.
 
 The lab deliberately stops one layer short of automatic task routing. GGO's existing Claude, Codex, Grok, and z.ai backends are coding-agent harnesses: they own tools, workspace mutation, resumable sessions, steering, the office bridge, and the commit contract. A chat-completions endpoint alone does not provide those guarantees. Marking these APIs as implementor failover targets before that harness exists would turn a green credential check into unsafe task dispatch. The new adapters do provide normalized completion, SSE streaming, tool-call, model, usage, and error primitives for that next layer.
 
@@ -10,7 +10,6 @@ The lab deliberately stops one layer short of automatic task routing. GGO's exis
 |---|---|---|---|---|---|
 | Google Gemini API | Google AI Studio API key | Project/model-specific free RPM, TPM, and RPD | Dynamic catalog; only currently verified free-tier Flash model families are probe-eligible | Local request/token evidence; exact project caps remain in AI Studio | Native completion, SSE, functions, models |
 | Groq | GroqCloud API key | Model-specific free RPD/TPD | Dynamic catalog intersected with the current official free-plan allowlist | Exact request/day and token/minute response headers after a probe; local count before that | OpenAI-compatible completion, SSE, tools, models |
-| OpenRouter | OpenRouter API key | 50 free-model requests/day, or 1,000/day for a funded account | Live catalog must report exactly-zero input, output, and request prices; `:free` only plus `openrouter/free` | Published request cap minus this GGO's calls; `/api/v1/key` identifies free/funded tier and account-credit metadata | OpenAI-compatible completion, SSE, tools, models |
 | Kilo Gateway | Anonymous, or optional Kilo key | 200 free-model requests per rolling hour/IP | Live catalog must report exactly-zero input/output pricing; free routes only plus `kilo-auto/free` | Persisted rolling-hour estimate; shared-IP activity outside GGO is unknowable | OpenAI-compatible completion, SSE, tools, models |
 | Mistral | Mistral API key from a workspace in Free mode | $10/month included credits | Dynamic chat-capable catalog; explicit probe only | Published $10 allowance and locally reported cost/tokens when present; remaining balance stays in Mistral Console | OpenAI-compatible completion, SSE, tools, models |
 | Cohere | Cohere evaluation API key | 1,000 calls/month; chat keys commonly have a 20 RPM trial limit | Dynamic chat-model catalog | Persisted monthly estimate for this GGO instance | Native v2 completion, SSE, tools, models |
@@ -34,7 +33,6 @@ Provider prerequisites:
 
 - **Gemini:** create a key in [Google AI Studio](https://aistudio.google.com/app/apikey). This integration intentionally does not copy Gemini CLI OAuth/browser credentials. Keep the project on the free tier if no spend is wanted.
 - **Groq:** create a key in [GroqCloud](https://console.groq.com/keys). The card reads exact quota headers after its first completed request.
-- **OpenRouter:** create a key in [OpenRouter settings](https://openrouter.ai/settings/keys). The key endpoint is used to distinguish free-tier from funded-account free-request caps; no paid model can be selected in the lab.
 - **Kilo:** no account is required for documented anonymous free-model access. A key from [Kilo](https://app.kilo.ai/) is optional.
 - **Mistral:** put the workspace in **Free** mode and create a key in [Mistral Console](https://console.mistral.ai/api-keys). Free-mode/account balance is authoritative there.
 - **Cohere:** create a free **evaluation** key in the [Cohere dashboard](https://dashboard.cohere.com/api-keys). GGO cannot distinguish an evaluation key from a production key, so verify the key type before probing.
@@ -42,7 +40,7 @@ Provider prerequisites:
 - **NVIDIA:** join the free [NVIDIA Developer Program](https://developer.nvidia.com/developer-program), then create a hosted API Catalog key at [build.nvidia.com](https://build.nvidia.com/). The provider does not expose a numeric remaining-prototype allowance, so GGO never invents one.
 - **Hugging Face:** create a [fine-grained token](https://huggingface.co/settings/tokens) with **Inference Providers** permission. Free accounts currently receive $0.10/month in routed credit. Remove/avoid BYOK provider keys if the intent is to consume only Hugging Face's credit; GGO pins one live provider route but cannot inspect keys configured in your Hugging Face account.
 
-Environment fallbacks are also supported: `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `KILO_API_KEY`, `MISTRAL_API_KEY`, `COHERE_API_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `NVIDIA_API_KEY`, and `HF_TOKEN`. A stored UI credential wins over the environment. **Forget stored key** removes only the database value; an environment key remains active and is labelled as such.
+Environment fallbacks are also supported: `GEMINI_API_KEY`, `GROQ_API_KEY`, `KILO_API_KEY`, `MISTRAL_API_KEY`, `COHERE_API_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `NVIDIA_API_KEY`, and `HF_TOKEN`. A stored UI credential wins over the environment. **Forget stored key** removes only the database value; an environment key remains active and is labelled as such.
 
 ## Security and failure behavior
 
@@ -51,7 +49,7 @@ Environment fallbacks are also supported: `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPE
 - Password fields are cleared after save; saved values cannot be revealed through the UI.
 - Provider errors and credential-bearing URLs are redacted before persistence or return. Probe logs contain provider, served model/provider, request ID, latency, token counts, and normalized error class—never the key, prompt, response text, or authorization header.
 - 401/403/498, billing/402, 429/`Retry-After`, 5xx, timeout, network, context-window, and invalid-model failures become distinct card states. There is no automatic retry and no automatic provider/model failover.
-- OpenRouter and Kilo pricing is refreshed immediately before inference. A previously free catalog entry that becomes non-zero is rejected before a completion call.
+- Kilo pricing is refreshed immediately before inference. A previously free catalog entry that becomes non-zero is rejected before a completion call.
 - The local quota ledger is keyed by a salted HMAC credential/account fingerprint. It survives restart, separates rotated keys, applies provider window timezone rules, and records rejected calls with a zero request count.
 - Every provider card always carries a usage chip. `EST`/`~` means locally calculated; “not exposed” never becomes a false zero.
 
@@ -70,7 +68,6 @@ The next engineering step is not another credential card. It is a provider-neutr
 
 - [Gemini API rate limits](https://ai.google.dev/gemini-api/docs/rate-limits), [models API](https://ai.google.dev/api/models), and [generate/stream/function API](https://ai.google.dev/api/generate-content)
 - [Groq rate limits and headers](https://console.groq.com/docs/rate-limits) and [API reference](https://console.groq.com/docs/api-reference)
-- [OpenRouter FAQ/free limits](https://openrouter.ai/docs/faq), [models API](https://openrouter.ai/docs/api/api-reference/models/get-models), [key/limits API](https://openrouter.ai/docs/api-reference/limits), and [chat API](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request)
 - [Kilo authentication](https://kilo.ai/docs/gateway/authentication), [models/API](https://kilo.ai/docs/gateway/api-reference), and [usage](https://kilo.ai/docs/gateway/usage-and-billing)
 - [Mistral pricing](https://mistral.ai/pricing/), [usage limits](https://docs.mistral.ai/admin/billing-usage/usage-limits), [models](https://docs.mistral.ai/api/endpoint/models), and [chat](https://docs.mistral.ai/api/endpoint/chat)
 - [Cohere evaluation limits](https://docs.cohere.com/docs/rate-limits), [models](https://docs.cohere.com/reference/list-models), [v2 chat](https://docs.cohere.com/v2/reference/chat), and [tool use](https://docs.cohere.com/v2/docs/tool-use-overview/)

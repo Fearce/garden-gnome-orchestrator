@@ -78,6 +78,10 @@ interface ProviderResponse {
   response?: { text: string; model: string; upstreamProvider?: string; inputTokens?: number; outputTokens?: number; latencyMs: number };
 }
 
+// Keep retired connections out of the console during rolling deployments where the static
+// client can update before the long-running server process is recycled onto the same release.
+const RETIRED_PROVIDER_IDS = new Set(["openrouter"]);
+
 const STATE_LABEL: Record<ProviderState, string> = {
   disabled: "Disabled",
   "awaiting-auth": "Awaiting auth",
@@ -141,8 +145,12 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return body;
 }
 
+function activeProviders(providers: FreeProvider[]): FreeProvider[] {
+  return providers.filter((provider) => !RETIRED_PROVIDER_IDS.has(provider.id));
+}
+
 function replaceProvider(providers: FreeProvider[], provider: FreeProvider): FreeProvider[] {
-  return providers.map((candidate) => candidate.id === provider.id ? provider : candidate);
+  return activeProviders(providers.map((candidate) => candidate.id === provider.id ? provider : candidate));
 }
 
 export function FreeProviders() {
@@ -160,7 +168,7 @@ export function FreeProviders() {
     let live = true;
     void jsonRequest<{ providers: FreeProvider[] }>("/api/free-providers")
       .then((body) => {
-        if (live) setProviders(body.providers);
+        if (live) setProviders(activeProviders(body.providers));
       })
       .catch((error: unknown) => {
         if (live) setLoadError(error instanceof Error ? error.message : "Could not load providers.");
@@ -189,7 +197,7 @@ export function FreeProviders() {
       // rather than only after closing and reopening Settings.
       try {
         const latest = await jsonRequest<{ providers: FreeProvider[] }>("/api/free-providers");
-        setProviders(latest.providers);
+        setProviders(activeProviders(latest.providers));
       } catch {
         // Preserve the actionable error from the operation; a second fetch failure adds no value.
       }

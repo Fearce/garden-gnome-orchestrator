@@ -519,7 +519,6 @@ export class FreeProviderService {
     }
 
     let limit = policy.limit;
-    if (definition.id === "openrouter") limit = remote?.freeTier === false ? 1_000 : remote?.freeTier === true ? 50 : undefined;
     const used = definition.id === "cloudflare"
       ? aggregate.estimatedUnits
       : definition.id === "mistral" || definition.id === "huggingface"

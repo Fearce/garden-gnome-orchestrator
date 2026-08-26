@@ -15,7 +15,6 @@ import {
   normalizeHuggingFaceModels,
   normalizeKiloModels,
   normalizeNvidiaModels,
-  normalizeOpenRouterModels,
 } from "../freeProviders/registry.js";
 import { registerFreeProviderRoutes } from "../freeProviders/routes.js";
 import { chooseFreeModel, FreeProviderService, stateForProviderError } from "../freeProviders/service.js";
@@ -49,23 +48,13 @@ function usage(overrides: Partial<ProviderUsageSnapshot> = {}): ProviderUsageSna
 
 // Registry/capability boundary: all requested recurring providers exist, and none is silently task-routable.
 const registry = createProviderRegistry(mockFetch(() => { throw new Error("network must not run during registration"); }));
-assert.deepEqual(registry.map((provider) => provider.id), ["gemini", "groq", "openrouter", "kilo", "mistral", "cohere", "cloudflare", "nvidia", "huggingface"]);
+assert.deepEqual(registry.map((provider) => provider.id), ["gemini", "groq", "kilo", "mistral", "cohere", "cloudflare", "nvidia", "huggingface"]);
 assert.ok(registry.every((provider) =>
   typeof provider.adapter.listModels === "function" &&
   typeof provider.adapter.complete === "function" &&
   typeof provider.adapter.stream === "function"));
 
 // Dynamic gateway pricing is fail-closed: a free-looking suffix is insufficient unless live input/output are exactly zero.
-const openRouterModels = normalizeOpenRouterModels({ data: [
-  { id: "vendor/free-now:free", pricing: { prompt: "0", completion: "0", request: "0" }, context_length: 131_072, supported_parameters: ["tools"] },
-  { id: "vendor/quietly-paid:free", pricing: { prompt: "0", completion: "0.000001", request: "0" } },
-  { id: "vendor/no-price:free", pricing: {} },
-] });
-assert.equal(openRouterModels.find((model) => model.id === "vendor/free-now:free")?.isFree, true);
-assert.equal(openRouterModels.find((model) => model.id === "vendor/quietly-paid:free")?.isFree, false);
-assert.equal(openRouterModels.find((model) => model.id === "vendor/no-price:free")?.isFree, false);
-assert.equal(openRouterModels.find((model) => model.id === "openrouter/free")?.isFree, true, "official free router is always available as a virtual route");
-
 const kiloModels = normalizeKiloModels({ data: [
   { id: "dynamic/free:free", pricing: { input: 0, output: 0 } },
   { id: "dynamic/paid:free", pricing: { input: 0, output: 0.2 } },
@@ -123,8 +112,8 @@ assert.deepEqual(cohereModels.map((model) => model.id), ["north-mini-code"]);
 assert.equal(cohereModels[0]?.supportsTools, true);
 
 // The selected model is respected only while eligible; otherwise selection falls to a verified preference.
-const openRouterDefinition = registry.find((provider) => provider.id === "openrouter")!;
-assert.equal(chooseFreeModel(openRouterDefinition, openRouterModels, "vendor/quietly-paid:free")?.id, "openrouter/free");
+const kiloDefinition = registry.find((provider) => provider.id === "kilo")!;
+assert.equal(chooseFreeModel(kiloDefinition, kiloModels, "dynamic/paid:free")?.id, "kilo-auto/free");
 
 // OpenAI-compatible completion + tool + exact header normalization.
 const compatibleFetch = mockFetch((url) => {
@@ -287,17 +276,16 @@ assert.equal(formatUsageChip({ usage: usage(), state: "rate-limited", configured
 assert.equal(formatUsageChip({ usage: usage(), state: "awaiting-auth", configured: false, optionalCredential: false }), "Quota · awaiting auth");
 assert.equal(formatUsageChip({ usage: usage({ quotaKind: "prototype" }), state: "ready", configured: true, optionalCredential: false }), "Free prototype · cap not exposed");
 
-// End-to-end service flow with a stub OpenRouter: key stays write-only, catalog validation is non-inference,
+// End-to-end service flow with a stub Kilo gateway: key stays write-only, catalog validation is non-inference,
 // the explicit probe rechecks pricing, records one call, and preserves actual upstream identity.
 let chatCalls = 0;
 let catalogModelPaid = false;
 const sentModels: string[] = [];
 const serviceFetch = mockFetch((url, init) => {
-  if (url === "https://openrouter.ai/api/v1/models") {
+  if (url === "https://api.kilo.ai/api/gateway/models") {
     return json({ data: [{ id: "vendor/coder:free", name: "Coder Free", pricing: { prompt: "0", completion: catalogModelPaid ? "0.000001" : "0", request: "0" }, supported_parameters: ["tools"] }] });
   }
-  if (url === "https://openrouter.ai/api/v1/key") return json({ data: { is_free_tier: true, limit: null, usage: 0 } });
-  if (url === "https://openrouter.ai/api/v1/chat/completions") {
+  if (url === "https://api.kilo.ai/api/gateway/chat/completions") {
     chatCalls += 1;
     sentModels.push((JSON.parse(String(init?.body)) as { model: string }).model);
     return json({ model: "vendor/coder:free", provider: "ExampleCloud", choices: [{ message: { content: "READY" } }], usage: { prompt_tokens: 8, completion_tokens: 1 } });
@@ -306,25 +294,25 @@ const serviceFetch = mockFetch((url, init) => {
 });
 const serviceStore = new MemoryStore();
 const service = new FreeProviderService(serviceStore, {}, serviceFetch);
-const saved = service.update("openrouter", { enabled: true, apiKey: "sk-or-v1-secret-key-value" });
+const saved = service.update("kilo", { enabled: true, apiKey: "kilo-secret-key-value" });
 assert.equal(saved.keyPresent, true);
 assert.equal(saved.keyLast4, "alue");
 assert.equal(JSON.stringify(saved).includes("secret-key"), false);
-const validated = await service.refresh("openrouter");
+const validated = await service.refresh("kilo");
 assert.equal(chatCalls, 0, "model validation must not consume inference quota");
 assert.equal(validated.health.state, "ready");
-assert.equal(validated.selectedModel, "openrouter/free", "preferred official free router wins safely");
-const probed = await service.probe("openrouter");
+assert.equal(validated.selectedModel, "kilo-auto/free", "preferred official free router wins safely");
+const probed = await service.probe("kilo");
 assert.equal(chatCalls, 1);
 assert.equal(probed.response.upstreamProvider, "ExampleCloud");
-assert.equal(probed.provider.usage.remaining, 49);
-assert.match(probed.provider.usage.displayLabel ?? "", /^~49 \/ 50/);
-assert.equal(JSON.stringify(probed).includes("sk-or-v1-secret"), false);
-service.update("openrouter", { selectedModel: "vendor/coder:free" });
+assert.equal(probed.provider.usage.remaining, 199);
+assert.match(probed.provider.usage.displayLabel ?? "", /^~199 \/ 200/);
+assert.equal(JSON.stringify(probed).includes("kilo-secret"), false);
+service.update("kilo", { selectedModel: "vendor/coder:free" });
 catalogModelPaid = true;
-await service.probe("openrouter");
+await service.probe("kilo");
 assert.equal(chatCalls, 2);
-assert.equal(sentModels[1], "openrouter/free", "a selected model whose refreshed price became non-zero must never be sent");
+assert.equal(sentModels[1], "kilo-auto/free", "a selected model whose refreshed price became non-zero must never be sent");
 
 // Auth gate + JSON route contract; a saved secret never comes back over REST.
 const app = Fastify({ logger: false });
@@ -332,7 +320,7 @@ registerFreeProviderRoutes(app, service, (cookie) => cookie === "session=yes");
 assert.equal((await app.inject({ method: "GET", url: "/api/free-providers" })).statusCode, 401);
 const listResponse = await app.inject({ method: "GET", url: "/api/free-providers", headers: { cookie: "session=yes" } });
 assert.equal(listResponse.statusCode, 200);
-assert.equal(listResponse.body.includes("sk-or-v1-secret"), false);
+assert.equal(listResponse.body.includes("kilo-secret"), false);
 const unknown = await app.inject({ method: "POST", url: "/api/free-providers/not-real/refresh", headers: { cookie: "session=yes" } });
 assert.equal(unknown.statusCode, 400);
 await app.close();

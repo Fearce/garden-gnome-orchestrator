@@ -151,51 +151,6 @@ export function normalizeMistralModels(body: unknown): ProviderModel[] {
   });
 }
 
-export function normalizeOpenRouterModels(body: unknown): ProviderModel[] {
-  const found: ProviderModel[] = arrayAt(body).flatMap((raw) => {
-    const value = record(raw);
-    if (!value) return [];
-    const id = idOf(value);
-    if (!id) return [];
-    const input = price(value, "prompt", "input", "input_price");
-    const output = price(value, "completion", "output", "output_price");
-    const request = price(value, "request", "request_price");
-    const image = price(value, "image", "image_price");
-    const internal = price(value, "internal_reasoning", "internal_reasoning_price");
-    const zeroPriced = input === 0 && output === 0 && (request == null || request === 0) && (image == null || image === 0) && (internal == null || internal === 0);
-    const free = id.endsWith(":free") && zeroPriced;
-    const architecture = record(value.architecture);
-    const supported = Array.isArray(value.supported_parameters) ? value.supported_parameters : [];
-    return [{
-      providerId: "openrouter" as const,
-      id,
-      displayName: displayName(value, id),
-      contextWindow: contextWindow(value),
-      supportsStreaming: true,
-      supportsTools: supported.includes("tools") || supported.includes("tool_choice"),
-      supportsVision: String(architecture?.input_modalities ?? "").includes("image"),
-      isFree: free,
-      freeStatusSource: zeroPriced ? "catalog-price" as const : "catalog-price" as const,
-      inputPricePerMillion: millionPrice(input),
-      outputPricePerMillion: millionPrice(output),
-      ineligibleReason: free ? undefined : id.endsWith(":free") ? "Catalog pricing is no longer exactly zero." : "Only current :free variants are eligible.",
-    }];
-  });
-  // The official free router is intentionally added even if a catalog deployment omits virtual routers.
-  if (!found.some((model) => model.id === "openrouter/free")) {
-    found.unshift({
-      providerId: "openrouter",
-      id: "openrouter/free",
-      displayName: "OpenRouter Free",
-      supportsStreaming: true,
-      supportsTools: true,
-      isFree: true,
-      freeStatusSource: "provider",
-    });
-  }
-  return found;
-}
-
 export function normalizeKiloModels(body: unknown): ProviderModel[] {
   const found: ProviderModel[] = arrayAt(body).flatMap((raw) => {
     const value = record(raw);
@@ -348,32 +303,6 @@ function authHeaders(credentials: ProviderCredentials): Record<string, string> {
   return credentials.apiKey ? { authorization: `Bearer ${credentials.apiKey}` } : {};
 }
 
-async function openRouterUsage(credentials: ProviderCredentials, fetchImpl?: typeof fetch) {
-  if (!credentials.apiKey) return null;
-  const response = await requestJson<unknown>(
-    "https://openrouter.ai/api/v1/key",
-    { headers: authHeaders(credentials) },
-    { fetchImpl, secrets: [credentials.apiKey] },
-  );
-  const root = record(response.body);
-  const data = record(root?.data) ?? root;
-  if (!data) return null;
-  const freeTier = boolean(data.is_free_tier);
-  const creditLimit = finite(data.limit);
-  const creditRemaining = finite(data.limit_remaining);
-  const creditUsed = finite(data.usage);
-  return {
-    source: "provider-api" as const,
-    secondaryLimits:
-      creditLimit != null || creditRemaining != null || creditUsed != null
-        ? [{ label: "Account credit", limit: creditLimit, remaining: creditRemaining, used: creditUsed, unit: "USD" }]
-        : undefined,
-    message: freeTier == null ? undefined : freeTier ? "OpenRouter reports this as a free-tier key." : "OpenRouter reports a funded account; free-model allowance is estimated at the funded tier.",
-    // Service combines this private marker into the published 50/1,000 free-request estimate.
-    freeTier,
-  } as Partial<import("./types.js").ProviderUsageSnapshot> & { freeTier?: boolean };
-}
-
 async function huggingFaceIdentity(credentials: ProviderCredentials, fetchImpl?: typeof fetch) {
   if (!credentials.apiKey) return null;
   await requestJson<unknown>(
@@ -391,15 +320,6 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
     completionUrl: () => "https://api.groq.com/openai/v1/chat/completions",
     headers: authHeaders,
     normalizeModels: normalizeGroqModels,
-    fetchImpl,
-  });
-  const openrouter = new OpenAiCompatibleAdapter({
-    providerId: "openrouter",
-    modelsUrl: () => "https://openrouter.ai/api/v1/models",
-    completionUrl: () => "https://openrouter.ai/api/v1/chat/completions",
-    headers: (credentials) => ({ ...authHeaders(credentials), "HTTP-Referer": "https://github.com/Fearce/garden-gnome-orchestrator", "X-Title": "GG Orchestrator" }),
-    normalizeModels: normalizeOpenRouterModels,
-    accountUsage: (credentials) => openRouterUsage(credentials, fetchImpl),
     fetchImpl,
   });
   const kilo = new OpenAiCompatibleAdapter({
@@ -463,25 +383,6 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
       usage: { quotaKind: "mixed", window: "day", timeZone: "UTC", unit: "requests", localEstimate: true, summary: "Local requests until Groq returns exact request/day and token/minute headers." },
       adapter: groq,
       preferredModels: ["openai/gpt-oss-120b", "qwen/qwen3.6-27b", "openai/gpt-oss-20b"],
-    },
-    {
-      id: "openrouter",
-      displayName: "OpenRouter",
-      transport: "openai-compatible",
-      tierKind: "RECURRING_DAILY",
-      tierLabel: "Free models · daily",
-      quotaSummary: "50 free-model requests/day, or 1,000/day after funding at least $10.",
-      docsUrl: "https://openrouter.ai/docs/faq",
-      signupUrl: "https://openrouter.ai/settings/keys",
-      credentialLabel: "OpenRouter API key",
-      credentialHelp: "Only :free models whose live catalog price is exactly zero can be probed.",
-      optionalCredential: false,
-      needsAccountId: false,
-      envKey: "OPENROUTER_API_KEY",
-      billingWarning: "GGO refreshes pricing immediately before every probe and rejects non-zero pricing. Paid fallback is impossible in this lab.",
-      usage: { quotaKind: "requests", window: "day", timeZone: "UTC", unit: "free requests", localEstimate: true, summary: "Published allowance minus calls recorded by this GGO instance." },
-      adapter: openrouter,
-      preferredModels: ["openrouter/free"],
     },
     {
       id: "kilo",
@@ -623,6 +524,6 @@ export function createProviderRegistry(fetchImpl?: typeof fetch): ProviderDefini
     adapter: new CohereAdapter(fetchImpl),
     preferredModels: ["north-mini-code", "command-a-03-2025", "command-r7b-12-2024"],
   };
-  const ordered = [gemini, byId.get("groq"), byId.get("openrouter"), byId.get("kilo"), byId.get("mistral"), cohere, byId.get("cloudflare"), byId.get("nvidia"), byId.get("huggingface")];
+  const ordered = [gemini, byId.get("groq"), byId.get("kilo"), byId.get("mistral"), cohere, byId.get("cloudflare"), byId.get("nvidia"), byId.get("huggingface")];
   return ordered.filter((definition): definition is ProviderDefinition => !!definition);
 }
