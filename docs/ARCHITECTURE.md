@@ -85,7 +85,7 @@ freshly revalidated free model must have explicit live or narrowly allowlisted o
 missing reader finding records the free run and immediately continues through the unchanged paid-provider
 `runRole` ladder. It never serves researcher, implementor, QA, or reviewer.
 
-The **director only directs** — it has no writable filesystem or shell path, so it cannot
+The **director only directs** — it has no filesystem or shell tools at all, so it cannot
 investigate a repo itself; any "figure out / debug / why is X" request is forced into
 a `dispatch`. Memory recall goes through the scoped `search_memory` / `read_memory` MCP
 tools (memory dir only), never a generic `Read`.
