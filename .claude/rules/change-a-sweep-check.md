@@ -27,6 +27,10 @@ FUNCTION and inject what it needs (a `cwd`, a clock), never re-assemble its inpu
 Register BOTH halves or the sweep never runs it: the `test:*` script in `server/package.json`
 AND the name in `GATES` in `scripts/run-gates.cjs`. `test:gate-registration` fails on either.
 
+**If your fix lands in `run-gates.cjs` itself, the suite's last green covers nothing — re-run it.**
+Editing the runner changes the gate LIST as well as the spawn, and one that cannot launch its children
+fails in the way that reads as success (08-26, two commits, caught by hand). Ask `probe:gates`.
+
 ## Loosening a detector is the dangerous direction
 
 Every check here answers "is something wrong?", so a false NEGATIVE is silent forever while a

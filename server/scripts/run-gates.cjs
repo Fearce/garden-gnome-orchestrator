@@ -12,14 +12,19 @@
 // last), so for its whole run you cannot tell a wedged gate from a slow one. That cost a full
 // re-run on 2026-08-17. The transcript grows live, so `tail -20 server/data/gates-last.log`
 // answers "which gate is it on, and what is it doing" at any moment.
-const { spawn } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { buildStamp, fingerprintFile } = require("./gates-provenance.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
+const ROOT_DIR = path.resolve(SERVER_DIR, "..");
 
 // Under server/data, which is gitignored — a run transcript is a working artifact, never a commit.
 const TRANSCRIPT = path.join(SERVER_DIR, "data", "gates-last.log");
+// Beside it: what that run COVERED, so a later reader can ask whether the green still holds
+// (`npm run probe:gates`) instead of comparing a log mtime against `git log` by hand.
+const STAMP = path.join(SERVER_DIR, "data", "gates-last.json");
 
 const GATES = [
   "test:cron",
@@ -93,6 +98,7 @@ const GATES = [
   "test:gate-registration",
   "test:quality-sweep",
   "test:gates-driver",
+  "test:gates-provenance",
 ];
 
 // npm is a .cmd on Windows; Node blocks spawning .cmd/.bat without a shell, so
@@ -142,6 +148,34 @@ function runGate(gate, log) {
   });
 }
 
+/** Git state, or nulls — the suite must still run in a tarball with no repo around it. */
+function gitRead(args) {
+  try {
+    return execFileSync("git", args, { cwd: ROOT_DIR, encoding: "utf8", windowsHide: true }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Written only after every gate has run, so an interrupted suite leaves no stamp at all — the
+ *  absence is how `probe:gates` tells "never finished" from "finished and passed". */
+function writeStamp(results, startedAt) {
+  const status = gitRead(["status", "--porcelain"]);
+  const stamp = buildStamp({
+    startedAt,
+    endedAt: Date.now(),
+    head: gitRead(["rev-parse", "HEAD"]),
+    dirty: status ? status.split(/\r?\n/).filter(Boolean).map((l) => l.slice(3)) : [],
+    runnerFingerprint: fingerprintFile(__filename),
+    results,
+  });
+  try {
+    fs.writeFileSync(STAMP, `${JSON.stringify(stamp, null, 2)}\n`);
+  } catch {
+    /* the transcript is the artifact that must not be lost; the stamp is a convenience */
+  }
+}
+
 function tail(text, n) {
   const lines = text.trimEnd().split(/\r?\n/);
   return lines.slice(-n).join("\n");
@@ -174,6 +208,7 @@ function closeTranscript(log) {
 }
 
 async function main() {
+  const startedAt = Date.now();
   const log = guardBrokenPipe(openTranscript());
   // The path goes out FIRST, not just in the summary: a backgrounded run is watched from the
   // transcript, and by the time the summary prints there is nothing left to watch.
@@ -192,6 +227,7 @@ async function main() {
     log.write(`──────── ${gate}: ${r.ok ? "passed" : "FAILED"} in ${(r.ms / 1000).toFixed(1)}s ────────\n`);
   }
 
+  writeStamp(results, startedAt);
   const summary = summaryText(results);
   say(summary);
   log.write(summary);
@@ -199,7 +235,7 @@ async function main() {
   return results.some((r) => !r.ok) ? 1 : 0;
 }
 
-module.exports = { GATES, TRANSCRIPT, guardBrokenPipe, summaryText, tail };
+module.exports = { GATES, TRANSCRIPT, STAMP, guardBrokenPipe, summaryText, tail };
 
 if (require.main === module) {
   guardBrokenPipe(process.stdout);

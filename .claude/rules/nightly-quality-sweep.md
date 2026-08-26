@@ -27,15 +27,19 @@ sat a day unbuilt that way (2026-07-29). Process-vs-dist reads the build the RUN
 ## 2. `npm run typecheck && npm run test:gates --prefix server` — health does NOT run the gates
 health greps dist symbols only, so a green one can sit on top of crash-broken gates (a missing
 `StubAccounts.setSpreadUsage` once slipped past a "13/13 green" claim). `test:gates` (`scripts/run-gates.cjs`)
-runs every registered FREE gate in ~90s (don't hardcode the count) and exits non-zero on any failure — stubs
-+ a throwaway git repo, no `claude` subprocess, no quota. Once, at the end; never gate by gate.
+runs every registered FREE gate and exits non-zero on any failure — stubs + a throwaway git repo, no `claude`
+subprocess, no quota, ~5min. Once, at the end; never gate by gate, and don't hardcode the count.
 `test:gate-registration` checks the suite is itself complete: a `test:*` script missing from `GATES`, or a
 `src/tests` file with no script at all, is a failure; `test:gates-driver` pins the runner itself.
-It now runs ~5min (two real-git gates), so **background it RAW and watch
-`server/data/gates-last.log`** — the terminal only carries one line per gate, that transcript carries what
-each one printed, and it grows live so `tail -20` names the gate in flight. Never background it through
-`| tail`: the pipe emits nothing until exit, so the output file stays EMPTY for the whole run and a slow
-gate is indistinguishable from a wedged one (paid for twice — 08-12 and 08-17).
+**Background it RAW and watch `server/data/gates-last.log`** — the terminal carries one line per gate, that
+transcript carries what each printed, and it grows live so `tail -20` names the gate in flight; block on
+`=== summary ===`, its one terminal marker. Never background it through `| tail`: the pipe emits nothing
+until exit, so the file stays EMPTY all run and a slow gate looks wedged (paid for twice — 08-12, 08-17).
+**A green EXPIRES — `npm run probe:gates --prefix server` says if the last still holds.** A finished run
+stamps `gates-last.json` (commit, dirty files, a fingerprint of the runner) only on reaching that summary, so
+an absent stamp means interrupted, not failed. STALE once code, gate code, or **the runner** moved since: a
+fix inside `run-gates.cjs` changes the gate LIST as well as the spawn, so the prior green describes a
+different suite — 08-26 shipped two such commits and caught it by hand. Gate: `test:gates-provenance`.
 
 ## 3. `npm run probe:run-errors --prefix server` — triage the non-done runs (`-- 168` for 7 days)
 `health`'s `runs 24h: { error: 10 }` is a COUNT, and most non-done runs are expected: a turn-ceiling cutoff,
