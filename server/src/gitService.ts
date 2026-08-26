@@ -23,6 +23,11 @@ export interface GitResult {
   code: number | null;
   stdout: string;
   stderr: string;
+  /** We killed this run at its deadline — it is not a git failure, and its output is not a git verdict.
+   *  What was captured is whatever git had already printed, which for a half-done WRITE reads as
+   *  success ("Switched to branch 'x'"), so a caller reporting that text as the error tells the operator
+   *  the op failed in git's own words for having worked. Callers must branch on this before quoting. */
+  timedOut: boolean;
 }
 
 /** Run git in `cwd`, resolving with its exit code + captured output (never rejects). Mirrors update.ts's
@@ -34,12 +39,14 @@ export function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS):
   return new Promise((resolveP) => {
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
     const child = spawn("git", ["--no-pager", ...args], {
       cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
       windowsHide: true,
     });
     const timer = setTimeout(() => {
+      timedOut = true;
       try {
         child.kill();
       } catch {
@@ -55,11 +62,11 @@ export function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS):
     child.stderr.on("data", (c: string) => (stderr += c));
     child.on("error", (e) => {
       clearTimeout(timer);
-      resolveP({ code: -1, stdout, stderr: stderr + String((e as Error).message) });
+      resolveP({ code: -1, stdout, stderr: stderr + String((e as Error).message), timedOut });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolveP({ code, stdout, stderr });
+      resolveP({ code, stdout, stderr, timedOut });
     });
   });
 }

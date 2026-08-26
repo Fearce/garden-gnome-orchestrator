@@ -36,6 +36,11 @@ import {
  *  read. Long enough for a slow first fetch on a big repo; short enough that a hung credential prompt
  *  (which GIT_TERMINAL_PROMPT=0 should already prevent) still ends in an error rather than a dead panel. */
 const NET_TIMEOUT_MS = 120_000;
+/** Writes that rewrite the WORKING TREE (checkout, add, restore, clean) do work proportional to the repo
+ *  and the machine's load, not to a ref lookup, so they don't belong on the timeout the metadata reads
+ *  share. The asymmetry sets the size: too long only leaves the panel waiting, while too short kills a
+ *  run git has already half-done — reporting the success it printed on the way as the failure reason. */
+const TREE_TIMEOUT_MS = 120_000;
 /** How many commits the console's History tab shows. Deeper than the task drawer's 20 — this is the
  *  repo's own history, which is the thing you actually scroll. */
 const REPO_LOG_LIMIT = 50;
@@ -203,11 +208,22 @@ function fail(message: string): RepoActionResult {
   return { ok: false, message };
 }
 
+/** The message for a run that did NOT succeed. Git's own words are the trustworthy ones — except when we
+ *  killed the run at its deadline, where they aren't git's verdict at all but whatever it had printed on
+ *  the way, which for a half-done write reads as success. Quoting that would tell the operator the op
+ *  failed and then hand them "Switched to branch 'x'" as the reason. Exported for its unit coverage:
+ *  the branch that must NOT echo git is the whole point, and it is invisible from the outside. */
+export function failureText(r: GitResult, fallback: string): string {
+  if (r.timedOut) {
+    return "Timed out waiting for git — the machine may be busy. It may have finished anyway, so re-read the repo before retrying.";
+  }
+  return gitText(r) || fallback;
+}
+
 /** Wrap a git run into a result, using git's own message either way. */
 function resultOf(r: GitResult, okFallback: string): RepoActionResult {
-  const text = gitText(r);
-  if (r.code === 0) return { ok: true, message: text || okFallback };
-  return fail(text || `git exited ${r.code ?? "?"}`);
+  if (r.code === 0) return { ok: true, message: gitText(r) || okFallback };
+  return fail(failureText(r, `git exited ${r.code ?? "?"}`));
 }
 
 async function currentBranch(root: string): Promise<{ branch: string | null; detached: boolean }> {
@@ -462,7 +478,7 @@ async function doPull(root: string, rebase: boolean): Promise<RepoActionResult> 
   // explicit second button for when the branches have diverged.
   const r = await runGit(root, rebase ? ["pull", "--rebase"] : ["pull", "--ff-only"], NET_TIMEOUT_MS);
   if (r.code === 0) return { ok: true, message: gitText(r) || "Already up to date." };
-  const text = gitText(r);
+  const text = failureText(r, "git pull failed");
   const diverged = /not possible to fast-forward|diverging|Need to specify how to reconcile/i.test(text);
   return fail(diverged && !rebase ? `${text} — your branch has diverged from ${upstream}; use Pull (rebase) to replay your commits on top.` : text);
 }
@@ -497,12 +513,12 @@ async function doCheckout(root: string, branch: string, create: boolean, from?: 
     if (await localBranchExists(root, branch)) return fail(`A branch named "${branch}" already exists.`);
     const start = from && from !== "" ? from : null;
     if (start && !(await refExists(root, start))) return fail(`No ref "${start}" to branch from.`);
-    const r = await runGit(root, start ? ["checkout", "-b", branch, start] : ["checkout", "-b", branch]);
+    const r = await runGit(root, start ? ["checkout", "-b", branch, start] : ["checkout", "-b", branch], TREE_TIMEOUT_MS);
     return resultOf(r, `Created and switched to ${branch}.`);
   }
 
   if (await localBranchExists(root, branch)) {
-    const r = await runGit(root, ["checkout", branch]);
+    const r = await runGit(root, ["checkout", branch], TREE_TIMEOUT_MS);
     return resultOf(r, `Switched to ${branch}.`);
   }
 
@@ -515,7 +531,7 @@ async function doCheckout(root: string, branch: string, create: boolean, from?: 
     if (await localBranchExists(root, local)) {
       return fail(`A local branch "${local}" already exists — switch to it instead of re-tracking ${branch}.`);
     }
-    const r = await runGit(root, ["checkout", "-b", local, "--track", branch]);
+    const r = await runGit(root, ["checkout", "-b", local, "--track", branch], TREE_TIMEOUT_MS);
     return resultOf(r, `Checked out ${local} tracking ${branch}.`);
   }
   return fail(`No branch "${branch}" in this repository.`);
@@ -529,7 +545,7 @@ async function doDeleteBranch(root: string, branch: string, force: boolean): Pro
 
   const r = await runGit(root, ["branch", force ? "-D" : "-d", branch]);
   if (r.code === 0) return { ok: true, message: gitText(r) || `Deleted ${branch}.` };
-  const text = gitText(r);
+  const text = failureText(r, "git branch failed");
   return fail(/not fully merged/i.test(text) ? `${text} — use Delete (force) if you're sure.` : text);
 }
 
@@ -544,8 +560,8 @@ async function doCommit(root: string, summary: string, description: string, path
   if (bad !== undefined) return fail(`"${bad}" isn't a valid path in this repository.`);
   if (paths.length === 0) return fail("Select at least one file to commit.");
 
-  const add = await runGit(root, ["add", "-A", "--", ...paths]);
-  if (add.code !== 0) return fail(gitText(add) || "git add failed");
+  const add = await runGit(root, ["add", "-A", "--", ...paths], TREE_TIMEOUT_MS);
+  if (add.code !== 0) return fail(failureText(add, "git add failed"));
 
   const args = ["commit", "-m", subject];
   const body = description.trim();
@@ -556,7 +572,7 @@ async function doCommit(root: string, summary: string, description: string, path
     const head = okOut(await runGit(root, ["rev-parse", "--short", "HEAD"]));
     return { ok: true, message: `Committed ${paths.length} file${paths.length === 1 ? "" : "s"}${head ? ` as ${head}` : ""} — ${subject}` };
   }
-  return fail(gitText(r) || "git commit failed");
+  return fail(failureText(r, "git commit failed"));
 }
 
 /** Throw away local changes to the given files: tracked ones go back to HEAD (index and working tree
@@ -573,12 +589,12 @@ async function doDiscard(root: string, paths: string[]): Promise<RepoActionResul
   const tracked = paths.filter((p) => !untrackedSet.has(p));
 
   if (tracked.length > 0) {
-    const r = await runGit(root, ["restore", "--source=HEAD", "--staged", "--worktree", "--", ...tracked]);
-    if (r.code !== 0) return fail(gitText(r) || "git restore failed");
+    const r = await runGit(root, ["restore", "--source=HEAD", "--staged", "--worktree", "--", ...tracked], TREE_TIMEOUT_MS);
+    if (r.code !== 0) return fail(failureText(r, "git restore failed"));
   }
   if (untracked.length > 0) {
-    const r = await runGit(root, ["clean", "-f", "-d", "--", ...untracked]);
-    if (r.code !== 0) return fail(gitText(r) || "git clean failed");
+    const r = await runGit(root, ["clean", "-f", "-d", "--", ...untracked], TREE_TIMEOUT_MS);
+    if (r.code !== 0) return fail(failureText(r, "git clean failed"));
   }
   return { ok: true, message: `Discarded changes in ${paths.length} file${paths.length === 1 ? "" : "s"}.` };
 }

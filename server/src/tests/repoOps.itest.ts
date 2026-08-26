@@ -20,18 +20,21 @@
  *   H. DISCARD    — a tracked edit reverts to HEAD, an untracked file is removed, others are untouched.
  *   I. VALIDATION — flag-shaped/traversing branch names and paths are rejected before git ever runs.
  *   J. COMMIT LOG — a commit's detail + its per-file diff; a merge commit says it's a merge.
+ *   M. SLOW GIT   — a working-tree write outlives the metadata-read budget, and a run we killed at its
+ *                   deadline is reported as a timeout instead of in the words git printed on the way.
  *
  * Run:  npm run test:repo-ops   (from server/)   — or:  npx tsx src/tests/repoOps.itest.ts
  * Exits non-zero if any assertion fails. Self-contained: builds throwaway repos in a temp dir, removes them.
  */
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { getRepoState, getCommitDetail, getCommitFileDiff, runRepoAction, remoteWebUrl, validRefName, validRepoPath } =
+const { getRepoState, getCommitDetail, getCommitFileDiff, runRepoAction, remoteWebUrl, failureText, validRefName, validRepoPath } =
   await import("../git/repoOps.js");
+const { runGit } = await import("../gitService.js");
 const { discoverRepos } = await import("../git/discoverRepos.js");
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
@@ -482,6 +485,47 @@ try {
     git(work, "remote", "set-url", "origin", "git@github.com:Fearce/sample.git");
     const s = await getRepoState(work);
     check("getRepoState exposes the link for the current branch", s.webUrl === "https://github.com/Fearce/sample/tree/master", String(s.webUrl));
+  }
+
+  // ---- M. slow git ----------------------------------------------------------------------------------
+  // The 2026-08-26 sweep went red here with "✗ switch to an existing branch succeeds — Switched to
+  // branch 'feature/x'" — git's own SUCCESS line delivered as the failure reason, with "✓ HEAD moved"
+  // passing right after it. A checkout was inheriting the metadata-read timeout, and on a box where a
+  // trivial one measured 19–57s it got killed after doing the work. Both halves are pinned here.
+  console.log("\nM. slow git — a working-tree write outlives the read budget; a killed run says so");
+  {
+    // `hash-object --stdin` blocks on a stdin that is piped and never written to, so this is a git that
+    // genuinely hangs rather than a contrived one.
+    const { work } = setupClone(root, "timeout");
+    const killed = await runGit(work, ["hash-object", "--stdin"], 300);
+    check("a run we killed at its deadline is flagged timedOut", killed.timedOut === true, String(killed.timedOut));
+    check("...and did not exit 0, so no caller reads it as success", killed.code !== 0, String(killed.code));
+
+    const finished = await runGit(work, ["rev-parse", "HEAD"]);
+    check("a run that finished in time is not flagged", finished.timedOut === false && finished.code === 0);
+
+    // The exact production shape: git had already printed its success line when we killed it.
+    const halfDone = { code: null, stdout: "", stderr: "Switched to branch 'feature/x'\n", timedOut: true };
+    const text = failureText(halfDone, "fallback");
+    check("a timed-out failure does not quote git's success line", !text.includes("Switched to branch"), text);
+    check("...and says it timed out instead", /timed out/i.test(text), text);
+    check(
+      "a REAL failure is still reported in git's own words",
+      failureText({ code: 1, stdout: "", stderr: "error: pathspec 'nope' did not match\n", timedOut: false }, "fallback") ===
+        "error: pathspec 'nope' did not match",
+    );
+
+    // Behavioural half: a post-checkout hook that outlives the read budget. Under the old budget git is
+    // killed after switching — ok:false carrying "Switched to branch…" — which is the bug above.
+    const { work: slow } = setupClone(root, "slow-checkout");
+    git(slow, "branch", "feature/slow");
+    const hook = join(slow, ".git", "hooks", "post-checkout");
+    writeFileSync(hook, "#!/bin/sh\nsleep 16\n");
+    chmodSync(hook, 0o755);
+
+    const sw = await runRepoAction(slow, { action: "checkout", branch: "feature/slow", create: false });
+    check("a checkout slower than the read budget still succeeds", sw.ok, sw.message);
+    check("...and actually moved HEAD", head(slow) === "feature/slow", head(slow));
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
