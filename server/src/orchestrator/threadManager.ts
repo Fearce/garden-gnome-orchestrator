@@ -1608,11 +1608,17 @@ export class ThreadManager implements OrchestratorApi {
    *  the legacy `setting_grok_model` kv (migration fallback), then the built-in default. Never inherits a
    *  Claude/Codex default — those model ids are invalid for the Grok CLI. */
   private grokModel(): string {
-    return (
-      this.modelOverrides()[GROK_SUB_ID]?.implementor?.trim() ||
-      this.db.kvGet("setting_grok_model")?.trim() ||
-      config.grok.defaultModel
-    );
+    const configured = this.modelOverrides()[GROK_SUB_ID]?.implementor?.trim() || this.db.kvGet("setting_grok_model")?.trim();
+    // A fresh login can expose a newer Grok model before the next release updates our curated fallback.
+    // Prefer the CLI's cached default when the operator has not deliberately picked one.
+    return configured || this.modelCatalog.grokModels()[0] || config.grok.defaultModel;
+  }
+
+  /** Preserve a manual model selection in Settings, but don't dispatch it after the authenticated CLI cache
+   * confirms that this login can no longer use it. A missing cache remains permissive for first login. */
+  private grokModelAvailable(): boolean {
+    const available = this.modelCatalog.grokModels();
+    return available.length === 0 || available.includes(this.grokModel());
   }
 
   /** The Grok CLI reasoning-effort override (low/medium/high; the model default is high). */
@@ -1987,6 +1993,7 @@ export class ThreadManager implements OrchestratorApi {
   private grokImplementorReady(): boolean {
     if (!this.settings().grokEnabled) return false;
     if (!grokAuthAvailable()) return false;
+    if (!this.grokModelAvailable()) return false;
     return !this.grokCapActive();
   }
 
@@ -2161,6 +2168,7 @@ export class ThreadManager implements OrchestratorApi {
         return { error: "Grok is enabled but has no usable auth: no `grok login` was found (~/.grok/auth.json) and no XAI_API_KEY is set. Run `grok login` (or `grok login --device-auth` on a headless box), or turn Grok off to use Claude." };
       }
       if (this.grokCapActive()) this.hub.log("info", "Grok is usage-capped — excluding it from this dispatch until it frees up.");
+      else if (!this.grokModelAvailable()) this.hub.log("warn", `Grok model ${this.grokModel()} is unavailable to this login; excluding Grok until the model selection is updated.`);
       else candidates.push(this.grokProviderCandidate());
     }
 

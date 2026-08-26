@@ -199,10 +199,10 @@ export const config = {
   // stay Claude by default (the Grok CLI has no in-process MCP bus tools).
   grok: {
     // First-boot default + the models the Subscriptions selector suggests. Free-text; a SuperGrok login
-    // today exposes only grok-4.5, but the pickable list unions this with whatever ~/.grok/models_cache.json
+    // today exposes grok-4.6, but the pickable list unions this with whatever ~/.grok/models_cache.json
     // reports live, so a newly-granted model shows up on its own. Override the default with GROK_MODEL.
-    defaultModel: process.env.GROK_MODEL?.trim() || "grok-4.5",
-    models: ["grok-4.5"] as const,
+    defaultModel: process.env.GROK_MODEL?.trim() || "grok-4.6",
+    models: ["grok-4.6"] as const,
     // The Grok CLI is a native executable (no node shim). Spawned by absolute path so it's PATH-independent.
     // Override GROK_BIN to point at a different install.
     bin:

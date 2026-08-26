@@ -249,6 +249,12 @@ async function main(): Promise<void> {
   {
     const h = makeHarness();
     try {
+      h.db.kvSet("cache_grok_models", JSON.stringify(["grok-4.6"]));
+      h.db.kvSet("setting_grok_model", "grok-4.5");
+      check("a CLI-cache-rejected Grok model is not ready", h.internals.grokModelAvailable() === false, String(h.internals.grokModelAvailable()));
+      h.db.kvSet("setting_grok_model", "");
+      check("an unpinned Grok selection follows the cached live model", h.internals.grokModel() === "grok-4.6", String(h.internals.grokModel()));
+
       const id = h.seed();
       h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: HAIKU, effort: "low", reason: "r" } });
       check("its own backend gets the model", h.internals.pickedModel(id, "claude") === HAIKU, String(h.internals.pickedModel(id, "claude")));
