@@ -82,9 +82,13 @@ a log line (a newline in a joining instance's name could forge container-log ent
 
 - **The join code is the whole boundary.** A member may name *any* repo room and receive its presence and
   chat; rooms separate strangers, not members. That is the right trade for a small invited office, but it
-  means "Mikkel is in the office" and "Mikkel could read any room he names" are the same statement.
+  means "Mikkel is in the office" and "Mikkel could read any room he names" are the same statement. The
+  owner view today lists rooms for `votaorg/vota-ios` and `Fearce/bobfish` alongside the shared ones, so
+  the rooms carry coordination chatter about private work, not only about the repo everyone shares.
   Rotating the code locks out new joins without disturbing anyone already in; revoking a device is
-  `DELETE /api/members/<id>`.
+  `DELETE /api/members/<id>`. If that separation ever needs to be real rather than social, the change is
+  to prove a checkout rather than accept a named room — which forks make genuinely hard, and which
+  nothing today needs.
 - **A joined device token lasts 180 days of silence** and slides forward on every connect, so a machine in
   regular use never re-authenticates. If a joined laptop is lost, revoke it — expiry will not do it for you.
 - **Chat bodies sit in a docker volume** on the Sprogbroen box. Root on that host can read them.
@@ -97,5 +101,19 @@ a log line (a newline in a joining instance's name could forge container-log ent
 `npm run test:relay-access --prefix server` — free, registered in the gate suite. Pure units for address
 attribution, the throttle's budget and memory bound, and owner sessions; then it **boots the real
 `src/index.ts`** on a loopback port and drives it, because which guard sits on which route is wiring that
-pure units cannot see. Each of the three headline fixes was revert-checked: removed, watched fail with an
-assertion naming the defect, restored byte-identically.
+pure units cannot see. It also holds a real WebSocket open past the new 15-second `requestTimeout`, which
+is the one way this change could have broken the live office. Each of the three headline fixes was
+revert-checked: removed, watched fail with an assertion naming the defect, restored byte-identically.
+
+Confirmed against the deployed relay after shipping: the security headers are present, anonymous
+`/api/health` no longer carries the member count while the owner's does, `/admin` without a key still
+degrades to the public page, eleven wrong join codes with a different spoofed address each still land in
+one bucket and throttle at the eleventh, and a session cookie is refused for `DELETE /api/members/:id`.
+The `?key=` → cookie → bare `/admin` flow was driven in a real browser from a clean profile, because
+`SameSite=Strict` failing on a direct navigation would have looked exactly like being logged straight
+back out on the phone; it holds, and the cookie is not readable from script.
+
+One cosmetic artifact: `Referrer-Policy` and `X-Content-Type-Options` now appear **twice** on responses,
+because Caddy adds its own copies of headers the relay also sets. Both are identical values and both
+parse correctly (the first token wins for `nosniff`, the last valid one for `Referrer-Policy`), and
+dropping them here would leave a relay deployed behind anything other than this Caddy without them.
