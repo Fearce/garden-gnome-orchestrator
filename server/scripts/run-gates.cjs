@@ -66,6 +66,7 @@ const GATES = [
   "test:relay-access",
   "test:zai-usage",
   "test:zai-cap",
+  "test:free-providers",
   "test:structured",
   "test:effort",
   "test:reader",

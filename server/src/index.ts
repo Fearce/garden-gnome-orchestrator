@@ -27,6 +27,8 @@ import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
 import { refreshStatus, getStatus, applyUpdate, startUpdatePoll } from "./update.js";
 import { registerWs } from "./ws/hub.js";
+import { FreeProviderService } from "./freeProviders/service.js";
+import { registerFreeProviderRoutes } from "./freeProviders/routes.js";
 import { randomUUID } from "node:crypto";
 import {
   isAuthed,
@@ -75,6 +77,7 @@ function webBundleVersion(): string | null {
 
 async function main(): Promise<void> {
   const db = new Db(config.dbPath);
+  const freeProviders = new FreeProviderService(db);
   const hub = new EventHub();
   const memory = new FileMemoryService();
   // One shared 5h-reset coordinator across every participant — the Claude subs AND Codex — so idle
@@ -142,6 +145,7 @@ async function main(): Promise<void> {
   // Live pickable-model lists for the Settings dropdowns — needs a subscription token, so start it after
   // the account manager. Boot-fetches from the provider models endpoints, then refreshes on a slow timer.
   manager.startModelCatalog();
+  freeProviders.start();
   startWebAutoBuild();
   // Poll git for new upstream commits so the console can surface a quiet "update available" badge.
   startUpdatePoll();
@@ -201,6 +205,7 @@ async function main(): Promise<void> {
     // default ws payload cap so a few screenshots don't get dropped on send.
     await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
     registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos, onlineOffice });
+    registerFreeProviderRoutes(app, freeProviders, isAuthed);
 
     // `build` is which dist THIS process loaded, read once at boot — the fact that turns "is the live
     // server running current code?" into a comparison instead of an inference from mtimes.

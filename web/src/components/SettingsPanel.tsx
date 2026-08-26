@@ -5,6 +5,7 @@ import { CODEX_SUB_ID, EFFORTS, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
 import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
+import { FreeProviders } from "./FreeProviders.js";
 
 /** The gear-icon panel: everything that isn't a per-task agent toggle (those live in the topbar).
  *  A light popover anchored under the topbar with a click-anywhere-outside backdrop to dismiss. */
@@ -174,6 +175,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
         <Group label="Subscriptions">
           <SubscriptionsSection />
+        </Group>
+
+        <Group label="Free AI connections">
+          <FreeProviders />
         </Group>
 
         <Group label="Composer">

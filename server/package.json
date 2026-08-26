@@ -63,6 +63,7 @@
     "test:relay-access": "tsx ../relay/src/access.test.ts",
     "test:zai-usage": "tsx src/tests/zaiUsage.test.ts",
     "test:zai-cap": "tsx src/tests/zaiCapDetect.test.ts",
+    "test:free-providers": "tsx src/tests/freeProviders.test.ts",
     "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",
     "test:qa-budget-scope": "node scripts/qa-budget-scope.test.cjs",
     "test:inject-qa": "tsx src/tests/injectDuringQa.itest.ts",
