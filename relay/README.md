@@ -41,8 +41,8 @@ device still needs an explicit `x-admin-token` header, so the session introduced
 | `POST /api/join` | join code | One-time code → device token. Rate-limited per address. |
 | `GET /ws` | device token | The WebSocket. `Authorization: Bearer …`, never a query parameter (Caddy logs request lines). |
 | `GET /admin`, `GET /admin?key=…` | admin token or session cookie | Who is connected, every joined instance, which rooms have traffic. |
-| `GET /api/members` | admin token or session cookie | List devices. |
-| `DELETE /api/members/:id` | admin token **header/query only** | Revoke a device. |
+| `GET /api/members` | admin token header or session cookie | List devices. |
+| `DELETE /api/members/:id` | admin token **header only** | Revoke a device. |
 
 ## What being public actually exposes
 

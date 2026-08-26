@@ -114,6 +114,7 @@ const HERE = join(fileURLToPath(import.meta.url), "..", "..");
   assert.equal(cookieValue("other=1", ADMIN_COOKIE), "");
   assert.equal(cookieValue(undefined, ADMIN_COOKIE), "");
   assert.equal(cookieValue(`${ADMIN_COOKIE}_other=nope`, ADMIN_COOKIE), "", "a prefix match is not a match");
+  assert.equal(cookieValue(`${ADMIN_COOKIE}=%`, ADMIN_COOKIE), "", "a malformed cookie is just an invalid session, not a thrown URI error");
 
   assert.equal(secretEquals("abc", "abc"), true);
   assert.equal(secretEquals("abc", "abd"), false);
@@ -225,10 +226,14 @@ try {
     const anon = (await (await get("/api/health")).json()) as Record<string, unknown>;
     assert.equal(anon.ok, true);
     assert.equal(anon.members, undefined, "member COUNT is not public — the page deliberately withholds it");
+    assert.equal(anon.uptimeSec, undefined, "the anonymous health response is exactly the same status data as the public page");
     assert.equal(anon.instancesOnline, 0);
 
     const owner = (await (await get("/api/health", { "x-admin-token": ADMIN_TOKEN })).json()) as Record<string, unknown>;
     assert.equal(owner.members, 0, "the owner sees it");
+    assert.equal(typeof owner.uptimeSec, "number", "uptime stays available to the owner without making restarts public");
+    const urlToken = (await (await get(`/api/health?key=${encodeURIComponent(ADMIN_TOKEN)}`)).json()) as Record<string, unknown>;
+    assert.equal(urlToken.members, undefined, "an API query string must not unlock owner data");
   }
 
   // /admin and the member API.
@@ -240,6 +245,7 @@ try {
 
     assert.equal((await get("/api/members")).status, 401);
     assert.equal((await get("/api/members?key=wrong")).status, 401);
+    assert.equal((await get(`/api/members?key=${encodeURIComponent(ADMIN_TOKEN)}`)).status, 401, "API reads never accept a logged URL token");
     assert.equal((await get("/api/members", { "x-admin-token": ADMIN_TOKEN })).status, 200);
     assert.equal((await get("/api/members", { authorization: `Bearer ${ADMIN_TOKEN}` })).status, 200);
   }
@@ -267,12 +273,15 @@ try {
     assert.equal(header.headers.get("set-cookie"), null, "and is handed no session to keep");
 
     assert.equal((await get("/admin", { cookie: `${ADMIN_COOKIE}=forged` })).status, 401);
+    assert.equal((await get("/admin", { cookie: `${ADMIN_COOKIE}=%` })).status, 401, "malformed cookies fail closed without an internal error");
   }
 
   // Revocation stays header-only, so introducing a cookie introduced no CSRF surface.
   {
     const viaCookie = await fetch(`${base}/api/members/whatever`, { method: "DELETE", headers: { cookie } });
     assert.equal(viaCookie.status, 401, "a session cookie must NOT be able to revoke a device");
+    const viaUrl = await fetch(`${base}/api/members/whatever?key=${encodeURIComponent(ADMIN_TOKEN)}`, { method: "DELETE" });
+    assert.equal(viaUrl.status, 401, "a mutation never accepts a logged URL token");
     const viaHeader = await fetch(`${base}/api/members/whatever`, {
       method: "DELETE",
       headers: { "x-admin-token": ADMIN_TOKEN },

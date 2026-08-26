@@ -92,28 +92,31 @@ function statusView(admin: boolean) {
   };
 }
 
-/**
- * Does this request carry the admin key itself? Header (for the API) or `?key=` (so the owner can just
- * open the page on a phone). Disabled outright when no ADMIN_TOKEN is configured — a blank key must
- * never pass.
- */
-function hasAdminKey(req: IncomingMessage, url: URL): boolean {
+/** Does this request carry the admin key in an explicit HTTP header? API credentials must never live in
+ * a URL, which Caddy logs and browsers retain in their history. */
+function hasAdminHeader(req: IncomingMessage): boolean {
   if (!config.adminToken) return false;
   const header = bearer(req) || String(req.headers["x-admin-token"] ?? "");
-  return secretEquals(header, config.adminToken) || secretEquals(url.searchParams.get("key") ?? "", config.adminToken);
+  return secretEquals(header, config.adminToken);
+}
+
+/** `/admin?key=…` is the one deliberate URL-bearing credential: it is immediately exchanged for a
+ * short-lived cookie and redirected to `/admin`. No API route accepts a query-string admin token. */
+function hasAdminPageKey(url: URL): boolean {
+  return Boolean(config.adminToken) && secretEquals(url.searchParams.get("key") ?? "", config.adminToken);
 }
 
 /**
  * Admin access for a READ. The owner-session cookie counts here, so a browser that traded `?key=` for a
  * cookie keeps working without the credential in every subsequent URL.
  *
- * Mutations deliberately do NOT accept it and call `hasAdminKey` directly: a cookie that authorises
+ * Mutations deliberately do NOT accept it and call `hasAdminHeader` directly: a cookie that authorises
  * `DELETE /api/members/:id` would make revocation forgeable from any page the owner happens to visit,
  * and the documented way to revoke is already an explicit `x-admin-token` header.
  */
-function isAdminRead(req: IncomingMessage, url: URL): boolean {
+function isAdminRead(req: IncomingMessage): boolean {
   if (!config.adminToken) return false;
-  return hasAdminKey(req, url) || adminSessions.valid(cookieValue(req.headers.cookie, ADMIN_COOKIE));
+  return hasAdminHeader(req) || adminSessions.valid(cookieValue(req.headers.cookie, ADMIN_COOKIE));
 }
 
 /** `Set-Cookie` for a freshly minted owner session. Host-only, unreadable from script, and not sent on
@@ -140,8 +143,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       instancesOnline: online.length,
       agentsOnline: online.reduce((n, o) => n + o.agents, 0),
       sharedRepos: core.sharedRepos().length,
-      ...(isAdminRead(req, url) ? { members: members.list().length } : {}),
-      uptimeSec: Math.round(process.uptime()),
+      ...(isAdminRead(req) ? { members: members.list().length, uptimeSec: Math.round(process.uptime()) } : {}),
     });
   }
 
@@ -168,7 +170,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (req.method === "DELETE" && path.startsWith("/api/members/")) {
-    if (!hasAdminKey(req, url)) return sendJson(res, 401, { error: "admin key required" });
+    if (!hasAdminHeader(req)) return sendJson(res, 401, { error: "admin key required" });
     const id = path.slice("/api/members/".length);
     const removed = members.remove(id);
     if (removed) console.log(`[relay] revoked member ${id}`);
@@ -176,7 +178,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (req.method === "GET" && path === "/api/members") {
-    if (!isAdminRead(req, url)) return sendJson(res, 401, { error: "admin key required" });
+    if (!isAdminRead(req)) return sendJson(res, 401, { error: "admin key required" });
     return sendJson(res, 200, { members: members.list(), online: core.online() });
   }
 
@@ -184,13 +186,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     // A key in the URL is traded once for a session cookie and redirected away, so it stops appearing in
     // the address bar, the browser's history and every subsequent proxy log line. A curl with the header
     // is answered directly — no redirect, no cookie to keep.
-    if (config.adminToken && url.searchParams.has("key") && hasAdminKey(req, url)) {
+    if (config.adminToken && url.searchParams.has("key") && hasAdminPageKey(url)) {
       return send(res, 303, "text/plain; charset=utf-8", "", {
         location: "/admin",
         "set-cookie": adminCookieHeader(adminSessions.mint()),
       });
     }
-    if (!isAdminRead(req, url)) return sendHtml(res, 401, publicPage(statusView(false)));
+    if (!isAdminRead(req)) return sendHtml(res, 401, publicPage(statusView(false)));
     return sendHtml(res, 200, adminPage(statusView(true)));
   }
 

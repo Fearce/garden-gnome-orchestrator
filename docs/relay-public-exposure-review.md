@@ -9,10 +9,10 @@ this repository) and four hardening gaps, all fixed here. Reviewed 2026-08-26 ag
 
 ## What "public" actually means here
 
-`GET /` and `GET /api/health` answer anyone. Both render the same three counts — instances online,
+`GET /` and `GET /api/health` answer anyone. Both expose the same three counts — instances online,
 agents working, shared repos — plus the office's display name, and the page carries `noindex`. No member
-names, no repository names, no task titles, no message bodies. That is a deliberate design, stated in
-`status.ts`'s own comment, and the code matches the comment.
+names, repository names, task titles, message bodies, or restart uptime are public. That is a deliberate
+design, stated in `status.ts`'s own comment, and the code matches the comment.
 
 Everything else is gated:
 
@@ -69,7 +69,9 @@ credential is a logged credential, and then `isAdmin` accepted `?key=`. Caddy lo
 the browser keeps it in history. `/admin?key=…` now trades the key **once** for a 12-hour
 `HttpOnly; Secure; SameSite=Strict` session cookie and redirects to the bare `/admin`. The cookie
 authorises reads only — revoking a device still needs an explicit header — so the session added no CSRF
-surface. `curl` with `x-admin-token` is answered directly, as documented.
+surface. That URL form is accepted only on `/admin`; every API read or mutation requires an explicit
+admin header (or, for reads, the session cookie). `curl` with `x-admin-token` is answered directly, as
+documented.
 
 **4. No CSP, and Node's default timeouts.** The pages are server-rendered with one inline `<style>` and
 no script, image or form, so the policy can deny everything else; `frame-ancestors 'none'` also makes the

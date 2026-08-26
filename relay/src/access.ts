@@ -166,7 +166,13 @@ export function cookieValue(header: string | undefined, name: string): string {
     const eq = part.indexOf("=");
     if (eq < 0) continue;
     if (part.slice(0, eq).trim() !== name) continue;
-    return decodeURIComponent(part.slice(eq + 1).trim());
+    // A Cookie header is entirely caller-controlled. A malformed percent escape must be an invalid
+    // session, not an exception that turns an anonymous request into a 500 (and a log-flood vector).
+    try {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    } catch {
+      continue;
+    }
   }
   return "";
 }
