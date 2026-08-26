@@ -55,6 +55,7 @@ const GATES = [
   "test:crashlog-scan",
   "test:process-build",
   "test:background-startup",
+  "test:usage-ping",
   "test:failover-ladder",
   "test:provider-serves-role",
   "test:park-classify",

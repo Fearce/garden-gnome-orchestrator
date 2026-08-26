@@ -1010,6 +1010,8 @@ function pingErrorMessage(reason: PingFailReason): string {
       return "token rejected — re-run 'claude setup-token'";
     case "network":
       return "usage read failed (network)";
+    case "timeout":
+      return "usage read timed out — host busy";
   }
 }
 

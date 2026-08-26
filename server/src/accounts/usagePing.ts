@@ -20,15 +20,31 @@ export interface PingUsage {
  *  - `no-token`: no OAuth token configured (empty `CLAUDE_CODE_OAUTH_TOKEN`).
  *  - `auth`:     server answered but carried no unified rate-limit headers
  *                (a 401 / rejected token, or a non-subscription account).
- *  - `network`: fetch threw or timed out before any usable response.
+ *  - `network`: fetch threw before any usable response (DNS, TLS, refused connection).
+ *  - `timeout`: the attempt was aborted at `timeoutMs`. Kept apart from `network` because on a
+ *               loaded host it almost always means THIS process was starved of the event loop,
+ *               not that the API is unreachable — and reporting that as "network" sends the next
+ *               investigation at DNS and tokens that turn out to be fine.
  */
-export type PingFailReason = "no-token" | "auth" | "network";
+export type PingFailReason = "no-token" | "auth" | "network" | "timeout";
 
 export type PingResult = { ok: true; usage: PingUsage } | { ok: false; reason: PingFailReason };
 
-/** Fire a minimal Haiku message; read usage from the rate-limit response headers. */
+/**
+ * Fire a minimal Haiku message; read usage from the rate-limit response headers.
+ *
+ * A timed-out attempt is retried once. The orchestrator shares a busy host with the agents it
+ * spawns, so a single ping can be aborted purely by a local stall — and with a ten-minute poll
+ * one miss freezes the meters (and the snapshot other tools read) until the next one.
+ */
 export async function pingUsage(token: string, timeoutMs = 12_000): Promise<PingResult> {
   if (!token) return { ok: false, reason: "no-token" };
+  const first = await attemptPing(token, timeoutMs);
+  if (first.ok || first.reason !== "timeout") return first;
+  return attemptPing(token, timeoutMs);
+}
+
+async function attemptPing(token: string, timeoutMs: number): Promise<PingResult> {
   let res: Response;
   try {
     res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -43,8 +59,8 @@ export async function pingUsage(token: string, timeoutMs = 12_000): Promise<Ping
       body: JSON.stringify({ model: PING_MODEL, max_tokens: 1, messages: [{ role: "user", content: "hi" }] }),
       signal: AbortSignal.timeout(timeoutMs),
     });
-  } catch {
-    return { ok: false, reason: "network" };
+  } catch (err) {
+    return { ok: false, reason: timedOut(err) ? "timeout" : "network" };
   }
   const h = res.headers;
   await res.text().catch(() => ""); // drain so the socket frees
@@ -64,6 +80,12 @@ export async function pingUsage(token: string, timeoutMs = 12_000): Promise<Ping
       sevenDayRejected: h.get("anthropic-ratelimit-unified-7d-status") === "rejected",
     },
   };
+}
+
+/** `AbortSignal.timeout` rejects with a DOMException named TimeoutError; a genuine connection
+ *  failure arrives as a TypeError. `AbortError` is covered too, for a caller-supplied signal. */
+function timedOut(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
 }
 
 function pct(v: string | null): number | null {
