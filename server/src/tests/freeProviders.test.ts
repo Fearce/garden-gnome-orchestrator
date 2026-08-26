@@ -396,6 +396,54 @@ readerHarness.start("What does fixture.ts export?");
 assert.equal((await readerHarness.result())?.isError, false);
 await readerHarness.stop();
 assert.equal(postedFinding, "The answer: fixture.ts exports 42");
+
+// A parallel tool batch that exhausts the read budget mid-way must still answer EVERY tool call.
+// An OpenAI-compatible endpoint rejects an assistant turn whose tool_calls are not all answered
+// (and Gemini requires one functionResponse per functionCall), so dropping the tail poisons the
+// next request rather than ending the turn — the free run would then fail over for a harness bug.
+await writeFile(join(harnessRoot, "big.txt"), `${"x".repeat(120)}\n`.repeat(200), "utf8");
+const budgetRequests: Array<Record<string, unknown>> = [];
+let budgetCall = 0;
+const budgetSession: FreeProviderTaskSession = {
+  target: { providerId: "stub", providerName: "Stub Free", model: "stub-tools" },
+  async complete(request) {
+    budgetRequests.push(structuredClone(request) as Record<string, unknown>);
+    budgetCall++;
+    if (budgetCall === 1) {
+      return {
+        text: "",
+        model: "stub-tools",
+        toolCalls: [
+          { id: "big-1", name: "Read", arguments: JSON.stringify({ file_path: "big.txt", limit: 500 }) },
+          { id: "big-2", name: "Read", arguments: JSON.stringify({ file_path: "big.txt", limit: 500 }) },
+          { id: "big-3", name: "Read", arguments: JSON.stringify({ file_path: "fixture.ts" }) },
+        ],
+        usage: {},
+      };
+    }
+    return { text: "```json\n{\"summary\":\"Budget respected\"}\n```", model: "stub-tools", toolCalls: [], usage: {} };
+  },
+  markHarnessFailure() {},
+  close() {},
+};
+const budgetHarness = new FreeProviderAgentRun(budgetSession, "planner", {
+  model: "stub-tools",
+  cwd: harnessRoot,
+  systemPrompt: "Read a lot, then plan.",
+  outputFormat: { type: "json_schema", schema: PLAN_SCHEMA },
+});
+budgetHarness.start("Read the big file twice and the fixture, then plan.");
+assert.equal((await budgetHarness.result())?.isError, false);
+await budgetHarness.stop();
+const budgetMessages = (budgetRequests[1]?.messages ?? []) as Array<Record<string, unknown>>;
+const declaredCallIds = budgetMessages
+  .filter((message) => message.role === "assistant" && Array.isArray(message.toolCalls))
+  .flatMap((message) => (message.toolCalls as Array<{ id: string }>).map((call) => call.id));
+const answeredCallIds = budgetMessages.filter((message) => message.role === "tool").map((message) => String(message.toolCallId));
+assert.deepEqual(declaredCallIds, ["big-1", "big-2", "big-3"], "the stub issued a three-call parallel batch");
+assert.deepEqual(answeredCallIds, declaredCallIds, "every declared tool_call id is answered once the read budget is spent");
+assert.match(String(budgetMessages.at(-1)?.content), /read context budget is full/i);
+
 await rm(harnessRoot, { recursive: true, force: true });
 await rm(outsideFile, { force: true });
 

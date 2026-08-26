@@ -31,6 +31,7 @@ const MAX_READ_BYTES = 2 * 1024 * 1024;
 // contracts and lets several bounded turns fit inside the smallest verified free token window.
 const MAX_OUTPUT_TOKENS = 1_024;
 const STRUCTURED_RETRIES = 2;
+const BUDGET_SPENT_TOOL_RESULT = "The read context budget for this turn is exhausted, so this tool was not run. Return your final structured result now.";
 
 type FindingSeverity = "info" | "note" | "warning" | "critical";
 
@@ -405,20 +406,29 @@ export class FreeProviderAgentRun implements AgentRunLike {
           }
           this.messages.push({ role: "assistant", content: completion.text, toolCalls: completion.toolCalls });
           if (completion.text.trim()) this.emit({ type: "thinking", text: completion.text.trim() });
+          // EVERY tool call in this assistant turn must get a result message, even once the read
+          // budget is spent: an OpenAI-compatible endpoint rejects an assistant turn whose
+          // `tool_calls` are not all answered, and Gemini requires one `functionResponse` per
+          // `functionCall`. Abandoning the tail of a parallel batch therefore poisons the next
+          // request instead of ending the turn, so a spent budget refuses the remaining calls
+          // rather than dropping them.
+          let budgetSpent = false;
           for (const call of completion.toolCalls) {
             toolCalls++;
             const parsed = this.parseArguments(call.arguments);
             this.emit({ type: "tool_use", id: call.id, name: call.name, input: parsed });
-            const result = await this.executeTool(root, call.name, parsed);
+            const result = budgetSpent
+              ? { content: BUDGET_SPENT_TOOL_RESULT, isError: true }
+              : await this.executeTool(root, call.name, parsed);
             const remaining = Math.max(0, MAX_TOOL_CONTEXT_CHARS - toolContextChars);
-            const bounded = truncate(result.content, Math.min(MAX_TOOL_RESULT_CHARS, remaining));
+            const bounded = budgetSpent ? result.content : truncate(result.content, Math.min(MAX_TOOL_RESULT_CHARS, remaining));
             toolContextChars += bounded.length;
             this.emit({ type: "tool_result", id: call.id, content: bounded, isError: result.isError });
             this.messages.push({ role: "tool", content: bounded, toolCallId: call.id, toolName: call.name });
-            if (toolContextChars >= MAX_TOOL_CONTEXT_CHARS) {
-              this.messages.push({ role: "user", content: "The read context budget is full. Stop calling tools and return your final structured result now." });
-              break;
-            }
+            if (toolContextChars >= MAX_TOOL_CONTEXT_CHARS) budgetSpent = true;
+          }
+          if (budgetSpent) {
+            this.messages.push({ role: "user", content: "The read context budget is full. Stop calling tools and return your final structured result now." });
           }
           continue;
         }
