@@ -69,7 +69,7 @@ function loadChromium() {
       /* try the next candidate */
     }
   }
-  const root = execFileSync("npm", ["root", "-g"], { shell: true }).toString().trim();
+  const root = execFileSync("npm", ["root", "-g"], { shell: true, windowsHide: true }).toString().trim();
   return require(path.join(root, "playwright")).chromium;
 }
 
@@ -136,7 +136,7 @@ function killInstance(port) {
         "-Command",
         `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -Expand OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force }`,
       ],
-      { stdio: "ignore" },
+      { stdio: "ignore", windowsHide: true },
     );
   } catch {
     /* already gone */
