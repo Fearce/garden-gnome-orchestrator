@@ -4773,6 +4773,9 @@ export class ThreadManager implements OrchestratorApi {
   async resumeThread(threadId: string, message?: string): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    // A restart's deferred auto-resume can fire after an operator has cancelled the task. Cancellation
+    // is terminal until an explicit Retry, so never let that stale timer resurrect autonomous work.
+    if (thread.state === "cancelled") return { ok: false, error: "Task is cancelled. Retry it to start again." };
     if (!existsSync(thread.workspace)) {
       this.setState(threadId, "failed", `Can't resume — workspace "${thread.workspace}" does not exist. Re-dispatch this task with a valid path.`);
       return { ok: false, error: `Workspace "${thread.workspace}" does not exist.` };
