@@ -19,6 +19,7 @@ stale, correct it in place and update its row.
 | What happens on a **token freeze** mid-task? | **Rate-limit/usage-cap handling is robust and self-healing** (4-signal detection → account failover → cap-park → 120 s auto-resume). **529 is deliberately left to the SDK.** Context-window-exceeded is the one real gap — see Open below. | [`../TOKEN_FREEZE_FINDINGS.md`](../TOKEN_FREEZE_FINDINGS.md) |
 | Does **freeze → reset → auto-resume** actually work end-to-end? | **Yes, proven.** 26/26 assertions against the real `ThreadManager`, with a negative control that fails if resume regresses to a cold restart. No bug existed; it had just never been exercised. | [`token-freeze-resume-test.md`](token-freeze-resume-test.md) · `npm run test:token-freeze` |
 | Why did **thread history disappear** in the feed? | **Two symptoms, one root cause (fixed); the third was not a bug.** | [`diagnosis-thread-history.md`](diagnosis-thread-history.md) |
+| Subscribe to **Alibaba Cloud** and add **Qwen 3.8**? | **Split answer: no to Qwen 3.8, yes to the subscription.** `qwen3.8-max` is *not* on the $50/mo Coding Plan — it's pay-as-you-go, so the DeepSeek verdict applies to it. The flat plan itself is worth buying for a different reason: **Codex and Grok can never serve `MCP_DEPENDENT_ROLES`**, so an Anthropic-compatible backend is the only second rung for reader/auto-review — and today's one is a z.ai **Lite** at 100% weekly. Build on the `ZaiAgentRun` seam; the real cost is that Alibaba publishes **no quota API**. | [`qwen-alibaba-integration-analysis.md`](qwen-alibaba-integration-analysis.md) |
 | Is it safe that **`office.sprogbroen.dk` is fully public**? | **Yes — being reachable was never the risk.** Anonymous callers get three counts; every surface naming a person, repo or message is behind a 190-bit admin key or a 256-bit device token. The real defect was the *deploy path*: a fresh host started an office whose join code is published in this repo. Fixed, with four hardening gaps. | [`relay-public-exposure-review.md`](relay-public-exposure-review.md) · `npm run test:relay-access` |
 
 ## Genuinely still open
@@ -37,6 +38,12 @@ prevent, so it's stated once, here.
   condition — if the tool bridge doesn't work cleanly, abandon it.
 - **DeepSeek as the anti-park bottom rung.** Conditionally recommended, not built, and only worth it
   if capping out *every* sub simultaneously is actually common.
+- **An Alibaba Coding Plan backend as the second MCP-capable rung.** Recommended, not built — blocked on
+  Kevin subscribing, and on the ~$1 pay-as-you-go test that proves MCP tool use survives the
+  Anthropic-compatible endpoint (if it doesn't, the recommendation flips to no).
+  `qwen-alibaba-integration-analysis.md` §5-6 has the touch list and the two traps: `buildEnv`'s
+  hardcoded `"zai"`/`config.zai.timeoutMs`, and the absent quota API that forces a **local** invocation
+  counter where z.ai has `usageUrl`.
 
 ## Adding a row
 
