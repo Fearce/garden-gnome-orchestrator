@@ -787,14 +787,26 @@ function DirectorSearchResults({
   const threads = useStore((s) => s.threads);
   const count = results.length;
   const empty = count === 0 && tasks.length === 0;
+  // Mirrors Db.conversationPlan: a query shorter than a trigram can't be indexed and matches nearly
+  // every task anyway, so the server searches titles and briefs only. Say that rather than quietly
+  // returning less — the whole point of searching conversations is that people rely on it.
+  const titlesOnly = [...query].length < CONVERSATION_MIN_CHARS;
   return (
     <div className="ds-results" role="region" aria-label="Search results">
       <div className="ds-status mono">
         {searching && empty ? "Searching…" : `${resultTally(tasks.length, count)} for “${query}”`}
       </div>
+      {titlesOnly && (
+        <div className="ds-scope-note faint">
+          Titles and briefs only — type {CONVERSATION_MIN_CHARS - [...query].length} more character
+          {CONVERSATION_MIN_CHARS - [...query].length === 1 ? "" : "s"} to search inside conversations.
+        </div>
+      )}
       {!searching && empty && (
         <div className="faint" style={{ fontSize: 13 }}>
-          Nothing in the director conversation, and no task’s title, brief or conversation, contains “{query}”.
+          {titlesOnly
+            ? `Nothing in the director conversation, and no task’s title or brief, contains “${query}”.`
+            : `Nothing in the director conversation, and no task’s title, brief or conversation, contains “${query}”.`}
         </div>
       )}
       {tasks.length > 0 && (
@@ -873,6 +885,10 @@ function TaskHit({
     </button>
   );
 }
+
+/** Shortest query the server will search conversations for — the trigram index's window, mirrored
+ *  from `TRIGRAM_LEN` in server/src/db/searchIndex.ts. */
+const CONVERSATION_MIN_CHARS = 3;
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
 

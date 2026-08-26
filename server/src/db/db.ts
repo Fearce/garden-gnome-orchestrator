@@ -247,6 +247,10 @@ interface RankedTask {
   metadata: boolean;
 }
 
+/** How one search reaches the tasks' conversations: the trigram index, the full scan it replaced
+ *  (only while that index is still being built), or not at all — see `Db.conversationPlan`. */
+type ConversationPlan = { via: "index"; match: string } | { via: "scan" } | { via: "none" };
+
 /** Strongest match first: a task whose own title or brief says the word is what the search is about,
  *  then whichever worked the term hardest, then the recent. Recency alone buries the answer — the task
  *  that actually did the work names the thing hundreds of times and is usually far older than the log
@@ -955,8 +959,8 @@ export class Db {
     const q = query.trim();
     if (!q) return [];
     const like = `%${escapeLike(q)}%`;
-    const match = this.conversationMatchExpr(q);
-    const messageHits = this.conversationHitCounts(like, match);
+    const plan = this.conversationPlan(q);
+    const messageHits = this.conversationHitCounts(like, plan);
     const ids = new Set(messageHits.keys());
     for (const r of this.raw
       .prepare("SELECT id FROM threads WHERE title LIKE @like ESCAPE '\\' OR brief LIKE @like ESCAPE '\\'")
@@ -971,7 +975,7 @@ export class Db {
       }))
       .sort(byRelevance)
       .slice(0, limit)
-      .map((c) => this.taskHit(c.thread, q, like, match, c.hits));
+      .map((c) => this.taskHit(c.thread, q, like, plan, c.hits));
   }
 
   /** True once every message is in the trigram index, so a search may use it. Cached because it only
@@ -982,10 +986,20 @@ export class Db {
     return this.ftsReady;
   }
 
-  /** The index expression for this query, or null when the search must fall back to the full scan:
-   *  a query too short to have a trigram, or an index still being built. */
-  private conversationMatchExpr(q: string): string | null {
-    return this.searchIndexReady() ? trigramMatchExpr(q) : null;
+  /**
+   * How this query reaches the conversations: the index, the old full scan, or not at all.
+   *
+   * "Not at all" is a deliberate floor, not a gap in the index. A one- or two-character term is
+   * shorter than a trigram, so nothing can index it — and it also matches nearly every task, so the
+   * scan spends half a minute reading 105 MB to rank noise. Under three characters the search stays
+   * on titles and briefs, which is where a fragment that short is actually discriminating, and the
+   * rail says so. The rule is length-only (never "…unless the index is still building") so that what
+   * the console promises and what the server does cannot drift apart for a minute after a deploy.
+   */
+  private conversationPlan(q: string): ConversationPlan {
+    const match = trigramMatchExpr(q);
+    if (match === null) return { via: "none" };
+    return this.searchIndexReady() ? { via: "index", match } : { via: "scan" };
   }
 
   /** Read back the matched threads. Chunked because a common word matches most of the table, and
@@ -1007,9 +1021,10 @@ export class Db {
    *  ~0.6s with the pages cached and ~30s without, all of it blocking the server's only thread.
    *  The trigram index narrows it to candidates first; the same LIKE then re-checks each one, so the
    *  answer is unchanged. Falls back to the scan when `match` is null (short query / index not built). */
-  private conversationHitCounts(like: string, match: string | null): Map<string, number> {
+  private conversationHitCounts(like: string, plan: ConversationPlan): Map<string, number> {
+    if (plan.via === "none") return new Map();
     const rows = (
-      match === null
+      plan.via === "scan"
         ? this.raw
             .prepare("SELECT thread_id, COUNT(*) n FROM messages WHERE content LIKE ? ESCAPE '\\' GROUP BY thread_id")
             .all(like)
@@ -1020,14 +1035,14 @@ export class Db {
                 WHERE messages_fts MATCH ? AND m.content LIKE ? ESCAPE '\\'
                 GROUP BY m.thread_id`,
             )
-            .all(match, like)
+            .all(plan.match, like)
     ) as Row[];
     return new Map(rows.map((r) => [r.thread_id as string, r.n as number]));
   }
 
   /** One hit, showing the most informative evidence available: the owner's own brief, else the task's
    *  conversation, else nothing — a title-only match is already legible in the highlighted title. */
-  private taskHit(t: Thread, q: string, like: string, match: string | null, messageHits: number): TaskSearchHit {
+  private taskHit(t: Thread, q: string, like: string, plan: ConversationPlan, messageHits: number): TaskSearchHit {
     const base = {
       threadId: t.id,
       title: t.title,
@@ -1037,7 +1052,7 @@ export class Db {
       messageHits,
     };
     if (containsFold(t.brief, q)) return { ...base, where: "brief", snippet: snippetAround(t.brief, q) };
-    const message = messageHits ? this.bestMatchingMessage(t.id, like, match) : null;
+    const message = messageHits ? this.bestMatchingMessage(t.id, like, plan) : null;
     if (message) return { ...base, where: "conversation", snippet: snippetAround(message, q) };
     return { ...base, where: "title", snippet: "" };
   }
@@ -1046,10 +1061,11 @@ export class Db {
    *  earliest of those, since a term is usually most explained where it first appears. Indexed like
    *  the hit counts, and for the same reason — this runs once per returned hit, so on the scan path a
    *  busy task's whole conversation was re-read up to `limit` more times. */
-  private bestMatchingMessage(threadId: string, like: string, match: string | null): string | null {
+  private bestMatchingMessage(threadId: string, like: string, plan: ConversationPlan): string | null {
+    if (plan.via === "none") return null;
     const ORDER = "ORDER BY (m.kind = 'text') DESC, m.created_at ASC LIMIT 1";
     const row = (
-      match === null
+      plan.via === "scan"
         ? this.raw
             .prepare(`SELECT m.content FROM messages m WHERE m.thread_id = ? AND m.content LIKE ? ESCAPE '\\' ${ORDER}`)
             .get(threadId, like)
@@ -1059,7 +1075,7 @@ export class Db {
                  JOIN messages m ON m.rowid = messages_fts.rowid
                 WHERE messages_fts MATCH ? AND m.thread_id = ? AND m.content LIKE ? ESCAPE '\\' ${ORDER}`,
             )
-            .get(match, threadId, like)
+            .get(plan.match, threadId, like)
     ) as Row | undefined;
     return (row?.content as string | undefined) ?? null;
   }

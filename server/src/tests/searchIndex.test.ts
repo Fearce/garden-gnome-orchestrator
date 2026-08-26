@@ -77,6 +77,12 @@ function scanHits(db: DbType, query: string): Map<string, number> {
   return new Map(rows.map((r) => [r.thread_id, r.n]));
 }
 
+/** What the search is contracted to return: the scan's answer, except that a query shorter than a
+ *  trigram searches no conversations at all (`Db.conversationPlan`). */
+function expectedHits(db: DbType, query: string): Map<string, number> {
+  return [...query.trim()].length < 3 ? new Map() : scanHits(db, query);
+}
+
 const asKey = (m: Map<string, number>): string =>
   [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}:${v}`).join("|");
 
@@ -131,7 +137,8 @@ const eq = freshDb("equivalence");
   const t2 = eq.createThread({ title: "Nightly crawl", workspace: "C:\\vota", rawPrompt: "p", brief: "b" }).id;
   const kinds = ["text", "tool", "result"] as const;
   CORPUS.forEach((content, i) => {
-    eq.addMessage({ threadId: i % 3 === 0 ? t2 : t1, role: "implementor", kind: kinds[i % 3], content });
+    const kind = kinds[i % kinds.length] ?? "text";
+    eq.addMessage({ threadId: i % 3 === 0 ? t2 : t1, role: "implementor", kind, content });
     // Same text in the other task too, so a per-task count that drifts is visible as well as a set that does.
     if (i % 4 === 0) eq.addMessage({ threadId: t1, role: "implementor", kind: "text", content });
   });
@@ -180,7 +187,7 @@ const eq = freshDb("equivalence");
   ];
   let mismatches = 0;
   for (const q of ADVERSARIAL) {
-    const want = asKey(scanHits(eq, q));
+    const want = asKey(expectedHits(eq, q));
     const got = asKey(searchHits(eq, q));
     if (want !== got) {
       mismatches++;
@@ -206,7 +213,7 @@ console.log("\nB. fuzz — random real substrings, index vs scan");
     const len = 1 + Math.floor(rnd() * 12);
     const at = Math.floor(rnd() * Math.max(1, line.length - len));
     const q = line.slice(at, at + len).trim();
-    if (!q) continue;
+    if ([...q].length < 3) continue; // below the floor by contract — covered explicitly in E, not here
     const want = asKey(scanHits(eq, q));
     const got = asKey(searchHits(eq, q));
     if (want) nonEmpty++;
@@ -318,11 +325,19 @@ console.log("\nE. short queries — fall back, never silently find nothing");
     }
   })() === true);
 
-  // The trap: a 1-2 char MATCH returns zero rows SILENTLY. If a short query ever reached the index,
-  // this is the assertion that would catch it.
-  check("a 2-char search still finds its tasks", searchHits(eq, "ab").size === asKey(scanHits(eq, "ab")).split("|").filter(Boolean).length);
-  check("…agreeing with the scan exactly", asKey(searchHits(eq, "ab")) === asKey(scanHits(eq, "ab")), asKey(scanHits(eq, "ab")));
-  check("a 1-char search agrees too", asKey(searchHits(eq, "x")) === asKey(scanHits(eq, "x")));
+  // Under three characters the contract is titles and briefs only — the rail says so, and the server
+  // must actually do it. The trap this avoids: a 1-2 char MATCH returns zero rows SILENTLY (no error),
+  // so a short query reaching the index would look like "that word isn't anywhere" instead of "too short".
+  check("a 2-char query searches no conversations", searchHits(eq, "ab").size === 0, asKey(searchHits(eq, "ab")));
+  check("a 1-char query searches no conversations", searchHits(eq, "x").size === 0, asKey(searchHits(eq, "x")));
+  check("…and the scan would have found some, so that is a floor, not an empty corpus", scanHits(eq, "ab").size > 0);
+  {
+    const t = eq.createThread({ title: "Ab initio", workspace: "W", rawPrompt: "p", brief: "b" }).id;
+    check("…but a short query still matches titles", eq.searchTasks("Ab").some((h) => h.threadId === t));
+    check("…reported as a title match with no conversation hits", eq.searchTasks("Ab").find((h) => h.threadId === t)?.messageHits === 0);
+    eq.deleteThread(t);
+  }
+  check("the floor is measured in characters, not UTF-16 units", searchHits(eq, "🍦🍦").size === 0);
 }
 
 // Every connection must be closed before the temp dir goes, or Windows throws EBUSY on the sqlite file.
