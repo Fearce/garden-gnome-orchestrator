@@ -34,6 +34,8 @@ export interface GrokRunConfig {
    *  puts the validated object on the `end` event as `structuredOutput`; we also fall back to parsing
    *  the streamed text so a multi-turn role (planner/QA) still yields a pipeline-usable result. */
   outputSchema?: JsonSchemaLike;
+  /** Director turns have no filesystem job: they emit one structured command for the server bridge. */
+  directorMode?: boolean;
   /** Grok has no office MCP tools. A standalone `OFFICE[team|office]: ...` line in its assistant message
    *  is intercepted here and posted through the orchestrator's real office chat backend. */
   onOfficeChat?: (scope: ChatScope, body: string) => void;
@@ -360,15 +362,17 @@ export class GrokAgentRun implements AgentRunLike {
       this.cfg.model,
       "--reasoning-effort",
       this.cfg.effort,
-      // --yolo: always-approve tool execution (file writes, shell) for unattended runs — the Grok
-      // equivalent of Codex's approvals bypass. The sandbox is off by default, so full FS + network access
-      // (needed for `git push`) is already granted; we deliberately pass no --sandbox profile.
-      "--yolo",
       "--cwd",
       this.cfg.cwd,
       "--no-alt-screen",
       "--no-auto-update",
     );
+    if (this.cfg.directorMode) {
+      args.push("--tools", "", "--disable-web-search", "--no-subagents", "--permission-mode", "plan");
+    } else {
+      // Implementors need unattended write/shell access; director-mode above deliberately does not.
+      args.push("--yolo");
+    }
     if (this.cfg.outputSchema) args.push("--json-schema", JSON.stringify(this.cfg.outputSchema));
     // GROK_HOME points the CLI at the home whose auth.json holds the `grok login` credentials;
     // GROK_DISABLE_AUTOUPDATER stops a mid-run self-update from stalling the turn.

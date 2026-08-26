@@ -28,6 +28,7 @@ import type {
   ModelGrade,
   ModelOutcome,
   ModelStat,
+  ModelEffortStat,
   OperatorNote,
   Question,
   QuestionOption,
@@ -39,6 +40,7 @@ import type {
   Thread,
   ThreadLane,
   ThreadState,
+  TokenUsage,
 } from "../types.js";
 
 export function newId(): string {
@@ -48,6 +50,19 @@ export function newId(): string {
 const now = () => Date.now();
 
 type Row = Record<string, unknown>;
+
+function rowToTokenUsage(r: Row): TokenUsage | null {
+  const values = [r.input_tokens, r.output_tokens, r.cache_read_input_tokens, r.cache_creation_input_tokens, r.reasoning_output_tokens, r.total_tokens];
+  if (values.every((v) => v == null)) return null;
+  return {
+    inputTokens: Number(r.input_tokens ?? 0),
+    outputTokens: Number(r.output_tokens ?? 0),
+    cacheReadInputTokens: Number(r.cache_read_input_tokens ?? 0),
+    cacheCreationInputTokens: Number(r.cache_creation_input_tokens ?? 0),
+    reasoningOutputTokens: Number(r.reasoning_output_tokens ?? 0),
+    totalTokens: Number(r.total_tokens ?? 0),
+  };
+}
 
 function rowToThread(r: Row): Thread {
   return {
@@ -86,6 +101,7 @@ function rowToRun(r: Row): AgentRun {
     state: r.state as AgentRunState,
     costUsd: (r.cost_usd as number | null) ?? null,
     numTurns: (r.num_turns as number | null) ?? null,
+    tokenUsage: rowToTokenUsage(r),
     error: (r.error as string | null) ?? null,
     // Null (never written) is NOT "the runner saw no cap" — it's a row from before the flag existed.
     capFlagged: r.cap_flagged == null ? null : r.cap_flagged === 1,
@@ -125,6 +141,8 @@ function rowToModelGrade(r: Row): ModelGrade {
     qaRounds: (r.qa_rounds as number | null) ?? null,
     costUsd: (r.cost_usd as number | null) ?? null,
     numTurns: (r.num_turns as number | null) ?? null,
+    tokenUsage: rowToTokenUsage(r),
+    tokenUsageComplete: r.token_usage_complete == null ? null : r.token_usage_complete === 1,
     durationMs: (r.duration_ms as number | null) ?? null,
     ranModels: (r.ran_models as string | null) ?? null,
     gradedModel: (r.graded_model as string | null) ?? null,
@@ -328,6 +346,19 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN lane TEXT",
       "ALTER TABLE attachments ADD COLUMN sha256 TEXT",
       "ALTER TABLE agent_runs ADD COLUMN cap_flagged INTEGER",
+      "ALTER TABLE agent_runs ADD COLUMN input_tokens INTEGER",
+      "ALTER TABLE agent_runs ADD COLUMN output_tokens INTEGER",
+      "ALTER TABLE agent_runs ADD COLUMN cache_read_input_tokens INTEGER",
+      "ALTER TABLE agent_runs ADD COLUMN cache_creation_input_tokens INTEGER",
+      "ALTER TABLE agent_runs ADD COLUMN reasoning_output_tokens INTEGER",
+      "ALTER TABLE agent_runs ADD COLUMN total_tokens INTEGER",
+      "ALTER TABLE model_grades ADD COLUMN input_tokens INTEGER",
+      "ALTER TABLE model_grades ADD COLUMN output_tokens INTEGER",
+      "ALTER TABLE model_grades ADD COLUMN cache_read_input_tokens INTEGER",
+      "ALTER TABLE model_grades ADD COLUMN cache_creation_input_tokens INTEGER",
+      "ALTER TABLE model_grades ADD COLUMN reasoning_output_tokens INTEGER",
+      "ALTER TABLE model_grades ADD COLUMN total_tokens INTEGER",
+      "ALTER TABLE model_grades ADD COLUMN token_usage_complete INTEGER",
       "ALTER TABLE chat_messages ADD COLUMN remote_instance TEXT",
     ]) {
       try {
@@ -653,6 +684,7 @@ export class Db {
       state: "starting",
       costUsd: null,
       numTurns: null,
+      tokenUsage: null,
       error: null,
       capFlagged: null, // no verdict until the run ends — matches what a re-read of the row returns
       startedAt: now(),
@@ -669,7 +701,7 @@ export class Db {
 
   updateRun(
     id: string,
-    patch: Partial<Pick<AgentRun, "sessionId" | "state" | "costUsd" | "numTurns" | "error" | "endedAt" | "capFlagged">>,
+    patch: Partial<Pick<AgentRun, "sessionId" | "state" | "costUsd" | "numTurns" | "tokenUsage" | "error" | "endedAt" | "capFlagged">>,
   ): void {
     const sets: string[] = [];
     const params: Row = { id };
@@ -687,6 +719,21 @@ export class Db {
         sets.push(`${col} = @${k}`);
         const v = (patch as Row)[k] ?? null;
         params[k] = typeof v === "boolean" ? (v ? 1 : 0) : v; // better-sqlite3 refuses to bind a boolean
+      }
+    }
+    if ("tokenUsage" in patch) {
+      const usage = patch.tokenUsage;
+      const usageMap: Array<[keyof TokenUsage, string]> = [
+        ["inputTokens", "input_tokens"],
+        ["outputTokens", "output_tokens"],
+        ["cacheReadInputTokens", "cache_read_input_tokens"],
+        ["cacheCreationInputTokens", "cache_creation_input_tokens"],
+        ["reasoningOutputTokens", "reasoning_output_tokens"],
+        ["totalTokens", "total_tokens"],
+      ];
+      for (const [key, col] of usageMap) {
+        sets.push(`${col} = @${key}`);
+        params[key] = usage?.[key] ?? null;
       }
     }
     if (!sets.length) return;
@@ -1409,9 +1456,13 @@ export class Db {
     this.raw
       .prepare(
         `INSERT OR REPLACE INTO model_grades(thread_id, workspace, title, provider, model, effort, reason,
-           outcome, score, qa_rounds, cost_usd, num_turns, duration_ms, ran_models, graded_model, created_at, graded_at)
+           outcome, score, qa_rounds, cost_usd, num_turns, input_tokens, output_tokens,
+           cache_read_input_tokens, cache_creation_input_tokens, reasoning_output_tokens, total_tokens, token_usage_complete,
+           duration_ms, ran_models, graded_model, created_at, graded_at)
          VALUES(@threadId, @workspace, @title, @provider, @model, @effort, @reason,
-           @outcome, @score, @qaRounds, @costUsd, @numTurns, @durationMs, @ranModels, @gradedModel, @createdAt, @gradedAt)`,
+           @outcome, @score, @qaRounds, @costUsd, @numTurns, @inputTokens, @outputTokens,
+           @cacheReadInputTokens, @cacheCreationInputTokens, @reasoningOutputTokens, @totalTokens, @tokenUsageComplete,
+           @durationMs, @ranModels, @gradedModel, @createdAt, @gradedAt)`,
       )
       .run({
         threadId: g.threadId,
@@ -1426,6 +1477,13 @@ export class Db {
         qaRounds: g.qaRounds ?? null,
         costUsd: g.costUsd ?? null,
         numTurns: g.numTurns ?? null,
+        inputTokens: g.tokenUsage?.inputTokens ?? null,
+        outputTokens: g.tokenUsage?.outputTokens ?? null,
+        cacheReadInputTokens: g.tokenUsage?.cacheReadInputTokens ?? null,
+        cacheCreationInputTokens: g.tokenUsage?.cacheCreationInputTokens ?? null,
+        reasoningOutputTokens: g.tokenUsage?.reasoningOutputTokens ?? null,
+        totalTokens: g.tokenUsage?.totalTokens ?? null,
+        tokenUsageComplete: g.tokenUsageComplete == null ? null : (g.tokenUsageComplete ? 1 : 0),
         durationMs: g.durationMs ?? null,
         ranModels: g.ranModels ?? null,
         gradedModel: g.gradedModel ?? null,
@@ -1438,14 +1496,17 @@ export class Db {
   /** Write a settled task's outcome onto its selection record. No-op when the task had no auto-pick. */
   gradeModelSelection(
     threadId: string,
-    patch: Pick<ModelGrade, "outcome" | "score" | "qaRounds" | "costUsd" | "numTurns" | "durationMs" | "ranModels" | "gradedModel">,
+    patch: Pick<ModelGrade, "outcome" | "score" | "qaRounds" | "costUsd" | "numTurns" | "tokenUsage" | "tokenUsageComplete" | "durationMs" | "ranModels" | "gradedModel">,
   ): ModelGrade | null {
     const existing = this.getModelGrade(threadId);
     if (!existing) return null;
     this.raw
       .prepare(
         `UPDATE model_grades SET outcome=@outcome, score=@score, qa_rounds=@qaRounds,
-           cost_usd=@costUsd, num_turns=@numTurns, duration_ms=@durationMs, ran_models=@ranModels,
+           cost_usd=@costUsd, num_turns=@numTurns, input_tokens=@inputTokens, output_tokens=@outputTokens,
+           cache_read_input_tokens=@cacheReadInputTokens, cache_creation_input_tokens=@cacheCreationInputTokens,
+           reasoning_output_tokens=@reasoningOutputTokens, total_tokens=@totalTokens, token_usage_complete=@tokenUsageComplete,
+           duration_ms=@durationMs, ran_models=@ranModels,
            graded_model=@gradedModel, graded_at=@gradedAt WHERE thread_id=@threadId`,
       )
       .run({
@@ -1455,6 +1516,13 @@ export class Db {
         qaRounds: patch.qaRounds ?? null,
         costUsd: patch.costUsd ?? null,
         numTurns: patch.numTurns ?? null,
+        inputTokens: patch.tokenUsage?.inputTokens ?? null,
+        outputTokens: patch.tokenUsage?.outputTokens ?? null,
+        cacheReadInputTokens: patch.tokenUsage?.cacheReadInputTokens ?? null,
+        cacheCreationInputTokens: patch.tokenUsage?.cacheCreationInputTokens ?? null,
+        reasoningOutputTokens: patch.tokenUsage?.reasoningOutputTokens ?? null,
+        totalTokens: patch.tokenUsage?.totalTokens ?? null,
+        tokenUsageComplete: patch.tokenUsageComplete ? 1 : 0,
         durationMs: patch.durationMs ?? null,
         ranModels: patch.ranModels ?? null,
         gradedModel: patch.gradedModel ?? null,
@@ -1489,6 +1557,12 @@ export class Db {
                 AVG(CASE WHEN outcome = 'done' THEN 1.0 ELSE 0.0 END) AS done_rate,
                 AVG(COALESCE(qa_rounds, 0)) AS avg_qa,
                 AVG(COALESCE(cost_usd, 0)) AS avg_cost,
+                AVG(CASE WHEN token_usage_complete = 1 THEN total_tokens END) AS avg_total_tokens,
+                AVG(CASE WHEN token_usage_complete = 1 THEN input_tokens END) AS avg_input_tokens,
+                AVG(CASE WHEN token_usage_complete = 1 THEN output_tokens END) AS avg_output_tokens,
+                AVG(CASE WHEN token_usage_complete = 1 THEN COALESCE(cache_read_input_tokens, 0) + COALESCE(cache_creation_input_tokens, 0) END) AS avg_cache_tokens,
+                AVG(CASE WHEN token_usage_complete = 1 THEN reasoning_output_tokens END) AS avg_reasoning_tokens,
+                AVG(CASE WHEN token_usage_complete = 1 THEN 1.0 ELSE 0.0 END) AS token_sample_rate,
                 AVG(COALESCE(duration_ms, 0)) AS avg_ms
            FROM model_grades
           WHERE graded_model IS NOT NULL AND score IS NOT NULL${workspace ? " AND workspace = @workspace" : ""}
@@ -1504,6 +1578,52 @@ export class Db {
       doneRate: (r.done_rate as number) ?? 0,
       avgQaRounds: Number(((r.avg_qa as number) ?? 0).toFixed(1)),
       avgCostUsd: Number(((r.avg_cost as number) ?? 0).toFixed(2)),
+      avgTotalTokens: r.avg_total_tokens == null ? null : Math.round(r.avg_total_tokens as number),
+      avgInputTokens: r.avg_input_tokens == null ? null : Math.round(r.avg_input_tokens as number),
+      avgOutputTokens: r.avg_output_tokens == null ? null : Math.round(r.avg_output_tokens as number),
+      avgCacheTokens: r.avg_cache_tokens == null ? null : Math.round(r.avg_cache_tokens as number),
+      avgReasoningTokens: r.avg_reasoning_tokens == null ? null : Math.round(r.avg_reasoning_tokens as number),
+      tokenSampleRate: (r.token_sample_rate as number) ?? 0,
+      avgMinutes: Math.round(((r.avg_ms as number) ?? 0) / 60_000),
+    }));
+  }
+
+  /** Per-model × effort history for choosing reasoning depth. Kept separate from modelStats so sparse
+   *  effort rows do not replace the stronger aggregate model prior in Settings or selection prompts. */
+  modelEffortStats(workspace?: string): ModelEffortStat[] {
+    const rows = this.raw.prepare(
+      `SELECT provider, graded_model AS model, effort, COUNT(*) AS picks,
+              AVG(score) AS avg_score,
+              AVG(CASE WHEN outcome = 'done' THEN 1.0 ELSE 0.0 END) AS done_rate,
+              AVG(COALESCE(qa_rounds, 0)) AS avg_qa,
+              AVG(COALESCE(cost_usd, 0)) AS avg_cost,
+              AVG(CASE WHEN token_usage_complete = 1 THEN total_tokens END) AS avg_total_tokens,
+              AVG(CASE WHEN token_usage_complete = 1 THEN input_tokens END) AS avg_input_tokens,
+              AVG(CASE WHEN token_usage_complete = 1 THEN output_tokens END) AS avg_output_tokens,
+              AVG(CASE WHEN token_usage_complete = 1 THEN COALESCE(cache_read_input_tokens, 0) + COALESCE(cache_creation_input_tokens, 0) END) AS avg_cache_tokens,
+              AVG(CASE WHEN token_usage_complete = 1 THEN reasoning_output_tokens END) AS avg_reasoning_tokens,
+              AVG(CASE WHEN token_usage_complete = 1 THEN 1.0 ELSE 0.0 END) AS token_sample_rate,
+              AVG(COALESCE(duration_ms, 0)) AS avg_ms
+         FROM model_grades
+        WHERE graded_model IS NOT NULL AND score IS NOT NULL${workspace ? " AND workspace = @workspace" : ""}
+        GROUP BY provider, graded_model, effort
+        ORDER BY picks DESC, avg_score DESC`,
+    ).all(workspace ? { workspace } : {}) as Row[];
+    return rows.map((r) => ({
+      provider: r.provider as ModelEffortStat["provider"],
+      model: r.model as string,
+      effort: r.effort as Effort,
+      picks: r.picks as number,
+      avgScore: Math.round((r.avg_score as number) ?? 0),
+      doneRate: (r.done_rate as number) ?? 0,
+      avgQaRounds: Number(((r.avg_qa as number) ?? 0).toFixed(1)),
+      avgCostUsd: Number(((r.avg_cost as number) ?? 0).toFixed(2)),
+      avgTotalTokens: r.avg_total_tokens == null ? null : Math.round(r.avg_total_tokens as number),
+      avgInputTokens: r.avg_input_tokens == null ? null : Math.round(r.avg_input_tokens as number),
+      avgOutputTokens: r.avg_output_tokens == null ? null : Math.round(r.avg_output_tokens as number),
+      avgCacheTokens: r.avg_cache_tokens == null ? null : Math.round(r.avg_cache_tokens as number),
+      avgReasoningTokens: r.avg_reasoning_tokens == null ? null : Math.round(r.avg_reasoning_tokens as number),
+      tokenSampleRate: (r.token_sample_rate as number) ?? 0,
       avgMinutes: Math.round(((r.avg_ms as number) ?? 0) / 60_000),
     }));
   }

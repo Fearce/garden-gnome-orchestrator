@@ -80,6 +80,8 @@ const GATES = [
   "test:auto-review",
   "test:model-select",
   "test:auto-model",
+  "test:director-provider",
+  "test:livebench",
   "test:self-improve-restart",
   "test:restart-revival",
   "test:silent-resume",

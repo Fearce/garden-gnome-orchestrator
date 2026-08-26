@@ -1,7 +1,7 @@
 # GG Orchestrator
 
 *Garden Gnome Orchestrator* — a single director's console for running coding
-agents the way you already work by hand: a Sonnet **director** enriches a raw
+agents the way you already work by hand: a provider-neutral **director** enriches a raw
 prompt, pulls in relevant memories, and asks the clarifying questions you'd
 otherwise forget to answer, then dispatches the task to a self-assembling agent
 pipeline — a **planner** reads the repo and plans, an optional **researcher**
@@ -14,6 +14,14 @@ The implementor runs on **Claude Opus 4.8** by default, or — when you enable t
 subscription in Settings — on the **OpenAI Codex**, **xAI Grok**, or **Zhipu z.ai
 (GLM)** backend instead, all authing off a flat-fee subscription with no per-token API billing
 (see [Runtime model](#runtime-model--zero-metered-api-credits)).
+The director uses the same enabled-provider pool and automatically leaves a capped subscription;
+with Auto model selection enabled, one model judges the stable director choice and it stays sticky
+until that target caps. Both smart choices also consider a daily cached [LiveBench](https://livebench.ai/)
+category/effort prior, clearly distinguishing exact scores from older same-family comparisons; local
+outcomes and live subscription headroom remain stronger signals. Local grades permanently retain whole-
+pipeline quality, QA, dollars, turns, time and normalized token burn (including cache/reasoning), with
+model×effort history feeding later choices even after the original task is purged.
+
 Authenticated recurring-free API providers can offload **planner** and **read-lane** runs through a
 separate path-confined, read-only tool harness. Settings shows live usage chips and the exact routing
 readiness for Gemini, Groq, Kilo, Mistral, Cohere, Cloudflare Workers AI, NVIDIA NIM, and Hugging Face;
@@ -53,8 +61,8 @@ pipeline — there's no fixed sequence; each agent decides what happens next:
 - **Implementor.** Does the work in the repo, fully autonomous. It always hands
   off to QA — it can't declare itself done. Runs on **Claude Opus 4.8** by
   default, or on the **Codex** / **Grok** / **z.ai (GLM)** backend when you enable
-  that subscription (the director, planner, researcher, and QA stay Claude —
-  though a z.ai run can also take failover for those when every Claude sub is capped).
+  that subscription. The director can run on any enabled backend; structured pipeline roles also
+  fail over across providers when Claude is capped (reader/reviewer stay on a native-tool backend).
 - **QA.** Reviews and tests against the brief; it's the **only** agent that can
   mark a task **done**, or bounce it back to the implementor with concrete fixes
   (looping until it passes or runs out of rounds).

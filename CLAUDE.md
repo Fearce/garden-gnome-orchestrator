@@ -19,7 +19,7 @@ curl -s -b /tmp/cj.txt http://127.0.0.1:4317/api/threads
 ```
 (Google sign-in also works, but the password is simplest for headless agents. Local/LAN only.)
 
-A director's console for running Claude Code agents: a Sonnet **director** enriches a
+A director's console for running Claude Code agents: a provider-neutral **director** enriches a
 prompt, runs a planner + researcher, then dispatches Opus 4.8 **implementor** workers you
 can inject into mid-work. Node/Fastify API (`server/`) + React/Vite console (`web/`), single origin.
 
@@ -206,10 +206,11 @@ Read the run trail to tell causes apart:
 
 ## Auto model selection (`settings.autoModelSelection`, off by default)
 On, the implementor's model + effort become a per-task judgement: just before the implementor stage,
-`orchestrator/modelSelector.ts` makes ONE cheap structured call on the DIRECTOR's model (the raw OAuth fetch
-the titler uses — `auxToken()`, no agent role, no tools) weighing the brief, the planner's read of the repo,
-the graded history, and the roster of models **dispatchable right now** (each enabled+authed+uncapped
-backend: Claude Haiku→Sonnet→Opus→Fable, Codex, Grok, GLM). The reply is validated against that roster and
+`orchestrator/modelSelector.ts` makes ONE no-tools structured judgement on whichever provider currently has
+headroom, weighing the brief, the planner's read of the repo, graded local history, a daily cached LiveBench
+category/effort prior, and the roster of models **dispatchable right now** (each enabled+authed+uncapped
+backend: Claude Haiku→Sonnet→Opus→Fable, Codex, Grok, GLM). Exact LiveBench rows are distinguished from
+explicitly labelled older same-family priors; local outcomes and role/tool fit outrank the benchmark. The reply is validated against that roster and
 the PROVIDER comes from the matched entry, never the reply, so a hallucinated id can't reach a spawn; two
 unusable replies fall back to normal routing (a dispatch is never blocked). The pick persists in
 `stage_outputs.modelPick` (a resume must land on the same backend — session ids are provider-specific),
@@ -226,7 +227,9 @@ purge (like `chat_messages`). `db.modelStats()` aggregates per model, globally a
 the next prompt and a read-only scoreboard under the toggle. Gates: `test:model-select` (validator + score)
 and `test:auto-model` (pick→run, effort precedence, routing, grading). `npm run probe:model-picks --prefix
 server [-- <limit> --repo <sub>]` answers "what did it choose, and was that a good call?"; `npm run
-model-lab --prefix server` drives the Settings surface headlessly (own instance, never prod).
+model-lab --prefix server` drives the Settings surface headlessly (own instance, never prod). The
+LiveBench release CSV/category map is persisted in kv and refreshed every 24h; fetch failures retain the
+last good snapshot and never block dispatch. Gate: `test:livebench`.
 
 ## The Git console (the in-app GitHub Desktop)
 The GitHub button beside the gear opens a repo-level git surface: a repository picker, a branch menu

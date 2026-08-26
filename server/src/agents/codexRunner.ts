@@ -5,7 +5,7 @@ import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
-import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo } from "../types.js";
+import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { extractOfficeChat, extractOperatorNotes } from "./officeBridge.js";
 import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
@@ -38,6 +38,9 @@ export interface CodexRunConfig {
    *  block, and its final message is parsed against this schema into `result.structuredOutput`. A parse/shape
    *  miss leaves `structuredOutput` unset and stashes `lastStructuredError` so the role layer can re-nudge. */
   outputSchema?: JsonSchemaLike;
+  /** Director turns use a server-executed JSON action bridge and must never touch a repository. Keep the
+   *  CLI's shell in a read-only sandbox instead of the implementor's unrestricted mode. */
+  directorMode?: boolean;
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Image blocks are handled
@@ -107,6 +110,34 @@ interface CodexEvent {
   error?: { message?: string };
   usage?: Record<string, number>;
   message?: string;
+}
+
+function usageCount(usage: Record<string, number> | undefined, ...keys: string[]): number {
+  for (const key of keys) {
+    const value = Number(usage?.[key]);
+    if (Number.isFinite(value) && value >= 0) return Math.round(value);
+  }
+  return 0;
+}
+
+/** Codex CLI token fields are snake_case today; accept camelCase too so a CLI event-shape cleanup does
+ *  not silently erase years of usage evidence. `total_tokens` is authoritative because cached and
+ *  reasoning counts can be subsets of input/output rather than additive categories. */
+export function codexTokenUsage(raw: Record<string, number> | undefined): TokenUsage | undefined {
+  if (!raw || !Object.keys(raw).length) return undefined;
+  const inputTokens = usageCount(raw, "input_tokens", "inputTokens");
+  const outputTokens = usageCount(raw, "output_tokens", "outputTokens");
+  const cacheReadInputTokens = usageCount(raw, "cached_input_tokens", "cache_read_input_tokens", "cacheReadInputTokens");
+  const cacheCreationInputTokens = usageCount(raw, "cache_creation_input_tokens", "cacheCreationInputTokens");
+  const reasoningOutputTokens = usageCount(raw, "reasoning_output_tokens", "reasoningOutputTokens");
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
+    reasoningOutputTokens,
+    totalTokens: usageCount(raw, "total_tokens", "totalTokens") || inputTokens + outputTokens,
+  };
 }
 
 // Matches both API-key 429/quota errors AND the ChatGPT-plan usage-cap wording the CLI prints when the
@@ -275,7 +306,7 @@ export class CodexAgentRun implements AgentRunLike {
   // A CLI terminal event arrives just before the child closes. Hold it until onTurnClose has checked
   // pendingSends, otherwise the pipeline can accept this result and hand off to QA while steering that
   // arrived in the close gap is still waiting to resume.
-  private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number } | undefined;
+  private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number; tokenUsage?: TokenUsage } | undefined;
   private readonly pendingSends: { text: string; images: CodexImage[] }[] = [];
   // Images pasted with the initial kickoff, kept so a self-healed wedged-resume fresh restart re-attaches
   // them (the freshFallback string carries only doctrine + task). Temp files written per turn live in
@@ -464,7 +495,9 @@ export class CodexAgentRun implements AgentRunLike {
     const imagePaths = await this.writeImages(images);
     const args = ["exec"];
     if (resumeId) args.push("resume", resumeId);
-    args.push("--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox");
+    args.push("--json", "--skip-git-repo-check");
+    if (this.cfg.directorMode) args.push(...directorSafetyArgs(!!resumeId));
+    else args.push("--dangerously-bypass-approvals-and-sandbox");
     for (const p of imagePaths) args.push("--image", p);
     // `--color` and `-C/--cd` are global flags on the fresh `codex exec` subcommand but are NOT
     // accepted by `codex exec resume` (the CLI rejects them with "unexpected argument '--color'",
@@ -596,14 +629,14 @@ export class CodexAgentRun implements AgentRunLike {
         break;
       case "turn.completed":
         this.sawTerminal = true;
-        this.pendingTerminalResult = { subtype: "success", isError: false, numTurns: 1 };
+        this.pendingTerminalResult = { subtype: "success", isError: false, numTurns: 1, tokenUsage: codexTokenUsage(ev.usage) };
         break;
       case "turn.failed": {
         this.sawTerminal = true;
         const msg = ev.error?.message ?? this.lastErrorMsg ?? "Codex turn failed.";
         if (RATE_LIMIT_RE.test(msg)) this.markCapped();
         else this.markTransientApiError(msg);
-        this.pendingTerminalResult = { subtype: "error", isError: true, result: msg };
+        this.pendingTerminalResult = { subtype: "error", isError: true, result: msg, tokenUsage: codexTokenUsage(ev.usage) };
         break;
       }
       case "error":
@@ -697,9 +730,9 @@ export class CodexAgentRun implements AgentRunLike {
   }
 
   /** Emit the per-turn result event (mirrors AgentRun's `result` SDK message) and cache it. */
-  private finishTurn(partial: { subtype: string; isError: boolean; result?: string; numTurns?: number }): void {
+  private finishTurn(partial: { subtype: string; isError: boolean; result?: string; numTurns?: number; tokenUsage?: TokenUsage }): void {
     this.clearWatchdog();
-    const evt: ResultEvent = { type: "result", subtype: partial.subtype, isError: partial.isError, result: partial.result, numTurns: partial.numTurns };
+    const evt: ResultEvent = { type: "result", subtype: partial.subtype, isError: partial.isError, result: partial.result, numTurns: partial.numTurns, tokenUsage: partial.tokenUsage };
     // A structured role run parses its final message into structuredOutput here so the pipeline reads it
     // uniformly (the same field the Claude SDK and Grok's --json-schema populate). A miss leaves the field
     // unset + records lastStructuredError; the role layer nudges and resumes rather than failing the turn.
@@ -774,4 +807,18 @@ export class CodexAgentRun implements AgentRunLike {
       this.emitter.emit("end");
     }
   }
+}
+
+/** `codex exec resume` deliberately exposes fewer flags than a fresh `codex exec`. In particular,
+ *  `--sandbox` is rejected by the resume parser, so express the same read-only boundary through a
+ *  config override on resumed Director turns. Keep this exported so a CLI upgrade cannot silently
+ *  reintroduce the exact post-dispatch crash this distinction prevents. */
+export function directorSafetyArgs(resuming: boolean): string[] {
+  return [
+    ...(resuming ? ["-c", 'sandbox_mode="read-only"'] : ["--sandbox", "read-only"]),
+    "-c",
+    'approval_policy="never"',
+    "--ignore-user-config",
+    "--ignore-rules",
+  ];
 }

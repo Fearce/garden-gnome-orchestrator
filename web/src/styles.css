@@ -912,7 +912,7 @@ button { font-family: inherit; cursor: pointer; }
 /* auto model selection — the scoreboard under its toggle */
 .ams-board { margin: 2px 16px 8px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
 .ams-row {
-  display: grid; grid-template-columns: minmax(0, 1fr) repeat(5, auto); gap: 12px;
+  display: grid; grid-template-columns: minmax(0, 1fr) repeat(6, auto); gap: 12px;
   align-items: center; padding: 6px 10px; font-size: 11.5px; color: var(--text-dim);
 }
 .ams-row + .ams-row { border-top: 1px solid var(--line); }

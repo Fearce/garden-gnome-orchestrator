@@ -63,7 +63,7 @@ Model + tool policy per role:
 
 | Role        | Model            | permissionMode | Tools |
 |-------------|------------------|----------------|-------|
-| Director    | claude-sonnet-4-6| bypassPermissions | memory (search_memory/read_memory) + orchestration MCP only — **no Read/Grep/Glob/Bash** |
+| Director    | runtime-selected Claude / Codex / Grok / z.ai | provider-specific | Native memory + orchestration MCP on Claude/z.ai; constrained server-command bridge on Codex/Grok — **no repo writes/shell** |
 | Planner     | eligible free pool → configured paid backend | provider-specific | Read/Grep/Glob — **owns codebase reading**; routes to researcher or implementor. The free harness has no write/shell/network surface and falls back on any failure. |
 | Researcher  | claude-sonnet-4-6| plan           | WebSearch/WebFetch, memory, bus — **no Read/Grep/Glob** (external info only; the planner reads the repo) |
 | Implementor | claude-opus-4-8  | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
@@ -109,6 +109,19 @@ model AND effort from every backend dispatchable at that moment, and every such
 task is graded when it settles so the next pick reads real outcomes rather than
 priors (CLAUDE.md § "Auto model selection"). Precedence is then
 `effort_override` > the pick > the planner.
+
+The smart picker also reads a persistent LiveBench snapshot refreshed every 24 hours from the leaderboard's
+raw release CSV/category files. Exact-model scores and published effort variants are shown to the judging
+agent; newer models may receive only an explicitly labelled older same-family prior. Live availability,
+role/tool compatibility, and this orchestrator's own accepted-task grades remain the stronger signals, and
+a failed refresh keeps the last snapshot without blocking dispatch.
+
+Those local grades are a durable learning record, not disposable task telemetry. For every auto-picked
+task the database retains quality/outcome, QA rounds, whole-pipeline dollars, turns, wall time, and normalized
+input/output/cache/reasoning/total tokens; the grade deliberately survives the source task's 30-day purge.
+The next choice reads both per-repo and global model aggregates plus model×effort breakdowns. Dollar cost and
+token-window burn are separate: a flat-subscription run can say `$0` while still consuming scarce allowance,
+so the selector explicitly optimizes the cheapest *reliable* choice across both.
 
 ## 4. In-process MCP servers (`server/src/bus/`)
 
@@ -395,9 +408,9 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
 
 ## 11. Image attachments (paste / drop / pick → vision)
 
-Pasted, dropped, or picked images ride the prompt as native Anthropic **image
-content blocks** (base64), so every agent — the Sonnet director and the
-Opus/Sonnet pipeline roles — *sees* them via vision (no Read-tool round-trip).
+Pasted, dropped, or picked images ride the prompt as native **image content blocks**
+(base64). Claude/z.ai consume them natively and Codex materializes them for `--image`;
+the Grok headless adapter is the one image-input degradation.
 CLI/SDK image input is base64-only; there is no file-path image source.
 
 - **Capture** (`web/src/lib/attachments.tsx`). `useAttachments()` handles paste

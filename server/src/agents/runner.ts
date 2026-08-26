@@ -13,7 +13,7 @@ import { EventEmitter } from "node:events";
 import type { Account } from "../accounts/account.js";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
-import type { AgentEvent, RateLimitInfo } from "../types.js";
+import type { AgentEvent, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 
 export type UserContent = string | unknown[];
@@ -56,6 +56,35 @@ export type ResultEvent = Extract<AgentEvent, { type: "result" }>;
  *  for it (a `priority: "now"` message, `interrupt()`, `stop()`), so it is never the run's own verdict.
  *  These two are the whole set the CLI itself treats as "aborted"; every other reason ends a real turn. */
 const ABORTED_TERMINAL_REASONS = new Set(["aborted_streaming", "aborted_tools"]);
+
+function finiteCount(value: unknown): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+/** Normalize the SDK's per-model accounting. Summing modelUsage preserves mixed-model turns (including
+ *  fallback aliases) and avoids relying on the provider-specific shape of the aggregate `usage` field. */
+export function claudeTokenUsage(modelUsage: unknown): TokenUsage | undefined {
+  if (!modelUsage || typeof modelUsage !== "object") return undefined;
+  const rows = Object.values(modelUsage as Record<string, Record<string, unknown>>);
+  if (!rows.length) return undefined;
+  const usage: TokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  };
+  for (const row of rows) {
+    usage.inputTokens += finiteCount(row.inputTokens);
+    usage.outputTokens += finiteCount(row.outputTokens);
+    usage.cacheReadInputTokens += finiteCount(row.cacheReadInputTokens);
+    usage.cacheCreationInputTokens += finiteCount(row.cacheCreationInputTokens);
+  }
+  usage.totalTokens = usage.inputTokens + usage.outputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
+  return usage;
+}
 
 /**
  * The public surface every agent backend exposes to the orchestrator — the seam that lets a Codex
@@ -479,6 +508,7 @@ export class AgentRun implements AgentRunLike {
           structuredOutput: m.structured_output,
           costUsd: m.total_cost_usd,
           numTurns: m.num_turns,
+          tokenUsage: claudeTokenUsage(m.modelUsage),
         };
         // An ABORTED turn is not an outcome. The CLI ends one with subtype "success", is_error false and
         // an EMPTY `result` — identical, in every field the pipeline reads, to a turn that finished. Only

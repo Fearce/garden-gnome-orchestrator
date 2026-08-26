@@ -20,6 +20,8 @@ const FETCH_TIMEOUT_MS = 12_000;
 /** Curated Claude fallback (most-capable first) for a fresh install or an unreachable models endpoint. */
 export const CURATED_CLAUDE_MODELS = [
   "claude-fable-5",
+  "claude-opus-5",
+  "claude-sonnet-5",
   "claude-opus-4-8",
   "claude-opus-4-7",
   "claude-opus-4-6",
@@ -48,6 +50,34 @@ export function uniq(ids: (string | undefined | null)[]): string[] {
     out.push(id);
   }
   return out;
+}
+
+/** Pick the newest known model in one Claude family. The live endpoint normally returns newest
+ *  first, but cached/provider ordering is not an API contract and the curated fallback may know
+ *  about a newer direct successor. Compare the numeric generation segments so auto-selection never
+ *  silently offers Opus 4.8 as the Opus tier while Opus 5 is already available. */
+export function newestClaudeFamilyModel(ids: string[], family: string): string | undefined {
+  const marker = `-${family.toLowerCase()}-`;
+  const candidates = ids
+    .map((id, index) => {
+      const lower = id.toLowerCase();
+      const at = lower.indexOf(marker);
+      if (at < 0) return undefined;
+      const tail = lower.slice(at + marker.length);
+      const version = (tail.match(/\d+/g) ?? []).map(Number);
+      return { id, index, version };
+    })
+    .filter((x): x is { id: string; index: number; version: number[] } => !!x);
+
+  candidates.sort((a, b) => {
+    const width = Math.max(a.version.length, b.version.length);
+    for (let i = 0; i < width; i++) {
+      const delta = (b.version[i] ?? 0) - (a.version[i] ?? 0);
+      if (delta) return delta;
+    }
+    return a.index - b.index;
+  });
+  return candidates[0]?.id;
 }
 
 /** List the Claude models the given subscription token can access, via the OAuth-authed models endpoint

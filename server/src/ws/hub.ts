@@ -67,6 +67,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     findings: ctx.db.listFindings(undefined, SNAPSHOT_FINDINGS),
     questions: ctx.db.listOpenQuestions(),
     director: ctx.db.listDirectorMessages(SNAPSHOT_DIRECTOR_MSGS),
+    directorStatus: ctx.director.status(),
     accounts: ctx.accounts.dto(),
     codexUsage: readCodexUsage(),
     grokUsage: ctx.manager.settings().grokEnabled || readGrokUsage().signedIn ? readGrokUsage() : null,

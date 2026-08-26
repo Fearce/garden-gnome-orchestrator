@@ -12,6 +12,7 @@ import type {
   ChatMessage,
   ChatRoomSummary,
   DirectorMessage,
+  DirectorStatus,
   Finding,
   Message,
   ModelStat,
@@ -59,6 +60,7 @@ export type ServerEvent =
       findings: Finding[];
       questions: Question[];
       director: DirectorMessage[];
+      directorStatus: DirectorStatus | null;
       accounts: AccountDTO[];
       codexUsage: CodexUsageDTO | null;
       grokUsage: GrokUsageDTO | null;
@@ -141,6 +143,7 @@ export type ServerEvent =
   | { type: "director.message"; message: DirectorMessage }
   | { type: "director.tool"; name: string; input: unknown }
   | { type: "director.busy"; busy: boolean }
+  | { type: "director.status"; status: DirectorStatus | null }
   // Reply to a director.search: everything matching `query`, newest-first — the director-conversation
   // hits in `messages`, and in `tasks` the tasks whose title, brief or conversation matches. Echoing
   // the query lets the client ignore a stale reply if the operator has since retyped.
@@ -167,7 +170,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // source:"voice" marks a spoken prompt (voice-gateway): the director gets a TTS-aware note
   // appended so it answers conversationally and confirms aloud before dispatching.
   z.object({ type: z.literal("prompt.new"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, source: z.literal("voice").optional() }),
-  // Skip-director mode: bypass the Sonnet director and dispatch the message straight into the pipeline
+  // Skip-director mode: bypass the provider-neutral director and dispatch straight into the pipeline
   // (its first active stage — planner if enabled, else the implementor). workspace is required since
   // there's no director to resolve one.
   z.object({ type: z.literal("prompt.direct"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField }),

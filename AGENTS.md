@@ -19,7 +19,7 @@ curl -s -b /tmp/cj.txt http://127.0.0.1:4317/api/threads
 ```
 (Google sign-in also works, but the password is simplest for headless agents. Local/LAN only.)
 
-A director's console for running Codex agents: a Sonnet **director** enriches a
+A director's console for running Codex agents: a provider-neutral **director** enriches a
 prompt, runs a planner + researcher, then dispatches Opus 4.8 **implementor** workers you
 can inject into mid-work. Node/Fastify API (`server/`) + React/Vite console (`web/`), single origin.
 

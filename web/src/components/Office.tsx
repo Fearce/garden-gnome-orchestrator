@@ -131,6 +131,7 @@ export function Office() {
   const officeRoom = useStore((s) => s.officeRoom);
   const openOffice = useStore((s) => s.openOffice);
   const directorBusy = useStore((s) => s.directorBusy);
+  const directorStatus = useStore((s) => s.directorStatus);
   const onlineOffice = useStore((s) => s.onlineOffice);
   const nameOverrides = useStore((s) => s.nameOverrides);
   const directorName = useStore((s) => s.settings.directorName);
@@ -220,8 +221,8 @@ export function Office() {
       <div className="office-strip" title="The office — the director and any agents working right now. Click to open the chat.">
         <button
           className={"office-walker office-director" + (directorBusy ? " working" : "")}
-          // The director is a Sonnet — pace it at the same model-driven medium lap as any Sonnet worker.
-          style={{ "--pace-dur": `${pacePeriodForModel("claude-sonnet")}s`, "--pace-delay": "0s" } as CSSProperties}
+          // Pace the gnome from the runtime model; cap failover can move the director between providers.
+          style={{ "--pace-dur": `${pacePeriodForModel(directorStatus?.model ?? "claude-sonnet")}s`, "--pace-delay": "0s" } as CSSProperties}
           onClick={() => openOffice(GENERAL_ROOM)}
           title={directorBusy ? "The director is working — click to open the office chat" : "The director — click to open the office chat"}
         >

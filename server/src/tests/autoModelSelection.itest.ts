@@ -11,7 +11,7 @@
  *  - REAL: `autoSelectModel` (its roster, its persistence, its grade record), `pickedModel`,
  *    `implementorEffort`, `routeForPick`, `startImplementor`'s model/effort resolution, `setState`'s
  *    grading hook, and the real Db behind all of them.
- *  - STUBBED: the network (a canned Anthropic reply — no token, no quota) and `wireRun`, which is the
+ *  - STUBBED: the provider-neutral structured judgement seam (a canned reply — no token, no quota) and `wireRun`, which is the
  *    last thing `startImplementor` does BEFORE spawning the CLI. Throwing there stops the run at exactly
  *    the point where the `agent_runs` row (model + effort) exists but nothing has been spawned, which is
  *    the only assertion this test needs from that method.
@@ -112,14 +112,28 @@ function makeHarness(): Harness {
   const mgr = new ThreadManager(db, hub, memory, new StubAccounts() as unknown as AccountManager);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = mgr as any;
+  internals.liveBench.prepareForSelection = async (): Promise<void> => {};
+  internals.liveBench.note = (): undefined => undefined;
+  let calls = 0;
+  let queue: string[] = [];
+  internals.askDirectorJson = async (): Promise<unknown | null> => {
+    calls++;
+    const text = queue.shift() ?? "";
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end < start) return null;
+    try {
+      return JSON.parse(text.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  };
   internals.wireRun = (): never => {
     throw new Error(WIRE_SENTINEL);
   };
   internals.officeCheckIn = (): void => {};
   internals.ensureGroup = (): void => {};
 
-  let calls = 0;
-  let queue: string[] = [];
   globalThis.fetch = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     // Only the selection call is answered; anything else this process might reach for (the voice-gateway
     // probe on a `done` settle) must look offline rather than be handed a model reply.
@@ -159,6 +173,31 @@ const thread = (h: Harness, id: string): Thread => h.db.getThread(id)!;
 
 async function main(): Promise<void> {
   console.log("\n=== auto model selection — pipeline wiring (real machinery) ===\n");
+
+  // -- roster: direct successors replace retired same-tier models in automatic choices ------------
+  console.log("Test roster — newest available Claude generation represents each capability tier");
+  {
+    const h = makeHarness();
+    try {
+      // Deliberately put the predecessors first: provider/cache ordering must not decide capability.
+      h.db.kvSet("cache_claude_models", JSON.stringify([
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        HAIKU,
+      ]));
+      const roster = h.internals.claudeRosterModels() as string[];
+      const pickable = h.internals.pickableClaudeModels() as string[];
+      check("Opus 5 is the automatic Opus candidate", roster.includes("claude-opus-5"), JSON.stringify(roster));
+      check("Opus 4.8 is not offered beside its direct successor", !roster.includes("claude-opus-4-8"), JSON.stringify(roster));
+      check("Sonnet 5 is the automatic Sonnet candidate", roster.includes("claude-sonnet-5"), JSON.stringify(roster));
+      check("Sonnet 4.6 is not offered beside its successor", !roster.includes("claude-sonnet-4-6"), JSON.stringify(roster));
+      check("older Claude models remain available for a manual compatibility pin", pickable.includes("claude-opus-4-8"), JSON.stringify(pickable));
+    } finally {
+      h.dispose();
+    }
+  }
 
   // -- A: off by default — the feature costs nothing until it's switched on ---------------------------
   console.log("Test A — the setting is off by default and nothing is spent");
@@ -355,9 +394,9 @@ async function main(): Promise<void> {
       h.reply(pickReply(HAIKU));
       await h.internals.autoSelectModel(thread(h, id));
       const r1 = h.db.createRun({ threadId: id, role: "implementor", model: HAIKU, account: "account a", effort: "low" });
-      h.db.updateRun(r1.id, { state: "done", costUsd: 0.5, numTurns: 12, endedAt: Date.now() });
+      h.db.updateRun(r1.id, { state: "done", costUsd: 0.5, numTurns: 12, tokenUsage: { inputTokens: 70_000, outputTokens: 10_000, cacheReadInputTokens: 20_000, cacheCreationInputTokens: 2_000, reasoningOutputTokens: 0, totalTokens: 80_000 }, endedAt: Date.now() });
       const r2 = h.db.createRun({ threadId: id, role: "qa", model: "claude-opus-4-8" });
-      h.db.updateRun(r2.id, { state: "done", costUsd: 1.5, numTurns: 20, endedAt: Date.now() });
+      h.db.updateRun(r2.id, { state: "done", costUsd: 1.5, numTurns: 20, tokenUsage: { inputTokens: 30_000, outputTokens: 5_000, cacheReadInputTokens: 10_000, cacheCreationInputTokens: 1_000, reasoningOutputTokens: 0, totalTokens: 35_000 }, endedAt: Date.now() });
       h.db.updateThreadStageOutputs(id, { qaRoundsUsed: 2 });
 
       h.internals.setState(id, "done");
@@ -365,9 +404,14 @@ async function main(): Promise<void> {
       check("the task is graded", graded?.outcome === "done" && graded.gradedAt != null, JSON.stringify(graded));
       check("one QA fix-round costs 12", graded?.score === 88, String(graded?.score));
       check("the whole task's cost is recorded", graded?.costUsd === 2, String(graded?.costUsd));
+      check("the whole pipeline's token burn is recorded durably", graded?.tokenUsage?.totalTokens === 115_000 && graded.tokenUsage.cacheReadInputTokens === 30_000, JSON.stringify(graded?.tokenUsage));
+      check("complete token telemetry is marked comparable", graded?.tokenUsageComplete === true, JSON.stringify(graded));
       check("the model that ran is credited", graded?.gradedModel === HAIKU, String(graded?.gradedModel));
       const stats = h.db.modelStats();
       check("the scoreboard has it", stats.length === 1 && stats[0]!.model === HAIKU && stats[0]!.avgScore === 88, JSON.stringify(stats));
+      check("the scoreboard feeds token burn to later picks", stats[0]?.avgTotalTokens === 115_000 && stats[0]?.avgOutputTokens === 15_000, JSON.stringify(stats[0]));
+      check("the scoreboard exposes token measurement coverage", stats[0]?.tokenSampleRate === 1, JSON.stringify(stats[0]));
+      check("effort-specific history is retained too", h.db.modelEffortStats()[0]?.effort === "low" && h.db.modelEffortStats()[0]?.avgTotalTokens === 115_000, JSON.stringify(h.db.modelEffortStats()));
       check("and it is visible for this repo", h.db.modelStats(stats.length ? h.db.getModelGrade(id)!.workspace : "").length === 1, "repo-scoped stats missed it");
       check("the grade is announced once", h.db.listFindings(id).filter((f) => f.summary.includes("scored")).length === 1, "grade finding count wrong");
     } finally {

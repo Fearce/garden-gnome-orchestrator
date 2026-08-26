@@ -15,7 +15,7 @@
 // Each QA fix-round past the first costs 12, capped at 36 — so a `done` that needed four rounds (64)
 // still ranks above a `review` that needed one (40). Reaching QA once is normal and free.
 
-import type { AgentRun, ModelOutcome, ThreadState } from "../types.js";
+import type { AgentRun, ModelOutcome, ThreadState, TokenUsage } from "../types.js";
 
 export const QA_ROUND_PENALTY = 12;
 export const MAX_QA_PENALTY = 36;
@@ -52,9 +52,20 @@ export function summarizeRuns(runs: AgentRun[]): {
   gradedModel: string | null;
   costUsd: number;
   numTurns: number;
+  tokenUsage: TokenUsage | null;
+  tokenUsageComplete: boolean;
 } {
   const ranModels: string[] = [];
   for (const r of runs) if (r.role === "implementor" && !ranModels.includes(r.model)) ranModels.push(r.model);
+  const usageRows = runs.map((r) => r.tokenUsage).filter((u): u is TokenUsage => !!u);
+  const tokenUsage = usageRows.length ? usageRows.reduce<TokenUsage>((sum, usage) => ({
+    inputTokens: sum.inputTokens + usage.inputTokens,
+    outputTokens: sum.outputTokens + usage.outputTokens,
+    cacheReadInputTokens: sum.cacheReadInputTokens + usage.cacheReadInputTokens,
+    cacheCreationInputTokens: sum.cacheCreationInputTokens + usage.cacheCreationInputTokens,
+    reasoningOutputTokens: sum.reasoningOutputTokens + usage.reasoningOutputTokens,
+    totalTokens: sum.totalTokens + usage.totalTokens,
+  }), { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 }) : null;
   return {
     ranModels,
     // A task a cap-failover split across two backends is evidence about neither, so it scores but never
@@ -62,6 +73,8 @@ export function summarizeRuns(runs: AgentRun[]): {
     gradedModel: ranModels.length === 1 ? ranModels[0]! : null,
     costUsd: runs.reduce((sum, r) => sum + (r.costUsd ?? 0), 0),
     numTurns: runs.reduce((sum, r) => sum + (r.numTurns ?? 0), 0),
+    tokenUsage,
+    tokenUsageComplete: runs.length > 0 && usageRows.length === runs.length,
   };
 }
 
@@ -83,6 +96,8 @@ export interface GradePatch {
   qaRounds: number;
   costUsd: number;
   numTurns: number;
+  tokenUsage: TokenUsage | null;
+  tokenUsageComplete: boolean;
   durationMs: number;
   ranModels: string;
   gradedModel: string | null;
@@ -106,6 +121,8 @@ export function gradeSettledTask(f: SettleFacts): GradePatch | null {
     qaRounds: f.qaRounds,
     costUsd: Number(summary.costUsd.toFixed(4)),
     numTurns: summary.numTurns,
+    tokenUsage: summary.tokenUsage,
+    tokenUsageComplete: summary.tokenUsageComplete,
     durationMs: Math.max(0, f.settledAt - f.dispatchedAt),
     ranModels: summary.ranModels.join(", "),
     gradedModel: summary.gradedModel,

@@ -73,6 +73,8 @@
     "test:auto-review": "tsx src/tests/autoReview.itest.ts",
     "test:model-select": "tsx src/tests/modelSelection.test.ts",
     "test:auto-model": "tsx src/tests/autoModelSelection.itest.ts",
+    "test:director-provider": "tsx src/tests/directorProvider.test.ts",
+    "test:livebench": "tsx src/tests/liveBenchScores.test.ts",
     "test:self-improve-restart": "tsx src/tests/selfImproveRestart.itest.ts",
     "test:restart-revival": "tsx src/tests/restartResumeRevival.itest.ts",
     "test:silent-resume": "tsx src/tests/silentResume.itest.ts",

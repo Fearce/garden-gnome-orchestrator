@@ -140,6 +140,7 @@ export interface AgentRun {
   state: AgentRunState;
   costUsd?: number | null;
   numTurns?: number | null;
+  tokenUsage?: TokenUsage | null;
   error?: string | null;
   /** Whether the RUNNER saw a usage cap during this run (`rateLimited` / a CLI backend's `capped`) — the
    *  flag every failover path keys on. Persisted because its absence is otherwise unprovable: a cap the
@@ -150,6 +151,18 @@ export interface AgentRun {
   capFlagged?: boolean | null;
   startedAt: number;
   endedAt?: number | null;
+}
+
+/** Provider-neutral token accounting captured from a run's terminal usage payload. Every category is
+ *  preserved because subscription-backed models can have $0 nominal cost while consuming scarce plan
+ *  allowance, and cache/reasoning ratios are useful evidence for later model + effort choices. */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
 }
 
 export interface QuestionOption {
@@ -450,6 +463,8 @@ export interface ModelGrade {
   costUsd?: number | null; // summed across ALL the task's agent runs at settle time — a cheap model that
   // needs three QA rounds is not cheap, and only the whole-task total says so
   numTurns?: number | null;
+  tokenUsage?: TokenUsage | null; // whole-pipeline totals, durable after the source task is purged
+  tokenUsageComplete?: boolean | null; // every run in the pipeline supplied usage; false = retain partial data but never compare it as a full cost
   durationMs?: number | null; // dispatch → settle wall-clock
   /** Every distinct model that actually ran the implementor role, comma-joined — a cap-failover can move
    *  the work off the picked model mid-task, and the record has to say so. */
@@ -471,7 +486,19 @@ export interface ModelStat {
   doneRate: number; // 0-1
   avgQaRounds: number;
   avgCostUsd: number;
+  avgTotalTokens: number | null;
+  avgInputTokens: number | null;
+  avgOutputTokens: number | null;
+  avgCacheTokens: number | null;
+  avgReasoningTokens: number | null;
+  tokenSampleRate: number; // 0-1 of graded tasks with complete whole-pipeline token telemetry
   avgMinutes: number;
+}
+
+/** The same durable evidence split by the auto-selected effort. Aggregate model stats remain useful
+ *  with sparse history; this second view teaches the selector when low/medium/high actually paid off. */
+export interface ModelEffortStat extends ModelStat {
+  effort: Effort;
 }
 
 /**
@@ -543,7 +570,7 @@ export interface OrchestratorSettings {
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
   maxReviewFixRounds: number; // implementor fix-rounds the auto-reviewer may trigger when it hands a task back (default 1; 0 = hand straight back to the owner, the pre-fix-round behavior)
   selfImproveEnabled: boolean; // off (default) → opt-in; on → after a task completes, the implementor runs one extra round building the tools/skills/memories that would have made the task easier
-  autoModelSelection: boolean; // off (default) → the implementor runs on the configured per-subscription model and the planner's effort. on → before the implementor starts, the director judges the task + repo and picks the model AND effort from every backend that is dispatchable right now (Haiku…Opus, Fable, Codex gpt, Grok, GLM). Every auto-selected task is graded when it settles, and those grades feed the next pick.
+  autoModelSelection: boolean; // off (default) → configured models + usage-aware provider routing. on → one smart call picks a sticky director model (re-picked on cap), and before each implementor starts a provider-neutral judge picks its model AND effort from every backend dispatchable right now. Implementor picks are graded for the next choice.
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
   maxConcurrentPerRepo: number; // max pipelines running at once for a SINGLE repo (normalized workspace); 0 (default) = unlimited. Additional tasks for a repo already at its per-repo cap wait in 'queued' until one of that repo's tasks finishes — tasks in OTHER repos are unaffected (they still run up to maxConcurrent).
   // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----
@@ -616,6 +643,14 @@ export interface OrchestratorSettings {
 /** The implementor backend chosen at dispatch by the subscription toggles. */
 export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
 
+/** The backend/model the long-lived director is actually using right now. Unlike the configured model
+ *  matrix this is runtime truth: cap failover and auto-selection can move the director between providers. */
+export interface DirectorStatus {
+  provider: ImplementorProvider;
+  model: string;
+  accountLabel: string;
+}
+
 /** The five agent roles a model can be picked for. Mirrored in web/src/types.ts. */
 export const MODEL_ROLES: Role[] = ["director", "planner", "researcher", "implementor", "qa"];
 
@@ -624,8 +659,8 @@ export const MODEL_ROLES: Role[] = ["director", "planner", "researcher", "implem
  * id (AccountDTO.id), the literal "codex" for the OpenAI backend, or "default" for the global per-role
  * fallback applied when a specific subscription has no override. Inner map is role → model id. A missing
  * entry falls through: subscription override → "default" override → the built-in config.models default.
- * Codex only implements, so only its "implementor" entry is meaningful and it never inherits a Claude
- * default (a Claude model id would be invalid for the Codex CLI).
+ * Alternate providers never inherit a Claude default (a Claude model id would be invalid there); their
+ * director row is meaningful through the provider-neutral command/native-tool director adapters.
  */
 export const DEFAULT_SUB_ID = "default";
 export const CODEX_SUB_ID = "codex";
@@ -671,6 +706,7 @@ export type AgentEvent =
       structuredOutput?: unknown;
       costUsd?: number;
       numTurns?: number;
+      tokenUsage?: TokenUsage;
       // The turn was ABORTED (owner steering / a pause), not finished. The CLI ends an aborted turn with
       // a success-shaped, empty result, so without this flag nothing downstream can tell it from a run
       // that completed — which is how one office-chat post ended every implementor in a repo at once.

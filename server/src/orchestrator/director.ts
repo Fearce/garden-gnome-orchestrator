@@ -1,31 +1,35 @@
-import { AgentRun, type UserContent } from "../agents/runner.js";
+import type { AgentRunLike, ResultEvent, UserContent } from "../agents/runner.js";
 import { directorConfig } from "../agents/roles.js";
 import { createDirectorServer } from "../bus/directorServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { contentWithImages, toImageBlock } from "../attachments.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
-import type { AgentEvent, DirectorMessage, ImageAttachment } from "../types.js";
-import type { ThreadManager } from "./threadManager.js";
+import type { AgentEvent, DirectorMessage, DirectorStatus, ImageAttachment } from "../types.js";
+import type { DirectorTarget, ThreadManager } from "./threadManager.js";
 import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
 import type { Account } from "../accounts/account.js";
 import { untilReset } from "../accounts/accountManager.js";
 import { config, fallbackModelFor } from "../config.js";
 import { existsSync } from "node:fs";
+import { DIRECTOR_CLI_PROTOCOL, DIRECTOR_CLI_SCHEMA, executeDirectorCliAction, type DirectorCliAction } from "./directorCliBridge.js";
 
-const MAX_DIRECTOR_FAILOVERS = 2;
+const MAX_DIRECTOR_FAILOVERS = 6;
+const MAX_CLI_ACTIONS = 20;
+const DIRECTOR_TARGET_KV = "director_target_key";
+const DIRECTOR_TARGET_AUTO_KV = "director_target_auto";
 
 /**
- * The single long-lived Sonnet session the owner chats with. Streaming-input mode
- * keeps the conversation alive across many messages; if the process ever ends
- * we restart and resume from the captured session id so context is preserved.
+ * The single long-lived director the owner chats with. Claude/z.ai use native MCP tools; Codex/Grok
+ * use a constrained server-command bridge. The selected target is sticky until it caps.
  */
 export class Director {
-  private run: AgentRun | undefined;
-  private sessionId: string | undefined;
-  private accountId: string | undefined;
-  private accountLabel: string | undefined;
+  private run: AgentRunLike | undefined;
+  private target: DirectorTarget | undefined;
+  private readonly sessions = new Map<string, string>();
+  private activeSessionKey: string | undefined;
+  private targetWasAuto = false;
   private busy = false;
   /** Images from the current user turn — carried past the text-only dispatch tool to the pipeline. */
   private pendingImages: ImageAttachment[] = [];
@@ -42,6 +46,16 @@ export class Director {
    *  (e.g. the "dispatched X" confirmation) belong to that task, so they're linked to it as they stream —
    *  a plain timeline heuristic would otherwise misfile a post-dispatch note under the NEXT task. */
   private turnDispatchId: string | undefined;
+  private cliActions = 0;
+  private cliCorrections = 0;
+  /** A CLI command may already have changed orchestrator state before its confirmation turn fails.
+   *  Preserve the successful result so a malformed/crashed follow-up can never tell the owner the
+   *  whole turn failed (and invite a duplicate dispatch). */
+  private cliCommittedResult: string | undefined;
+  private startGeneration = 0;
+  /** CLI processes end immediately after emitting their structured result. Bridge execution can await
+   *  server work, so onEnd must not settle the turn while handleCliResult still owns that result. */
+  private readonly cliHandling = new WeakSet<AgentRunLike>();
 
   constructor(
     private readonly api: ThreadManager,
@@ -49,7 +63,20 @@ export class Director {
     private readonly hub: EventHub,
     private readonly scheduler: Scheduler,
     private readonly notes: OperatorNotes,
-  ) {}
+  ) {
+    const key = db.kvGet(DIRECTOR_TARGET_KV);
+    this.targetWasAuto = db.kvGet(DIRECTOR_TARGET_AUTO_KV) === "1";
+    if (key) {
+      const saved = api.directorTargets(this.targetWasAuto).find((t) => t.key === key);
+      if (saved && api.directorTargetReady(saved)) this.target = saved;
+    }
+  }
+
+  status(): DirectorStatus | null {
+    return this.target
+      ? { provider: this.target.provider, model: this.target.model, accountLabel: this.target.accountLabel }
+      : null;
+  }
 
   handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice"): void {
     const refs = (images ?? []).map((img) =>
@@ -71,32 +98,34 @@ export class Director {
     const content = contentWithImages(source === "voice" ? `${base}\n\n${voiceNote()}` : base, this.pendingImages.map(toImageBlock));
     this.pending = content;
     this.failovers = 0;
+    this.cliActions = 0;
+    this.cliCorrections = 0;
+    this.cliCommittedResult = undefined;
 
     const live = this.run && !this.run.finished;
-    const accountCapped = this.accountId ? this.api.accounts.isRateLimited(this.accountId) : false;
-    if (live && accountCapped) {
-      // The long-lived session is stuck on a now-capped account — move it to one with
-      // headroom (resume keeps the conversation) BEFORE sending, so the owner never sees the
-      // SDK's "session limit" message while the other subscription is wide open.
-      const next = this.api.accounts.selectFailover(this.accountId!);
-      this.hub.log("info", `Director's ${this.accountLabel ?? this.accountId} is at its limit — switching to ${next?.label ?? "the other account"}.`);
-      void this.run!.stop();
-      this.start(content, next ?? undefined);
+    const auto = this.api.settings().autoModelSelection;
+    const mustReselect = !this.target || !this.api.directorTargetReady(this.target) || auto !== this.targetWasAuto;
+    if (live && mustReselect) {
+      const old = this.run!;
+      this.run = undefined; // neutralize the old onEnd before stop() emits it
+      this.hub.log("info", "Director target changed or lost headroom — selecting another enabled provider/model.");
+      void old.stop();
+      void this.start(content);
     } else if (live) {
       this.run!.send(content);
     } else {
-      this.start(content); // a fresh run's select() already skips capped accounts
+      void this.start(content);
     }
     this.setBusy(true);
   }
 
   /**
-   * Skip-director mode: dispatch the owner's message straight into the pipeline without the Sonnet
-   * director enriching/clarifying. The message becomes the brief verbatim and enters the pipeline at
+   * Skip-director mode: dispatch the owner's message straight into the pipeline without the
+   * provider-neutral director enriching/clarifying. The message becomes the brief verbatim and enters the pipeline at
    * its first active stage (planner if enabled, else the implementor — runPipeline routes by settings,
    * so this is never hardcoded to one agent). A workspace is required: there's no director to resolve
    * one. The user message + a confirmation are echoed into the director chat so the transcript shows
-   * what was sent; the long-lived Sonnet session is left completely untouched.
+   * what was sent; the long-lived director session is left completely untouched.
    */
   async dispatchDirect(text: string, workspace?: string, images?: ImageAttachment[]): Promise<void> {
     // Skip-director is an EXPLICIT owner choice, so honor it unconditionally: even a scheduling-shaped
@@ -159,6 +188,7 @@ export class Director {
    */
   cancelTurn(): void {
     if (!this.busy) return;
+    this.startGeneration++; // invalidate an in-flight smart selection before it can spawn a replacement
     const run = this.run;
     // Drop the run reference FIRST: stop() triggers this run's onEnd, and clearing it here makes
     // that handler see itself superseded (this.run !== run) and skip reactiveFailover — we settle
@@ -183,23 +213,73 @@ export class Director {
     return m;
   }
 
-  private start(firstContent: UserContent, account?: Account): void {
+  private async start(firstContent: UserContent, target?: DirectorTarget): Promise<void> {
+    const generation = ++this.startGeneration;
+    const chosen = target ?? await this.chooseTarget();
+    if (generation !== this.startGeneration || this.pending === undefined) return;
+    if (!chosen) {
+      this.postDirectorNote(this.allCappedMessage());
+      this.settleTurn();
+      return;
+    }
     const director = createDirectorServer(this.api, () => this.pendingImages, (threadId) => {
       this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId);
       this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
     }, this.scheduler, this.notes);
     const memory = createMemoryServer(this.api.memory);
     const cfg = directorConfig({ director, memory }, this.api.directorName());
-    const acct = account ?? this.api.accounts.select().account;
-    this.accountId = acct.id;
-    this.accountLabel = acct.label;
-    cfg.model = this.api.modelFor(acct.id, "director");
-    cfg.oauthToken = acct.token || undefined;
-    if (this.sessionId) cfg.resume = this.sessionId;
-    const run = new AgentRun(cfg);
+    const sessionKey = this.sessionKey(chosen);
+    const resume = this.activeSessionKey === sessionKey ? this.sessions.get(sessionKey) : undefined;
+    const isCli = chosen.provider === "codex" || chosen.provider === "grok";
+    const run = this.api.createDirectorAgent(chosen, cfg, { resume, ...(isCli ? { cliSchema: DIRECTOR_CLI_SCHEMA } : {}) });
+    this.target = chosen;
+    this.activeSessionKey = sessionKey;
+    this.db.kvSet(DIRECTOR_TARGET_KV, chosen.key);
+    this.db.kvSet(DIRECTOR_TARGET_AUTO_KV, this.targetWasAuto ? "1" : "0");
     this.run = run;
-    this.wire(run, acct);
-    run.start(firstContent);
+    this.publishStatus();
+    this.wire(run, chosen);
+    const content = resume ? firstContent : this.bootstrapContent(firstContent, cfg.systemPrompt, isCli);
+    run.start(content);
+  }
+
+  private async chooseTarget(excludeKeys: ReadonlySet<string> = new Set()): Promise<DirectorTarget | undefined> {
+    const auto = this.api.settings().autoModelSelection;
+    const available = this.api.directorTargets(auto).filter((t) => !excludeKeys.has(t.key));
+    const sticky = this.target && auto === this.targetWasAuto && !excludeKeys.has(this.target.key) && this.api.directorTargetReady(this.target)
+      ? available.find((t) => t.key === this.target!.key)
+      : undefined;
+    if (sticky) return sticky;
+    let target: DirectorTarget | undefined;
+    if (auto) target = await this.api.autoSelectDirectorTarget(excludeKeys);
+    else target = this.api.preferredDirectorTarget(available);
+    this.targetWasAuto = auto;
+    return target;
+  }
+
+  private sessionKey(target: DirectorTarget): string {
+    // Claude local sessions are portable between Claude subscription tokens; every other provider owns
+    // a separate session namespace and must bootstrap from persisted conversation on a cross-provider move.
+    return target.provider === "claude" ? "claude" : target.provider;
+  }
+
+  private bootstrapContent(content: UserContent, systemPrompt: unknown, cli: boolean): UserContent {
+    const previous = this.db.listDirectorMessages(40)
+      .filter((m) => !this.currentTurnMsgIds.includes(m.id))
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((m) => `${m.role === "user" ? config.ownerName : this.api.directorName()}: ${m.content}`)
+      .join("\n\n")
+      .slice(-16_000);
+    const system = typeof systemPrompt === "string" ? systemPrompt : "";
+    const prefix = [
+      cli ? system : "",
+      cli ? DIRECTOR_CLI_PROTOCOL : "",
+      previous ? `Conversation context from the previous provider/session:\n${previous}` : "",
+      previous ? "Continue naturally with the new user message below. Do not mention the provider switch." : "",
+    ].filter(Boolean).join("\n\n");
+    if (!prefix) return content;
+    if (typeof content === "string") return `${prefix}\n\n${content}`;
+    return [{ type: "text", text: prefix }, ...content] as UserContent;
   }
 
   private setBusy(b: boolean): void {
@@ -208,47 +288,35 @@ export class Director {
     this.hub.publish({ type: "director.busy", busy: b });
   }
 
-  private wire(run: AgentRun, acct: Account): void {
-    // `acct` is captured per-run: once a failover reassigns `this.account*`, a trailing
-    // event from THIS (now-dead) run must still be charged to the account it ran on.
+  private publishStatus(): void {
+    this.hub.publish({ type: "director.status", status: this.status() });
+  }
+
+  private wire(run: AgentRunLike, target: DirectorTarget): void {
+    const cli = target.provider === "codex" || target.provider === "grok";
     const off = run.onEvent((e: AgentEvent) => {
       if (this.run !== run) return; // superseded by a failover switch — don't touch the new run's state
       switch (e.type) {
         case "init":
-          // sessionId is optional on the event (Grok may emit an early session-less init); only
-          // overwrite when the CLI supplies a real id.
-          if (e.sessionId) this.sessionId = e.sessionId;
+          if (e.sessionId) this.sessions.set(this.sessionKey(target), e.sessionId);
           break;
         case "text_delta":
-          this.hub.publish({ type: "director.delta", text: e.text });
+          if (!cli) this.hub.publish({ type: "director.delta", text: e.text });
           break;
         case "text": {
-          const m = this.db.addDirectorMessage({ role: "director", kind: "text", content: e.text });
-          this.currentTurnMsgIds.push(m.id); // part of this turn's segment — links to a dispatch it precedes
-          // A reply written AFTER this turn already dispatched (the confirmation note) belongs to that
-          // task — link it now so it doesn't fall to the timeline heuristic and misfile under the next one.
-          if (this.turnDispatchId) this.db.linkDirectorMessagesToThread([m.id], this.turnDispatchId);
-          this.hub.publish({ type: "director.message", message: m });
+          if (!cli) this.postModelMessage(e.text);
           break;
         }
         case "tool_use":
           this.hub.publish({ type: "director.tool", name: e.name, input: e.input });
           break;
         case "result":
-          if (run.rateLimited) {
-            // The long-lived streaming session doesn't END on a capped turn — it just finishes the
-            // turn with a result and waits for more input — so onEnd never fires to fail us over.
-            // Drive the switch from here: move to a sub with headroom, resume, re-send the turn.
-            this.reactiveFailover(run, acct);
-          } else {
-            this.pending = undefined;
-            this.failovers = 0;
-            this.pendingImages = []; // turn done — don't hold base64 between turns
-            this.setBusy(false);
-          }
+          if (this.api.directorRunCapped(target, run)) this.reactiveFailover(run, target);
+          else if (cli) void this.handleCliResult(run, target, e);
+          else this.settleTurn();
           break;
         case "rate_limit":
-          this.api.accounts.updateFromRateLimit(acct.id, e.info);
+          if (target.provider === "claude") this.api.accounts.updateFromRateLimit(target.accountId, e.info);
           break;
         case "error":
           this.hub.log("error", `Director: ${e.message}`); // onEnd settles busy / fails over
@@ -260,12 +328,122 @@ export class Director {
     run.onEnd(() => {
       off(); // detach this run's listener so its trailing events can't mutate shared state
       if (this.run !== run) return; // a proactive switch (or a result-driven failover) replaced us
+      // Codex/Grok are one-process-per-turn. Their result event and end event are adjacent, while a
+      // bridge command (even a plain reply through an async function) resumes on a microtask. Leave the
+      // dead runner owned by that handler; it will either post the reply or start a fresh resumed CLI turn.
+      if (cli && this.cliHandling.has(run)) return;
       // onEnd only fires when the run truly ENDS — a thrown error / process death. The normal capped
       // turn is handled in the `result` handler above; this catches a run the cap (or a crash) killed
       // outright. reactiveFailover fails over on a cap, otherwise just settles the abandoned turn.
-      this.reactiveFailover(run, acct);
+      this.reactiveFailover(run, target);
       if (this.run === run) this.run = undefined; // not switched away — this run is dead, drop it
     });
+  }
+
+  private postModelMessage(content: string): DirectorMessage {
+    const m = this.db.addDirectorMessage({ role: "director", kind: "text", content });
+    this.currentTurnMsgIds.push(m.id);
+    if (this.turnDispatchId) this.db.linkDirectorMessagesToThread([m.id], this.turnDispatchId);
+    this.hub.publish({ type: "director.message", message: m });
+    return m;
+  }
+
+  private async handleCliResult(run: AgentRunLike, target: DirectorTarget, result: ResultEvent): Promise<void> {
+    if (this.run !== run || this.pending === undefined) return;
+    this.cliHandling.add(run);
+    if (result.isError) {
+      if (this.cliCommittedResult) {
+        this.finishCommittedCliTurn(run);
+        return;
+      }
+      void this.failoverAfterCliError(run, target, result.result);
+      return;
+    }
+    const action = result.structuredOutput as DirectorCliAction | undefined;
+    if (!action?.kind) {
+      if (this.cliCommittedResult) {
+        this.finishCommittedCliTurn(run);
+        return;
+      }
+      if (++this.cliCorrections <= 2) {
+        const detail = "lastStructuredError" in run && typeof run.lastStructuredError === "string"
+          ? ` Parser detail: ${run.lastStructuredError}`
+          : "";
+        this.continueCli(run, target, `Your reply did not match the Director command schema.${detail} Return exactly one valid JSON command now.`);
+        return;
+      }
+      this.cliHandling.delete(run);
+      this.run = undefined;
+      this.postDirectorNote(`${providerName(target)} could not produce a valid director command. I stopped this turn; resend and another available provider will be tried.`);
+      this.settleTurn();
+      return;
+    }
+    if (++this.cliActions > MAX_CLI_ACTIONS) {
+      this.cliHandling.delete(run);
+      this.run = undefined;
+      this.postDirectorNote("I stopped that turn because the director command loop exceeded its safety limit. Resend with the key action you want.");
+      this.settleTurn();
+      return;
+    }
+    const outcome = await executeDirectorCliAction(action, this.api, this.scheduler, this.notes, this.pendingImages);
+    if (this.run !== run || this.pending === undefined) return;
+    if (outcome.toolName) this.hub.publish({ type: "director.tool", name: outcome.toolName, input: outcome.toolInput });
+    if (outcome.dispatchedId) {
+      this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, outcome.dispatchedId);
+      this.turnDispatchId = outcome.dispatchedId;
+    }
+    if (outcome.result && isCommittedCliAction(action.kind) && !outcome.result.startsWith("ERROR:")) {
+      this.cliCommittedResult = outcome.result;
+    }
+    if (outcome.final) {
+      this.cliHandling.delete(run);
+      this.run = undefined;
+      this.postModelMessage(outcome.final);
+      this.settleTurn();
+      return;
+    }
+    this.continueCli(run, target, `TOOL RESULT (${outcome.toolName ?? action.kind}):\n${outcome.result ?? "OK"}\n\nReturn the next Director JSON command.`);
+  }
+
+  /** Finish truthfully after a state-changing command succeeded but its optional prose confirmation
+   *  failed. The server's own tool result is authoritative and already concise/user-facing. */
+  private finishCommittedCliTurn(run: AgentRunLike): void {
+    if (this.run !== run || !this.cliCommittedResult) return;
+    const message = this.cliCommittedResult;
+    this.cliHandling.delete(run);
+    this.run = undefined;
+    this.postModelMessage(message);
+    this.settleTurn();
+  }
+
+  /** A real CLI/process failure before any side effect is safe to retry on a different provider. Do
+   *  not mislabel it as malformed JSON, and do not wait for the owner to resend manually. */
+  private async failoverAfterCliError(run: AgentRunLike, target: DirectorTarget, reason?: string): Promise<void> {
+    if (this.run !== run || this.pending === undefined) return;
+    const pending = this.pending;
+    const next = this.failovers < MAX_DIRECTOR_FAILOVERS
+      ? await this.chooseTarget(new Set([target.key]))
+      : undefined;
+    if (this.run !== run || this.pending === undefined) return;
+    this.cliHandling.delete(run);
+    this.run = undefined;
+    await run.stop().catch(() => {});
+    if (next) {
+      this.failovers++;
+      this.hub.log("warn", `Director CLI failed on ${providerName(target)} — switching to ${providerName(next)}. ${reason ?? ""}`.trim());
+      await this.start(pending, next);
+      return;
+    }
+    this.postDirectorNote(`${providerName(target)} could not complete the director turn${reason ? `: ${reason}` : "."}`);
+    this.settleTurn();
+  }
+
+  /** A completed batch CLI cannot be reused in-place: start a new process resumed onto its session. */
+  private continueCli(run: AgentRunLike, target: DirectorTarget, content: string): void {
+    if (this.run !== run || this.pending === undefined) return;
+    this.cliHandling.delete(run);
+    this.run = undefined; // neutralize the old runner's adjacent onEnd callback
+    void this.start(content, target);
   }
 
   /**
@@ -278,64 +456,79 @@ export class Director {
    * streaming turn) and onEnd (run died) — the `this.run !== run` guards in wire() neutralize the
    * superseded run's trailing events.
    */
-  private reactiveFailover(run: AgentRun, acct: Account): void {
+  private reactiveFailover(run: AgentRunLike, target: DirectorTarget): void {
     if (this.classifying) return; // an in-flight classification owns this turn's revival — don't race it
     if (run.rateLimited && this.pending !== undefined && this.failovers < MAX_DIRECTOR_FAILOVERS) {
-      const model = this.api.modelFor(acct.id, "director");
-      if (fallbackModelFor(model)) {
+      if (target.provider === "claude" && fallbackModelFor(target.model)) {
         // classifyCap pings the account (async) — latch a flag so a result-handler call and an onEnd
         // call for the same dead run can't both classify and double-start the replacement.
         this.classifying = true;
-        void this.classifyThenFailover(run, acct, model).finally(() => (this.classifying = false));
+        void this.classifyThenFailover(run, target).finally(() => (this.classifying = false));
         return;
       }
     }
-    this.accountFailoverOrSettle(run, acct);
+    void this.providerFailoverOrSettle(run, target);
   }
 
   /** Async half of reactiveFailover for a fallback-capable model: a pool cap restarts the turn on the
    *  SAME account (modelFor now resolves the fallback); a real account cap falls through to the normal
    *  account switch. Re-checks that the turn wasn't superseded while the classify ping ran. */
-  private async classifyThenFailover(run: AgentRun, acct: Account, model: string): Promise<void> {
-    const kind = await this.api.accounts.classifyCap(acct.id, model, run.rateLimitInfo).catch(() => "account" as const);
+  private async classifyThenFailover(run: AgentRunLike, target: DirectorTarget): Promise<void> {
+    const kind = await this.api.accounts.classifyCap(target.accountId, target.model, run.rateLimitInfo).catch(() => "account" as const);
     // Superseded while we pinged (a new user turn started another run) → leave the new turn alone.
     // this.run === undefined means the capped run died without a replacement — still ours to revive.
     if (this.pending === undefined || (this.run !== run && this.run !== undefined)) return;
     if (kind === "model") {
       this.failovers++;
-      this.hub.log(
-        "warn",
-        `Director hit the ${model} usage pool on ${acct.label} — falling back to ${this.api.modelFor(acct.id, "director")} on the same account, resuming.`,
-      );
-      void run.stop();
-      this.start(this.pending, acct); // keeps busy + pending set; modelFor resolves the fallback now
+      const next = await this.chooseTarget(new Set([target.key]));
+      this.hub.log("warn", `Director hit the ${target.model} model pool on ${target.accountLabel} — switching to ${next?.model ?? "another available model"}.`);
+      this.run = undefined;
+      await run.stop();
+      if (next && this.pending) await this.start(this.pending, next);
+      else this.finishUnavailable();
       return;
     }
-    this.accountFailoverOrSettle(run, acct);
+    await this.providerFailoverOrSettle(run, target);
   }
 
-  /** The account-switch / all-capped / settle tail of reactiveFailover (the pre-Fable behavior). */
-  private accountFailoverOrSettle(run: AgentRun, acct: Account): void {
-    if (run.rateLimited && this.pending !== undefined && this.failovers < MAX_DIRECTOR_FAILOVERS) {
-      const next = this.api.accounts.selectFailover(acct.id);
-      if (next && this.sessionId) {
+  private async providerFailoverOrSettle(run: AgentRunLike, target: DirectorTarget): Promise<void> {
+    const capped = this.api.directorRunCapped(target, run);
+    if (!capped || this.pending === undefined) {
+      this.settleTurn();
+      return;
+    }
+    this.api.noteDirectorProviderCap(target);
+    if (this.failovers < MAX_DIRECTOR_FAILOVERS) {
+      const pending = this.pending;
+      const next = await this.chooseTarget(new Set([target.key]));
+      if (next && pending && (this.run === run || this.run === undefined)) {
         this.failovers++;
-        this.hub.log("warn", `Director hit a usage limit on ${acct.label} — switching to ${next.label}, resuming.`);
-        void run.stop(); // tear down the capped run; if it already ended this is a no-op
-        this.start(this.pending, next); // keeps busy + pending set; the switch carries the turn
+        this.hub.log("warn", `Director hit a usage limit on ${providerName(target)} — switching to ${providerName(next)} (${next.model}).`);
+        this.run = undefined;
+        await run.stop();
+        await this.start(pending, next);
         return;
       }
     }
-    if (run.rateLimited && this.pending !== undefined) {
-      // Couldn't fail over — every subscription is capped. Say so instead of going silently idle.
-      const m = this.db.addDirectorMessage({ role: "director", kind: "text", content: this.allCappedMessage() });
-      this.hub.publish({ type: "director.message", message: m });
-      this.hub.log("warn", "Director: all accounts rate-limited — no failover available.");
-    }
-    // Failover wasn't possible (or the turn simply ended) — settle it.
+    this.finishUnavailable();
+  }
+
+  private finishUnavailable(): void {
+    this.postDirectorNote(this.allCappedMessage());
+    this.hub.log("warn", "Director: every enabled provider is capped or unavailable — no failover target.");
+    this.target = undefined;
+    this.db.kvSet(DIRECTOR_TARGET_KV, "");
+    this.publishStatus();
+    this.settleTurn();
+  }
+
+  private settleTurn(): void {
     this.pending = undefined;
     this.failovers = 0;
     this.pendingImages = [];
+    this.cliActions = 0;
+    this.cliCorrections = 0;
+    this.cliCommittedResult = undefined;
     this.setBusy(false);
   }
 
@@ -344,19 +537,34 @@ export class Director {
   private allCappedMessage(): string {
     const resetAt = this.api.accounts.soonestResetAt();
     const when = resetAt != null ? untilReset(resetAt, Date.now()) : null;
-    const n = this.api.accounts.count();
-    const single = n <= 1;
-    const subject = single
-      ? "Your Claude subscription is at its usage limit"
-      : n === 2
-        ? "Both Claude subscriptions are at their usage limit"
-        : `All ${n} Claude subscriptions are at their usage limit`;
-    const freesWhen = single ? "It frees up" : "The first one frees up";
-    const freesGeneric = single ? "It frees up when the 5-hour window resets" : "They free up when the 5-hour window resets";
+    const subject = "Every enabled director provider is currently capped or unavailable";
     return when
-      ? `${subject} right now, so I couldn't get to this. ${freesWhen} ${when} — resend then.`
-      : `${subject} right now, so I couldn't get to this. ${freesGeneric} — resend then.`;
+      ? `${subject}, so I couldn't complete this turn. A Claude window is expected to free ${when}; you can resend then.`
+      : `${subject}, so I couldn't complete this turn. Re-enable a provider with usage, or resend after a subscription resets.`;
   }
+}
+
+const COMMITTED_CLI_ACTIONS = new Set([
+  "dispatch",
+  "dispatch_read",
+  "inject",
+  "interrupt_thread",
+  "auto_review",
+  "post_operator_note",
+  "create_scheduled_task",
+  "update_scheduled_task",
+  "delete_scheduled_task",
+]);
+
+function isCommittedCliAction(kind: string): boolean {
+  return COMMITTED_CLI_ACTIONS.has(kind);
+}
+
+function providerName(target: DirectorTarget): string {
+  return target.provider === "claude" ? `${target.accountLabel} (Claude)`
+    : target.provider === "codex" ? "Codex"
+      : target.provider === "grok" ? "Grok"
+        : "z.ai";
 }
 
 /** Appended to voice-originated prompts: the reply is read aloud by TTS mid-conversation, so the

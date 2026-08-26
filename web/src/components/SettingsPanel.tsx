@@ -143,7 +143,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         <Group label="Auto model selection">
           <ToggleRow
             label="Auto-select the implementor model"
-            hint="Off (default): the implementor runs on the model configured for its subscription, at the planner's effort. On: before it starts, the director weighs the task and the planner's read of the repo and picks the model AND effort itself — from every backend that can be dispatched right now (Haiku through Opus, Fable, Codex, Grok, GLM). Every auto-picked task is scored when it settles, and those scores are what the next pick reads."
+            hint="Off (default): the implementor runs on the model configured for its subscription, at the planner's effort. On: a smart judgement picks the director once (sticky until its provider caps), and the director picks each implementor's model + effort from every backend available right now. Both use a daily cached LiveBench category/effort prior; local outcomes and live availability remain stronger signals. Implementor picks are scored for the next decision."
             on={settings.autoModelSelection}
             onChange={(v) => setSettings({ autoModelSelection: v })}
           />
@@ -153,7 +153,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         <Group label="Director">
           <TextRow
             label="Director name"
-            hint="What your Sonnet director is called across the console and the office chat. Pick a name so it reads as yours."
+            hint="What your director is called across the console and office chat, whichever provider/model is currently running it."
             value={settings.directorName}
             placeholder="ChangeNameInSettings"
             maxLength={40}
@@ -776,9 +776,9 @@ function AccountWeeklySafety({ accountId, value }: { accountId: string; value: n
   );
 }
 
-/** Roles a CLI backend (Codex/Grok) can run. Director is excluded — it drives the console via MCP
- *  dispatch/memory tools no CLI adapter provides, so it always runs on Claude. */
-const CLI_ROLES: readonly Role[] = MODEL_ROLES.filter((r) => r !== "director");
+/** Roles an alternate backend can run. Codex/Grok direct through the server command bridge; z.ai keeps
+ *  the native MCP tools, so every provider can now own the director as well as pipeline roles. */
+const CLI_ROLES: readonly Role[] = MODEL_ROLES;
 
 /** A per-subscription MAX reasoning-effort cap. The director/planner still picks the per-task effort;
  *  this only bounds it, so a tiny task stays cheap while nothing on this sub exceeds the chosen tier. */
@@ -1340,6 +1340,10 @@ const EyeOff = () => (
 /** What each auto-picked model has actually delivered — the evidence the next pick is made from, shown so
  *  the selection loop isn't a black box. Read-only: the server owns every number. Stays visible after the
  *  setting is switched off (the history is still worth reading), and disappears only when there's neither. */
+function formatCompact(n: number): string {
+  return new Intl.NumberFormat("en", { notation: n >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(n);
+}
+
 function ModelScoreboard({ enabled }: { enabled: boolean }) {
   const stats = useStore((s) => s.modelStats);
   if (!enabled && !stats.length) return null;
@@ -1360,6 +1364,7 @@ function ModelScoreboard({ enabled }: { enabled: boolean }) {
         <span>Accepted</span>
         <span>QA</span>
         <span>Cost</span>
+        <span>Tokens</span>
       </div>
       {stats.map((s) => (
         <div className="ams-row" key={`${s.provider}:${s.model}`}>
@@ -1371,6 +1376,9 @@ function ModelScoreboard({ enabled }: { enabled: boolean }) {
           <span className="mono">{Math.round(s.doneRate * 100)}%</span>
           <span className="mono">{s.avgQaRounds}</span>
           <span className="mono">${s.avgCostUsd.toFixed(2)}</span>
+          <span className="mono" title={s.avgTotalTokens == null ? `No complete provider token payload recorded yet (${Math.round(s.tokenSampleRate * 100)}% coverage)` : `${s.avgInputTokens ?? 0} input · ${s.avgOutputTokens ?? 0} output · ${s.avgCacheTokens ?? 0} cache · ${s.avgReasoningTokens ?? 0} reasoning · ${Math.round(s.tokenSampleRate * 100)}% complete-run coverage`}>
+            {s.avgTotalTokens == null ? "—" : formatCompact(s.avgTotalTokens)}
+          </span>
         </div>
       ))}
     </div>

@@ -122,4 +122,6 @@ export interface OrchestratorApi {
   resumeThread(threadId: string, message?: string): Promise<ThreadActionResult>;
   cancelThread(threadId: string): Promise<ThreadActionResult>;
   retryThread(threadId: string): Promise<ThreadActionResult>;
+  /** Delegate the owner's final review of a task parked in `review` to the auto-reviewer. */
+  autoReview(threadId: string): Promise<ThreadActionResult>;
 }

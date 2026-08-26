@@ -9,9 +9,9 @@ import { codexUsageCapped, readCodexUsage } from "../agents/codexUsage.js";
 import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRunner.js";
 import { noteGrokCap, readGrokUsage, grokUsageCapped } from "../agents/grokUsage.js";
 import { noteZaiCap, readZaiUsage, zaiUsageCapped } from "../agents/zaiUsage.js";
-import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, CURATED_ZAI_MODELS, uniq } from "../agents/modelCatalog.js";
+import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, CURATED_ZAI_MODELS, newestClaudeFamilyModel, uniq } from "../agents/modelCatalog.js";
 import { clampEffort, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort, reviewerConfig } from "../agents/roles.js";
-import { jsonContractInstruction } from "../agents/structuredText.js";
+import { jsonContractInstruction, type JsonSchemaLike } from "../agents/structuredText.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createGitReadServer } from "../bus/gitReadServer.js";
@@ -20,7 +20,8 @@ import { createMemoryServer } from "../bus/memoryServer.js";
 import { OperatorNotes } from "./notes.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
-import { modelNote, selectImplementorModel, type ModelCandidate } from "./modelSelector.js";
+import { buildSelectionPrompt, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
+import { LiveBenchScores } from "./liveBenchScores.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
@@ -28,11 +29,11 @@ import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import { DiscordNotifier, parseChannelId, type OwnerNotice } from "./discordNotify.js";
-import { config, fallbackModelFor } from "../config.js";
 import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
 import type { FreeProviderService } from "../freeProviders/service.js";
+import { config, fallbackModelFor } from "../config.js";
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import { acknowledgedInjection, injectionSendOptions, structuredAcknowledgedInjection } from "./injection.js";
@@ -76,6 +77,23 @@ const CLAUDE_TIERS = ["haiku", "sonnet", "opus", "fable"];
 // How many models each CLI/GLM backend contributes to the roster. Their pickable lists are already
 // most-capable-first, and a backend the operator pinned to one model contributes just that one.
 const ROSTER_PER_CLI = 4;
+
+/** A concrete backend/model/account the provider-neutral director can start on. `key` is persisted by
+ *  Director so auto-selection happens once and is reused until this target loses headroom. */
+export interface DirectorTarget {
+  key: string;
+  provider: ImplementorProvider;
+  model: string;
+  accountId: string;
+  accountLabel: string;
+}
+
+const DIRECTOR_PICK_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["key"],
+  properties: { key: { type: "string" } },
+};
 
 /** The planner's own findings, flattened for the model selector: what the task turned out to involve,
  *  which files it touches, what's risky, and how hard the planner judged it. This is the only view of the
@@ -590,6 +608,9 @@ export class ThreadManager implements OrchestratorApi {
   private zaiCapUntil: number | undefined;
   // Owns the live pickable-model lists (Settings dropdowns). Rebroadcasts settings when a list changes.
   private readonly modelCatalog: ModelCatalog;
+  // Persistent 24h LiveBench capability prior. It informs the smart selectors but never gates routing:
+  // a stale or unavailable leaderboard simply leaves local outcome history + the judging agent in charge.
+  private readonly liveBench: LiveBenchScores;
   // Posts the owner's phone notifications (task done / needs you / failed) to their Discord channel.
   private readonly discord: DiscordNotifier;
 
@@ -606,6 +627,7 @@ export class ThreadManager implements OrchestratorApi {
       () => this.openaiApiKey(),
       () => this.hub.publish({ type: "settings", settings: this.settings() }),
     );
+    this.liveBench = new LiveBenchScores(db, (level, message) => this.hub.log(level, message));
     // Reads its config lazily on every notice, so flipping the toggle applies to tasks already running.
     this.discord = new DiscordNotifier(
       () => ({ enabled: this.settingBool("setting_discord_notify", false), token: this.discordBotToken(), channelId: this.discordChannelId() }),
@@ -643,6 +665,7 @@ export class ThreadManager implements OrchestratorApi {
    *  account manager has started, so a subscription token is available for the Anthropic models fetch. */
   startModelCatalog(): void {
     this.modelCatalog.start();
+    this.liveBench.start();
   }
 
   /** Poll for rate-limit-parked tasks and resume them the moment an account regains headroom, so a
@@ -1374,7 +1397,7 @@ export class ThreadManager implements OrchestratorApi {
     const ov = this.modelOverrides();
     const selected: string[] = [];
     for (const [subId, roles] of Object.entries(ov)) {
-      if (subId === CODEX_SUB_ID || subId === GROK_SUB_ID) continue; // non-Claude ids belong to their own lists
+      if (subId === CODEX_SUB_ID || subId === GROK_SUB_ID || subId === ZAI_SUB_ID) continue; // non-Claude ids belong to their own lists
       for (const m of Object.values(roles)) if (m) selected.push(m);
     }
     return uniq([...this.modelCatalog.claudeModels(), ...CURATED_CLAUDE_MODELS, ...Object.values(config.models), ...selected]);
@@ -1383,34 +1406,208 @@ export class ThreadManager implements OrchestratorApi {
   /** Pickable Codex model ids for the Settings dropdown: curated flagships first, then any additional
    *  live models the key exposes, plus the currently-selected Codex model. */
   private pickableCodexModels(): string[] {
-    const selected = [this.codexModel(), this.modelOverrides()[CODEX_SUB_ID]?.implementor].filter((x): x is string => !!x);
+    const selected = [this.codexModel(), ...Object.values(this.modelOverrides()[CODEX_SUB_ID] ?? {})].filter((x): x is string => !!x);
     return uniq([...CURATED_CODEX_MODELS, ...this.modelCatalog.codexModels(), ...selected]);
   }
 
   /** Pickable Grok model ids for the Settings dropdown: curated defaults first, then any additional models
    *  the CLI's local cache reports, plus the currently-selected Grok model. */
   private pickableGrokModels(): string[] {
-    const selected = [this.grokModel(), this.modelOverrides()[GROK_SUB_ID]?.implementor].filter((x): x is string => !!x);
+    const selected = [this.grokModel(), ...Object.values(this.modelOverrides()[GROK_SUB_ID] ?? {})].filter((x): x is string => !!x);
     return uniq([...CURATED_GROK_MODELS, ...this.modelCatalog.grokModels(), ...selected]);
   }
 
   /** Pickable z.ai (GLM) model ids for the Settings dropdown: curated GLM models plus the current pick.
    *  z.ai has no live models endpoint we fetch — the plan's GLM ids are a fixed known set. */
   private pickableZaiModels(): string[] {
-    const selected = [this.zaiModel(), this.modelOverrides()[ZAI_SUB_ID]?.implementor].filter((x): x is string => !!x);
+    const selected = [this.zaiModel(), ...Object.values(this.modelOverrides()[ZAI_SUB_ID] ?? {})].filter((x): x is string => !!x);
     return uniq([...CURATED_ZAI_MODELS, ...selected]);
   }
 
   // ---- auto model selection (the "Auto model selection" setting) ----
 
-  /** The Claude models offered to the selector: one per capability tier rather than every snapshot the
-   *  models endpoint lists, so the choice is between meaningfully different options (and the prompt stays
-   *  short). The configured implementor default is always included — it is what would have run anyway. */
+  /** The Claude models offered to the selector: one newest model per capability tier rather than every
+   *  predecessor/snapshot the endpoint lists, so the choice is between meaningfully different options.
+   *  A configured model from another family is retained; an older member of an represented family is a
+   *  manual compatibility choice, not an automatic candidate beside its direct successor. */
   private claudeRosterModels(): string[] {
     const pickable = this.pickableClaudeModels();
-    const tier = (family: string): string | undefined =>
-      CURATED_CLAUDE_MODELS.find((m) => m.toLowerCase().includes(family)) ?? pickable.find((m) => m.toLowerCase().includes(family));
-    return uniq([...CLAUDE_TIERS.map(tier), this.modelFor(DEFAULT_SUB_ID, "implementor")]);
+    const tier = (family: string): string | undefined => newestClaudeFamilyModel(pickable, family);
+    const tiers = CLAUDE_TIERS.map(tier);
+    const configured = this.modelFor(DEFAULT_SUB_ID, "implementor");
+    const configuredFamily = CLAUDE_TIERS.find((family) => configured.toLowerCase().includes(`-${family}-`));
+    return uniq([...tiers, !configuredFamily || tiers.includes(configured) ? configured : undefined]);
+  }
+
+  private providerRoleModel(provider: ImplementorProvider, role: Role, accountId?: string): string {
+    const ov = this.modelOverrides();
+    if (provider === "claude") return this.modelFor(accountId ?? this.accounts.dispatchPreview().account.id, role);
+    if (provider === "codex") return ov[CODEX_SUB_ID]?.[role]?.trim() || this.codexModel();
+    if (provider === "grok") return ov[GROK_SUB_ID]?.[role]?.trim() || this.grokModel();
+    return ov[ZAI_SUB_ID]?.[role]?.trim() || this.zaiModel();
+  }
+
+  /** Every backend/model the director may actually start on now. With `allModels`, expose the same
+   *  capability roster as implementor auto-selection; otherwise return each provider's configured
+   *  director model. A provider is present only when enabled, authenticated and under its live caps. */
+  directorTargets(allModels = false): DirectorTarget[] {
+    const out: DirectorTarget[] = [];
+    const add = (provider: ImplementorProvider, accountId: string, accountLabel: string, models: string[]): void => {
+      for (const model of uniq(models).filter(Boolean)) {
+        out.push({ key: `${provider}|${accountId}|${model}`, provider, accountId, accountLabel, model });
+      }
+    };
+    const claude = this.accounts.dispatchPreview();
+    if (claude.hasHeadroom) {
+      const models = allModels
+        ? this.claudeRosterModels().map((m) => this.poolResolved(claude.account.id, m))
+        : [this.providerRoleModel("claude", "director", claude.account.id)];
+      add("claude", claude.account.id, claude.account.label, models);
+    }
+    if (this.codexImplementorReady()) {
+      add("codex", "openai-codex", "Codex", allModels ? this.pickableCodexModels().slice(0, ROSTER_PER_CLI) : [this.providerRoleModel("codex", "director")]);
+    }
+    if (this.settings().grokEnabled && grokAuthAvailable() && !this.grokCapActive()) {
+      const live = this.modelCatalog.grokModels();
+      const models = allModels
+        ? (live.length ? live : this.pickableGrokModels()).slice(0, ROSTER_PER_CLI)
+        : [this.providerRoleModel("grok", "director")];
+      const available = live.length ? models.filter((m) => live.includes(m)) : models;
+      if (available.length) add("grok", "xai-grok", "Grok", available);
+    }
+    if (this.zaiImplementorReady()) {
+      add("zai", "zai", "z.ai", allModels ? this.pickableZaiModels().slice(0, ROSTER_PER_CLI) : [this.providerRoleModel("zai", "director")]);
+    }
+    return out;
+  }
+
+  /** Is a previously-selected target still dispatchable? The director remains sticky while true; it
+   *  reselects only on a real provider/account cap (or the operator disabling/removing that backend). */
+  directorTargetReady(target: DirectorTarget): boolean {
+    if (target.provider === "claude") {
+      const a = this.accounts.dto().find((x) => x.id === target.accountId);
+      const tight = Math.max(a?.fiveHour ?? 0, a?.sevenDay ?? 0);
+      return !!a?.enabled && !this.accounts.isRateLimited(target.accountId) && tight < PROVIDER_HARD_LIMIT;
+    }
+    if (target.provider === "codex") return this.codexImplementorReady();
+    if (target.provider === "grok") {
+      const live = this.modelCatalog.grokModels();
+      return this.settings().grokEnabled && grokAuthAvailable() && !this.grokCapActive() && (!live.length || live.includes(target.model));
+    }
+    return this.zaiImplementorReady();
+  }
+
+  /** Usage-aware deterministic fallback for the director and for bootstrapping the smart selector. */
+  preferredDirectorTarget(targets = this.directorTargets(false)): DirectorTarget | undefined {
+    if (!targets.length) return undefined;
+    const providers = uniq(targets.map((t) => t.provider));
+    const candidates = providers.map((provider) =>
+      provider === "claude" ? this.claudeProviderCandidate()
+        : provider === "codex" ? this.codexProviderCandidate()
+          : provider === "grok" ? this.grokProviderCandidate()
+            : this.zaiProviderCandidate(),
+    );
+    const provider = this.preferredImplementorProvider(candidates);
+    return targets.find((t) => t.provider === provider) ?? targets[0];
+  }
+
+  /** Construct the concrete runner for a director target. Claude/z.ai retain the native MCP tools in
+   *  `cfg`; Codex/Grok use the structured server-command bridge and a read-only director mode. */
+  createDirectorAgent(
+    target: DirectorTarget,
+    cfg: AgentRunConfig,
+    opts?: { resume?: string; cliSchema?: JsonSchemaLike },
+  ): AgentRunLike {
+    const resolved = { ...cfg, model: target.model };
+    if (opts?.resume) resolved.resume = opts.resume;
+    if (target.provider === "claude") {
+      resolved.oauthToken = this.accounts.byId(target.accountId)?.token || undefined;
+      return new AgentRun(resolved);
+    }
+    if (target.provider === "zai") {
+      resolved.baseUrl = config.zai.baseUrl;
+      resolved.authToken = this.zaiApiKey();
+      return new ZaiAgentRun(resolved);
+    }
+    const cwd = join(config.dataDir, "director-sandbox");
+    mkdirSync(cwd, { recursive: true });
+    if (target.provider === "codex") {
+      return new CodexAgentRun({
+        model: target.model, effort: this.codexEffort(target.model), cwd,
+        apiKey: this.openaiApiKey() ?? "", resume: opts?.resume,
+        outputSchema: opts?.cliSchema, directorMode: true,
+      });
+    }
+    return new GrokAgentRun({
+      model: target.model, effort: this.grokEffort(), cwd, resume: opts?.resume,
+      outputSchema: opts?.cliSchema, directorMode: true,
+    });
+  }
+
+  directorRunCapped(target: DirectorTarget, agent: AgentRunLike): boolean {
+    if (target.provider === "codex" && agent instanceof CodexAgentRun) return agent.capped;
+    if (target.provider === "grok" && agent instanceof GrokAgentRun) return agent.capped;
+    return agent.rateLimited;
+  }
+
+  noteDirectorProviderCap(target: DirectorTarget): void {
+    if (target.provider === "codex") this.noteCodexCap();
+    else if (target.provider === "grok") this.noteGrokCap();
+    else if (target.provider === "zai") this.noteZaiCap();
+  }
+
+  /** One no-tools structured judgement call on whichever provider currently has headroom. This is the
+   *  shared escape from the old hidden Anthropic dependency: both auto-selectors work while Claude is capped. */
+  async askDirectorJson(prompt: string, schema: JsonSchemaLike, judge?: DirectorTarget): Promise<unknown | null> {
+    const target = judge ?? this.preferredDirectorTarget();
+    if (!target) return null;
+    mkdirSync(join(config.dataDir, "director-sandbox"), { recursive: true });
+    const cfg: AgentRunConfig = {
+      model: target.model,
+      cwd: join(config.dataDir, "director-sandbox"),
+      systemPrompt: "Return only the requested structured answer. Do not use tools or inspect files.",
+      permissionMode: "plan",
+      allowedTools: [],
+      disallowedTools: ["Read", "Grep", "Glob", "Write", "Edit", "NotebookEdit", "Bash", "AskUserQuestion"],
+      settingSources: [],
+      outputFormat: { type: "json_schema", schema: schema as Record<string, unknown> },
+      includePartialMessages: false,
+      maxTurns: 2,
+    };
+    const agent = this.createDirectorAgent(target, cfg, { cliSchema: schema });
+    const off = agent.onEvent((e) => {
+      if (e.type === "rate_limit" && target.provider === "claude") this.accounts.updateFromRateLimit(target.accountId, e.info);
+    });
+    agent.start(`${prompt}\n\nReturn exactly one JSON object matching the supplied schema.`);
+    const result = await agent.result().catch(() => undefined);
+    off();
+    await agent.stop().catch(() => {});
+    if (this.directorRunCapped(target, agent)) this.noteDirectorProviderCap(target);
+    return result && !result.isError ? result.structuredOutput ?? null : null;
+  }
+
+  /** Smart director choice: one judgement for the stable director job, then Director persists the key
+   *  and reuses it until that target caps. A malformed/failed judgement falls back to usage-aware routing. */
+  async autoSelectDirectorTarget(excludeKeys: ReadonlySet<string> = new Set()): Promise<DirectorTarget | undefined> {
+    await this.liveBench.prepareForSelection();
+    const targets = this.directorTargets(true).filter((t) => !excludeKeys.has(t.key));
+    if (targets.length <= 1) return targets[0];
+    const judge = this.preferredDirectorTarget(targets);
+    const prompt = [
+      `Choose the best model to be ${config.ownerName}'s long-lived orchestrator director.`,
+      "The director must understand rough requests, interpret screenshots, ask only useful questions, enrich precise coding briefs, and reliably dispatch/steer tasks. Pick the least expensive model you trust to do that unattended. This is one sticky choice, not a per-task choice.",
+      "Available targets:",
+      ...targets.map((t) => {
+        const benchmark = this.liveBench.note(t.model);
+        return `- key=${t.key} — ${providerLabel(t.provider)} ${t.model}${t.provider === "codex" || t.provider === "grok" ? " (structured command bridge)" : " (native director tools)"}${benchmark ? `\n  ${benchmark}` : ""}`;
+      }),
+      "LiveBench is a secondary capability prior, not an availability signal. Prefer exact-model evidence over an older family prior; local task outcomes and native-tool fit beat a small benchmark gap.",
+      "Reply with the exact key.",
+    ].join("\n");
+    const picked = await this.askDirectorJson(prompt, DIRECTOR_PICK_SCHEMA, judge) as { key?: unknown } | null;
+    const stillReady = targets.filter((t) => this.directorTargetReady(t));
+    const target = typeof picked?.key === "string" ? stillReady.find((t) => t.key === picked.key) : undefined;
+    return target ?? this.preferredDirectorTarget(stillReady);
   }
 
   /** Every (provider, model) pair a task could ACTUALLY be dispatched to right now — each backend that is
@@ -1419,7 +1616,10 @@ export class ThreadManager implements OrchestratorApi {
   private implementorModelRoster(): ModelCandidate[] {
     const out: ModelCandidate[] = [];
     const add = (provider: ImplementorProvider, models: string[]): void => {
-      for (const model of uniq(models)) out.push({ provider, model, note: modelNote(provider, model) });
+      for (const model of uniq(models)) {
+        const benchmark = this.liveBench.note(model);
+        out.push({ provider, model, note: [modelNote(provider, model), benchmark].filter(Boolean).join(". ") });
+      }
     };
     if (this.accounts.hasHeadroom()) add("claude", this.claudeRosterModels());
     if (this.codexImplementorReady()) add("codex", this.pickableCodexModels().slice(0, ROSTER_PER_CLI));
@@ -1446,24 +1646,38 @@ export class ThreadManager implements OrchestratorApi {
     const saved = this.db.getThreadStageOutputs(thread.id).modelPick;
     if (saved) return saved; // already picked for this episode (a resume) — never re-decide mid-task
     if (saved === null) return undefined; // an earlier attempt already failed; don't pay for it twice
+    await this.liveBench.prepareForSelection();
     const candidates = this.implementorModelRoster();
     const workspace = normalizeWorkspace(thread.workspace);
-    const pick = await selectImplementorModel(
-      {
-        title: thread.title,
-        workspace: thread.workspace,
-        brief: thread.brief,
-        planText: planDigest(plan),
-        candidates,
-        efforts: this.selectableEfforts(),
-        repoStats: this.db.modelStats(workspace),
-        globalStats: this.db.modelStats(),
-      },
-      // auxToken() is a read-only token grab — it must NOT run the dispatch selector, which would bump
-      // round-robin state and flicker the "active account" badge for a non-dispatch.
-      this.accounts.auxToken(),
-      config.models.director,
-    ).catch((e) => {
+    const selection = {
+      title: thread.title,
+      workspace: thread.workspace,
+      brief: thread.brief,
+      planText: planDigest(plan),
+      candidates,
+      efforts: this.selectableEfforts(),
+      repoStats: this.db.modelStats(workspace),
+      globalStats: this.db.modelStats(),
+      repoEffortStats: this.db.modelEffortStats(workspace),
+      globalEffortStats: this.db.modelEffortStats(),
+    };
+    let pick: ModelPick | null = null;
+    if (candidates.length === 1) {
+      const only = candidates[0]!;
+      pick = { provider: only.provider, model: only.model, effort: "high", reason: "only dispatchable model" };
+    } else if (candidates.length > 1) {
+      const schema = {
+        type: "object", additionalProperties: false, required: ["model", "effort", "reason"],
+        properties: {
+          model: { type: "string" },
+          effort: { type: "string", enum: selection.efforts },
+          reason: { type: "string" },
+        },
+      };
+      const raw = await this.askDirectorJson(buildSelectionPrompt(selection), schema).catch(() => null);
+      pick = raw ? parseSelection(JSON.stringify(raw), selection) : null;
+    }
+    pick = await Promise.resolve(pick).catch((e) => {
       this.hub.log("warn", `Auto model selection failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
       return null;
     });
@@ -1486,7 +1700,11 @@ export class ThreadManager implements OrchestratorApi {
       threadId: thread.id,
       fromRole: "director",
       summary: `Auto-selected ${pick.model} at ${pick.effort} effort for this task`,
-      detail: [pick.reason, `Considered: ${candidates.map((c) => c.model).join(", ")}.`].filter(Boolean).join("\n\n"),
+      detail: [
+        pick.reason,
+        `Considered: ${candidates.map((c) => c.model).join(", ")}.`,
+        this.liveBench.note(pick.model) ? `Benchmark evidence used: ${this.liveBench.note(pick.model)}.` : undefined,
+      ].filter(Boolean).join("\n\n"),
       severity: "info",
     });
     return pick;
@@ -1549,7 +1767,7 @@ export class ThreadManager implements OrchestratorApi {
       threadId: thread.id,
       fromRole: "director",
       summary: `Auto-selected ${pending.model} scored ${patch.score}/100 on this task`,
-      detail: `Outcome: ${patch.outcome}. QA rounds: ${patch.qaRounds}. Cost: $${patch.costUsd.toFixed(2)} over ${patch.numTurns} turns, ${Math.round(patch.durationMs / 60_000)} min.${patch.gradedModel ? "" : ` Ran on more than one model (${patch.ranModels}), so it doesn't count toward any model's average.`}`,
+      detail: `Outcome: ${patch.outcome}. QA rounds: ${patch.qaRounds}. Cost: $${patch.costUsd.toFixed(2)} over ${patch.numTurns} turns and ${formatTokenCount(patch.tokenUsage?.totalTokens)}${patch.tokenUsage && !patch.tokenUsageComplete ? " partially measured" : ""} tokens, ${Math.round(patch.durationMs / 60_000)} min.${patch.gradedModel ? "" : ` Ran on more than one model (${patch.ranModels}), so it doesn't count toward any model's average.`}`,
       severity: "info",
     });
   }
@@ -4873,8 +5091,9 @@ export class ThreadManager implements OrchestratorApi {
   async resumeThread(threadId: string, message?: string): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
-    // A restart's deferred auto-resume can fire after an operator has cancelled the task. Cancellation
-    // is terminal until an explicit Retry, so never let that stale timer resurrect autonomous work.
+    // A restart's deferred auto-resume can fire after an operator has cancelled the task.  Cancellation
+    // is terminal until an explicit Retry, so never let that stale timer resurrect gameplay or other
+    // autonomous work behind the operator's back.
     if (thread.state === "cancelled") return { ok: false, error: "Task is cancelled. Retry it to start again." };
     if (!existsSync(thread.workspace)) {
       this.setState(threadId, "failed", `Can't resume — workspace "${thread.workspace}" does not exist. Re-dispatch this task with a valid path.`);
@@ -6296,6 +6515,7 @@ export class ThreadManager implements OrchestratorApi {
       endedAt: Date.now(),
       costUsd: res?.costUsd ?? null,
       numTurns: res?.numTurns ?? null,
+      tokenUsage: res?.tokenUsage ?? null,
       sessionId: agent.sessionId ?? null,
     });
     this.emitRun(runId);
@@ -6316,6 +6536,7 @@ export class ThreadManager implements OrchestratorApi {
       endedAt: Date.now(),
       costUsd: res?.costUsd ?? run.costUsd ?? null,
       numTurns: res?.numTurns ?? run.numTurns ?? null,
+      tokenUsage: res?.tokenUsage ?? run.tokenUsage ?? null,
       sessionId: agent.sessionId ?? run.sessionId ?? null,
     });
     this.emitRun(runId);
@@ -6962,6 +7183,11 @@ function providerHeadroom(pct: number | null): number {
 
 function fmtUsage(n: number | null): string {
   return n == null ? "-" : `${Math.round(n)}%`;
+}
+
+function formatTokenCount(n: number | null | undefined): string {
+  if (n == null) return "unknown";
+  return new Intl.NumberFormat("en", { notation: n >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(n);
 }
 
 function safeJson(v: unknown): string {

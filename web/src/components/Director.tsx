@@ -6,7 +6,7 @@ import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
-import { CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, codexEffortsForModel, type CodexEffort, type DirectorItem, type DirectorMessage, type Effort, type OrchestratorSettings, type Role, type TaskSearchHit } from "../types.js";
+import { CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, codexEffortsForModel, type CodexEffort, type DirectorItem, type DirectorMessage, type DirectorStatus, type Effort, type OrchestratorSettings, type Role, type TaskSearchHit } from "../types.js";
 import { codexModelOptions } from "../lib/models.js";
 import { effortLabel, modelLabel, stateColor, stateLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
@@ -18,6 +18,12 @@ import { useColumnResize } from "./useColumnResize.js";
 // across surfaces. The list is capped at settings.maxRecentRepos. Trailing-separator-tolerant basename,
 // cross-platform (handles / and \ paths):
 const repoLabel = (p: string): string => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
+
+export function directorRuntimeLabel(status: DirectorStatus | null, busy: boolean): string {
+  const provider = status ? ({ claude: "Claude", codex: "Codex", grok: "Grok", zai: "z.ai" } as const)[status.provider] : "";
+  const running = status ? `director · ${provider} · ${modelLabel(status.model).toLowerCase()}` : "director · selecting model";
+  return busy ? `${running} · thinking…` : running;
+}
 
 // Tracks "this rail has no room to spare" (mirrors the CSS bands — keep the two in step) so a few
 // controls can swap to a space-frugal layout: the wrapping recent-repo chips become a single dropdown
@@ -52,12 +58,9 @@ export function Director() {
   const cancelDirector = useStore((s) => s.cancelDirector);
   const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
   const directorName = useStore((s) => s.settings.directorName);
-  // The director's model, resolved like the server's modelFor: the operator's default-layer override
-  // (Settings → Agent models), else the built-in default. Per-sub overrides aren't resolvable here —
-  // the console doesn't know which subscription the director run landed on.
-  const directorModel = useStore(
-    (s) => s.settings.modelOverrides?.[DEFAULT_SUB_ID]?.director?.trim() || s.settings.modelDefaults.director || "",
-  );
+  // Runtime truth from the server. The director can move between Claude, Codex, Grok and z.ai when a
+  // subscription caps, so deriving this label from the default Claude setting would immediately lie.
+  const directorStatus = useStore((s) => s.directorStatus);
   const setSettings = useStore((s) => s.setSettings);
   // Skip-director mode + the recent-repo list live in the server-persisted settings so they survive a
   // reload on ANY surface (see the repoLabel note above). setSettings is optimistic, so toggling/adding
@@ -192,7 +195,7 @@ export function Director() {
             <div className="rail-head-title">
               <h2>{directorName}</h2>
               <span className="dim mono" style={{ fontSize: 11 }}>
-                {busy ? "director · thinking…" : "director" + (directorModel ? ` · ${modelLabel(directorModel).toLowerCase()}` : "")}
+                {directorRuntimeLabel(directorStatus, busy)}
               </span>
             </div>
           </div>

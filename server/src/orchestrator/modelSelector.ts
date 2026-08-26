@@ -11,7 +11,7 @@
 // roster) returns null and the caller falls back to normal usage-based routing — a dispatch is never
 // blocked by this, and a hallucinated model id never reaches a spawn.
 
-import type { Effort, ImplementorProvider, ModelPick, ModelStat } from "../types.js";
+import type { Effort, ImplementorProvider, ModelEffortStat, ModelPick, ModelStat } from "../types.js";
 
 const SELECTOR_TIMEOUT_MS = 45_000;
 const MAX_OUTPUT_TOKENS = 300;
@@ -38,6 +38,8 @@ export interface SelectionContext {
   efforts: Effort[];
   repoStats: ModelStat[]; // how auto-picked tasks scored in THIS repo
   globalStats: ModelStat[]; // …and everywhere
+  repoEffortStats?: ModelEffortStat[];
+  globalEffortStats?: ModelEffortStat[];
 }
 
 const PROVIDER_LABEL: Record<ImplementorProvider, string> = {
@@ -71,7 +73,18 @@ function clip(s: string, n: number): string {
 }
 
 function statLine(s: ModelStat): string {
-  return `- ${s.model} — ${s.picks} task${s.picks === 1 ? "" : "s"}, avg score ${s.avgScore}, ${Math.round(s.doneRate * 100)}% accepted, ${s.avgQaRounds} QA rounds, $${s.avgCostUsd.toFixed(2)}, ${s.avgMinutes} min`;
+  const burn = s.avgTotalTokens == null
+    ? `token burn unknown (${Math.round(s.tokenSampleRate * 100)}% complete telemetry)`
+    : `${formatTokens(s.avgTotalTokens)} tokens (${formatTokens(s.avgOutputTokens ?? 0)} output, ${formatTokens(s.avgCacheTokens ?? 0)} cache; ${Math.round(s.tokenSampleRate * 100)}% complete telemetry)`;
+  return `- ${s.model} — ${s.picks} task${s.picks === 1 ? "" : "s"}, avg score ${s.avgScore}, ${Math.round(s.doneRate * 100)}% accepted, ${s.avgQaRounds} QA rounds, $${s.avgCostUsd.toFixed(2)}, ${burn}, ${s.avgMinutes} min`;
+}
+
+function effortStatLine(s: ModelEffortStat): string {
+  return `${statLine(s).replace(`- ${s.model}`, `- ${s.model} @ ${s.effort}`)}`;
+}
+
+function formatTokens(n: number): string {
+  return new Intl.NumberFormat("en", { notation: n >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(n);
 }
 
 function statBlock(stats: ModelStat[], emptyNote: string): string {
@@ -84,7 +97,8 @@ export function buildSelectionPrompt(ctx: SelectionContext): string {
   return [
     "You are choosing which AI coding model will IMPLEMENT one task in an autonomous pipeline, and how hard it should think.",
     "",
-    "Pick the CHEAPEST option you are confident can finish this job unattended. Both mistakes are real: too weak and the work bounces through QA fix-rounds or lands on a human, which costs far more than the stronger model would have; too strong and a limited allowance is spent on work a small model would have nailed. Judge the work in front of you — its size, how many files and systems it spans, how much of it is mechanical versus genuinely uncertain.",
+    "Pick the CHEAPEST option you are confident can finish this job unattended. Cost means BOTH dollars and subscription/token-window burn: a $0 subscription run can still waste scarce allowance. Both mistakes are real: too weak and the work bounces through QA fix-rounds or lands on a human, which costs far more than the stronger model would have; too strong or too-high effort and limited tokens are spent on work a smaller/shallower choice would have nailed. Judge the work in front of you — its size, how many files and systems it spans, how much of it is mechanical versus genuinely uncertain.",
+    "Candidate notes may include a daily cached LiveBench score. Treat it as a secondary capability prior: exact-model evidence is stronger than an explicitly labelled older-family prior; this orchestrator's own task outcomes are more relevant to autonomous reliability. Use category scores that fit THIS task, and use benchmarked effort variants to choose the smallest reasoning effort that preserves quality.",
     "",
     "## The task",
     `Repository: ${ctx.workspace}`,
@@ -100,13 +114,19 @@ export function buildSelectionPrompt(ctx: SelectionContext): string {
     `${ctx.efforts.join(" | ")} — how much reasoning the model spends per turn. Each backend's own ceiling is applied automatically, so ask for what the task deserves.`,
     "",
     "## How earlier auto-picked tasks actually scored",
-    "100 = accepted with no human involvement; 40 = the task ended up needing a human; each QA fix-round past the first costs 12 more. Cost is the WHOLE task's, so a cheap model that needed three QA rounds reads as expensive here. Prefer this evidence over your priors about these models.",
+    "100 = accepted with no human involvement; 40 = the task ended up needing a human; each QA fix-round past the first costs 12 more. Dollars, tokens, turns and time cover the WHOLE pipeline, so a cheap model that needed three QA rounds reads as expensive here. Prefer this evidence over your priors about these models. Never treat $0 as free when token burn is known.",
     "",
     "### In this repository",
     statBlock(ctx.repoStats, "(no graded tasks in this repository yet)"),
     "",
     "### Across all repositories",
     statBlock(ctx.globalStats, "(no graded tasks yet — judge from the task itself)"),
+    "",
+    "### Model + effort outcomes in this repository",
+    ctx.repoEffortStats?.length ? ctx.repoEffortStats.map(effortStatLine).join("\n") : "(no effort-specific history in this repository yet)",
+    "",
+    "### Model + effort outcomes across all repositories",
+    ctx.globalEffortStats?.length ? ctx.globalEffortStats.map(effortStatLine).join("\n") : "(no effort-specific history yet)",
     "",
     "Reply with ONE JSON object and nothing else:",
     `{"model": "<exact id from the list above>", "effort": "${ctx.efforts.join("|")}", "reason": "<20 words or fewer: why this model for this task>"}`,

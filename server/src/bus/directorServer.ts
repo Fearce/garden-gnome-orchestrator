@@ -210,6 +210,24 @@ export function createDirectorServer(
     },
   );
 
+  const autoReview = tool(
+    "auto_review",
+    `Start the app's on-demand auto-reviewer for a task parked in review. Use this when ${config.ownerName} asks you to auto-review, review-and-mark-done, or retry an auto-review for an existing task. This delegates the final accept-or-hand-back decision; it does not dispatch a new task. Get the task id from the request or list_threads, then call this tool once.`,
+    { threadId: z.string().describe("The existing task id to auto-review.") },
+    async (args) => {
+      const r = await api.autoReview(args.threadId);
+      return {
+        content: [{
+          type: "text",
+          text: r.ok
+            ? `Started auto-review for ${args.threadId}; current state: ${r.state ?? "reviewing"}.`
+            : `Could not start auto-review: ${r.error}`,
+        }],
+        isError: !r.ok,
+      };
+    },
+  );
+
   const readFindings = tool(
     "read_findings",
     "Read findings across all tasks (or one task). Use this to notice when something one task discovered is relevant to another, then notify or inject accordingly.",
@@ -314,6 +332,6 @@ export function createDirectorServer(
   return createSdkMcpServer({
     name: DIRECTOR_SERVER,
     version: "0.1.0",
-    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, readFindings, postOperatorNote, createScheduledTask, listScheduledTasks, updateScheduledTask, deleteScheduledTask],
+    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, autoReview, readFindings, postOperatorNote, createScheduledTask, listScheduledTasks, updateScheduledTask, deleteScheduledTask],
   });
 }

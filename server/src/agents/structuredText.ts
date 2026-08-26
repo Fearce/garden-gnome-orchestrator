@@ -12,6 +12,8 @@
  *  schemas in roles.ts — enough to accept a well-formed result and reject a malformed one). */
 export interface JsonSchemaLike {
   type?: string;
+  description?: string;
+  additionalProperties?: boolean;
   required?: string[];
   properties?: Record<string, JsonSchemaLike>;
   items?: JsonSchemaLike;

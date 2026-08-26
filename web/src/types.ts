@@ -24,6 +24,13 @@ export function codexEffortsForModel(model: string): readonly CodexEffort[] {
 export type GrokEffort = "low" | "medium" | "high";
 export const GROK_EFFORTS: GrokEffort[] = ["low", "medium", "high"];
 
+/** Live backend/model for the director. This is server runtime state, not a settings-derived guess. */
+export interface DirectorStatus {
+  provider: ImplementorProvider;
+  model: string;
+  accountLabel: string;
+}
+
 export type ThreadState =
   | "intake"
   | "enriching"
@@ -112,11 +119,21 @@ export interface AgentRun {
   state: AgentRunState;
   costUsd?: number | null;
   numTurns?: number | null;
+  tokenUsage?: TokenUsage | null;
   error?: string | null;
   /** The runner read this run's ending as a usage cap (mirrors the server field). */
   capFlagged?: boolean | null;
   startedAt: number;
   endedAt?: number | null;
+}
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
 }
 
 export interface QuestionOption {
@@ -382,7 +399,7 @@ export interface OrchestratorSettings {
   maxConcurrent: number;
   maxConcurrentPerRepo: number; // max pipelines running at once for a single repo; 0 (default) = unlimited (only the global maxConcurrent applies)
   selfImproveEnabled: boolean; // opt-in (off by default): completed tasks get one extra implementor round that builds the tools/skills/memories the session showed were missing
-  autoModelSelection: boolean; // opt-in (off by default): before the implementor starts, the director picks its model AND effort from every backend dispatchable right now, judging the task + the planner's read of the repo. Every auto-picked task is graded when it settles, and the grades feed the next pick.
+  autoModelSelection: boolean; // opt-in: smart-pick one sticky director target (re-pick on cap), plus each implementor's model/effort from every dispatchable backend; implementor outcomes feed later picks.
   // Token-usage safety limit: opt-in auto-stop when live utilization reaches the threshold. Disabled by
   // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.
   tokenLimitEnabled: boolean;
@@ -472,6 +489,12 @@ export interface ModelStat {
   doneRate: number; // 0-1
   avgQaRounds: number;
   avgCostUsd: number;
+  avgTotalTokens: number | null;
+  avgInputTokens: number | null;
+  avgOutputTokens: number | null;
+  avgCacheTokens: number | null;
+  avgReasoningTokens: number | null;
+  tokenSampleRate: number;
   avgMinutes: number;
 }
 
@@ -720,6 +743,7 @@ export type ServerEvent =
       findings: Finding[];
       questions: Question[];
       director: DirectorMessage[];
+      directorStatus: DirectorStatus | null;
       accounts: AccountDTO[];
       codexUsage: CodexUsageDTO | null;
       grokUsage: GrokUsageDTO | null;
@@ -787,6 +811,7 @@ export type ServerEvent =
   | { type: "director.message"; message: DirectorMessage }
   | { type: "director.tool"; name: string; input: unknown }
   | { type: "director.busy"; busy: boolean }
+  | { type: "director.status"; status: DirectorStatus | null }
   // Reply to a director.search: everything matching `query`, newest-first — director-conversation hits
   // in `messages`, matching tasks in `tasks`. The echoed query lets the client drop a stale reply if
   // the operator has retyped since.

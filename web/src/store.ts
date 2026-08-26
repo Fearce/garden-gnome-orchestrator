@@ -13,6 +13,7 @@ import type {
   DirectorItem,
   Effort,
   DirectorMessage,
+  DirectorStatus,
   FeedItem,
   Finding,
   GitSummary,
@@ -82,6 +83,7 @@ interface State {
   director: DirectorItem[];
   directorDraft: string;
   directorBusy: boolean;
+  directorStatus: DirectorStatus | null;
   // Console-wide search — the whole director conversation across every task, plus the tasks whose
   // title, brief or conversation matches (the snapshot carries only the recent director slice and no
   // task conversations, so both come from a server query; the server match is ASCII case-insensitive).
@@ -501,6 +503,7 @@ export const useStore = create<State>((set) => ({
   director: [],
   directorDraft: "",
   directorBusy: false,
+  directorStatus: null,
   directorSearch: null,
   threadFeeds: {},
   threadDrafts: {},
@@ -857,7 +860,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}), ...(ev.notes ? { notes: ev.notes } : {}), ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, directorStatus: ev.directorStatus ?? null, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}), ...(ev.notes ? { notes: ev.notes } : {}), ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}) });
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
@@ -1202,6 +1205,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "director.busy":
       useStore.setState({ directorBusy: ev.busy });
+      break;
+    case "director.status":
+      useStore.setState({ directorStatus: ev.status });
       break;
     case "director.results":
       useStore.setState((s) => {
