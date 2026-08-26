@@ -70,9 +70,42 @@ function readConfig(db) {
     url: kv("online_office_url"),
     name: kv("online_office_name"),
     joined: !!kv("online_office_token"), // presence only — the token itself is never read out
+    unlinked: parseUnlinked(kv("online_office_unlinked")),
     // When the fixed build first booted here. Absent = it never has, so nothing below can be a regression.
     fixAt: Number(kv(SELF_ECHO_FIX.kv)) || null,
   };
+}
+
+/**
+ * The relay's one-line headline. Every count is OPTIONAL because the relay decides what an anonymous
+ * caller may know, and that decision moves: `members` went behind the admin key in `970ab04` (how many
+ * devices have joined is a membership fact), and this line promptly read "undefined member machine(s)"
+ * — a probe reporting a fault that wasn't one, which is how a check stops being read.
+ */
+function relaySummary(health) {
+  const parts = [];
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const add = (v, one, many) => {
+    const n = num(v);
+    if (n !== null) parts.push(`${n} ${n === 1 ? one : many}`);
+  };
+  add(health.instancesOnline, "instance online", "instances online");
+  add(health.agentsOnline, "agent", "agents");
+  add(health.sharedRepos, "shared repo", "shared repos");
+  // Absent for an anonymous read, which is the norm — say nothing rather than name a missing number.
+  add(health.members, "member machine", "member machines");
+  return parts.length ? parts.join(", ") : "reachable, but reporting no counts";
+}
+
+/** The suggestions `OnlineOffice.recordLookalikes` left behind. Never trusted into a shape — this row is
+ *  written by a build that may be older or newer than this script. */
+function parseUnlinked(raw) {
+  try {
+    const list = JSON.parse(raw || "[]");
+    return Array.isArray(list) ? list.filter((p) => p && typeof p.local === "string" && typeof p.remote === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -202,10 +235,7 @@ async function main() {
   if (!health) console.log("  relay: no address recorded");
   else if (health.error) console.log(`  relay: UNREACHABLE (${health.error}) — the office degrades soft; local work is unaffected`);
   else {
-    console.log(
-      `  relay: ${health.instancesOnline} instance(s) online, ${health.agentsOnline} agent(s), ` +
-        `${health.sharedRepos} shared repo(s), ${health.members} member machine(s)`,
-    );
+    console.log(`  relay: ${relaySummary(health)}`);
   }
 
   const rows = db
@@ -252,6 +282,23 @@ async function main() {
     );
   }
 
+  // The blind spot this section exists for: everything above inspects rooms that FORMED, so two machines
+  // that should have met and never did read as an absence of activity. On 2026-08-26 that was exactly the
+  // case — Kevin on `Fearce/garden-gnome-orchestrator`, Mikkel on his `prismicious/…` fork, three agents
+  // in one codebase and two rooms, while this probe printed a clean two-way ✓.
+  console.log("\n=== repositories that look like the same project but aren't grouped ===");
+  if (!cfg.unlinked.length) {
+    console.log("  none — every remote repo sharing a name with one of yours is grouped with it.");
+  } else {
+    for (const p of cfg.unlinked) {
+      console.log(`  ⚠ "${p.remote}" on ${p.instance ?? "another machine"} vs your "${p.local}"`);
+    }
+    console.log("    Same repository name, different owner — so they are separate rooms and those agents");
+    console.log("    cannot see each other. If it IS the same project (a fork), add the other side as a");
+    console.log("    remote in that checkout and they group on the next presence tick. If the two are");
+    console.log("    genuinely unrelated repos that share a name, this is correct and nothing needs doing.");
+  }
+
   const verdict = verdictFor({ echo, rooms });
   console.log("\n=== verdict ===");
   if (verdict.ok) console.log("  ✓ the online office is two-way: nothing is echoing back, every cross-machine room is reachable");
@@ -260,7 +307,7 @@ async function main() {
   process.exit(verdict.ok ? 0 : 1);
 }
 
-module.exports = { SELF_ECHO_FIX, classifyOfficeRows, senderMachine, verdictFor };
+module.exports = { SELF_ECHO_FIX, classifyOfficeRows, parseUnlinked, relaySummary, senderMachine, verdictFor };
 
 if (require.main === module) {
   main().catch((e) => {

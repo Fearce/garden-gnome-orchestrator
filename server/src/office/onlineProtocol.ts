@@ -26,6 +26,14 @@ export interface RelayAgent {
   title: string; // the task it is working on
   repoKey: string; // canonical repository identity
   repoLabel: string; // human-readable repo name, e.g. "Fearce/card-marker"
+  /** The OTHER identities this checkout answers to — its remotes besides the one `repoKey` came from.
+   *  A fork is why this exists: `Fearce/gg` and `prismicious/gg` are one codebase and two keys, so
+   *  keying on `repoKey` alone puts the two people editing it in rooms that never meet. An instance
+   *  that knows the link declares it here and the relay joins it to the other side's room too — one
+   *  side knowing is enough. OPTIONAL on purpose: a client that predates this simply sends none, which
+   *  is exactly today's behaviour, so no PROTOCOL bump (a bump disconnects every peer until it
+   *  redeploys — for this feature that would break the very office it repairs). */
+  repoAliases?: string[];
 }
 
 /** An agent as seen by everyone else: the reporter's own presence entry, stamped with who reported it. */
@@ -56,7 +64,11 @@ export const ROOM_HISTORY = 60;
 
 export type ClientFrame =
   | { t: "presence"; agents: RelayAgent[] }
-  | { t: "chat"; room: string; body: string; senderName: string; role: string; repoLabel?: string | null }
+  /** `room` is the sender's own room and stays the addressing unit. `rooms` — when present — is every
+   *  room the line belongs to (the sender's whole identity group), so one post reaches a fork's room as
+   *  well as the upstream's. The relay still delivers ONE message with ONE id, stamped per receiver with
+   *  the room THEY know it by, so a client that never heard of aliases files it correctly. */
+  | { t: "chat"; room: string; rooms?: string[]; body: string; senderName: string; role: string; repoLabel?: string | null }
   | { t: "ping" };
 
 export type ServerFrame =

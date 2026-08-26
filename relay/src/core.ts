@@ -49,7 +49,48 @@ interface PeerState {
  *  an attempt to fan a message into a room nobody would look at. */
 const REPO_ROOM_RE = /^repo:[a-z0-9][a-z0-9._+\-/:@]{0,199}$/;
 
+/**
+ * The same contract as `REPO_ROOM_RE`, one level down: the KEY a room is built from, which the identity
+ * normalizer only ever emits as lowercase `host/owner/repo` or `name:<leaf>`.
+ *
+ * Validating the wrapped room instead is not equivalent, and quietly lets junk through: `relayRepoRoom`
+ * on a key of `repo:../../etc` yields `repo:repo:../../etc`, whose first character after the prefix is
+ * the harmless `r`, so the room test passes something the room test would have refused directly.
+ */
+const REPO_KEY_RE = /^(?:name:[a-z0-9][a-z0-9._+-]*|[a-z0-9][a-z0-9._+\-/@]*\/[a-z0-9._+\-/@]+)$/;
+
+/** A checkout with more remotes than this is pathological, and every alias costs a room membership and a
+ *  history fan-out — so the list is bounded here rather than trusted. */
+const MAX_REPO_ALIASES = 8;
+
 const clip = (s: unknown, n: number): string => (typeof s === "string" ? s.replace(/\s+$/, "").slice(0, n) : "");
+
+/** Agent-supplied ROOM names for one chat line, held to the same shape and cap as the keys they wrap. */
+const cleanRooms = (raw: unknown, exclude: string): string[] => {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const r of raw) {
+    const room = clip(r, 220);
+    if (!room || room === exclude || out.includes(room) || !REPO_ROOM_RE.test(room)) continue;
+    out.push(room);
+    if (out.length >= MAX_REPO_ALIASES) break;
+  }
+  return out;
+};
+
+/** Agent-supplied repo keys, cleaned to the same shape `repoKey` is held to and capped. */
+const cleanKeys = (raw: unknown, exclude: string): string[] => {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const k of raw) {
+    const key = clip(k, 200).toLowerCase();
+    if (!key || key === exclude || out.includes(key)) continue;
+    if (!REPO_KEY_RE.test(key)) continue;
+    out.push(key);
+    if (out.length >= MAX_REPO_ALIASES) break;
+  }
+  return out;
+};
 
 /**
  * The Online Office's routing brain: who is online, which repos they are in, and who each chat line
@@ -127,13 +168,19 @@ export class RelayCore {
         title: clip(a.title, 160),
         repoKey: clip(a.repoKey, 200).toLowerCase(),
         repoLabel: clip(a.repoLabel, 120),
+        repoAliases: cleanKeys(a.repoAliases, clip(a.repoKey, 200).toLowerCase()),
       }))
       .filter((a) => a.key && a.repoKey);
 
+    // An instance is in a room per identity its checkouts answer to, not just per `repoKey`: the side
+    // that knows a fork and its upstream are one repository joins BOTH rooms, which is what lets it hear
+    // the other side at all. The other side needs to know nothing.
     const rooms = new Set<string>([OFFICE_ROOM]);
     for (const a of clean) {
-      const room = relayRepoRoom(a.repoKey);
-      if (REPO_ROOM_RE.test(room)) rooms.add(room);
+      for (const key of [a.repoKey, ...a.repoAliases]) {
+        const room = relayRepoRoom(key);
+        if (REPO_ROOM_RE.test(room)) rooms.add(room);
+      }
     }
     const entered = [...rooms].filter((r) => !st.rooms.has(r));
     const changed = JSON.stringify(st.agents) !== JSON.stringify(clean);
@@ -162,11 +209,18 @@ export class RelayCore {
       instanceName: st.peer.instanceName,
       at: this.now(),
     };
-    this.history.push(room, msg);
+    // The rooms this one line belongs to: the sender's own, plus any it declared as the same repository.
+    // The general office never fans out — it is one room by definition.
+    const group = room === OFFICE_ROOM ? [room] : [room, ...cleanRooms(frame.rooms, room)];
+    // Filed under every room in the group, so a peer that only knows the OTHER name still gets the
+    // backlog when it enters. The copies share one id, which is what the receiver's durable dedup keys on.
+    for (const r of group) this.history.push(r, { ...msg, room: r });
     for (const other of this.peers.values()) {
       if (other.peer.instanceId === st.peer.instanceId) continue; // the sender already has its own copy
-      if (!other.rooms.has(room)) continue;
-      other.peer.send({ t: "chat", msg });
+      // Deliver ONCE, stamped with the room THIS peer knows the repo by — a client that predates aliases
+      // matches an incoming room against its own key exactly, and would file an unrecognised one nowhere.
+      const seenAs = group.find((r) => other.rooms.has(r));
+      if (seenAs) other.peer.send({ t: "chat", msg: { ...msg, room: seenAs } });
     }
     return null;
   }
@@ -210,17 +264,54 @@ export class RelayCore {
   /** Repo identities that two or more DIFFERENT instances are in right now — the collaborations the
    *  office exists for, and the headline number on the status page. */
   sharedRepos(): { repoKey: string; repoLabel: string; instances: string[] }[] {
+    const canonical = this.repoGroups();
     const byRepo = new Map<string, { label: string; instances: Set<string> }>();
     for (const st of this.peers.values()) {
       for (const a of st.agents) {
-        const e = byRepo.get(a.repoKey) ?? { label: a.repoLabel || a.repoKey, instances: new Set<string>() };
+        const group = canonical.get(a.repoKey) ?? a.repoKey;
+        const e = byRepo.get(group) ?? { label: a.repoLabel || group, instances: new Set<string>() };
+        // The representative's own label reads best ("Fearce/gg", not whichever fork spoke first).
+        if (a.repoKey === group && a.repoLabel) e.label = a.repoLabel;
         e.instances.add(st.peer.instanceName);
-        byRepo.set(a.repoKey, e);
+        byRepo.set(group, e);
       }
     }
     return [...byRepo.entries()]
       .filter(([, e]) => e.instances.size >= 2)
       .map(([repoKey, e]) => ({ repoKey, repoLabel: e.label, instances: [...e.instances] }));
+  }
+
+  /**
+   * The identity keys connected instances have declared to be the SAME repository, each mapped to one
+   * representative (the lexicographically smallest, so the answer doesn't depend on who connected first).
+   *
+   * Counting without this reports a fork and its upstream as two separate repositories — so a real
+   * cross-machine collaboration shows up as "0 shared repos" on the status page and in `/api/health`,
+   * which is exactly the reading that made this defect look like an absence of activity.
+   */
+  private repoGroups(): Map<string, string> {
+    const parent = new Map<string, string>();
+    const find = (k: string): string => {
+      const up = parent.get(k) ?? k;
+      if (up === k) return k;
+      const root = find(up);
+      parent.set(k, root);
+      return root;
+    };
+    const union = (a: string, b: string): void => {
+      const [ra, rb] = [find(a), find(b)];
+      if (ra !== rb) parent.set(ra < rb ? rb : ra, ra < rb ? ra : rb);
+    };
+    for (const st of this.peers.values()) {
+      for (const a of st.agents) {
+        if (!parent.has(a.repoKey)) parent.set(a.repoKey, a.repoKey);
+        for (const alias of a.repoAliases ?? []) {
+          if (!parent.has(alias)) parent.set(alias, alias);
+          union(a.repoKey, alias);
+        }
+      }
+    }
+    return new Map([...parent.keys()].map((k) => [k, find(k)]));
   }
 
   private broadcastPresence(): void {

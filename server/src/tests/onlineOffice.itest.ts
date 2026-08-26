@@ -41,7 +41,7 @@ const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { OnlineOffice, normalizeRelayUrl } = await import("../office/onlineOffice.js");
-const { forgetRepoIdentity, normalizeRemote, remoteLabel, repoIdentity } = await import("../office/repoIdentity.js");
+const { forgetRepoIdentity, normalizeRemote, remoteLabel, repoIdentity, repoLeaf } = await import("../office/repoIdentity.js");
 const { OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } = await import("../office/onlineProtocol.js");
 const { GENERAL_ROOM, isCollaborationRoom, repoRoom } = await import("../types.js");
 
@@ -165,9 +165,25 @@ function fakeRelay(opts: { reject401?: boolean } = {}) {
 
 // ---- throwaway git repos ---------------------------------------------------------------------------
 
-async function makeRepo(dir: string, remote?: string): Promise<string> {
+/**
+ * Best-effort removal of a throwaway directory holding git checkouts.
+ *
+ * Windows locks a directory that is any live process's cwd, and this repo is worked by several agents at
+ * once — so a `git` spawn (this test's, or a neighbour's) can still hold one at teardown. A temp dir the
+ * OS will reap is not worth failing a gate over; the assertions above it have already run.
+ */
+function rmTemp(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 150 });
+  } catch (e) {
+    console.log(`  (note: left ${dir} for the OS to reap — ${(e as Error).message})`);
+  }
+}
+
+async function makeRepo(dir: string, remote?: string, extra: Record<string, string> = {}): Promise<string> {
   await runGit(dir, ["init", "-q"]);
   if (remote) await runGit(dir, ["remote", "add", "origin", remote]);
+  for (const [name, url] of Object.entries(extra)) await runGit(dir, ["remote", "add", name, url]);
   return dir;
 }
 
@@ -269,6 +285,11 @@ async function main(): Promise<void> {
     check("an explicit port isn't part of the identity", normalizeRemote("ssh://git@git.example.com:2222/team/app.git") === "git.example.com/team/app");
     check("junk is refused rather than becoming a room", normalizeRemote("not a url") === null && normalizeRemote("") === null);
 
+    // The leaf is what makes a fork SUSPECTED of being the same project — never what groups it.
+    check("the repo leaf drops the host and owner", repoLeaf("github.com/fearce/card-marker") === "card-marker");
+    check("…and a fork shares it with its upstream", repoLeaf("github.com/prismicious/gg") === repoLeaf("github.com/fearce/gg"));
+    check("…and a remote-less checkout still has one", repoLeaf("name:scratch") === "scratch");
+
     // A relay URL is what a human pastes, so it accepts the forms a human types.
     check("relay URL: bare host gets https", normalizeRelayUrl("office.example.com") === "https://office.example.com");
     check("relay URL: a wss:// paste becomes https", normalizeRelayUrl("wss://office.example.com/") === "https://office.example.com");
@@ -291,8 +312,29 @@ async function main(): Promise<void> {
       check("a repo with NO remote falls back to its folder name", !!b && b.key.startsWith("name:card-marker-"), JSON.stringify(b));
       const none = await repoIdentity(mkdtempSync(join(root, "not-a-repo-")));
       check("a workspace that isn't a repo has no identity", none === null);
+
+      check("an ordinary single-remote checkout declares no aliases", a?.aliases.length === 0, JSON.stringify(a));
+
+      // A FORK checkout: `origin` is the contributor's own copy, `upstream` the canonical repo. Keying on
+      // origin alone is what put Kevin and Mikkel in two rooms while both edited this repository.
+      const fork = await makeRepo(mkdtempSync(join(root, "fork-")), "https://github.com/prismicious/garden-gnome-orchestrator.git", {
+        upstream: "git@github.com:Fearce/garden-gnome-orchestrator.git",
+      });
+      forgetRepoIdentity();
+      const f = await repoIdentity(fork);
+      check("a fork is still PRIMARY-keyed on its own origin", f?.key === "github.com/prismicious/garden-gnome-orchestrator", JSON.stringify(f));
+      check("…and carries the upstream as an alias, which is what makes the two group", f?.aliases.includes("github.com/fearce/garden-gnome-orchestrator") === true, JSON.stringify(f?.aliases));
+
+      // The upstream side can supply the link instead — one side knowing is enough.
+      const upstream = await makeRepo(mkdtempSync(join(root, "upstream-")), "https://github.com/Fearce/garden-gnome-orchestrator.git", {
+        mikkel: "https://github.com/prismicious/garden-gnome-orchestrator.git",
+      });
+      forgetRepoIdentity();
+      const u = await repoIdentity(upstream);
+      check("a remote under any NAME becomes an alias, not just `upstream`", u?.aliases.includes("github.com/prismicious/garden-gnome-orchestrator") === true, JSON.stringify(u));
+      check("…and the primary key is unchanged, so its room never moves", u?.key === "github.com/fearce/garden-gnome-orchestrator", JSON.stringify(u?.key));
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmTemp(root);
     }
   }
 
@@ -390,6 +432,102 @@ async function main(): Promise<void> {
       db.raw.close();
       await relay.close();
       rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // -- Test C2: a fork and its upstream are ONE repository --------------------------------------------
+  // The 2026-08-26 defect, from the client's side: Kevin's checkout advertised
+  // `Fearce/garden-gnome-orchestrator` and Mikkel's `prismicious/garden-gnome-orchestrator`, so agents
+  // editing one codebase on two machines were not peers, the office stayed switched off for both, and
+  // every check read green because the OTHER shared repo (card-marker) matched on both sides.
+  console.log("\nTest C2 — a fork and its upstream group as one repository");
+  {
+    const relay = fakeRelay();
+    const url = await relay.listen();
+    const dir = mkdtempSync(join(tmpdir(), "online-office-fork-"));
+    const db = new Db(join(dir, "orchestrator.sqlite"));
+    const hub = new EventHub();
+    // This machine is the UPSTREAM side and happens to have the fork configured as a second remote.
+    const workspace = await makeRepo(mkdtempSync(join(dir, "repo-")), "https://github.com/Fearce/garden-gnome-orchestrator.git", {
+      mikkel: "https://github.com/prismicious/garden-gnome-orchestrator.git",
+    });
+    const UP = "github.com/fearce/garden-gnome-orchestrator";
+    const FORK = "github.com/prismicious/garden-gnome-orchestrator";
+    const chats: { msg: RelayChat; workspaces: string[] }[] = [];
+    const joins: { repoLabel: string; workspaces: string[]; joiners: RelayPresentAgent[] }[] = [];
+    forgetRepoIdentity();
+
+    const office: OnlineOfficeType = new OnlineOffice({
+      db,
+      hub,
+      roster: () => [{ key: "t1::implementor", name: "Wren", role: "implementor", title: "Office health", workspace }],
+      onRemoteChat: (msg, workspaces) => chats.push({ msg, workspaces }),
+      onRemoteJoin: (repoLabel, workspaces, joiners) => joins.push({ repoLabel, workspaces, joiners }),
+    });
+    try {
+      office.start();
+      const ok = await office.join({ url, code: JOIN_CODE, instanceName: "Kevin" });
+      check("joined", ok.ok, ok.error);
+      check("connected", await until(() => office.status().state === "online" && relay.connected()));
+      check("presence advertised", await until(() => relay.presence().length > 0));
+
+      const advertised = relay.presence().at(-1)!.agents[0]!;
+      check("the primary key is still the origin's, so this instance's room never moves", advertised.repoKey === UP, advertised.repoKey);
+      check("…and the fork rides along as an alias the relay can group on", (advertised.repoAliases ?? []).includes(FORK), JSON.stringify(advertised.repoAliases));
+
+      // Mikkel's agent, advertising ONLY his fork — his instance need not know about ours at all.
+      const sten = remoteAgent({ instanceId: "inst-mikkel", instanceName: "Mikkel's Nissefactory", key: "t9::implementor", name: "Sten", repoKey: FORK, repoLabel: "prismicious/garden-gnome-orchestrator" });
+      relay.push({ t: "presence", agents: [sten] });
+      check("an agent on the FORK is announced as joining our repo", await until(() => joins.length === 1), JSON.stringify(joins));
+      check("…naming our local checkout", joins[0]?.workspaces[0] === workspace, JSON.stringify(joins[0]?.workspaces));
+      check("…and counts as a remote peer, which is the office ON-switch", office.remotePeers(workspace).length === 1);
+      const shared = office.status().sharedRepos;
+      check("the status DTO reports ONE shared repo, not two", shared.length === 1, JSON.stringify(shared));
+
+      // Inbound: the relay stamps a line with the room the RECEIVER knows the repo by — but a line that
+      // still carries the fork's own room must resolve to our checkout too.
+      relay.push({
+        t: "chat",
+        msg: { id: "f1", room: relayRepoRoom(FORK), body: "I'm in web/ChatRoom.tsx", senderName: "Sten", role: "implementor", instanceId: "inst-mikkel", instanceName: "Mikkel's Nissefactory", repoLabel: "prismicious/garden-gnome-orchestrator", at: Date.now() },
+      });
+      check("a line addressed to the FORK's room is delivered", await until(() => chats.length === 1));
+      check("…and resolves to our local checkout of the same repository", chats[0]?.workspaces[0] === workspace, JSON.stringify(chats[0]?.workspaces));
+
+      // Outbound: one post, addressed to our own room, but carrying the whole group so it reaches a
+      // machine that only knows the other name.
+      office.postChat({ workspace, body: "I'm in server/src/office", senderName: "Wren", role: "implementor" });
+      check("a local post reaches the relay", await until(() => relay.chats().length === 1));
+      const sent = relay.chats()[0]!;
+      check("…addressed to our own room", sent.room === relayRepoRoom(UP), sent.room);
+      check("…and carrying the fork's room too, so the other machine is reachable", (sent.rooms ?? []).includes(relayRepoRoom(FORK)), JSON.stringify(sent.rooms));
+
+      // A grouped pair is NOT a look-alike — the whole point of the suggestion is that it goes away.
+      office.refreshPresence();
+      await until(() => db.kvGet("online_office_unlinked") !== null);
+      check("a repo we ARE grouped with raises no suggestion", (db.kvGet("online_office_unlinked") ?? "[]") === "[]", db.kvGet("online_office_unlinked") ?? "");
+
+      // Now a THIRD machine on a same-named repo we have no remote for. This is the blind spot: nothing
+      // else in the office can see it, because the room it would share with us never forms.
+      relay.push({
+        t: "presence",
+        agents: [
+          sten,
+          remoteAgent({ instanceId: "inst-third", instanceName: "Someone's box", key: "t7::implementor", name: "Alv", repoKey: "github.com/someone/garden-gnome-orchestrator", repoLabel: "someone/garden-gnome-orchestrator" }),
+        ],
+      });
+      await sleep(60);
+      office.refreshPresence();
+      const raw = await until(() => (db.kvGet("online_office_unlinked") ?? "[]") !== "[]");
+      check("an ungrouped same-named repo IS reported, so the sweep can see it", raw, db.kvGet("online_office_unlinked") ?? "");
+      const suggestions = JSON.parse(db.kvGet("online_office_unlinked") ?? "[]") as { local: string; remote: string; instance: string }[];
+      check("…naming both sides and the machine", suggestions[0]?.remote === "someone/garden-gnome-orchestrator" && suggestions[0]?.instance === "Someone's box", JSON.stringify(suggestions));
+      check("…and only the ungrouped one — the fork we DID link is absent", suggestions.length === 1, JSON.stringify(suggestions));
+      check("…while it is still NOT treated as a peer (a shared name is a suggestion, never a grouping)", office.remotePeers(workspace).length === 1);
+    } finally {
+      office.dispose();
+      db.raw.close();
+      await relay.close();
+      rmTemp(dir);
     }
   }
 

@@ -280,4 +280,152 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
   assert.deepEqual(core.roster(), []);
 }
 
+// ---- forks: one codebase, two remote identities ------------------------------------------------------
+// The live defect this covers (2026-08-26): Kevin's checkout advertised `Fearce/garden-gnome-orchestrator`
+// and Mikkel's advertised `prismicious/garden-gnome-orchestrator` — the same repository through his fork —
+// so three agents edited one codebase in two rooms that could not see each other. Every existing check
+// read green, because the OTHER shared repo (`Fearce/card-marker`) matched on both sides.
+
+const UP = "github.com/fearce/garden-gnome-orchestrator";
+const FORK = "github.com/prismicious/garden-gnome-orchestrator";
+
+/** Kevin (has the fork configured as a second remote) and Mikkel (knows only his fork). */
+function forkPair(opts: { withAlias: boolean }) {
+  const core = newCore();
+  const kevin = fakePeer("i-kevin", "Kevin");
+  const mikkel = fakePeer("i-mikkel", "Mikkel's Nissefactory");
+  core.attach(kevin);
+  core.attach(mikkel);
+  core.onFrame(kevin.connId, {
+    t: "presence",
+    agents: [agent({ key: "t-k::implementor", name: "Wren", repoKey: UP, repoLabel: "Fearce/garden-gnome-orchestrator", ...(opts.withAlias ? { repoAliases: [FORK] } : {}) })],
+  });
+  core.onFrame(mikkel.connId, {
+    t: "presence",
+    agents: [agent({ key: "t-m::implementor", name: "Sten", repoKey: FORK, repoLabel: "prismicious/garden-gnome-orchestrator" })],
+  });
+  kevin.drain();
+  mikkel.drain();
+  return { core, kevin, mikkel };
+}
+
+// Without the link declared, the two never meet — this is the bug, pinned so the fix can't silently rot.
+{
+  const { core, kevin, mikkel } = forkPair({ withAlias: false });
+  core.onFrame(mikkel.connId, { t: "chat", room: relayRepoRoom(FORK), body: "claiming web/", senderName: "Sten", role: "implementor" });
+  assert.deepEqual(chats(kevin.drain()), [], "no alias declared ⇒ the fork's line must not reach the upstream room");
+  core.onFrame(kevin.connId, { t: "chat", room: relayRepoRoom(UP), rooms: [relayRepoRoom(UP)], body: "claiming office/", senderName: "Wren", role: "implementor" });
+  assert.deepEqual(chats(mikkel.drain()), []);
+  assert.deepEqual(core.sharedRepos(), [], "and the collaboration is invisible in the headline count");
+}
+
+// One side knowing the link is enough, and it works in BOTH directions.
+{
+  const { core, kevin, mikkel } = forkPair({ withAlias: true });
+
+  // fork → upstream. Kevin joined the fork's room via his alias, so he simply receives it.
+  core.onFrame(mikkel.connId, { t: "chat", room: relayRepoRoom(FORK), body: "claiming web/", senderName: "Sten", role: "implementor" });
+  const toKevin = chats(kevin.drain());
+  assert.equal(toKevin.length, 1, "the fork's line reaches the upstream side exactly once");
+  assert.ok(toKevin[0]!.t === "chat" && toKevin[0]!.msg.body === "claiming web/");
+
+  // upstream → fork. Mikkel's client predates aliases: it matches an incoming room against its own key
+  // exactly, so the relay must stamp the line with the room HE knows the repo by, not the sender's.
+  core.onFrame(kevin.connId, {
+    t: "chat",
+    room: relayRepoRoom(UP),
+    rooms: [relayRepoRoom(UP), relayRepoRoom(FORK)],
+    body: "claiming office/",
+    senderName: "Wren",
+    role: "implementor",
+  });
+  const toMikkel = chats(mikkel.drain());
+  assert.equal(toMikkel.length, 1, "delivered ONCE, not once per room in the group");
+  assert.ok(toMikkel[0]!.t === "chat");
+  assert.equal(toMikkel[0]!.msg.room, relayRepoRoom(FORK), "stamped with the receiver's own room");
+  assert.equal(toMikkel[0]!.msg.body, "claiming office/");
+
+  // One shared repository, not two — the number the status page and /api/health report.
+  const shared = core.sharedRepos();
+  assert.equal(shared.length, 1, JSON.stringify(shared));
+  assert.equal(shared[0]!.repoKey, UP, "the representative is the lexicographically smallest key, so it is stable");
+  assert.equal(shared[0]!.repoLabel, "Fearce/garden-gnome-orchestrator");
+  assert.deepEqual([...shared[0]!.instances].sort(), ["Kevin", "Mikkel's Nissefactory"]);
+}
+
+// A copy is filed under every room in the group, so the side that only knows the OTHER name still gets
+// the backlog when it enters — and the copies share ONE id, which is what the client's durable dedup keys on.
+{
+  const { core, kevin } = forkPair({ withAlias: true });
+  core.onFrame(kevin.connId, {
+    t: "chat",
+    room: relayRepoRoom(UP),
+    rooms: [relayRepoRoom(UP), relayRepoRoom(FORK)],
+    body: "history please",
+    senderName: "Wren",
+    role: "implementor",
+  });
+  const late = fakePeer("i-late", "A third machine");
+  core.attach(late);
+  core.onFrame(late.connId, { t: "presence", agents: [agent({ key: "t-l::implementor", repoKey: FORK, repoLabel: "prismicious/garden-gnome-orchestrator" })] });
+  const replay = late.sent.filter((f) => f.t === "history");
+  assert.equal(replay.length, 1, "entering the fork's room replays what was said under the upstream name");
+  assert.ok(replay[0]!.t === "history" && replay[0]!.messages.length === 1);
+  assert.equal(replay[0]!.t === "history" && replay[0]!.messages[0]!.body, "history please");
+}
+
+// An unrelated repository must not be pulled in by someone else's alias list.
+{
+  const { core, kevin } = forkPair({ withAlias: true });
+  const other = fakePeer("i-other", "Someone else");
+  core.attach(other);
+  core.onFrame(other.connId, { t: "presence", agents: [agent({ key: "t-o::implementor", repoKey: "github.com/someone/utilities", repoLabel: "someone/utilities" })] });
+  other.drain();
+  core.onFrame(kevin.connId, {
+    t: "chat",
+    room: relayRepoRoom(UP),
+    rooms: [relayRepoRoom(UP), relayRepoRoom(FORK)],
+    body: "not for you",
+    senderName: "Wren",
+    role: "implementor",
+  });
+  assert.deepEqual(chats(other.drain()), [], "a repo outside the group hears nothing");
+}
+
+// Aliases are agent-supplied, so they are cleaned and capped exactly like `repoKey` is.
+{
+  const core = newCore();
+  const kevin = fakePeer("i-kevin");
+  core.attach(kevin);
+  core.onFrame(kevin.connId, {
+    t: "presence",
+    agents: [agent({ repoKey: UP, repoAliases: ["repo:../../etc", "UPPER/Case", "", "github.com/a/b", UP, "github.com/a/b"] })],
+  });
+  const seen = core.roster()[0]!.repoAliases ?? [];
+  assert.deepEqual(seen, ["upper/case", "github.com/a/b"], "junk dropped, lowercased, de-duped, self excluded");
+
+  const core2 = newCore();
+  const p = fakePeer("i-cap");
+  core2.attach(p);
+  core2.onFrame(p.connId, { t: "presence", agents: [agent({ repoKey: UP, repoAliases: Array.from({ length: 40 }, (_, i) => `github.com/o/r${i}`) })] });
+  assert.equal((core2.roster()[0]!.repoAliases ?? []).length, 8, "capped, so one client can't fan itself into 40 rooms");
+}
+
+// Backward compatibility: a client that sends no aliases and no `rooms` behaves exactly as it always did.
+{
+  const core = newCore();
+  const kevin = fakePeer("i-kevin");
+  const mikkel = fakePeer("i-mikkel");
+  core.attach(kevin);
+  core.attach(mikkel);
+  for (const p of [kevin, mikkel]) core.onFrame(p.connId, { t: "presence", agents: [agent()] });
+  kevin.drain();
+  mikkel.drain();
+  core.onFrame(kevin.connId, { t: "chat", room: relayRepoRoom("github.com/fearce/card-marker"), body: "same as ever", senderName: "Rune", role: "implementor" });
+  const got = chats(mikkel.drain());
+  assert.equal(got.length, 1);
+  assert.equal(got[0]!.t === "chat" && got[0]!.msg.room, relayRepoRoom("github.com/fearce/card-marker"));
+  assert.equal(core.sharedRepos().length, 1);
+}
+
 console.log("relay core: all assertions passed");

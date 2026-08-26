@@ -21,7 +21,7 @@
 // Run: node scripts/office-health.test.cjs
 
 const assert = require("node:assert/strict");
-const { SELF_ECHO_FIX, classifyOfficeRows, senderMachine, verdictFor } = require("./probe-office.cjs");
+const { SELF_ECHO_FIX, classifyOfficeRows, parseUnlinked, relaySummary, senderMachine, verdictFor } = require("./probe-office.cjs");
 
 const SELF = "Kevin";
 const FIX_AT = Date.parse("2026-08-25T08:30:00Z");
@@ -115,5 +115,45 @@ assert.equal(senderMachine("Sif @ Box @ Two"), "Box @ Two", "split on the FIRST 
 // --- the boundary is read from the DB, never hardcoded ----------------------------------------
 assert.equal(SELF_ECHO_FIX.kv, "remote_instance_backfill_v1", "the boundary must come from the stamp the fixed build writes");
 assert.ok(!("at" in SELF_ECHO_FIX), "a hardcoded timestamp is what made this check cry wolf — it must not come back");
+
+// --- 6. look-alike repositories: the blind spot the rest of this probe has --------------------
+//     Everything above inspects rooms that FORMED. Two machines that should have met and never did read
+//     as an absence of activity — which is how the 2026-08-26 fork defect ran under a clean two-way ✓.
+//     The row is written by the SERVER, so this parser must survive an older or newer build's shape.
+{
+  const one = parseUnlinked(JSON.stringify([{ local: "Fearce/gg", remote: "prismicious/gg", instance: "Mikkel's Nissefactory" }]));
+  assert.equal(one.length, 1);
+  assert.equal(one[0].remote, "prismicious/gg");
+
+  assert.deepEqual(parseUnlinked(""), [], "an absent row is 'nothing to report', not a crash");
+  assert.deepEqual(parseUnlinked("not json"), [], "a corrupt row must not take the whole sweep step down");
+  assert.deepEqual(parseUnlinked("{}"), [], "a non-array is refused rather than iterated");
+  assert.deepEqual(parseUnlinked(JSON.stringify([null, 7, { local: "a" }, { local: "a", remote: "b" }])).length, 1, "entries missing a side are dropped");
+
+  // A suggestion must never fail the sweep: the pair may be genuinely unrelated repos sharing a name
+  // (`Fearce/utilities` and `prismicious/utilities` are exactly that on this relay). Reporting it is the
+  // whole job; reddening a healthy office over it is what makes a check stop being read.
+  const empty6 = { liveEcho: [], residue: [], unstamped: [] };
+  assert.equal(verdictFor({ echo: empty6, rooms: [] }).ok, true, "look-alikes are advisory — the verdict must not depend on them");
+}
+
+// --- 7. the relay headline: what the relay declines to tell us is not a fault -----------------
+//     `members` moved behind the admin key in 970ab04, and this line immediately read
+//     "undefined member machine(s)" against a perfectly healthy relay. A probe that invents a fault
+//     is the failure mode this file exists to prevent, so the shape is pinned rather than formatted
+//     inline: the relay decides what an anonymous caller may know, and that decision will move again.
+{
+  const full = { instancesOnline: 2, agentsOnline: 7, sharedRepos: 1, members: 2 };
+  assert.equal(relaySummary(full), "2 instances online, 7 agents, 1 shared repo, 2 member machines");
+  assert.equal(
+    relaySummary({ instancesOnline: 2, agentsOnline: 7, sharedRepos: 0 }),
+    "2 instances online, 7 agents, 0 shared repos",
+    "a count the relay withholds is omitted, never printed as undefined",
+  );
+  assert.equal(relaySummary({ instancesOnline: 1, agentsOnline: 1, sharedRepos: 1, members: 1 }), "1 instance online, 1 agent, 1 shared repo, 1 member machine");
+  assert.equal(relaySummary({ instancesOnline: 0, agentsOnline: 0, sharedRepos: 0 }), "0 instances online, 0 agents, 0 shared repos", "zero is a real answer and must survive");
+  assert.equal(relaySummary({}), "reachable, but reporting no counts", "a relay that answers with nothing says so in words");
+  assert.ok(!relaySummary({ instancesOnline: 2, agentsOnline: 7, sharedRepos: 1 }).includes("undefined"), "the exact regression");
+}
 
 console.log("office health: all assertions passed");

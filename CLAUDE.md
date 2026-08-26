@@ -271,21 +271,21 @@ add tools mid-query). Dedup is durable via `chatThreadInRoom`, so a restart/auto
 Gate: `test:office-gating`.
 
 ## The Online Office (the office, across machines)
-Two people running their own orchestrator on one repo were invisible to each other. **Settings → Online
-office** joins a shared relay (`relay/`, one container on the Sprogbroen box at `office.sprogbroen.dk`):
-each instance advertises its live agents, and agents in the SAME repo become peers — office on,
-`office_look` lists them, `chat_post(scope:"team")` reaches them, a remote line is pushed into the live
-implementor and persisted into the local project room, which the console shows as a chatroom tab + ONE
-top-bar huddle (`isCollaborationRoom` — a remote machine counts before any local task speaks). Nothing an
-instance sends echoes back to it: presence, chat and replayed history are sender-filtered at BOTH ends —
-an echo made a solo agent look like it had a teammate. **The room key is the git REMOTE identity, not the
-workspace path** (`office/repoIdentity.ts`) — `C:\repos\x` and `~/dev/x` are one room; no remote ⇒ folder
-name. Prompts say what makes a remote peer different: their edits never reach your `git status`, so you
-collide at the remote. **Auth is once** — one `JOIN_CODE`, exchanged for a per-machine device token whose
-expiry slides forward on every connect (revoke at `/admin?key=…`). All of it degrades soft: no token,
-relay down, device revoked ⇒ the console says so and local pipelines run as before. Gates
-`test:online-office` + `test:relay-core`, browser `npm run office-lab --prefix server`; traps in
-`.claude/rules/online-office.md`; credentials in `server/data/online-office-credentials.txt` (gitignored).
+Two orchestrators on one repo were invisible to each other. **Settings → Online office** joins a shared
+relay (`relay/`, one container on the Sprogbroen box at `office.sprogbroen.dk`): each advertises its live
+agents; same-repo agents become peers — office on, `office_look` lists them, `chat_post(scope:"team")`
+reaches them, a remote line reaches the live implementor and lands in the local project room, which the
+console shows as a chatroom tab + ONE top-bar huddle (`isCollaborationRoom` — a remote machine counts
+before any local task speaks). Nothing an instance sends echoes back: presence, chat and history are
+sender-filtered at BOTH ends — an echo gave a solo agent a teammate, itself. **The room key is the git
+REMOTE identity, not the workspace path** (`office/repoIdentity.ts`) — two paths are one room, and so are
+a FORK and its upstream once either side has the other's remote (every remote is an alias); no remote ⇒
+folder name. A remote peer's edits never reach your `git status`, so you collide at the remote — the
+prompts say so. **Auth is once** — a `JOIN_CODE` traded for a per-machine device token whose expiry
+slides forward on every connect (revoke at `/admin?key=…`). It degrades soft: no token, relay down or
+device revoked ⇒ the console says so and local pipelines run as before. Gates `test:online-office` +
+`test:relay-core`, browser `npm run office-lab --prefix server`; traps in `.claude/rules/online-office.md`;
+credentials in `server/data/online-office-credentials.txt` (gitignored).
 
 ## Deliverables (agent-produced files)
 A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the

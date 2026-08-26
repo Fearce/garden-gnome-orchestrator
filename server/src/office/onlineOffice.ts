@@ -3,7 +3,7 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import { OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } from "./onlineProtocol.js";
 import type { ClientFrame, JoinResponse, RelayAgent, RelayChat, RelayPresentAgent, ServerFrame } from "./onlineProtocol.js";
-import { repoIdentity, type RepoIdentity } from "./repoIdentity.js";
+import { identitiesMatch, identityKeys, repoIdentity, repoLeaf, type RepoIdentity } from "./repoIdentity.js";
 
 /** How the console sees the online office. The token is never part of this — only whether one is held. */
 export interface OnlineOfficeDTO {
@@ -55,6 +55,8 @@ const KV = {
   name: "online_office_name",
   token: "online_office_token",
   instanceId: "online_office_instance_id",
+  /** Read by `probe:office`, so the nightly sweep can see a collaboration that never formed. */
+  unlinked: "online_office_unlinked",
 } as const;
 
 const PRESENCE_MS = 15_000;
@@ -79,6 +81,7 @@ export class OnlineOffice {
   private connectedAt: number | null = null;
   private remote: RelayPresentAgent[] = [];
   private lastPresence = "";
+  private lastLookalikes = "";
   private reconnectDelay = RECONNECT_MIN_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private presenceTimer: ReturnType<typeof setInterval> | undefined;
@@ -203,16 +206,18 @@ export class OnlineOffice {
   remotePeers(workspace: string): RelayPresentAgent[] {
     const id = this.identityFor(workspace);
     if (!id) return [];
-    return this.remote.filter((a) => a.repoKey === id.key);
+    return this.remote.filter((a) => sameRepo(id, a));
   }
 
   /** Local workspaces that map to a relay room — how an incoming remote message finds the local repo
-   *  it belongs to. The office room maps to every workspace this instance currently has live. */
+   *  it belongs to. The office room maps to every workspace this instance currently has live.
+   *  Matched against every identity the checkout answers to, because the relay stamps a line with the
+   *  room the RECEIVER knows the repo by — which for a fork is not the room the sender posted into. */
   workspacesForRoom(room: string, candidates: string[]): string[] {
     if (room === OFFICE_ROOM) return candidates;
     return candidates.filter((ws) => {
       const id = this.identityFor(ws);
-      return !!id && relayRepoRoom(id.key) === room;
+      return !!id && identityKeys(id).some((k) => relayRepoRoom(k) === room);
     });
   }
 
@@ -221,8 +226,15 @@ export class OnlineOffice {
   postChat(input: { workspace: string | null; body: string; senderName: string; role: string }): void {
     if (this.state !== "online") return;
     void this.resolveIdentity(input.workspace).then((id) => {
-      const room = input.workspace && id ? relayRepoRoom(id.key) : OFFICE_ROOM;
-      this.send({ t: "chat", room, body: input.body, senderName: input.senderName, role: input.role, repoLabel: id?.label ?? null });
+      if (!input.workspace || !id) {
+        this.send({ t: "chat", room: OFFICE_ROOM, body: input.body, senderName: input.senderName, role: input.role, repoLabel: null });
+        return;
+      }
+      // Every room this checkout's repo answers to, so one post reaches a fork's room as well as the
+      // upstream's. The relay still delivers a single message per peer — this is addressing, not fan-out.
+      const rooms = identityKeys(id).map(relayRepoRoom);
+      const room = relayRepoRoom(id.key);
+      this.send({ t: "chat", room, rooms, body: input.body, senderName: input.senderName, role: input.role, repoLabel: id.label });
     });
   }
 
@@ -341,15 +353,63 @@ export class OnlineOffice {
     const joiners = this.remote.filter((a) => !before.has(`${a.instanceId}:${a.key}`));
     if (!joiners.length) return;
     const mine = this.deps.roster();
+    /** Local workspaces that are the same repository as this remote agent — a fork counts. */
+    const localFor = (j: RelayPresentAgent): string[] => {
+      const seen = mine.filter((m) => {
+        const id = this.identityFor(m.workspace);
+        return !!id && sameRepo(id, j);
+      });
+      return [...new Set(seen.map((m) => m.workspace))];
+    };
     const byRepo = new Map<string, RelayPresentAgent[]>();
     for (const j of joiners) {
-      const shared = mine.filter((m) => this.identityFor(m.workspace)?.key === j.repoKey).map((m) => m.workspace);
-      if (!shared.length) continue;
+      if (!localFor(j).length) continue;
       byRepo.set(j.repoKey, [...(byRepo.get(j.repoKey) ?? []), j]);
     }
     for (const [repoKey, list] of byRepo) {
-      const workspaces = [...new Set(mine.filter((m) => this.identityFor(m.workspace)?.key === repoKey).map((m) => m.workspace))];
-      this.deps.onRemoteJoin(list[0]?.repoLabel || repoKey, workspaces, list);
+      const first = list[0];
+      if (!first) continue;
+      this.deps.onRemoteJoin(first.repoLabel || repoKey, localFor(first), list);
+    }
+  }
+
+  /**
+   * Remote repositories that share a NAME with one of ours but are not grouped with it.
+   *
+   * This is the check that was missing when the defect it exists for ran silently: `probe:office` can
+   * only inspect rooms that FORMED, so two machines that should have met and never did looked exactly
+   * like an absence of activity. A matching leaf is a SUGGESTION — the pair may genuinely be unrelated
+   * repos — so it is recorded and reported, never acted on. Linking them is one `git remote add`.
+   */
+  private unlinkedLookalikes(): { local: string; remote: string; instance: string }[] {
+    const out = new Map<string, { local: string; remote: string; instance: string }>();
+    for (const a of this.deps.roster()) {
+      const id = this.identityFor(a.workspace);
+      if (!id) continue;
+      const leaf = repoLeaf(id.key);
+      for (const r of this.remote) {
+        if (sameRepo(id, r) || repoLeaf(r.repoKey) !== leaf) continue;
+        out.set(`${id.key}|${r.repoKey}`, { local: id.label, remote: r.repoLabel || r.repoKey, instance: r.instanceName });
+      }
+    }
+    return [...out.values()];
+  }
+
+  /** Persist the current suggestions so the nightly sweep can read them, and say it once in the log —
+   *  the console is where this is noticed live, the kv row is what `probe:office` reports at 3am. */
+  private recordLookalikes(): void {
+    const found = this.unlinkedLookalikes();
+    const fingerprint = JSON.stringify(found);
+    if (fingerprint === this.lastLookalikes) return;
+    this.lastLookalikes = fingerprint;
+    this.deps.db.kvSet(KV.unlinked, fingerprint);
+    for (const p of found) {
+      this.deps.hub.log(
+        "warn",
+        `Online office: "${p.remote}" on ${p.instance} looks like the same repository as your "${p.local}", ` +
+          `but they are separate rooms so those agents cannot see each other. If it IS the same project ` +
+          `(a fork), link them with: git remote add ${p.instance.replace(/\W+/g, "-").toLowerCase()} <their remote URL>`,
+      );
     }
   }
 
@@ -360,8 +420,19 @@ export class OnlineOffice {
     for (const a of local) {
       const id = await this.resolveIdentity(a.workspace);
       if (!id) continue; // a workspace that isn't a repo has no cross-machine identity to share
-      agents.push({ key: a.key, name: a.name, role: a.role, title: a.title, repoKey: id.key, repoLabel: id.label });
+      agents.push({
+        key: a.key,
+        name: a.name,
+        role: a.role,
+        title: a.title,
+        repoKey: id.key,
+        repoLabel: id.label,
+        // Omitted entirely for the ordinary single-remote checkout, so its presence frame is unchanged.
+        ...(id.aliases.length ? { repoAliases: id.aliases } : {}),
+      });
     }
+    // Every local identity is warm by now (the loop above awaited them), which is what this needs.
+    this.recordLookalikes();
     const fingerprint = JSON.stringify(agents);
     if (fingerprint === this.lastPresence) return;
     this.lastPresence = fingerprint;
@@ -425,11 +496,10 @@ export class OnlineOffice {
   // ---- state ----------------------------------------------------------------------------------------
 
   private sharedReposNow(): SharedRepo[] {
-    const remoteKeys = new Set(this.remote.map((a) => a.repoKey));
     const byKey = new Map<string, SharedRepo>();
     for (const a of this.deps.roster()) {
       const id = this.identityFor(a.workspace);
-      if (!id || !remoteKeys.has(id.key)) continue;
+      if (!id || !this.remote.some((r) => sameRepo(id, r))) continue;
       const e = byKey.get(id.key) ?? { repoKey: id.key, repoLabel: id.label, workspaces: [] };
       if (!e.workspaces.includes(a.workspace)) e.workspaces.push(a.workspace);
       byKey.set(id.key, e);
@@ -459,6 +529,18 @@ export class OnlineOffice {
   private instanceName(): string {
     return this.deps.db.kvGet(KV.name) ?? "an orchestrator";
   }
+}
+
+/**
+ * Whether a remote agent is working the same repository as a local checkout.
+ *
+ * Not `a.repoKey === id.key`: a fork and its upstream are one codebase under two remote identities, and
+ * only ONE side needs to have the other's remote configured for the pair to be recognised — so both
+ * directions are checked. This is the office ON-switch for cross-machine work; before it, Kevin's and
+ * Mikkel's agents edited this very repo in rooms that could not see each other.
+ */
+function sameRepo(id: RepoIdentity, agent: { repoKey: string; repoAliases?: string[] }): boolean {
+  return identitiesMatch(id, [agent.repoKey, ...(agent.repoAliases ?? [])]);
 }
 
 /** Accept what a human would paste — `office.example.com`, a `wss://` URL, a trailing slash — and
