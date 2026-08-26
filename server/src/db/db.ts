@@ -241,9 +241,15 @@ function escapeLike(s: string): string {
 
 const containsFold = (text: string, q: string): boolean => text.toLowerCase().includes(q.toLowerCase());
 
+/** One task's conversation match: how many messages matched, and the rowid of the one to quote. */
+interface ConversationHit {
+  hits: number;
+  bestRowid: number;
+}
+
 interface RankedTask {
   thread: Thread;
-  hits: number;
+  hit: ConversationHit | null;
   metadata: boolean;
 }
 
@@ -257,7 +263,8 @@ type ConversationPlan = { via: "index"; match: string } | { via: "scan" } | { vi
  *  dumps and office chatter that mention it once. */
 function byRelevance(a: RankedTask, b: RankedTask): number {
   if (a.metadata !== b.metadata) return a.metadata ? -1 : 1;
-  if (a.hits !== b.hits) return b.hits - a.hits;
+  const [ah, bh] = [a.hit?.hits ?? 0, b.hit?.hits ?? 0];
+  if (ah !== bh) return bh - ah;
   return b.thread.createdAt - a.thread.createdAt;
 }
 
@@ -960,7 +967,7 @@ export class Db {
     if (!q) return [];
     const like = `%${escapeLike(q)}%`;
     const plan = this.conversationPlan(q);
-    const messageHits = this.conversationHitCounts(like, plan);
+    const messageHits = this.conversationHits(like, plan);
     const ids = new Set(messageHits.keys());
     for (const r of this.raw
       .prepare("SELECT id FROM threads WHERE title LIKE @like ESCAPE '\\' OR brief LIKE @like ESCAPE '\\'")
@@ -970,12 +977,12 @@ export class Db {
     return this.threadsByIds([...ids])
       .map((thread) => ({
         thread,
-        hits: messageHits.get(thread.id) ?? 0,
+        hit: messageHits.get(thread.id) ?? null,
         metadata: containsFold(thread.title, q) || containsFold(thread.brief, q),
       }))
       .sort(byRelevance)
       .slice(0, limit)
-      .map((c) => this.taskHit(c.thread, q, like, plan, c.hits));
+      .map((c) => this.taskHit(c.thread, q, c.hit));
   }
 
   /** True once every message is in the trigram index, so a search may use it. Cached because it only
@@ -1016,67 +1023,67 @@ export class Db {
     return out;
   }
 
-  /** Matching messages per task. `messages.content` is ~105 MB of tool output and a leading-wildcard
-   *  LIKE can use no ordinary index, so this used to re-read the whole table on every keystroke —
-   *  ~0.6s with the pages cached and ~30s without, all of it blocking the server's only thread.
-   *  The trigram index narrows it to candidates first; the same LIKE then re-checks each one, so the
-   *  answer is unchanged. Falls back to the scan when `match` is null (short query / index not built). */
-  private conversationHitCounts(like: string, plan: ConversationPlan): Map<string, number> {
+  /**
+   * Per task: how many of its messages match, and which one to quote.
+   *
+   * `messages.content` is ~105 MB of tool output and a leading-wildcard LIKE can use no ordinary
+   * index, so this used to re-read the whole table on every keystroke — measured on the real database,
+   * a search for "orchestrator" spent **263 seconds** here, all of it blocking the server's only
+   * thread. The trigram index narrows to candidates first and the same LIKE re-checks each one, so the
+   * answer is unchanged.
+   *
+   * Count and quote come from ONE pass because they used to come from 41. Picking the message to quote
+   * was a separate per-task query, and the tasks a common word returns are by definition the ones that
+   * said it most — the biggest conversations in the database — so those 40 follow-up reads cost another
+   * 27 seconds. A window function ranks each task's matches while the pass that counts them is already
+   * running; only the ~40 rows actually returned are then read for their text.
+   */
+  private conversationHits(like: string, plan: ConversationPlan): Map<string, ConversationHit> {
     if (plan.via === "none") return new Map();
+    const ranked = `SELECT tid, n, rid FROM (
+        SELECT m.thread_id AS tid, m.rowid AS rid,
+               COUNT(*) OVER (PARTITION BY m.thread_id) AS n,
+               ROW_NUMBER() OVER (PARTITION BY m.thread_id
+                                  ORDER BY (m.kind = 'text') DESC, m.created_at ASC) AS rn
+          FROM %SOURCE%
+      ) WHERE rn = 1`;
     const rows = (
       plan.via === "scan"
-        ? this.raw
-            .prepare("SELECT thread_id, COUNT(*) n FROM messages WHERE content LIKE ? ESCAPE '\\' GROUP BY thread_id")
-            .all(like)
+        ? this.raw.prepare(ranked.replace("%SOURCE%", "messages m WHERE m.content LIKE ? ESCAPE '\\'")).all(like)
         : this.raw
             .prepare(
-              `SELECT m.thread_id, COUNT(*) n FROM messages_fts
-                 JOIN messages m ON m.rowid = messages_fts.rowid
-                WHERE messages_fts MATCH ? AND m.content LIKE ? ESCAPE '\\'
-                GROUP BY m.thread_id`,
+              ranked.replace(
+                "%SOURCE%",
+                `messages_fts JOIN messages m ON m.rowid = messages_fts.rowid
+                  WHERE messages_fts MATCH ? AND m.content LIKE ? ESCAPE '\\'`,
+              ),
             )
             .all(plan.match, like)
     ) as Row[];
-    return new Map(rows.map((r) => [r.thread_id as string, r.n as number]));
+    return new Map(rows.map((r) => [r.tid as string, { hits: r.n as number, bestRowid: r.rid as number }]));
   }
 
   /** One hit, showing the most informative evidence available: the owner's own brief, else the task's
    *  conversation, else nothing — a title-only match is already legible in the highlighted title. */
-  private taskHit(t: Thread, q: string, like: string, plan: ConversationPlan, messageHits: number): TaskSearchHit {
+  private taskHit(t: Thread, q: string, hit: ConversationHit | null): TaskSearchHit {
     const base = {
       threadId: t.id,
       title: t.title,
       state: t.state,
       workspace: t.workspace,
       createdAt: t.createdAt,
-      messageHits,
+      messageHits: hit?.hits ?? 0,
     };
     if (containsFold(t.brief, q)) return { ...base, where: "brief", snippet: snippetAround(t.brief, q) };
-    const message = messageHits ? this.bestMatchingMessage(t.id, like, plan) : null;
+    const message = hit ? this.messageContent(hit.bestRowid) : null;
     if (message) return { ...base, where: "conversation", snippet: snippetAround(message, q) };
     return { ...base, where: "title", snippet: "" };
   }
 
-  /** The clearest matching message in one task: prose somebody wrote over raw tool traffic, and the
-   *  earliest of those, since a term is usually most explained where it first appears. Indexed like
-   *  the hit counts, and for the same reason — this runs once per returned hit, so on the scan path a
-   *  busy task's whole conversation was re-read up to `limit` more times. */
-  private bestMatchingMessage(threadId: string, like: string, plan: ConversationPlan): string | null {
-    if (plan.via === "none") return null;
-    const ORDER = "ORDER BY (m.kind = 'text') DESC, m.created_at ASC LIMIT 1";
-    const row = (
-      plan.via === "scan"
-        ? this.raw
-            .prepare(`SELECT m.content FROM messages m WHERE m.thread_id = ? AND m.content LIKE ? ESCAPE '\\' ${ORDER}`)
-            .get(threadId, like)
-        : this.raw
-            .prepare(
-              `SELECT m.content FROM messages_fts
-                 JOIN messages m ON m.rowid = messages_fts.rowid
-                WHERE messages_fts MATCH ? AND m.thread_id = ? AND m.content LIKE ? ESCAPE '\\' ${ORDER}`,
-            )
-            .get(plan.match, threadId, like)
-    ) as Row | undefined;
+  /** The text of one already-chosen message, by rowid — read only for the handful of hits that survive
+   *  the ranking cut, never for every task a common word touched. */
+  private messageContent(rowid: number): string | null {
+    const row = this.raw.prepare("SELECT content FROM messages WHERE rowid = ?").get(rowid) as Row | undefined;
     return (row?.content as string | undefined) ?? null;
   }
 
