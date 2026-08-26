@@ -34,11 +34,19 @@ export const config = {
  *  literal string in a public repository — and the length check alone waves the placeholder through. */
 const PLACEHOLDER = /change[-_ ]?me|^(?:changeme|placeholder|example|password|secret|test|todo|xxx+)$/i;
 
+const MIN_SECRET_LENGTH = 20;
+
+function assertSecret(name: string, value: string, required: boolean): void {
+  if (!value && !required) return;
+  if (value.length < MIN_SECRET_LENGTH) {
+    throw new Error(`${name} must be at least ${MIN_SECRET_LENGTH} characters — use a random value, not a hand-typed password.`);
+  }
+  if (PLACEHOLDER.test(value)) {
+    throw new Error(`${name} is still a placeholder — set it to ${MIN_SECRET_LENGTH}+ random characters before starting the relay.`);
+  }
+}
+
 export function assertConfigured(): void {
-  if (config.joinCode.length < 8) {
-    throw new Error("JOIN_CODE must be set to at least 8 characters — refusing to run an office anyone can walk into.");
-  }
-  if (PLACEHOLDER.test(config.joinCode)) {
-    throw new Error("JOIN_CODE is still a placeholder — set it to 20+ random characters before starting the relay.");
-  }
+  assertSecret("JOIN_CODE", config.joinCode, true);
+  assertSecret("ADMIN_TOKEN", config.adminToken, false);
 }
