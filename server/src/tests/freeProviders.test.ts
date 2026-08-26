@@ -481,6 +481,18 @@ assert.equal(taskSession?.target.model, "vendor/coder:free");
 await taskSession?.complete({ messages: [{ role: "user", content: "Return a plan." }], tools: [], maxOutputTokens: 16 });
 taskSession?.close();
 assert.equal(chatCalls, 1, "a routed task uses the same metered ledger path as probes");
+const priceChangedSession = await service.openTaskSession("planner");
+assert.ok(priceChangedSession);
+catalogModelPaid = true;
+await assert.rejects(
+  priceChangedSession!.complete({ messages: [{ role: "user", content: "Continue the plan." }], tools: [], maxOutputTokens: 16 }),
+  /does not explicitly report tool support|no longer routing-eligible/i,
+  "every routed turn must revalidate live pricing before it can call a formerly free model",
+);
+priceChangedSession?.close();
+assert.equal(chatCalls, 1, "a catalog price change must fail closed without sending another inference request");
+catalogModelPaid = false;
+await service.refresh("kilo");
 const rotatedSession = await service.openTaskSession("reader");
 assert.ok(rotatedSession);
 service.update("kilo", { apiKey: "rotated-kilo-secret-value" });

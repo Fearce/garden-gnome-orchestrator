@@ -18,8 +18,12 @@ import type {
 
 const MAX_MODEL_CALLS_PER_TURN = 18;
 const MAX_TOOL_CALLS_PER_TURN = 48;
-const MAX_TOOL_RESULT_CHARS = 24_000;
-const MAX_TOOL_CONTEXT_CHARS = 120_000;
+// Groq's smallest documented free-model allowance is 8K TPM. Tool output is replayed on every
+// subsequent turn, so a 120K-character read budget would make otherwise valid free runs reliably
+// exceed that limit. These are deliberately conservative character caps (code is often denser than
+// English) and leave room for the task brief, system contract, tool definitions, and 1K completion.
+const MAX_TOOL_RESULT_CHARS = 6_000;
+const MAX_TOOL_CONTEXT_CHARS = 10_000;
 const MAX_READ_BYTES = 2 * 1024 * 1024;
 // Groq's published free tier is 8K TPM. A 4K reservation on both sides of one tool call makes an
 // otherwise tiny two-turn lookup deterministically exceed that allowance, because providers may count

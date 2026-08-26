@@ -605,6 +605,11 @@ export class FreeProviderService {
     if (this.context(definition).fingerprint !== fingerprint) {
       throw new ProviderRequestError("The provider credential changed during this task; retrying through the normal fallback path.", "invalid-configuration");
     }
+    // A task can contain many tool turns. Rechecking only when the lease opens leaves a window for
+    // a formerly zero-priced catalog entry to become billable before a later turn. Model discovery
+    // is non-inference, so refresh before every completion and fail closed rather than silently
+    // switching this pinned task to another model or risking a paid call.
+    await this.refresh(definition.id);
     const current = this.routingDecision(definition);
     if (!current.eligible || current.model?.id !== model.id) {
       throw new ProviderRequestError(current.reason || "The free model is no longer routing-eligible.", "invalid-model");
