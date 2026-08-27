@@ -636,7 +636,7 @@ export function transientApiErrorInfo(value: unknown): TransientApiErrorInfo | u
 }
 
 const RATE_LIMIT_RESULT_RE =
-  /(rate.?limit|usage limit|session limit|hour limit|limit (?:reached|exceeded|exhausted)|too many requests|\b429\b|insufficient[_\s-]*quota|quota[_\s-]*(?:exceeded|reached|exhausted)|(?:exceeded|exhausted)\s+(?:your\s+)?(?:current\s+)?quota)/i;
+  /(rate.?limit|usage limit|session limit|hour limit|limit (?:reached|exceeded|exhausted)|too many requests|\b429\b|insufficient[_\s-]*quota|quota[_\s-]*(?:exceeded|reached|exhausted)|(?:exceeded|exhausted)\s+(?:your\s+)?(?:current\s+)?quota|(?:selected\s+)?model is (?:currently\s+)?at capacity)/i;
 
 /** Pull useful text out of the heterogeneous error shapes used by SDKs and OpenAI-compatible gateways.
  * Error.message is non-enumerable, so this deliberately reads named fields rather than relying on

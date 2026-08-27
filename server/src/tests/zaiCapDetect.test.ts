@@ -126,6 +126,11 @@ for (const prose of [
   assert.equal(resultLooksRateLimited({ error: { response: { status: 429 } } }), true, "a nested SDK response.status=429 is recognized");
   assert.equal(resultLooksRateLimited({ stop_reason: "rate_limit" }), true, "the SDK rate_limit stop code is unchanged");
   assert.equal(resultLooksRateLimited({ error: { code: "insufficient_quota" } }), true, "nested insufficient_quota codes are recognized");
+  assert.equal(
+    resultLooksRateLimited({ error: { message: "Selected model is at capacity. Please try a different model." } }),
+    true,
+    "a provider model-capacity rejection is retryable through the fallback ladder",
+  );
 }
 
 // SDK assistant errors can nest the HTTP status under error.response and carry the only reset wording
