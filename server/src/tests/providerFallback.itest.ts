@@ -151,6 +151,27 @@ try {
   const interruptedAfterRecovery = db.createRun({ threadId: successCap.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
   db.updateRun(interruptedAfterRecovery.id, { state: "interrupted", endedAt: Date.now() + 2_000 });
   check("a newer successful Codex run invalidates the older recorded cap", internals.codexRecoveredAfterLastRecordedCap());
+  const noResultRun = db.createRun({ threadId: successCap.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+  internals.finishRun(noResultRun.id, undefined, { rateLimited: false });
+  check("a no-result structured run is recorded as interrupted", db.getRun(noResultRun.id)?.state === "interrupted", db.getRun(noResultRun.id)?.state);
+  check("a no-result structured run is not recovery evidence", internals.codexRecoveredAfterLastRecordedCap());
+  // Historical rows predate capFlagged. A textual cap is still conclusive whether the old runner
+  // wrote it as an error or a nominally-successful terminal event, and must outweigh the earlier
+  // recovery exactly as boot-time cap restoration does.
+  const legacyErrorCap = db.createRun({ threadId: successCap.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+  db.updateRun(legacyErrorCap.id, {
+    state: "error",
+    error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+    endedAt: Date.now() + 3_000,
+  });
+  check("a newer legacy textual error cap remains authoritative", !internals.codexRecoveredAfterLastRecordedCap());
+  const legacySuccessCap = db.createRun({ threadId: successCap.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+  db.updateRun(legacySuccessCap.id, {
+    state: "done",
+    error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+    endedAt: Date.now() + 4_000,
+  });
+  check("a newer legacy success-shaped textual cap remains authoritative", !internals.codexRecoveredAfterLastRecordedCap());
 
   // A synchronous/pre-init Claude 429 has no session id to carry. It must fresh-start on the next
   // subscription, not treat the missing id as proof that every provider is exhausted.

@@ -2345,14 +2345,21 @@ export class ThreadManager implements OrchestratorApi {
   private codexRecoveredAfterLastRecordedCap(): boolean {
     const latest = this.db
       .listAllRuns(5_000)
+      .map((run) => ({
+        run,
+        // Pre-capFlagged rows can still carry a provider's textual 429/usage-limit signal. Keep
+        // their meaning aligned with boot restoration: a later legacy cap must not be hidden by an
+        // older successful run and clear the provider-stated reset early.
+        capped: run.capFlagged === true || providerErrorLooksRateLimited(run.error ?? ""),
+      }))
       .filter(
-        (run) =>
+        ({ run, capped }) =>
           run.account?.startsWith("codex:") &&
           run.endedAt != null &&
-          (run.capFlagged === true || run.state === "done"),
+          (capped || run.state === "done"),
       )
-      .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))[0];
-    return latest?.state === "done" && latest.capFlagged !== true;
+      .sort((a, b) => (b.run.endedAt ?? 0) - (a.run.endedAt ?? 0))[0];
+    return latest?.run.state === "done" && !latest.capped;
   }
 
   /** Whether Codex should be treated as usage-capped right now (route implementors to Claude). True while
@@ -6980,7 +6987,10 @@ export class ThreadManager implements OrchestratorApi {
 
   private finishRun(runId: string, res: Extract<AgentEvent, { type: "result" }> | undefined, agent: AgentRunLike): void {
     this.db.updateRun(runId, {
-      state: res?.isError ? "error" : "done",
+      // A structured role that ends without a result was interrupted (cancellation, restart, or a
+      // runner teardown), not successful. Besides keeping the run trail truthful, this must match
+      // finalizeRun so such a row cannot be mistaken for proof that Codex recovered from a cap.
+      state: res ? (res.isError ? "error" : "done") : "interrupted",
       // Persist the failure reason so a dead run is diagnosable instead of a silent error row.
       error: res?.isError ? runErrorText(res) : null,
       capFlagged: capFlaggedBy(agent),
