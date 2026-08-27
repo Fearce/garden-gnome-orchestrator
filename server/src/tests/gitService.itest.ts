@@ -56,6 +56,11 @@ function configureRepo(dir: string): void {
   git(dir, "config", "commit.gpgsign", "false");
   git(dir, "config", "core.autocrlf", "false");
   git(dir, "config", "push.default", "simple");
+  // Make the throwaway repo independent of a developer's global hooks. The product still respects
+  // hooks in real repositories; this integration test needs only Git's repository semantics.
+  const emptyHooks = join(dir, ".git", "itest-empty-hooks");
+  mkdirSync(emptyHooks);
+  git(dir, "config", "core.hooksPath", emptyHooks);
 }
 
 /** A working clone of a fresh bare "origin", with one seed commit pushed. @{push} resolves to origin/master. */

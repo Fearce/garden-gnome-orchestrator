@@ -73,7 +73,11 @@ const REPO_CONFIG = `
 `;
 
 function configureRepo(dir: string): void {
-  appendFileSync(join(dir, ".git", "config"), REPO_CONFIG);
+  // Avoid inheriting arbitrary workstation hooks in disposable repositories. The actions below still
+  // exercise the production command paths, just with an explicitly empty hook directory.
+  const emptyHooks = join(dir, ".git", "itest-empty-hooks").replace(/\\/g, "/");
+  mkdirSync(emptyHooks);
+  appendFileSync(join(dir, ".git", "config"), `${REPO_CONFIG}\n[core]\n\thooksPath = ${emptyHooks}\n`);
 }
 
 /** A working clone of a fresh bare "origin", with one seed commit pushed on master. */
