@@ -56,6 +56,7 @@ const GATES = [
   "test:process-build",
   "test:background-startup",
   "test:usage-ping",
+  "test:account-usage-health",
   "test:failover-ladder",
   "test:provider-serves-role",
   "test:provider-fallback",

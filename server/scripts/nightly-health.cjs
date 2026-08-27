@@ -31,6 +31,7 @@ const { serverRuntimeDiff } = require("./compiled-diff.cjs");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
 const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, isDeadEndLine } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
+const { inspectAccountUsage } = require("./account-usage-health.cjs");
 
 const args = process.argv.slice(2);
 function flag(name) {
@@ -369,6 +370,15 @@ async function main() {
         .prepare("SELECT state, count(*) c FROM agent_runs WHERE started_at > ? GROUP BY state")
         .all(since);
       console.log("  runs 24h:", Object.fromEntries(runs.map((r) => [r.state, r.c])));
+
+      // A healthy process and SQLite file do not prove that the account pings have produced a meter
+      // reading. The original all-dash FleetView incident passed every earlier health line, so inspect
+      // the same persisted snapshots `probe:accounts` reads and name every missing/stale dimension.
+      const accountUsage = inspectAccountUsage(
+        db.prepare("SELECT key, value FROM kv WHERE key LIKE 'account_usage_%' ORDER BY key").all(),
+      );
+      if (accountUsage.issues.length) warn(`account usage: ${accountUsage.issues.join("; ")}`);
+      else ok(`${accountUsage.records.length} account usage reading(s) fresh and complete`);
 
       const stuck = db
         .prepare(

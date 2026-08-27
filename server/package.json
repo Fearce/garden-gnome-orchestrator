@@ -54,6 +54,7 @@
     "test:process-build": "node scripts/process-vs-dist.test.cjs",
     "test:background-startup": "node scripts/background-startup.test.cjs",
     "test:usage-ping": "tsx src/tests/usagePing.test.ts",
+    "test:account-usage-health": "node scripts/account-usage-health.test.cjs",
     "test:failover-ladder": "node scripts/failover-ladder.test.cjs",
     "test:park-classify": "node scripts/parks-classify.test.cjs",
     "test:recovery-features": "node scripts/recovery-features.test.cjs",
