@@ -298,9 +298,18 @@ export class AgentRun implements AgentRunLike {
     if (this.cfg.resume) options.resume = this.cfg.resume;
     if (this.cfg.forkSession) options.forkSession = this.cfg.forkSession;
 
-    this.q = query({ prompt: this.input, options });
-    this.input.push(toUserMessage(firstMessage));
-    void this.consume();
+    try {
+      this.q = query({ prompt: this.input, options });
+      this.input.push(toUserMessage(firstMessage));
+      void this.consume();
+    } catch (err) {
+      // Most provider rejections arrive while consuming the query, but an SDK is also allowed to reject
+      // synchronously while constructing it. Route that through the same cap classifier: a 429/quota
+      // error is a provider handoff, never a terminal stage failure.
+      this.handleThrownProviderError(err);
+      this.finished = true;
+      this.emitter.emit("end");
+    }
     return this;
   }
 
@@ -402,23 +411,29 @@ export class AgentRun implements AgentRunLike {
     this.transientApiErrorMessage = info.message;
   }
 
+  /** Normalize a provider exception that bypassed the SDK's ordinary message stream. Quota exceptions
+   * need an error result as well as the cap event: callers await `result()` before inspecting
+   * `rateLimited`, and a missing result used to look like an unexplained stage failure. */
+  private handleThrownProviderError(err: unknown): void {
+    const message = providerErrorText(err) || errMessage(err);
+    const capped = providerErrorLooksRateLimited(err, this.providerCapText);
+    if (capped) this.flagCapFromSignal(capInfoFromText(message));
+    else this.flagTransientApiError(err);
+    this.emit({ type: "error", message });
+    if ((capped || this.transientApiError) && !this.lastResult) {
+      const evt: ResultEvent = { type: "result", subtype: "error_during_execution", isError: true, result: message };
+      this.lastResult = evt;
+      this.emit(evt);
+    }
+  }
+
   private async consume(): Promise<void> {
     try {
       for await (const message of this.q as Query) {
         this.handle(message);
       }
     } catch (err) {
-      const message = errMessage(err);
-      this.flagTransientApiError(message);
-      this.emit({ type: "error", message });
-      // Transport/provider failures can throw before the SDK emits its normal result message. Synthesize
-      // one so the orchestration layer can apply its bounded retry/failover policy instead of seeing an
-      // ambiguous undefined result and parking the task.
-      if (this.transientApiError && !this.lastResult) {
-        const evt: ResultEvent = { type: "result", subtype: "error_during_execution", isError: true, result: message };
-        this.lastResult = evt;
-        this.emit(evt);
-      }
+      this.handleThrownProviderError(err);
     } finally {
       this.finished = true;
       this.emitter.emit("end");
@@ -464,8 +479,21 @@ export class AgentRun implements AgentRunLike {
         // (SDKAssistantMessageError "rate_limit"), NOT a rate_limit_event — catch it here so the
         // failover path still fires. (Not "overloaded": that's transient server load the SDK retries,
         // and switching accounts wouldn't help.)
-        if (m.error === "rate_limit") {
-          const text = [typeof m.error === "string" ? m.error : "", ...blocks.map((b) => b?.text ?? "")].join("\n");
+        // Message text is agent-authored and may quote a 429 while explaining it; only an actual
+        // message-level provider error/status belongs to the routing classifier here. Plain text keeps
+        // the deliberately narrow `looksLikeCapNotice` branch above.
+        const capSignal = {
+          error: m.error,
+          api_error_status: m.api_error_status,
+          status: m.status,
+          response: m.response,
+          // Some SDK versions put the provider error under `message` rather than the top-level
+          // `error` field. Keep it in the structured signal, but still append text blocks below so
+          // a provider-stated reset survives the cap latch.
+          message: m.message,
+        };
+        if (providerErrorLooksRateLimited(capSignal, this.providerCapText)) {
+          const text = [providerErrorText(capSignal), ...blocks.map((b) => b?.text ?? "")].filter(Boolean).join("\n");
           this.flagCapFromSignal(capInfoFromText(text));
         }
         else if (m.error) this.flagTransientApiError({ error: m.error, message: blocks.map((b) => b?.text ?? "").join(" ") });
@@ -525,12 +553,17 @@ export class AgentRun implements AgentRunLike {
         // error_during_execution carrying a rate-limit message, or is_error + api_error_status 429)
         // rather than a rate_limit_event / assistant error. Flag BEFORE emitting so the awaiting
         // failover path (which reads agent.rateLimited the moment result() resolves) sees it.
-        if (evt.isError && resultLooksRateLimited(m, this.providerCapText)) {
-          const text = [
-            typeof m.result === "string" ? m.result : "",
-            typeof m.message === "string" ? m.message : "",
-            ...(Array.isArray(m.errors) ? m.errors.filter((e: unknown): e is string => typeof e === "string") : []),
-          ].join("\n");
+        const capSignal = {
+          result: m.result,
+          message: m.message,
+          errors: m.errors,
+          error: m.error,
+          api_error_status: m.api_error_status,
+          status: m.status,
+          response: m.response,
+        };
+        if (evt.isError && resultLooksRateLimited(capSignal, this.providerCapText)) {
+          const text = providerErrorText(capSignal);
           this.flagCapFromSignal(capInfoFromText(text));
         }
         if (evt.isError) this.flagTransientApiError(m);
@@ -603,7 +636,64 @@ export function transientApiErrorInfo(value: unknown): TransientApiErrorInfo | u
 }
 
 const RATE_LIMIT_RESULT_RE =
-  /(rate.?limit|usage limit|session limit|hour limit|limit reached|too many requests|quota (?:exceeded|reached))/i;
+  /(rate.?limit|usage limit|session limit|hour limit|limit (?:reached|exceeded|exhausted)|too many requests|\b429\b|insufficient[_\s-]*quota|quota[_\s-]*(?:exceeded|reached|exhausted)|(?:exceeded|exhausted)\s+(?:your\s+)?(?:current\s+)?quota)/i;
+
+/** Pull useful text out of the heterogeneous error shapes used by SDKs and OpenAI-compatible gateways.
+ * Error.message is non-enumerable, so this deliberately reads named fields rather than relying on
+ * JSON.stringify alone. The bounded walk also preserves a nested provider-stated reset for cap latching. */
+export function providerErrorText(value: unknown): string {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  const add = (part: unknown): void => {
+    if (typeof part !== "string") return;
+    const text = part.trim();
+    if (text && !parts.includes(text)) parts.push(text);
+  };
+  const visit = (part: unknown, depth: number): void => {
+    if (typeof part === "string") {
+      add(part);
+      return;
+    }
+    if (part == null || typeof part !== "object" || depth >= 6 || seen.has(part)) return;
+    seen.add(part);
+    if (Array.isArray(part)) {
+      for (const item of part) visit(item, depth + 1);
+      return;
+    }
+    const record = part as Record<string, unknown>;
+    // Include `message` explicitly: it is non-enumerable on Error instances but is where SDKs put the
+    // human-readable quota/reset wording.
+    for (const key of ["message", "error", "errors", "result", "code", "error_code", "errorCode", "type", "reason", "stop_reason", "stopReason", "detail", "details", "data", "body", "response", "cause"])
+      visit(record[key], depth + 1);
+  };
+  visit(value, 0);
+  return parts.join("\n");
+}
+
+/** True when a thrown provider error or a structured SDK result represents a quota/rate-limit rejection.
+ * Providers disagree on both shape (`status`, `response.status`, `api_error_status`) and code
+ * (`rate_limit`, `insufficient_quota`), so keep the classification shared by the result and exception
+ * paths. A 429 is always a routing condition here, not a human-review failure. */
+export function providerErrorLooksRateLimited(value: unknown, providerCapText?: RegExp): boolean {
+  // SDKs wrap HTTP failures differently across providers and versions: `response.status`,
+  // `error.response.status`, `response.data.error.status`, and `cause.status` all occur in the
+  // wild. Walk the error envelope rather than assuming a single shallow shape; a nested 429 is
+  // just as retryable-with-fallback as a top-level one.
+  const seen = new Set<unknown>();
+  const has429 = (part: unknown, depth: number): boolean => {
+    if (part == null || typeof part !== "object" || depth >= 5 || seen.has(part)) return false;
+    seen.add(part);
+    if (Array.isArray(part)) return part.some((item) => has429(item, depth + 1));
+    const record = part as Record<string, unknown>;
+    for (const status of [record.api_error_status, record.status, record.statusCode, record.httpStatus]) {
+      if ((typeof status === "number" && status === 429) || (typeof status === "string" && Number(status) === 429)) return true;
+    }
+    return [record.response, record.error, record.data, record.body, record.details, record.cause, record.errors].some((child) => has429(child, depth + 1));
+  };
+  if (has429(value, 0)) return true;
+  const text = providerErrorText(value);
+  return RATE_LIMIT_RESULT_RE.test(text) || (providerCapText?.test(text) ?? false);
+}
 
 /**
  * Tight match for the CLI's own session-limit notice as it appears in an assistant TEXT block
@@ -689,9 +779,11 @@ export function parseUsageLimitResetAt(text: string, now = Date.now()): number |
  * A future reset time keeps the account/provider out of routing until the provider says it is usable;
  * absent one retains the bounded session fallback rather than a permanent latch. */
 function capInfoFromText(text: string, now = Date.now()): RateLimitInfo {
+  const statedReset = parseUsageLimitResetAt(text, now);
   return {
     status: "rejected",
-    resetsAt: parseUsageLimitResetAt(text, now) ?? now + SESSION_LIMIT_FALLBACK_MS,
+    resetsAt: statedReset ?? now + SESSION_LIMIT_FALLBACK_MS,
+    resetSource: statedReset == null ? "fallback" : "provider",
   };
 }
 
@@ -704,10 +796,5 @@ function capInfoFromText(text: string, now = Date.now()): RateLimitInfo {
  * Exported for `test:zai-cap`; the sole production caller is the result branch above.
  */
 export function resultLooksRateLimited(m: Record<string, any>, providerCapText?: RegExp): boolean {
-  if (m.api_error_status === 429) return true;
-  if (typeof m.stop_reason === "string" && /rate.?limit/i.test(m.stop_reason)) return true;
-  const errs = Array.isArray(m.errors) ? m.errors.join(" ") : "";
-  const text = typeof m.result === "string" ? m.result : "";
-  const capped = (s: string): boolean => RATE_LIMIT_RESULT_RE.test(s) || (providerCapText?.test(s) ?? false);
-  return capped(errs) || capped(text);
+  return providerErrorLooksRateLimited(m, providerCapText);
 }

@@ -65,6 +65,9 @@ const QA_DURABLE_COUNTERS = {
   // Control-flow marker, not a launch tally: it stores WHICH already-charged round will be retried
   // after every provider was capped. The cap_flagged run row is the recovery term in the arithmetic.
   qaCapRetryRound: { input: "capRetryRound", recoversRound: false, label: "pending usage-cap retry round" },
+  // Same shape for a server restart that landed while QA was live: the implementation is complete and
+  // boot recovery retries the charged review directly, so this is not another launch term either.
+  qaInterruptedRetryRound: { input: "interruptedRetryRound", recoversRound: false, label: "pending restart-interrupted QA retry round" },
   qaCutoffResumes: { input: "cutoffResumes", recoversRound: true, label: "turn-ceiling continuation(s)" },
   qaSilentRetries: { input: "silentRetries", recoversRound: true, label: "empty-run retry(ies)" },
   // Spends no launch of its OWN: it re-counts the subset of qaCutoffResumes charged to the review running
@@ -106,7 +109,7 @@ function accountedLaunches(input) {
  * exceeding maxQaRounds.
  */
 function qaLoopReading(input) {
-  const { cap, launches, roundsUsed, capRetryRound, interrupted, appliesFixes } = input;
+  const { cap, launches, roundsUsed, capRetryRound, interruptedRetryRound, interrupted, appliesFixes } = input;
   const lines = [];
   const accounted = accountedLaunches(input);
   const parts = launchTerms().map((term) => `${num(input[term.input])} ${term.label}`);
@@ -121,6 +124,12 @@ function qaLoopReading(input) {
     lines.push(
       `  · QA round ${capRetryRound} is waiting for a usage-cap retry; this marker names the already-charged round, ` +
         "not another launch (the capped run's cap_flagged row accounts for its eventual replacement).",
+    );
+  }
+  if (interruptedRetryRound != null) {
+    lines.push(
+      `  Â· QA round ${interruptedRetryRound} is waiting for a restart-interrupted retry; this marker names the already-charged round, ` +
+        "not another launch (boot recovery retries QA directly without replaying the implementor).",
     );
   }
 

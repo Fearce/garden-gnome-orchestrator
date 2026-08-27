@@ -8,7 +8,16 @@ import { logCrash } from "../crashLog.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { extractCliBridgeMessages } from "./officeBridge.js";
-import { parseUsageLimitResetAt, transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
+import {
+  parseUsageLimitResetAt,
+  providerErrorLooksRateLimited,
+  providerErrorText,
+  transientApiErrorInfo,
+  type AgentRunLike,
+  type ResultEvent,
+  type SendOpts,
+  type UserContent,
+} from "./runner.js";
 import { formatStructuredRoleFeed, parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
 
 export interface CodexRunConfig {
@@ -109,7 +118,7 @@ interface CodexEvent {
   type?: string;
   thread_id?: string;
   item?: CodexItem;
-  error?: { message?: string };
+  error?: { message?: string; code?: string; status?: number | string; statusCode?: number | string; response?: unknown; data?: unknown };
   usage?: Record<string, number>;
   message?: string;
 }
@@ -142,10 +151,12 @@ export function codexTokenUsage(raw: Record<string, number> | undefined): TokenU
   };
 }
 
-// Matches both API-key 429/quota errors AND the ChatGPT-plan usage-cap wording the CLI prints when the
-// 5h/weekly limit is hit ("usage limit reached", "reached your usage limit", "usage_limit_reached").
-const RATE_LIMIT_RE =
-  /(rate.?limit|429|too many requests|quota (?:exceeded|reached)|insufficient_quota|usage[ _]limit|reached your (?:usage|plan)|limit reached)/i;
+// Keep the CLI's cap test on the shared provider-error classifier. In particular, a Codex
+// `turn.failed` can carry an opaque message plus `error.code: "insufficient_quota"`; inspecting
+// only the prose turned that retryable routing condition into a terminal QA park.
+function codexErrorLooksRateLimited(value: unknown): boolean {
+  return providerErrorLooksRateLimited(value);
+}
 // Hard ceiling on the partial-line stdout buffer. A well-behaved Codex CLI emits one newline-terminated
 // JSON event at a time, so this only trips on a runaway newline-less blob — at which point we drop it
 // rather than let it grow the heap unbounded (16 MB is far above any real single event).
@@ -635,8 +646,8 @@ export class CodexAgentRun implements AgentRunLike {
         break;
       case "turn.failed": {
         this.sawTerminal = true;
-        const msg = ev.error?.message ?? this.lastErrorMsg ?? "Codex turn failed.";
-        if (RATE_LIMIT_RE.test(msg)) this.markCapped(msg);
+        const msg = providerErrorText(ev.error) || ev.error?.message || this.lastErrorMsg || "Codex turn failed.";
+        if (codexErrorLooksRateLimited(ev.error ?? msg)) this.markCapped(msg);
         else this.markTransientApiError(msg);
         this.pendingTerminalResult = { subtype: "error", isError: true, result: msg, tokenUsage: codexTokenUsage(ev.usage) };
         break;
@@ -644,9 +655,11 @@ export class CodexAgentRun implements AgentRunLike {
       case "error":
         // Transient transport errors ("Reconnecting…") — not fatal on their own; remember the text so a
         // turn that dies without turn.failed still surfaces a reason.
-        if (ev.message) {
-          this.lastErrorMsg = ev.message.slice(0, 500);
-          this.markTransientApiError(ev.message);
+        if (ev.message || ev.error) {
+          const message = providerErrorText(ev.error) || ev.message || "Codex provider error.";
+          this.lastErrorMsg = message.slice(0, 500);
+          if (codexErrorLooksRateLimited(ev.error ?? message)) this.markCapped(message);
+          else this.markTransientApiError(message);
         }
         break;
       case "item.started":
@@ -727,7 +740,12 @@ export class CodexAgentRun implements AgentRunLike {
    *  the Claude backend — NOT the Claude-account failover (see the `capped`/`rateLimited` field comment). */
   private markCapped(message?: string): void {
     this.capped = true;
-    this.rateLimitInfo = { status: "rejected", resetsAt: message ? parseUsageLimitResetAt(message) : undefined };
+    const resetsAt = message ? parseUsageLimitResetAt(message) : undefined;
+    this.rateLimitInfo = {
+      status: "rejected",
+      resetsAt,
+      resetSource: resetsAt == null ? "fallback" : "provider",
+    };
   }
 
   private markTransientApiError(value: unknown): void {
@@ -802,7 +820,7 @@ export class CodexAgentRun implements AgentRunLike {
       const msg = this.lastErrorMsg ?? `Codex CLI exited with code ${code ?? "unknown"} before finishing the turn.`;
       // The 5h/weekly cap often kills the turn instantly (429 on stderr, no turn.failed event) — the
       // "dies in ~2s" symptom. Flag it here too so the provider failover fires instead of parking.
-      if (RATE_LIMIT_RE.test(msg)) this.markCapped(msg);
+      if (codexErrorLooksRateLimited(msg)) this.markCapped(msg);
       else this.markTransientApiError(msg);
       this.finishTurn({ subtype: "error", isError: true, result: msg });
     } else if (this.pendingTerminalResult) {

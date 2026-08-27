@@ -219,6 +219,7 @@ section("QA-loop check");
     qaLaunches: qa.length,
     qaRoundsUsed: stage.qaRoundsUsed ?? null,
     qaCapRetryRound: stage.qaCapRetryRound ?? null,
+    qaInterruptedRetryRound: stage.qaInterruptedRetryRound ?? null,
     // The allowances the review RUNNING NOW still has (both renew on every verdict), as opposed to the
     // lifetime tallies in the arithmetic below. A park at either max is a wedged reviewer, not a long task.
     qaCutoffResumesThisRound: stage.qaCutoffResumesThisRound ?? null,
@@ -232,6 +233,7 @@ section("QA-loop check");
     launches: qa.length,
     roundsUsed: stage.qaRoundsUsed ?? null,
     capRetryRound: stage.qaCapRetryRound,
+    interruptedRetryRound: stage.qaInterruptedRetryRound,
     cutoffResumes: stage.qaCutoffResumes,
     silentRetries: stage.qaSilentRetries,
     cutoffResumesThisRound: stage.qaCutoffResumesThisRound,

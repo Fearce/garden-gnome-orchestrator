@@ -278,11 +278,26 @@ async function testRevivalIsBoundedThenReleased(): Promise<void> {
   bed.dispose();
 }
 
+async function testQaRestartRetriesOnlyQa(): Promise<void> {
+  console.log("\nTest D — a restart during QA preserves the completed implementation and retries only QA\n");
+  const bed = makeBed("restart-qa-direct-");
+  const id = seedLiveTask(bed, "qa");
+  bed.db.updateThreadStageOutputs(id, { qaRoundsUsed: 2 });
+  const b = boot(bed);
+  const stage = bed.db.getThreadStageOutputs(id);
+  const thread = bed.db.getThread(id);
+  check("the restart records the interrupted QA round", stage.qaInterruptedRetryRound === 2, JSON.stringify(stage));
+  check("the restart still persists its normal auto-resume promise", thread?.state === "failed" && thread.error === AUTO_RESUME_MSG, `${thread?.state} ${thread?.error}`);
+  b.stop();
+  bed.dispose();
+}
+
 async function main(): Promise<void> {
   console.log("\n=== A restart's auto-resume promise survives a second restart — integration test ===");
   await testStrandedPromiseIsRevived();
   await testOnlyTheOwedOnesAreRevived();
   await testRevivalIsBoundedThenReleased();
+  await testQaRestartRetriesOnlyQa();
 
   console.log(`\n${failed === 0 ? "✅ ALL PASSED" : "❌ FAILURES"} — ${passed} passed, ${failed} failed`);
   if (failed) {

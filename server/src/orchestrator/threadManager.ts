@@ -3,7 +3,14 @@ import { bySafetyHeadroom, untilReset, weeklySafetyPool } from "../accounts/acco
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import { AgentRun, ZaiAgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runner.js";
+import {
+  AgentRun,
+  ZaiAgentRun,
+  parseUsageLimitResetAt,
+  providerErrorLooksRateLimited,
+  type AgentRunConfig,
+  type AgentRunLike,
+} from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { codexUsageCapped, liveCodexUsage, readCodexUsage } from "../agents/codexUsage.js";
 import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRunner.js";
@@ -316,8 +323,6 @@ const SELF_IMPROVE_MSG =
   "make those improvements. Keep this work in its own commit(s), separate from the task's commits, and follow " +
   "the same commit/push doctrine the task used. Scope it to what THIS session actually taught you — no " +
   "speculative frameworks. If nothing genuinely worth building surfaced, say so in one line and finish.";
-// On a mid-run 5h/weekly cap, relaunch on another account (resuming the session) up to N times.
-const MAX_ACCOUNT_FAILOVERS = 3;
 const MAX_TRANSIENT_API_FAILURES = config.maxTransientApiFailures;
 // On a model-pool cap (Fable's own gated allowance, separate from the 5h/weekly windows) the run
 // relaunches on the SAME account with the fallback model — this is that relaunch's continuation nudge,
@@ -329,6 +334,10 @@ const MODEL_FALLBACK_CONTINUE_MSG =
 // after which Codex is tried again (a failing turn simply re-arms the latch). kv key persists it across boots.
 const CODEX_CAP_COOLDOWN_MS = 60 * 60_000;
 const CODEX_CAP_KV_KEY = "codex_cap_until";
+// A provider-stated reset is more authoritative than a generic live-usage probe. Keep its provenance
+// across a deploy so a fresh app-server reading cannot route work back to a provider that explicitly
+// told us "try again at …".
+const CODEX_CAP_SOURCE_KV_KEY = "codex_cap_reset_source";
 // Grok's weekly scrape normally supplies the reset epoch; before it lands, a rejected turn falls back to
 // a fixed cooldown (config.grok.capCooldownMs). kv-persisted.
 const GROK_CAP_KV_KEY = "grok_cap_until";
@@ -583,6 +592,10 @@ export class ThreadManager implements OrchestratorApi {
   // task stuck in a re-cap loop doesn't spam the channel each interval (see CAP_RESUME_NOTIFY_COOLDOWN_MS).
   private readonly capResumeNotifiedAt = new Map<string, number>();
   private capSupervisor: NodeJS.Timeout | undefined;
+  // The interval supervisor is a safety net. This one-shot wakes at the earliest provider/account reset
+  // we actually know, so provider exhaustion does not wait for a human (or for the next coarse poll).
+  private capResumeWake: NodeJS.Timeout | undefined;
+  private capResumeWakeAt: number | undefined;
   // One-shot latch for the token-safety auto-stop: set when a crossing fires the stop, cleared once
   // utilization drops back below the threshold — so the stop fires once per crossing, not on every ping
   // while the window stays hot (which would re-stop tasks the owner just re-dispatched).
@@ -598,6 +611,7 @@ export class ThreadManager implements OrchestratorApi {
   // preferred, else a cooldown); auto-clears when the window passes. Persisted in kv so a restart's
   // auto-resume wave doesn't slam Codex again on stale-good routing. Undefined = Codex not latched-capped.
   private codexCapUntil: number | undefined;
+  private codexCapUntilProviderStated = false;
   // Epoch ms until which Grok is treated as usage-capped (route implementors elsewhere). Set when a live
   // Grok run is rejected; a fixed cooldown (no reset epoch is exposed). Persisted so a restart's auto-resume
   // wave doesn't slam a still-capped Grok. Undefined = Grok not latched-capped.
@@ -643,6 +657,15 @@ export class ThreadManager implements OrchestratorApi {
     this.loadCodexCap();
     this.loadGrokCap();
     this.loadZaiCap();
+    // A restart can interrupt a task after its provider has emitted a cap but before the cap latch was
+    // persisted (or an older build may have only recorded the capped run). Rehydrate any still-future
+    // provider-stated reset before auto-resume is armed, so that task cannot immediately select the
+    // same exhausted provider again.
+    this.restoreRecordedProviderCapLatches();
+    // Earlier builds parked a capped QA pass as a manual "needs your review" task. Convert only
+    // those provably quota-caused legacy parks into the durable QA-only retry state before the boot
+    // supervisor scans them; completed/cancelled tasks remain untouched.
+    this.recoverLegacyQaCapParks();
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
@@ -658,6 +681,10 @@ export class ThreadManager implements OrchestratorApi {
     this.accounts.onUsageRefresh(() => {
       this.enforceTokenSafetyLimit();
       this.maybeScheduleTokenResume();
+      // An account reset is the best signal that a cap-park can run again. Do not wait for the
+      // periodic supervisor after the usage reader has already established fresh headroom.
+      this.resumeCapParked();
+      this.armCapResumeWake();
     });
     // Honor a persisted "Fast usage polling" opt-in on boot — set before accounts.start() arms the
     // ping timer in index.ts, so the first interval already uses the chosen cadence.
@@ -677,6 +704,88 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
+  /** Convert the pre-fallback QA terminal shape into the durable cap-park protocol. Older versions
+   * wrote a normal human-review message even when the latest QA run clearly says quota/rate-limit;
+   * resuming that row took the manual implementor-only path and redid already-reviewed work. This runs
+   * on every boot but is idempotent: once the CAP marker + qaCapRetryRound are present it leaves the
+   * task alone, and it never touches done/cancelled/manual-review rows. */
+  private recoverLegacyQaCapParks(): void {
+    let recovered = 0;
+    for (const thread of this.db.listThreads()) {
+      if (thread.state !== "review" && thread.state !== "failed") continue;
+      if (!/^QA could not complete — needs your review\b/i.test(thread.error ?? "")) continue;
+      const stage = this.db.getThreadStageOutputs(thread.id);
+      if (!stage.kickoff || stage.qaCapRetryRound != null) continue;
+      const latestQa = this.db
+        .listRuns(thread.id)
+        .filter((run) => run.role === "qa")
+        .sort((a, b) => b.startedAt - a.startedAt)[0];
+      if (!latestQa || (latestQa.capFlagged !== true && !providerErrorLooksRateLimited(latestQa.error ?? ""))) continue;
+
+      this.latchLegacyProviderCap(latestQa.account ?? null, latestQa.error ?? "");
+      const round = Math.max(1, stage.qaRoundsUsed ?? 0);
+      this.db.updateThreadStageOutputs(thread.id, { qaCapRetryRound: round });
+      this.db.updateThread(thread.id, { state: "review", error: this.capParkMessage("qa") });
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "qa",
+        summary: "Recovered a legacy QA usage-limit park — QA will retry automatically",
+        detail: "The completed implementation is preserved; the next available provider reruns only the interrupted QA round.",
+        severity: "note",
+      });
+      recovered++;
+    }
+    if (recovered) this.hub.log("warn", `Recovered ${recovered} legacy QA usage-limit ${recovered === 1 ? "park" : "parks"} for automatic provider fallback.`);
+  }
+
+  /** Restore explicit provider reset times from recorded capped runs. This deliberately does not
+   * change a task's state: it is a routing repair used before boot auto-resume and legacy-park
+   * migration. Retaining only the latest reset per account avoids replaying a long run history. */
+  private restoreRecordedProviderCapLatches(): void {
+    const now = Date.now();
+    const latestByAccount = new Map<string, { error: string; reset: number }>();
+    for (const thread of this.db.listThreads()) {
+      for (const run of this.db.listRuns(thread.id)) {
+        if (!run.account || !run.error) continue;
+        if (run.capFlagged !== true && !providerErrorLooksRateLimited(run.error)) continue;
+        const reset = parseUsageLimitResetAt(run.error, now);
+        if (reset == null || reset <= now) continue;
+        const prior = latestByAccount.get(run.account);
+        if (!prior || reset > prior.reset) latestByAccount.set(run.account, { error: run.error, reset });
+      }
+    }
+    for (const [account, { error }] of latestByAccount) this.latchLegacyProviderCap(account, error);
+    if (latestByAccount.size) {
+      this.hub.log("warn", `Restored ${latestByAccount.size} recorded provider usage-cap ${latestByAccount.size === 1 ? "latch" : "latches"} before auto-resume.`);
+    }
+  }
+
+  /** A legacy failed row will never re-emit the runner's rate_limit event, so restore its provider
+   * latch before scheduling recovery. This prevents an old Codex "try again at Sep 2" record from
+   * immediately selecting Codex again on the first direct QA retry. */
+  private latchLegacyProviderCap(accountLabel: string | null, error: string): void {
+    const reset = parseUsageLimitResetAt(error);
+    const info: RateLimitInfo = {
+      status: "rejected",
+      resetsAt: reset,
+      resetSource: reset == null ? "fallback" : "provider",
+    };
+    if (accountLabel?.startsWith("codex:")) {
+      this.noteCodexCap(info);
+      return;
+    }
+    if (accountLabel?.startsWith("grok:")) {
+      this.noteGrokCap(info);
+      return;
+    }
+    if (accountLabel === "zai" || accountLabel?.startsWith("zai:")) {
+      this.noteZaiCap(info);
+      return;
+    }
+    const account = this.accounts.dto().find((entry) => entry.label === accountLabel);
+    if (account) this.accounts.updateFromRateLimit(account.id, info);
+  }
+
   /** Kick off the live model-list catalog (boot fetch + slow refresh). Called from index.ts after the
    *  account manager has started, so a subscription token is available for the Anthropic models fetch. */
   startModelCatalog(): void {
@@ -686,9 +795,12 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Poll for rate-limit-parked tasks and resume them the moment an account regains headroom, so a
    *  cap wave (every sub at its 5h/weekly limit) doesn't leave the owner to hand-resume each task.
-   *  CAP_RETRY_MS=0 disables it (the timer is unref'd, so it never holds the process open). */
+   *  CAP_RETRY_MS=0 disables only the coarse poll; the reset-timed wake remains armed. */
   private startCapSupervisor(): void {
-    if (config.capRetryMs <= 0) return;
+    if (config.capRetryMs <= 0) {
+      this.armCapResumeWake();
+      return;
+    }
     // A 'review' task isn't auto-resumed on boot (markInterrupted only revives IN_FLIGHT states), so a
     // restart would otherwise strand tasks that were cap-parked before the bounce until the first
     // interval tick. Sweep once shortly after start — after the account pings have had a moment to land
@@ -697,6 +809,55 @@ export class ThreadManager implements OrchestratorApi {
     setTimeout(() => this.resumeCapParked(), AUTO_RESUME_DELAY_MS).unref?.();
     this.capSupervisor = setInterval(() => this.resumeCapParked(), config.capRetryMs);
     this.capSupervisor.unref?.();
+    this.armCapResumeWake();
+  }
+
+  /** Cap-park rows are durable (unlike the in-memory `capParked` set), so both the interval and the
+   * reset-timed wake work across a server restart. Keep this predicate in one place so a normal review
+   * is never resurrected by a quota timer. */
+  private capParkedThreads(): Thread[] {
+    return this.db
+      .listThreads()
+      .filter((t) => (t.state === "review" || t.state === "failed") && (t.error ?? "").startsWith(CAP_PARK_PREFIX));
+  }
+
+  /** Earliest known provider/account reset for an exhausted pipeline. AccountManager includes its
+   * persisted per-sub cap latches; the CLI providers keep their own durable latches here. */
+  private earliestCapResetAt(now = Date.now()): number | undefined {
+    const resets: Array<number | null | undefined> = [
+      this.accounts.soonestResetAt(),
+      this.codexCapUntil,
+      this.grokCapUntil,
+      this.zaiCapUntil,
+    ];
+    const codex = readCodexUsage();
+    const grok = readGrokUsage();
+    const zai = readZaiUsage();
+    resets.push(codex?.fiveHourReset, codex?.sevenDayReset, grok.sevenDayReset, zai.fiveHourReset, zai.sevenDayReset);
+    const future = resets.filter((reset): reset is number => reset != null && reset > now);
+    return future.length ? Math.min(...future) : undefined;
+  }
+
+  /** Schedule one bounded wake at the first provider reset. The regular poll remains a fallback for
+   * missing/changed provider clocks, but this removes the "sit in review until someone notices" gap. */
+  private armCapResumeWake(): void {
+    const parked = this.capParkedThreads();
+    const resetAt = parked.length ? this.earliestCapResetAt() : undefined;
+    if (this.capResumeWake && this.capResumeWakeAt === resetAt) return;
+    if (this.capResumeWake) clearTimeout(this.capResumeWake);
+    this.capResumeWake = undefined;
+    this.capResumeWakeAt = resetAt;
+    if (resetAt == null) return;
+    // Node clamps values beyond a signed 32-bit timeout. Re-arm if an unusually distant provider
+    // reset exceeds that bound; normal 5h/weekly windows are comfortably below it.
+    const delay = Math.min(Math.max(0, resetAt - Date.now()) + 25, 0x7fffffff);
+    this.capResumeWake = setTimeout(() => {
+      this.capResumeWake = undefined;
+      this.capResumeWakeAt = undefined;
+      this.resumeCapParked();
+      this.armCapResumeWake();
+    }, delay);
+    this.capResumeWake.unref?.();
   }
 
   /** Resume tasks parked because all accounts were capped — but only once an account actually has
@@ -713,16 +874,29 @@ export class ThreadManager implements OrchestratorApi {
     // to a ready CLI when Claude is still capped (see the Claude→CLI handoff in runRole). Older parks
     // that still carry CAP_PARK_QA_MARK in their error text are therefore unblocked by CLI headroom too.
     const claudeFree = this.accounts.hasHeadroom();
-    const cliFree = this.codexImplementorReady() || this.grokImplementorReady() || this.zaiImplementorReady();
-    if (!claudeFree && !cliFree) return;
+    const zaiFree = this.zaiImplementorReady();
+    const cliBridgeFree = this.codexImplementorReady() || this.grokImplementorReady();
+    if (!claudeFree && !zaiFree && !cliBridgeFree) {
+      this.armCapResumeWake();
+      return;
+    }
     let slots = this.settings().maxConcurrent - this.activePipelines.size;
-    if (slots <= 0) return;
-    const parked = this.db
-      .listThreads()
-      .filter((t) => t.state === "review" && (t.error ?? "").startsWith(CAP_PARK_PREFIX))
-      .sort((a, b) => a.updatedAt - b.updatedAt); // oldest-parked first — fairest, and bounded by free slots
+    if (slots <= 0) {
+      this.armCapResumeWake();
+      return;
+    }
+    const parked = this.capParkedThreads().sort((a, b) => a.updatedAt - b.updatedAt); // oldest-parked first — fairest, and bounded by free slots
     for (const t of parked) {
       if (slots <= 0) break;
+      // Reader stages need a durable owner-answer channel. z.ai shares the Anthropic SDK, and Codex
+      // now returns its read-only answer through the schema for ThreadManager to post; Grok remains
+      // bridge-only, so waking on Grok-only headroom would create a deterministic cap/repark loop.
+      const readerPark = /\(reader stage\)/i.test(t.error ?? "");
+      if (readerPark && !claudeFree && !zaiFree && !this.codexImplementorReady()) continue;
+      // A prior supervisor tick may already have changed this row to failed and started its pipeline.
+      // Keep the marker durable for a crash between that update and resumeThread, but never double-spawn
+      // it while this process still owns the slot.
+      if (this.activePipelines.has(t.id) || this.resuming.has(t.id)) continue;
       // Honor the per-repo cap too (the global cap is the `slots` gate above). resumeThread reserves the
       // slot synchronously, so activeCountForRepo already counts tasks resumed earlier in THIS pass — a
       // repo at its cap is left parked for a later supervisor tick rather than reviving two at once.
@@ -734,12 +908,13 @@ export class ThreadManager implements OrchestratorApi {
         this.capResumeNotifiedAt.set(t.id, now);
         this.notifyExternal(`↪ account freed up — auto-resuming "${t.title}".`);
       }
-      // Mirror the boot auto-resume: flip to 'failed' with a null error (no restart note) so resumeThread
-      // enters runPipeline and continues from the failure point instead of the QA-less manual-resume path.
-      this.db.updateThread(t.id, { state: "failed", error: null });
+      // Enter the resume-aware failed path without losing the durable cap marker. If this process dies
+      // before resumeThread gets CPU, the next boot's supervisor still knows the task is auto-resumable.
+      if (t.state === "review") this.db.updateThread(t.id, { state: "failed", error: t.error });
       const id = t.id;
       void this.resumeThread(id).catch((e) => this.hub.log("error", `Cap auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
     }
+    this.armCapResumeWake();
   }
 
   /**
@@ -888,7 +1063,10 @@ export class ThreadManager implements OrchestratorApi {
       // Cap-parked review tasks re-enter via the failed→runPipeline path (like resumeCapParked), clearing
       // the marker; a paused task resumes its implementor directly. resumeThread's own resuming/live guards
       // keep this from double-starting a task the cap supervisor is also picking up.
-      if (t.state === "review") this.db.updateThread(t.id, { state: "failed", error: null });
+      // Keep the CAP marker durable until runPipeline has actually claimed the task. A restart in
+      // the tiny gap between this write and resumeThread used to leave an ordinary failed row that
+      // neither the cap supervisor nor boot recovery could discover.
+      if (t.state === "review") this.db.updateThread(t.id, { state: "failed", error: t.error });
       const id = t.id;
       void this.resumeThread(id).catch((e) => this.hub.log("error", `Token-reset resume of ${id.slice(0, 8)} failed: ${String(e)}`));
     }
@@ -990,6 +1168,11 @@ export class ThreadManager implements OrchestratorApi {
       // until the implementor relaunches) to flag this as a restart-triggered resume — so the worker is
       // told the restart already completed and must not restart the orchestrator, which it's a child of,
       // again, the loop these warnings exist for.
+      // QA begins only after the implementor has stopped and its completed work is durable. A restart
+      // here must retry that charged review directly, not relaunch the implementor and duplicate work.
+      if (t.state === "qa") {
+        this.db.updateThreadStageOutputs(t.id, { qaInterruptedRetryRound: Math.max(1, stage.qaRoundsUsed ?? 0) });
+      }
       this.db.updateThread(t.id, { state: "failed", error: RESTART_AUTO_RESUME_MSG });
       // A fresh interruption is a fresh episode: what the budget below counts is how many boots in a row
       // failed to get THIS interruption's resume airborne, not how many the task has survived in its life.
@@ -2112,21 +2295,46 @@ export class ThreadManager implements OrchestratorApi {
   private loadCodexCap(): void {
     const v = this.db.kvGet(CODEX_CAP_KV_KEY);
     const until = v ? Number(v) : NaN;
-    if (Number.isFinite(until) && until > Date.now()) this.codexCapUntil = until;
-    else if (v) this.db.kvSet(CODEX_CAP_KV_KEY, ""); // stale/expired — clear it
+    if (Number.isFinite(until) && until > Date.now()) {
+      this.codexCapUntil = until;
+      this.codexCapUntilProviderStated = this.db.kvGet(CODEX_CAP_SOURCE_KV_KEY) === "provider";
+    } else if (v) {
+      this.clearCodexCap();
+    }
   }
 
   /** Latch Codex as usage-capped until its window resets, so implementors route to the Claude backend.
    *  Prefers the real reset epoch from the usage snapshot; falls back to a fixed cooldown when unknown. */
-  private noteCodexCap(info?: RateLimitInfo): void {
+  private capResetUntil(info: RateLimitInfo | undefined, observed: Array<number | null | undefined>, fallbackMs: number): number {
     const now = Date.now();
+    // A provider's own future timestamp is the authority. In particular, do not shorten a plain-text
+    // "try again at Sep 2" cap to an older 5h/weekly dashboard reset: that would route work straight
+    // back to the provider before the provider said it was ready. The only non-authoritative timestamp
+    // is our bounded fallback for a message that named no reset at all.
+    if (info?.resetsAt != null && info.resetsAt > now && info.resetSource !== "fallback") return info.resetsAt;
+    const snapshots = observed.filter((reset): reset is number => reset != null && reset > now);
+    if (snapshots.length) return Math.min(...snapshots);
+    if (info?.resetsAt != null && info.resetsAt > now) return info.resetsAt;
+    return now + fallbackMs;
+  }
+
+  private noteCodexCap(info?: RateLimitInfo): void {
     const u = readCodexUsage();
-    const snapReset = [info?.resetsAt, u?.fiveHourReset, u?.sevenDayReset].filter((r): r is number => !!r && r > now);
-    const until = snapReset.length ? Math.min(...snapReset) : now + CODEX_CAP_COOLDOWN_MS;
-    if (this.codexCapUntil && this.codexCapUntil >= until) return; // already latched at least this long
+    const until = this.capResetUntil(info, [u?.fiveHourReset, u?.sevenDayReset], CODEX_CAP_COOLDOWN_MS);
+    const providerStated = info?.resetsAt != null && info.resetsAt > Date.now() && info.resetSource !== "fallback";
+    if (this.codexCapUntil && this.codexCapUntil >= until && (!providerStated || this.codexCapUntilProviderStated)) return;
     this.codexCapUntil = until;
+    this.codexCapUntilProviderStated = providerStated;
     this.db.kvSet(CODEX_CAP_KV_KEY, String(until));
+    this.db.kvSet(CODEX_CAP_SOURCE_KV_KEY, providerStated ? "provider" : "fallback");
     this.hub.log("warn", `Codex hit its usage cap — routing implementors to Claude until ${new Date(until).toLocaleString()}.`);
+  }
+
+  private clearCodexCap(): void {
+    this.codexCapUntil = undefined;
+    this.codexCapUntilProviderStated = false;
+    this.db.kvSet(CODEX_CAP_KV_KEY, "");
+    this.db.kvSet(CODEX_CAP_SOURCE_KV_KEY, "");
   }
 
   /** Whether Codex should be treated as usage-capped right now (route implementors to Claude). True while
@@ -2140,15 +2348,13 @@ export class ThreadManager implements OrchestratorApi {
       // the same plan has usable headroom — model/account limits can clear between the failure and
       // the next supervisor tick. Rollout snapshots are deliberately NOT enough here: they can be
       // old, whereas liveCodexUsage is a fresh plan-wide RPC reading.
-      if (liveCodexUsage() && this.codexProviderCandidate().hasHeadroom) {
+      if (!this.codexCapUntilProviderStated && liveCodexUsage() && this.codexProviderCandidate().hasHeadroom) {
         this.hub.log("info", "Codex live usage probe reports headroom — clearing the stale Codex cap latch.");
-        this.codexCapUntil = undefined;
-        this.db.kvSet(CODEX_CAP_KV_KEY, "");
+        this.clearCodexCap();
         return false;
       }
       if (now < this.codexCapUntil) return true;
-      this.codexCapUntil = undefined;
-      this.db.kvSet(CODEX_CAP_KV_KEY, "");
+      this.clearCodexCap();
     }
     return codexUsageCapped(now);
   }
@@ -2158,6 +2364,7 @@ export class ThreadManager implements OrchestratorApi {
   onCodexUsageRefresh(): void {
     if (!liveCodexUsage()) return;
     if (!this.codexCapActive()) this.resumeCapParked();
+    this.armCapResumeWake();
   }
 
   /** Restore the persisted Grok usage-cap latch on boot (mirrors loadCodexCap). */
@@ -2174,12 +2381,10 @@ export class ThreadManager implements OrchestratorApi {
    *  weekly scrape normally supplies the true reset; before it lands, a fixed cooldown keeps the latch
    *  self-expiring. Mirrors the chip's countdown via noteGrokCap. */
   private noteGrokCap(info?: RateLimitInfo): void {
-    const now = Date.now();
     // Prefer the real weekly reset from the live `/usage show` scrape; fall back to a fixed cooldown when
     // no scrape has landed yet. A cap response's stated reset is still authoritative enough to avoid
     // immediately retrying the same exhausted provider before the next scrape lands.
-    const resets = [info?.resetsAt, readGrokUsage().sevenDayReset].filter((r): r is number => r != null && r > now);
-    const until = resets.length ? Math.min(...resets) : now + config.grok.capCooldownMs;
+    const until = this.capResetUntil(info, [readGrokUsage().sevenDayReset], config.grok.capCooldownMs);
     if (this.grokCapUntil && this.grokCapUntil >= until) return; // already latched at least this long
     this.grokCapUntil = until;
     this.db.kvSet(GROK_CAP_KV_KEY, String(until));
@@ -2215,13 +2420,11 @@ export class ThreadManager implements OrchestratorApi {
    *  quota scrape normally supplies the true 5h/weekly reset; before it lands, a fixed cooldown keeps the
    *  latch self-expiring. Mirrors the chip's countdown via noteZaiCap. */
   private noteZaiCap(info?: RateLimitInfo): void {
-    const now = Date.now();
     const u = readZaiUsage();
     // Prefer the soonest real reset from the quota scrape (5h or weekly, whichever is nearer and in the
     // future). Preserve a rejected turn's stated reset too, so a transiently unavailable quota endpoint
     // cannot shorten the provider hold to an arbitrary cooldown.
-    const resets = [info?.resetsAt, u.fiveHourReset, u.sevenDayReset].filter((r): r is number => r != null && r > now);
-    const until = resets.length ? Math.min(...resets) : now + config.zai.capCooldownMs;
+    const until = this.capResetUntil(info, [u.fiveHourReset, u.sevenDayReset], config.zai.capCooldownMs);
     if (this.zaiCapUntil && this.zaiCapUntil >= until) return; // already latched at least this long
     this.zaiCapUntil = until;
     this.db.kvSet(ZAI_CAP_KV_KEY, String(until));
@@ -2673,8 +2876,10 @@ export class ThreadManager implements OrchestratorApi {
   private settleReview(threadId: string, humanReason: string): void {
     const need = this.capParked.get(threadId);
     this.capParked.delete(threadId);
-    if (need) this.setState(threadId, "review", this.capParkMessage(need));
-    else this.setState(threadId, "review", humanReason);
+    if (need) {
+      this.setState(threadId, "review", this.capParkMessage(need));
+      this.armCapResumeWake();
+    } else this.setState(threadId, "review", humanReason);
   }
 
   /** Record an exhausted fallback ladder in the shared role runner. This keeps quota failures in every
@@ -2694,7 +2899,10 @@ export class ThreadManager implements OrchestratorApi {
     const grokOn = this.settings().grokEnabled;
     const zaiOn = this.settings().zaiEnabled;
     const cliOn = codexOn || grokOn || zaiOn;
-    const resets = [this.accounts.soonestResetAt()];
+    // Include durable live-run latches as well as dashboard snapshots. A provider can report a
+    // session-specific reset that the generic usage dashboard cannot see (notably Codex), and the
+    // owner-facing message must promise the same earliest wake the scheduler will honor.
+    const resets = [this.accounts.soonestResetAt(), this.codexCapUntil, this.grokCapUntil, this.zaiCapUntil];
     if (cliOn) {
       if (codexOn) {
         const u = readCodexUsage();
@@ -2719,8 +2927,8 @@ export class ThreadManager implements OrchestratorApi {
           ? `every backend — Claude subscriptions and ${cliLabel} — was rate-limited during QA ${CAP_PARK_QA_MARK}`
           : `every Claude subscription was rate-limited during QA ${CAP_PARK_QA_MARK}`
         : cliOn
-          ? `every account — Claude subscriptions and ${cliLabel} — was rate-limited mid-task`
-          : "every Claude subscription was rate-limited mid-task";
+          ? `every account — Claude subscriptions and ${cliLabel} — was rate-limited during the ${need} stage (${need} stage)`
+          : `every Claude subscription was rate-limited during the ${need} stage (${need} stage)`;
     return `${CAP_PARK_PREFIX} — ${scope}.${when} It will resume automatically when one frees up (no manual Resume needed).`;
   }
 
@@ -2884,9 +3092,10 @@ export class ThreadManager implements OrchestratorApi {
       this.directorNotes.delete(threadId);
       const rawNote = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n");
       const note = rawNote ? acknowledgedInjection(rawNote) : undefined;
-      // Pick the implementor model (and effort) for this task before the routing gate resolves a backend —
-      // the pick decides both. Off by default; a failed pick leaves normal routing in charge.
-      await this.autoSelectModel(thread, plan);
+      // Pick the implementor model only when implementation will actually run. A capped or
+      // restart-interrupted QA retry has durable completed implementation, so an extra model-selection
+      // call would waste a provider turn and could itself derail the handoff.
+      if (saved.qaCapRetryRound == null && saved.qaInterruptedRetryRound == null) await this.autoSelectModel(thread, plan);
       if (this.cancelled(threadId)) return;
       await this.runImplementorQa(thread, kickoff, this.implementorEffort(threadId, plan?.effort), this.latestImplementorSession(threadId), note, {
         qaEnabled: settings.qaEnabled,
@@ -3072,7 +3281,10 @@ export class ThreadManager implements OrchestratorApi {
     let resume: string | undefined = initialResume;
     let message: string | unknown[] = kickoff;
     let provider: ImplementorProvider = "claude";
-    let accountFailovers = 0;
+    // A configured account is a one-shot candidate after a cap. Do not impose an arbitrary small
+    // counter here: deployments can legitimately have more than three Claude subscriptions. The set
+    // also prevents a misbehaving selector from cycling us back onto a known-capped account.
+    const triedClaudeAccounts = new Set<string>([acct.id]);
     let transientFailures = 0;
     const unavailableProviders = new Set<ImplementorProvider>();
 
@@ -3106,6 +3318,12 @@ export class ThreadManager implements OrchestratorApi {
         });
         provider = cli;
         resume = undefined;
+      } else {
+        // Every Claude subscription is already durably marked capped and no other backend can run
+        // this role. Do not fire one more doomed Claude turn after a restart: park immediately and let
+        // the reset-timed supervisor resume it when a provider is genuinely available.
+        this.parkForExhaustedProviders(thread.id, role);
+        return undefined;
       }
     }
 
@@ -3188,6 +3406,13 @@ export class ThreadManager implements OrchestratorApi {
       if (role === "reviewer") this.liveReviewer.set(thread.id, agent);
       agent.start(startMessage);
       let res = await agent.result();
+      // A provider can emit its cap signal before a success-shaped terminal result (for example an
+      // assistant session-limit notice followed by `success`). The cap wins over that nominal result:
+      // accepting it here would bypass the shared fallback ladder and turn a retryable quota event
+      // into an empty plan/QA review.
+      const capped =
+        agent.rateLimited ||
+        ((agent instanceof CodexAgentRun || agent instanceof GrokAgentRun) && agent.capped);
       if (role === "reader" && provider === "codex" && res && !res.isError && !capFlaggedBy(agent)) {
         const out = res.structuredOutput as ReaderOutput | undefined;
         const alreadyPosted = this.db.listFindings(thread.id).some((finding) => finding.fromRunId === run.id);
@@ -3204,16 +3429,16 @@ export class ThreadManager implements OrchestratorApi {
           });
         }
       }
-      if (role === "planner" && res && !res.isError) res = await this.drainDirectorNotes(thread, agent, res);
+      if (role === "planner" && res && !res.isError && !capped) res = await this.drainDirectorNotes(thread, agent, res);
       if (role === "planner") this.liveRole.delete(thread.id);
       if (role === "qa") this.liveQa.delete(thread.id);
       if (role === "reviewer") this.liveReviewer.delete(thread.id);
       await agent.stop();
       this.untrack(thread.id, agent);
       this.finishRun(run.id, res, agent);
-      if ((res && !res.isError) || this.cancelled(thread.id)) return res;
+      if (this.cancelled(thread.id) || (res && !res.isError && !capped)) return res;
 
-      if (agent.transientApiError) {
+      if (!capped && agent.transientApiError) {
         transientFailures++;
         if (transientFailures < MAX_TRANSIENT_API_FAILURES) {
           await this.waitForTransientRetry(thread, role, transientFailures, provider);
@@ -3240,7 +3465,6 @@ export class ThreadManager implements OrchestratorApi {
         this.notifyExternal(`↪ ${role} hit repeated ${fromName} API errors — continuing "${thread.title}" on ${toName}.`);
         provider = next;
         transientFailures = 0;
-        accountFailovers = 0;
         resume = undefined;
         message = prependUserContent(kickoff, `[Provider outage handoff]\n${fromName} failed ${MAX_TRANSIENT_API_FAILURES} consecutive times. Continue this ${role} stage on ${toName} and complete it fully.`);
         continue;
@@ -3248,9 +3472,6 @@ export class ThreadManager implements OrchestratorApi {
 
       if (provider !== "claude") {
         // z.ai (AgentRun) signals a cap via rateLimited; the CLI backends via `.capped`.
-        const capped =
-          ((agent instanceof CodexAgentRun || agent instanceof GrokAgentRun) && agent.capped) ||
-          (agent instanceof ZaiAgentRun && agent.rateLimited);
         if (!capped) return res;
         if (provider === "codex") this.noteCodexCap(agent.rateLimitInfo);
         else if (provider === "grok") this.noteGrokCap(agent.rateLimitInfo);
@@ -3263,7 +3484,6 @@ export class ThreadManager implements OrchestratorApi {
         }
         provider = next;
         transientFailures = 0;
-        accountFailovers = 0;
         resume = undefined;
         message = prependUserContent(kickoff, `[Provider usage-limit handoff]\nContinue this ${role} stage on ${providerLabel(next)} and complete it fully.`);
         continue;
@@ -3286,7 +3506,7 @@ export class ThreadManager implements OrchestratorApi {
       // (nextReadyImplementor(role) keeps them off the MCP-less CLI backends). A planner/researcher cap
       // otherwise degrades to no-plan/no-research; QA otherwise parks the task to 'review' (capParked flags
       // it for the supervisor).
-      if (!next || accountFailovers >= MAX_ACCOUNT_FAILOVERS) {
+      if (!next || triedClaudeAccounts.has(next.id)) {
         const cli = this.nextReadyImplementor("claude", unavailableProviders, role);
         if (cli) {
           this.postFinding({
@@ -3299,7 +3519,6 @@ export class ThreadManager implements OrchestratorApi {
           this.notifyExternal(`↪ ${role} — all Claude subs maxed; continuing "${thread.title}" on ${providerLabel(cli)}.`);
           provider = cli;
           transientFailures = 0;
-          accountFailovers = 0;
           resume = undefined;
           message = prependUserContent(kickoff, `[Claude usage-limit handoff]\nEvery Claude subscription is capped. Continue this ${role} stage on ${providerLabel(cli)} and complete it fully.`);
           continue;
@@ -3309,9 +3528,14 @@ export class ThreadManager implements OrchestratorApi {
       }
       this.logFailover(thread, role, next.label, agent.rateLimitInfo);
       acct = next;
-      accountFailovers++;
+      triedClaudeAccounts.add(next.id);
       resume = agent.sessionId;
-      message = "Your session was switched to another account after a usage limit. Continue exactly where you left off and finish.";
+      message = resume
+        ? "Your session was switched to another account after a usage limit. Continue exactly where you left off and finish."
+        : prependUserContent(
+            kickoff,
+            "[Claude usage-limit handoff]\nThe previous Claude account was rejected before it created a resumable session. Start this stage fresh on the new account, re-read the task/workspace, and complete it fully.",
+          );
     }
     return undefined;
   }
@@ -4032,16 +4256,21 @@ export class ThreadManager implements OrchestratorApi {
     useNext: boolean,
     continueMsg: string,
   ): Promise<ResultEvent | undefined> {
-    let accountFailovers = 0;
+    // Each account gets one attempt in this cap chain. This supports every configured subscription and
+    // prevents a selector from cycling back onto a known-capped account.
+    const triedClaudeAccounts = new Set<string>([currentAccountId]);
     let transientFailures = 0;
-    while (accountFailovers <= MAX_ACCOUNT_FAILOVERS) {
+    while (true) {
       const res = await this.awaitTurnResult(current, useNext);
-      if ((res && !res.isError) || this.cancelled(thread.id)) return res;
+      const capped =
+        current.rateLimited ||
+        ((current instanceof CodexAgentRun || current instanceof GrokAgentRun) && current.capped);
+      if (this.cancelled(thread.id) || (res && !res.isError && !capped)) return res;
 
       // 500/529/overload/transport failures are provider incidents, not quota. Retry the SAME provider
       // twice (three consecutive failures total) and preserve its session whenever one was established.
       // The enclosing completion layer switches backend after the third failure.
-      if (current.transientApiError) {
+      if (!capped && current.transientApiError) {
         transientFailures++;
         if (transientFailures >= MAX_TRANSIENT_API_FAILURES) return res;
         const provider = this.providerForRun(current);
@@ -4060,7 +4289,14 @@ export class ThreadManager implements OrchestratorApi {
         continue;
       }
 
-      if (!current.rateLimited) return res;
+      if (!capped) return res;
+      // CLI cap notices can be followed by a success-shaped terminal result. Normalize that into
+      // the error-shaped outcome awaitImplementorCompletion already routes through its provider flip.
+      if (current instanceof CodexAgentRun || current instanceof GrokAgentRun) {
+        return res?.isError
+          ? res
+          : { type: "result", subtype: "error_during_execution", isError: true, result: "CLI provider usage cap" };
+      }
       // z.ai is AgentRun-based but a single-key subscription, not a Claude account — there's no sibling
       // account to fail over to. Latch its cap and return an error result so awaitImplementorCompletion's
       // provider-flip continues the task on another backend (mirrors the CLI cap handling).
@@ -4095,25 +4331,24 @@ export class ThreadManager implements OrchestratorApi {
       // Rate-limited: fail over to another account, or give up to "review" (return undefined so the
       // caller doesn't run QA on / mark done a half-finished implementation).
       const next = this.failoverAccount(currentAccountId);
-      const sessionId = this.lastImplementorSession.get(thread.id);
+      const sessionId = current.sessionId ?? this.lastImplementorSession.get(thread.id);
       // No account with headroom (vs. a missing session) means a cap parked this — flag it so the
       // settle tags it for the supervisor, which resumes the task once an account frees up.
-      if (!next && current.rateLimited) this.capParked.set(thread.id, "implementor");
-      if (!next || !sessionId) return undefined;
+      if (!next || triedClaudeAccounts.has(next.id)) {
+        if (current.rateLimited) this.capParked.set(thread.id, "implementor");
+        return undefined;
+      }
       this.logFailover(thread, "implementor", next.label, current.rateLimitInfo);
       await current.stop();
-      const relaunch = this.startImplementor(thread, continueMsg, { resume: sessionId, effort, account: next });
+      const handoff = sessionId
+        ? continueMsg
+        : `${kickoff}\n\n[Claude usage-limit handoff]\nThe previous account was rejected before a resumable session was created. Review the current workspace and complete the task from this fresh account.`;
+      const relaunch = this.startImplementor(thread, handoff, { resume: sessionId, effort, account: next });
       current = relaunch.run;
       currentAccountId = relaunch.accountId;
+      triedClaudeAccounts.add(currentAccountId);
       useNext = false;
-      accountFailovers++;
     }
-    // Reaching here means the loop exhausted MAX_ACCOUNT_FAILOVERS via repeated cap-failovers (the only
-    // path that falls through — every other outcome returns inside the loop). Each fresh account also
-    // capped, so this is still a cap-park: flag it so the settle tags it for the supervisor rather than
-    // mis-parking it as a needs-human review that never auto-resumes.
-    if (current.rateLimited) this.capParked.set(thread.id, "implementor");
-    return undefined;
   }
 
   /**
@@ -4257,12 +4492,19 @@ export class ThreadManager implements OrchestratorApi {
       if (from === "codex") this.noteCodexCap(current.rateLimitInfo);
       else if (from === "grok") this.noteGrokCap(current.rateLimitInfo);
       else if (from === "zai") this.noteZaiCap(current.rateLimitInfo);
-      const next = this.nextReadyImplementor(from) ?? "claude";
-      this.implementorProvider.set(thread.id, next);
+      unavailableProviders.add(from);
+      const next = this.nextReadyImplementor(from, unavailableProviders);
       // Fully end the capped CLI run BEFORE anything else — postFinding routes a warning to this.live's
       // run, so stopping first guarantees it can never resume a fresh doomed turn on the just-capped session
       // (matches the "end the implementor before the next stage" ordering used across this file).
       await current.stop();
+      if (!next) {
+        // No backend has headroom. Parking preserves the durable auto-resume marker rather than
+        // relaunching a known-unready Claude provider and turning provider exhaustion into a task failure.
+        this.capParked.set(thread.id, "implementor");
+        return res;
+      }
+      this.implementorProvider.set(thread.id, next);
       const fromName = providerLabel(from);
       const toName = providerLabel(next);
       this.postFinding({
@@ -4436,9 +4678,11 @@ export class ThreadManager implements OrchestratorApi {
     pipe: PipeOpts = { qaEnabled: true, maxQaRounds: config.maxQaRounds },
   ): Promise<void> {
     // Hard routing gate — resolve + remember the implementor backend from the subscription toggles.
-    // A blocked routing (provider off / Codex without a valid key) parks the task here, before any
-    // agent spawns. Covers every fresh dispatch and pipeline resume (both reach here via runPipeline).
-    if (!this.gateImplementorProvider(thread)) return;
+    // A QA-only retry already has a finished implementation and routes through runRole's QA fallback
+    // chain; gating it as an implementor would unnecessarily block/restart work on a saturated backend.
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    const qaOnlyRetry = pipe.qaEnabled && (stage.qaCapRetryRound != null || stage.qaInterruptedRetryRound != null);
+    if (!qaOnlyRetry && !this.gateImplementorProvider(thread)) return;
     try {
       await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession, directorNote, pipe);
     } finally {
@@ -4557,8 +4801,13 @@ export class ThreadManager implements OrchestratorApi {
     // subscription. Resume from the persisted count instead: a mid-episode resume continues the SAME
     // budget (and, being round > 1, warm-resumes the prior QA session rather than re-reading everything).
     // Fresh dispatch = 0; a retry nulls stage_outputs, so it resets too.
-    const priorRounds = pipe.qaEnabled ? this.db.getThreadStageOutputs(thread.id).qaRoundsUsed ?? 0 : 0;
-    if (pipe.qaEnabled && priorRounds >= pipe.maxQaRounds) {
+    const savedQa = this.db.getThreadStageOutputs(thread.id);
+    const qaCapRetryRound = pipe.qaEnabled ? savedQa.qaCapRetryRound : undefined;
+    const qaInterruptedRetryRound = pipe.qaEnabled ? savedQa.qaInterruptedRetryRound : undefined;
+    const qaRetryRound = qaCapRetryRound ?? qaInterruptedRetryRound;
+    const qaOnlyRetry = qaRetryRound != null;
+    const priorRounds = pipe.qaEnabled ? savedQa.qaRoundsUsed ?? 0 : 0;
+    if (pipe.qaEnabled && !qaOnlyRetry && priorRounds >= pipe.maxQaRounds) {
       // A prior episode already spent the full QA budget and an interrupt re-entered before it could park.
       // Don't re-run the implementor + a fresh QA pass on the (already usage-heavy) backend — park it.
       this.postFinding({
@@ -4570,6 +4819,12 @@ export class ThreadManager implements OrchestratorApi {
       this.settleReview(thread.id, `QA still not satisfied after ${pipe.maxQaRounds} rounds — needs your review.`);
       return;
     }
+    // A cap or restart during QA means the implementor already finished. Preserve that stage and retry
+    // the exact charged QA round instead of needlessly resuming implementation from scratch.
+    let res: ResultEvent | undefined = qaOnlyRetry
+      ? { type: "result", subtype: "success", isError: false }
+      : undefined;
+    if (!qaOnlyRetry) {
     const start = await this.startResumedImplementor(thread, kickoff, resumeSession, {
       effort,
       resumeNudge: pipe.qaEnabled
@@ -4586,7 +4841,7 @@ export class ThreadManager implements OrchestratorApi {
     // (state was still pre-implementor) after the fold — deliver it now that the implementor is live, so
     // it isn't stranded in the buffer. Notes arriving after this point hit the live-inject path directly.
     this.flushDirectorNotes(thread.id, start.run);
-    let res = await this.awaitImplementorCompletion(
+    res = await this.awaitImplementorCompletion(
       thread,
       effort,
       kickoff,
@@ -4599,6 +4854,7 @@ export class ThreadManager implements OrchestratorApi {
     // Before the hand-off: if the director queued follow-ups while the implementor worked, it does that
     // work too now (re-launched with them) instead of proceeding — the Queue button's whole point.
     res = await this.drainQueuedImplementor(thread, effort, kickoff, res, pipe.qaEnabled);
+    }
 
     // QA disabled — the implementor's output is final. A clean finish goes straight to 'done'
     // (the only non-QA path to 'done' besides a manual markDone); an incomplete one parks for review.
@@ -4620,7 +4876,11 @@ export class ThreadManager implements OrchestratorApi {
     let qaFixForcedProvider: ImplementorProvider | undefined;
     let qaFixForceFresh = false;
     let qaFixSummary: string | undefined;
-    for (let round = priorRounds + 1; round <= pipe.maxQaRounds; round++) {
+    // The charged round must get exactly one replacement QA attempt even if an operator lowered
+    // maxQaRounds while recovery was pending. It was already within the budget when it was charged;
+    // silently dropping it would turn a recoverable interruption into a permanent review park.
+    const qaRoundCeiling = qaOnlyRetry ? Math.max(pipe.maxQaRounds, qaRetryRound!) : pipe.maxQaRounds;
+    for (let round = qaOnlyRetry ? qaRetryRound! : priorRounds + 1; round <= qaRoundCeiling; round++) {
       if (this.cancelled(thread.id)) return;
       if (!res || res.isError) {
         this.settleReview(thread.id, this.implementorParkReason(res, "needs your review."));
@@ -4637,6 +4897,7 @@ export class ThreadManager implements OrchestratorApi {
       // finalizes the run, so this.live stays empty for the whole QA stage; the session id survives in
       // lastImplementorSession for the fix-round resume.
       await this.stopLive(thread.id);
+      const retryingDirectQaRound = qaOnlyRetry && round === qaRetryRound;
       const qa = await this.runQA(thread, {
         round,
         applyFixes: pipe.qaAppliesFixes,
@@ -4644,11 +4905,29 @@ export class ThreadManager implements OrchestratorApi {
         forcedProvider: pipe.qaAppliesFixes ? qaFixForcedProvider : undefined,
         forceFresh: pipe.qaAppliesFixes ? qaFixForceFresh : false,
         priorFixSummary: pipe.qaAppliesFixes ? qaFixSummary : undefined,
+        // This is a continuation of a paid-but-cap-rejected or restart-interrupted QA pass, not another
+        // implementor/QA cycle.
+        // It warm-resumes only if that backend is still ready; runRole drops the session on a handoff.
+        continuation: retryingDirectQaRound,
       }).catch((e) => {
         this.hub.log("warn", `QA failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
         return undefined;
       });
       if (this.cancelled(thread.id)) return;
+
+      if (qa) {
+        // A real QA verdict completed the retry. Clear before any later state transition so a restart
+        // cannot mistake a normal non-pass/fix round for a still-pending direct QA handoff.
+        this.db.updateThreadStageOutputs(thread.id, { qaCapRetryRound: undefined, qaInterruptedRetryRound: undefined });
+      } else if (this.capParked.get(thread.id) === "qa") {
+        // Preserve the charged round through review→failed→pipeline and even a server bounce, so the
+        // supervisor retries QA itself rather than relaunching the already-complete implementor.
+        this.db.updateThreadStageOutputs(thread.id, { qaCapRetryRound: round, qaInterruptedRetryRound: undefined });
+      } else if (retryingDirectQaRound) {
+        // The replacement reviewer failed for a real non-cap reason; leave a truthful human review,
+        // not a stale automatic retry marker.
+        this.db.updateThreadStageOutputs(thread.id, { qaCapRetryRound: undefined, qaInterruptedRetryRound: undefined });
+      }
 
       if (!qa) {
         const detail = this.qaParkDetail(thread.id);

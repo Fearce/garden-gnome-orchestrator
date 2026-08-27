@@ -43,6 +43,11 @@ export interface PersistedAccountUsage {
   holdUntil?: number | null;
   extWakeAt?: number | null;
   modelLimits?: Record<string, number>;
+  // A run can learn about a session/quota cap before the next dashboard ping. Keep that latch across a
+  // deploy so boot cannot immediately route a cap-parked task back to the same subscription.
+  rateLimited?: boolean;
+  rateLimitWindow?: string | null;
+  rateLimitResetAt?: number | null;
 }
 
 export interface AccountUsagePersistence {
@@ -65,6 +70,9 @@ const HARD_LIMIT = 98;
 const STALE_MS = 20 * 60 * 1000; // a value older than this (ping failing) shows "stale"
 const RESET_BUFFER_MS = 3_000; // ping this long after a window reset to catch the rollover
 const MIN_RESET_DELAY_MS = 1_000;
+// Structured providers occasionally omit a reset timestamp. Keep those account caps bounded too: a
+// missing timestamp must delay routing, not turn into a permanent manual-review wait after a restart.
+const ACCOUNT_CAP_FALLBACK_MS = 5 * 60 * 60 * 1000;
 // ---- 5h window-start staggering ----
 // Any /v1/messages request — including our own usage pings — STARTS a new 5h window when none is
 // running, so pinging every account right at its reset keeps all subscriptions phase-locked: they
@@ -292,6 +300,23 @@ export class AccountManager {
       });
       this.stagger?.register(a.id, () => this.phase(a.id));
     }
+    // ThreadManager reconciles interrupted work before the async boot usage probes begin. Restore just
+    // the durable cap latches synchronously so that short auto-resume delay cannot select a subscription
+    // which a prior process already learned was quota-capped.
+    const now = Date.now();
+    for (const a of accounts) {
+      const persisted = this.persist?.load(a.id) ?? null;
+      if (persisted) this.restorePersistedCap(this.states.get(a.id)!, persisted, now);
+    }
+  }
+
+  private restorePersistedCap(st: AccountState, persisted: PersistedAccountUsage, now: number): void {
+    // Snapshot versions before cap persistence lack these optional fields and naturally restore as
+    // clear. A future reset is the durable provider hold; an expired/unknown legacy value is not.
+    const heldCap = persisted.rateLimited === true && persisted.rateLimitResetAt != null && persisted.rateLimitResetAt > now;
+    st.rateLimited = heldCap;
+    st.rateLimitWindow = heldCap ? persisted.rateLimitWindow ?? null : null;
+    st.rateLimitResetAt = heldCap ? persisted.rateLimitResetAt! : null;
   }
 
   start(): void {
@@ -363,6 +388,7 @@ export class AccountManager {
         st.usageAt = p.usageAt;
         st.extWakeAt = p.extWakeAt ?? null;
         st.modelLimits = new Map(Object.entries(p.modelLimits ?? {}).filter(([, r]) => r > now));
+        this.restorePersistedCap(st, p, now);
         st.updatedAt = now;
       }
       // An externally-woken account never boot-holds: the outside consumer has likely started the
@@ -421,6 +447,25 @@ export class AccountManager {
     this.onUsage?.();
   }
 
+  /** Persist one coherent routing snapshot. All writers route through this so a later usage/model save
+   * cannot erase a run-observed cap latch before its provider reset. */
+  private persistState(st: AccountState, now = Date.now()): void {
+    const capActive = st.rateLimited && st.rateLimitResetAt != null && st.rateLimitResetAt > now;
+    this.persist?.save(st.account.id, {
+      fiveHour: st.fiveHour,
+      sevenDay: st.sevenDay,
+      fiveHourReset: st.fiveHourReset,
+      sevenDayReset: st.sevenDayReset,
+      usageAt: st.usageAt,
+      holdUntil: st.holdUntil,
+      extWakeAt: st.extWakeAt,
+      modelLimits: liveModelLimits(st, now),
+      rateLimited: capActive,
+      rateLimitWindow: capActive ? st.rateLimitWindow : null,
+      rateLimitResetAt: capActive ? st.rateLimitResetAt : null,
+    });
+  }
+
   /** Tiny Haiku ping → live usage from rate-limit headers; also (re)schedules the reset ping.
    *  Returns the fresh read (null when the ping had no usable one) so classifyCap can judge headroom
    *  from the raw headers. `expectIdle` marks a ping we believed would START the window (a hold
@@ -460,16 +505,6 @@ export class AccountManager {
     st.usageStale = false;
     st.error = null;
     st.holdUntil = null; // a real read means the window is live (the ping itself starts one) — no hold applies
-    this.persist?.save(a.id, {
-      fiveHour: u.fiveHour,
-      sevenDay: u.sevenDay,
-      fiveHourReset: u.fiveHourReset,
-      sevenDayReset: u.sevenDayReset,
-      usageAt: now,
-      holdUntil: null,
-      extWakeAt: st.extWakeAt,
-      modelLimits: liveModelLimits(st, now),
-    });
     // Preserve a run-flagged cap whose reset is still in the future. A per-session ("You've hit your
     // session limit") cap is invisible to these 5h/weekly headers, so a routine ping would otherwise
     // read the windows as clear and wipe the cap — un-freezing the account, which then gets a parked
@@ -479,11 +514,14 @@ export class AccountManager {
     if (u.fiveHourRejected) {
       st.rateLimited = true;
       st.rateLimitWindow = "five_hour";
-      st.rateLimitResetAt = u.fiveHourReset;
+      // Unified headers normally include a reset, but a rejected response with a stripped/malformed
+      // reset header is still a real cap. Keep it durably out of routing for the bounded fallback rather
+      // than losing the in-memory hold at the next server restart.
+      st.rateLimitResetAt = u.fiveHourReset != null && u.fiveHourReset > now ? u.fiveHourReset : now + ACCOUNT_CAP_FALLBACK_MS;
     } else if (u.sevenDayRejected) {
       st.rateLimited = true;
       st.rateLimitWindow = "seven_day";
-      st.rateLimitResetAt = u.sevenDayReset;
+      st.rateLimitResetAt = u.sevenDayReset != null && u.sevenDayReset > now ? u.sevenDayReset : now + ACCOUNT_CAP_FALLBACK_MS;
     } else if (capHold) {
       st.rateLimited = true; // keep the existing window/reset — the cap is real but not header-visible yet
     } else {
@@ -492,6 +530,7 @@ export class AccountManager {
       st.rateLimitResetAt = null;
     }
     st.updatedAt = now;
+    this.persistState(st, now);
     this.scheduleResetEvent(a, u);
     return u;
   }
@@ -541,17 +580,9 @@ export class AccountManager {
     if (st) {
       st.fiveHour = 0;
       st.fiveHourReset = null;
+      st.holdUntil = startAt;
       st.updatedAt = Date.now();
-      this.persist?.save(a.id, {
-        fiveHour: st.fiveHour,
-        sevenDay: st.sevenDay,
-        fiveHourReset: null,
-        sevenDayReset: st.sevenDayReset,
-        usageAt: st.usageAt,
-        holdUntil: startAt,
-        extWakeAt: st.extWakeAt,
-        modelLimits: liveModelLimits(st, Date.now()),
-      });
+      this.persistState(st);
     }
     this.armHold(a, startAt);
     this.publish();
@@ -663,16 +694,18 @@ export class AccountManager {
   updateFromRateLimit(accountId: string, info: RateLimitInfo): void {
     const st = this.states.get(accountId);
     if (!st) return;
+    const now = Date.now();
     if (info.status === "rejected") {
       st.rateLimited = true;
       st.rateLimitWindow = info.rateLimitType ?? null;
-      st.rateLimitResetAt = info.resetsAt ?? null;
+      st.rateLimitResetAt = info.resetsAt != null && info.resetsAt > now ? info.resetsAt : now + ACCOUNT_CAP_FALLBACK_MS;
     } else if (st.rateLimited && (st.rateLimitWindow == null || st.rateLimitWindow === info.rateLimitType)) {
       st.rateLimited = false;
       st.rateLimitWindow = null;
       st.rateLimitResetAt = null;
     }
-    st.updatedAt = Date.now();
+    st.updatedAt = now;
+    this.persistState(st, now);
     this.publish();
   }
 
@@ -703,6 +736,7 @@ export class AccountManager {
     st.rateLimitWindow = null;
     st.rateLimitResetAt = null;
     st.updatedAt = Date.now();
+    this.persistState(st);
     this.publish();
     return "model";
   }
@@ -718,16 +752,7 @@ export class AccountManager {
     st.modelLimits = new Map([...st.modelLimits].filter(([, r]) => r > now));
     st.modelLimits.set(model, until);
     st.updatedAt = now;
-    this.persist?.save(accountId, {
-      fiveHour: st.fiveHour,
-      sevenDay: st.sevenDay,
-      fiveHourReset: st.fiveHourReset,
-      sevenDayReset: st.sevenDayReset,
-      usageAt: st.usageAt,
-      holdUntil: st.holdUntil,
-      extWakeAt: st.extWakeAt,
-      modelLimits: liveModelLimits(st, now),
-    });
+    this.persistState(st, now);
     this.publish();
   }
 

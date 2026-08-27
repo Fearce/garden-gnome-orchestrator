@@ -33,10 +33,11 @@ function check(label: string, condition: boolean, detail?: string): void {
 }
 
 class StubAccounts {
+  headroom = true;
   onUsageRefresh(_cb: () => void): void {}
   effectiveUtilization(): number | null { return null; }
   soonestResetAt(): number | null { return null; }
-  hasHeadroom(): boolean { return true; }
+  hasHeadroom(): boolean { return this.headroom; }
   dispatchPreview(): Record<string, unknown> {
     return { account: { id: "claude-a", label: "Claude A" }, hasHeadroom: true, fiveHour: 0, sevenDay: 0, fiveHourReset: null, sevenDayReset: null, weeklySafetyPct: 100 };
   }
@@ -51,7 +52,8 @@ const root = mkdtempSync(join(tmpdir(), "provider-fallback-"));
 const workspace = join(root, "workspace");
 mkdirSync(workspace, { recursive: true });
 const db = new Db(join(root, "orchestrator.sqlite"));
-const manager = new ThreadManager(db, new EventHub(), new FileMemoryService(join(root, "memory")), new StubAccounts() as unknown as AccountManager);
+const accountStub = new StubAccounts();
+const manager = new ThreadManager(db, new EventHub(), new FileMemoryService(join(root, "memory")), accountStub as unknown as AccountManager);
 const thread = db.createThread({ title: "QA falls back after a Codex cap", workspace, rawPrompt: "verify", brief: "verify" });
 const internals = manager as any;
 const providers: string[] = [];
@@ -73,6 +75,7 @@ internals.createRoleAgent = (provider: string) => {
   const agent = cap ? Object.create(CodexAgentRun.prototype) : {};
   Object.assign(agent, {
     capped: cap,
+    rateLimitInfo: cap ? { status: "rejected", resetsAt: statedReset!, resetSource: "provider" } : undefined,
     rateLimited: false,
     transientApiError: false,
     transientApiErrorMessage: undefined,
@@ -98,8 +101,276 @@ try {
   check("the quota-capped provider is attempted once", providers[0] === "codex", providers.join(" → "));
   check("QA immediately retries on the next provider", providers.join(" → ") === "codex → claude", providers.join(" → "));
   check("the fallback provider's verdict reaches QA", result?.structuredOutput === verdict);
+  check("the provider-stated reset remains latched", internals.codexCapUntil === statedReset, String(internals.codexCapUntil));
   check("a reachable fallback does not create an auto-resume park", !internals.capParked.has(thread.id));
   check("the task never enters a needs-your-review state", db.getThread(thread.id)?.state !== "review", db.getThread(thread.id)?.state);
+
+  // The runner can see a provider cap before a success-shaped terminal event (plain assistant cap
+  // notices are one real shape). A nominal success must not bypass fallback just because isError=false.
+  const successCap = db.createThread({ title: "Success-shaped Codex cap still falls back", workspace, rawPrompt: "verify", brief: "verify" });
+  providers.length = 0;
+  internals.dispatchAccount = () => ({ id: "claude-a", label: "Claude A", token: undefined });
+  internals.nextReadyImplementor = (from: string) => (from === "codex" ? "claude" : undefined);
+  internals.createRoleAgent = (provider: string) => {
+    providers.push(provider);
+    const cap = provider === "codex";
+    const agent = cap ? Object.create(CodexAgentRun.prototype) : {};
+    Object.assign(agent, {
+      capped: cap,
+      rateLimited: false,
+      rateLimitInfo: cap ? { status: "rejected", resetsAt: statedReset!, resetSource: "provider" } : undefined,
+      transientApiError: false,
+      transientApiErrorMessage: undefined,
+      sessionId: undefined,
+      start: () => {},
+      result: async () => cap
+        ? { type: "result", subtype: "success", isError: false, result: "usage limit notice" }
+        : { type: "result", subtype: "success", isError: false, structuredOutput: verdict },
+      stop: async () => {},
+    });
+    return agent;
+  };
+  const successCapResult = await internals.runRole(
+    successCap,
+    "qa",
+    "Review the implementation.",
+    () => ({ model: "unused" }),
+    undefined,
+    { forcedProvider: "codex" },
+  );
+  check("a success-shaped capped provider still retries the next provider", providers.join(" → ") === "codex → claude", providers.join(" → "));
+  check("the success-shaped cap reaches the fallback QA verdict", successCapResult?.structuredOutput === verdict);
+  check("the success-shaped cap does not create a human-review park", !internals.capParked.has(successCap.id));
+
+  // A synchronous/pre-init Claude 429 has no session id to carry. It must fresh-start on the next
+  // subscription, not treat the missing id as proof that every provider is exhausted.
+  const earlyCap = db.createThread({ title: "Pre-init Claude cap fresh-starts the next account", workspace, rawPrompt: "verify", brief: "verify" });
+  const starts: Array<{ message: string; opts: { resume?: string; account?: { id: string } } }> = [];
+  const firstImplementor = {
+    rateLimited: true,
+    transientApiError: false,
+    capped: false,
+    sessionId: undefined,
+    rateLimitInfo: { status: "rejected", resetsAt: Date.now() + 60_000 },
+    result: async () => ({ type: "result", subtype: "error", isError: true, result: "HTTP 429" }),
+    nextResult: async () => undefined,
+    stop: async () => {},
+  };
+  const secondImplementor = {
+    rateLimited: false,
+    transientApiError: false,
+    capped: false,
+    sessionId: undefined,
+    result: async () => ({ type: "result", subtype: "success", isError: false, result: "completed" }),
+    nextResult: async () => undefined,
+    stop: async () => {},
+  };
+  internals.failoverAccount = () => ({ id: "claude-b", label: "Claude B", token: undefined });
+  internals.acctById = () => null;
+  internals.logFailover = () => {};
+  internals.startImplementor = (_t: unknown, message: string, opts: { resume?: string; account?: { id: string } }) => {
+    starts.push({ message, opts });
+    return { run: secondImplementor, accountId: "claude-b" };
+  };
+  const earlyResult = await internals.awaitImplementorResult(
+    earlyCap,
+    undefined,
+    "FULL KICKOFF",
+    firstImplementor,
+    "claude-a",
+    false,
+    "Continue exactly where you left off.",
+  );
+  check("a pre-init Claude cap launches the next account", starts.length === 1, String(starts.length));
+  check("the pre-init fallback starts fresh instead of resuming a missing session", starts[0]?.opts.resume === undefined, JSON.stringify(starts[0]?.opts));
+  check("the pre-init fallback keeps the full kickoff context", starts[0]?.message.includes("FULL KICKOFF") === true, starts[0]?.message);
+  check("the pre-init fallback completes instead of cap-parking", earlyResult?.isError === false && !internals.capParked.has(earlyCap.id));
+
+  // A reader may use Codex as a read-only schema fallback, but never Grok (which has no safe owner-answer
+  // channel). When Claude and z.ai are exhausted, the supervisor must therefore wake a reader on Codex
+  // rather than leaving it in a deterministic cap/repark loop.
+  const readerPark = db.createThread({ title: "Reader cap park can use Codex", workspace, rawPrompt: "read", brief: "read" });
+  db.updateThread(readerPark.id, { state: "review", error: "⏳ Auto-resume pending — every backend was rate-limited during the reader stage (reader stage)." });
+  accountStub.headroom = false;
+  internals.zaiImplementorReady = () => false;
+  internals.codexImplementorReady = () => true;
+  let readerResumed: string | undefined;
+  internals.resumeThread = async (id: string) => {
+    readerResumed = id;
+    return { ok: true, state: "planning" };
+  };
+  internals.resumeCapParked();
+  await Promise.resolve();
+  check("a reader cap park resumes when only Codex has headroom", readerResumed === readerPark.id, readerResumed);
+  check("the reader handoff keeps the durable cap marker", (db.getThread(readerPark.id)?.error ?? "").startsWith("⏳ Auto-resume pending"));
+  accountStub.headroom = true;
+
+  // A persisted cap must prevent even the first post-restart Claude launch. With no usable backend,
+  // runRole records the durable cap park immediately and waits for the supervisor instead of spending
+  // another rejected turn on the already-saturated subscription.
+  const noProvider = db.createThread({ title: "All capped providers do not get retried", workspace, rawPrompt: "verify", brief: "verify" });
+  accountStub.headroom = false;
+  internals.codexImplementorReady = () => false;
+  internals.grokImplementorReady = () => false;
+  internals.zaiImplementorReady = () => false;
+  internals.nextReadyImplementor = () => undefined;
+  let doomedStarts = 0;
+  internals.createRoleAgent = () => {
+    doomedStarts++;
+    throw new Error("a known-capped provider must not launch");
+  };
+  const noProviderResult = await internals.runRole(noProvider, "qa", "Review the implementation.", () => ({ model: "unused" }));
+  check("all-capped routing does not retry the saturated provider", doomedStarts === 0, String(doomedStarts));
+  check("all-capped routing marks the QA stage for durable auto-resume", noProviderResult === undefined && internals.capParked.get(noProvider.id) === "qa", String(internals.capParked.get(noProvider.id)));
+  internals.capParked.delete(noProvider.id);
+  accountStub.headroom = true;
+
+  // The durable CAP marker is what lets the supervisor recover after a process restart. Exercise the
+  // real scan/state handoff (only the resume leaf is stubbed): a marked QA task is never left as a
+  // normal "needs your review" row once any provider has headroom.
+  const parked = db.createThread({ title: "Cap park auto-resumes", workspace, rawPrompt: "verify", brief: "verify" });
+  db.updateThread(parked.id, { state: "review", error: "⏳ Auto-resume pending — every backend was rate-limited during QA (QA stage)." });
+  let resumedId: string | undefined;
+  internals.resumeThread = async (id: string) => {
+    resumedId = id;
+    return { ok: true, state: "planning" };
+  };
+  internals.resumeCapParked();
+  await Promise.resolve();
+  check("the cap supervisor invokes the normal resume path when a provider frees up", resumedId === parked.id, resumedId);
+  check("the cap supervisor changes the durable park into the resume-aware failed entry", db.getThread(parked.id)?.state === "failed", db.getThread(parked.id)?.state);
+
+  // No fixed failover count may strand a later configured Claude subscription. The legacy counter
+  // stopped after three switches even though config supports more accounts; each prior account caps,
+  // then the fifth one returns a normal QA result.
+  const multi = db.createThread({ title: "Fifth Claude subscription remains reachable", workspace, rawPrompt: "verify", brief: "verify" });
+  const accounts = Array.from({ length: 5 }, (_, i) => ({ id: `claude-${i + 1}`, label: `Claude ${i + 1}`, token: `token-${i + 1}` }));
+  let launches = 0;
+  internals.dispatchAccount = () => accounts[0]!;
+  internals.failoverAccount = (id: string) => accounts[accounts.findIndex((account) => account.id === id) + 1] ?? null;
+  internals.nextReadyImplementor = () => undefined;
+  internals.modelFor = () => "test-model";
+  internals.modelCapFallback = async () => false;
+  internals.logFailover = () => {};
+  internals.createRoleAgent = () => {
+    launches++;
+    const capped = launches < accounts.length;
+    return {
+      capped: false,
+      rateLimited: capped,
+      rateLimitInfo: capped ? { status: "rejected", resetsAt: Date.now() + 60_000 } : undefined,
+      transientApiError: false,
+      transientApiErrorMessage: undefined,
+      sessionId: undefined,
+      start: () => {},
+      result: async () => capped
+        ? { type: "result", subtype: "error", isError: true, result: "usage limit reached" }
+        : { type: "result", subtype: "success", isError: false, structuredOutput: verdict },
+      stop: async () => {},
+    };
+  };
+  const fifth = await internals.runRole(multi, "qa", "Review the implementation.", () => ({ model: "unused" }));
+  check("all configured Claude subscriptions are tried before parking", launches === 5, String(launches));
+  check("the fifth Claude subscription's QA verdict completes", fifth?.structuredOutput === verdict);
+  check("a later ready Claude subscription does not cap-park the task", !internals.capParked.has(multi.id));
+
+  // Historical tasks were already parked under the old generic QA error. Boot migration must preserve
+  // their completed implementation, latch the provider that named a reset, and retry only QA.
+  const legacyRoot = mkdtempSync(join(tmpdir(), "provider-fallback-legacy-"));
+  const legacyWorkspace = join(legacyRoot, "workspace");
+  mkdirSync(legacyWorkspace, { recursive: true });
+  const legacyDb = new Db(join(legacyRoot, "orchestrator.sqlite"));
+  const legacyThread = legacyDb.createThread({
+    title: "Legacy Codex QA usage-limit park",
+    workspace: legacyWorkspace,
+    rawPrompt: "verify",
+    brief: "verify",
+  });
+  legacyDb.updateThread(legacyThread.id, {
+    state: "review",
+    error: "QA could not complete — needs your review You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+  });
+  legacyDb.updateThreadStageOutputs(legacyThread.id, { kickoff: "KICKOFF: completed implementation", qaRoundsUsed: 2 });
+  const legacyRun = legacyDb.createRun({ threadId: legacyThread.id, role: "qa", model: "gpt-5.6", account: "codex:gpt-5.6" });
+  legacyDb.updateRun(legacyRun.id, {
+    state: "error",
+    capFlagged: true,
+    error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+    endedAt: Date.now(),
+  });
+  const legacyZaiThread = legacyDb.createThread({
+    title: "Legacy z.ai QA usage-limit park",
+    workspace: legacyWorkspace,
+    rawPrompt: "verify",
+    brief: "verify",
+  });
+  legacyDb.updateThread(legacyZaiThread.id, {
+    state: "review",
+    error: "QA could not complete — needs your review You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+  });
+  legacyDb.updateThreadStageOutputs(legacyZaiThread.id, { kickoff: "KICKOFF: completed implementation", qaRoundsUsed: 1 });
+  const legacyZaiRun = legacyDb.createRun({ threadId: legacyZaiThread.id, role: "qa", model: "glm-4.6", account: "zai" });
+  legacyDb.updateRun(legacyZaiRun.id, {
+    state: "error",
+    capFlagged: true,
+    error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+    endedAt: Date.now(),
+  });
+  // The last overnight task was still actively in QA when the server was deployed. It is not a
+  // legacy review park, so boot reconciliation changes it to failed before the cap supervisor sees
+  // it. Its recorded provider reset must nevertheless be restored before the direct QA retry.
+  const activeReset = parseUsageLimitResetAt("You've hit your usage limit. Try again at Sep 3rd, 2026 2:23 PM.", new Date("2026-08-27T12:00:00").getTime())!;
+  const activeQaThread = legacyDb.createThread({
+    title: "Active Codex QA usage-limit interruption",
+    workspace: legacyWorkspace,
+    rawPrompt: "verify",
+    brief: "verify",
+  });
+  legacyDb.updateThread(activeQaThread.id, { state: "qa" });
+  legacyDb.updateThreadStageOutputs(activeQaThread.id, { kickoff: "KICKOFF: completed implementation", qaRoundsUsed: 3 });
+  const activeQaRun = legacyDb.createRun({ threadId: activeQaThread.id, role: "qa", model: "gpt-5.6", account: "codex:gpt-5.6" });
+  legacyDb.updateRun(activeQaRun.id, {
+    state: "error",
+    capFlagged: true,
+    error: "You've hit your usage limit. Try again at Sep 3rd, 2026 2:23 PM.",
+    endedAt: Date.now(),
+  });
+  // This fixture needs boot reconciliation to inspect a live QA state, but it must not launch a real
+  // async pipeline against the temporary database after this test closes it.
+  const originalScheduleAutoResume = (ThreadManager.prototype as any).scheduleAutoResume;
+  (ThreadManager.prototype as any).scheduleAutoResume = () => {};
+  let legacyManager: InstanceType<typeof ThreadManager>;
+  try {
+    legacyManager = new ThreadManager(legacyDb, new EventHub(), new FileMemoryService(join(legacyRoot, "memory")), new StubAccounts() as unknown as AccountManager);
+  } finally {
+    (ThreadManager.prototype as any).scheduleAutoResume = originalScheduleAutoResume;
+  }
+  const legacyInternals = legacyManager as any;
+  check("legacy Codex cap parks are converted to the auto-resume marker", (legacyDb.getThread(legacyThread.id)?.error ?? "").startsWith("⏳ Auto-resume pending"));
+  check("legacy QA recovery preserves the charged QA round", legacyDb.getThreadStageOutputs(legacyThread.id).qaCapRetryRound === 2, String(legacyDb.getThreadStageOutputs(legacyThread.id).qaCapRetryRound));
+  check("an interrupted active QA cap restores its later Codex reset before retry", legacyInternals.codexCapUntil === activeReset, String(legacyInternals.codexCapUntil));
+  check("legacy z.ai account labels latch z.ai before requeue", legacyInternals.zaiCapUntil === statedReset, String(legacyInternals.zaiCapUntil));
+  check("an interrupted active QA preserves its direct-review retry marker", legacyDb.getThreadStageOutputs(activeQaThread.id).qaInterruptedRetryRound === 3, String(legacyDb.getThreadStageOutputs(activeQaThread.id).qaInterruptedRetryRound));
+  let legacyImplementorStarts = 0;
+  let legacyQaRuns = 0;
+  legacyInternals.startResumedImplementor = async () => {
+    legacyImplementorStarts++;
+    return { run: {}, accountId: "claude-a" };
+  };
+  legacyInternals.stopLive = async () => {};
+  legacyInternals.runSelfImprovement = async () => {};
+  legacyInternals.runQA = async () => {
+    legacyQaRuns++;
+    return { pass: true, summary: "fallback QA completed", issues: [] };
+  };
+  await legacyInternals.runImplementorQaLoop(legacyDb.getThread(legacyThread.id)!, "KICKOFF: completed implementation", undefined, undefined, undefined, {
+    qaEnabled: true,
+    maxQaRounds: 2,
+  });
+  check("legacy recovery reruns QA directly", legacyQaRuns === 1 && legacyImplementorStarts === 0, `qa=${legacyQaRuns}, implementor=${legacyImplementorStarts}`);
+  check("legacy QA recovery reaches done without another manual-review park", legacyDb.getThread(legacyThread.id)?.state === "done", legacyDb.getThread(legacyThread.id)?.state);
+  legacyDb.raw.close();
+  rmSync(legacyRoot, { recursive: true, force: true });
 } finally {
   db.raw.close();
   rmSync(root, { recursive: true, force: true });

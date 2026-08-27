@@ -312,6 +312,31 @@ async function main(): Promise<void> {
   }
 
   // -- Test F: the other freeze outcome — a cap-parked 'review' task auto-resumes the same way ---------
+  // -- Test F0: the async handoff never drops the cap marker before resumeThread claims it -----------
+  console.log("\nTest F0 — a token-triggered cap resume keeps its durable marker through the handoff");
+  {
+    const h = makeHarness();
+    try {
+      const { threadId } = seedFrozenTask(h, "review", /* capParked */ true);
+      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
+      h.stub.util = 4;
+      h.stub.headroom = true;
+      let markerAtHandoff = "";
+      // Capture the exact row state synchronously when the fire-and-forget handoff begins. A server
+      // bounce at this point must still leave boot recovery a CAP marker to discover.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).resumeThread = async (id: string) => {
+        markerAtHandoff = h.db.getThread(id)?.error ?? "";
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).fireTokenResume();
+      await delay(30);
+      check("the cap marker survives until resumeThread claims the task", markerAtHandoff.startsWith(CAP_PARK_PREFIX), markerAtHandoff);
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log("\nTest F — usage resets: a CAP-PARKED 'review' task auto-resumes with its prior session");
   {
     const h = makeHarness();

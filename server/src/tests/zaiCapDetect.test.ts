@@ -10,6 +10,7 @@
 
 import assert from "node:assert/strict";
 import { AgentRun, ZaiAgentRun, looksLikeCapNotice, parseUsageLimitResetAt, resultLooksRateLimited } from "../agents/runner.js";
+import { CodexAgentRun } from "../agents/codexRunner.js";
 import type { AgentEvent } from "../types.js";
 
 // Both wordings production has recorded, verbatim: the weekly exhaustion (the row that went unseen) and
@@ -119,9 +120,69 @@ for (const prose of [
 {
   assert.equal(looksLikeCapNotice(ZAI_CAP), false, "no backend pattern → only Anthropic's wording counts");
   assert.equal(looksLikeCapNotice("You've hit your weekly limit · resets Jul 21, 10pm"), true);
-  assert.equal(resultLooksRateLimited({ result: ZAI_CAP }), false);
+  assert.equal(resultLooksRateLimited({ result: ZAI_CAP }), true, "an error result's generic 429/quota wording is a provider handoff");
   assert.equal(resultLooksRateLimited({ errors: [ZAI_CAP] }, /weekly\/monthly limit exhausted/i), true);
   assert.equal(resultLooksRateLimited({ api_error_status: 429 }), true, "the structured signal is unchanged");
+  assert.equal(resultLooksRateLimited({ error: { response: { status: 429 } } }), true, "a nested SDK response.status=429 is recognized");
+  assert.equal(resultLooksRateLimited({ stop_reason: "rate_limit" }), true, "the SDK rate_limit stop code is unchanged");
+  assert.equal(resultLooksRateLimited({ error: { code: "insufficient_quota" } }), true, "nested insufficient_quota codes are recognized");
+}
+
+// SDK assistant errors can nest the HTTP status under error.response and carry the only reset wording
+// in that nested error. Both must survive into the rate-limit latch rather than degrading to a short
+// generic cooldown or a terminal review park.
+{
+  const resetText = "You've hit your usage limit. Try again at Sep 2nd, 2030 2:23 PM.";
+  const expectedReset = new Date("Sep 2, 2030 2:23 PM").getTime();
+  const { run } = newRun((c) => new AgentRun(c));
+  handle(run, {
+    type: "assistant",
+    error: { response: { status: 429 }, message: resetText },
+    message: { content: [] },
+  });
+  assert.equal(run.rateLimited, true, "a nested assistant HTTP 429 reaches the cap fallback path");
+  assert.equal(run.rateLimitInfo?.resetsAt, expectedReset, "the nested provider reset is retained on the cap latch");
+  assert.equal(run.rateLimitInfo?.resetSource, "provider", "the parsed nested reset is marked provider-stated");
+}
+
+// OpenAI's standard billing wording reverses the older "quota exceeded" phrasing. It is still a
+// retryable provider condition in every shape the pipeline receives: a Claude SDK error result, a
+// thrown transport exception, and a Codex CLI `turn.failed` event.
+{
+  const openAiQuota = "You exceeded your current quota, please check your plan and billing details.";
+  assert.equal(resultLooksRateLimited({ result: openAiQuota }), true, "OpenAI's current-quota wording is recognized");
+
+  const { run: resultRun } = newRun((c) => new AgentRun(c));
+  handle(resultRun, errorResult(openAiQuota));
+  assert.equal(resultRun.rateLimited, true, "a Claude SDK error result routes OpenAI quota exhaustion to failover");
+
+  const { run: thrownRun } = newRun((c) => new AgentRun(c));
+  const thrown = Object.assign(new Error(openAiQuota), { status: 429 });
+  (thrownRun as unknown as { handleThrownProviderError(error: unknown): void }).handleThrownProviderError(thrown);
+  assert.equal(thrownRun.rateLimited, true, "a thrown HTTP 429 synthesizes the cap signal consumed by stage fallback");
+  assert.equal(thrownRun.lastResult?.isError, true, "a thrown cap also resolves the waiting stage result");
+
+  const codex = new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
+  (codex as unknown as { handleEvent(event: unknown): void }).handleEvent({ type: "turn.failed", error: { message: openAiQuota } });
+  assert.equal(codex.capped, true, "a Codex CLI quota error uses the same provider fallback path");
+
+  for (const error of [
+    { message: "Request rejected by upstream provider", code: "insufficient_quota" },
+    { message: "Request rejected by upstream provider", code: "rate_limit" },
+    { message: "Insufficient quota" },
+    { message: "insufficient-quota" },
+  ]) {
+    const structuredCodex = new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
+    (structuredCodex as unknown as { handleEvent(event: unknown): void }).handleEvent({ type: "turn.failed", error });
+    assert.equal(structuredCodex.capped, true, `Codex ${JSON.stringify(error)} is a provider-fallback cap`);
+  }
+
+  const errorEventCodex = new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
+  (errorEventCodex as unknown as { handleEvent(event: unknown): void }).handleEvent({
+    type: "error",
+    error: { message: "Request rejected by upstream provider", code: "insufficient_quota" },
+  });
+  assert.equal(errorEventCodex.capped, true, "a Codex error event with structured quota code is a cap too");
 }
 
 console.log("z.ai cap detection: ok");

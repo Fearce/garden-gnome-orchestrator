@@ -223,7 +223,63 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test A2: a usage-capped QA retries QA itself, even at the normal round limit ---------------------
+  console.log("\nTest A2 — a QA provider cap resumes the charged review directly (no duplicate implementor)");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const internals = h.mgr as any;
+      const continuations: boolean[] = [];
+      let calls = 0;
+      internals.runQA = async (_thread: Thread, opts: { round: number; continuation?: boolean }): Promise<{ pass: boolean; summary: string } | undefined> => {
+        h.qaRounds.push(opts.round);
+        continuations.push(opts.continuation === true);
+        calls++;
+        if (calls === 1) {
+          // Mirrors the real runRole ladder after every usable provider has been capped.
+          internals.capParked.set(id, "qa");
+          return undefined;
+        }
+        return { pass: true, summary: "fallback provider completed QA" };
+      };
+      await runLoop(h, id, 1);
+      check("the capped final QA round parks for automatic retry", h.db.getThread(id)?.state === "review" && (h.db.getThread(id)?.error ?? "").startsWith("⏳ Auto-resume pending"));
+      check("the charged QA round is persisted for direct retry", h.db.getThreadStageOutputs(id).qaCapRetryRound === 1, String(h.db.getThreadStageOutputs(id).qaCapRetryRound));
+      check("the original implementation ran once", h.implementorStarts() === 1, String(h.implementorStarts()));
+
+      // Simulate the supervisor's review→failed handoff. The saved stage record is the authority.
+      h.db.updateThread(id, { state: "failed", error: h.db.getThread(id)?.error ?? null });
+      await runLoop(h, id, 1);
+      check("the fallback QA receives the same final round", JSON.stringify(h.qaRounds) === JSON.stringify([1, 1]), JSON.stringify(h.qaRounds));
+      check("the replacement QA is a continuation, not a fresh QA budget round", continuations[1] === true, JSON.stringify(continuations));
+      check("QA-cap auto-resume did not relaunch the implementor", h.implementorStarts() === 1, String(h.implementorStarts()));
+      check("a fallback QA pass completes the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check("the retry marker clears once QA returns a verdict", h.db.getThreadStageOutputs(id).qaCapRetryRound === undefined);
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Test B (the bug): a restart re-entry does NOT reset the budget — it stays bounded ----------------
+  // -- Test A3: a restart during QA retries that QA round, never the completed implementor -----------
+  console.log("\nTest A3 — a restart-interrupted QA pass resumes the review directly");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.setVerdict({ pass: true, summary: "replacement QA completed" });
+      h.db.updateThreadStageOutputs(id, { qaRoundsUsed: 2, qaInterruptedRetryRound: 2 });
+      await runLoop(h, id, 2);
+      check("restart recovery runs the charged QA round", JSON.stringify(h.qaRounds) === JSON.stringify([2]), JSON.stringify(h.qaRounds));
+      check("restart recovery does not relaunch the completed implementor", h.implementorStarts() === 0, String(h.implementorStarts()));
+      check("the restart QA marker clears after a verdict", h.db.getThreadStageOutputs(id).qaInterruptedRetryRound === undefined);
+      check("the direct restart QA retry can complete the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log("\nTest B — a restart re-enters the loop but the exhausted budget stays spent (no fresh pass)");
   {
     const h = makeHarness();

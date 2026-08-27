@@ -77,7 +77,7 @@ interface GrokEvent {
 // exhausted" — that's a cap (fails over to Claude/Codex + latches the cooldown), NOT a plain error that
 // parks the task for human review, so 402/payment-required/balance-exhausted must match too.
 const RATE_LIMIT_RE =
-  /(rate.?limit|429|402|payment required|too many requests|quota (?:exceeded|reached)|insufficient|usage[ _]limit|reached your (?:usage|plan|limit)|limit reached|out of (?:capacity|credits)|(?:balance|credits?|quota) (?:exhausted|depleted)|capacity)/i;
+  /(rate.?limit|429|402|payment required|too many requests|quota (?:exceeded|reached)|(?:exceeded|exhausted)\s+(?:your\s+)?(?:current\s+)?quota|insufficient|usage[ _]limit|reached your (?:usage|plan|limit)|limit reached|out of (?:capacity|credits)|(?:balance|credits?|quota) (?:exhausted|depleted)|capacity)/i;
 /** Max in-session re-prompts when a structured role (planner/QA) finishes without a schema-valid object. */
 const MAX_STRUCTURED_RETRIES = 2;
 

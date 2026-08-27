@@ -77,5 +77,71 @@ check("names its writer", written.source === "claude-orchestrator");
 check("stamps a liveness heartbeat", typeof written.writtenAt === "number" && written.writtenAt > 0);
 check("round-trips every account", Object.keys(written.accounts).sort().join(",") === "acct1,acct2");
 
+// A run-observed cap can arrive before (or independently of) the usage dashboard headers. It must be
+// durable: a deploy between the cap and its stated reset must not let the boot selector route a parked
+// task straight back onto the same subscription. Empty tokens make bootPing's probe deterministic
+// (`no-token`, no network) while still exercising the real snapshot restore path.
+console.log("account-usage: durable provider cap latch");
+const capSnapshots = new Map<string, any>();
+const capPersist = {
+  load(id: string) {
+    return capSnapshots.get(id) ?? null;
+  },
+  save(id: string, usage: any) {
+    capSnapshots.set(id, structuredClone(usage));
+  },
+};
+const capAccount = { id: "cap-acct", label: "capped", token: "" };
+const capUntil = Date.now() + 60 * 60_000;
+const beforeRestart = new AccountManager([capAccount], new EventHub(), 600_000, { persist: capPersist });
+beforeRestart.updateFromRateLimit(capAccount.id, { status: "rejected", rateLimitType: "five_hour", resetsAt: capUntil });
+const savedCap = capSnapshots.get(capAccount.id);
+check("a rejected run persists its cap flag", savedCap?.rateLimited === true);
+check("a rejected run persists the provider reset", savedCap?.rateLimitResetAt === capUntil);
+const afterRestart = new AccountManager([capAccount], new EventHub(), 600_000, { persist: capPersist });
+check("a persisted cap blocks dispatch before asynchronous boot pings", afterRestart.isRateLimited(capAccount.id) && !afterRestart.hasHeadroom());
+await (afterRestart as any).bootPing();
+check("boot restores a still-active run cap", afterRestart.isRateLimited(capAccount.id));
+check("a restored cap holds the account out of dispatch", !afterRestart.hasHeadroom());
+check("the restored cap keeps its provider reset", afterRestart.dto()[0]?.resetsAt === capUntil);
+beforeRestart.updateFromRateLimit(capAccount.id, { status: "allowed", rateLimitType: "five_hour" });
+check("an allowed signal clears the persisted cap", capSnapshots.get(capAccount.id)?.rateLimited === false);
+const afterClear = new AccountManager([capAccount], new EventHub(), 600_000, { persist: capPersist });
+await (afterClear as any).bootPing();
+check("a cleared cap stays clear across restart", !afterClear.isRateLimited(capAccount.id) && afterClear.hasHeadroom());
+
+// A 429 response should include a reset header, but a proxy can strip it. The rejection must still
+// survive a deploy; otherwise the selector starts a parked task straight back on the same account.
+console.log("account-usage: rejected header without reset");
+const headerSnapshots = new Map<string, any>();
+const headerPersist = {
+  load(id: string) {
+    return headerSnapshots.get(id) ?? null;
+  },
+  save(id: string, usage: any) {
+    headerSnapshots.set(id, structuredClone(usage));
+  },
+};
+const headerAccount = { id: "header-cap", label: "header capped", token: "test-token" };
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async () => new Response("", {
+  status: 429,
+  headers: {
+    "anthropic-ratelimit-unified-5h-utilization": "1",
+    "anthropic-ratelimit-unified-7d-utilization": "0",
+    "anthropic-ratelimit-unified-5h-status": "rejected",
+  },
+});
+try {
+  const beforeHeaderRestart = new AccountManager([headerAccount], new EventHub(), 600_000, { persist: headerPersist });
+  await (beforeHeaderRestart as any).pingOne(headerAccount);
+  const savedHeaderCap = headerSnapshots.get(headerAccount.id);
+  check("a rejected header without reset persists a fallback cap", savedHeaderCap?.rateLimited === true && (savedHeaderCap?.rateLimitResetAt ?? 0) > Date.now() + 4 * 60 * 60_000);
+  const afterHeaderRestart = new AccountManager([headerAccount], new EventHub(), 600_000, { persist: headerPersist });
+  check("the fallback header cap survives restart and blocks dispatch", afterHeaderRestart.isRateLimited(headerAccount.id) && !afterHeaderRestart.hasHeadroom());
+} finally {
+  globalThis.fetch = originalFetch;
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

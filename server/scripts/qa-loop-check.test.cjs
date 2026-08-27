@@ -50,6 +50,18 @@ assert.equal(accountedLaunches({ roundsUsed: 10, interrupted: 2 }), 10, "an inte
   assert.match(text(r), /QA round 1 is waiting for a usage-cap retry/);
   assert.doesNotMatch(text(r), /1 pending usage-cap retry round/, "the marker must not enter launch arithmetic");
 }
+// A restart during QA stores the same kind of control-flow marker. Its already-charged round is retried
+// directly, so the diagnostic must neither manufacture a launch nor hide the recovery state.
+{
+  assert.equal(
+    accountedLaunches({ roundsUsed: 2, interruptedRetryRound: 2 }),
+    2,
+    "the pending restart-interrupted QA round is not an extra launch term",
+  );
+  const r = qaLoopReading({ ...base, launches: 2, roundsUsed: 2, interruptedRetryRound: 2 });
+  assert.match(text(r), /QA round 2 is waiting for a restart-interrupted retry/);
+  assert.doesNotMatch(text(r), /2 pending restart-interrupted QA retry round/, "the restart marker must not enter launch arithmetic");
+}
 
 // --- THE 2026-08-17 REGRESSION ------------------------------------------------
 // The check compared QA *launches* against the *rounds* cap. Real production tasks run
