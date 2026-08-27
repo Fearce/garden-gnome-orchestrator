@@ -165,6 +165,7 @@ async function main(): Promise<void> {
           },
           stagger,
           runModel: () => manager.settings().codexModel,
+          onUsageRefresh: () => manager.onCodexUsageRefresh(),
         }),
       () =>
         startGrokUsageMonitor(hub, {

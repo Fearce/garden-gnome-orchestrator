@@ -96,6 +96,14 @@ let livePing: CodexUsageDTO | null = null;
 // reality — fall back to the rollout truth instead. ~3× the default ping cadence.
 const LIVE_PING_MAX_AGE_MS = 30 * 60_000;
 
+/** The still-fresh app-server reading, if one is available. Unlike readCodexUsage this never falls
+ * back to a rollout file: consumers use it when a just-completed live probe must be allowed to
+ * overturn a pessimistic cap latch that was set by an earlier failed run. */
+export function liveCodexUsage(): CodexUsageDTO | null {
+  if (!livePing || Date.now() - livePing.updatedAt > LIVE_PING_MAX_AGE_MS) return null;
+  return livePing;
+}
+
 /** Record a live app-server rate-limit read. Called by the usage ping on every successful probe. */
 export function noteCodexPing(usage: CodexUsageDTO): void {
   livePing = usage;

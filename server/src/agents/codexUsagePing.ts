@@ -252,6 +252,8 @@ export function startCodexUsageMonitor(
     stagger?: ResetStagger;
     /** The configured implementor model — the wake turn's fallback when WAKE_MODEL is rejected. */
     runModel?: () => string;
+    /** Invoked after a successful live rate-limit RPC, so routing can immediately react to a reset. */
+    onUsageRefresh?: () => void;
   },
 ): void {
   let lastSig = "";
@@ -378,6 +380,7 @@ export function startCodexUsageMonitor(
     pinging = true;
     try {
       lastRead = await pingCodexUsage(opts.apiKey());
+      if (lastRead) opts.onUsageRefresh?.();
     } finally {
       pinging = false;
     }

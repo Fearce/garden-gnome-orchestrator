@@ -5,7 +5,7 @@ import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
 import { AgentRun, ZaiAgentRun, type AgentRunConfig, type AgentRunLike } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
-import { codexUsageCapped, readCodexUsage } from "../agents/codexUsage.js";
+import { codexUsageCapped, liveCodexUsage, readCodexUsage } from "../agents/codexUsage.js";
 import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRunner.js";
 import { noteGrokCap, readGrokUsage, grokUsageCapped } from "../agents/grokUsage.js";
 import { noteZaiCap, readZaiUsage, zaiUsageCapped } from "../agents/zaiUsage.js";
@@ -2114,11 +2114,29 @@ export class ThreadManager implements OrchestratorApi {
   private codexCapActive(): boolean {
     const now = Date.now();
     if (this.codexCapUntil != null) {
+      // A failed Codex turn may only tell us "usage limit" and therefore installs a bounded
+      // cooldown. Do not let that pessimistic fallback overrule a newer app-server probe that says
+      // the same plan has usable headroom — model/account limits can clear between the failure and
+      // the next supervisor tick. Rollout snapshots are deliberately NOT enough here: they can be
+      // old, whereas liveCodexUsage is a fresh plan-wide RPC reading.
+      if (liveCodexUsage() && this.codexProviderCandidate().hasHeadroom) {
+        this.hub.log("info", "Codex live usage probe reports headroom — clearing the stale Codex cap latch.");
+        this.codexCapUntil = undefined;
+        this.db.kvSet(CODEX_CAP_KV_KEY, "");
+        return false;
+      }
       if (now < this.codexCapUntil) return true;
       this.codexCapUntil = undefined;
       this.db.kvSet(CODEX_CAP_KV_KEY, "");
     }
     return codexUsageCapped(now);
+  }
+
+  /** Called after a successful app-server usage probe. A fresh positive Codex reading can free
+   * cap-parked work immediately instead of waiting for the cap supervisor's next interval. */
+  onCodexUsageRefresh(): void {
+    if (!liveCodexUsage()) return;
+    if (!this.codexCapActive()) this.resumeCapParked();
   }
 
   /** Restore the persisted Grok usage-cap latch on boot (mirrors loadCodexCap). */
