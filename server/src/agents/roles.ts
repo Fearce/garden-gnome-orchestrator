@@ -94,16 +94,17 @@ export const QA_SCHEMA: Record<string, unknown> = {
   },
 };
 
-// The reader's lean structured output: did it ANSWER the question read-only, or ESCALATE because the
-// task actually needs the full pipeline? The answer itself is posted as a finding (post_finding); this
-// only reports the disposition so runReader knows whether to mark the task done or park it for redispatch.
+// The reader's structured output includes the answer as well as its disposition. Normal SDK readers
+// still post the finding directly; a read-only Codex fallback has no MCP bus, so ThreadManager records
+// this field through the same finding service on its behalf.
 export const READER_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["answered", "escalated"],
+  required: ["answered", "escalated", "answer"],
   properties: {
     answered: { type: "boolean", description: "You fully answered the question read-only and posted the answer as a finding." },
     escalated: { type: "boolean", description: "The task needs the full pipeline (edits/verification/depth) — you posted a 'needs full pipeline' finding instead of half-answering." },
+    answer: { type: "string", description: "The complete owner-facing answer with concrete file/commit references, or the escalation explanation." },
     reason: { type: "string", description: "When escalated: the one-line reason the full pipeline is needed." },
   },
 };

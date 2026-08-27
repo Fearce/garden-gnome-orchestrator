@@ -452,9 +452,9 @@ const CLOSEABLE: ReadonlySet<Thread["state"]> = new Set(["done", "failed", "canc
 // resume settled here with no QA loop) and 'paused' are work the owner can sign off on directly — the
 // pipeline's own only-QA-marks-done rule never applies to these, so without this they'd be stuck.
 const DONEABLE: ReadonlySet<Thread["state"]> = new Set(["review", "paused"]);
-// Reader results reach the owner only through the in-process MCP bus (`post_finding`). A reviewer's
-// schema-validated verdict is recorded by ThreadManager, so CLI fallbacks can safely review; their
-// kickoff requires any owner-dependent decision to return `accept:false`, never a guessed acceptance.
+// Reader results normally reach the owner through the in-process MCP bus (`post_finding`). Codex is the
+// safe CLI exception: it has a real read-only sandbox and its schema carries the answer for ThreadManager
+// to post. Grok has no equivalent harness-level read-only boundary, so it remains excluded.
 const MCP_DEPENDENT_ROLES: ReadonlySet<Role> = new Set(["reader"]);
 // Backends that reach the bus/office through the runner's `OFFICE[...]` TEXT bridge instead of real MCP
 // servers, so the tools above simply aren't there. z.ai is deliberately NOT one: it drives the same Claude
@@ -465,6 +465,7 @@ const CLI_BRIDGED_PROVIDERS: ReadonlySet<ImplementorProvider> = new Set(["codex"
 /** Whether a backend can serve a role at all — the fitness test the failover paths gate on. Exported for
  *  the provider-serves-role unit gate (the role×provider matrix IS the failover contract). */
 export function providerServesRole(role: Role, provider: ImplementorProvider): boolean {
+  if (role === "reader" && provider === "codex") return true;
   return !MCP_DEPENDENT_ROLES.has(role) || !CLI_BRIDGED_PROVIDERS.has(provider);
 }
 /** The roles `runRole` drives: every non-implementor agent, each one-shot and schema-bound. */
@@ -3129,6 +3130,9 @@ export class ThreadManager implements OrchestratorApi {
           apiKey: this.openaiApiKey() ?? "",
           resume,
           outputSchema: cfg.outputFormat?.schema,
+          // A reader may inspect files/git through Codex's shell, but its lane contract is immutable:
+          // enforce the same read-only sandbox used by the director instead of the implementor bypass.
+          directorMode: role === "reader",
           onOfficeChat: (scope, body) => {
             this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
           },
@@ -3184,6 +3188,22 @@ export class ThreadManager implements OrchestratorApi {
       if (role === "reviewer") this.liveReviewer.set(thread.id, agent);
       agent.start(startMessage);
       let res = await agent.result();
+      if (role === "reader" && provider === "codex" && res && !res.isError && !capFlaggedBy(agent)) {
+        const out = res.structuredOutput as ReaderOutput | undefined;
+        const alreadyPosted = this.db.listFindings(thread.id).some((finding) => finding.fromRunId === run.id);
+        if (!alreadyPosted && out?.answer?.trim()) {
+          const answer = out.answer.trim();
+          const firstLine = answer.split(/\r?\n/, 1)[0]!.trim();
+          this.postFinding({
+            threadId: thread.id,
+            fromRole: "reader",
+            fromRunId: run.id,
+            summary: firstLine.slice(0, 240) || (out.escalated ? "Reader needs the full pipeline" : "Reader answer"),
+            detail: answer,
+            severity: out.escalated ? "warning" : "info",
+          });
+        }
+      }
       if (role === "planner" && res && !res.isError) res = await this.drainDirectorNotes(thread, agent, res);
       if (role === "planner") this.liveRole.delete(thread.id);
       if (role === "qa") this.liveQa.delete(thread.id);
@@ -7224,6 +7244,8 @@ export function cliRoleKickoff(
         ].join(" ")
       : role === "reviewer"
         ? "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the review directly; do not invent tool calls. If accepting depends on an owner decision you cannot ask for here, return accept:false with that decision as a concrete issue; never accept on a guess."
+        : role === "reader" && provider === "Codex"
+          ? "The post_finding MCP tool is unavailable on this fallback. Investigate read-only, put the COMPLETE owner-facing answer (including concrete file/commit references) in the final schema object's `answer` field, and set answered/escalated normally. The orchestrator will record that answer as the task finding. Do not invent tool calls."
         : "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the core role directly; do not invent tool calls.";
   const cliOperatorNote = [
     "The CLI can still put one action for the owner on the shared Notes list: if you leave them a branch/PR to review, merge, or approve, emit one standalone line in the exact form `OPERATOR_NOTE: short action | https://...`.",

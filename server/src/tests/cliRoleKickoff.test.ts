@@ -52,3 +52,24 @@ for (const provider of ["Codex", "Grok"] as const) {
 }
 
 console.log("cli role kickoff: editing QA doctrine reaches Codex and Grok without a read-only contradiction");
+
+{
+  const cfg: AgentRunConfig = {
+    model: "test-reader",
+    cwd: process.cwd(),
+    systemPrompt: "Answer repository lookups read-only.",
+    outputFormat: {
+      type: "json_schema",
+      schema: {
+        type: "object",
+        required: ["answered", "escalated", "answer"],
+        properties: { answered: { type: "boolean" }, escalated: { type: "boolean" }, answer: { type: "string" } },
+      },
+    },
+  };
+  const kickoff = cliRoleKickoff(cfg, "Count the rebases.", "reader", "Codex");
+  assert.equal(typeof kickoff, "string");
+  assert.match(kickoff as string, /COMPLETE owner-facing answer/i);
+  assert.match(kickoff as string, /final schema object's `answer` field/i);
+  assert.match(kickoff as string, /remain read-only/i);
+}

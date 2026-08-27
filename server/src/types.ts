@@ -452,12 +452,12 @@ export interface ResearchOutput {
   warnings: string[];
 }
 
-/** The reader lane's lean disposition (the answer itself is posted as a finding, not returned here):
- *  did the reader answer the lookup read-only, or escalate because the task actually needs the full
- *  pipeline? runReader reads this to mark the task done vs. park it in 'review' for re-dispatch. */
+/** The reader lane's disposition. MCP-capable readers post the answer as a finding themselves; the
+ *  answer field lets a read-only Codex fallback return the same payload for ThreadManager to post. */
 export interface ReaderOutput {
   answered: boolean; // fully answered read-only and posted the answer as a finding
   escalated: boolean; // needs the full pipeline (edits/verification/depth) — posted a 'needs full pipeline' finding instead of half-answering
+  answer: string; // complete owner-facing answer, or the escalation explanation; used by the Codex reader fallback
   reason?: string; // when escalated: the one-line reason
 }
 

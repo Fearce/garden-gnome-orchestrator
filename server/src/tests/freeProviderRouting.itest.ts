@@ -81,7 +81,7 @@ const fetchStub = (async (input: string | URL | Request, init?: RequestInit) => 
     }
     return json({
       model: "vendor/coder:free",
-      choices: [{ message: { content: "```json\n{\"answered\":true,\"escalated\":false}\n```" } }],
+        choices: [{ message: { content: "```json\n{\"answered\":true,\"escalated\":false,\"answer\":\"The stubbed lookup answer.\"}\n```" } }],
       usage: { prompt_tokens: 4, completion_tokens: 1 },
     });
   }

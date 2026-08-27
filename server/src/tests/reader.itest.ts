@@ -165,7 +165,7 @@ async function testFinalizeDisposition(): Promise<void> {
   try {
     // 1. ANSWERED read-only → 'done' (owner is notified) → auto-closed (lands in the closed tray, no manual step).
     const answered = mkRead("read: which model does the reader use");
-    await manager.finalizeReader(answered, asResult({ structuredOutput: { answered: true, escalated: false } }));
+    await manager.finalizeReader(answered, asResult({ structuredOutput: { answered: true, escalated: false, answer: "The reader answer." } }));
     const a = db.getThread(answered.id);
     check("answered read task auto-closes", a?.state === "closed", `got ${a?.state}`);
     check("closed_at set (arms the auto-purge clock, like a manual close)", typeof a?.closedAt === "number");
@@ -175,7 +175,7 @@ async function testFinalizeDisposition(): Promise<void> {
 
     // 2. ESCALATED → parked in 'review', NEVER auto-closed (must be re-dispatched through the full pipeline).
     const escalated = mkRead("read: refactor the pipeline");
-    await manager.finalizeReader(escalated, asResult({ structuredOutput: { answered: false, escalated: true, reason: "needs edits" } }));
+    await manager.finalizeReader(escalated, asResult({ structuredOutput: { answered: false, escalated: true, answer: "Needs edits.", reason: "needs edits" } }));
     const e = db.getThread(escalated.id);
     check("escalated read task parks in 'review' (not closed)", e?.state === "review", `got ${e?.state}`);
     check("escalated read task is NOT closed", e?.state !== "closed");
