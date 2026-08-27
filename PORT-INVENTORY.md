@@ -10,11 +10,15 @@
 > The `legacy` and `upstream` remotes described below are gone. Every checkout on Mikkel's box now has
 > exactly one remote, `origin` → `git@github.com:Fearce/garden-gnome-orchestrator.git`, and that repo is
 > writable, so §1's *"we do not own it; never push there"* no longer applies: push straight to `origin`.
-> All six `port/*` branches this report was written to support now live on that repo under the same names.
+> All six `port/*` branches this report was written to support were pushed to that repo under the same
+> names, then removed again the same afternoon on Mikkel's revised instruction ("it's kind of rude to add
+> so many branches to someone else's repo") — they are **not** on `origin` today. Each is preserved as a
+> local branch in this checkout and in the restore-verified git bundle archive; nothing was lost. Push one
+> back to `origin` yourself when you're ready to open its PR.
 > The legacy misspelled checkout still exists on disk, and its pre-scrub history is on the separate private
 > repo `prismicious/claude-orchestrator`, but it is no longer wired in here as a remote. Everything else
 > below (the divergence inventory, the conflict zone, the per-feature citations) is unaffected and still
-> the reference. Full evidence: `docs/remote-consolidation-2026-08-27.md`.
+> the reference. Full evidence: `docs/remote-consolidation-2026-08-27.md` (§2, §4½).
 
 This report inventories the full divergence between our fork and current upstream HEAD so we can port
 the fork's best pieces onto a clean upstream baseline. It is complete, not a sample: every changed file
