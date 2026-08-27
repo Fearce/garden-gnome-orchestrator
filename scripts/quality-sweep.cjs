@@ -73,7 +73,12 @@ function run(entry, log) {
   return new Promise((resolve) => {
     const started = Date.now();
     const done = (ok) => resolve({ ...entry, ok, ms: Date.now() - started });
-    const child = spawn("npm", ["run", entry.script], { cwd: entry.cwd, stdio: ["ignore", "pipe", "pipe"], shell: win });
+    const child = spawn("npm", ["run", entry.script], {
+      cwd: entry.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: win,
+      windowsHide: true,
+    });
     child.stdout.on("data", (c) => emit(log, c.toString()));
     child.stderr.on("data", (c) => emit(log, c.toString()));
     child.on("error", (err) => {
