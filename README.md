@@ -1,253 +1,221 @@
 # GG Orchestrator
 
-*Garden Gnome Orchestrator* — a single director's console for running coding
-agents the way you already work by hand: a provider-neutral **director** enriches a raw
-prompt, pulls in relevant memories, and asks the clarifying questions you'd
-otherwise forget to answer, then dispatches the task to a self-assembling agent
-pipeline — a **planner** reads the repo and plans, an optional **researcher**
-gathers external context, an **implementor** does the work in the right repo, and
-a **QA** agent reviews it. Fire many tasks at once, watch them as concurrent
-lanes, feed a running agent new information mid-flight, and resume a task that
-died partway.
+**Run five coding agents at once and actually stay on top of them.**
 
-The implementor runs on **Claude Opus 4.8** by default, or — when you enable the
-subscription in Settings — on the **OpenAI Codex**, **xAI Grok**, or **Zhipu z.ai
-(GLM)** backend instead, all authing off a flat-fee subscription with no per-token API billing
-(see [Runtime model](#runtime-model--zero-metered-api-credits)).
-The director uses the same enabled-provider pool and automatically leaves a capped subscription;
-with Auto model selection enabled, one model judges the stable director choice and it stays sticky
-until that target caps. Both smart choices also consider a daily cached [LiveBench](https://livebench.ai/)
-category/effort prior, clearly distinguishing exact scores from older same-family comparisons; local
-outcomes and live subscription headroom remain stronger signals. Local grades permanently retain whole-
-pipeline quality, QA, dollars, turns, time and normalized token burn (including cache/reasoning), with
-model×effort history feeding later choices even after the original task is purged.
+A local director's console for Claude Code. You describe a task in plain language;
+a director agent asks the questions you'd otherwise forget to answer, then hands the
+brief to a pipeline that plans, researches, builds and reviews it. Every task is a
+card on a live board you can watch, interrupt, feed new information to, and resume.
 
-Authenticated recurring-free API providers can offload only **confidently small, first-attempt** planner
-and read-lane runs through a separate path-confined, read-only tool harness. Settings shows live usage
-chips and exact capacity readiness for Gemini, Groq, Kilo, Mistral, Cohere, Cloudflare Workers AI,
-NVIDIA NIM, and Hugging Face; task admission is fail-closed for broad, risky, uncertain, retried, or
-continued work. Any free-run failure falls back automatically to the existing subscription backends.
-See [Free AI task pool](docs/free-ai-provider-connections.md).
+![The GG Orchestrator console: a director conversation on the left, nine tasks running on the board](docs/assets/hero.png)
 
-> A local cockpit for directing coding agents — not a hosted service or a
-> finance/background "agent" bot.
+It runs on your machine, against your repos, on your Claude subscription. There is no
+hosted service and no metered API billing.
 
 ## Why it exists
 
-The manual workflow this automates:
+The workflow this replaces is one people already do by hand:
 
-1. Have Sonnet optimize / enrich a raw prompt.
-2. Have it research the codebase a bit.
-3. Pick an existing session or create a new one.
-4. Start an Opus 4.8 agent.
-5. **Stop it and feed it new information** when another agent reveals something
-   that changes the picture.
+1. Get a model to sharpen a rough prompt into a real brief.
+2. Have it read the codebase enough to plan.
+3. Start a strong agent on the work.
+4. Stop it and feed it new information when something changes the picture.
+5. Review what came back.
 
-Doing that by hand for one task is fine. Doing it for five concurrent tasks is
-where a director's console earns its keep.
+That is fine for one task. At five concurrent tasks you lose track of which agent knows
+what, which one is stuck, and which one quietly finished twenty minutes ago. This is the
+console for that problem.
 
 ## How a task runs
 
-A dispatched task is a **thread** that runs a self-assembling, **agent-routed**
-pipeline — there's no fixed sequence; each agent decides what happens next:
+A dispatched task is a **thread**, and the pipeline assembles itself. There is no fixed
+sequence: each agent decides what happens next.
 
-- **Planner first, always.** An eligible free provider gets the bounded read-only run first; otherwise
-  (or on any free-run failure) the configured subscription backend reads the codebase, produces the plan, and
-  declares what comes next: a researcher (when the task needs information that
-  *isn't* in the repo) or straight to the implementor.
-- **Researcher — optional, external-only.** Web search, library/API docs, GitHub
-  issues, changelogs, plus your global memory. It does **not** read the codebase
-  (that's the planner's job) — it enriches the build, then hands to the implementor.
-- **Implementor.** Does the work in the repo, fully autonomous. It always hands
-  off to QA — it can't declare itself done. Runs on **Claude Opus 4.8** by
-  default, or on the **Codex** / **Grok** / **z.ai (GLM)** backend when you enable
-  that subscription. The director can run on any enabled backend; structured pipeline roles also
-  fail over across providers when Claude is capped (reader/reviewer stay on a native-tool backend).
-- **QA.** Reviews and tests against the brief; it's the **only** agent that can
-  mark a task **done**, or bounce it back to the implementor with concrete fixes
-  (looping until it passes or runs out of rounds).
+- **Planner, always first.** Reads the codebase, writes the plan, and declares what comes
+  next: a researcher, if the task needs information that is not in the repo, or straight
+  to the implementor.
+- **Researcher, optional and external only.** Web search, library docs, changelogs, issue
+  threads. It deliberately does not read the codebase, because that is the planner's job.
+- **Implementor.** Does the work. It is fully autonomous and it *cannot* declare itself
+  done; it always hands off.
+- **QA.** Reviews and tests against the brief. It is the only role that can mark a task
+  **done**, and it can bounce work back to the implementor with concrete fixes, looping
+  until the task passes or runs out of rounds.
 
-**Read lane.** A pure read-only lookup ("read HANDOFF.md and report it", "which
-model does role X use") skips the whole pipeline: the director dispatches it with
-`dispatch_read`, which runs **one** read-only **reader** (free pool only when the lookup passes the conservative small-task/first-attempt gate; reliable-provider fallback otherwise) that answers
-by posting a finding — no planner, no implementor, no QA. Anything needing an edit
-or verification escalates back to the full pipeline instead of half-answering. The
-card shows a **READ** badge.
+Each finished stage is persisted, so a task that dies mid-pipeline (crash, restart,
+rate limit) resumes from where it stopped rather than starting over.
 
-**Auto-review & mark done.** When a task parks in **review** it's waiting on you —
-and sometimes you don't feel like reading the diff. The button on a parked task
-hands your review to one **reviewer** agent: it inspects the change, runs the
-project's checks, browser-tests any UI, and asks *you* directly (a normal console
-question) about anything only you can decide. Then it either marks the task
-**done** in your place or hands it straight back with the concrete reasons it
-couldn't sign off. It reviews only — it never edits, fixes, or commits.
+**A pure lookup skips all of it.** "Which module owns the feature-flag cache?" does not
+need a planner or a QA round, so the director dispatches it down a **read lane**: one
+read-only agent answers by posting a finding, and the card gets a `READ` badge. If the
+question turns out to need an edit, it escalates to the full pipeline instead of
+half-answering.
 
-The director's `dispatch` just hands over the brief — the chain assembles itself.
-Each completed stage is **persisted**, so a task that dies mid-pipeline (crash,
-restart, timeout) can be **resumed** from where it failed: finished stages are
-reused and the implementor picks up its prior session. You can also inject new
-context into a live task, or interrupt + resume it, at any point.
+**When a task parks for your review, you can delegate that too.** "Auto-review and mark
+done" hands your review to a reviewer agent that inspects the change, runs the project's
+checks, and asks you directly about anything only you can decide. It then marks the task
+done in your place or hands it back with the reasons it could not sign off. It reviews
+only: it never edits or commits.
 
-## In the console
+## A look around
 
-Beyond the pipeline, the board gives you:
+Open a task and you get its whole trail: which agents ran, what they cost, what they
+found, and any file they produced. The composer at the bottom injects new information
+into the running agent without restarting it.
 
-- **Deliverables** — agents surface any owner-facing file they produce (a report,
-  CSV, diagram, exported data) as a card in the right panel you can preview inline,
-  download, or copy the path of.
-- **The office** — concurrent tasks on the same repo see each other and coordinate
-  in a shared per-repo chat room, so two agents don't clobber the same files.
-- **Scheduled tasks** — dispatch a brief on a recurring schedule (a nightly health
-  sweep, a periodic check) instead of firing it by hand. The director only creates
-  one when you explicitly ask to *schedule a task*; a cadence mentioned inside a
-  normal request ("run it nightly") is just work, and gets dispatched once.
-- **Diff review & injection** — review a task's `git diff` in a modal without
-  leaving the console, and paste/drop **images** into any prompt for the agents to
-  see via vision.
-- **Anywhere access** — password or Google sign-in gates the LAN listener, with
-  opt-in browser, **Discord** and webhook notifications when a task finishes,
-  needs your input, or fails — so it reaches your phone while you're away.
+![A task detail panel showing the planner, researcher, implementor and QA trail, two findings and a deliverable](docs/assets/task-detail.png)
 
-## Runtime model — zero metered API credits
+Findings are how agents talk to each other and to you. An agent posts one the moment it
+learns something that changes the plan, so a discovery made by the researcher is in front
+of the implementor before it writes the wrong thing.
 
-Every backend authenticates off a flat-fee subscription, never a metered API key
-— no `ANTHROPIC_API_KEY`, no `OPENAI_API_KEY`, no per-token billing:
+**Recurring work runs itself.** A nightly audit or a weekly flake sweep is a schedule, not
+a reminder to dispatch it by hand.
 
-- **Claude** (the director, planner, researcher, QA, and the default implementor)
-  runs through the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`), which
-  drives the bundled Claude Code binary and **inherits your Claude Max
-  subscription auth**. Local runs use your logged-in CLI credentials
-  automatically; running as a background service uses a `CLAUDE_CODE_OAUTH_TOKEN`
-  from `claude setup-token`.
+![The scheduled tasks view with three recurring briefs](docs/assets/scheduled.png)
 
-  > From 2026-06-15, subscription Agent SDK usage draws from a separate monthly
-  > "Agent SDK credit" pool (still your subscription, not API billing).
+**Anything waiting on you personally lands in one list.** Agents post a branch or a PR here
+when they need you to look; you click it, deal with it, and delete the line.
 
-- **Codex** (optional implementor backend) runs the OpenAI Codex CLI, authed by a
-  ChatGPT-plan `codex login` seeded into the isolated `server/data/codex-home/auth.json`
-  (see the `codex` block in `server/src/config.ts`).
-- **Grok** (optional implementor backend) runs the xAI Grok CLI, authed by a
-  flat-fee SuperGrok `grok login` (OAuth, `~/.grok/auth.json`).
-- **z.ai** (optional implementor backend) runs Zhipu's **GLM Coding Plan** through
-  its **Anthropic-compatible endpoint** — so, unlike Codex/Grok, it reuses the
-  Claude Agent SDK path (a base-URL + `ANTHROPIC_AUTH_TOKEN` swap) and keeps the
-  in-app bus/office tools, deliverables, and resume. Authed by a z.ai API key
-  (Settings → Subscriptions, or `ZAI_API_KEY`); its real 5-hour + weekly quota
-  windows feed the usage chip and routing (see the `zai` block in `server/src/config.ts`).
+![The notes view listing a pushed branch and a PR waiting for review](docs/assets/notes.png)
 
-Enable Codex, Grok, or z.ai per-machine from the **Subscriptions** panel in Settings;
-until then every role runs on Claude. Because the CLI backends share one login
-each, note that any *other* tool on your machine pointed at the same
-`codex-home` / `~/.grok` shares it — logging out, rotating a token, or moving
-`CODEX_HOME_DIR` affects those consumers too, so update their config in the same
-change.
+Also in the console: a per-repo chat room so concurrent agents on the same checkout do not
+clobber each other, an in-app git surface for branches, diffs and commits, search across
+every task's full conversation, and opt-in browser, Discord or webhook notifications when
+a task finishes or needs you.
 
-**Multi-subscription load balancing.** Configure two or more Claude
-subscriptions (`ACCOUNT_<n>_TOKEN`) and each dispatch routes to burn the
-"perishable" weekly allowance first — the sub whose weekly window resets soonest —
-holding the long-runway one in reserve until it caps, then failing over
-mid-task without losing work. Live 5h + weekly utilization for every sub shows in
-the top-bar burn strip.
+## Runtime model
+
+Every backend authenticates off a flat-fee subscription rather than a metered API key.
+The server deliberately strips `ANTHROPIC_API_KEY` from the agent environment so a stray
+key cannot silently route your agents onto per-token billing.
+
+Claude runs through the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk),
+which drives the Claude Code binary and inherits your existing CLI login. Default models:
+
+| Role | Model |
+| --- | --- |
+| Director | `claude-sonnet-5` |
+| Planner | `claude-opus-5` |
+| Researcher | `claude-sonnet-5` |
+| Implementor | `claude-opus-5` |
+| QA | `claude-opus-5` |
+| Reader (read lane) | `claude-sonnet-5` |
+| Reviewer (auto-review) | `claude-opus-5` |
+
+Three other backends are optional, off by default, and enabled per machine under
+**Settings > Subscriptions**: **OpenAI Codex** (ChatGPT plan), **xAI Grok** (SuperGrok),
+and **Zhipu z.ai** (GLM Coding Plan). If Claude caps mid-task, work fails over to whichever
+enabled backend still has headroom instead of stopping.
+
+**More than one Claude subscription?** Set `ACCOUNT_1_TOKEN`, `ACCOUNT_2_TOKEN` and so on
+(up to 8). Dispatches route to burn the perishable weekly allowance first, and the top bar
+shows live 5-hour and weekly usage per subscription.
+
+## Quick start
+
+Requires **Node 22 or newer** (not enforced anywhere, but that is what it is developed and
+run against) and a working `claude` CLI login.
+
+```bash
+git clone https://github.com/Fearce/garden-gnome-orchestrator.git
+cd garden-gnome-orchestrator
+
+npm install          # the repo root; installs concurrently, used by dev/serve
+npm run install:all  # server/, web/ and relay/
+
+npm run serve        # server + web console
+```
+
+Then open <http://127.0.0.1:4317>.
+
+Nothing has to be configured to start. Every setting has a default, and the Agent SDK
+picks up the credentials your `claude` CLI already has.
+
+For a headless or always-on setup, where there is no interactive CLI login to inherit,
+mint a subscription token and put it in `server/.env`:
+
+```bash
+claude setup-token   # then: CLAUDE_CODE_OAUTH_TOKEN=... in server/.env
+```
+
+Runs on macOS, Linux and Windows.
+
+<details>
+<summary><b>Linux and npm 12: two extra first-run steps</b></summary>
+
+`better-sqlite3` is a native addon, and npm 12 blocks package build scripts by default, so
+its `node-gyp rebuild` never runs and the server crashes at boot with *"Could not locate the
+bindings file"*. Approve it once:
+
+```bash
+cd server
+npm install-scripts approve better-sqlite3
+npm rebuild better-sqlite3
+```
+
+`ls node_modules/better-sqlite3/build/Release/better_sqlite3.node` should then exist. On
+older npm this is automatic. Other blocked scripts (`esbuild`, `tree-sitter-*`) are not
+needed to boot. Re-run this whenever you delete `node_modules`.
+</details>
+
+### Configuration
+
+Per-machine settings live in `server/.env`, which is gitignored. Copy
+[`server/.env.example`](server/.env.example) and fill in only what you need; every value is
+documented inline there. The ones worth knowing about:
+
+| Variable | What it does |
+| --- | --- |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Subscription token from `claude setup-token`. Optional locally. |
+| `ACCOUNT_<n>_TOKEN`, `_LABEL`, `_ID` | Additional Claude subscriptions to balance across (n = 1..8). |
+| `AUTH_PASSWORD` or `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` | Gates the listener. Required before the server will bind to anything but localhost. |
+| `OWNER_NAME` | Your name, woven into the agent prompts. |
+| `NO_PUSH_REPO_PATTERN` | Agents commit but never push any repo whose origin contains this substring. |
+| `DEFAULT_WORKSPACE`, `WORKSPACE_SEARCH_ROOTS` | Where the console looks for your repos. |
+| `DATA_DIR` | SQLite state and logs. Defaults to `server/data`. |
+| `PORT`, `HTTPS_PORT` | Default `4317` and `4319`. TLS is optional and skipped if no cert is present. |
+
+**On exposure:** this is built for localhost and your own LAN. If `HOST` is set to anything
+non-local without a password or Google sign-in configured, the server refuses and binds back
+to `127.0.0.1`. Do not put it on the public internet.
+
+### Run modes
+
+| Command | Use it for |
+| --- | --- |
+| `npm run serve` | Normal use. Server without file watching, plus the web dev server. |
+| `npm run dev` | Working on the server. Adds `tsx watch`, which hot-restarts on changes and **kills in-flight tasks**. |
+| `npm run build && npm start` | Production. Serves the built console from `:4317` alone. |
+| `npm run typecheck` | server, web and relay. |
+| `npm run test:gates` | The full local test suite. No agents, no quota, a few minutes. |
 
 ## Layout
 
 ```
 server/   Fastify HTTP + WebSocket backend, the Agent SDK runtime, SQLite state
 web/      React + Vite director console
-docs/     ARCHITECTURE.md — the design contract
+relay/    Optional standalone relay, so orchestrators on different machines
+          can see each other's agents on a shared repo
+docs/     ARCHITECTURE.md, the design contract
 ```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the full design, and it is kept current.
 
-## Quick start
+## Contributing
 
-```bash
-# one-time: mint a subscription token for headless/service use (optional locally)
-claude setup-token   # paste the token into server/.env as CLAUDE_CODE_OAUTH_TOKEN
+Issues and pull requests are welcome. Before opening a PR:
 
-cd claude-orchestrator        # Windows: cd C:\claude-orchestrator
-npm run install:all
-npm run serve        # task pipelines: server (no watch) + web — start here
-```
+- Run `npm run typecheck` and `npm run test:gates`. Both are local and cost nothing.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`,
+  `refactor:`, `chore:`), matching the existing history.
+- Keep one concern per commit.
 
-Cross-platform: runs on macOS, Linux, and Windows. Paths shown Unix-style;
-`server/.env` (`DEFAULT_WORKSPACE`, `WORKSPACE_SEARCH_ROOTS`) defaults to your home dir
-when unset, so no config is needed to start.
+There is no CI on this repo yet, so the local gates are the gate.
 
-### Linux / first-run extra steps
+A note on scope: the **Voice mode** panel in Settings talks to a voice gateway that lives in
+a separate project and is not shipped here. Everything else in the console is in this repo.
 
-On a fresh Linux setup (and any machine running **npm 12+**) two extra steps were
-needed that macOS/Windows didn't hit:
+## License
 
-1. **Install the repo-root dev dep.** `npm run install:all` only installs `server/`
-   and `web/`, not the root — where `concurrently` (used by `npm run dev` / `serve`)
-   lives. Without it you get `concurrently: not found`. Run a plain install at the root:
-
-   ```bash
-   npm install            # at the repo root — adds concurrently
-   ```
-
-2. **Compile the `better-sqlite3` native binary.** It's a native (C++) addon, and
-   **npm 12 blocks packages' install/build scripts by default** (a new allowlist), so
-   its `node-gyp rebuild` never runs and the server crashes at boot with
-   *"Could not locate the bindings file … better_sqlite3.node"*. Approve its build
-   script once, then rebuild:
-
-   ```bash
-   cd server
-   npm install-scripts approve better-sqlite3   # allowlist its build step (npm 12+)
-   npm rebuild better-sqlite3                    # compile against your Node version
-   ```
-
-   Verify: `ls node_modules/better-sqlite3/build/Release/better_sqlite3.node` should exist.
-
-   Notes:
-   - On **older npm** the build script isn't blocked, so `npm run install:all` compiles
-     `better-sqlite3` automatically and neither step above is needed — this is why other
-     OSes / setups "just worked".
-   - `npm install-scripts ls` lists everything currently blocked. Other blocked scripts
-     (`esbuild`, `tree-sitter-*`, …) are **not** required to boot the orchestrator — the
-     web build (Vite/esbuild) works without them. Approve + rebuild any additional one the
-     same way only if a feature later reports a missing binding.
-   - Re-run both steps whenever you delete and reinstall `node_modules`.
-
-### Configuration & personal rules — `server/.env`
-
-All per-machine and personal settings live in **`server/.env`**, which is
-**gitignored** — copy `server/.env.example` to `server/.env` and fill in what you
-need. Nothing is required to run locally; every value has a sensible default. This
-is where you put anything specific to *you* rather than shipping it in the code:
-
-- **`OWNER_NAME`** — your name, woven into the agent prompts (defaults to "the user").
-- **`NO_PUSH_REPO_PATTERN`** — a personal git rule: agents commit-only (never push)
-  any repo whose origin URL contains this substring, while every other repo
-  auto-pushes. Handy for keeping work/private repos from being pushed. Unset = push
-  everything.
-- **`HTTPS_PFX_PATH` / `HTTPS_PFX_PASSPHRASE`** — your own TLS cert for the optional
-  HTTPS listener; **`PLAYWRIGHT_RUNTIME_DEPS_DIR`** — a custom Playwright location for
-  agent browser-tests.
-- Auth (`AUTH_PASSWORD`, Google `CLIENT_ID/SECRET`, `ALLOWED_EMAIL`), account tokens,
-  `DEFAULT_WORKSPACE`, and more — all documented inline in `server/.env.example`.
-
-Because `server/.env` is gitignored, your personal values never end up in the repo;
-the committed code carries only generic defaults.
-
-### Run modes — `serve` vs `dev`
-
-The server runs under `tsx`. `npm run dev` adds `tsx watch`, which hot-restarts the
-process whenever an **imported `server/src` module** changes. The orchestrator is
-routinely pointed at **its own repo**, so an implementor agent editing `server/src`
-restarts the watched server mid-run — that SIGTERMs every in-flight Claude Code child,
-and on reboot each running thread is stamped *"interrupted by a server restart"*. (Only
-imported modules trigger it; `server/data/*.sqlite*` and other non-imported files do
-not.)
-
-- **`npm run serve`** — server in **no-watch** mode + web. Use this for **real task
-  pipelines**: editing `server/src` no longer restarts the running console. This is the
-  default for actually running agents.
-- **`npm run dev`** — server under `tsx watch` + web. Use this **only while actively
-  developing the server itself**; it auto-reloads on `server/src` edits and will end any
-  in-flight tasks. The startup banner prints a ⚠ reminder when you're in this mode.
-
-To pick up a server-code change while in `serve`, stop and re-run `npm run serve` (or
-`npm run build && npm start` for the built `dist`).
+[MIT](LICENSE).
