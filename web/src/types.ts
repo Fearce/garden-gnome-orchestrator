@@ -101,8 +101,8 @@ export interface Thread {
   closedAt?: number | null;
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' marks a successful close
   lane?: ThreadLane | null; // 'read' = the read-only reader lane — drives the card's READ badge
-  // Timed task: the wall-clock work window. `deadlineAt` is absolute, so the card's countdown is just
-  // (deadlineAt - now) and stays right across a reload or a restart. Null = an ordinary task.
+  // Timed task: the wall-clock work window. `deadlineAt` is absolute once work starts, so the card's
+  // countdown is just (deadlineAt - now) and survives reload/restart. Null also covers a queued window.
   durationMs?: number | null;
   deadlineAt?: number | null;
   // Shotgun: the requested collaborator count, and — on a COLLABORATOR — its lead plus its owned share.

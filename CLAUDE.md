@@ -251,7 +251,7 @@ owner asks in words. `duration_ms`/`deadline_at`/`agent_count`/`parent_id`/`assi
 thread columns, so an ordinary task is byte-for-byte unaffected.
 
 **Timed** (`orchestrator/timedTasks.ts`) — "work on this for 8 hours". `deadline_at` is stamped ABSOLUTE
-at dispatch (time spent queued must not eat the window) and the round counters are durable in
+when the task acquires its first pipeline slot, so time spent queued does not eat the window; the round counters are durable in
 `stage_outputs`, so ONE window survives restarts, turn ceilings, provider hand-offs and cap parks: each
 re-enters the pipeline and re-asks `timedDecision`. The loop sits in `runImplementorQaLoop` between the
 implementor and the QA hand-off, so QA still reviews the finished work exactly once.
@@ -275,6 +275,11 @@ The lead then waits at a barrier, runs ONE integration/reconcile round over the 
 pass reviews the result. **Overlapping ownership is a REJECTION, not a warning** — two agents in one file
 in one tree lose work silently, with no merge step to catch it — and the task then degrades to a normal
 single-agent run with the reason posted. Degrading is a first-class outcome (most tasks can't be split).
+The complete split (narrowed lead kickoff, every child assignment and barrier ids) commits in ONE SQLite
+transaction before any child can start; a restart then launches only that complete durable set. A malformed
+legacy partial split is parked rather than guessed at. Root, absolute/drive and `..` ownership paths are
+rejected. A timed split that expires during decomposition creates no children, and every child inherits the
+lead's exact absolute deadline.
 **Collaborators BYPASS both concurrency caps** (`enqueueOrRun` early-returns on `parentId`): the lead holds
 a slot and then blocks on its children, so queueing a child behind a cap the parent occupies deadlocks the
 pair — guaranteed at `maxConcurrent: 1`. MAX_AGENTS (6) is what bounds it instead. The barrier polls

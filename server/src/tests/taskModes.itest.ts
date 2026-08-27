@@ -135,11 +135,18 @@ async function main(): Promise<void> {
   {
     const h = makeHarness();
     try {
-      const before = Date.now();
       const id = await h.mgr.dispatch({ title: "timed", workspace: REPO, brief: "do it", durationMs: 8 * HOUR });
       const t = h.db.getThread(id)!;
       check("durationMs persists", t.durationMs === 8 * HOUR, String(t.durationMs));
-      check("deadlineAt is stamped ABSOLUTE at dispatch", t.deadlineAt != null && t.deadlineAt >= before + 8 * HOUR && t.deadlineAt <= Date.now() + 8 * HOUR, String(t.deadlineAt));
+      check("a queued-or-intake timed task has no deadline yet", t.deadlineAt === null, String(t.deadlineAt));
+      const beforeActivation = Date.now();
+      h.internals.activateTimedWindow(t);
+      const activated = h.db.getThread(id)!;
+      check(
+        "deadlineAt is stamped only when a pipeline starts",
+        activated.deadlineAt != null && activated.deadlineAt >= beforeActivation + 8 * HOUR && activated.deadlineAt <= Date.now() + 8 * HOUR,
+        String(activated.deadlineAt),
+      );
 
       const plain = await h.mgr.dispatch({ title: "plain", workspace: REPO, brief: "do it" });
       const p = h.db.getThread(plain)!;
@@ -162,6 +169,34 @@ async function main(): Promise<void> {
       check("its assignment round-trips through the JSON column", k.assignment?.files.join(",") === "src/api,src/db", JSON.stringify(k.assignment));
       check("listCollaborators finds it from the lead", h.db.listCollaborators(shot).map((x) => x.id).join() === kid);
       check("a zero duration is stored as no window, not as an instant deadline", h.db.getThread(await h.mgr.dispatch({ title: "z", workspace: REPO, brief: "b", durationMs: 0 }))!.deadlineAt === null);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nA1 — a queue delay never consumes the requested timed-work duration");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ maxConcurrent: 1 });
+      const blocker = await h.mgr.dispatch({ title: "blocker", workspace: REPO, brief: "hold the only slot" });
+      const id = await h.mgr.dispatch({ title: "timed", workspace: REPO, brief: "work after the queue", durationMs: 2 * HOUR });
+      check("the timed task really entered the concurrency queue", h.db.getThread(id)?.state === "queued");
+      check("it has no deadline while it is only queued", h.db.getThread(id)?.deadlineAt === null);
+
+      // Let this task acquire its first real slot through the actual runPipeline boundary. The role
+      // leaves are stubbed, but the queue/deadline lifecycle is not.
+      h.internals.activePipelines.delete(blocker);
+      h.internals.runPlanner = async () => undefined;
+      h.internals.runImplementorQa = async () => {};
+      const beforeStart = Date.now();
+      await h.internals.runPipeline(id);
+      const started = h.db.getThread(id)!;
+      check(
+        "the full duration begins at slot acquisition, not dispatch",
+        started.deadlineAt != null && started.deadlineAt >= beforeStart + 2 * HOUR && started.deadlineAt <= Date.now() + 2 * HOUR,
+        String(started.deadlineAt),
+      );
     } finally {
       h.dispose();
     }
@@ -300,6 +335,37 @@ async function main(): Promise<void> {
     }
   }
   {
+    // A capacity park is not a failed work round. The cap supervisor will resume the SAME task once a
+    // provider frees up, so closing the window here would turn a temporary allowance shortage into an
+    // early QA hand-off and discard the remaining requested work time.
+    const h = makeHarness();
+    try {
+      const id = await h.mgr.dispatch({ title: "timed", workspace: REPO, brief: "work", durationMs: 8 * HOUR });
+      h.internals.awaitImplementorCompletion = async (_t: Thread, _e: unknown, _k: string, _r: unknown, _a: string, _u: boolean, msg: string) => {
+        h.rounds.push(msg);
+        h.internals.capParked.set(id, "implementor");
+        return ERR;
+      };
+      const parked = await h.internals.runTimedWindow(h.db.getThread(id)!, "high", "kickoff", OK, true);
+      check("a cap-parked timed round returns to the normal capacity recovery path", parked === ERR);
+      check("a cap park does NOT close the timed window", h.db.getThreadStageOutputs(id).timedFinalizing !== true);
+
+      // Mimic the cap supervisor consuming its marker and re-entering after a provider has headroom.
+      // The resumed round succeeds, and the timed loop is still able to grant new useful work.
+      h.internals.capParked.delete(id);
+      h.internals.awaitImplementorCompletion = async (_t: Thread, _e: unknown, _k: string, _r: unknown, _a: string, _u: boolean, msg: string) => {
+        h.rounds.push(msg);
+        h.db.setTimedWindow(id, 8 * HOUR, Date.now() - 1); // stop after proving one post-recovery round
+        return OK;
+      };
+      await h.internals.runTimedWindow(h.db.getThread(id)!, "high", "kickoff", OK, true);
+      check("cap recovery can run a further timed work round", h.rounds.length === 2, String(h.rounds.length));
+      check("the later deadline close happens only after recovery work", h.db.getThreadStageOutputs(id).timedFinalizing === true);
+    } finally {
+      h.dispose();
+    }
+  }
+  {
     // The runaway guard: rounds that return instantly having written nothing must not spend the window.
     const h = makeHarness();
     try {
@@ -339,7 +405,7 @@ async function main(): Promise<void> {
   {
     const h = makeHarness();
     try {
-      const id = await h.mgr.dispatch({ title: "big", workspace: REPO, brief: "build two things", agentCount: 3 });
+      const id = await h.mgr.dispatch({ title: "big", workspace: REPO, brief: "build two things", durationMs: 8 * HOUR, agentCount: 3 });
       const plan: ShotgunPlan = {
         parallelizable: true,
         reason: "three independent areas",
@@ -357,6 +423,7 @@ async function main(): Promise<void> {
       check("each collaborator owns exactly its own share", kids.map((k) => k.assignment?.files.join()).join("|") === "src/web|docs", kids.map((k) => k.assignment?.files.join()).join("|"));
       check("each points at the lead", kids.every((k) => k.parentId === id));
       check("each carries the shared goal in its brief", kids.every((k) => k.brief.includes("build two things")));
+      check("timed collaborators inherit the lead's absolute deadline", kids.every((k) => k.deadlineAt != null && k.deadlineAt === h.db.getThread(id)!.deadlineAt));
       check("the collaborator ids are persisted for the barrier", (h.db.getThreadStageOutputs(id).shotgunChildren ?? []).length === 2);
       check("the lead's own share is persisted", h.db.getThreadStageOutputs(id).shotgunAssignment?.title === "api");
       check("the split is marked planned (sticky)", h.db.getThreadStageOutputs(id).shotgunPlanned === true);
@@ -369,7 +436,203 @@ async function main(): Promise<void> {
       h.internals.runShotgunDecomposition = async (): Promise<ShotgunPlan> => plan;
       const again = await h.internals.prepareShotgun(h.db.getThread(id)!, undefined, "BASE KICKOFF");
       check("a re-entry does NOT spawn a second set of collaborators", h.db.listCollaborators(id).length === 2, String(h.db.listCollaborators(id).length));
-      check("...and returns the kickoff unchanged", again === "BASE KICKOFF");
+      check("...and returns the durable narrowed kickoff", again === kickoff);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nC1 — shotgun split commit/recovery is atomic before any collaborator starts");
+  {
+    const h = makeHarness();
+    try {
+      const id = await h.mgr.dispatch({ title: "atomic", workspace: REPO, brief: "three independent pieces", agentCount: 3 });
+      h.started.length = 0; // exclude the lead's dispatch from this child-start assertion
+      const observed: boolean[] = [];
+      h.internals.startPipeline = (childId: string): void => {
+        const saved = h.db.getThreadStageOutputs(id);
+        const children = h.db.listCollaborators(id);
+        const child = h.db.getThread(childId)!;
+        const contract = h.internals.collaboratorOwnershipBlock(child) as string;
+        observed.push(
+          saved.shotgunChildren?.length === 2 &&
+            !!saved.shotgunAssignment &&
+            !!saved.kickoff &&
+            children.length === 2 &&
+            contract.includes("src/api") &&
+            contract.includes("src/web") &&
+            contract.includes("docs"),
+        );
+        h.started.push(childId);
+        h.internals.activePipelines.add(childId);
+      };
+      h.internals.runShotgunDecomposition = async (): Promise<ShotgunPlan> => ({
+        parallelizable: true,
+        reason: "independent",
+        assignments: [
+          { title: "api", objective: "api work", files: ["src/api"] },
+          { title: "web", objective: "web work", files: ["src/web"] },
+          { title: "docs", objective: "docs work", files: ["docs"] },
+        ],
+      });
+      const kickoff = await h.internals.prepareShotgun(h.db.getThread(id)!, undefined, "BASE");
+      check("every child sees the complete split before its first start", observed.length === 2 && observed.every(Boolean), JSON.stringify(observed));
+      check("the narrowed lead kickoff was durable before children started", h.db.getThreadStageOutputs(id).kickoff === kickoff);
+    } finally {
+      h.dispose();
+    }
+  }
+  {
+    // Simulate a crash immediately AFTER the SQLite transaction committed but BEFORE enqueueing. The
+    // next lead episode must recover the complete set and start every intake child exactly once.
+    const h = makeHarness();
+    try {
+      const id = await h.mgr.dispatch({ title: "recovery", workspace: REPO, brief: "shared objective", agentCount: 3 });
+      h.started.length = 0;
+      const mine = { title: "api", objective: "api work", files: ["src/api"] };
+      const peers = [
+        { title: "web", objective: "web work", files: ["src/web"] },
+        { title: "docs", objective: "docs work", files: ["docs"] },
+      ];
+      const narrowed = h.internals.shotgunLeadKickoff("BASE", mine, peers);
+      const children = h.db.createShotgunSplit({
+        leadId: id,
+        leadAssignment: mine,
+        leadKickoff: narrowed,
+        children: peers.map((assignment) => ({
+          title: assignment.title,
+          workspace: REPO,
+          brief: assignment.objective,
+          assignment,
+        })),
+      });
+      const resumed = await h.internals.prepareShotgun(h.db.getThread(id)!, undefined, "WHOLE BRIEF");
+      check("a post-commit/pre-enqueue crash resumes the durable narrowed lead kickoff", resumed === narrowed);
+      check("recovery starts every durable intake collaborator once", h.started.length === children.length && new Set(h.started).size === children.length, h.started.join(","));
+      check(
+        "recovered contracts include all peers",
+        children.every((child) => {
+          const contract = h.internals.collaboratorOwnershipBlock(h.db.getThread(child.id)!) as string;
+          return contract.includes("src/api") && contract.includes("src/web") && contract.includes("docs");
+        }),
+      );
+    } finally {
+      h.dispose();
+    }
+  }
+  {
+    // The deadline can pass during the planner/decomposer call. That must skip the split entirely:
+    // passing zero remaining milliseconds through dispatch used to create an untimed child.
+    const h = makeHarness();
+    try {
+      const id = await h.mgr.dispatch({ title: "expired split", workspace: REPO, brief: "shared objective", durationMs: HOUR, agentCount: 2 });
+      h.started.length = 0;
+      h.internals.runShotgunDecomposition = async (): Promise<ShotgunPlan> => {
+        h.db.setTimedWindow(id, HOUR, Date.now() - 1);
+        return {
+          parallelizable: true,
+          reason: "independent",
+          assignments: [
+            { title: "api", objective: "api work", files: ["src/api"] },
+            { title: "web", objective: "web work", files: ["src/web"] },
+          ],
+        };
+      };
+      await h.internals.prepareShotgun(h.db.getThread(id)!, undefined, "BASE");
+      check("expiry during decomposition creates no untimed collaborator", h.db.listCollaborators(id).length === 0 && h.started.length === 0);
+      check("expiry during decomposition closes the lead window transparently", h.db.getThreadStageOutputs(id).timedFinalizing === true);
+      check("the expiry reason is durable for the final park", (h.db.getThreadStageOutputs(id).shotgunDegraded ?? "").includes("window ended"));
+    } finally {
+      h.dispose();
+    }
+  }
+  {
+    // Simulate a crash/failure while the second child row is being written. SQLite's transaction must
+    // roll back the first child AND the lead's split marker, leaving a future episode free to plan
+    // safely instead of treating a half-written split as real.
+    const h = makeHarness();
+    try {
+      const id = await h.mgr.dispatch({ title: "transaction rollback", workspace: REPO, brief: "shared objective", agentCount: 3 });
+      const originalCreate = h.db.createThread.bind(h.db);
+      let calls = 0;
+      (h.db as any).createThread = (input: unknown) => {
+        calls++;
+        if (calls === 2) throw new Error("simulated child-write crash");
+        return originalCreate(input as Parameters<typeof h.db.createThread>[0]);
+      };
+      let threw = false;
+      try {
+        h.db.createShotgunSplit({
+          leadId: id,
+          leadAssignment: { title: "api", objective: "api work", files: ["src/api"] },
+          leadKickoff: "NARROWED",
+          children: [
+            { title: "web", workspace: REPO, brief: "web", assignment: { title: "web", objective: "web work", files: ["src/web"] } },
+            { title: "docs", workspace: REPO, brief: "docs", assignment: { title: "docs", objective: "docs work", files: ["docs"] } },
+          ],
+        });
+      } catch {
+        threw = true;
+      } finally {
+        (h.db as any).createThread = originalCreate;
+      }
+      check("a mid-split write failure is surfaced", threw);
+      check("a mid-split write rolls back every child", h.db.listCollaborators(id).length === 0);
+      check("a mid-split write rolls back the lead marker too", h.db.getThreadStageOutputs(id).shotgunPlanned !== true);
+    } finally {
+      h.dispose();
+    }
+  }
+  {
+    // A complete atomic split can still spend a little time waiting to enqueue/start its children.
+    // They inherit the parent's absolute deadline, and a child that reaches its pipeline after that
+    // instant must park without beginning an untimed first implementation.
+    const h = makeHarness();
+    try {
+      const id = await h.mgr.dispatch({ title: "late child", workspace: REPO, brief: "shared objective", durationMs: HOUR, agentCount: 2 });
+      h.internals.runShotgunDecomposition = async (): Promise<ShotgunPlan> => ({
+        parallelizable: true,
+        reason: "independent",
+        assignments: [
+          { title: "api", objective: "api work", files: ["src/api"] },
+          { title: "web", objective: "web work", files: ["src/web"] },
+        ],
+      });
+      await h.internals.prepareShotgun(h.db.getThread(id)!, undefined, "BASE");
+      const child = h.db.listCollaborators(id)[0]!;
+      h.db.setTimedWindow(child.id, HOUR, Date.now() - 1);
+      let implemented = false;
+      h.internals.runImplementorQa = async () => {
+        implemented = true;
+      };
+      await h.internals.runPipeline(child.id);
+      check("a child that starts after the inherited deadline never begins implementation", !implemented);
+      check("the late child parks with the timed-window reason", h.db.getThread(child.id)?.state === "review" && (h.db.getThread(child.id)?.error ?? "").includes("window ended"));
+    } finally {
+      h.dispose();
+    }
+  }
+  {
+    // Rows left by the pre-atomic implementation cannot safely be guessed at. They are explicitly
+    // quarantined instead of letting a full-brief lead run beside a partial child set.
+    const h = makeHarness();
+    try {
+      const id = await h.mgr.dispatch({ title: "legacy partial", workspace: REPO, brief: "shared objective", agentCount: 2 });
+      h.started.length = 0;
+      const mine = { title: "api", objective: "api work", files: ["src/api"] };
+      const child = h.db.createThread({
+        title: "web",
+        workspace: REPO,
+        rawPrompt: "",
+        brief: "web work",
+        parentId: id,
+        assignment: { title: "web", objective: "web work", files: ["src/web"] },
+      });
+      h.db.updateThreadStageOutputs(id, { shotgunPlanned: true, shotgunAssignment: mine, shotgunChildren: [] });
+      await h.internals.prepareShotgun(h.db.getThread(id)!, undefined, "WHOLE BRIEF");
+      check("an incomplete legacy split launches no collaborator", h.started.length === 0);
+      check("an incomplete legacy split is durably blocked", (h.db.getThreadStageOutputs(id).shotgunRecoveryBlocked ?? "").includes("partial shotgun split"));
+      check("an intake child from that partial split is stopped safely", h.db.getThread(child.id)?.state === "review");
     } finally {
       h.dispose();
     }

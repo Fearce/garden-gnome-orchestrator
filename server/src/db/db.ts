@@ -600,6 +600,66 @@ export class Db {
     return t;
   }
 
+  /**
+   * Persist a shotgun lead's complete, safe split before any collaborator is allowed to run.
+   *
+   * The collaborators share one working tree, so "create one child, enqueue it, then create the
+   * next" is unsafe: a crash or a fast child can observe an incomplete peer list. The lead's
+   * narrowed kickoff, its owned share, every child row, and the barrier's complete child list must
+   * become visible as one SQLite transaction. ThreadManager only enqueues the returned children
+   * after this method has committed.
+   */
+  createShotgunSplit(input: {
+    leadId: string;
+    leadAssignment: ShotgunAssignment;
+    leadKickoff: string;
+    children: Array<{
+      title: string;
+      workspace: string;
+      brief: string;
+      effortOverride?: Effort | null;
+      durationMs?: number | null;
+      deadlineAt?: number | null;
+      assignment: ShotgunAssignment;
+    }>;
+  }): Thread[] {
+    return this.raw.transaction(() => {
+      const lead = this.getThread(input.leadId);
+      if (!lead) throw new Error(`Shotgun lead ${input.leadId} no longer exists`);
+      const stage = this.getThreadStageOutputs(lead.id);
+      // This is deliberately a DB guard as well as ThreadManager's early return. A duplicate caller
+      // must not create a second set of writers simply because it raced before its in-memory check.
+      if (stage.shotgunPlanned || this.listCollaborators(lead.id).length) {
+        throw new Error(`Shotgun lead ${lead.id} already has a persisted split`);
+      }
+
+      const children = input.children.map((child) =>
+        this.createThread({
+          title: child.title,
+          workspace: child.workspace,
+          rawPrompt: "",
+          brief: child.brief,
+          effortOverride: child.effortOverride ?? null,
+          durationMs: child.durationMs ?? null,
+          deadlineAt: child.deadlineAt ?? null,
+          parentId: lead.id,
+          assignment: child.assignment,
+        }),
+      );
+      const next: StageOutputs = {
+        ...stage,
+        shotgunPlanned: true,
+        shotgunAssignment: input.leadAssignment,
+        shotgunChildren: children.map((child) => child.id),
+        // Persist the narrowed lead kickoff in the same transaction. A resume may therefore never
+        // pair a full-objective lead with any persisted collaborator rows.
+        kickoff: input.leadKickoff,
+      };
+      this.raw.prepare("UPDATE threads SET stage_outputs = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(next), now(), lead.id);
+      return children;
+    })();
+  }
+
   /** Collaborator threads belonging to a lead, oldest first — the order they were assigned, which is the
    *  order the decomposition ranked them. */
   listCollaborators(parentId: string): Thread[] {

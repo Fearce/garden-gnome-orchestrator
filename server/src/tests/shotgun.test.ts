@@ -131,6 +131,19 @@ check(
   "whitespace-only file entries are stripped, so a share of blanks reads as no files",
   !validateDecomposition(PLAN([A("api", ["src/api"]), { title: "web", objective: "do it", files: ["  ", ""] }]), 2).ok,
 );
+const canonical = validateDecomposition(PLAN([A("api", ["./src/api/"]), A("web", ["src/./web"])]), 2);
+check("safe dot aliases are canonicalized before assignment", canonical.ok && canonical.assignments.map((a) => a.files.join(",")).join("|") === "src/api|src/web");
+for (const [label, path, clue] of [
+  ["repository root", ".", "repository root"],
+  ["Unix absolute path", "/tmp/outside", "absolute"],
+  ["Windows drive path", "C:" + "\\repo\\src\\web", "drive-qualified"],
+  ["parent traversal", "src/api/../web", "traversal"],
+] as const) {
+  const unsafe = validateDecomposition(PLAN([A("bounded", ["src/api"]), A("unsafe", [path])]), 2);
+  check(`${label} is rejected before collaborators can spawn`, !unsafe.ok && unsafe.reason.includes(clue), unsafe.ok ? "" : unsafe.reason);
+}
+const traversalAlias = validateDecomposition(PLAN([A("api", ["src/api"]), A("web", ["src/api/../web"])]), 2);
+check("a traversal alias cannot masquerade as a disjoint sibling share", !traversalAlias.ok && traversalAlias.reason.includes("traversal"), traversalAlias.ok ? "" : traversalAlias.reason);
 
 // Trimming: the planner is asked to rank shares, so asking for fewer agents keeps the leading ones.
 const five = PLAN([A("a", ["1"]), A("b", ["2"]), A("c", ["3"]), A("d", ["4"]), A("e", ["5"])]);

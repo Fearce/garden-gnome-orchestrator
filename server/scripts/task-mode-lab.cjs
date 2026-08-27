@@ -58,6 +58,7 @@ function seed() {
 
   row({ id: "t-plain", title: "An ordinary task", state: "implementing" });
   row({ id: "t-timed", title: "A timed task", state: "implementing", duration: 8 * HOUR, deadline: now + 6 * HOUR + 12 * 60_000 });
+  row({ id: "t-queued", title: "A queued timed task", state: "queued", duration: 2 * HOUR });
   row({ id: "t-over", title: "A finished window", state: "review", duration: HOUR, deadline: now - 60_000 });
   row({ id: "t-lead", title: "A shotgun lead", state: "implementing", agents: 3 });
   row({
@@ -111,6 +112,7 @@ async function main() {
     const titles = await page.$$eval(".card .title", (els) => els.map((e) => e.textContent.trim()));
     check("the board renders the ordinary task", titles.includes("An ordinary task"), titles.join(" | "));
     check("the board renders the timed task", titles.includes("A timed task"), titles.join(" | "));
+    check("the board renders a queued timed task", titles.includes("A queued timed task"), titles.join(" | "));
     check("the board renders the shotgun lead", titles.includes("A shotgun lead"), titles.join(" | "));
     // The whole point of hiding them: N collaborator cards beside their lead is the clutter the brief rules out.
     check("a COLLABORATOR is hidden from the board", !titles.includes("Share: the api") && !titles.includes("Share: the web"), titles.join(" | "));
@@ -118,6 +120,8 @@ async function main() {
     const timedBadge = await page.$eval('[data-thread-id="t-timed"] .timed-badge', (e) => e.textContent.trim()).catch(() => null);
     check("the timed card shows a live countdown", !!timedBadge && /left$/.test(timedBadge), String(timedBadge));
     check("...reading the real remaining time, not the total", !!timedBadge && timedBadge.startsWith("6h"), String(timedBadge));
+    const queuedBadge = await page.$eval('[data-thread-id="t-queued"] .timed-badge', (e) => e.textContent.trim()).catch(() => null);
+    check("a queued timed card says the full window is still queued", queuedBadge?.includes("2h queued") === true, String(queuedBadge));
     const overBadge = await page.$eval('[data-thread-id="t-over"] .timed-badge', (e) => ({ text: e.textContent.trim(), over: e.className.includes("over") })).catch(() => null);
     check("a task past its deadline reads 'window ended'", overBadge?.text === "window ended", JSON.stringify(overBadge));
     check("...and is styled as over", overBadge?.over === true, JSON.stringify(overBadge));
@@ -147,6 +151,11 @@ async function main() {
     const windowRow = await page.$eval(".taskmode-panel", (e) => e.textContent);
     check("the timed panel states the window it was given", /8h/.test(windowRow), windowRow.slice(0, 120));
     check("...and how much is left", /left/.test(windowRow), windowRow.slice(0, 120));
+
+    await page.click('[data-thread-id="t-queued"]');
+    await page.waitForSelector(".taskmode-panel", { timeout: 15_000 });
+    const queuedWindowRow = await page.$eval(".taskmode-panel", (e) => e.textContent);
+    check("the queued timed panel explains when the countdown starts", /starts when a pipeline slot opens/i.test(queuedWindowRow), queuedWindowRow.slice(0, 120));
 
     // ---- the composer row: a real round-trip through the server ------------------------------------
     const durSel = ".composer-taskmode select[aria-label='Work window']";

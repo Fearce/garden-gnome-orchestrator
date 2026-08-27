@@ -1631,9 +1631,8 @@ export class ThreadManager implements OrchestratorApi {
   // ---- dispatch + pipeline ----
 
   async dispatch(input: DispatchInput): Promise<string> {
-    // The window is stamped ABSOLUTE at dispatch, not derived later from createdAt: a task that waits in
-    // 'queued' behind the concurrency cap would otherwise silently lose that waiting time out of its own
-    // work window. `deadlineAt` is the single enforced instant from here on.
+    // Keep a requested window dormant while this task waits in the concurrency queue. Its absolute
+    // deadline is stamped only when runPipeline actually claims a slot — queued time is not work time.
     const durationMs = input.durationMs && input.durationMs > 0 ? input.durationMs : null;
     const thread = this.db.createThread({
       title: input.title,
@@ -1643,7 +1642,7 @@ export class ThreadManager implements OrchestratorApi {
       effortOverride: input.effort ?? null,
       lane: input.lane ?? null,
       durationMs,
-      deadlineAt: durationMs ? Date.now() + durationMs : null,
+      deadlineAt: null,
       agentCount: input.agentCount ?? null,
       parentId: input.parentId ?? null,
       assignment: input.assignment ?? null,
@@ -3446,7 +3445,7 @@ export class ThreadManager implements OrchestratorApi {
    * fresh dispatch simply finds no saved stages and runs them all.
    */
   private async runPipeline(threadId: string, directorNote?: string): Promise<void> {
-    const thread = this.db.getThread(threadId);
+    let thread = this.db.getThread(threadId);
     if (!thread) return;
     const slotToken = Symbol("pipeline");
     this.activePipelines.add(threadId);
@@ -3459,6 +3458,9 @@ export class ThreadManager implements OrchestratorApi {
       this.activePipelines.delete(threadId);
       this.pumpQueue();
     };
+    // The slot above is the task's first real opportunity to work. Stamp the durable deadline here,
+    // not at dispatch, so time spent queued behind other pipelines never eats an owner's work window.
+    thread = this.activateTimedWindow(thread);
     if (!existsSync(thread.workspace)) {
       this.setState(threadId, "failed", `Workspace "${thread.workspace}" does not exist on disk — agents can't run there. Re-dispatch with a valid path.`);
       releaseSlot();
@@ -3584,6 +3586,22 @@ export class ThreadManager implements OrchestratorApi {
       //    safely; in the last case it degrades to a normal single-agent run and says why.
       kickoff = await this.prepareShotgun(thread, plan, kickoff);
       if (this.cancelled(threadId)) return;
+      const prepared = this.db.getThreadStageOutputs(threadId);
+      if (prepared.shotgunRecoveryBlocked) {
+        this.settleReview(threadId, prepared.shotgunRecoveryBlocked);
+        return;
+      }
+      // Planning/decomposition can use the whole short window. Never start a first implementor after
+      // its deadline — including a collaborator that was committed safely but only got a CPU slot after
+      // the shared deadline elapsed. Existing implementation still follows its normal final path.
+      const hasImplementation = this.db.listRuns(threadId).some((run) => run.role === "implementor");
+      const activeWindow = this.timedWindowFor(this.db.getThread(threadId) ?? thread);
+      if (!hasImplementation && activeWindow && activeWindow.deadlineAt <= Date.now()) {
+        const reason = prepared.shotgunDegraded ?? "The timed work window ended before implementation could start.";
+        if (!prepared.timedFinalizing) this.closeTimedWindow(thread, { reason, extensions: prepared.timedExtensions ?? 0 });
+        this.settleReview(threadId, reason);
+        return;
+      }
       if (this.capParked.has(threadId)) {
         this.settleReview(threadId, "Splitting the task across agents could not complete — needs your review.");
         return;
@@ -5273,6 +5291,20 @@ export class ThreadManager implements OrchestratorApi {
     return timedWindow(thread);
   }
 
+  /** Start a requested window exactly when its pipeline first owns a slot. A queued task therefore
+   * keeps the owner-requested duration intact, while every later resume keeps this same absolute
+   * deadline. The fallback call from runTimedWindow also repairs legacy/in-process callers that enter
+   * the boundary helper directly rather than through runPipeline. */
+  private activateTimedWindow(thread: Thread): Thread {
+    if (thread.deadlineAt != null || !thread.durationMs || thread.durationMs <= 0) return thread;
+    const deadlineAt = Date.now() + thread.durationMs;
+    const activated = { ...thread, deadlineAt };
+    this.db.setTimedWindow(thread.id, thread.durationMs, deadlineAt);
+    this.hub.publish({ type: "thread.upsert", thread: activated });
+    this.hub.log("info", `Timed task ${thread.id.slice(0, 8)} began its ${formatDuration(thread.durationMs)} work window.`);
+    return activated;
+  }
+
   /** Whether the implementor declared the objective complete in its most recent message. Read from the
    *  persisted message rather than the run result, so it survives the relaunch between rounds. */
   private timedDeclaredComplete(threadId: string): boolean {
@@ -5298,6 +5330,7 @@ export class ThreadManager implements OrchestratorApi {
     res: ResultEvent | undefined,
     qaFollows: boolean,
   ): Promise<ResultEvent | undefined> {
+    thread = this.activateTimedWindow(thread);
     if (!this.timedWindowFor(thread)) return res;
     const saved = this.db.getThreadStageOutputs(thread.id);
     if (saved.timedFinalizing) return res;
@@ -5307,10 +5340,12 @@ export class ThreadManager implements OrchestratorApi {
 
     for (;;) {
       if (this.cancelled(thread.id)) return res;
-      // A round that ended in error (a cap, an exhausted resume budget, a real failure) ends the
-      // window: piling more rounds onto a task that is already failing spends the remaining hours
-      // reproducing the same failure. The settle path below reports it as it would any other.
+      // A capacity park is a temporary interruption, not a failed work round. Keep the durable window
+      // open so the cap supervisor resumes this same round/session and can still grant later useful
+      // rounds. Other errors really do close the window: repeating a genuine failure for hours helps no
+      // one. `settleReview` consumes this in-memory flag only after we return to the outer pipeline.
       if (!res || res.isError) {
+        if (this.capParked.has(thread.id)) return res;
         this.closeTimedWindow(thread, { reason: "The work window stopped early because a work round did not finish cleanly.", extensions });
         return res;
       }
@@ -5409,9 +5444,10 @@ export class ThreadManager implements OrchestratorApi {
    * running, which would spawn a second set of agents onto the same tree.
    */
   private async prepareShotgun(thread: Thread, plan: PlanOutput | undefined, kickoff: string): Promise<string> {
+    thread = this.activateTimedWindow(thread);
     if (thread.parentId || !isShotgun(thread.agentCount)) return kickoff;
     const saved = this.db.getThreadStageOutputs(thread.id);
-    if (saved.shotgunPlanned) return kickoff; // already decided in an earlier episode; saved.kickoff carries the share
+    if (saved.shotgunPlanned) return this.reconcileShotgunSplit(thread, saved, kickoff);
     const agentCount = thread.agentCount!;
 
     const raw = await this.runShotgunDecomposition(thread, plan, agentCount).catch((e) => {
@@ -5429,30 +5465,46 @@ export class ThreadManager implements OrchestratorApi {
     const [mine, ...theirs] = decided.assignments;
     if (!mine || !theirs.length) return this.degradeShotgun(thread, "the decomposition left no work for the other agents", kickoff);
 
-    // Persist BEFORE spawning: a crash between the two must leave a task that re-plans cleanly, never
-    // one whose children exist but whose parent has no record of them.
-    this.db.updateThreadStageOutputs(thread.id, { shotgunPlanned: true, shotgunAssignment: mine });
-    const children: string[] = [];
-    for (const assignment of theirs) {
-      const peers = decided.assignments.filter((a) => a !== assignment).map((a) => ({ title: a.title, files: a.files }));
-      const id = await this.dispatch({
-        title: assignment.title,
-        workspace: thread.workspace,
-        brief: [assignment.objective, "", "## The shared goal this is part of", thread.brief].join("\n"),
-        effort: thread.effortOverride ?? undefined,
-        parentId: thread.id,
-        assignment,
-        // Collaborators share the lead's deadline, so a timed shotgun has every agent working the same
-        // window rather than each starting its own clock from whenever it happened to be spawned.
-        durationMs: thread.deadlineAt ? Math.max(0, thread.deadlineAt - Date.now()) : null,
-      });
-      children.push(id);
-      this.db.updateThreadStageOutputs(thread.id, { shotgunChildren: [...children] });
-      // Held so the child's own pipeline can fold it into its kickoff without re-deriving it. Only a
-      // cache: collaboratorOwnershipBlock rebuilds the same contract from the persisted assignments
-      // when a restart empties this map.
-      this.shotgunOwnership.set(id, ownershipBlock(assignment, peers));
+    // The planner can take enough wall clock for a short timed task to expire. Do not turn a zero
+    // remaining duration into an untimed child: that would let a collaborator keep editing after its
+    // lead had entered the final path. With no share started yet, the honest outcome is a transparent
+    // park rather than pretending there is time to launch a parallel implementation.
+    const current = this.db.getThread(thread.id) ?? thread;
+    if (current.deadlineAt != null && current.deadlineAt <= Date.now()) {
+      return this.expireShotgunBeforeStart(current, kickoff);
     }
+
+    const narrowedKickoff = this.shotgunLeadKickoff(kickoff, mine, theirs);
+    let children: Thread[];
+    try {
+      // All split facts become durable together: lead scope + narrowed kickoff, every child assignment,
+      // and the complete barrier list. No child is even enqueued until this returns committed.
+      children = this.db.createShotgunSplit({
+        leadId: current.id,
+        leadAssignment: mine,
+        leadKickoff: narrowedKickoff,
+        children: theirs.map((assignment) => ({
+          title: assignment.title,
+          workspace: current.workspace,
+          brief: [assignment.objective, "", "## The shared goal this is part of", current.brief].join("\n"),
+          effortOverride: current.effortOverride ?? null,
+          // A collaborator inherits the parent's already-started absolute deadline — never a freshly
+          // calculated duration that could accidentally become null at expiry.
+          durationMs: current.durationMs ?? null,
+          deadlineAt: current.deadlineAt ?? null,
+          assignment,
+        })),
+      });
+    } catch (error) {
+      // A duplicate caller may have lost the in-memory race but won no writes; re-read and recover the
+      // committed split. Any other write failure is quarantined rather than falling through to a lead
+      // working the whole brief beside an unknown partial set of collaborators.
+      const after = this.db.getThreadStageOutputs(current.id);
+      if (after.shotgunPlanned) return this.reconcileShotgunSplit(current, after, kickoff);
+      return this.blockShotgunRecovery(current, kickoff, `The requested split could not be committed atomically: ${String(error)}`);
+    }
+
+    await this.launchShotgunCollaborators(current, mine, children);
 
     this.postFinding({
       threadId: thread.id,
@@ -5462,8 +5514,112 @@ export class ThreadManager implements OrchestratorApi {
       severity: "note",
     });
     this.hub.log("info", `Shotgun ${thread.id.slice(0, 8)} split into ${decided.assignments.length} shares (${children.length} collaborator(s) spawned).`);
-    const myPeers = theirs.map((a) => ({ title: a.title, files: a.files }));
-    return [kickoff, "", ownershipBlock(mine, myPeers), "", "## Your share of this task", mine.objective].join("\n");
+    return narrowedKickoff;
+  }
+
+  /** The lead obeys the same path boundaries as its collaborators, then receives a dedicated final
+   * integration pass once they have all settled. */
+  private shotgunLeadKickoff(kickoff: string, mine: ShotgunAssignment, peers: ShotgunAssignment[]): string {
+    return [
+      kickoff,
+      "",
+      ownershipBlock(mine, peers.map((assignment) => ({ title: assignment.title, files: assignment.files }))),
+      "",
+      "## Your share of this task",
+      mine.objective,
+    ].join("\n");
+  }
+
+  /** Build every child contract from the complete persisted split. This is called before any child is
+   * started and again after a restart; the map is only a warm cache, while the rows are the durable
+   * source of truth that collaboratorOwnershipBlock can reconstruct. */
+  private installShotgunOwnership(lead: ShotgunAssignment, children: Thread[]): void {
+    const shares = [
+      { id: "lead", assignment: lead },
+      ...children.filter((child) => child.assignment).map((child) => ({ id: child.id, assignment: child.assignment! })),
+    ];
+    for (const child of children) {
+      if (!child.assignment) continue;
+      const peers = shares
+        .filter((share) => share.id !== child.id)
+        .map((share) => ({ title: share.assignment.title, files: share.assignment.files }));
+      this.shotgunOwnership.set(child.id, ownershipBlock(child.assignment, peers));
+    }
+  }
+
+  /** Publish and enqueue a fully-persisted child set. A process can die before this point without
+   * harm: reconcileShotgunSplit sees the durable complete set and starts the still-intake children on
+   * the next parent resume. */
+  private async launchShotgunCollaborators(lead: Thread, leadAssignment: ShotgunAssignment, children: Thread[]): Promise<void> {
+    this.installShotgunOwnership(leadAssignment, children);
+    const baseline = lead.baselineHead ?? (await getHeadSha(lead.workspace).catch(() => null));
+    for (const child of children) {
+      this.db.setBaselineHead(child.id, baseline);
+      this.hub.publish({ type: "thread.upsert", thread: this.db.getThread(child.id) ?? child });
+    }
+    // Start only after every child row, every peer contract and the narrowed lead kickoff committed.
+    for (const child of children) {
+      const current = this.db.getThread(child.id);
+      if (current?.state === "intake" || current?.state === "queued") this.enqueueOrRun(child.id);
+    }
+  }
+
+  /** Rebuild a committed split after a restart or a second in-process entry. A full set is safe to
+   * launch idempotently; an older partial set is not — it gets quarantined rather than guessing which
+   * files a live/previous child was allowed to edit. */
+  private async reconcileShotgunSplit(thread: Thread, saved: StageOutputs, kickoff: string): Promise<string> {
+    if (saved.shotgunDegraded || saved.shotgunRecoveryBlocked) return saved.kickoff ?? kickoff;
+    const children = this.db.listCollaborators(thread.id);
+    const expected = saved.shotgunChildren ?? [];
+    const expectedIds = new Set(expected);
+    const complete =
+      !!saved.shotgunAssignment &&
+      expected.length > 0 &&
+      expectedIds.size === expected.length &&
+      children.length === expected.length &&
+      children.every((child) => expectedIds.has(child.id) && !!child.assignment);
+    if (!complete) {
+      return this.blockShotgunRecovery(
+        thread,
+        kickoff,
+        "A partial shotgun split from an interrupted older run was found without one complete ownership contract. No collaborator was resumed, because it would be unsafe to continue sharing this working tree without knowing every peer's boundaries.",
+      );
+    }
+    const narrowedKickoff = saved.kickoff ?? this.shotgunLeadKickoff(kickoff, saved.shotgunAssignment!, children.map((child) => child.assignment!));
+    if (!saved.kickoff) this.db.updateThreadStageOutputs(thread.id, { kickoff: narrowedKickoff });
+    await this.launchShotgunCollaborators(thread, saved.shotgunAssignment!, children);
+    return narrowedKickoff;
+  }
+
+  /** Stop and park any legacy partial split. This is intentionally not an automatic degradation to one
+   * agent: an existing child may already have changed a subset of the tree, so continuing the lead on
+   * the whole brief would recreate the overwrite race this feature is meant to prevent. */
+  private async blockShotgunRecovery(thread: Thread, kickoff: string, reason: string): Promise<string> {
+    const saved = this.db.getThreadStageOutputs(thread.id);
+    if (saved.shotgunRecoveryBlocked) return saved.kickoff ?? kickoff;
+    this.db.updateThreadStageOutputs(thread.id, { shotgunRecoveryBlocked: reason });
+    for (const child of this.db.listCollaborators(thread.id)) {
+      if (collaboratorSettled(child.state)) continue;
+      await this.stopLive(child.id);
+      if (!collaboratorSettled(this.db.getThread(child.id)?.state ?? child.state)) {
+        this.setState(child.id, "review", "Shotgun split recovery was incomplete, so this collaborator was stopped to protect the shared working tree.");
+      }
+    }
+    this.postFinding({ threadId: thread.id, fromRole: "planner", summary: "Shotgun split parked safely", detail: reason, severity: "warning" });
+    this.hub.log("warn", `Shotgun ${thread.id.slice(0, 8)} quarantined: ${reason}`);
+    return kickoff;
+  }
+
+  /** A timed lead that runs out of wall clock while planning its split must not create untimed children.
+   * There is no implementation to integrate yet, so park with the exact reason rather than starting a
+   * speculative first round after the deadline. */
+  private expireShotgunBeforeStart(thread: Thread, kickoff: string): string {
+    const reason = "The timed work window ended while the shotgun split was being prepared, before any collaborator could safely start.";
+    const saved = this.db.getThreadStageOutputs(thread.id);
+    if (!saved.timedFinalizing) this.closeTimedWindow(thread, { reason, extensions: saved.timedExtensions ?? 0 });
+    this.db.updateThreadStageOutputs(thread.id, { shotgunPlanned: true, shotgunDegraded: reason });
+    this.postFinding({ threadId: thread.id, fromRole: "planner", summary: "Shotgun split skipped — work window ended", detail: reason, severity: "note" });
+    return kickoff;
   }
 
   /** Record why a shotgun request ran single-agent after all, and carry on as an ordinary task. This is

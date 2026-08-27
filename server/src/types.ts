@@ -145,7 +145,7 @@ export interface Thread {
   baselineHead?: string | null; // repo HEAD sha captured at dispatch — the "before" point for scoping the Changes chip to this task's own diff; null when not a repo / legacy rows
   // ---- Timed task: a single task with a wall-clock work window (orchestrator/timedTasks.ts) ----
   durationMs?: number | null; // the window the owner asked for; null = an ordinary task with no window
-  deadlineAt?: number | null; // absolute epoch ms the window closes — what is actually enforced, and what the card counts down to
+  deadlineAt?: number | null; // absolute epoch ms once work starts; null while a timed task is queued (or for an ordinary task)
   // ---- Shotgun task: N collaborators on one objective (orchestrator/shotgun.ts) ----
   agentCount?: number | null; // collaborators the owner asked for; null/1 = an ordinary single-agent task
   parentId?: string | null; // set on a COLLABORATOR: the lead task it belongs to (hidden from the board, shown inside the lead)
@@ -636,6 +636,9 @@ export interface StageOutputs {
   shotgunDegraded?: string; // why this task ran single-agent after all (the owner-facing reason); absent when it genuinely parallelized
   shotgunAssignment?: ShotgunAssignment | null; // the LEAD's own share of the split, so a resume re-hands it the same scope
   shotgunIntegrated?: boolean; // the integration/reconcile pass ran — sticky, so a restart doesn't redo it
+  /** A legacy/partial split was found without a complete durable ownership contract. It is quarantined
+   *  for a human instead of resuming a lead alongside unknown peers in the shared working tree. */
+  shotgunRecoveryBlocked?: string;
   qaSilentRetriesThisRound?: number; // the same retries, but only those spent on the review currently running
   // — zeroed the moment a round reaches a verdict, for the reason qaCutoffResumesThisRound exists. An empty
   // run is a property of ONE review too: a round whose retry WORKED still spent the lifetime count, so a

@@ -99,25 +99,48 @@ export function isShotgun(agentCount: number | null | undefined): boolean {
   return agentCount != null && agentCount >= MIN_AGENTS;
 }
 
-/** Normalize an owned path for comparison: forward slashes, lowercased, no leading `./`, no trailing
- *  separator. Mirrors `normalizeWorkspace`'s intent — Windows and POSIX spellings of one path must
- *  compare equal, or the overlap check silently passes on a real collision. */
-export function normalizeOwnedPath(p: string): string {
+/** Canonical repo-relative spelling, preserving case for the agent-facing ownership contract. */
+function canonicalOwnedPath(p: string): string {
   return p
     .trim()
     .replace(/\\/g, "/")
-    .replace(/^\.\//, "")
-    .replace(/\/+$/, "")
-    .toLowerCase();
+    .replace(/^(?:\.\/)+/, "")
+    .split("/")
+    .filter((segment) => segment && segment !== ".")
+    .join("/");
+}
+
+/** Why an ownership path cannot safely be handed to a collaborator, or null when it is a real
+ * repo-relative path. We reject traversal rather than resolving it: resolving aliases against a
+ * runtime workspace would make the planner's safe split depend on the host's path syntax. */
+function invalidOwnedPath(p: string): string | null {
+  const raw = p.trim().replace(/\\/g, "/");
+  if (!raw || raw === ".") return "it names the repository root rather than a bounded owned path";
+  if (raw.startsWith("/")) return "it is absolute rather than repository-relative";
+  if (/^[a-z]:/i.test(raw)) return "it uses a drive-qualified path rather than a repository-relative path";
+  if (raw.split("/").includes("..")) return "it contains `..` traversal, which can alias another agent's files";
+  if (!canonicalOwnedPath(raw)) return "it names the repository root rather than a bounded owned path";
+  return null;
+}
+
+/** Normalize an owned path for comparison: forward slashes, lowercased, no dot aliases or trailing
+ * separator. Mirrors `normalizeWorkspace`'s intent — Windows and POSIX spellings of one path must
+ * compare equal, or the overlap check silently passes on a real collision. */
+export function normalizeOwnedPath(p: string): string {
+  return canonicalOwnedPath(p).toLowerCase();
 }
 
 /** Whether two owned paths collide. Not just equality: a directory owns everything beneath it, so
  *  `src/api` and `src/api/routes.ts` are the same claim and must be caught. The `/` boundary check
  *  keeps `src/apidocs` from being read as living inside `src/api`. */
 export function pathsCollide(a: string, b: string): boolean {
+  if (a.trim() === "." || b.trim() === ".") return true;
   const x = normalizeOwnedPath(a);
   const y = normalizeOwnedPath(b);
   if (!x || !y) return false;
+  // A root claim would own every path. validateDecomposition rejects it before this is reached, but
+  // treating it as a collision here makes the exported helper conservative on its own too.
+  if (x === "." || y === ".") return true;
   if (x === y) return true;
   return x.startsWith(y + "/") || y.startsWith(x + "/");
 }
@@ -162,6 +185,18 @@ export function validateDecomposition(plan: ShotgunPlan | null | undefined, agen
     // Without a declared file set there is no ownership contract, and ownership is the ONLY thing
     // keeping two agents from silently overwriting each other in this shared tree.
     return { ok: false, reason: `work package "${noFiles.title}" declares no owned files, so its edits could not be kept clear of the others` };
+  }
+  for (const assignment of assignments) {
+    const invalid = assignment.files.find((file) => invalidOwnedPath(file));
+    if (invalid) {
+      return {
+        ok: false,
+        reason: `work package "${assignment.title}" declares unsafe owned path \`${invalid}\`: ${invalidOwnedPath(invalid)}. Collaborators may only own bounded repository-relative paths, or their writes could escape or alias another share.`,
+      };
+    }
+    // Store one canonical spelling in the persisted assignment and prompt. Collision checks stay
+    // case-insensitive (conservative across the Windows/Linux workspaces this server supports).
+    assignment.files = assignment.files.map(canonicalOwnedPath);
   }
   for (let i = 0; i < assignments.length; i++) {
     for (let j = i + 1; j < assignments.length; j++) {

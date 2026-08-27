@@ -246,7 +246,7 @@ function TaskMode({ thread }: { thread: Thread }) {
   const threads = useStore((s) => s.threads);
   const collaborators = useMemo(() => Object.values(threads).filter((t) => t.parentId === thread.id), [threads, thread.id]);
   const lead = useStore((s) => (thread.parentId ? s.threads[thread.parentId] : undefined));
-  if (!thread.deadlineAt && !collaborators.length && !thread.parentId) return null;
+  if (!thread.deadlineAt && !thread.durationMs && !collaborators.length && !thread.parentId) return null;
 
   return (
     <div className="taskmode-panel">
@@ -256,6 +256,14 @@ function TaskMode({ thread }: { thread: Thread }) {
           <span className="taskmode-val">
             {thread.durationMs ? <span className="taskmode-total">{formatDuration(thread.durationMs)}</span> : null}
             <Countdown deadlineAt={thread.deadlineAt} className={thread.deadlineAt <= Date.now() ? "taskmode-over" : "taskmode-left"} />
+          </span>
+        </div>
+      ) : thread.durationMs ? (
+        <div className="taskmode-row">
+          <span className="taskmode-key mono">window</span>
+          <span className="taskmode-val">
+            <span className="taskmode-total">{formatDuration(thread.durationMs)}</span>
+            <span className="taskmode-left">starts when a pipeline slot opens</span>
           </span>
         </div>
       ) : null}

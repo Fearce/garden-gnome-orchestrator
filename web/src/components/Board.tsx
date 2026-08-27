@@ -16,7 +16,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
 import type { AgentRun, BoardView, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
-import { closesInDays, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { closesInDays, formatDuration, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
@@ -698,6 +698,10 @@ const Card = memo(function Card({
           {thread.deadlineAt ? (
             <span className={"timed-badge" + (thread.deadlineAt <= Date.now() ? " over" : "")}>
               <Countdown deadlineAt={thread.deadlineAt} />
+            </span>
+          ) : thread.durationMs ? (
+            <span className="timed-badge" title={`A ${formatDuration(thread.durationMs)} work window starts when this task acquires a pipeline slot; queued time is not charged.`}>
+              ⏱ {formatDuration(thread.durationMs)} queued
             </span>
           ) : null}
           {collabCount ? (

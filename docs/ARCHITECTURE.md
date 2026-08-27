@@ -326,8 +326,8 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   unaffected: `duration_ms`/`deadline_at` (timed) and `agent_count`/`parent_id`/`assignment` (shotgun).
   Both hooks sit in `runImplementorQaLoop` *between* the implementor and the QA hand-off, so QA still
   reviews the finished work exactly once.
-  - **Timed** — "work on this for 8 hours". `deadline_at` is stamped ABSOLUTE at dispatch (time spent
-    queued must not eat the window) and every round counter is durable in `stage_outputs`, so ONE
+  - **Timed** — "work on this for 8 hours". `deadline_at` is stamped ABSOLUTE when the task acquires
+    its first pipeline slot (time spent queued does not eat the window) and every round counter is durable in `stage_outputs`, so ONE
     window survives a restart, a turn ceiling, a provider hand-off and a cap park: each re-enters the
     pipeline and re-asks `timedDecision` rather than depending on a timer in memory. **The deadline is
     enforced at round BOUNDARIES, never by aborting a live turn** — a mid-turn abort returns a
@@ -348,6 +348,11 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
     result. **Overlapping ownership is a rejection, not a warning** (two agents in one file in one tree
     lose work silently, with no merge step to catch it): the task degrades to a normal single-agent run
     with the reason posted, which is a supported outcome since most tasks cannot be split. Collaborators
+    are persisted as one atomic split — narrowed lead kickoff, every child assignment and
+    the complete barrier list commit before any child can start — so a restart can launch only the
+    complete durable set. Legacy partial splits are parked instead of guessed at; root, absolute/drive
+    and `..` ownership paths are rejected. A timed split that expires during decomposition creates no
+    children, and children inherit the lead's exact absolute deadline.
     **bypass both concurrency caps** — the lead holds a slot and then blocks on its children, so queueing
     a child behind a cap its own parent occupies deadlocks the pair; `MAX_AGENTS` bounds it instead. The
     barrier polls DURABLE child state rather than holding promises, which is what lets an auto-resumed
