@@ -75,7 +75,7 @@ function fail(msg) {
 
 function winListener(port) {
   try {
-    const out = execFileSync("netstat", ["-ano"], { encoding: "utf8" });
+    const out = execFileSync("netstat", ["-ano"], { encoding: "utf8", windowsHide: true });
     const re = new RegExp(`TCP\\s+\\S+:${port}\\s+\\S+\\s+LISTENING\\s+(\\d+)`, "i");
     const m = out.match(re);
     return m ? Number(m[1]) : null;
@@ -202,7 +202,7 @@ function processStartMs(pid) {
         "-Command",
         `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
       ],
-      { encoding: "utf8" },
+      { encoding: "utf8", windowsHide: true },
     ).trim();
     const t = Date.parse(out);
     return Number.isFinite(t) ? t : null;
@@ -331,6 +331,7 @@ async function main() {
     const branch = execFileSync("git", ["status", "-sb"], {
       cwd: ROOT,
       encoding: "utf8",
+      windowsHide: true,
     })
       .trim()
       .split("\n")[0];
@@ -338,6 +339,7 @@ async function main() {
     const porcelain = execFileSync("git", ["status", "--porcelain"], {
       cwd: ROOT,
       encoding: "utf8",
+      windowsHide: true,
     })
       .trim()
       .split("\n")
