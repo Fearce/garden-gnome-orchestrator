@@ -754,15 +754,14 @@ function parseResetClock(text: string, now: number): number | undefined {
   return t;
 }
 
-/** Best-effort reset timestamp from provider text such as Codex's
- * `try again at Sep 2nd, 2026 2:23 PM` or a CLI's `resets 7pm`. Providers that expose a structured
- * rate-limit event still win with that authoritative value; this prevents a plain-text quota rejection
- * from being held only for the generic cooldown. */
-export function parseUsageLimitResetAt(text: string, now = Date.now()): number | undefined {
+/** Parse an explicit dated provider reset without deciding whether it is still in the future. The
+ * boot-time cap reconciler needs that distinction: an expired historical reset must not be turned into
+ * a new generic cooldown on every restart. */
+function parseExplicitUsageLimitResetAt(text: string): number | undefined {
   const absolute = /(?:try again|reset(?:s)?|available again)\s+(?:at\s+)?([A-Z][a-z]{2,8}\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4}\s+\d{1,2}:\d{2}\s*(?:am|pm)?)/i.exec(text);
   if (absolute?.[1]) {
     const parsed = Date.parse(absolute[1].replace(/(\d)(st|nd|rd|th)\b/gi, "$1"));
-    if (Number.isFinite(parsed) && parsed > now) return parsed;
+    if (Number.isFinite(parsed)) return parsed;
   }
   // z.ai (and several OpenAI-compatible gateways) state resets in a numeric timestamp such as
   // `Your limit will reset at 2026-08-22 06:06:05`. It is provider-local wall-clock time, just like
@@ -770,8 +769,25 @@ export function parseUsageLimitResetAt(text: string, now = Date.now()): number |
   const numeric = /(?:try again|reset(?:s)?|available again)\s+(?:at\s+)?(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)/i.exec(text);
   if (numeric?.[1]) {
     const parsed = Date.parse(numeric[1]);
-    if (Number.isFinite(parsed) && parsed > now) return parsed;
+    if (Number.isFinite(parsed)) return parsed;
   }
+  return undefined;
+}
+
+/** Whether a provider named a concrete dated reset that has already elapsed. Short daily clock notices
+ * intentionally return false: they roll to their next occurrence and remain useful as a future reset. */
+export function usageLimitResetWasExplicitlyElapsed(text: string, now = Date.now()): boolean {
+  const reset = parseExplicitUsageLimitResetAt(text);
+  return reset != null && reset <= now;
+}
+
+/** Best-effort future reset timestamp from provider text such as Codex's
+ * `try again at Sep 2nd, 2026 2:23 PM` or a CLI's `resets 7pm`. Providers that expose a structured
+ * rate-limit event still win with that authoritative value; this prevents a plain-text quota rejection
+ * from being held only for the generic cooldown. */
+export function parseUsageLimitResetAt(text: string, now = Date.now()): number | undefined {
+  const explicit = parseExplicitUsageLimitResetAt(text);
+  if (explicit != null && explicit > now) return explicit;
   return parseResetClock(text, now);
 }
 

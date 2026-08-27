@@ -7,6 +7,7 @@ import {
   AgentRun,
   ZaiAgentRun,
   parseUsageLimitResetAt,
+  usageLimitResetWasExplicitlyElapsed,
   providerErrorLooksRateLimited,
   type AgentRunConfig,
   type AgentRunLike,
@@ -338,13 +339,19 @@ const CODEX_CAP_KV_KEY = "codex_cap_until";
 // across a deploy so a fresh app-server reading cannot route work back to a provider that explicitly
 // told us "try again at …".
 const CODEX_CAP_SOURCE_KV_KEY = "codex_cap_reset_source";
+// A cap can originate in a director turn, which deliberately has no `agent_runs` row. Keep the time
+// at which the durable latch was observed so boot reconciliation never lets an older pipeline success
+// erase a newer director-origin cap.
+const CODEX_CAP_RECORDED_AT_KV_KEY = "codex_cap_recorded_at";
 // Grok's weekly scrape normally supplies the reset epoch; before it lands, a rejected turn falls back to
 // a fixed cooldown (config.grok.capCooldownMs). kv-persisted.
 const GROK_CAP_KV_KEY = "grok_cap_until";
+const GROK_CAP_RECORDED_AT_KV_KEY = "grok_cap_recorded_at";
 // z.ai's quota scrape supplies the true 5h/weekly reset; before it lands, a rejected turn falls back to a
 // fixed cooldown (config.zai.capCooldownMs). kv-persisted so a restart's auto-resume wave doesn't slam a
 // still-capped z.ai.
 const ZAI_CAP_KV_KEY = "zai_cap_until";
+const ZAI_CAP_RECORDED_AT_KV_KEY = "zai_cap_recorded_at";
 const PROVIDER_HARD_LIMIT = 98;
 // After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
 // doesn't need a manual Resume click. Human-gated phases (a pending question/approval, paused, or
@@ -612,14 +619,17 @@ export class ThreadManager implements OrchestratorApi {
   // auto-resume wave doesn't slam Codex again on stale-good routing. Undefined = Codex not latched-capped.
   private codexCapUntil: number | undefined;
   private codexCapUntilProviderStated = false;
+  private codexCapRecordedAt: number | undefined;
   // Epoch ms until which Grok is treated as usage-capped (route implementors elsewhere). Set when a live
   // Grok run is rejected; a fixed cooldown (no reset epoch is exposed). Persisted so a restart's auto-resume
   // wave doesn't slam a still-capped Grok. Undefined = Grok not latched-capped.
   private grokCapUntil: number | undefined;
+  private grokCapRecordedAt: number | undefined;
   // Epoch ms until which z.ai is treated as usage-capped (route implementors elsewhere). Set when a live
   // z.ai run is rejected; the real 5h/weekly reset from the quota scrape is preferred, else a cooldown.
   // Persisted so a restart's auto-resume wave doesn't slam a still-capped z.ai. Undefined = not latched.
   private zaiCapUntil: number | undefined;
+  private zaiCapRecordedAt: number | undefined;
   // Owns the live pickable-model lists (Settings dropdowns). Rebroadcasts settings when a list changes.
   private readonly modelCatalog: ModelCatalog;
   // Persistent 24h LiveBench capability prior. It informs the smart selectors but never gates routing:
@@ -742,12 +752,25 @@ export class ThreadManager implements OrchestratorApi {
     if (recovered) this.hub.log("warn", `Recovered ${recovered} legacy QA usage-limit ${recovered === 1 ? "park" : "parks"} for automatic provider fallback.`);
   }
 
-  /** Restore explicit provider reset times from recorded capped runs. This deliberately does not
-   * change a task's state: it is a routing repair used before boot auto-resume and legacy-park
-   * migration. Retaining only the latest reset per account avoids replaying a long run history. */
+  /** Reconcile persisted provider latches with recorded capped runs. This deliberately does not change a
+   * task's state: it is a routing repair used before boot auto-resume and legacy-park migration. A dated
+   * provider reset remains authoritative until a later clean run disproves it; a later reset-less capacity
+   * rejection alone must not shorten that hold, while a restart after a reset-less cap still gets a bounded
+   * fallback latch. */
   private restoreRecordedProviderCapLatches(): void {
     const now = Date.now();
-    const latestByAccount = new Map<string, { account: string; error?: string; reset?: number; capped: boolean; endedAt: number; startedAt: number }>();
+    type RecordedOutcome = {
+      account: string;
+      error?: string;
+      reset?: number;
+      explicitResetExpired: boolean;
+      capped: boolean;
+      endedAt: number;
+      startedAt: number;
+    };
+    const latestByAccount = new Map<string, RecordedOutcome>();
+    const latestFutureReset = new Map<string, RecordedOutcome>();
+    const latestCleanSuccess = new Map<string, RecordedOutcome>();
     // CLI quota is plan-wide, while run.account includes the selected model (`codex:gpt-...`). A
     // success on one Codex model therefore disproves an older cap recorded on another model too.
     const outcomeKey = (account: string): string => {
@@ -756,35 +779,102 @@ export class ThreadManager implements OrchestratorApi {
       if (account === "zai" || account.startsWith("zai:")) return "zai";
       return account;
     };
+    const newer = (candidate: RecordedOutcome, prior: RecordedOutcome): boolean =>
+      candidate.endedAt > prior.endedAt || (candidate.endedAt === prior.endedAt && candidate.startedAt > prior.startedAt);
+    const rememberNewer = (map: Map<string, RecordedOutcome>, key: string, outcome: RecordedOutcome): void => {
+      const prior = map.get(key);
+      if (!prior || newer(outcome, prior)) map.set(key, outcome);
+    };
     for (const thread of this.db.listThreads()) {
       for (const run of this.db.listRuns(thread.id)) {
         if (!run.account || run.endedAt == null) continue;
         const capped = run.capFlagged === true || providerErrorLooksRateLimited(run.error ?? "");
-        // A newer clean completion proves an older recorded cap reset is stale. Keep the newest
-        // conclusive outcome per account, rather than selecting the farthest future reset from all
-        // history (which can resurrect an already-disproved multi-day latch after a later short
-        // model-capacity rejection).
+        // A newer clean completion proves an older recorded cap reset is stale. Ignore other errors:
+        // they say nothing about whether the provider's quota reopened.
         if (!capped && run.state !== "done") continue;
-        const key = outcomeKey(run.account);
-        const prior = latestByAccount.get(key);
-        if (prior && (prior.endedAt > run.endedAt || (prior.endedAt === run.endedAt && prior.startedAt >= run.startedAt))) continue;
-        const reset = capped && run.error ? parseUsageLimitResetAt(run.error, now) : undefined;
-        latestByAccount.set(key, { account: run.account, error: run.error ?? undefined, reset, capped, endedAt: run.endedAt, startedAt: run.startedAt });
+        const error = run.error ?? undefined;
+        const outcome: RecordedOutcome = {
+          account: run.account,
+          error,
+          reset: capped && error ? parseUsageLimitResetAt(error, now) : undefined,
+          explicitResetExpired: capped && error ? usageLimitResetWasExplicitlyElapsed(error, now) : false,
+          capped,
+          endedAt: run.endedAt,
+          startedAt: run.startedAt,
+        };
+        const key = outcomeKey(outcome.account);
+        rememberNewer(latestByAccount, key, outcome);
+        if (outcome.capped && outcome.reset != null) rememberNewer(latestFutureReset, key, outcome);
+        if (!outcome.capped) rememberNewer(latestCleanSuccess, key, outcome);
       }
     }
-    // loadCodexCap ran first, so reconciliation must actively remove a persisted historical reset when
-    // the newest outcome disproves it. A newer reset-less capacity rejection gets a non-authoritative
-    // fallback latch; the fresh live headroom probe may then clear it immediately.
-    const codexOutcome = latestByAccount.get("codex");
-    if (codexOutcome && (!codexOutcome.capped || codexOutcome.reset == null || codexOutcome.reset <= now)) {
-      this.clearCodexCap();
-      if (codexOutcome.capped) this.noteCodexCap({ status: "rejected", resetSource: "fallback" });
-    }
 
-    const restorable = [...latestByAccount.values()].filter((outcome) => outcome.capped && outcome.error && outcome.reset != null && outcome.reset > now);
-    for (const outcome of restorable) this.latchLegacyProviderCap(outcome.account, outcome.error!);
-    if (restorable.length) {
-      this.hub.log("warn", `Restored ${restorable.length} recorded provider usage-cap ${restorable.length === 1 ? "latch" : "latches"} before auto-resume.`);
+    const managedKey = (key: string): key is "codex" | "grok" | "zai" => key === "codex" || key === "grok" || key === "zai";
+    const clearManagedCap = (key: "codex" | "grok" | "zai"): void => {
+      if (key === "codex") this.clearCodexCap();
+      else if (key === "grok") this.clearGrokCap();
+      else this.clearZaiCap();
+    };
+    const managedCapUntil = (key: "codex" | "grok" | "zai"): number | undefined => {
+      if (key === "codex") return this.codexCapUntil;
+      if (key === "grok") return this.grokCapUntil;
+      return this.zaiCapUntil;
+    };
+    const managedCapRecordedAt = (key: "codex" | "grok" | "zai"): number | undefined => {
+      if (key === "codex") return this.codexCapRecordedAt;
+      if (key === "grok") return this.grokCapRecordedAt;
+      return this.zaiCapRecordedAt;
+    };
+    let restored = 0;
+    for (const [key, outcome] of latestByAccount) {
+      const stated = latestFutureReset.get(key);
+      const success = latestCleanSuccess.get(key);
+      const statedStillAuthoritative = !!stated && (!success || !newer(success, stated));
+
+      if (!managedKey(key)) {
+        // Claude's AccountManager owns its own persisted per-subscription cap state. Preserve the
+        // existing boot repair for a provider-stated future reset without synthesizing a new fallback.
+        if (outcome.capped && outcome.error && outcome.reset != null) {
+          this.latchLegacyProviderCap(outcome.account, outcome.error);
+          restored++;
+        }
+        continue;
+      }
+
+      // Not every capped provider turn creates an agent-run record: a director cap is recorded only in
+      // the durable latch. Do not rewrite a live KV latch from older history. Legacy latches without
+      // provenance are also retained conservatively until their already-persisted reset, rather than
+      // risking a boot-time retry of a provider that just told us it was unavailable.
+      const activeCapUntil = managedCapUntil(key);
+      const capRecordedAt = managedCapRecordedAt(key);
+      if (activeCapUntil != null && (capRecordedAt == null || outcome.endedAt <= capRecordedAt)) continue;
+      if (activeCapUntil != null && outcome.capped && outcome.reset == null) {
+        // A newer bare capacity rejection renews a short fallback hold, but note*Cap deliberately
+        // preserves a longer existing provider reset. An expired historical date is neither evidence
+        // to clear the current latch nor a reason to create a new cooldown.
+        if (!outcome.explicitResetExpired && outcome.error) this.latchLegacyProviderCap(outcome.account, outcome.error);
+        continue;
+      }
+
+      // A new explicit reset wins. A bare capacity/429 cap only replaces an older reset after a clean
+      // completion proved that reset stale; an explicitly expired reset installs no fresh cooldown.
+      const selected =
+        !outcome.capped
+          ? undefined
+          : outcome.reset != null
+            ? outcome
+            : statedStillAuthoritative
+              ? stated
+              : outcome.explicitResetExpired
+                ? undefined
+                : outcome;
+      clearManagedCap(key);
+      if (!selected) continue;
+      this.latchLegacyProviderCap(selected.account, selected.error ?? "");
+      if (selected.reset != null) restored++;
+    }
+    if (restored) {
+      this.hub.log("warn", `Restored ${restored} recorded provider usage-cap ${restored === 1 ? "latch" : "latches"} before auto-resume.`);
     }
   }
 
@@ -2327,9 +2417,15 @@ export class ThreadManager implements OrchestratorApi {
     if (Number.isFinite(until) && until > Date.now()) {
       this.codexCapUntil = until;
       this.codexCapUntilProviderStated = this.db.kvGet(CODEX_CAP_SOURCE_KV_KEY) === "provider";
+      this.codexCapRecordedAt = this.persistedCapRecordedAt(CODEX_CAP_RECORDED_AT_KV_KEY);
     } else if (v) {
       this.clearCodexCap();
     }
+  }
+
+  private persistedCapRecordedAt(key: string): number | undefined {
+    const recordedAt = Number(this.db.kvGet(key));
+    return Number.isFinite(recordedAt) && recordedAt > 0 ? recordedAt : undefined;
   }
 
   /** Latch Codex as usage-capped until its window resets, so implementors route to the Claude backend.
@@ -2348,9 +2444,14 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private noteCodexCap(info?: RateLimitInfo): void {
+    const now = Date.now();
     const u = readCodexUsage();
     const until = this.capResetUntil(info, [u?.fiveHourReset, u?.sevenDayReset], CODEX_CAP_COOLDOWN_MS);
-    const providerStated = info?.resetsAt != null && info.resetsAt > Date.now() && info.resetSource !== "fallback";
+    const providerStated = info?.resetsAt != null && info.resetsAt > now && info.resetSource !== "fallback";
+    // Record every fresh rejection, including one that preserves a longer existing provider reset. A
+    // later clean run can then prove that held reset stale, while an older historical success cannot.
+    this.codexCapRecordedAt = now;
+    this.db.kvSet(CODEX_CAP_RECORDED_AT_KV_KEY, String(now));
     if (this.codexCapUntil && this.codexCapUntil >= until && (!providerStated || this.codexCapUntilProviderStated)) return;
     this.codexCapUntil = until;
     this.codexCapUntilProviderStated = providerStated;
@@ -2362,8 +2463,10 @@ export class ThreadManager implements OrchestratorApi {
   private clearCodexCap(): void {
     this.codexCapUntil = undefined;
     this.codexCapUntilProviderStated = false;
+    this.codexCapRecordedAt = undefined;
     this.db.kvSet(CODEX_CAP_KV_KEY, "");
     this.db.kvSet(CODEX_CAP_SOURCE_KV_KEY, "");
+    this.db.kvSet(CODEX_CAP_RECORDED_AT_KV_KEY, "");
   }
 
   /** A provider-stated reset is authoritative until the provider proves otherwise. The task database is
@@ -2434,18 +2537,30 @@ export class ThreadManager implements OrchestratorApi {
     const until = v ? Number(v) : NaN;
     if (Number.isFinite(until) && until > Date.now()) {
       this.grokCapUntil = until;
+      this.grokCapRecordedAt = this.persistedCapRecordedAt(GROK_CAP_RECORDED_AT_KV_KEY);
       noteGrokCap(until);
-    } else if (v) this.db.kvSet(GROK_CAP_KV_KEY, ""); // stale/expired — clear it
+    } else if (v) this.clearGrokCap(); // stale/expired
+  }
+
+  private clearGrokCap(): void {
+    this.grokCapUntil = undefined;
+    this.grokCapRecordedAt = undefined;
+    this.db.kvSet(GROK_CAP_KV_KEY, "");
+    this.db.kvSet(GROK_CAP_RECORDED_AT_KV_KEY, "");
+    noteGrokCap(null);
   }
 
   /** Latch Grok as usage-capped after a rejected turn, routing implementors to another backend. The live
    *  weekly scrape normally supplies the true reset; before it lands, a fixed cooldown keeps the latch
    *  self-expiring. Mirrors the chip's countdown via noteGrokCap. */
   private noteGrokCap(info?: RateLimitInfo): void {
+    const now = Date.now();
     // Prefer the real weekly reset from the live `/usage show` scrape; fall back to a fixed cooldown when
     // no scrape has landed yet. A cap response's stated reset is still authoritative enough to avoid
     // immediately retrying the same exhausted provider before the next scrape lands.
     const until = this.capResetUntil(info, [readGrokUsage().sevenDayReset], config.grok.capCooldownMs);
+    this.grokCapRecordedAt = now;
+    this.db.kvSet(GROK_CAP_RECORDED_AT_KV_KEY, String(now));
     if (this.grokCapUntil && this.grokCapUntil >= until) return; // already latched at least this long
     this.grokCapUntil = until;
     this.db.kvSet(GROK_CAP_KV_KEY, String(until));
@@ -2458,9 +2573,7 @@ export class ThreadManager implements OrchestratorApi {
     const now = Date.now();
     if (this.grokCapUntil != null) {
       if (now < this.grokCapUntil) return true;
-      this.grokCapUntil = undefined;
-      this.db.kvSet(GROK_CAP_KV_KEY, "");
-      noteGrokCap(null);
+      this.clearGrokCap();
     }
     // Also honor the scraped weekly window: if `/usage show` shows 100% used (not yet reset), Grok is
     // capped even without a live-run rejection.
@@ -2473,19 +2586,31 @@ export class ThreadManager implements OrchestratorApi {
     const until = v ? Number(v) : NaN;
     if (Number.isFinite(until) && until > Date.now()) {
       this.zaiCapUntil = until;
+      this.zaiCapRecordedAt = this.persistedCapRecordedAt(ZAI_CAP_RECORDED_AT_KV_KEY);
       noteZaiCap(until);
-    } else if (v) this.db.kvSet(ZAI_CAP_KV_KEY, ""); // stale/expired — clear it
+    } else if (v) this.clearZaiCap(); // stale/expired
+  }
+
+  private clearZaiCap(): void {
+    this.zaiCapUntil = undefined;
+    this.zaiCapRecordedAt = undefined;
+    this.db.kvSet(ZAI_CAP_KV_KEY, "");
+    this.db.kvSet(ZAI_CAP_RECORDED_AT_KV_KEY, "");
+    noteZaiCap(null);
   }
 
   /** Latch z.ai as usage-capped after a rejected turn, routing implementors to another backend. The live
    *  quota scrape normally supplies the true 5h/weekly reset; before it lands, a fixed cooldown keeps the
    *  latch self-expiring. Mirrors the chip's countdown via noteZaiCap. */
   private noteZaiCap(info?: RateLimitInfo): void {
+    const now = Date.now();
     const u = readZaiUsage();
     // Prefer the soonest real reset from the quota scrape (5h or weekly, whichever is nearer and in the
     // future). Preserve a rejected turn's stated reset too, so a transiently unavailable quota endpoint
     // cannot shorten the provider hold to an arbitrary cooldown.
     const until = this.capResetUntil(info, [u.fiveHourReset, u.sevenDayReset], config.zai.capCooldownMs);
+    this.zaiCapRecordedAt = now;
+    this.db.kvSet(ZAI_CAP_RECORDED_AT_KV_KEY, String(now));
     if (this.zaiCapUntil && this.zaiCapUntil >= until) return; // already latched at least this long
     this.zaiCapUntil = until;
     this.db.kvSet(ZAI_CAP_KV_KEY, String(until));
@@ -2498,9 +2623,7 @@ export class ThreadManager implements OrchestratorApi {
     const now = Date.now();
     if (this.zaiCapUntil != null) {
       if (now < this.zaiCapUntil) return true;
-      this.zaiCapUntil = undefined;
-      this.db.kvSet(ZAI_CAP_KV_KEY, "");
-      noteZaiCap(null);
+      this.clearZaiCap();
     }
     // Also honor the scraped windows: either window at 100% (not yet reset) caps z.ai even without a rejection.
     return zaiUsageCapped(now);

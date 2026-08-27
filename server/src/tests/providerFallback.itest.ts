@@ -21,7 +21,7 @@ const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { CodexAgentRun } = await import("../agents/codexRunner.js");
-const { parseUsageLimitResetAt } = await import("../agents/runner.js");
+const { parseUsageLimitResetAt, usageLimitResetWasExplicitlyElapsed } = await import("../agents/runner.js");
 
 function check(label: string, condition: boolean, detail?: string): void {
   if (condition) {
@@ -30,6 +30,28 @@ function check(label: string, condition: boolean, detail?: string): void {
   }
   console.error(`  ✗ ${label}${detail ? ` — ${detail}` : ""}`);
   process.exitCode = 1;
+}
+
+function usageLimitNoticeAt(date: Date): string {
+  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][date.getMonth()];
+  const day = date.getDate();
+  const mod100 = day % 100;
+  const suffix = mod100 >= 11 && mod100 <= 13 ? "th" : (["th", "st", "nd", "rd"][day % 10] ?? "th");
+  const hour24 = date.getHours();
+  const hour = hour24 % 12 || 12;
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  const meridiem = hour24 >= 12 ? "PM" : "AM";
+  return `You've hit your usage limit. Try again at ${month} ${day}${suffix}, ${date.getFullYear()} ${hour}:${minute} ${meridiem}.`;
+}
+
+function bootFixtureManager(fixtureDb: any, fixtureRoot: string): any {
+  const originalScheduleAutoResume = (ThreadManager.prototype as any).scheduleAutoResume;
+  (ThreadManager.prototype as any).scheduleAutoResume = () => {};
+  try {
+    return new ThreadManager(fixtureDb, new EventHub(), new FileMemoryService(join(fixtureRoot, "memory")), new StubAccounts() as unknown as AccountManager);
+  } finally {
+    (ThreadManager.prototype as any).scheduleAutoResume = originalScheduleAutoResume;
+  }
 }
 
 class StubAccounts {
@@ -61,8 +83,12 @@ const realGrokImplementorReady = internals.grokImplementorReady;
 const providers: string[] = [];
 const verdict: QaOutput = { pass: true, summary: "Claude completed the review", issues: [] };
 
-const statedReset = parseUsageLimitResetAt("You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.", new Date("2026-08-27T12:00:00").getTime());
-check("the provider's stated absolute reset is parsed", statedReset === new Date("2026-09-02T14:23:00").getTime(), String(statedReset));
+const statedResetDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+statedResetDate.setSeconds(0, 0);
+const statedResetText = usageLimitNoticeAt(statedResetDate);
+const statedReset = parseUsageLimitResetAt(statedResetText);
+check("the provider's stated absolute reset is parsed", statedReset === statedResetDate.getTime(), String(statedReset));
+check("an expired provider reset is distinguishable from an absent reset", usageLimitResetWasExplicitlyElapsed("You've hit your usage limit. Try again at Jan 1st, 2020 12:00 PM.", Date.now()));
 
 // The real loop owns routing and persistence; only the process-spawning leaf is replaced. Constructing
 // through Object.create preserves the Codex `instanceof` cap branch used in production.
@@ -84,7 +110,7 @@ internals.createRoleAgent = (provider: string) => {
     sessionId: undefined,
     start: () => {},
     result: async () => cap
-      ? { type: "result", subtype: "error", isError: true, result: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM." }
+      ? { type: "result", subtype: "error", isError: true, result: statedResetText }
       : { type: "result", subtype: "success", isError: false, structuredOutput: verdict },
     stop: async () => {},
   });
@@ -163,14 +189,14 @@ try {
   const legacyErrorCap = db.createRun({ threadId: successCap.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
   db.updateRun(legacyErrorCap.id, {
     state: "error",
-    error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+    error: statedResetText,
     endedAt: Date.now() + 3_000,
   });
   check("a newer legacy textual error cap remains authoritative", !internals.codexRecoveredAfterLastRecordedCap());
   const legacySuccessCap = db.createRun({ threadId: successCap.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
   db.updateRun(legacySuccessCap.id, {
     state: "done",
-    error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+    error: statedResetText,
     endedAt: Date.now() + 4_000,
   });
   check("a newer legacy success-shaped textual cap remains authoritative", !internals.codexRecoveredAfterLastRecordedCap());
@@ -374,14 +400,14 @@ try {
   });
   legacyDb.updateThread(legacyThread.id, {
     state: "review",
-    error: "QA could not complete — needs your review You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+    error: `QA could not complete — needs your review ${statedResetText}`,
   });
   legacyDb.updateThreadStageOutputs(legacyThread.id, { kickoff: "KICKOFF: completed implementation", qaRoundsUsed: 2 });
   const legacyRun = legacyDb.createRun({ threadId: legacyThread.id, role: "qa", model: "gpt-5.6", account: "codex:gpt-5.6" });
   legacyDb.updateRun(legacyRun.id, {
     state: "error",
     capFlagged: true,
-    error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+    error: statedResetText,
     endedAt: Date.now(),
   });
   const legacyCapacityThread = legacyDb.createThread({
@@ -410,20 +436,22 @@ try {
   });
   legacyDb.updateThread(legacyZaiThread.id, {
     state: "review",
-    error: "QA could not complete — needs your review You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+    error: `QA could not complete — needs your review ${statedResetText}`,
   });
   legacyDb.updateThreadStageOutputs(legacyZaiThread.id, { kickoff: "KICKOFF: completed implementation", qaRoundsUsed: 1 });
   const legacyZaiRun = legacyDb.createRun({ threadId: legacyZaiThread.id, role: "qa", model: "glm-4.6", account: "zai" });
   legacyDb.updateRun(legacyZaiRun.id, {
     state: "error",
     capFlagged: true,
-    error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
+    error: statedResetText,
     endedAt: Date.now(),
   });
   // The last overnight task was still actively in QA when the server was deployed. It is not a
   // legacy review park, so boot reconciliation changes it to failed before the cap supervisor sees
   // it. Its recorded provider reset must nevertheless be restored before the direct QA retry.
-  const activeReset = parseUsageLimitResetAt("You've hit your usage limit. Try again at Sep 3rd, 2026 2:23 PM.", new Date("2026-08-27T12:00:00").getTime())!;
+  const activeResetDate = new Date(statedResetDate.getTime() + 24 * 60 * 60 * 1000);
+  const activeResetText = usageLimitNoticeAt(activeResetDate);
+  const activeReset = parseUsageLimitResetAt(activeResetText)!;
   const activeQaThread = legacyDb.createThread({
     title: "Active Codex QA usage-limit interruption",
     workspace: legacyWorkspace,
@@ -438,7 +466,7 @@ try {
   legacyDb.updateRun(activeQaRun.id, {
     state: "error",
     capFlagged: true,
-    error: "You've hit your usage limit. Try again at Sep 3rd, 2026 2:23 PM.",
+    error: activeResetText,
     endedAt: activeQaEndedAt,
   });
   // This fixture needs boot reconciliation to inspect a live QA state, but it must not launch a real
@@ -493,7 +521,7 @@ try {
   const oldCap = staleDb.createRun({ threadId: staleThread.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
   const staleNow = Date.now();
   staleDb.raw.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(staleNow - 3_500, oldCap.id);
-  staleDb.updateRun(oldCap.id, { state: "error", capFlagged: true, error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.", endedAt: staleNow - 3_000 });
+  staleDb.updateRun(oldCap.id, { state: "error", capFlagged: true, error: statedResetText, endedAt: staleNow - 3_000 });
   const recovered = staleDb.createRun({ threadId: staleThread.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
   staleDb.raw.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(staleNow - 2_500, recovered.id);
   staleDb.updateRun(recovered.id, { state: "done", capFlagged: false, endedAt: staleNow - 2_000 });
@@ -512,6 +540,96 @@ try {
   check("the current reset-less capacity latch remains non-authoritative", staleInternals.codexCapUntilProviderStated === false, String(staleInternals.codexCapUntilProviderStated));
   staleDb.raw.close();
   rmSync(staleRoot, { recursive: true, force: true });
+
+  const recordOutcome = (fixtureDb: any, fixtureThread: any, account: string, state: "done" | "error", error: string, capFlagged: boolean, endedAt: number): void => {
+    const run = fixtureDb.createRun({ threadId: fixtureThread.id, role: "qa", model: "fixture", account });
+    fixtureDb.raw.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(endedAt - 100, run.id);
+    fixtureDb.updateRun(run.id, { state, error, capFlagged, endedAt });
+  };
+
+  // A persisted CLI latch must be cleared by a newer success on THAT provider, not just on Codex.
+  // This is plan-wide for each CLI provider even though run.account carries the selected model.
+  const successRoot = mkdtempSync(join(tmpdir(), "provider-fallback-success-reconcile-"));
+  const successWorkspace = join(successRoot, "workspace");
+  mkdirSync(successWorkspace, { recursive: true });
+  const successDb = new Db(join(successRoot, "orchestrator.sqlite"));
+  const reconcileNow = Date.now();
+  successDb.kvSet("grok_cap_until", String(reconcileNow + 7 * 24 * 60 * 60 * 1000));
+  successDb.kvSet("grok_cap_recorded_at", String(reconcileNow - 5_000));
+  successDb.kvSet("zai_cap_until", String(reconcileNow + 7 * 24 * 60 * 60 * 1000));
+  successDb.kvSet("zai_cap_recorded_at", String(reconcileNow - 5_000));
+  const grokSuccessThread = successDb.createThread({ title: "New Grok success clears stale latch", workspace: successWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(successDb, grokSuccessThread, "grok:grok-4.6", "error", statedResetText, true, reconcileNow - 4_000);
+  recordOutcome(successDb, grokSuccessThread, "grok:grok-4.6", "done", "", false, reconcileNow - 3_000);
+  const zaiSuccessThread = successDb.createThread({ title: "New z.ai success clears stale latch", workspace: successWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(successDb, zaiSuccessThread, "zai", "error", statedResetText, true, reconcileNow - 2_000);
+  recordOutcome(successDb, zaiSuccessThread, "zai", "done", "", false, reconcileNow - 1_000);
+  const successInternals = bootFixtureManager(successDb, successRoot);
+  check("a newer Grok success clears its persisted historical latch", successInternals.grokCapUntil === undefined, String(successInternals.grokCapUntil));
+  check("a newer z.ai success clears its persisted historical latch", successInternals.zaiCapUntil === undefined, String(successInternals.zaiCapUntil));
+  successDb.raw.close();
+  rmSync(successRoot, { recursive: true, force: true });
+
+  // Director calls can hit a provider cap without creating an agent_runs row. A fresh durable latch
+  // from such a call must survive boot even when the database contains an older successful pipeline run.
+  const directorRoot = mkdtempSync(join(tmpdir(), "provider-fallback-director-latch-"));
+  const directorWorkspace = join(directorRoot, "workspace");
+  mkdirSync(directorWorkspace, { recursive: true });
+  const directorDb = new Db(join(directorRoot, "orchestrator.sqlite"));
+  const directorNow = Date.now();
+  const directorLatchUntil = directorNow + 7 * 24 * 60 * 60 * 1000;
+  directorDb.kvSet("grok_cap_until", String(directorLatchUntil));
+  directorDb.kvSet("grok_cap_recorded_at", String(directorNow));
+  const directorThread = directorDb.createThread({ title: "Fresh director Grok cap survives boot", workspace: directorWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(directorDb, directorThread, "grok:grok-4.6", "done", "", false, directorNow - 1_000);
+  const directorInternals = bootFixtureManager(directorDb, directorRoot);
+  check("a fresh director-origin Grok latch is not erased by historical success", directorInternals.grokCapUntil === directorLatchUntil, String(directorInternals.grokCapUntil));
+  directorDb.raw.close();
+  rmSync(directorRoot, { recursive: true, force: true });
+
+  // If a restart beats the KV write after a reset-less provider capacity error, all CLI backends still
+  // receive a bounded fallback latch rather than being selected again immediately.
+  const fallbackRoot = mkdtempSync(join(tmpdir(), "provider-fallback-resetless-"));
+  const fallbackWorkspace = join(fallbackRoot, "workspace");
+  mkdirSync(fallbackWorkspace, { recursive: true });
+  const fallbackDb = new Db(join(fallbackRoot, "orchestrator.sqlite"));
+  const fallbackNow = Date.now();
+  const grokCapacityThread = fallbackDb.createThread({ title: "Reset-less Grok capacity cap restores", workspace: fallbackWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(fallbackDb, grokCapacityThread, "grok:grok-4.6", "error", "Selected model is at capacity. Please try a different model.", false, fallbackNow - 2_000);
+  const zaiCapacityThread = fallbackDb.createThread({ title: "Reset-less z.ai capacity cap restores", workspace: fallbackWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(fallbackDb, zaiCapacityThread, "zai", "error", "Selected model is at capacity. Please try a different model.", false, fallbackNow - 1_000);
+  const fallbackInternals = bootFixtureManager(fallbackDb, fallbackRoot);
+  check("a reset-less Grok cap is restored with a bounded latch", fallbackInternals.grokCapUntil > Date.now(), String(fallbackInternals.grokCapUntil));
+  check("a reset-less z.ai cap is restored with a bounded latch", fallbackInternals.zaiCapUntil > Date.now(), String(fallbackInternals.zaiCapUntil));
+  fallbackDb.raw.close();
+  rmSync(fallbackRoot, { recursive: true, force: true });
+
+  // A later model-capacity notice is not proof that an earlier provider-stated plan reset is stale.
+  // Keep the authoritative date until a clean run succeeds after it.
+  const preserveRoot = mkdtempSync(join(tmpdir(), "provider-fallback-preserve-reset-"));
+  const preserveWorkspace = join(preserveRoot, "workspace");
+  mkdirSync(preserveWorkspace, { recursive: true });
+  const preserveDb = new Db(join(preserveRoot, "orchestrator.sqlite"));
+  const preserveThread = preserveDb.createThread({ title: "Reset-less capacity does not shorten provider reset", workspace: preserveWorkspace, rawPrompt: "verify", brief: "verify" });
+  const preserveNow = Date.now();
+  recordOutcome(preserveDb, preserveThread, "codex:gpt-5.6-terra", "error", statedResetText, true, preserveNow - 2_000);
+  recordOutcome(preserveDb, preserveThread, "codex:gpt-5.6-terra", "error", "Selected model is at capacity. Please try a different model.", false, preserveNow - 1_000);
+  const preserveInternals = bootFixtureManager(preserveDb, preserveRoot);
+  check("a reset-less Codex capacity cap preserves an undisproved provider reset", preserveInternals.codexCapUntil === statedReset, String(preserveInternals.codexCapUntil));
+  check("the preserved Codex reset remains provider-authoritative", preserveInternals.codexCapUntilProviderStated === true, String(preserveInternals.codexCapUntilProviderStated));
+  preserveDb.raw.close();
+  rmSync(preserveRoot, { recursive: true, force: true });
+
+  const expiredRoot = mkdtempSync(join(tmpdir(), "provider-fallback-expired-reset-"));
+  const expiredWorkspace = join(expiredRoot, "workspace");
+  mkdirSync(expiredWorkspace, { recursive: true });
+  const expiredDb = new Db(join(expiredRoot, "orchestrator.sqlite"));
+  const expiredThread = expiredDb.createThread({ title: "Expired provider reset does not re-latch", workspace: expiredWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(expiredDb, expiredThread, "codex:gpt-5.6-terra", "error", "You've hit your usage limit. Try again at Jan 1st, 2020 12:00 PM.", true, Date.now() - 1_000);
+  const expiredInternals = bootFixtureManager(expiredDb, expiredRoot);
+  check("an expired Codex reset does not become a fresh fallback cooldown on boot", expiredInternals.codexCapUntil === undefined, String(expiredInternals.codexCapUntil));
+  expiredDb.raw.close();
+  rmSync(expiredRoot, { recursive: true, force: true });
 } finally {
   db.raw.close();
   rmSync(root, { recursive: true, force: true });
