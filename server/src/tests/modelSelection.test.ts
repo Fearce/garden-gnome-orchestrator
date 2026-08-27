@@ -16,7 +16,8 @@
 
 import { buildSelectionPrompt, modelNote, parseSelection, selectImplementorModel, type ModelCandidate } from "../orchestrator/modelSelector.js";
 import { gradeSettledTask, outcomeOfState, scoreOutcome } from "../orchestrator/modelGrading.js";
-import { fetchZaiModels } from "../agents/modelCatalog.js";
+import { CURATED_CODEX_MODELS, fetchZaiModels } from "../agents/modelCatalog.js";
+import { WAKE_MODEL } from "../agents/codexUsagePing.js";
 import { claudeTokenUsage } from "../agents/runner.js";
 import { codexTokenUsage } from "../agents/codexRunner.js";
 import type { AgentRun, Effort } from "../types.js";
@@ -279,6 +280,16 @@ check("Codex preserves cache/reasoning detail without double-counting total", co
 
 // z.ai's models endpoint answers OLDEST-first, and every picker in this app reads list position as
 // capability, so the ordering is the load-bearing part of the parse.
+// Under ChatGPT-plan auth `config.codex.models` is the ENTIRE Codex roster auto-select can reach, and
+// the usage ping separately asserts its wake model runs on that auth. A model good enough to wake the
+// 5h window but missing from the roster is a model the selector can never pick — the shape of the
+// regression that quietly cut the Codex roster from five models to three.
+check(
+  "the Codex model the usage ping wakes with is one auto-select can also pick",
+  (CURATED_CODEX_MODELS as readonly string[]).includes(WAKE_MODEL),
+  `${WAKE_MODEL} not in ${CURATED_CODEX_MODELS.join(",")}`,
+);
+
 const respondWith = (body: string, status: number): void => {
   globalThis.fetch = (async () => new Response(body, { status })) as typeof fetch;
 };

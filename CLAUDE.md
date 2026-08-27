@@ -209,8 +209,8 @@ On, the implementor's model + effort become a per-task judgement: just before th
 `orchestrator/modelSelector.ts` makes ONE no-tools structured judgement on whichever provider currently has
 headroom, weighing the brief, the planner's read of the repo, graded local history, a daily cached LiveBench
 category/effort prior, and the roster of models **dispatchable right now**. The roster is exhaustive, not
-representative: every live Claude model, every live Grok model, every Codex model exposed by the active
-ChatGPT/API-key auth catalog, and every documented GLM Coding Plan model on each enabled+authed+uncapped backend. Each entry names
+representative: every live Claude, Grok and GLM model (z.ai mirrors Anthropic's `/v1/models`, so its roster is fetched, not hand-listed), and
+every Codex model the active auth exposes — its API-key catalog, else the CLI presets that ARE the ChatGPT-plan roster — on each enabled+authed+uncapped backend. Each entry names
 its exact model-compatible effort tiers after the operator's backend/account cap; no fixed per-provider slice
 or global effort list can hide a usable choice. Exact LiveBench rows are distinguished from
 explicitly labelled older same-family priors; local outcomes and role/tool fit outrank the benchmark. The reply is validated against that roster and

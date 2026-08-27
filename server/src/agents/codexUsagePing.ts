@@ -35,7 +35,9 @@ const ROLLOUT_POLL_MS = 30_000; // the cheap rollout-file poll (fresh mid-run da
 // supported when using Codex with a ChatGPT account" (verified live, CLI 0.142.4). Effort "low", not
 // "minimal" — minimal 400s against the built-in web_search tool. CODEX_WAKE=off disables waking.
 const WAKE_OFF = process.env.CODEX_WAKE === "off";
-const WAKE_MODEL = process.env.CODEX_WAKE_MODEL?.trim() || "gpt-5.5";
+/** Exported because it is a claim about what ChatGPT-plan auth can run, which `config.codex.models`
+ *  makes independently — under that auth the curated list IS the whole roster, so the two must agree. */
+export const WAKE_MODEL = process.env.CODEX_WAKE_MODEL?.trim() || "gpt-5.5";
 const WAKE_EFFORT = "low";
 const WAKE_PROMPT = "Reply with exactly: ok";
 const WAKE_TIMEOUT_MS = 180_000;
