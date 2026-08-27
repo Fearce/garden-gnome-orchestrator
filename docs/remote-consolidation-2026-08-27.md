@@ -234,6 +234,12 @@ Danger Zone, **Delete this repository**.
   survive; the rendered diff and commit list become unavailable once the head repo is gone. Both were
   closed unmerged, and both branches now exist on the real repo by the same names, so no code is at risk.
   This is the only irreversible loss, and it is why the deletion was left as a decision rather than forced.
+  **Measured afterwards, and it did not happen.** GitHub keeps `refs/pull/N/head` forever, independently
+  of the head repo: `git ls-remote origin` still lists `refs/pull/11/head` at `a0c4838` and
+  `refs/pull/12/head` at `d578328`, and the API still renders both diffs in full (`pulls/11/files` = 10
+  files / +851, `pulls/12/files` = 2 files / +93) with `head.repo` reading `null`. So the fork deletion
+  and the later branch cleanup cost **nothing at all** — the prediction above was pessimistic, and is kept
+  as written because it is what the decision was taken on.
 - **PR #13 is unaffected.** Its head is `Merkelmore/garden-gnome-orchestrator`, a third party's fork.
 
 ---
@@ -258,10 +264,10 @@ Danger Zone, **Delete this repository**.
 > "was pushed to and confirmed on Fearce", not as "still there today". Full per-branch sha/preservation
 > table is in the QA finding on this task's blackboard, posted the same time as this edit.
 >
-> Two closed PRs (`Fearce` #11, #12) still show "the compare/diff is unavailable" the same way they did
-> once the fork was deleted (§4) — their head branches are gone from both places now. No change from the
-> risk already accepted and recorded in §4; this section doesn't reopen that call, just notes the branch
-> that carried it is no longer on `origin` either.
+> Two closed PRs (`Fearce` #11, #12) had their head on one of these branches, so this looked like it
+> compounded the §4 risk. It does not: `refs/pull/11/head` and `refs/pull/12/head` survive both the fork
+> deletion and the branch cleanup, and both diffs still render in full — measured, see §4. Nothing this
+> task did, or that Mikkel did after it, cost a single commit or a single rendered diff.
 
 ---
 
