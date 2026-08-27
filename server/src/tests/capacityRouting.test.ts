@@ -61,6 +61,14 @@ check(
   "a cached 100% reading is fresh after its recorded reset elapsed",
   assessCapacity([{ label: "5h", usedPct: 100, resetAt: NOW - MINUTE }], high, NOW).status === "viable",
 );
+check(
+  "a substantial task does not reserve a full 5h-sized burn from the weekly allowance",
+  assessCapacity([{ label: "weekly", usedPct: 75, resetAt: NOW + 5 * 24 * HOUR }], high, NOW).status === "viable",
+);
+check(
+  "the weekly allowance still gates substantial work when it is near exhaustion",
+  assessCapacity([{ label: "weekly", usedPct: 92, resetAt: NOW + 5 * 24 * HOUR }], high, NOW).status === "at-risk",
+);
 
 console.log("\n=== capacity routing — multiple providers and gating windows ===\n");
 

@@ -469,9 +469,11 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
 - **Workload-sized runway, before dispatch.** Known-viable capacity wins over unmetered capacity, which
   wins over known-at-risk capacity. Existing weekly-safety, spread-usage, and soonest-reset preferences
   remain tiebreakers inside that capacity tier. A reset inside the estimated run reduces the amount that
-  must be available before dispatch; a reset after completion does not. Short roles may therefore bridge
-  a near reset, while substantial implementation/QA work is parked instead of knowingly starting on a
-  pool forecast to expire mid-task. An owner-triggered reviewer refuses the same known-doomed launch and
+  must be available before dispatch; a reset after completion does not. Weekly and monthly windows keep
+  gating dispatch, but task burn is weighted lower than a 5h window so substantial work is not stranded
+  behind a healthy long-window allowance. Short roles may therefore bridge a near reset, while substantial
+  implementation/QA work is parked instead of knowingly starting on a pool forecast to expire mid-task.
+  An owner-triggered reviewer refuses the same known-doomed launch and
   leaves the task in review with the next viable reset, because that manual lane deliberately does not
   join pipeline auto-resume. Unknown telemetry remains dispatchable as a bounded fallback so
   API-key and cold-start installations do not deadlock. The task gets a finding with its workload reserve,
@@ -480,8 +482,8 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   simulates the combined windows at each future reset. It will not advertise or schedule a 5h wake while
   the same pool's weekly/monthly gate remains exhausted. The task error names the limiting pool(s), the
   next reset that would actually make one viable (or says no reliable reset is known), and the supervisor
-  rechecks the same role-sized reserve before auto-resuming. Gate: `test:capacity-routing` plus the existing
-  provider-fallback, QA-budget, auto-model, and Codex-pool gates.
+  rechecks the same role-sized reserve before auto-resuming. Gate: `test:capacity-routing` and
+  `test:codex-usage` plus the existing provider-fallback, QA-budget, auto-model, and Codex-pool gates.
 - Degrades to single-account (inherited login) when fewer than two tokens are
   configured. A bar reads `—` only before the first successful ping for that
   account.

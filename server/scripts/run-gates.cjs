@@ -36,6 +36,7 @@ const GATES = [
   "test:grok-runner",
   "test:grok-reasoning",
   "test:grok-usage",
+  "test:codex-usage",
   "test:schedule-detect",
   "test:scheduler",
   "test:notes",

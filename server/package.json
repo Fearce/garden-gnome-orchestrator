@@ -35,6 +35,7 @@
     "test:grok-runner": "tsx src/tests/grokRunner.test.ts",
     "test:grok-reasoning": "tsx src/tests/grokReasoning.test.ts",
     "test:grok-usage": "tsx src/tests/grokUsage.test.ts",
+    "test:codex-usage": "tsx src/tests/codexUsage.test.ts",
     "test:schedule-detect": "tsx src/tests/scheduleDetect.test.ts",
     "test:scheduler": "tsx src/tests/scheduler.test.ts",
     "test:notes": "tsx src/tests/operatorNotes.test.ts",

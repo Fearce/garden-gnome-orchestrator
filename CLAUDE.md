@@ -228,8 +228,10 @@ general or dedicated 5h + weekly, Grok weekly + monthly credits, routing ceiling
 Known viable capacity wins, unknown/unmetered capacity remains a bounded fallback, and known-at-risk
 capacity is last. Existing weekly-safety, spread-usage, and perishable-reset policy still breaks ties
 inside that tier. A reset during the estimated run reduces pre-reset demand; one after completion does
-not. This lets a short role bridge a near reset without assigning substantial implementation or QA to
-a pool forecast to expire mid-task.
+not. Longer-window gates (weekly/monthly) still gate dispatch, but their required task burn is scaled
+below the 5h window so one high-effort task does not consume a whole weekly-sized reserve. This lets a
+short role bridge a near reset without assigning substantial implementation or QA to a pool forecast to
+expire mid-task.
 
 When every visible compatible pool lacks the reserve, substantial work enters the existing durable
 `Auto-resume pending` park without spending a doomed turn. The task's finding/error shows the workload
@@ -238,7 +240,7 @@ does not wake or promise capacity while a weekly/monthly window is still exhaust
 rechecks the same workload reserve before resuming. Eligible reader/planner/researcher turns compare
 independent Codex model pools proactively, and selecting one no longer selects/wakes an unused Claude
 account. Unknown telemetry never freezes an otherwise dispatchable API-key/cold-start backend. Gate:
-`test:capacity-routing` (plus `test:provider-fallback`, `test:qa-budget`, `test:auto-model`, and
+`test:capacity-routing` and `test:codex-usage` (plus `test:provider-fallback`, `test:qa-budget`, `test:auto-model`, and
 `test:codex-pools` for wiring/recovery).
 
 ## Auto model selection (`settings.autoModelSelection`, off by default)

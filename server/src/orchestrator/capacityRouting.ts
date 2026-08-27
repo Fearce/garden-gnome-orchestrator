@@ -15,6 +15,8 @@ export interface CapacityWindow {
   label: string;
   usedPct: number | null;
   resetAt: number | null;
+  /** Relative share of this window a normal task burn consumes. 5h is 1; longer windows are lower. */
+  burnWeight?: number;
 }
 
 /** A conservative routing reserve, not a promise about provider token accounting. */
@@ -132,8 +134,8 @@ export function standardCapacityWindows(
   sevenDayReset: number | null | undefined,
 ): CapacityWindow[] {
   return [
-    { label: "5h", usedPct: finitePct(fiveHour), resetAt: finiteEpoch(fiveHourReset) },
-    { label: "weekly", usedPct: finitePct(sevenDay), resetAt: finiteEpoch(sevenDayReset) },
+    { label: "5h", usedPct: finitePct(fiveHour), resetAt: finiteEpoch(fiveHourReset), burnWeight: 1 },
+    { label: "weekly", usedPct: finitePct(sevenDay), resetAt: finiteEpoch(sevenDayReset), burnWeight: 0.2 },
   ];
 }
 
@@ -192,7 +194,7 @@ export function assessCapacity(windows: readonly CapacityWindow[], demand: Capac
       : window.resetAt != null && window.resetAt < now + demand.expectedDurationMs
         ? Math.max(0, (window.resetAt - now) / demand.expectedDurationMs)
         : 1;
-    const requiredPct = Math.min(100, demand.reservePct + demand.expectedBurnPct * fractionBeforeReset);
+    const requiredPct = Math.min(100, demand.reservePct + demand.expectedBurnPct * windowBurnWeight(window) * fractionBeforeReset);
     return {
       label: window.label,
       remainingPct,
@@ -298,6 +300,14 @@ function finiteEpoch(value: number | null | undefined): number | null {
 
 function clampPct(value: number): number {
   return Math.max(0, Math.min(100, value));
+}
+
+function windowBurnWeight(window: CapacityWindow): number {
+  if (typeof window.burnWeight === "number" && Number.isFinite(window.burnWeight)) return Math.max(0, window.burnWeight);
+  const label = window.label.toLowerCase();
+  if (label.includes("monthly")) return 0.1;
+  if (label.includes("weekly") || label.includes("7d")) return 0.2;
+  return 1;
 }
 
 function round(value: number): number {

@@ -109,8 +109,10 @@ and **Zhipu z.ai** (GLM Coding Plan). If Claude caps mid-task, work fails over t
 enabled backend still has headroom instead of stopping. Before a substantial run starts,
 routing compares the task's estimated quota runway against every visible account/provider/model
 pool (including Grok monthly credits and dedicated Codex model allowances); a nearly spent pool
-loses to one that can carry the work. If none can, the task shows the limiting windows and waits
-for the first reset that actually makes a compatible pool viable, then resumes automatically.
+loses to one that can carry the work. Weekly/monthly gates are weighted as longer windows, so they
+still matter without treating one task as a whole weekly burn. If none can, the task shows the
+limiting windows and waits for the first reset that actually makes a compatible pool viable, then
+resumes automatically.
 
 **More than one Claude subscription?** Set `ACCOUNT_1_TOKEN`, `ACCOUNT_2_TOKEN` and so on
 (up to 8). Dispatches route to burn the perishable weekly allowance first, and the top bar

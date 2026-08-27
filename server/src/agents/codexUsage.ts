@@ -102,6 +102,12 @@ let livePing: CodexUsageDTO | null = null;
 // a CLI upgrade changing the RPC), a last-known 100%-capped reading must not pin the cap checks past
 // reality — fall back to the rollout truth instead. ~3× the default ping cadence.
 const LIVE_PING_MAX_AGE_MS = 30 * 60_000;
+// Routing can ask for Codex capacity once per provider/model during a single dispatch decision. The
+// underlying rollout scan recursively walks CODEX_HOME + ~/.codex and parses JSONL, so keep one merged
+// answer briefly and invalidate it on the in-process state changes that can alter the result.
+const READ_CACHE_TTL_MS = 2_000;
+let readCache: { at: number; value: CodexUsageDTO | null } | null = null;
+let rolloutScanCount = 0;
 
 /** The still-fresh app-server reading, if one is available. Unlike readCodexUsage this never falls
  * back to a rollout file: consumers use it when a just-completed live probe must be allowed to
@@ -114,6 +120,7 @@ export function liveCodexUsage(): CodexUsageDTO | null {
 /** Record a live app-server rate-limit read. Called by the usage ping on every successful probe. */
 export function noteCodexPing(usage: CodexUsageDTO): void {
   livePing = usage;
+  clearReadCache();
   persistCache();
 }
 
@@ -141,6 +148,7 @@ let plannedWakeAt: number | null = null;
 /** Record (or clear, with null) the scheduled Codex wake turn. */
 export function noteCodexWake(at: number | null): void {
   plannedWakeAt = at;
+  clearReadCache();
 }
 
 /** The codex CLI does not expose rolling rate limits over `codex exec --json`, but it PERSISTS them to
@@ -151,6 +159,14 @@ export function noteCodexWake(at: number | null): void {
  *  CODEX_HOME and the operator's ~/.codex, fold in the latest live app-server ping (codexUsagePing), and
  *  return the most recent of them all. Returns null when nothing has produced a reading yet. */
 export function readCodexUsage(): CodexUsageDTO | null {
+  const now = Date.now();
+  if (readCache && now - readCache.at <= READ_CACHE_TTL_MS) return cloneUsage(readCache.value);
+  const value = readCodexUsageUncached(now);
+  readCache = { at: now, value: cloneUsage(value) };
+  return cloneUsage(value);
+}
+
+function readCodexUsageUncached(now: number): CodexUsageDTO | null {
   const homes = [config.codex.home, config.codex.sourceAuthHome];
   let best: CodexUsageDTO | null = null;
   let latestTurn: CodexUsageDTO | null = null;
@@ -159,10 +175,9 @@ export function readCodexUsage(): CodexUsageDTO | null {
     if (snap && (!latestTurn || snap.updatedAt > latestTurn.updatedAt)) latestTurn = snap;
     if (snap && (!best || snap.updatedAt > best.updatedAt)) best = snap;
   }
-  const pingFresh = livePing && Date.now() - livePing.updatedAt <= LIVE_PING_MAX_AGE_MS;
+  const pingFresh = livePing && now - livePing.updatedAt <= LIVE_PING_MAX_AGE_MS;
   if (pingFresh && (!best || livePing!.updatedAt > best.updatedAt)) best = livePing;
   if (!best) return null;
-  const now = Date.now();
   const wakeAt = plannedWakeAt != null && plannedWakeAt > now ? plannedWakeAt : null;
   // Pools ride the live ping only — a rollout's `rate_limits` carries just the plan-wide windows. So
   // attach them independently of which snapshot won `best` above, or a rollout newer than the ping
@@ -223,6 +238,7 @@ function turnFiveHourReset(
 
 /** Newest `rate_limits` snapshot from the most recent rollout file under `<home>/sessions`. */
 function latestRollupUsage(home: string): CodexUsageDTO | null {
+  rolloutScanCount++;
   const sessions = join(home, "sessions");
   if (!existsSync(sessions)) return null;
   let files: string[];
@@ -252,6 +268,29 @@ function latestRollupUsage(home: string): CodexUsageDTO | null {
   }
   return null;
 }
+
+function clearReadCache(): void {
+  readCache = null;
+}
+
+function cloneUsage(value: CodexUsageDTO | null): CodexUsageDTO | null {
+  return value ? { ...value, pools: value.pools?.map((pool) => ({ ...pool })) } : null;
+}
+
+export const __codexUsageTestHooks = {
+  clearReadCache(): void {
+    clearReadCache();
+  },
+  reset(): void {
+    readCache = null;
+    rolloutScanCount = 0;
+    livePing = null;
+    plannedWakeAt = null;
+  },
+  rolloutScanCount(): number {
+    return rolloutScanCount;
+  },
+};
 
 function safeMtime(f: string): number {
   try {
