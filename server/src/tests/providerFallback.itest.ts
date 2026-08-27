@@ -477,6 +477,39 @@ try {
   check("legacy QA recovery reaches done without another manual-review park", legacyDb.getThread(legacyThread.id)?.state === "done", legacyDb.getThread(legacyThread.id)?.state);
   legacyDb.raw.close();
   rmSync(legacyRoot, { recursive: true, force: true });
+
+  // Boot restoration must never resurrect an old provider-stated reset after a newer clean run proved
+  // that reset stale. A still-newer model-capacity rejection has no reset of its own; it gets the normal
+  // bounded/live-headroom latch rather than inheriting the disproved multi-day date.
+  const staleRoot = mkdtempSync(join(tmpdir(), "provider-fallback-stale-reset-"));
+  const staleWorkspace = join(staleRoot, "workspace");
+  mkdirSync(staleWorkspace, { recursive: true });
+  const staleDb = new Db(join(staleRoot, "orchestrator.sqlite"));
+  const staleThread = staleDb.createThread({ title: "Old reset stays disproved", workspace: staleWorkspace, rawPrompt: "verify", brief: "verify" });
+  staleDb.updateThread(staleThread.id, { state: "review", error: "QA could not complete — Selected model is at capacity. Please try a different model." });
+  staleDb.updateThreadStageOutputs(staleThread.id, { kickoff: "KICKOFF: completed implementation", qaRoundsUsed: 1 });
+  const oldCap = staleDb.createRun({ threadId: staleThread.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+  const staleNow = Date.now();
+  staleDb.raw.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(staleNow - 3_500, oldCap.id);
+  staleDb.updateRun(oldCap.id, { state: "error", capFlagged: true, error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.", endedAt: staleNow - 3_000 });
+  const recovered = staleDb.createRun({ threadId: staleThread.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+  staleDb.raw.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(staleNow - 2_500, recovered.id);
+  staleDb.updateRun(recovered.id, { state: "done", capFlagged: false, endedAt: staleNow - 2_000 });
+  const currentCapacity = staleDb.createRun({ threadId: staleThread.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+  staleDb.raw.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(staleNow - 1_500, currentCapacity.id);
+  staleDb.updateRun(currentCapacity.id, { state: "error", capFlagged: false, error: "Selected model is at capacity. Please try a different model.", endedAt: staleNow - 1_000 });
+  (ThreadManager.prototype as any).scheduleAutoResume = () => {};
+  let staleManager: InstanceType<typeof ThreadManager>;
+  try {
+    staleManager = new ThreadManager(staleDb, new EventHub(), new FileMemoryService(join(staleRoot, "memory")), new StubAccounts() as unknown as AccountManager);
+  } finally {
+    (ThreadManager.prototype as any).scheduleAutoResume = originalScheduleAutoResume;
+  }
+  const staleInternals = staleManager as any;
+  check("a newer success prevents restoration of an older provider-stated Codex reset", staleInternals.codexCapUntil !== statedReset, String(staleInternals.codexCapUntil));
+  check("the current reset-less capacity latch remains non-authoritative", staleInternals.codexCapUntilProviderStated === false, String(staleInternals.codexCapUntilProviderStated));
+  staleDb.raw.close();
+  rmSync(staleRoot, { recursive: true, force: true });
 } finally {
   db.raw.close();
   rmSync(root, { recursive: true, force: true });

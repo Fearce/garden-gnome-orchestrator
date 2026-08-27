@@ -747,20 +747,26 @@ export class ThreadManager implements OrchestratorApi {
    * migration. Retaining only the latest reset per account avoids replaying a long run history. */
   private restoreRecordedProviderCapLatches(): void {
     const now = Date.now();
-    const latestByAccount = new Map<string, { error: string; reset: number }>();
+    const latestByAccount = new Map<string, { error?: string; reset?: number; capped: boolean; endedAt: number; startedAt: number }>();
     for (const thread of this.db.listThreads()) {
       for (const run of this.db.listRuns(thread.id)) {
-        if (!run.account || !run.error) continue;
-        if (run.capFlagged !== true && !providerErrorLooksRateLimited(run.error)) continue;
-        const reset = parseUsageLimitResetAt(run.error, now);
-        if (reset == null || reset <= now) continue;
+        if (!run.account || run.endedAt == null) continue;
+        const capped = run.capFlagged === true || providerErrorLooksRateLimited(run.error ?? "");
+        // A newer clean completion proves an older recorded cap reset is stale. Keep the newest
+        // conclusive outcome per account, rather than selecting the farthest future reset from all
+        // history (which can resurrect an already-disproved multi-day latch after a later short
+        // model-capacity rejection).
+        if (!capped && run.state !== "done") continue;
         const prior = latestByAccount.get(run.account);
-        if (!prior || reset > prior.reset) latestByAccount.set(run.account, { error: run.error, reset });
+        if (prior && (prior.endedAt > run.endedAt || (prior.endedAt === run.endedAt && prior.startedAt >= run.startedAt))) continue;
+        const reset = capped && run.error ? parseUsageLimitResetAt(run.error, now) : undefined;
+        latestByAccount.set(run.account, { error: run.error ?? undefined, reset, capped, endedAt: run.endedAt, startedAt: run.startedAt });
       }
     }
-    for (const [account, { error }] of latestByAccount) this.latchLegacyProviderCap(account, error);
-    if (latestByAccount.size) {
-      this.hub.log("warn", `Restored ${latestByAccount.size} recorded provider usage-cap ${latestByAccount.size === 1 ? "latch" : "latches"} before auto-resume.`);
+    const restorable = [...latestByAccount.entries()].filter(([, outcome]) => outcome.capped && outcome.error && outcome.reset != null && outcome.reset > now);
+    for (const [account, outcome] of restorable) this.latchLegacyProviderCap(account, outcome.error!);
+    if (restorable.length) {
+      this.hub.log("warn", `Restored ${restorable.length} recorded provider usage-cap ${restorable.length === 1 ? "latch" : "latches"} before auto-resume.`);
     }
   }
 
