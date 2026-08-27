@@ -16,7 +16,7 @@ import {
   validateAgainstSchema,
   type JsonSchemaLike,
 } from "./structuredText.js";
-import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
+import { parseUsageLimitResetAt, transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 
 export interface GrokRunConfig {
   /** The Grok model to run, e.g. `grok-4.6`. */
@@ -512,7 +512,7 @@ export class GrokAgentRun implements AgentRunLike {
         this.endThoughtSegment();
         this.sawTerminal = true;
         const msg = ev.message ?? this.lastErrorMsg ?? "Grok turn failed.";
-        if (RATE_LIMIT_RE.test(msg)) this.markCapped();
+        if (RATE_LIMIT_RE.test(msg)) this.markCapped(msg);
         else this.markTransientApiError(msg);
         this.pendingTerminalResult = { subtype: "error", isError: true, result: msg };
         break;
@@ -535,7 +535,7 @@ export class GrokAgentRun implements AgentRunLike {
         if (ev.structuredOutput !== undefined) this.endStructuredOutput = ev.structuredOutput;
         // A cap can also close a turn via `end` with a limit stopReason rather than an `error` event.
         const stop = ev.stopReason ?? "";
-        if (RATE_LIMIT_RE.test(stop)) this.markCapped();
+        if (RATE_LIMIT_RE.test(stop)) this.markCapped(stop);
         // `MaxTurns` (or a max_turns_reached event) is an involuntary cutoff, NOT a finish — surface it as
         // error_max_turns so the pipeline silently warm-resumes it, exactly like the Claude turn ceiling.
         const cutoff = this.maxTurnsHit || /max.?turns/i.test(stop);
@@ -614,9 +614,9 @@ export class GrokAgentRun implements AgentRunLike {
 
   /** Flag that this turn died to a usage cap. Drives the pipeline's provider failover to another backend —
    *  NOT the Claude-account failover (see the `capped`/`rateLimited` field comment). */
-  private markCapped(): void {
+  private markCapped(message?: string): void {
     this.capped = true;
-    this.rateLimitInfo = { status: "rejected" };
+    this.rateLimitInfo = { status: "rejected", resetsAt: message ? parseUsageLimitResetAt(message) : undefined };
   }
 
   private markTransientApiError(value: unknown): void {
@@ -779,7 +779,7 @@ export class GrokAgentRun implements AgentRunLike {
     // failure so a waiting result()/nextResult() resolves instead of hanging.
     if (!this.sawTerminal) {
       const msg = this.lastErrorMsg ?? `Grok CLI exited with code ${code ?? "unknown"} before finishing the turn.`;
-      if (RATE_LIMIT_RE.test(msg)) this.markCapped();
+      if (RATE_LIMIT_RE.test(msg)) this.markCapped(msg);
       else this.markTransientApiError(msg);
       this.finishTurn({ subtype: "error", isError: true, result: msg });
     } else if (this.pendingTerminalResult) {

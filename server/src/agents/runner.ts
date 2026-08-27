@@ -449,10 +449,10 @@ export class AgentRun implements AgentRunLike {
               // a cap-parked task is auto-resumed, instantly re-caps, and loops — re-showing this very
               // message. flagCapFromSignal emits the synthetic rate_limit that holds the account out of
               // rotation until the window resets — once per run, since the CLI repeats this notice and
-              // each event reaches AccountManager. Parse the "resets 7pm" clock for the real reset; fall
-              // back to the ~5h session cadence when absent, so the hold always self-expires.
-              const resetsAt = parseResetClock(b.text, Date.now()) ?? Date.now() + SESSION_LIMIT_FALLBACK_MS;
-              this.flagCapFromSignal({ status: "rejected", resetsAt });
+              // each event reaches AccountManager. Preserve either a provider-stated absolute reset
+              // or a short clock reset; fall back to the ~5h session cadence when absent, so the hold
+              // always self-expires.
+              this.flagCapFromSignal(capInfoFromText(b.text));
               continue;
             }
             this.emit({ type: "text", text: b.text });
@@ -464,7 +464,10 @@ export class AgentRun implements AgentRunLike {
         // (SDKAssistantMessageError "rate_limit"), NOT a rate_limit_event — catch it here so the
         // failover path still fires. (Not "overloaded": that's transient server load the SDK retries,
         // and switching accounts wouldn't help.)
-        if (m.error === "rate_limit") this.flagCapFromSignal({ status: "rejected" });
+        if (m.error === "rate_limit") {
+          const text = [typeof m.error === "string" ? m.error : "", ...blocks.map((b) => b?.text ?? "")].join("\n");
+          this.flagCapFromSignal(capInfoFromText(text));
+        }
         else if (m.error) this.flagTransientApiError({ error: m.error, message: blocks.map((b) => b?.text ?? "").join(" ") });
         break;
       }
@@ -522,7 +525,14 @@ export class AgentRun implements AgentRunLike {
         // error_during_execution carrying a rate-limit message, or is_error + api_error_status 429)
         // rather than a rate_limit_event / assistant error. Flag BEFORE emitting so the awaiting
         // failover path (which reads agent.rateLimited the moment result() resolves) sees it.
-        if (evt.isError && resultLooksRateLimited(m, this.providerCapText)) this.flagCapFromSignal({ status: "rejected" });
+        if (evt.isError && resultLooksRateLimited(m, this.providerCapText)) {
+          const text = [
+            typeof m.result === "string" ? m.result : "",
+            typeof m.message === "string" ? m.message : "",
+            ...(Array.isArray(m.errors) ? m.errors.filter((e: unknown): e is string => typeof e === "string") : []),
+          ].join("\n");
+          this.flagCapFromSignal(capInfoFromText(text));
+        }
         if (evt.isError) this.flagTransientApiError(m);
         this.emit(evt);
         break;
@@ -664,7 +674,25 @@ export function parseUsageLimitResetAt(text: string, now = Date.now()): number |
     const parsed = Date.parse(absolute[1].replace(/(\d)(st|nd|rd|th)\b/gi, "$1"));
     if (Number.isFinite(parsed) && parsed > now) return parsed;
   }
+  // z.ai (and several OpenAI-compatible gateways) state resets in a numeric timestamp such as
+  // `Your limit will reset at 2026-08-22 06:06:05`. It is provider-local wall-clock time, just like
+  // the short `resets 7pm` form below, so Date.parse intentionally uses the server's local zone.
+  const numeric = /(?:try again|reset(?:s)?|available again)\s+(?:at\s+)?(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)/i.exec(text);
+  if (numeric?.[1]) {
+    const parsed = Date.parse(numeric[1]);
+    if (Number.isFinite(parsed) && parsed > now) return parsed;
+  }
   return parseResetClock(text, now);
+}
+
+/** Normalize an unstructured quota error into the same durable cap signal as a rate_limit_event.
+ * A future reset time keeps the account/provider out of routing until the provider says it is usable;
+ * absent one retains the bounded session fallback rather than a permanent latch. */
+function capInfoFromText(text: string, now = Date.now()): RateLimitInfo {
+  return {
+    status: "rejected",
+    resetsAt: parseUsageLimitResetAt(text, now) ?? now + SESSION_LIMIT_FALLBACK_MS,
+  };
 }
 
 /**

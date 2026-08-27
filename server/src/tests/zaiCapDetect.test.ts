@@ -9,7 +9,7 @@
 // spawns a live CLI against a real z.ai key, which no gate can do.
 
 import assert from "node:assert/strict";
-import { AgentRun, ZaiAgentRun, looksLikeCapNotice, resultLooksRateLimited } from "../agents/runner.js";
+import { AgentRun, ZaiAgentRun, looksLikeCapNotice, parseUsageLimitResetAt, resultLooksRateLimited } from "../agents/runner.js";
 import type { AgentEvent } from "../types.js";
 
 // Both wordings production has recorded, verbatim: the weekly exhaustion (the row that went unseen) and
@@ -55,6 +55,23 @@ for (const notice of ZAI_CAPS) {
     1,
     "the cap is announced once per run, however often the CLI repeats it",
   );
+}
+
+// --- Unstructured cap text keeps the provider's reset, not merely a generic cooldown ---
+{
+  const codexStyle = "You've hit your usage limit. Try again at Sep 2nd, 2030 2:23 PM.";
+  const codexReset = new Date("Sep 2, 2030 2:23 PM").getTime();
+  assert.equal(parseUsageLimitResetAt(codexStyle), codexReset, "the shared parser understands a provider-stated absolute reset");
+  const { run: claude } = newRun((c) => new AgentRun(c));
+  handle(claude, errorResult(codexStyle));
+  assert.equal(claude.rateLimitInfo?.resetsAt, codexReset, "a Claude error result propagates its stated absolute reset");
+
+  const zaiStyle = "API Error: Request rejected (429) · [1308][Usage limit reached for 5 hour. Your limit will reset at 2030-09-02 14:23:00]";
+  const zaiReset = new Date(2030, 8, 2, 14, 23, 0).getTime();
+  assert.equal(parseUsageLimitResetAt(zaiStyle), zaiReset, "the shared parser understands a provider-stated numeric reset");
+  const { run: zai } = newRun((c) => new ZaiAgentRun(c));
+  handle(zai, assistantText(zaiStyle));
+  assert.equal(zai.rateLimitInfo?.resetsAt, zaiReset, "a z.ai cap notice propagates its stated numeric reset");
 }
 
 // --- …and as an error RESULT, the belt-and-suspenders path (the same text is persisted as the run error) ---

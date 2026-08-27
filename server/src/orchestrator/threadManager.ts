@@ -2172,12 +2172,13 @@ export class ThreadManager implements OrchestratorApi {
   /** Latch Grok as usage-capped after a rejected turn, routing implementors to another backend. The live
    *  weekly scrape normally supplies the true reset; before it lands, a fixed cooldown keeps the latch
    *  self-expiring. Mirrors the chip's countdown via noteGrokCap. */
-  private noteGrokCap(): void {
+  private noteGrokCap(info?: RateLimitInfo): void {
     const now = Date.now();
     // Prefer the real weekly reset from the live `/usage show` scrape; fall back to a fixed cooldown when
-    // no scrape has landed yet (so the latch always self-expires rather than sticking forever).
-    const reset = readGrokUsage().sevenDayReset;
-    const until = reset != null && reset > now ? reset : now + config.grok.capCooldownMs;
+    // no scrape has landed yet. A cap response's stated reset is still authoritative enough to avoid
+    // immediately retrying the same exhausted provider before the next scrape lands.
+    const resets = [info?.resetsAt, readGrokUsage().sevenDayReset].filter((r): r is number => r != null && r > now);
+    const until = resets.length ? Math.min(...resets) : now + config.grok.capCooldownMs;
     if (this.grokCapUntil && this.grokCapUntil >= until) return; // already latched at least this long
     this.grokCapUntil = until;
     this.db.kvSet(GROK_CAP_KV_KEY, String(until));
@@ -2212,12 +2213,13 @@ export class ThreadManager implements OrchestratorApi {
   /** Latch z.ai as usage-capped after a rejected turn, routing implementors to another backend. The live
    *  quota scrape normally supplies the true 5h/weekly reset; before it lands, a fixed cooldown keeps the
    *  latch self-expiring. Mirrors the chip's countdown via noteZaiCap. */
-  private noteZaiCap(): void {
+  private noteZaiCap(info?: RateLimitInfo): void {
     const now = Date.now();
     const u = readZaiUsage();
     // Prefer the soonest real reset from the quota scrape (5h or weekly, whichever is nearer and in the
-    // future); fall back to a fixed cooldown so the latch always self-expires rather than sticking forever.
-    const resets = [u.fiveHourReset, u.sevenDayReset].filter((r): r is number => r != null && r > now);
+    // future). Preserve a rejected turn's stated reset too, so a transiently unavailable quota endpoint
+    // cannot shorten the provider hold to an arbitrary cooldown.
+    const resets = [info?.resetsAt, u.fiveHourReset, u.sevenDayReset].filter((r): r is number => r != null && r > now);
     const until = resets.length ? Math.min(...resets) : now + config.zai.capCooldownMs;
     if (this.zaiCapUntil && this.zaiCapUntil >= until) return; // already latched at least this long
     this.zaiCapUntil = until;
@@ -3225,8 +3227,8 @@ export class ThreadManager implements OrchestratorApi {
           (agent instanceof ZaiAgentRun && agent.rateLimited);
         if (!capped) return res;
         if (provider === "codex") this.noteCodexCap(agent.rateLimitInfo);
-        else if (provider === "grok") this.noteGrokCap();
-        else if (provider === "zai") this.noteZaiCap();
+        else if (provider === "grok") this.noteGrokCap(agent.rateLimitInfo);
+        else if (provider === "zai") this.noteZaiCap(agent.rateLimitInfo);
         unavailableProviders.add(provider);
         const next = this.nextReadyImplementor(provider, unavailableProviders, role);
         if (!next) {
@@ -4030,7 +4032,7 @@ export class ThreadManager implements OrchestratorApi {
       // account to fail over to. Latch its cap and return an error result so awaitImplementorCompletion's
       // provider-flip continues the task on another backend (mirrors the CLI cap handling).
       if (current instanceof ZaiAgentRun) {
-        this.noteZaiCap();
+        this.noteZaiCap(current.rateLimitInfo);
         return res?.isError ? res : { type: "result", subtype: "error_during_execution", isError: true, result: "z.ai usage cap" };
       }
       // A Fable-pool rejection with normal-window headroom relaunches on the SAME account — modelFor
@@ -4220,8 +4222,8 @@ export class ThreadManager implements OrchestratorApi {
     if (res?.isError && !this.cancelled(thread.id) && (cliCapped || zaiCapped)) {
       const from = this.implementorProvider.get(thread.id) ?? "claude";
       if (from === "codex") this.noteCodexCap(current.rateLimitInfo);
-      else if (from === "grok") this.noteGrokCap();
-      else if (from === "zai") this.noteZaiCap();
+      else if (from === "grok") this.noteGrokCap(current.rateLimitInfo);
+      else if (from === "zai") this.noteZaiCap(current.rateLimitInfo);
       const next = this.nextReadyImplementor(from) ?? "claude";
       this.implementorProvider.set(thread.id, next);
       // Fully end the capped CLI run BEFORE anything else — postFinding routes a warning to this.live's
