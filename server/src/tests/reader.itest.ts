@@ -27,6 +27,7 @@ import { join } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
 const { readerConfig } = await import("../agents/roles.js");
+const { READER_PROMPT } = await import("../agents/prompts.js");
 const { validateGitRead, runReadonlyGit, GIT_READ_SUBCOMMANDS } = await import("../git/readonlyGit.js");
 const { config } = await import("../config.js");
 const { Db } = await import("../db/db.js");
@@ -71,6 +72,7 @@ async function testToolset(): Promise<void> {
   check("runs under bypassPermissions", cfg.permissionMode === "bypassPermissions", `got ${cfg.permissionMode}`);
   check("model is the configured reader model", cfg.model === config.models.reader, `got ${cfg.model}`);
   check("emits structured output (json_schema)", cfg.outputFormat?.type === "json_schema");
+  check("the reader prompt requires the structured answer fallback", /required `answer` field/i.test(READER_PROMPT));
 
   // Every write / shell / network tool must be DENIED and must NOT appear in the allowlist.
   const mustDeny = ["Write", "Edit", "NotebookEdit", "MultiEdit", "Bash", "PowerShell", "KillShell", "BashOutput", "WebSearch", "WebFetch", "Task", "AskUserQuestion"];
@@ -203,11 +205,50 @@ async function testFinalizeDisposition(): Promise<void> {
   }
 }
 
+// ---- D. promoted read-lane restart resume ----------------------------------------------------------
+// A user can correct/extend a completed reader answer, which cold-starts an implementor while preserving
+// lane='read' for the card. If a server restart interrupts that implementor, Resume must continue the
+// implementor session instead of re-entering the readerDone short-circuit and leaving the task failed.
+async function testPromotedReadRestartResume(): Promise<void> {
+  console.log("\nD. Promoted read lane — restart resumes the implementor, not the finished reader");
+
+  const dataDir = mkdtempSync(join(tmpdir(), "reader-promoted-resume-"));
+  const db = new Db(join(dataDir, "orchestrator.sqlite"));
+  const hub = new EventHub();
+  const memory = new FileMemoryService();
+  const accounts = new AccountManager(config.accounts, hub, config.accountPingMs, { stagger: new ResetStagger() });
+  const manager = new ThreadManager(db, hub, memory, accounts);
+  const internals = manager as unknown as {
+    resumeImplementorOnly: (thread: unknown, message?: string) => Promise<void>;
+  };
+
+  try {
+    const thread = db.createThread({ title: "read then correct", workspace: dataDir, rawPrompt: "", brief: "count", lane: "read" });
+    db.updateThreadStageOutputs(thread.id, { readerDone: true });
+    const run = db.createRun({ threadId: thread.id, role: "implementor", model: "gpt-test", account: "codex:gpt-test" });
+    db.updateRun(run.id, { state: "interrupted", sessionId: "codex-session", endedAt: Date.now() });
+    db.updateThread(thread.id, { state: "failed", error: "interrupted by a server restart — auto-resuming…" });
+
+    let resumed = false;
+    internals.resumeImplementorOnly = async () => { resumed = true; };
+    const result = await manager.resumeThread(thread.id, "use the PR URL");
+    await Promise.resolve();
+
+    check("Resume reports implementing", result.ok && result.state === "implementing", JSON.stringify(result));
+    check("the promoted implementor resume path runs", resumed);
+    check("task leaves failed state immediately", db.getThread(thread.id)?.state === "implementing", `got ${db.getThread(thread.id)?.state}`);
+  } finally {
+    try { db.raw.close(); } catch { /* already closed */ }
+    try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* windows file lock — harmless */ }
+  }
+}
+
 // ---- run -------------------------------------------------------------------------------------------
 console.log("Reader lane (Option C) — read-only enforcement test");
 await testToolset();
 await testGitAllowlist();
 await testFinalizeDisposition();
+await testPromotedReadRestartResume();
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);
 if (failed > 0) {

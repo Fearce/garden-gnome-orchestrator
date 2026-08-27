@@ -5294,6 +5294,23 @@ export class ThreadManager implements OrchestratorApi {
     // the failure point — and clears the error via the first stage's setState.
     if (thread.state === "failed") {
       const note = message?.trim() ? message : undefined;
+      // A completed read task can be promoted into a real implementor session when the owner corrects
+      // or extends the reader's answer. Its durable lane remains `read` for the card/history, so a
+      // restart during that promoted session leaves state=failed + readerDone=true. Sending that back
+      // through runPipeline would enter the read-lane short circuit, see readerDone, and return without
+      // changing state — the Resume button would appear to do nothing forever. If an implementor really
+      // ran, resume that promoted session directly; an interrupted reader with no implementor still
+      // takes the normal resume-aware read pipeline below.
+      const promotedRead =
+        thread.lane === "read" &&
+        this.db.getThreadStageOutputs(threadId).readerDone === true &&
+        this.latestRoleRun(threadId, "implementor") != null;
+      if (promotedRead) {
+        this.resuming.add(threadId);
+        this.setState(threadId, "implementing");
+        void this.resumeImplementorOnly(thread, note);
+        return { ok: true, state: "implementing" };
+      }
       // Thread the steering note INTO the pipeline so the implementor actually receives it — not just
       // the UI feed. The feed echo is owned by the caller (injectThread echoes before resuming); a
       // direct resume carries no message, so nothing is dropped from the history.
