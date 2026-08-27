@@ -23,6 +23,16 @@ function qaKickoff(systemPrompt: string, disallowedTools: string[]): string {
 const readOnly = qaKickoff(QA_PROMPT, ["Write", "Edit", "NotebookEdit", "AskUserQuestion"]);
 assert.match(readOnly, /inspect and run checks, but do not edit the implementation/i);
 assert.match(readOnly, /OPERATOR_NOTE: short action \| https:\/\//, "CLI fallback roles must retain the owner-note bridge");
+assert.match(
+  readOnly,
+  /DELIVERABLE: Short label \| C:\/absolute\/path\/to\/file\.ext/,
+  "CLI fallback roles must retain the deliverable bridge",
+);
+assert.match(
+  readOnly,
+  /never use it to hide an implementor's missing deliverable/i,
+  "QA must not surface an implementor artifact on its behalf",
+);
 
 // Run the same shared kickoff builder for both CLI provider labels. The distinction is deliberate:
 // Codex triggered the regression, but Grok uses this exact text path too.

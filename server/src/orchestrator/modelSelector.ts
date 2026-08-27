@@ -59,8 +59,8 @@ const PROVIDER_LABEL: Record<ImplementorProvider, string> = {
  */
 export function modelNote(provider: ImplementorProvider, model: string): string {
   const id = model.toLowerCase();
-  if (provider === "codex") return "strong autonomous coder; runs as a separate CLI with no bus tools (it cannot post findings or deliverables)";
-  if (provider === "grok") return "capable generalist; runs as a separate CLI with no bus tools (it cannot post findings or deliverables)";
+  if (provider === "codex") return "strong autonomous coder; separate CLI with no interactive bus tools, but text bridges preserve office chat, owner notes, and deliverables";
+  if (provider === "grok") return "capable generalist; separate CLI with no interactive bus tools, but text bridges preserve office chat, owner notes, and deliverables";
   if (provider === "zai") return "GLM coding-plan model on an Anthropic-compatible endpoint — keeps every tool a Claude run has; solid mid-tier coder";
   if (id.includes("haiku")) return "fastest and cheapest; well suited to small, well-scoped, mechanical changes";
   if (id.includes("sonnet")) return "balanced cost and capability; the workhorse for ordinary feature work and refactors";

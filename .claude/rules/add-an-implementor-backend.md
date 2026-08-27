@@ -26,8 +26,9 @@ Two flavors:
   (`ANTHROPIC_BASE_URL`+`ANTHROPIC_AUTH_TOKEN`, drop the Claude OAuth token) + a nominal
   `class XAgentRun extends AgentRun {}` marker. Keeps the bus/office MCP tools, deliverables,
   resume, images for FREE — the big win over a custom runner.
-- **Custom CLI** (Codex/Grok): a new `AgentRunLike` class + the `OFFICE[team|office]:` text
-  bridge (`office-bridge.md`) — it gives all that up.
+- **Custom CLI** (Codex/Grok): a new `AgentRunLike` class + the CLI text bridges
+  (`office-bridge.md`). It still lacks interactive findings/read_findings/ask_user MCP,
+  but the bridges preserve office chat, owner notes, and deliverable cards.
 
 ## Touch list
 1. `config.ts` — backend block (auth/key, models, usage endpoint). `modelCatalog.ts` — `CURATED_X_MODELS`.
@@ -59,7 +60,8 @@ Two flavors:
    unreachable: z.ai's `Request rejected (429) · [1310][Weekly/Monthly Limit Exhausted…]` read as a crash
    for weeks — no latch, no hand-off, a burnt QA round. Mirror the wording into `probe-run-errors.cjs`'s
    `CAP_RE` too, or the sweep files it as a REAL failure. Gate: `test:zai-cap`.
-10. `capParkMessage`, `providerLabel`, and — CLI text-bridge backends ONLY — `isCliOfficeBridge` (a
+10. `capParkMessage`, `providerLabel`, and — CLI text-bridge backends ONLY — `isCliOfficeBridge` plus
+    the office/note/deliverable runner callbacks (a
     reuse-AgentRun backend has the real office MCP, so LEAVE IT OUT).
 11. **`scripts/probe-accounts.cjs` — `BACKENDS` *and* `MIRRORED_HEADROOM_TERMS`.** The sweep's
     failover-ladder readout reads `setting_x_enabled` + `x_cap_until` by literal name, and it

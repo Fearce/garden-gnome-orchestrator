@@ -3135,6 +3135,9 @@ export class ThreadManager implements OrchestratorApi {
           onOperatorNote: (body, url) => {
             this.postCliOperatorNote(thread, role, body, url);
           },
+          onDeliverable: (label, path) => {
+            this.postCliDeliverable(thread, role, run.id, label, path);
+          },
         }));
       } else if (provider === "grok") {
         accountId = "xai-grok";
@@ -3150,6 +3153,9 @@ export class ThreadManager implements OrchestratorApi {
           },
           onOperatorNote: (body, url) => {
             this.postCliOperatorNote(thread, role, body, url);
+          },
+          onDeliverable: (label, path) => {
+            this.postCliDeliverable(thread, role, run.id, label, path);
           },
         }));
       } else if (provider === "zai") {
@@ -3735,9 +3741,10 @@ export class ThreadManager implements OrchestratorApi {
       runId = run.id;
       this.emitRun(run.id);
       // The Codex CLI is a separate process; the in-process bus MCP server can't attach to it, so a
-      // Codex implementor runs without post_finding/ask_user/read_findings (and no office chat) — a
-      // documented degradation. The QA loop still reviews its output, and the doctrine makes it commit.
-      // A fresh start still gets the doctrine + (toolless) peer heads-up so it knows to avoid collisions.
+      // Codex implementor runs without interactive post_finding/ask_user/read_findings — a documented
+      // degradation. Text bridges preserve office chat, owner notes, and deliverable cards; the QA loop
+      // still reviews its output, and the doctrine makes it commit. A fresh start gets the doctrine plus
+      // the (toolless) peer heads-up so it knows to avoid collisions.
       if (!opts?.resume) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, this.withOfficeNote(thread, "implementor", kickoff, false)].filter(Boolean).join("\n\n");
       // freshFallback lets the runner self-heal a wedged `exec resume` (hangs at 0% CPU on an interrupted
       // gpt-5 session) by restarting fresh — so it must carry the SAME doctrine + task a fresh start gets.
@@ -3753,6 +3760,9 @@ export class ThreadManager implements OrchestratorApi {
         },
         onOperatorNote: (body, url) => {
           this.postCliOperatorNote(thread, "implementor", body, url);
+        },
+        onDeliverable: (label, path) => {
+          this.postCliDeliverable(thread, "implementor", runId, label, path);
         },
       });
       // If this run had to self-heal a wedged resume, remember it so every later turn skips the resume
@@ -3782,6 +3792,9 @@ export class ThreadManager implements OrchestratorApi {
         },
         onOperatorNote: (body, url) => {
           this.postCliOperatorNote(thread, "implementor", body, url);
+        },
+        onDeliverable: (label, path) => {
+          this.postCliDeliverable(thread, "implementor", runId, label, path);
         },
       });
       // Reuse the CLI-resume-wedged set (shared by both CLI backends): once a resume self-heals to fresh,
@@ -6047,6 +6060,23 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
+  /** CLI runners turn `DELIVERABLE: label | path` into the same authoritative finding write as the
+   * MCP `post_deliverable` tool. Carry the real run id so the QA backstop can prove this task surfaced
+   * the file, and publish through postFinding so an already-open console receives the card immediately. */
+  private postCliDeliverable(thread: Thread, role: Role, runId: string, label: string, path: string): void {
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: role,
+      fromRunId: runId,
+      kind: "deliverable",
+      summary: label,
+      detail: null,
+      path,
+      label,
+      severity: "info",
+    });
+  }
+
   // ---- the online office: the same coordination, across machines ----
 
   /** Wire the cross-machine office in. Attached after construction (index.ts) rather than taken as a
@@ -6986,8 +7016,8 @@ function qaFixCommitPolicy(autoPush: boolean): string {
 function deliverablesCheckBlock(unsurfacedArtifacts: string[]): string {
   const lines = [
     "## Deliverables check (REQUIRED — do this every round)",
-    "A deliverable is a file the owner should be able to open/download from the console; the implementor surfaces one by calling `post_deliverable`, which is easy to forget. Verify it did so for EVERY owner-facing artifact this task produced — a report, generated document, CSV/data export, diagram, rendered image/video, or generated asset (NOT ordinary source-code or config edits). Cross-check the actual git diff / new files against the deliverables already recorded (use `read_findings` — deliverables show as `[info]` findings whose summary is the file's label).",
-    "If any produced artifact was NOT surfaced, that is a **blocker** issue: fail the review and tell the implementor exactly which file(s) to `post_deliverable` (with an absolute path so the card resolves). Do not surface them yourself — bounce it back.",
+    "A deliverable is a file the owner should be able to open/download from the console; the implementor surfaces one with `post_deliverable`, or with its `DELIVERABLE: label | absolute path` bridge on a Codex/Grok CLI run. Either mechanism records the same deliverable finding and is easy to forget. Verify EVERY owner-facing artifact this task produced — a report, generated document, CSV/data export, diagram, rendered image/video, or generated asset (NOT ordinary source-code or config edits). Cross-check the actual git diff / new files against the deliverables already recorded (use `read_findings` — deliverables show as `[info]` findings whose summary is the file's label).",
+    "If any produced artifact was NOT surfaced, that is a **blocker** issue: fail the review, name the exact file(s), and tell the implementor to use its available deliverable mechanism with an absolute path so the card resolves. Do not surface them yourself — bounce it back.",
   ];
   if (unsurfacedArtifacts.length) {
     lines.push(
@@ -7044,7 +7074,7 @@ function reviewerKickoff(thread: Thread, plan: PlanOutput | undefined, unsurface
     parts.push(
       "",
       "## Possibly-unsurfaced deliverables",
-      "The harness flagged these files as written by this task but never surfaced via `post_deliverable` (so the owner has no card to open them from). If any is a genuine owner-facing artifact — a report, export, diagram, generated asset — that's a reason to hand the task back naming it; if they're just source/support files, say so and move on:",
+      "The harness flagged these files as written by this task but never surfaced as deliverable findings (so the owner has no card to open them from). If any is a genuine owner-facing artifact — a report, export, diagram, generated asset — that's a reason to hand the task back naming it; if they're just source/support files, say so and move on:",
       ...unsurfacedArtifacts.map((p) => `- ${p}`),
     );
   }
@@ -7200,11 +7230,19 @@ export function cliRoleKickoff(
     `Keep the action text to ${NOTE_MAX_CHARS} characters, use a real http(s) link, and do not use this bridge for status updates or summaries.`,
     schema ? "Put that line immediately BEFORE your final schema JSON; the runner strips and posts it." : "Put it at the end of your reply; the runner strips and posts it.",
   ].join(" ");
+  const cliDeliverable = [
+    role === "qa"
+      ? "A CLI deliverable bridge exists only for an owner-facing file THIS QA run itself produced; never use it to hide an implementor's missing deliverable."
+      : "If this role itself produces an owner-facing file, the CLI can still add its real View/Download card.",
+    "Emit one standalone line per file in the exact form `DELIVERABLE: Short label | C:/absolute/path/to/file.ext`; use an absolute path inside the task workspace and do not surface ordinary source/config edits.",
+    schema ? "Put any deliverable line immediately BEFORE your final schema JSON; the runner strips and posts it." : "Put it at the end of your reply; the runner strips and posts it.",
+  ].join(" ");
   const prelude = [
     `[Temporary provider fallback: run the ${role} role on ${provider}.]`,
     system,
     safety,
     noMcp,
+    cliDeliverable,
     cliOperatorNote,
     schemaBlock,
   ]

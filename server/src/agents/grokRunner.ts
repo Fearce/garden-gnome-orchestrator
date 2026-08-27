@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
-import { endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, extractOfficeChat, extractOperatorNotes } from "./officeBridge.js";
+import { endsWithOpenDeliverableMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, extractCliBridgeMessages } from "./officeBridge.js";
 import {
   formatStructuredRoleFeed,
   parseStructuredText,
@@ -42,6 +42,8 @@ export interface GrokRunConfig {
   /** Grok has no bus MCP tools. A standalone `OPERATOR_NOTE: <line> | <https://...>` marker is
    * intercepted and posted through the owner's real note list, then stripped from the transcript. */
   onOperatorNote?: (body: string, url?: string) => void;
+  /** A standalone `DELIVERABLE: <label> | <path>` marker is recorded as a real deliverable finding. */
+  onDeliverable?: (label: string, path: string) => void;
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Grok headless takes only a
@@ -568,48 +570,55 @@ export class GrokAgentRun implements AgentRunLike {
     if (text) this.emit({ type: "thinking", text });
   }
 
-  /** Close the current assistant-text segment: post any *complete* OFFICE bridge lines immediately,
+  /** Close the current assistant-text segment: post any *complete* CLI bridge lines immediately,
    *  leave incomplete markers in the buffer (Grok interleaves thought/text mid-answer, so harvesting
    *  open-ended bodies here produced truncated team posts like "claimi"), and insert a newline only
    *  when no open marker remains — so a later turn can't glue onto a finished claim body. */
   private endTextSegment(): void {
     if (!this.streamInText) return;
     this.streamInText = false;
-    this.harvestOfficePosts({ openEnded: false });
-    // Don't append `\n` while an OFFICE marker is still open — that would falsely complete it on the
+    this.harvestCliBridgePosts({ openEnded: false });
+    // Don't append `\n` while any CLI marker is still open — that would falsely complete it on the
     // next harvest. Segment separation only applies once the claim body is done.
     if (
       this.textBuf &&
       !this.textBuf.endsWith("\n") &&
       !endsWithOpenOfficeMarker(this.textBuf) &&
-      !endsWithOpenOperatorNoteMarker(this.textBuf)
+      !endsWithOpenOperatorNoteMarker(this.textBuf) &&
+      !endsWithOpenDeliverableMarker(this.textBuf)
     ) {
       this.textBuf += "\n";
     }
   }
 
-  /** Strip + post OFFICE[...] markers from textBuf in place. Safe to call repeatedly — already-posted
+  /** Strip + post CLI bridge markers from textBuf in place. Safe to call repeatedly — already-posted
    *  markers are gone from the buffer, so a later flush won't double-post. Incomplete open markers are
    *  left in place when `openEnded` is false (mid-segment). */
-  private harvestOfficePosts(opts?: { openEnded?: boolean }): void {
+  private harvestCliBridgePosts(opts?: { openEnded?: boolean }): void {
     if (!this.textBuf) return;
-    const office = extractOfficeChat(this.textBuf, opts);
-    const { visible, notes } = extractOperatorNotes(office.visible, opts);
-    for (const post of office.posts) {
+    const bridge = extractCliBridgeMessages(this.textBuf, opts);
+    for (const post of bridge.posts) {
       try {
         this.cfg.onOfficeChat?.(post.scope, post.body);
       } catch {
         /* best-effort side channel; never fail the turn because office chat failed */
       }
     }
-    for (const note of notes) {
+    for (const note of bridge.notes) {
       try {
         this.cfg.onOperatorNote?.(note.body, note.url);
       } catch {
         /* best-effort side channel; never fail the turn because a note post failed */
       }
     }
-    this.textBuf = visible;
+    for (const deliverable of bridge.deliverables) {
+      try {
+        this.cfg.onDeliverable?.(deliverable.label, deliverable.path);
+      } catch {
+        /* best-effort side channel; QA's deterministic check still catches a failed post */
+      }
+    }
+    this.textBuf = bridge.visible;
   }
 
   /** Flag that this turn died to a usage cap. Drives the pipeline's provider failover to another backend —
@@ -649,7 +658,7 @@ export class GrokAgentRun implements AgentRunLike {
     this.emit(evt);
   }
 
-  /** Flush the turn's accumulated assistant text: strip + post any remaining OFFICE[...] bridge lines
+  /** Flush the turn's accumulated assistant text: strip + post any remaining CLI bridge lines
    *  (segment harvest during the stream usually already did this), emit the rest as one persisted `text`
    *  block, and resolve structuredOutput for schema-constrained roles.
    *
@@ -661,7 +670,7 @@ export class GrokAgentRun implements AgentRunLike {
     this.endThoughtSegment();
     this.streamInText = false;
     const openEnded = this.sawTerminal && !this.interrupting;
-    this.harvestOfficePosts({ openEnded });
+    this.harvestCliBridgePosts({ openEnded });
     const visible = this.textBuf;
     this.textBuf = "";
     this.structuredProgressEmitted = 0;

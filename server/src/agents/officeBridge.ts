@@ -1,9 +1,10 @@
 import { NOTE_MAX_CHARS, type ChatScope } from "../types.js";
 
 /**
- * CLI backends (Codex, Grok) have no office MCP tools. Implementors post by emitting a
- * `OFFICE[team|office]: <msg>` marker in assistant text; the runner intercepts it, strips it from the
- * task transcript, and posts through the real office chat backend.
+ * CLI backends (Codex, Grok) have no in-process MCP tools. Three deliberately simple markers preserve
+ * the side effects an implementor needs most: office chat, owner notes, and owner-facing deliverables.
+ * The runner intercepts them, strips valid markers from the task transcript, and posts through the
+ * same orchestrator services used by the real MCP tools.
  *
  * Matching is deliberately looser than "whole line only":
  * - Grok streaming-json often concatenates successive model turns WITHOUT newlines
@@ -38,6 +39,17 @@ export const MAX_OFFICE_BODY = 280;
 const OPERATOR_NOTE_RE = /`?OPERATOR_NOTE[ \t]*:[ \t]*/gi;
 const MAX_OPERATOR_NOTE_WIRE_CHARS = NOTE_MAX_CHARS + 700;
 
+// Owner-facing files need the same bridge: without it a Codex/Grok implementor can create and commit a
+// real artifact but cannot satisfy QA's mandatory deliverables check. Keep the payload line-oriented and
+// human-writable rather than making the model escape a Windows path inside JSON:
+//
+//   DELIVERABLE: Provider connection guide | C:\repo\docs\providers.md
+//
+// The serving endpoint remains the security boundary: it resolves the real path, confines it to the task
+// workspace, requires a regular file, and enforces the 25 MB cap. This parser only transports label+path.
+const DELIVERABLE_RE = /`?DELIVERABLE[ \t]*:[ \t]*/gi;
+const MAX_DELIVERABLE_WIRE_CHARS = 4096;
+
 export interface ExtractOfficeChatOpts {
   /**
    * When true (default), a marker that runs to end-of-string is treated as complete (Codex whole
@@ -54,12 +66,44 @@ export interface CliOperatorNote {
   url?: string;
 }
 
+/** An owner-facing file emitted through the CLI text bridge. */
+export interface CliDeliverable {
+  label: string;
+  path: string;
+}
+
 export interface ExtractOperatorNotesOpts {
   /**
    * Same streaming contract as {@link ExtractOfficeChatOpts.openEnded}: a marker at the end of a live
    * Grok chunk is kept until a clean terminal flush so a partial PR sentence never becomes an owner note.
    */
   openEnded?: boolean;
+}
+
+export interface ExtractDeliverablesOpts {
+  /** Same streaming contract as the office/note extractors. */
+  openEnded?: boolean;
+}
+
+/**
+ * Extract every supported CLI side-channel in the one safe order used by both runners. Deliverables
+ * run first so a complete marker glued after an unfinished OFFICE/OPERATOR_NOTE body is removed before
+ * that earlier marker can swallow its path. Each individual extractor also preserves the other two
+ * incomplete markers, which matters while Grok is still streaming a line.
+ */
+export function extractCliBridgeMessages(
+  text: string,
+  opts?: ExtractOfficeChatOpts,
+): {
+  visible: string;
+  posts: Array<{ scope: ChatScope; body: string }>;
+  notes: CliOperatorNote[];
+  deliverables: CliDeliverable[];
+} {
+  const files = extractDeliverables(text, opts);
+  const office = extractOfficeChat(files.visible, opts);
+  const notes = extractOperatorNotes(office.visible, opts);
+  return { visible: notes.visible, posts: office.posts, notes: notes.notes, deliverables: files.deliverables };
 }
 
 /**
@@ -135,10 +179,10 @@ export function extractOfficeChat(
 
   // Mid-stream incomplete markers must keep exact trailing text (no trim) so the next token can
   // append. Final/open-ended extractions tidy whitespace for the transcript.
-  // The two extractors run CHAINED over one buffer, so each must respect the OTHER's open marker as
+  // The three extractors run CHAINED over one buffer, so each must respect the OTHER open markers as
   // well: trimming a buffer that ends inside the other's half-streamed body eats the trailing space the
   // next chunk appends to, gluing words together (`claiming db.tsand schema.ts`).
-  const hasOpenMarker = !openEnded && (endsWithOpenOfficeMarker(out) || endsWithOpenOperatorNoteMarker(out));
+  const hasOpenMarker = !openEnded && endsWithOpenCliBridgeMarker(out);
   const visible = hasOpenMarker
     ? out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
     : out
@@ -195,8 +239,8 @@ export function extractOperatorNotes(
   }
   out += text.slice(cursor);
 
-  // Same both-markers rule as `extractOfficeChat` — see the comment there.
-  const hasOpenMarker = !openEnded && (endsWithOpenOperatorNoteMarker(out) || endsWithOpenOfficeMarker(out));
+  // Same all-markers rule as `extractOfficeChat` — see the comment there.
+  const hasOpenMarker = !openEnded && endsWithOpenCliBridgeMarker(out);
   const visible = hasOpenMarker
     ? out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
     : out
@@ -204,6 +248,59 @@ export function extractOperatorNotes(
         .replace(/\n{3,}/g, "\n\n")
         .trim();
   return { visible, notes };
+}
+
+/**
+ * Strip valid `DELIVERABLE: label | path` markers and return their payloads. Unlike office/note junk,
+ * a malformed deliverable marker is left visible: "deliverable:" is ordinary prose models sometimes
+ * write, and silently deleting it when no parseable path follows would damage the final answer.
+ */
+export function extractDeliverables(
+  text: string,
+  opts?: ExtractDeliverablesOpts,
+): { visible: string; deliverables: CliDeliverable[] } {
+  const openEnded = opts?.openEnded !== false;
+  const deliverables: CliDeliverable[] = [];
+  if (!text) return { visible: "", deliverables };
+
+  let out = "";
+  let cursor = 0;
+  DELIVERABLE_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DELIVERABLE_RE.exec(text)) !== null) {
+    const markerStart = m.index;
+    const bodyStart = DELIVERABLE_RE.lastIndex;
+    out += text.slice(cursor, markerStart);
+
+    const taken = takeDeliverableBody(text, bodyStart, openEnded);
+    if (!taken.complete) {
+      cursor = markerStart;
+      DELIVERABLE_RE.lastIndex = text.length;
+      break;
+    }
+
+    const parsed = splitDeliverable(taken.body);
+    const markerEnd = taken.bodyEnd + (taken.trailingTick ? 1 : 0);
+    if (parsed) {
+      deliverables.push(parsed);
+      out += "\n";
+    } else {
+      // Not the bridge grammar: preserve the model's prose byte-for-byte.
+      out += text.slice(markerStart, markerEnd);
+    }
+    cursor = markerEnd;
+    DELIVERABLE_RE.lastIndex = cursor;
+  }
+  out += text.slice(cursor);
+
+  const hasOpenMarker = !openEnded && endsWithOpenCliBridgeMarker(out);
+  const visible = hasOpenMarker
+    ? out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
+    : out
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+  return { visible, deliverables };
 }
 
 /** True when a Grok stream ends inside an incomplete `OPERATOR_NOTE:` line. */
@@ -231,6 +328,31 @@ function splitOperatorNote(raw: string): CliOperatorNote {
   return { body: raw };
 }
 
+function splitDeliverable(raw: string): CliDeliverable | null {
+  // A path is far more likely than a short label to contain punctuation, so use the first explicit
+  // separator and preserve the rest verbatim. Windows forbids `|` in filenames; on POSIX a literal
+  // ` | ` remains legal but is sufficiently unusual that the documented unambiguous wire wins.
+  const divider = raw.indexOf(" | ");
+  if (divider < 0) return null;
+  const label = raw.slice(0, divider).trim();
+  const path = raw.slice(divider + 3).trim();
+  if (isJunkOfficeBody(label) || !path) return null;
+  return { label, path };
+}
+
+/** A Grok segment boundary is not represented in the text stream. When a standalone bridge line is
+ * immediately followed by the next structured/narrative turn, recognize the end of a plausible file
+ * path instead of appending that turn to the card path. The broad extension check is reserved for JSON
+ * delimiters; capitalized prose uses the high-precision owner-facing extension set to avoid splitting a
+ * legitimate mixed-case filename such as `report.v2Final.md`. */
+function gluedDeliverableBoundaryAt(text: string, i: number, bodyStart: number): boolean {
+  const cur = text[i]!;
+  if (cur !== "{" && cur !== "[" && !/[A-Z]/.test(cur)) return false;
+  const prefix = text.slice(bodyStart, i).trimEnd();
+  if (cur === "{" || cur === "[") return /\.[A-Za-z0-9]{1,12}$/.test(prefix);
+  return /\.(?:md|markdown|csv|tsv|pdf|html?|png|jpe?g|gif|webp|svg|ico|webm|mp4|mov|xlsx?|docx|pptx|txt|zip)$/i.test(prefix);
+}
+
 /** Scan a single `OPERATOR_NOTE:` payload. Newline/backtick/next marker end it; an in-flight Grok
  * chunk is deliberately incomplete until the final clean flush, just like OFFICE markers. */
 function takeOperatorNoteBody(
@@ -249,11 +371,17 @@ function takeOperatorNoteBody(
       break;
     }
     if (ch === "`") {
-      trailingTick = true;
+      // A triple fence belongs to the next structured JSON block; only consume a lone backtick that
+      // closes the model's optional wrapping around the marker itself.
+      trailingTick = !text.startsWith("```", i);
       complete = true;
       break;
     }
     if (startsOperatorNoteMarker(text, i)) {
+      complete = true;
+      break;
+    }
+    if (startsOfficeMarker(text, i) || startsDeliverableMarker(text, i)) {
       complete = true;
       break;
     }
@@ -272,6 +400,69 @@ function startsOperatorNoteMarker(text: string, i: number): boolean {
   let j = i;
   if (text[j] === "`") j++;
   return /^operator_note[ \t]*:/i.test(text.slice(j));
+}
+
+/** Scan one deliverable payload. A later bridge marker terminates it even when Grok glued model turns. */
+function takeDeliverableBody(
+  text: string,
+  bodyStart: number,
+  openEnded: boolean,
+): { body: string; bodyEnd: number; trailingTick: boolean; complete: boolean } {
+  const n = text.length;
+  let i = bodyStart;
+  let trailingTick = false;
+  let complete = false;
+  while (i < n) {
+    const ch = text[i]!;
+    if (ch === "\n" || ch === "\r") {
+      complete = true;
+      break;
+    }
+    if (ch === "`") {
+      // Preserve a glued fenced JSON block for structured-role parsing.
+      trailingTick = !text.startsWith("```", i);
+      complete = true;
+      break;
+    }
+    if (startsDeliverableMarker(text, i) || startsOfficeMarker(text, i) || startsOperatorNoteMarker(text, i)) {
+      complete = true;
+      break;
+    }
+    if (gluedDeliverableBoundaryAt(text, i, bodyStart)) {
+      complete = true;
+      break;
+    }
+    if (i - bodyStart >= MAX_DELIVERABLE_WIRE_CHARS) {
+      complete = true;
+      break;
+    }
+    i++;
+  }
+  if (!complete && i >= n) complete = openEnded;
+  if (!complete) return { body: "", bodyEnd: bodyStart, trailingTick: false, complete: false };
+  return { body: text.slice(bodyStart, i).trim(), bodyEnd: i, trailingTick, complete: true };
+}
+
+function startsDeliverableMarker(text: string, i: number): boolean {
+  let j = i;
+  if (text[j] === "`") j++;
+  return /^deliverable[ \t]*:/i.test(text.slice(j));
+}
+
+/** True when a Grok stream ends inside an incomplete deliverable line. */
+export function endsWithOpenDeliverableMarker(text: string): boolean {
+  if (!text) return false;
+  DELIVERABLE_RE.lastIndex = 0;
+  let last: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = DELIVERABLE_RE.exec(text)) !== null) last = m;
+  if (!last) return false;
+  const bodyStart = last.index + last[0].length;
+  return !takeDeliverableBody(text, bodyStart, false).complete;
+}
+
+function endsWithOpenCliBridgeMarker(text: string): boolean {
+  return endsWithOpenOfficeMarker(text) || endsWithOpenOperatorNoteMarker(text) || endsWithOpenDeliverableMarker(text);
 }
 
 /** Scan forward from `bodyStart` for the end of one office-bridge body. */
@@ -296,7 +487,8 @@ function takeOfficeBody(
 
     // Optional closing backtick (model copied `` `OFFICE[team]: msg` ``).
     if (ch === "`") {
-      trailingTick = true;
+      // Preserve a glued fenced block; a lone backtick still closes a wrapped OFFICE marker.
+      trailingTick = !text.startsWith("```", i);
       complete = true;
       break;
     }
@@ -313,6 +505,13 @@ function takeOfficeBody(
     // marker is open, so the two markers arrive glued far more often than they arrive on separate lines.
     // Without this stop the owner's note is silently lost AND its PR link is broadcast to the chatroom.
     if (startsOperatorNoteMarker(text, i)) {
+      complete = true;
+      break;
+    }
+
+    // A deliverable marker on the same glued line is harvested first by the runners, but keep this
+    // boundary too so direct extractor use and future ordering changes cannot leak a path into chat.
+    if (startsDeliverableMarker(text, i)) {
       complete = true;
       break;
     }

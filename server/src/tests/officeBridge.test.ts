@@ -3,8 +3,11 @@
 
 import assert from "node:assert/strict";
 import {
+  endsWithOpenDeliverableMarker,
   endsWithOpenOfficeMarker,
   endsWithOpenOperatorNoteMarker,
+  extractCliBridgeMessages,
+  extractDeliverables,
   extractOfficeChat,
   extractOperatorNotes,
   MAX_OFFICE_BODY,
@@ -240,8 +243,8 @@ import {
   assert.equal(endsWithOpenOperatorNoteMarker(complete.visible), false);
 }
 
-// Both runners chain the two extractors in this order — office first, notes over what it left visible.
-// One reply carrying both markers must deliver both and leave neither in the transcript.
+// The lower-level office-then-notes ordering remains compatible for callers that do not need the
+// composite three-bridge seam. One reply carrying both markers must deliver both and leave neither.
 {
   const raw = [
     "Pushed the fix.",
@@ -272,7 +275,7 @@ import {
   }
 }
 
-// The two markers GLUED on one line — office first means the office body would otherwise eat the note
+// Two markers GLUED on one line — office-before-notes means the office body would otherwise eat the note
 // marker whole, losing the owner's note AND broadcasting its PR link to the chatroom as a claim. Grok
 // withholds the segment-separating newline while an OFFICE marker is open, so this is the common shape,
 // not an exotic one: a separator of "", " " and ". " must all behave like a newline.
@@ -295,7 +298,7 @@ import {
   }
 }
 
-// The extractors run CHAINED over one buffer, so each must honour the OTHER's open marker: trimming a
+// The extractors run CHAINED over one buffer, so each must honour the OTHER open markers: trimming a
 // buffer that ends inside the other's half-streamed body eats the space the next chunk appends to.
 {
   // Office marker open, no note marker — the notes pass must not trim the trailing space.
@@ -314,6 +317,87 @@ import {
     [{ body: "review PR #42", url: "https://x.example/p/42" }],
     "a streamed note keeps its word break",
   );
+}
+
+// CLI deliverables use a human-writable label/path line. A valid marker is stripped from the feed and
+// becomes the exact payload ThreadManager records as a deliverable finding.
+{
+  const raw = "Built the guide.\nDELIVERABLE: Free provider setup guide | C:\\claude-orchestrator\\docs\\free-ai-provider-connections.md\nDone.";
+  const { visible, deliverables } = extractDeliverables(raw);
+  assert.deepEqual(deliverables, [
+    {
+      label: "Free provider setup guide",
+      path: "C:\\claude-orchestrator\\docs\\free-ai-provider-connections.md",
+    },
+  ]);
+  assert.ok(!visible.includes("DELIVERABLE:"));
+  assert.match(visible, /Built the guide/);
+  assert.match(visible, /Done\./);
+}
+
+// Ordinary prose that happens to say "deliverable:" is not the wire grammar and must remain visible.
+{
+  const raw = "The deliverable: provider guide is ready for review.";
+  const { visible, deliverables } = extractDeliverables(raw);
+  assert.deepEqual(deliverables, []);
+  assert.equal(visible, raw);
+}
+
+// A streamed Grok marker stays buffered until its path is complete; no partial card can be recorded.
+{
+  const partial = extractDeliverables("DELIVERABLE: Provider report | C:\\work\\provider", { openEnded: false });
+  assert.deepEqual(partial.deliverables, []);
+  assert.equal(endsWithOpenDeliverableMarker(partial.visible), true);
+  const complete = extractDeliverables(partial.visible + "-report.md\nContinuing.", { openEnded: false });
+  assert.deepEqual(complete.deliverables, [{ label: "Provider report", path: "C:\\work\\provider-report.md" }]);
+  assert.equal(endsWithOpenDeliverableMarker(complete.visible), false);
+  assert.match(complete.visible, /Continuing\./);
+}
+
+// Grok omits separators between model turns. A deliverable immediately followed by structured JSON or
+// capitalized narration must keep an exact path, and a fenced JSON block must remain byte-valid.
+{
+  const fenced = extractCliBridgeMessages(
+    'DELIVERABLE: QA evidence | C:\\work\\qa-evidence.md```json\n{"pass":true,"summary":"verified"}\n```',
+  );
+  assert.deepEqual(fenced.deliverables, [{ label: "QA evidence", path: "C:\\work\\qa-evidence.md" }]);
+  assert.match(fenced.visible, /^```json\n/);
+  assert.match(fenced.visible, /"pass":true/);
+
+  const unfenced = extractCliBridgeMessages(
+    'DELIVERABLE: QA evidence | C:\\work\\qa-evidence.md{"pass":true,"summary":"verified"}',
+  );
+  assert.deepEqual(unfenced.deliverables, [{ label: "QA evidence", path: "C:\\work\\qa-evidence.md" }]);
+  assert.match(unfenced.visible, /^\{"pass":true/);
+
+  const narrated = extractCliBridgeMessages("DELIVERABLE: QA evidence | C:\\work\\qa-evidence.mdFinished verification.");
+  assert.deepEqual(narrated.deliverables, [{ label: "QA evidence", path: "C:\\work\\qa-evidence.md" }]);
+  assert.match(narrated.visible, /Finished verification\./);
+}
+
+// Both runners use the composite extractor. All three markers may arrive glued in one Grok segment;
+// each side effect must survive, while none of the bridge syntax reaches the persisted transcript.
+{
+  const raw =
+    "Pushed." +
+    "OFFICE[team]: releasing officeBridge.ts" +
+    "DELIVERABLE: Bridge verification report | C:\\work\\bridge-report.md" +
+    "OPERATOR_NOTE: PR #77 ready | https://github.com/acme/repo/pull/77\nFinished.";
+  const result = extractCliBridgeMessages(raw);
+  assert.deepEqual(result.posts, [{ scope: "project", body: "releasing officeBridge.ts" }]);
+  assert.deepEqual(result.deliverables, [{ label: "Bridge verification report", path: "C:\\work\\bridge-report.md" }]);
+  assert.deepEqual(result.notes, [{ body: "PR #77 ready", url: "https://github.com/acme/repo/pull/77" }]);
+  assert.ok(!/OFFICE\[|OPERATOR_NOTE:|DELIVERABLE:/.test(result.visible), "all bridge markers are stripped");
+  assert.match(result.visible, /Pushed\./);
+  assert.match(result.visible, /Finished\./);
+}
+
+// Chaining the extractors mid-stream must preserve a deliverable's trailing space for the next chunk.
+{
+  const first = extractCliBridgeMessages("Done.\nDELIVERABLE: Final report | C:\\work\\final ", { openEnded: false });
+  assert.deepEqual(first.deliverables, []);
+  const finished = extractCliBridgeMessages(first.visible + "report.md\n", { openEnded: true });
+  assert.deepEqual(finished.deliverables, [{ label: "Final report", path: "C:\\work\\final report.md" }]);
 }
 
 console.log("All officeBridge extraction checks passed.");

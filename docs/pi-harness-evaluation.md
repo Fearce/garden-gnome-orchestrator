@@ -235,15 +235,15 @@ Today the fallback ladder is three hand-rolled implementations:
   `AgentRun` via an env swap (`ZaiAgentRun`).
 
 Costs we're carrying because of that: ~75 KB of duplicated plumbing; two separate cap classifiers;
-`structuredText.ts` as a scraper; the office reduced to prose parsing; and the flatly documented gap
-— *"Codex-backend implementors have no bus tools and so can't emit deliverables at all (a known
-gap)."*
+`structuredText.ts` as a scraper; office chat, owner notes, and deliverables reduced to prose parsing;
+and no interactive `post_finding`, `read_findings`, or `ask_user` path.
 
 **One `PiAgentRun implements AgentRunLike`, driving `pi --mode rpc`, would replace both runners** and
 give that lane, for the first time:
 
-- **Real tools instead of a text bridge** — `post_finding`, `post_deliverable`, `ask_user`,
-  `chat_post` as registered Pi tools routed back over localhost. That closes the deliverables gap.
+- **Real tools instead of three text bridges** — `post_finding`, `post_deliverable`, `ask_user`,
+  `chat_post` as registered Pi tools routed back over localhost. The `DELIVERABLE:` bridge now closes
+  the card-emission gap, but real tools would remove parsing and restore the remaining interactive bus.
 - **Provider-agnostic reach** — Codex, Grok, z.ai, Gemini, DeepSeek, Bedrock, local llama.cpp, all
   behind one runner. New backend = a models.json entry, not a new 37 KB file.
 - **One event stream** to normalise instead of three.

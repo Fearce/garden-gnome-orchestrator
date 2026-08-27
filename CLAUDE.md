@@ -297,8 +297,9 @@ credentials in `server/data/online-office-credentials.txt` (gitignored).
 A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the
 right panel. It's a `findings` row with `kind='deliverable'`, a `path` (absolute or workspace-relative)
 and a human `label` (the `summary` mirrors the label; `detail` holds the optional description). Agents
-emit one via the `post_deliverable` bus tool (`bus/busServer.ts`); the implementor prompt documents the
-format. The console reads these from the thread's findings and renders file cards (`web/src/components/
+emit one via the `post_deliverable` bus tool (`bus/busServer.ts`); Codex/Grok CLI implementors use the
+runner's `DELIVERABLE: label | absolute path` text bridge. The implementor prompts document both formats.
+The console reads these from the thread's findings and renders file cards (`web/src/components/
 Deliverables.tsx` + `FileIcon.tsx`) with View (typed inline preview — markdown/JSON/CSV/code/image/PDF),
 Download, and Copy-path. Bytes are served by `GET /api/deliverable/:id` (`?download=1` for an attachment),
 which is auth-gated and **confines the resolved real path inside the owning task's workspace** (symlinks
@@ -315,7 +316,8 @@ run's own recorded `Write` tool calls and deliverable findings to list artifact-
 extension; source, config, meta-docs, and `_`-prefixed scratch excluded) the implementor wrote but never surfaced.
 It's a HINT injected into `qaKickoff`, not an auto-emit — surfacing every changed file would spam the console with
 ordinary source edits. Bash/script-generated artifacts don't show as `Write` calls, so QA also checks the real git
-diff itself. Codex-backend implementors have no bus tools and so can't emit deliverables at all (a known gap).
+diff itself. CLI bridge entries carry the real run id and publish through `ThreadManager.postFinding`, so
+they satisfy the same backstop and immediately appear in an already-open console.
 
 **Emitting one — avoid the "file not available" 404:** a *relative* `path` resolves as `join(thread.workspace,
 path)`, and the task workspace is often the **parent** of this git repo (e.g. workspace
