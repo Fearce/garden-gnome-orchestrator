@@ -79,6 +79,11 @@ export function grokEffortsForModel(model: string): readonly GrokEffort[] {
   return supportsXhigh ? GROK_EFFORTS : GROK_PRE_XHIGH_EFFORTS;
 }
 
+/** z.ai is reached through the Claude SDK against an Anthropic-COMPATIBLE endpoint, so unlike Codex and
+ *  Grok there is no per-model capability list to read: `effort` is passed to a server that documents no
+ *  contract for it. These three are the tiers verified to round-trip; whether GLM honours `xhigh`/`max`
+ *  or rejects them is unanswered, and can only be settled by a live run while the backend has headroom
+ *  (it is capped as of 2026-08-27). Widen this only from such a run, never from the roster alone. */
 export const ZAI_EFFORTS = ["low", "medium", "high"] as const;
 export type ZaiEffort = (typeof ZAI_EFFORTS)[number];
 
