@@ -404,7 +404,7 @@ const readerSession: FreeProviderTaskSession = {
     readerCall++;
     return readerCall === 1
       ? { text: "", model: "stub-tools", toolCalls: [{ id: "finding-1", name: T.postFinding, arguments: "{\"summary\":\"The answer\",\"detail\":\"fixture.ts exports 42\",\"severity\":\"info\"}" }], usage: {} }
-      : { text: "```json\n{\"answered\":true,\"escalated\":false}\n```", model: "stub-tools", toolCalls: [], usage: {} };
+      : { text: "```json\n{\"answered\":true,\"escalated\":false,\"answer\":\"fixture.ts exports 42\"}\n```", model: "stub-tools", toolCalls: [], usage: {} };
   },
   markHarnessFailure() {},
   close() {},
