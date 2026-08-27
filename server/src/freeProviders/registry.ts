@@ -527,7 +527,7 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
       optionalCredential: true,
       needsAccountId: false,
       envKey: "KILO_API_KEY",
-      billingWarning: "Only live zero-priced free routes are eligible; the catalog is rechecked before every probe and routed task.",
+      billingWarning: "Only live zero-priced free routes are eligible; the catalog is rechecked before every probe and routed task. Use anonymous mode or remove any matching Kilo account-level BYOK key: Kilo bills BYOK requests directly to that provider.",
       usage: { quotaKind: "requests", window: "rolling", timeZone: "UTC", limit: 200, unit: "free requests", localEstimate: true, summary: "Rolling-hour estimate for calls from this GGO instance; the real limit is shared by IP." },
       adapter: kilo,
       preferredModels: ["kilo-auto/free"],

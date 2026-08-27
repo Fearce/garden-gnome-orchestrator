@@ -144,6 +144,7 @@ assert.equal(geminiModels[1]?.isFree, false);
 const cohereModels = normalizeCohereModels({ models: [
   { name: "north-mini-code", endpoints: ["chat"], context_length: 128_000, features: ["tools"] },
   { name: "embed-v4", endpoints: ["embed"] },
+  { name: "retired-chat", is_deprecated: true, endpoints: ["chat"], features: ["tools"] },
 ] });
 assert.deepEqual(cohereModels.map((model) => model.id), ["north-mini-code"]);
 assert.equal(cohereModels[0]?.supportsTools, true);

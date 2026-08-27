@@ -46,7 +46,10 @@ export function normalizeCohereModels(body: unknown): ProviderModel[] {
   return values.flatMap((raw) => {
     const model = record(raw);
     const id = typeof model?.name === "string" ? model.name : typeof model?.id === "string" ? model.id : "";
-    if (!id) return [];
+    // Cohere's documented /v1/models payload explicitly marks retired entries. Keeping one in
+    // the card makes a stale saved selection look runnable until the paid/free probe gets a
+    // needless invalid-model response, so exclude it during live catalog normalization.
+    if (!id || model?.is_deprecated === true) return [];
     const endpoints = Array.isArray(model?.endpoints) ? model.endpoints : [];
     if (endpoints.length && !endpoints.includes("chat")) return [];
     const features = Array.isArray(model?.features) ? model.features : [];
