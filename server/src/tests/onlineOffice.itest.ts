@@ -244,7 +244,7 @@ function makeManagerHarness() {
         if (i.tokenResumeTimer) clearTimeout(i.tokenResumeTimer);
       }
       db.raw.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmTemp(dir);
     },
   };
 }
@@ -431,7 +431,7 @@ async function main(): Promise<void> {
       office.dispose();
       db.raw.close();
       await relay.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmTemp(dir);
     }
   }
 
@@ -554,7 +554,7 @@ async function main(): Promise<void> {
       office.dispose();
       db.raw.close();
       await relay.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmTemp(dir);
     }
   }
 
@@ -713,7 +713,7 @@ async function main(): Promise<void> {
       check("the backfill is one-time", again.kvGet("remote_instance_backfill_v1") === flag, `${flag} → ${again.kvGet("remote_instance_backfill_v1")}`);
       again.raw.close();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmTemp(dir);
     }
   }
 
