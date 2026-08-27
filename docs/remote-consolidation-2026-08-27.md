@@ -191,7 +191,20 @@ so it keeps working (it takes the remote as `-r`, default `origin`).
 
 ---
 
-## 4. The one step left for Mikkel
+## 4. The step that was left for Mikkel, and is now done
+
+> **CLOSED, 2026-08-27, same day.** Mikkel deleted the fork himself while this work was finishing.
+> `gh api repos/prismicious/garden-gnome-orchestrator` now returns 404 and `git ls-remote` on it returns
+> *"Repository not found"*, while the same token still reads `Fearce/garden-gnome-orchestrator` and
+> `prismicious/claude-orchestrator` normally, so this is a real deletion and not an auth failure. The only
+> remaining fork of the real repo is `Merkelmore/garden-gnome-orchestrator` (a third party's, untouched).
+>
+> **Post-deletion loss check, run against the archive bundle rather than any surviving remote:** for each
+> of the 12 branches the fork held, `git rev-list <tip> --not <every ref on the real repo>` is **0**, except
+> `backup/master-pre-upstream-sync-2026-07-30` at 10, and all 10 of those are still reachable from the local
+> branch of that name in `projects\claude-orchestrator` as well as from the bundle. **Nothing was lost.**
+>
+> Everything below is kept as the record of what the decision looked like before it was taken.
 
 The fork is still there. `gh` is authenticated as `prismicious`, which **can** admin its own fork, but the
 token has no `delete_repo` scope. Verified by attempting it rather than inferring it:
