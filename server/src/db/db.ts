@@ -982,8 +982,8 @@ export class Db {
    *  (returned ASC) so a months-long chat doesn't bloat every hello/reconnect frame. */
   listDirectorMessages(limit?: number): DirectorMessage[] {
     const rows = limit
-      ? (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at DESC LIMIT ?").all(limit) as Row[]).reverse()
-      : (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at ASC").all() as Row[]);
+      ? (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at DESC, rowid DESC LIMIT ?").all(limit) as Row[]).reverse()
+      : (this.raw.prepare("SELECT * FROM director_messages ORDER BY created_at ASC, rowid ASC").all() as Row[]);
     return rows.map(rowToDirectorMessage);
   }
 
