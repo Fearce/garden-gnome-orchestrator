@@ -84,6 +84,7 @@
     "test:cli-role-kickoff": "tsx src/tests/cliRoleKickoff.test.ts",
     "test:per-repo": "tsx src/tests/perRepoConcurrency.itest.ts",
     "test:provider-serves-role": "tsx src/tests/providerServesRole.test.ts",
+    "test:provider-fallback": "tsx src/tests/providerFallback.itest.ts",
     "test:crashlog": "tsx src/tests/crashLog.itest.ts",
     "test:leak-bookkeeping": "tsx src/tests/threadBookkeepingLeak.itest.ts",
     "test:attachment-dedupe": "tsx src/tests/attachmentDedupe.test.ts",

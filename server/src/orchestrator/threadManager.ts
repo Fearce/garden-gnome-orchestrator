@@ -469,6 +469,10 @@ export function providerServesRole(role: Role, provider: ImplementorProvider): b
 }
 /** The roles `runRole` drives: every non-implementor agent, each one-shot and schema-bound. */
 type StructuredRole = "planner" | "researcher" | "qa" | "reader" | "reviewer";
+/** A pipeline stage that can be paused solely because every provider is quota-capped.  This is kept
+ * separate from `Role`: auto-review is an owner-initiated, post-pipeline action and must never be
+ * restarted as though it were a normal pipeline. */
+type CapParkStage = "planner" | "researcher" | "implementor" | "qa" | "reader";
 
 /** Where the remote-chat dedup set is persisted. The relay replays a room's backlog on every entry, and
  *  a restart is an entry — so this guard has to be durable, not in-memory. */
@@ -569,10 +573,10 @@ export class ThreadManager implements OrchestratorApi {
   // Threads whose current run gave up to 'review' because every account was capped (no failover
   // headroom). Set the instant the give-up happens, read+cleared when the task settles so the review
   // message carries the CAP_PARK marker the supervisor keys off. The value records WHICH stage capped
-  // (used for the park message wording); any free backend can unpark either kind now that runRole
+  // (used for the park message wording); any free backend can unpark it now that runRole
   // fails QA over to Codex/Grok. In-memory only — the durable signal is the persisted error text
   // (prefix + optional historical QA marker), so a restart still finds cap-parked tasks.
-  private readonly capParked = new Map<string, "qa" | "implementor">();
+  private readonly capParked = new Map<string, CapParkStage>();
   // Last time we externally announced auto-resuming a given thread — throttles the webhook ping so a
   // task stuck in a re-cap loop doesn't spam the channel each interval (see CAP_RESUME_NOTIFY_COOLDOWN_MS).
   private readonly capResumeNotifiedAt = new Map<string, number>();
@@ -2097,10 +2101,10 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Latch Codex as usage-capped until its window resets, so implementors route to the Claude backend.
    *  Prefers the real reset epoch from the usage snapshot; falls back to a fixed cooldown when unknown. */
-  private noteCodexCap(): void {
+  private noteCodexCap(info?: RateLimitInfo): void {
     const now = Date.now();
     const u = readCodexUsage();
-    const snapReset = [u?.fiveHourReset, u?.sevenDayReset].filter((r): r is number => !!r && r > now);
+    const snapReset = [info?.resetsAt, u?.fiveHourReset, u?.sevenDayReset].filter((r): r is number => !!r && r > now);
     const until = snapReset.length ? Math.min(...snapReset) : now + CODEX_CAP_COOLDOWN_MS;
     if (this.codexCapUntil && this.codexCapUntil >= until) return; // already latched at least this long
     this.codexCapUntil = until;
@@ -2643,7 +2647,7 @@ export class ThreadManager implements OrchestratorApi {
     if (text) this.hub.publish({ type: "voice.announce", threadId: t.id, text });
   }
 
-  /** Settle a task to 'review' after an incomplete run. If the run gave up ONLY because every account
+  /** Settle a task to 'review' after an incomplete run. If the run gave up ONLY because every provider
    *  was capped (the `capParked` flag), tag it with the CAP_PARK marker so the supervisor auto-resumes
    *  it when an account frees up; otherwise use the human-facing reason (a genuine needs-your-eyes park).
    *  The flag is consumed here so it never leaks into an unrelated later settle of the same thread. */
@@ -2654,11 +2658,18 @@ export class ThreadManager implements OrchestratorApi {
     else this.setState(threadId, "review", humanReason);
   }
 
+  /** Record an exhausted fallback ladder in the shared role runner. This keeps quota failures in every
+   * pipeline stage resumable, rather than letting a non-QA stage silently degrade to partial context. */
+  private parkForExhaustedProviders(threadId: string, role: StructuredRole | "implementor"): void {
+    if (role === "reviewer") return; // auto-review is owner-initiated, not part of the resumable pipeline
+    this.capParked.set(threadId, role);
+  }
+
   /** Review message for a cap-park — doubles as the supervisor's marker (CAP_PARK_PREFIX, plus the
    *  historical CAP_PARK_QA_MARK for QA-stage parks) and tells the owner it'll resume itself, naming when
    *  the soonest account frees up if we know it. Scoped honestly: it only claims "every account" when
    *  CLI backends were genuinely unavailable too (Claude→Codex/Grok failover already tried them). */
-  private capParkMessage(need: "qa" | "implementor"): string {
+  private capParkMessage(need: CapParkStage): string {
     const now = Date.now();
     const codexOn = this.settings().codexEnabled;
     const grokOn = this.settings().grokEnabled;
@@ -2788,6 +2799,13 @@ export class ThreadManager implements OrchestratorApi {
             return undefined;
           });
           if (this.cancelled(threadId)) return;
+          // A quota-exhausted planner did not complete a deliberate "no plan" outcome. Preserve the
+          // unfinished stage and park it with the durable cap marker, so the supervisor retries this
+          // exact stage after a provider frees up instead of sending an implementor a fabricated blank plan.
+          if (this.capParked.has(threadId)) {
+            this.settleReview(threadId, "Planner could not complete — needs your review.");
+            return;
+          }
         } else {
           this.hub.log("info", `Planner disabled — ${threadId.slice(0, 8)} skips planning, straight to the implementor.`);
         }
@@ -2806,6 +2824,12 @@ export class ThreadManager implements OrchestratorApi {
           return undefined;
         });
         if (this.cancelled(threadId)) return;
+        // Same invariant as planning: quota exhaustion is not a valid empty research result and must
+        // resume before the implementor sees the handoff.
+        if (this.capParked.has(threadId)) {
+          this.settleReview(threadId, "Researcher could not complete — needs your review.");
+          return;
+        }
         this.db.updateThreadStageOutputs(threadId, { research: research ?? null, researchDone: true });
       }
 
@@ -2997,6 +3021,12 @@ export class ThreadManager implements OrchestratorApi {
     return undefined;
   }
 
+  /** Single construction seam for a structured-role agent. Keeping provider selection beside the
+   * construction makes the fallback loop testable without starting a real subscription-backed process. */
+  private createRoleAgent(_provider: ImplementorProvider, create: () => AgentRunLike): AgentRunLike {
+    return create();
+  }
+
   /** Run a one-shot role to a result. Usage caps switch Claude accounts as before. Transient provider
    *  failures retry three times, then planner/researcher/QA can continue on an enabled CLI backend.
    *  `opts.preferredProvider` starts the role on a CLI backend (e.g. warm-resuming a prior Grok QA
@@ -3074,7 +3104,7 @@ export class ThreadManager implements OrchestratorApi {
       if (provider === "codex") {
         accountId = "openai-codex";
         if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Codex");
-        agent = new CodexAgentRun({
+        agent = this.createRoleAgent("codex", () => new CodexAgentRun({
           model,
           effort: this.codexEffort(model),
           cwd: thread.workspace,
@@ -3087,11 +3117,11 @@ export class ThreadManager implements OrchestratorApi {
           onOperatorNote: (body, url) => {
             this.postCliOperatorNote(thread, role, body, url);
           },
-        });
+        }));
       } else if (provider === "grok") {
         accountId = "xai-grok";
         if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Grok");
-        agent = new GrokAgentRun({
+        agent = this.createRoleAgent("grok", () => new GrokAgentRun({
           model,
           effort: this.grokEffort(model),
           cwd: thread.workspace,
@@ -3103,7 +3133,7 @@ export class ThreadManager implements OrchestratorApi {
           onOperatorNote: (body, url) => {
             this.postCliOperatorNote(thread, role, body, url);
           },
-        });
+        }));
       } else if (provider === "zai") {
         // z.ai runs the Claude SDK path against its Anthropic-compatible endpoint, so it keeps the bus/office
         // MCP servers and structured output already built into `cfg` by makeCfg — just point it at z.ai. A
@@ -3112,9 +3142,9 @@ export class ThreadManager implements OrchestratorApi {
         cfg.baseUrl = config.zai.baseUrl;
         cfg.authToken = this.zaiApiKey();
         if (resume) cfg.resume = resume;
-        agent = new ZaiAgentRun(cfg);
+        agent = this.createRoleAgent("zai", () => new ZaiAgentRun(cfg));
       } else {
-        agent = new AgentRun(cfg);
+        agent = this.createRoleAgent("claude", () => new AgentRun(cfg));
       }
       this.wireRun(agent, thread.id, run.id, role, accountId);
       this.track(thread.id, agent);
@@ -3178,12 +3208,15 @@ export class ThreadManager implements OrchestratorApi {
           ((agent instanceof CodexAgentRun || agent instanceof GrokAgentRun) && agent.capped) ||
           (agent instanceof ZaiAgentRun && agent.rateLimited);
         if (!capped) return res;
-        if (provider === "codex") this.noteCodexCap();
+        if (provider === "codex") this.noteCodexCap(agent.rateLimitInfo);
         else if (provider === "grok") this.noteGrokCap();
         else if (provider === "zai") this.noteZaiCap();
         unavailableProviders.add(provider);
         const next = this.nextReadyImplementor(provider, unavailableProviders, role);
-        if (!next) return res;
+        if (!next) {
+          this.parkForExhaustedProviders(thread.id, role);
+          return res;
+        }
         provider = next;
         transientFailures = 0;
         accountFailovers = 0;
@@ -3227,7 +3260,7 @@ export class ThreadManager implements OrchestratorApi {
           message = prependUserContent(kickoff, `[Claude usage-limit handoff]\nEvery Claude subscription is capped. Continue this ${role} stage on ${providerLabel(cli)} and complete it fully.`);
           continue;
         }
-        if (role === "qa") this.capParked.set(thread.id, "qa");
+        this.parkForExhaustedProviders(thread.id, role);
         return res;
       }
       this.logFailover(thread, role, next.label, agent.rateLimitInfo);
@@ -3324,9 +3357,13 @@ export class ThreadManager implements OrchestratorApi {
   async finalizeReader(thread: Thread, res: ResultEvent | undefined): Promise<void> {
     // Sticky across resume — set BEFORE any settle so a restart between here and the state change can't
     // re-enter runReader and post a second answer.
-    this.db.updateThreadStageOutputs(thread.id, { readerDone: true });
-
     const out = res?.structuredOutput as ReaderOutput | undefined;
+    // A capped reader did not answer. Keep readerDone clear so the supervisor resumes the lookup.
+    if (this.capParked.has(thread.id)) {
+      this.settleReview(thread.id, "Reader could not complete — needs your review (or a full re-dispatch).");
+      return;
+    }
+    this.db.updateThreadStageOutputs(thread.id, { readerDone: true });
     if (!res || res.isError) {
       this.settleReview(thread.id, "Reader could not complete — needs your review (or a full re-dispatch).");
       return;
@@ -4164,7 +4201,7 @@ export class ThreadManager implements OrchestratorApi {
     const zaiCapped = current instanceof ZaiAgentRun && current.rateLimited;
     if (res?.isError && !this.cancelled(thread.id) && (cliCapped || zaiCapped)) {
       const from = this.implementorProvider.get(thread.id) ?? "claude";
-      if (from === "codex") this.noteCodexCap();
+      if (from === "codex") this.noteCodexCap(current.rateLimitInfo);
       else if (from === "grok") this.noteGrokCap();
       else if (from === "zai") this.noteZaiCap();
       const next = this.nextReadyImplementor(from) ?? "claude";

@@ -58,6 +58,7 @@ const GATES = [
   "test:usage-ping",
   "test:failover-ladder",
   "test:provider-serves-role",
+  "test:provider-fallback",
   "test:park-classify",
   "test:recovery-features",
   "test:office-bridge",

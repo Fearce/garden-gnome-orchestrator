@@ -654,6 +654,19 @@ function parseResetClock(text: string, now: number): number | undefined {
   return t;
 }
 
+/** Best-effort reset timestamp from provider text such as Codex's
+ * `try again at Sep 2nd, 2026 2:23 PM` or a CLI's `resets 7pm`. Providers that expose a structured
+ * rate-limit event still win with that authoritative value; this prevents a plain-text quota rejection
+ * from being held only for the generic cooldown. */
+export function parseUsageLimitResetAt(text: string, now = Date.now()): number | undefined {
+  const absolute = /(?:try again|reset(?:s)?|available again)\s+(?:at\s+)?([A-Z][a-z]{2,8}\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4}\s+\d{1,2}:\d{2}\s*(?:am|pm)?)/i.exec(text);
+  if (absolute?.[1]) {
+    const parsed = Date.parse(absolute[1].replace(/(\d)(st|nd|rd|th)\b/gi, "$1"));
+    if (Number.isFinite(parsed) && parsed > now) return parsed;
+  }
+  return parseResetClock(text, now);
+}
+
 /**
  * Whether an ERROR result looks like a usage-cap rejection (vs. error_max_turns / error_max_budget_usd
  * / a real crash). The caller gates this on is_error, so matching the result/errors text here can't

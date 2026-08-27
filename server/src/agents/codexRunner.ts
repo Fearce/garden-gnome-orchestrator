@@ -8,7 +8,7 @@ import { logCrash } from "../crashLog.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { extractOfficeChat, extractOperatorNotes } from "./officeBridge.js";
-import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
+import { parseUsageLimitResetAt, transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 import { formatStructuredRoleFeed, parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
 
 export interface CodexRunConfig {
@@ -634,7 +634,7 @@ export class CodexAgentRun implements AgentRunLike {
       case "turn.failed": {
         this.sawTerminal = true;
         const msg = ev.error?.message ?? this.lastErrorMsg ?? "Codex turn failed.";
-        if (RATE_LIMIT_RE.test(msg)) this.markCapped();
+        if (RATE_LIMIT_RE.test(msg)) this.markCapped(msg);
         else this.markTransientApiError(msg);
         this.pendingTerminalResult = { subtype: "error", isError: true, result: msg, tokenUsage: codexTokenUsage(ev.usage) };
         break;
@@ -717,9 +717,9 @@ export class CodexAgentRun implements AgentRunLike {
 
   /** Flag that this turn died to a usage cap (429 / quota). Drives the pipeline's provider failover to
    *  the Claude backend — NOT the Claude-account failover (see the `capped`/`rateLimited` field comment). */
-  private markCapped(): void {
+  private markCapped(message?: string): void {
     this.capped = true;
-    this.rateLimitInfo = { status: "rejected" };
+    this.rateLimitInfo = { status: "rejected", resetsAt: message ? parseUsageLimitResetAt(message) : undefined };
   }
 
   private markTransientApiError(value: unknown): void {
@@ -794,7 +794,7 @@ export class CodexAgentRun implements AgentRunLike {
       const msg = this.lastErrorMsg ?? `Codex CLI exited with code ${code ?? "unknown"} before finishing the turn.`;
       // The 5h/weekly cap often kills the turn instantly (429 on stderr, no turn.failed event) — the
       // "dies in ~2s" symptom. Flag it here too so the provider failover fires instead of parking.
-      if (RATE_LIMIT_RE.test(msg)) this.markCapped();
+      if (RATE_LIMIT_RE.test(msg)) this.markCapped(msg);
       else this.markTransientApiError(msg);
       this.finishTurn({ subtype: "error", isError: true, result: msg });
     } else if (this.pendingTerminalResult) {
