@@ -195,9 +195,12 @@ const get = (path: string, headers: Record<string, string> = {}) =>
 
 /** Open a real WebSocket against the running relay. Rejects with the refusal — the upgrade answers a
  *  bare `401` line, which `ws` surfaces as "Unexpected server response: 401". */
-function openSocket(p: number, headers: Record<string, string>): Promise<WebSocket> {
+function openSocket(p: number, headers: Record<string, string>, onMessage?: (data: Buffer) => void): Promise<WebSocket> {
   return new Promise((ok, no) => {
     const ws = new WebSocket(`ws://127.0.0.1:${p}/ws`, { headers });
+    // A welcome can share the first TCP read with the upgrade. Subscribe before `open` resolves so a
+    // real immediate greeting is observed rather than turning this test into a scheduler race.
+    if (onMessage) ws.on("message", onMessage);
     ws.once("open", () => ok(ws));
     ws.once("error", (e: Error) => no(e));
   });
@@ -344,9 +347,12 @@ try {
   // socket. `requestTimeout` is 15s, the relay's own heartbeat is 30s, and a real office connection is
   // open for days — so hold one past the request timeout and prove it still answers.
   {
-    const ws = await openSocket(port, { authorization: `Bearer ${token}`, "x-office-instance": "gate" });
     const frames: string[] = [];
-    ws.on("message", (d: Buffer) => frames.push((JSON.parse(String(d)) as { t: string }).t));
+    const ws = await openSocket(
+      port,
+      { authorization: `Bearer ${token}`, "x-office-instance": "gate" },
+      (d: Buffer) => frames.push((JSON.parse(String(d)) as { t: string }).t),
+    );
 
     await new Promise((r) => setTimeout(r, 18_000));
     assert.equal(ws.readyState, ws.OPEN, "an established socket must survive requestTimeout — the office holds these for days");

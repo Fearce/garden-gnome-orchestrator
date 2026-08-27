@@ -31,8 +31,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const superviseScript = path.join(__dirname, "supervise.cjs");
 
-/** Run the supervisor with a given child script for `runMs`, then SIGTERM it and resolve. */
-async function runSupervisor({ dataDir, childScript, runMs }) {
+/** Run the supervisor until it demonstrates its expected restarts (or `runMs` elapses), then SIGTERM it. */
+async function runSupervisor({ dataDir, childScript, counter, minLaunches, runMs }) {
   const proc = spawn(process.execPath, [superviseScript], {
     cwd: path.resolve(__dirname, ".."),
     windowsHide: true,
@@ -50,7 +50,15 @@ async function runSupervisor({ dataDir, childScript, runMs }) {
   let out = "";
   proc.stdout.on("data", (c) => (out += c.toString()));
   proc.stderr.on("data", (c) => (out += c.toString()));
-  await sleep(runMs);
+  // Startup and child-process scheduling can be much slower on a busy Windows machine. Waiting for the
+  // actual lifecycle event keeps this integration test fast when healthy and avoids calling a valid
+  // supervisor broken solely because its first child launched after an arbitrary 2.5 s sleep.
+  const deadline = Date.now() + runMs;
+  while (Date.now() < deadline) {
+    const launches = fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").length : 0;
+    if (launches >= minLaunches) break;
+    await sleep(50);
+  }
   proc.kill("SIGTERM");
   // Give the supervisor its graceful-shutdown window to exit.
   await new Promise((resolve) => {
@@ -85,10 +93,10 @@ async function main() {
       `const fs=require('fs');fs.appendFileSync(${JSON.stringify(counter)},'x');` +
         `process.stderr.write('boom-from-child\\n');process.exit(1);`,
     );
-    await runSupervisor({ dataDir, childScript, runMs: 2500 });
+    await runSupervisor({ dataDir, childScript, counter, minLaunches: 3, runMs: 8000 });
 
     const launches = fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").length : 0;
-    check(launches >= 3, `child was respawned after each crash (launched ${launches}× in ~2.5s)`);
+    check(launches >= 3, `child was respawned after each crash (launched ${launches}× within 8s)`);
 
     const crashLog = path.join(dataDir, "crash.log");
     const crashText = fs.existsSync(crashLog) ? fs.readFileSync(crashLog, "utf8") : "";
@@ -113,7 +121,7 @@ async function main() {
       `const fs=require('fs');fs.appendFileSync(${JSON.stringify(counter)},'x');` +
         `setTimeout(()=>process.exit(75),250);`,
     );
-    await runSupervisor({ dataDir, childScript, runMs: 2500 });
+    await runSupervisor({ dataDir, childScript, counter, minLaunches: 2, runMs: 8000 });
 
     const launches = fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").length : 0;
     check(launches >= 2, `restart-requesting child was respawned (launched ${launches}×)`);
