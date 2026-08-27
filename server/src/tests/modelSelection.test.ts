@@ -41,7 +41,13 @@ const CANDIDATES: ModelCandidate[] = [
   { provider: "claude", model: "claude-haiku-4-5-20251001", efforts: ["low", "medium", "high"], note: modelNote("claude", "claude-haiku-4-5-20251001") },
   { provider: "claude", model: "claude-sonnet-4-6", efforts: ["low", "medium", "high", "max"], note: modelNote("claude", "claude-sonnet-4-6") },
   { provider: "claude", model: "claude-opus-4-8", efforts: ["low", "medium", "high", "xhigh", "max"], note: modelNote("claude", "claude-opus-4-8") },
-  { provider: "codex", model: "gpt-5.6-sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], note: modelNote("codex", "gpt-5.6-sol") },
+  {
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    note: modelNote("codex", "gpt-5.6-sol"),
+    capacity: "Codex general pool: 5h 42% free (resets in 2h) — enough runway for substantial implementation",
+  },
   { provider: "zai", model: "glm-4.7", efforts: ["low", "medium", "high"], note: modelNote("zai", "glm-4.7") },
 ];
 const EFFORTS: Effort[] = ["low", "medium", "high", "max", "ultra"];
@@ -136,6 +142,8 @@ console.log("\n=== the prompt carries what the decision needs ===\n");
   check("durable token totals reach the selector", prompt.includes("120K tokens"), "token history missing");
   check("effort-specific local outcomes reach the selector", prompt.includes("claude-sonnet-4-6 @ medium"), "effort history missing");
   check("LiveBench is framed as a secondary effort/category prior", /LiveBench.*secondary capability prior.*category scores.*smallest reasoning effort/s.test(prompt), "benchmark weighting guidance missing");
+  check("exact live pool capacity reaches the model roster", prompt.includes("Live capacity: Codex general pool: 5h 42% free"), "capacity line missing");
+  check("the selector must avoid at-risk pools for substantial work", /Do not put substantial work on an at-risk pool/.test(prompt), "runway policy missing");
 }
 
 {

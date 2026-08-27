@@ -22,6 +22,7 @@
  */
 
 import type { Role } from "../types.js";
+import { preferCapacity, standardCapacityWindows, type CapacityDemand } from "../orchestrator/capacityRouting.js";
 
 /** The pool every model without a dedicated allowance draws on. */
 export const GENERAL_LIMIT_ID = "codex";
@@ -133,6 +134,8 @@ export interface DedicatedPickInput {
   /** Per-pool cap latches from live 429s, so a just-rejected pool isn't immediately retried. */
   capLatches?: PoolCapLatches;
   limitPct?: number;
+  /** Role/task-sized reserve. When present, a nearly-spent pool loses to one able to carry the turn. */
+  demand?: CapacityDemand;
 }
 
 /**
@@ -144,15 +147,22 @@ export interface DedicatedPickInput {
  * roster. Ties break on the pool with the most headroom so a burst spreads rather than hammering one.
  */
 export function dedicatedPoolModel(input: DedicatedPickInput): string | undefined {
-  const { pools, role, now, dispatchable, capLatches, limitPct } = input;
+  const { pools, role, now, dispatchable, capLatches, limitPct, demand } = input;
   if (!roleMayUseDedicatedPool(role)) return undefined;
   const runnable = new Set(dispatchable.map((m) => normalizeModelId(m)).filter((m): m is string => !!m));
   const usable = dedicatedPools(pools)
     .filter((p) => runnable.has(p.modelSlug!))
     .filter((p) => !poolLatched(capLatches, p.limitId, now))
-    .filter((p) => poolHasHeadroom(p, now, limitPct))
-    .sort((a, b) => poolHeadroomPct(b) - poolHeadroomPct(a));
-  return usable[0]?.modelSlug ?? undefined;
+    .filter((p) => poolHasHeadroom(p, now, limitPct));
+  const capacity = demand
+    ? preferCapacity(usable, (pool) => standardCapacityWindows(pool.fiveHour, pool.fiveHourReset, pool.sevenDay, pool.sevenDayReset), demand, now)
+    : undefined;
+  // With a workload reserve, an all-at-risk dedicated tier is not a useful target: return control to
+  // the caller so it can consider the general Codex pool and the other providers. Without this guard,
+  // merely having 1% below the hard cutoff made a dedicated pool shadow a healthy general allowance.
+  if (capacity?.allKnownAtRisk) return undefined;
+  const ranked = [...(capacity?.candidates ?? usable)].sort((a, b) => poolHeadroomPct(b) - poolHeadroomPct(a));
+  return ranked[0]?.modelSlug ?? undefined;
 }
 
 /** Whether a live 429 latch is still holding this pool off. */

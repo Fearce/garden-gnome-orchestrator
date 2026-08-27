@@ -214,6 +214,33 @@ Read the run trail to tell causes apart:
   is re-started at its slot by a cheap real wake turn (one-word prompt, `gpt-5.5` low effort — mini
   models 400 on ChatGPT-plan auth; `CODEX_WAKE=off` disables, `CODEX_WAKE_MODEL` overrides).
 
+### Capacity-aware dispatch and waiting
+
+Hard-cap detection, account/provider failover, Fable fallback, dedicated Codex pools, durable cap-park
+auto-resume, and the free planner/reader pool's full-run request/token/credit lease already exist. The
+routing layer now adds a pre-dispatch runway check shared by
+Claude-account selection, provider selection, exact Codex model-pool selection, smart model rosters,
+QA/reviewer routing, Director target selection, and parked-task wake scheduling.
+
+The check estimates a role-sized duration/burn/reserve (including implementor effort, plan size/risk,
+and timed-task duration) and evaluates every visible gating window: Claude/z.ai 5h + weekly, Codex
+general or dedicated 5h + weekly, Grok weekly + monthly credits, routing ceilings, and live cap latches.
+Known viable capacity wins, unknown/unmetered capacity remains a bounded fallback, and known-at-risk
+capacity is last. Existing weekly-safety, spread-usage, and perishable-reset policy still breaks ties
+inside that tier. A reset during the estimated run reduces pre-reset demand; one after completion does
+not. This lets a short role bridge a near reset without assigning substantial implementation or QA to
+a pool forecast to expire mid-task.
+
+When every visible compatible pool lacks the reserve, substantial work enters the existing durable
+`Auto-resume pending` park without spending a doomed turn. The task's finding/error shows the workload
+estimate and each pool's free percentage/reset. `nextViableAt` simulates all coupled gates, so a 5h reset
+does not wake or promise capacity while a weekly/monthly window is still exhausted. The supervisor
+rechecks the same workload reserve before resuming. Eligible reader/planner/researcher turns compare
+independent Codex model pools proactively, and selecting one no longer selects/wakes an unused Claude
+account. Unknown telemetry never freezes an otherwise dispatchable API-key/cold-start backend. Gate:
+`test:capacity-routing` (plus `test:provider-fallback`, `test:qa-budget`, `test:auto-model`, and
+`test:codex-pools` for wiring/recovery).
+
 ## Auto model selection (`settings.autoModelSelection`, off by default)
 On, the implementor's model + effort become a per-task judgement: just before the implementor stage,
 `orchestrator/modelSelector.ts` makes ONE no-tools structured judgement on whichever provider currently has
@@ -222,7 +249,10 @@ category/effort prior, and the roster of models **dispatchable right now**. The 
 representative: every live Claude, Grok and GLM model (z.ai mirrors Anthropic's `/v1/models`, so its roster is fetched, not hand-listed), and
 every Codex model the active auth exposes — its API-key catalog, else the CLI presets that ARE the ChatGPT-plan roster — on each enabled+authed+uncapped backend. Each entry names
 its exact model-compatible effort tiers after the operator's backend/account cap; no fixed per-provider slice
-or global effort list can hide a usable choice. Exact LiveBench rows are distinguished from
+or global effort list can hide a usable choice. Each entry also names the live quota runway of the exact
+account/general/dedicated pool the model would consume. The selector is instructed to treat that as an
+operational constraint; known-at-risk models are removed when a viable option exists, and the chosen
+provider is checked again immediately before dispatch. Exact LiveBench rows are distinguished from
 explicitly labelled older same-family priors; local outcomes and role/tool fit outrank the benchmark. The reply is validated against that roster and
 the PROVIDER comes from the matched entry, never the reply, so a hallucinated id can't reach a spawn; two
 unusable replies fall back to normal routing (a dispatch is never blocked). The pick persists in

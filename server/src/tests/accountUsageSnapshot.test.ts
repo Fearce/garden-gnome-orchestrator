@@ -70,6 +70,21 @@ check("an unpinged sub reports no reading", snapshot.accounts.acct1?.usageAt ===
 check("an unpinged sub has no utilization", snapshot.accounts.acct1?.fiveHour === null);
 check("cadence rides along so a consumer can size its staleness bound", snapshot.pingIntervalMs > 0);
 
+console.log("account-usage: reset-aware hard headroom and stale routing evidence");
+const rolloverManager = new AccountManager([{ id: "rollover", label: "rollover", token: "" }], new EventHub());
+const rolloverState = (rolloverManager as any).states.get("rollover");
+rolloverState.fiveHour = 100;
+rolloverState.fiveHourReset = Date.now() - 1_000;
+rolloverState.sevenDay = 20;
+rolloverState.sevenDayReset = Date.now() + 24 * 60 * 60_000;
+check("an expired 100% window is dispatchable even before its cached percentage refreshes", rolloverManager.hasHeadroom());
+rolloverState.fiveHourReset = Date.now() + 60_000;
+check("the same 100% window stays blocked while its reset is still future", !rolloverManager.hasHeadroom());
+rolloverState.fiveHour = 70;
+rolloverState.sevenDay = 70;
+rolloverState.usageStale = true;
+check("stale apparent headroom is reported as unknown instead of fresh capacity", rolloverManager.dispatchPreview().capacity.status === "unknown");
+
 publishAccountUsage(snapshot);
 const written = JSON.parse(readFileSync(snapshotPath(), "utf8"));
 check("published to CLAUDE_ACCOUNT_SNAPSHOT_PATH", snapshotPath() === process.env.CLAUDE_ACCOUNT_SNAPSHOT_PATH);

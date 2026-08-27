@@ -41,8 +41,11 @@ import {
   type ShotgunPlan,
 } from "./shotgun.js";
 import {
+  dedicatedPools,
   dedicatedPoolModel,
   describePool,
+  normalizeModelId,
+  POOL_HARD_LIMIT_PCT,
   poolForModel,
   poolHasHeadroom,
   poolLatched,
@@ -66,6 +69,19 @@ import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
 import { buildSelectionPrompt, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
 import { providerIntent } from "./providerIntent.js";
 import { LiveBenchScores } from "./liveBenchScores.js";
+import {
+  assessCapacity,
+  capacityWindowsWithFreshness,
+  demandForRole,
+  demandSummary,
+  describeCapacity as describeRoutingCapacity,
+  formatUntil,
+  nextViableAt,
+  preferCapacity,
+  standardCapacityWindows,
+  type CapacityDemand,
+  type CapacityWindow,
+} from "./capacityRouting.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
@@ -123,6 +139,8 @@ export interface DirectorTarget {
   model: string;
   accountId: string;
   accountLabel: string;
+  /** Live allowance used by this target, shown to the smart selector. */
+  capacity?: string;
 }
 
 const DIRECTOR_PICK_SCHEMA = {
@@ -216,9 +234,24 @@ export interface ProviderCandidate {
   provider: ImplementorProvider;
   hasHeadroom: boolean;
   fiveHour: number | null;
+  fiveHourReset?: number | null;
   sevenDay: number | null;
   sevenDayReset: number | null;
   weeklySafetyPct: number; // 1-100 soft weekly ceiling; at/above it this backend is de-preferred (100 = off)
+  capacityLabel?: string;
+  /** Every window that gates this exact account/provider/model pool, including monthly credits. */
+  capacityWindows?: CapacityWindow[];
+}
+
+interface RoleCapacityOption {
+  provider: ImplementorProvider;
+  label: string;
+  windows: CapacityWindow[];
+  hasHeadroom: boolean;
+}
+
+interface ClaudeCapacityOption extends RoleCapacityOption {
+  accountId: string;
 }
 
 /** A settings.set patch: the writable subset of OrchestratorSettings plus the write-only raw key. The
@@ -391,6 +424,9 @@ const GROK_CAP_RECORDED_AT_KV_KEY = "grok_cap_recorded_at";
 const ZAI_CAP_KV_KEY = "zai_cap_until";
 const ZAI_CAP_RECORDED_AT_KV_KEY = "zai_cap_recorded_at";
 const PROVIDER_HARD_LIMIT = 98;
+// Provider usage caches older than their normal polling horizon are availability hints, not current
+// runway. Hard-limit holds remain conservative; apparent headroom becomes unknown (see capacityRouting).
+const ROUTING_USAGE_STALE_MS = 40 * 60_000;
 // After a server restart, auto-resume tasks that were ACTIVELY running (not human-gated) so a bounce
 // doesn't need a manual Resume click. Human-gated phases (a pending question/approval, paused, or
 // pre-planner intake) were waiting on a person, so they're left failed for a manual Resume instead.
@@ -782,7 +818,7 @@ export class ThreadManager implements OrchestratorApi {
       this.latchLegacyProviderCap(latestQa.account ?? null, latestQa.error ?? "");
       const round = Math.max(1, stage.qaRoundsUsed ?? 0);
       this.db.updateThreadStageOutputs(thread.id, { qaCapRetryRound: round });
-      this.db.updateThread(thread.id, { state: "review", error: this.capParkMessage("qa") });
+      this.db.updateThread(thread.id, { state: "review", error: this.capParkMessage(thread.id, "qa") });
       this.postFinding({
         threadId: thread.id,
         fromRole: "qa",
@@ -982,20 +1018,24 @@ export class ThreadManager implements OrchestratorApi {
       .filter((t) => (t.state === "review" || t.state === "failed") && (t.error ?? "").startsWith(CAP_PARK_PREFIX));
   }
 
-  /** Earliest known provider/account reset for an exhausted pipeline. AccountManager includes its
-   * persisted per-sub cap latches; the CLI providers keep their own durable latches here. */
+  private capParkStage(thread: Thread): CapParkStage {
+    const match = /\((planner|researcher|implementor|qa|reader) stage\)/i.exec(thread.error ?? "");
+    if (match) return match[1]!.toLowerCase() as CapParkStage;
+    if (/\bQA\b/i.test(thread.error ?? "")) return "qa"; // legacy marker: "QA runs on Claude"
+    return "implementor";
+  }
+
+  /** Earliest reset that actually makes a compatible pool viable for one of the parked workloads.
+   * Simulating all gating windows avoids waking on a 5h reset while the weekly/monthly window still
+   * blocks the same account, and includes independently-metered Codex model pools. */
   private earliestCapResetAt(now = Date.now()): number | undefined {
-    const resets: Array<number | null | undefined> = [
-      this.accounts.soonestResetAt(),
-      this.codexCapUntil,
-      this.grokCapUntil,
-      this.zaiCapUntil,
-    ];
-    const codex = readCodexUsage();
-    const grok = readGrokUsage();
-    const zai = readZaiUsage();
-    resets.push(codex?.fiveHourReset, codex?.sevenDayReset, grok.sevenDayReset, zai.fiveHourReset, zai.sevenDayReset);
-    const future = resets.filter((reset): reset is number => reset != null && reset > now);
+    const future: number[] = [];
+    for (const thread of this.capParkedThreads()) {
+      const role = this.capParkStage(thread);
+      const demand = this.capacityDemand(thread, role);
+      const next = this.nextRoleCapacityAt(role, demand, now);
+      if (next != null) future.push(next);
+    }
     return future.length ? Math.min(...future) : undefined;
   }
 
@@ -1034,13 +1074,6 @@ export class ThreadManager implements OrchestratorApi {
     // enabled+authed+under caps) → also resume QA-phase parks: runRole fails planner/researcher/QA over
     // to a ready CLI when Claude is still capped (see the Claude→CLI handoff in runRole). Older parks
     // that still carry CAP_PARK_QA_MARK in their error text are therefore unblocked by CLI headroom too.
-    const claudeFree = this.accounts.hasHeadroom();
-    const zaiFree = this.zaiImplementorReady();
-    const cliBridgeFree = this.codexImplementorReady() || this.grokImplementorReady();
-    if (!claudeFree && !zaiFree && !cliBridgeFree) {
-      this.armCapResumeWake();
-      return;
-    }
     let slots = this.settings().maxConcurrent - this.activePipelines.size;
     if (slots <= 0) {
       this.armCapResumeWake();
@@ -1052,8 +1085,10 @@ export class ThreadManager implements OrchestratorApi {
       // Reader stages need a durable owner-answer channel. z.ai shares the Anthropic SDK, and Codex
       // now returns its read-only answer through the schema for ThreadManager to post; Grok remains
       // bridge-only, so waking on Grok-only headroom would create a deterministic cap/repark loop.
-      const readerPark = /\(reader stage\)/i.test(t.error ?? "");
-      if (readerPark && !claudeFree && !zaiFree && !this.codexImplementorReady()) continue;
+      const role = this.capParkStage(t);
+      const demand = this.capacityDemand(t, role);
+      const ready = this.roleCapacityOptions(role, demand).filter((option) => this.roleCapacityReady(option, demand));
+      if (!ready.length) continue;
       // A prior supervisor tick may already have changed this row to failed and started its pipeline.
       // Keep the marker durable for a crash between that update and resumeThread, but never double-spawn
       // it while this process still owns the slot.
@@ -1063,11 +1098,11 @@ export class ThreadManager implements OrchestratorApi {
       // repo at its cap is left parked for a later supervisor tick rather than reviving two at once.
       if (this.repoAtCapacity(t.workspace)) continue;
       slots--;
-      this.hub.log("info", `An account freed up — auto-resuming rate-limit-parked "${t.title.slice(0, 48)}".`);
+      this.hub.log("info", `${ready[0]!.label} has viable runway — auto-resuming capacity-parked "${t.title.slice(0, 48)}".`);
       const now = Date.now();
       if (now - (this.capResumeNotifiedAt.get(t.id) ?? 0) > CAP_RESUME_NOTIFY_COOLDOWN_MS) {
         this.capResumeNotifiedAt.set(t.id, now);
-        this.notifyExternal(`↪ account freed up — auto-resuming "${t.title}".`);
+        this.notifyExternal(`↪ ${ready[0]!.label} has viable quota runway — auto-resuming "${t.title}".`);
       }
       // Enter the resume-aware failed path without losing the durable cap marker. If this process dies
       // before resumeThread gets CPU, the next boot's supervisor still knows the task is auto-resumable.
@@ -1421,14 +1456,28 @@ export class ThreadManager implements OrchestratorApi {
     }, AUTO_RESUME_DELAY_MS);
   }
 
-  private dispatchAccount(): Acct {
-    const { account } = this.accounts.select();
+  /** One shared workload estimate for account, provider, model-pool, and reset-wait decisions. */
+  private capacityDemand(thread: Thread, role: Role, effort?: Effort): CapacityDemand {
+    const plan = this.db.getThreadStageOutputs(thread.id).plan ?? undefined;
+    const files = new Set(plan?.steps.flatMap((step) => step.files ?? []) ?? []);
+    return demandForRole(role, {
+      effort: role === "implementor" ? (effort ?? thread.effortOverride ?? plan?.effort) : undefined,
+      stepCount: plan?.steps.length,
+      fileCount: files.size,
+      riskCount: plan?.risks.length,
+      durationMs: thread.durationMs,
+      deadlineAt: thread.deadlineAt,
+    });
+  }
+
+  private dispatchAccount(demand?: CapacityDemand): Acct {
+    const { account } = this.accounts.select(demand);
     return { id: account.id, label: account.label, token: account.token || undefined };
   }
 
   /** A usable account other than `excludeId` for failover, or null if none has headroom. */
-  private failoverAccount(excludeId: string): Acct | null {
-    const a = this.accounts.selectFailover(excludeId);
+  private failoverAccount(excludeId: string, demand?: CapacityDemand): Acct | null {
+    const a = this.accounts.selectFailover(excludeId, demand);
     return a ? { id: a.id, label: a.label, token: a.token || undefined } : null;
   }
 
@@ -1865,20 +1914,34 @@ export class ThreadManager implements OrchestratorApi {
    *  director model. A provider is present only when enabled, authenticated and under its live caps. */
   directorTargets(allModels = false): DirectorTarget[] {
     const out: DirectorTarget[] = [];
-    const add = (provider: ImplementorProvider, accountId: string, accountLabel: string, models: string[]): void => {
+    const demand = demandForRole("director");
+    const add = (provider: ImplementorProvider, accountId: string, accountLabel: string, models: string[], capacity: string): void => {
       for (const model of uniq(models).filter(Boolean)) {
-        out.push({ key: `${provider}|${accountId}|${model}`, provider, accountId, accountLabel, model });
+        out.push({ key: `${provider}|${accountId}|${model}`, provider, accountId, accountLabel, model, capacity });
       }
     };
-    const claude = this.accounts.dispatchPreview();
+    const claude = this.accounts.dispatchPreview(demand);
     if (claude.hasHeadroom) {
       const models = allModels
         ? this.claudeRosterModels().map((m) => this.poolResolved(claude.account.id, m))
         : [this.providerRoleModel("claude", "director", claude.account.id)];
-      add("claude", claude.account.id, claude.account.label, models);
+      const candidate = providerCandidateFromClaude(claude);
+      for (const model of uniq(models)) {
+        add("claude", claude.account.id, claude.account.label, [model], modelCapacityNote("claude", model, candidate, demand));
+      }
     }
-    if (this.codexImplementorReady()) {
-      add("codex", "openai-codex", "Codex", allModels ? this.codexRosterModels() : [this.providerRoleModel("codex", "director")]);
+    const codexKey = this.openaiApiKey();
+    if (this.settings().codexEnabled && codexAuthAvailable(!!codexKey && /^sk-/.test(codexKey))) {
+      const pools = this.codexPoolSnapshot();
+      const models = allModels
+        ? this.codexRosterModels().filter((model) => !poolForModel(pools ?? [], model)?.modelSlug)
+        : [this.providerRoleModel("codex", "director")];
+      for (const model of uniq(models)) {
+        const candidate = this.codexProviderCandidate("director", demand, model);
+        if (candidate.hasHeadroom) {
+          add("codex", "openai-codex", "Codex", [model], describeProviderCapacity(candidate, demand));
+        }
+      }
     }
     if (this.grokProviderReady()) {
       const live = this.modelCatalog.grokModels();
@@ -1886,10 +1949,14 @@ export class ThreadManager implements OrchestratorApi {
         ? (live.length ? live : this.pickableGrokModels())
         : [this.providerRoleModel("grok", "director")];
       const available = live.length ? models.filter((m) => live.includes(m)) : models;
-      if (available.length) add("grok", "xai-grok", "Grok", available);
+      if (available.length) {
+        const candidate = this.grokProviderCandidate(demand);
+        add("grok", "xai-grok", "Grok", available, describeProviderCapacity(candidate, demand));
+      }
     }
     if (this.zaiImplementorReady()) {
-      add("zai", "zai", "z.ai", allModels ? this.pickableZaiModels() : [this.providerRoleModel("zai", "director")]);
+      const candidate = this.zaiProviderCandidate(demand);
+      add("zai", "zai", "z.ai", allModels ? this.pickableZaiModels() : [this.providerRoleModel("zai", "director")], describeProviderCapacity(candidate, demand));
     }
     return out;
   }
@@ -1898,31 +1965,80 @@ export class ThreadManager implements OrchestratorApi {
    *  reselects only on a provider/account cap, hard usage ceiling, or the operator disabling/removing
    *  that backend. */
   directorTargetReady(target: DirectorTarget): boolean {
-    if (target.provider === "claude") {
-      const a = this.accounts.dto().find((x) => x.id === target.accountId);
-      const tight = Math.max(a?.fiveHour ?? 0, a?.sevenDay ?? 0);
-      return !!a?.enabled && !this.accounts.isRateLimited(target.accountId) && tight < PROVIDER_HARD_LIMIT;
-    }
-    if (target.provider === "codex") return this.codexImplementorReady();
+    const demand = demandForRole("director");
+    const candidate = this.directorCandidateForTarget(target, demand);
+    if (!candidate.hasHeadroom) return false;
     if (target.provider === "grok") {
       const live = this.modelCatalog.grokModels();
-      return this.grokProviderReady() && (!live.length || live.includes(target.model));
+      if (live.length && !live.includes(target.model)) return false;
     }
-    return this.zaiImplementorReady();
+    if (assessCapacity(candidateCapacityWindows(candidate), demand).status !== "at-risk") return true;
+    // A sticky target may keep a tight pool only when there is genuinely nowhere safer to move. This
+    // preserves the long-lived director session while still shedding it before a viable alternative.
+    return !this.directorTargets(true).some((alternative) => {
+      if (alternative.key === target.key) return false;
+      const other = this.directorCandidateForTarget(alternative, demand);
+      return other.hasHeadroom && assessCapacity(candidateCapacityWindows(other), demand).status !== "at-risk";
+    });
+  }
+
+  private directorCandidateForTarget(target: DirectorTarget, demand: CapacityDemand): ProviderCandidate {
+    if (target.provider === "claude") {
+      const option = this.claudeCapacityOptions(demand).find((entry) => entry.accountId === target.accountId);
+      const dto = this.accounts.dto().find((entry) => entry.id === target.accountId);
+      return {
+        provider: "claude",
+        hasHeadroom: option?.hasHeadroom ?? false,
+        fiveHour: dto?.fiveHour ?? null,
+        fiveHourReset: dto?.fiveHourReset ?? null,
+        sevenDay: dto?.sevenDay ?? null,
+        sevenDayReset: dto?.sevenDayReset ?? null,
+        weeklySafetyPct: dto?.weeklySafetyPct ?? 100,
+        capacityLabel: `Claude ${target.accountLabel}`,
+        capacityWindows: option?.windows ?? [],
+      };
+    }
+    if (target.provider === "codex") {
+      const key = this.openaiApiKey();
+      const candidate = this.codexProviderCandidate("director", demand, target.model);
+      return {
+        ...candidate,
+        hasHeadroom:
+          this.settings().codexEnabled &&
+          codexAuthAvailable(!!key && /^sk-/.test(key)) &&
+          candidate.hasHeadroom,
+      };
+    }
+    if (target.provider === "grok") {
+      const candidate = this.grokProviderCandidate(demand);
+      return { ...candidate, hasHeadroom: this.settings().grokEnabled && grokAuthAvailable() && candidate.hasHeadroom };
+    }
+    const candidate = this.zaiProviderCandidate(demand);
+    return { ...candidate, hasHeadroom: this.settings().zaiEnabled && !!this.zaiApiKey() && candidate.hasHeadroom };
   }
 
   /** Usage-aware deterministic fallback for the director and for bootstrapping the smart selector. */
   preferredDirectorTarget(targets = this.directorTargets(false)): DirectorTarget | undefined {
     if (!targets.length) return undefined;
-    const providers = uniq(targets.map((t) => t.provider));
-    const candidates = providers.map((provider) =>
-      provider === "claude" ? this.claudeProviderCandidate()
-        : provider === "codex" ? this.codexProviderCandidate()
-          : provider === "grok" ? this.grokProviderCandidate()
-            : this.zaiProviderCandidate(),
-    );
-    const provider = this.preferredImplementorProvider(candidates);
-    return targets.find((t) => t.provider === provider) ?? targets[0];
+    const demand = demandForRole("director");
+    const pairs = targets.map((target) => ({ target, candidate: this.directorCandidateForTarget(target, demand) }));
+    const chosen = this.preferredProviderCandidate(pairs.map((pair) => pair.candidate), demand);
+    return pairs.find((pair) => pair.candidate === chosen)?.target ?? targets[0];
+  }
+
+  /** Honest no-target status for the chat director, using every enabled provider/model pool and only a
+   * reset that would actually make one of them viable. */
+  directorCapacityWaitMessage(now = Date.now()): string {
+    const demand = demandForRole("director");
+    const options = this.roleCapacityOptions("director", demand, now);
+    const next = this.nextRoleCapacityAt("director", demand, now);
+    const reset = next != null
+      ? ` The next viable pool is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
+      : " No reliable reset time is available yet; live meters are still polled.";
+    const status = options.length
+      ? ` Capacity checked: ${options.map((option) => describeRoutingCapacity(option, demand, now)).join("; ")}.`
+      : " No enabled, authenticated provider is available.";
+    return `Every enabled director target is capped, lacks safe runway, or is unavailable, so I couldn't complete this turn.${reset}${status} Resend after capacity frees; routing will reselect automatically.`;
   }
 
   /** Construct the concrete runner for a director target. Claude/z.ai retain the native MCP tools in
@@ -1965,7 +2081,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   noteDirectorProviderCap(target: DirectorTarget): void {
-    if (target.provider === "codex") this.noteCodexCap();
+    if (target.provider === "codex") this.noteCodexCap(undefined, target.model);
     else if (target.provider === "grok") this.noteGrokCap();
     else if (target.provider === "zai") this.noteZaiCap();
   }
@@ -2013,7 +2129,7 @@ export class ThreadManager implements OrchestratorApi {
       "Available targets:",
       ...targets.map((t) => {
         const benchmark = this.liveBench.note(t.model);
-        return `- key=${t.key} — ${providerLabel(t.provider)} ${t.model}${t.provider === "codex" || t.provider === "grok" ? " (structured command bridge)" : " (native director tools)"}${benchmark ? `\n  ${benchmark}` : ""}`;
+        return `- key=${t.key} — ${providerLabel(t.provider)} ${t.model}${t.provider === "codex" || t.provider === "grok" ? " (structured command bridge)" : " (native director tools)"}${t.capacity ? `\n  ${t.capacity}` : ""}${benchmark ? `\n  ${benchmark}` : ""}`;
       }),
       "LiveBench is a secondary capability prior, not an availability signal. Prefer exact-model evidence over an older family prior; local task outcomes and native-tool fit beat a small benchmark gap.",
       "Reply with the exact key.",
@@ -2027,34 +2143,76 @@ export class ThreadManager implements OrchestratorApi {
   /** Every (provider, model) pair a task could ACTUALLY be dispatched to right now — each backend that is
    *  enabled, authed and not usage-capped, with the models its own picker offers. A roster built from
    *  anything looser would let the selector choose a backend that then can't run. */
-  private implementorModelRoster(): ModelCandidate[] {
-    const out: ModelCandidate[] = [];
-    const add = (provider: ImplementorProvider, models: string[], effortsFor: (model: string) => Effort[]): void => {
+  private implementorModelRoster(demand: CapacityDemand = demandForRole("implementor")): ModelCandidate[] {
+    interface RosterEntry {
+      provider: ImplementorProvider;
+      model: string;
+      efforts: Effort[];
+      candidate: ProviderCandidate;
+    }
+    const entries: RosterEntry[] = [];
+    const add = (
+      provider: ImplementorProvider,
+      models: string[],
+      effortsFor: (model: string) => Effort[],
+      candidateFor: (model: string) => ProviderCandidate,
+    ): void => {
       for (const model of uniq(models)) {
-        const benchmark = this.liveBench.note(model);
-        out.push({ provider, model, efforts: effortsFor(model), note: [modelNote(provider, model), benchmark].filter(Boolean).join(". ") });
+        const candidate = candidateFor(model);
+        if (candidate.hasHeadroom) entries.push({ provider, model, efforts: effortsFor(model), candidate });
       }
     };
     const underCap = (supported: readonly Effort[], cap: Effort): Effort[] =>
       supported.filter((effort) => EFFORTS.indexOf(effort) <= EFFORTS.indexOf(cap) && (effort !== "xhigh" || config.enableXhigh));
     if (this.accounts.hasHeadroom()) {
-      const cap = this.accountMaxEffort(this.accounts.dispatchPreview().account.id);
-      add("claude", this.claudeRosterModels(), (model) => underCap(claudeEffortsForModel(model), cap));
+      const claude = this.claudeProviderCandidate(demand);
+      const cap = this.accountMaxEffort(this.accounts.dispatchPreview(demand).account.id);
+      add("claude", this.claudeRosterModels(), (model) => underCap(claudeEffortsForModel(model), cap), () => claude);
     }
-    if (this.codexImplementorReady()) {
-      add("codex", this.codexRosterModels(), (model) => underCap(this.codexSupportedEfforts(model), this.codexEffort(model)));
+    if (this.codexImplementorReady("implementor", demand)) {
+      const pools = this.codexPoolSnapshot();
+      // Dedicated one-shot models are intentionally excluded from implementation; see codexPools.ts.
+      const models = this.codexRosterModels().filter((model) => !poolForModel(pools ?? [], model)?.modelSlug);
+      add(
+        "codex",
+        models,
+        (model) => underCap(this.codexSupportedEfforts(model), this.codexEffort(model)),
+        (model) => this.codexProviderCandidate("implementor", demand, model),
+      );
     }
     if (this.grokImplementorReady()) {
       const live = this.modelCatalog.grokModels();
       const models = live.length ? this.pickableGrokModels().filter((model) => live.includes(model)) : this.pickableGrokModels();
-      add("grok", models, (model) => underCap(grokEffortsForModel(model), this.grokEffort(model)));
+      const grok = this.grokProviderCandidate(demand);
+      const routedGrok = grok.hasHeadroom ? grok : { ...grok, hasHeadroom: true, capacityWindows: [] };
+      add("grok", models, (model) => underCap(grokEffortsForModel(model), this.grokEffort(model)), () => routedGrok);
     }
     if (this.zaiImplementorReady()) {
       const live = this.modelCatalog.zaiModels();
       const models = live.length ? this.pickableZaiModels().filter((model) => live.includes(model)) : this.pickableZaiModels();
-      add("zai", models, () => underCap(ZAI_EFFORTS, this.zaiEffort()));
+      const zai = this.zaiProviderCandidate(demand);
+      const routedZai = zai.hasHeadroom ? zai : { ...zai, hasHeadroom: true, capacityWindows: [] };
+      add("zai", models, () => underCap(ZAI_EFFORTS, this.zaiEffort()), () => routedZai);
     }
-    return out;
+    const capacity = preferCapacity(entries, (entry) => candidateCapacityWindows(entry.candidate), demand);
+    if (demand.substantial && capacity.allKnownAtRisk) return [];
+    const hasKnownViable = entries.some((entry) => assessCapacity(candidateCapacityWindows(entry.candidate), demand).status === "viable");
+    // Unknown is still a real dispatchable pool (notably API-key Codex and a provider before its first
+    // free meter read). Keep it visible to the smart selector with an explicit warning; only known-risk
+    // models are removed when a viable option exists.
+    const selected = hasKnownViable
+      ? entries.filter((entry) => assessCapacity(candidateCapacityWindows(entry.candidate), demand).status !== "at-risk")
+      : capacity.candidates;
+    return selected.map((entry) => {
+      const benchmark = this.liveBench.note(entry.model);
+      return {
+        provider: entry.provider,
+        model: entry.model,
+        efforts: entry.efforts,
+        note: [modelNote(entry.provider, entry.model), benchmark].filter(Boolean).join(". "),
+        capacity: modelCapacityNote(entry.provider, entry.model, entry.candidate, demand),
+      };
+    });
   }
 
   /** Union of the exact per-candidate effort sets, kept in canonical low→ultra order for the JSON schema. */
@@ -2075,7 +2233,8 @@ export class ThreadManager implements OrchestratorApi {
     if (saved) return saved; // already picked for this episode (a resume) — never re-decide mid-task
     if (saved === null) return undefined; // an earlier attempt already failed; don't pay for it twice
     await this.liveBench.prepareForSelection();
-    const candidates = this.implementorModelRoster();
+    const demand = this.capacityDemand(thread, "implementor", thread.effortOverride ?? plan?.effort);
+    const candidates = this.implementorModelRoster(demand);
     const workspace = normalizeWorkspace(thread.workspace);
     const selection = {
       title: thread.title,
@@ -2130,6 +2289,8 @@ export class ThreadManager implements OrchestratorApi {
       summary: `Auto-selected ${pick.model} at ${pick.effort} effort for this task`,
       detail: [
         pick.reason,
+        `Capacity target: ${demandSummary(demand)}.`,
+        candidates.find((candidate) => candidate.provider === pick.provider && candidate.model === pick.model)?.capacity,
         `Considered: ${candidates.map((c) => c.model).join(", ")}.`,
         this.liveBench.note(pick.model) ? `Benchmark evidence used: ${this.liveBench.note(pick.model)}.` : undefined,
       ].filter(Boolean).join("\n\n"),
@@ -2154,13 +2315,16 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Which backend an auto-picked task routes to. The pick owns the decision — that IS the feature — but
-   *  only while its backend can still take the work; one that capped since the pick falls back to whatever
-   *  normal usage-based routing chose. */
-  private routeForPick(threadId: string, routed: ImplementorProvider): ImplementorProvider {
+   *  only while its backend can still take the work with the reserve used for final dispatch. A pool that
+   *  capped or lost safe runway since selection falls back to current usage-aware routing. */
+  private routeForPick(threadId: string, routed: ImplementorProvider, demand: CapacityDemand): ImplementorProvider {
     const pick = this.db.getThreadStageOutputs(threadId).modelPick;
     if (!pick || pick.provider === routed) return routed;
-    if (!this.providerReady(pick.provider)) {
-      this.hub.log("warn", `Auto-selected ${providerLabel(pick.provider)} for ${threadId.slice(0, 8)} can't take the task now — routing to ${providerLabel(routed)} on its own model.`);
+    const pickedCandidate = this.readyRoleCandidates("implementor", demand).find((candidate) => candidate.provider === pick.provider);
+    const pickedCapacity = pickedCandidate ? assessCapacity(candidateCapacityWindows(pickedCandidate), demand) : undefined;
+    if (!pickedCandidate || (demand.substantial && pickedCapacity?.status === "at-risk")) {
+      const why = !pickedCandidate ? "can't take the task now" : "no longer has enough safe quota runway";
+      this.hub.log("warn", `Auto-selected ${providerLabel(pick.provider)} for ${threadId.slice(0, 8)} ${why} — routing to ${providerLabel(routed)} on its own model.`);
       return routed;
     }
     return pick.provider;
@@ -2271,7 +2435,7 @@ export class ThreadManager implements OrchestratorApi {
    * `codexPools.ts` for why a model instructed never to verify its own work must not be an implementor
    * or a reviewer.
    */
-  private codexRoleModel(role: Role): string {
+  private codexRoleModel(role: Role, demand?: CapacityDemand): string {
     const configured = this.providerRoleModel("codex", role);
     if (!roleMayUseDedicatedPool(role)) return configured;
     const pools = this.codexPoolSnapshot();
@@ -2284,6 +2448,7 @@ export class ThreadManager implements OrchestratorApi {
       now: Date.now(),
       dispatchable: this.codexRosterModels(),
       capLatches: this.poolCapUntil,
+      demand,
     });
     return pick ?? configured;
   }
@@ -2337,13 +2502,13 @@ export class ThreadManager implements OrchestratorApi {
   /** The dedicated pool this role would actually spend right now, or undefined when the policy, the
    *  latches, the meters or the roster rule one out. The single resolver behind both the availability
    *  gate and the candidate's meters, so the two can never disagree about which pool a run will use. */
-  private dedicatedPoolFor(role: Role | undefined): CodexPool | undefined {
+  private dedicatedPoolFor(role: Role | undefined, demand?: CapacityDemand): CodexPool | undefined {
     if (!role || !roleMayUseDedicatedPool(role)) return undefined;
     const pools = this.codexPoolSnapshot();
     if (!pools) return undefined;
     if (this.modelOverrides()[CODEX_SUB_ID]?.[role]?.trim()) return undefined; // operator pinned this role's model
     const now = Date.now();
-    const model = dedicatedPoolModel({ pools, role, now, dispatchable: this.codexRosterModels(), capLatches: this.poolCapUntil });
+    const model = dedicatedPoolModel({ pools, role, now, dispatchable: this.codexRosterModels(), capLatches: this.poolCapUntil, demand });
     if (!model) return undefined;
     const pool = poolForModel(pools, model);
     // Re-assert the two live gates on the resolved pool. dedicatedPoolModel already applied them, so
@@ -2354,8 +2519,8 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Whether a dedicated pool can serve this role right now — the availability half of the routing
    *  policy, so a bounded role can still reach Codex when only the GENERAL pool is exhausted. */
-  private dedicatedPoolReadyFor(role: Role | undefined): boolean {
-    return this.dedicatedPoolFor(role) != null;
+  private dedicatedPoolReadyFor(role: Role | undefined, demand?: CapacityDemand): boolean {
+    return this.dedicatedPoolFor(role, demand) != null;
   }
 
   /** The selected Grok implementor model. Resolution: the model-overrides matrix (grok.implementor), then
@@ -2828,9 +2993,34 @@ export class ThreadManager implements OrchestratorApi {
     return zaiUsageCapped(now);
   }
 
-  private claudeProviderCandidate(): ProviderCandidate {
-    const c = this.accounts.dispatchPreview();
-    return providerCandidateFromClaude(c);
+  private claudeProviderCandidate(demand?: CapacityDemand): ProviderCandidate {
+    const preview = (this.accounts as unknown as { dispatchPreview?: (demand?: CapacityDemand) => Partial<AccountDispatchPreview> & { account: { id: string; label: string } } }).dispatchPreview;
+    if (typeof preview === "function") {
+      const c = preview.call(this.accounts, demand);
+      return {
+        provider: "claude",
+        hasHeadroom: c.hasHeadroom ?? this.accounts.hasHeadroom(),
+        fiveHour: c.fiveHour ?? null,
+        fiveHourReset: c.fiveHourReset ?? null,
+        sevenDay: c.sevenDay ?? null,
+        sevenDayReset: c.sevenDayReset ?? null,
+        weeklySafetyPct: c.weeklySafetyPct ?? 100,
+        capacityLabel: `Claude ${c.account.label}`,
+        capacityWindows: c.capacityWindows ?? standardCapacityWindows(c.fiveHour, c.fiveHourReset, c.sevenDay, c.sevenDayReset),
+      };
+    }
+    const option = this.claudeCapacityOptions(demand ?? demandForRole("implementor"))[0];
+    return {
+      provider: "claude",
+      hasHeadroom: option?.hasHeadroom ?? false,
+      fiveHour: null,
+      fiveHourReset: null,
+      sevenDay: null,
+      sevenDayReset: null,
+      weeklySafetyPct: 100,
+      capacityLabel: option?.label ?? "Claude",
+      capacityWindows: option?.windows ?? [],
+    };
   }
 
   /** Grok's dispatch candidate. Weekly used-% + reset come from the CLI log / winpty scrape; monthly
@@ -2838,24 +3028,44 @@ export class ThreadManager implements OrchestratorApi {
    *  Claude/Codex. Headroom = not cap-latched, not near the weekly hard limit, and not monthly-exhausted.
    *  When no reading has landed yet the windows are null (treated as headroom, sorts last) until the first
    *  ping fills in. */
-  private grokProviderCandidate(): ProviderCandidate {
+  private grokProviderCandidate(_demand?: CapacityDemand): ProviderCandidate {
     const now = Date.now();
     const u = readGrokUsage();
+    const capActive = this.grokCapActive();
     const nearWeekly =
       u.sevenDay != null && u.sevenDay >= PROVIDER_HARD_LIMIT && (u.sevenDayReset == null || u.sevenDayReset > now);
+    const monthlyPct = u.monthlyUsed != null && u.monthlyLimit != null && u.monthlyLimit > 0
+      ? Math.min(100, (u.monthlyUsed / u.monthlyLimit) * 100)
+      : null;
     const monthlyExhausted =
-      u.monthlyUsed != null &&
-      u.monthlyLimit != null &&
-      u.monthlyLimit > 0 &&
-      u.monthlyUsed >= u.monthlyLimit &&
+      monthlyPct != null &&
+      monthlyPct >= PROVIDER_HARD_LIMIT &&
       (u.monthlyReset == null || u.monthlyReset > now);
     return {
       provider: "grok",
+      // Keep the actual latch guard in this expression: probe-accounts.cjs structurally mirrors every
+      // dispatch door so its operator-facing failover ladder cannot overstate usable capacity.
       hasHeadroom: !this.providerStartupCoolingDown("grok") && !this.grokCapActive() && !nearWeekly && !monthlyExhausted,
       fiveHour: null,
+      fiveHourReset: null,
       sevenDay: u.sevenDay,
       sevenDayReset: u.sevenDayReset,
       weeklySafetyPct: this.settings().grokWeeklySafetyPct,
+      capacityLabel: "Grok subscription",
+      capacityWindows: withCapLatch(
+        capacityWindowsWithFreshness(
+          [
+            { label: "weekly", usedPct: u.sevenDay, resetAt: u.sevenDayReset },
+            { label: "monthly credits", usedPct: monthlyPct, resetAt: u.monthlyReset },
+          ],
+          PROVIDER_HARD_LIMIT,
+          u.stale === true,
+          now,
+        ),
+        "live usage cap",
+        capActive,
+        this.grokCapUntil,
+      ),
     };
   }
 
@@ -2878,18 +3088,36 @@ export class ThreadManager implements OrchestratorApi {
    *  endpoint (see zaiUsagePing). z.ai competes by soonest weekly reset like Claude/Codex/Grok. Headroom =
    *  not cap-latched and neither window at/over the hard limit. Null windows (no reading yet) count as
    *  headroom (sorts last) until the first poll fills in. */
-  private zaiProviderCandidate(): ProviderCandidate {
+  private zaiProviderCandidate(_demand?: CapacityDemand): ProviderCandidate {
     const now = Date.now();
     const u = readZaiUsage();
+    const capActive = this.zaiCapActive();
     const near = (pct: number | null, reset: number | null): boolean =>
       pct != null && pct >= PROVIDER_HARD_LIMIT && (reset == null || reset > now);
     return {
       provider: "zai",
-      hasHeadroom: !this.zaiCapActive() && !near(u.fiveHour, u.fiveHourReset) && !near(u.sevenDay, u.sevenDayReset),
+      hasHeadroom:
+        !this.providerStartupCoolingDown("zai") &&
+        !this.zaiCapActive() &&
+        !near(u.fiveHour, u.fiveHourReset) &&
+        !near(u.sevenDay, u.sevenDayReset),
       fiveHour: u.fiveHour,
+      fiveHourReset: u.fiveHourReset,
       sevenDay: u.sevenDay,
       sevenDayReset: u.sevenDayReset,
       weeklySafetyPct: this.settings().zaiWeeklySafetyPct,
+      capacityLabel: "z.ai coding-plan pool",
+      capacityWindows: withCapLatch(
+        capacityWindowsWithFreshness(
+          standardCapacityWindows(u.fiveHour, u.fiveHourReset, u.sevenDay, u.sevenDayReset),
+          PROVIDER_HARD_LIMIT,
+          u.stale === true,
+          now,
+        ),
+        "live usage cap",
+        capActive,
+        this.zaiCapUntil,
+      ),
     };
   }
 
@@ -2903,28 +3131,56 @@ export class ThreadManager implements OrchestratorApi {
     return this.zaiProviderCandidate().hasHeadroom;
   }
 
-  private codexProviderCandidate(role?: Role): ProviderCandidate {
+  private codexProviderCandidate(role?: Role, demand?: CapacityDemand, modelOverride?: string): ProviderCandidate {
     const now = Date.now();
     const u = readCodexUsage();
     // A role eligible to spend a DEDICATED allowance is metered by that pool, not the plan-wide one, so
     // both the doors and the reported windows switch to it. Quoting the general pool's exhausted weekly
     // for a run that will never touch it is exactly what would keep an idle pool out of the ladder —
     // and conversely, quoting the idle pool for an implementor would claim room it cannot use.
-    const dedicated = this.dedicatedPoolFor(role);
+    const model = modelOverride ?? (role ? this.codexRoleModel(role, demand) : this.codexModel());
+    const pools = this.codexPoolSnapshot();
+    const pool = pools ? poolForModel(pools, model) : undefined;
+    const dedicated = pool?.modelSlug ? pool : undefined;
     const nearLimit = (pct: number | null, reset: number | null): boolean =>
       pct != null && pct >= PROVIDER_HARD_LIMIT && (reset == null || reset > now);
+    const poolCapped = dedicated
+      ? poolLatched(this.poolCapUntil, dedicated.limitId, now)
+      : this.codexCapActive();
+    const fiveHour = pool ? pool.fiveHour : (u?.fiveHour ?? null);
+    const fiveHourReset = pool ? pool.fiveHourReset : (u?.fiveHourReset ?? null);
+    const sevenDay = pool ? pool.sevenDay : (u?.sevenDay ?? null);
+    const sevenDayReset = pool ? pool.sevenDayReset : (u?.sevenDayReset ?? null);
+    const stale = !pool && u != null && now - u.updatedAt > ROUTING_USAGE_STALE_MS;
+    const capacityWindows = withCapLatch(
+      capacityWindowsWithFreshness(
+        standardCapacityWindows(fiveHour, fiveHourReset, sevenDay, sevenDayReset),
+        dedicated ? POOL_HARD_LIMIT_PCT : PROVIDER_HARD_LIMIT,
+        stale,
+        now,
+      ),
+      dedicated ? `${dedicated.limitName ?? dedicated.limitId} cap` : "live usage cap",
+      poolCapped,
+      dedicated ? (this.poolCapUntil.get(dedicated.limitId) ?? null) : this.codexCapUntil,
+    );
+    const selectedPoolReady =
+      !poolCapped &&
+      !nearLimit(fiveHour, fiveHourReset) &&
+      !nearLimit(sevenDay, sevenDayReset) &&
+      (!dedicated || poolHasHeadroom(dedicated, now));
     return {
       provider: "codex",
       hasHeadroom:
         !this.providerStartupCoolingDown("codex") &&
-        // `dedicated` is already gated on its own latch + meters (dedicatedPoolFor), so it stands in
-        // for the two window checks rather than adding to them.
-        (!!dedicated ||
-          (!nearLimit(u?.fiveHour ?? null, u?.fiveHourReset ?? null) && !nearLimit(u?.sevenDay ?? null, u?.sevenDayReset ?? null))),
-      fiveHour: dedicated ? dedicated.fiveHour : (u?.fiveHour ?? null),
-      sevenDay: dedicated ? dedicated.sevenDay : (u?.sevenDay ?? null),
-      sevenDayReset: dedicated ? dedicated.sevenDayReset : (u?.sevenDayReset ?? null),
+        // probe-accounts mirrors this exact general-or-dedicated pool decision as separate ladder rungs.
+        selectedPoolReady,
+      fiveHour: fiveHour,
+      fiveHourReset,
+      sevenDay,
+      sevenDayReset,
       weeklySafetyPct: this.settings().codexWeeklySafetyPct,
+      capacityLabel: dedicated?.limitName ?? (dedicated?.limitId ? `Codex ${dedicated.limitId}` : "Codex general pool"),
+      capacityWindows,
     };
   }
 
@@ -2937,14 +3193,20 @@ export class ThreadManager implements OrchestratorApi {
    *  "Spread usage": when the operator opts in (spreadUsage), the tie-break flips from soonest-reset to
    *  LOWEST weekly usage — the backend with the most weekly headroom takes the implementor — so burn
    *  evens out across all platforms; the safety fallback still supersedes. */
-  private preferredImplementorProvider(candidates: ProviderCandidate[]): ImplementorProvider {
+  private preferredProviderCandidate(candidates: ProviderCandidate[], demand?: CapacityDemand): ProviderCandidate {
     const withHeadroom = candidates.filter((c) => c.hasHeadroom);
     const base = withHeadroom.length ? withHeadroom : candidates;
+    // Viable runway is the first cut. A soft weekly ceiling or perishable-first preference must never
+    // put a long task on a pool forecast to cap when another pool can carry it.
+    const capacity = demand
+      ? preferCapacity(base, candidateCapacityWindows, demand)
+      : undefined;
+    const capacityPool = capacity?.candidates ?? base;
     // Soft weekly ceiling (per-backend): a backend whose weekly usage crossed its safety % is de-preferred in
     // favor of one still under its own ceiling — but never dropped entirely (falls through when all are over,
     // so this can't freeze a dispatch). Claude carries the selected account's own ceiling; Codex/Grok/z.ai
     // carry their backend ceilings.
-    const safety = weeklySafetyPool(base);
+    const safety = weeklySafetyPool(capacityPool);
     const pool = safety.candidates;
     // Spread usage: balance across ALL backends by lowest weekly usage. The all-over-safety no-freeze
     // fallback (most headroom) supersedes both it and the default soonest-reset order.
@@ -2953,27 +3215,263 @@ export class ThreadManager implements OrchestratorApi {
       : this.settings().spreadUsage
         ? providerSpreadUsage
         : providerPriority;
-    return pool.reduce((best, c) => (priority(best, c) <= 0 ? best : c)).provider;
+    return pool.reduce((best, c) => (priority(best, c) <= 0 ? best : c));
+  }
+
+  private preferredImplementorProvider(candidates: ProviderCandidate[], demand?: CapacityDemand): ImplementorProvider {
+    return this.preferredProviderCandidate(candidates, demand).provider;
+  }
+
+  /** Every backend that can serve this exact role now, with the pool the role would actually spend. */
+  private readyRoleCandidates(role: Role, demand: CapacityDemand): ProviderCandidate[] {
+    const candidates: ProviderCandidate[] = [];
+    if (providerServesRole(role, "claude")) {
+      const claude = this.claudeProviderCandidate(demand);
+      if (claude.hasHeadroom) candidates.push(claude);
+    }
+    if (providerServesRole(role, "codex") && this.codexImplementorReady(role, demand)) {
+      candidates.push(this.codexProviderCandidate(role, demand));
+    }
+    if (providerServesRole(role, "grok") && this.grokImplementorReady()) candidates.push(this.grokProviderCandidate(demand));
+    if (providerServesRole(role, "zai") && this.zaiImplementorReady()) candidates.push(this.zaiProviderCandidate(demand));
+    return candidates;
+  }
+
+  private preferredRoleProvider(role: Role, demand: CapacityDemand): {
+    provider?: ImplementorProvider;
+    candidates: ProviderCandidate[];
+    allKnownAtRisk: boolean;
+  } {
+    const candidates = this.readyRoleCandidates(role, demand);
+    const capacity = preferCapacity(candidates, candidateCapacityWindows, demand);
+    return {
+      provider: candidates.length ? this.preferredImplementorProvider(candidates, demand) : undefined,
+      candidates,
+      allKnownAtRisk: capacity.allKnownAtRisk,
+    };
+  }
+
+  /** Hard availability only. Explicit owner provider instructions use this compatibility seam; normal
+   * automatic dispatch uses the task-sized providerSafeForRole path below. */
+  private providerReady(provider: ImplementorProvider): boolean {
+    if (this.providerStartupCoolingDown(provider)) return false;
+    switch (provider) {
+      case "claude": return this.accounts.hasHeadroom();
+      case "codex": return this.codexImplementorReady();
+      case "grok": return this.grokImplementorReady();
+      case "zai": return this.zaiImplementorReady();
+    }
+  }
+
+  private providerSafeForRole(provider: ImplementorProvider, role: Role, demand: CapacityDemand): boolean {
+    return this.roleCapacityOptions(role, demand).some(
+      (option) => option.provider === provider && this.roleCapacityReady(option, demand),
+    );
+  }
+
+  /** AccountManager's full API is always present in production. The fallback keeps old embedders and
+   * focused test harnesses that provide only hasHeadroom/dispatchPreview source-compatible; unknown
+   * windows are safer than fabricating quota. */
+  private claudeCapacityOptions(demand: CapacityDemand, now = Date.now()): ClaudeCapacityOption[] {
+    const api = this.accounts as unknown as {
+      capacityOptions?: (demand: CapacityDemand, now?: number) => Array<{
+        account: { id: string; label: string };
+        windows: CapacityWindow[];
+        hasHeadroom: boolean;
+      }>;
+      dispatchPreview?: (demand?: CapacityDemand) => Partial<AccountDispatchPreview> & {
+        account: { id: string; label: string };
+      };
+      hasHeadroom: () => boolean;
+    };
+    if (typeof api.capacityOptions === "function") {
+      return api.capacityOptions(demand, now).map((option) => ({
+        provider: "claude",
+        accountId: option.account.id,
+        label: `Claude ${option.account.label}`,
+        windows: option.windows,
+        hasHeadroom: option.hasHeadroom,
+      }));
+    }
+    if (typeof api.dispatchPreview === "function") {
+      const preview = api.dispatchPreview(demand);
+      return [{
+        provider: "claude",
+        accountId: preview.account.id,
+        label: `Claude ${preview.account.label}`,
+        windows: preview.capacityWindows ?? standardCapacityWindows(
+          preview.fiveHour,
+          preview.fiveHourReset,
+          preview.sevenDay,
+          preview.sevenDayReset,
+        ),
+        hasHeadroom: preview.hasHeadroom ?? api.hasHeadroom(),
+      }];
+    }
+    return [{ provider: "claude", accountId: "claude", label: "Claude", windows: [], hasHeadroom: api.hasHeadroom() }];
+  }
+
+  /** Every independently metered allowance that could serve this role. Unlike provider candidates,
+   * this inventory keeps capped pools: reset scheduling needs to know what can become viable later. */
+  private roleCapacityOptions(role: Role, demand: CapacityDemand, now = Date.now()): RoleCapacityOption[] {
+    const options: RoleCapacityOption[] = [];
+    if (providerServesRole(role, "claude")) {
+      options.push(...this.claudeCapacityOptions(demand, now));
+    }
+
+    const codexStart = options.length;
+    if (this.settings().codexEnabled && providerServesRole(role, "codex")) {
+      const key = this.openaiApiKey();
+      if (codexAuthAvailable(!!key && /^sk-/.test(key))) {
+        const usage = readCodexUsage();
+        const pools = this.codexPoolSnapshot();
+        const configured = this.providerRoleModel("codex", role);
+        const models = new Set<string>([configured]);
+        const explicitRoleModel = !!this.modelOverrides()[CODEX_SUB_ID]?.[role]?.trim();
+        if (this.settings().autoModelSelection && (role === "director" || role === "implementor")) {
+          for (const model of this.codexRosterModels()) {
+            if (!poolForModel(pools ?? [], model)?.modelSlug) models.add(model);
+          }
+        }
+        if (!explicitRoleModel && roleMayUseDedicatedPool(role) && pools) {
+          const dispatchable = new Set(this.codexRosterModels().map((model) => normalizeModelId(model)));
+          for (const pool of dedicatedPools(pools)) {
+            if (pool.modelSlug && dispatchable.has(pool.modelSlug)) models.add(pool.modelSlug);
+          }
+        }
+
+        const seenPools = new Set<string>();
+        const generalCapActive = this.codexCapActive();
+        for (const model of models) {
+          const pool = pools ? poolForModel(pools, model) : undefined;
+          const poolKey = pool?.limitId ?? "general";
+          if (seenPools.has(poolKey)) continue;
+          seenPools.add(poolKey);
+          const dedicated = pool?.modelSlug ? pool : undefined;
+          const capActive = dedicated
+            ? poolLatched(this.poolCapUntil, dedicated.limitId, now)
+            : generalCapActive;
+          const fiveHour = pool ? pool.fiveHour : (usage?.fiveHour ?? null);
+          const fiveHourReset = pool ? pool.fiveHourReset : (usage?.fiveHourReset ?? null);
+          const sevenDay = pool ? pool.sevenDay : (usage?.sevenDay ?? null);
+          const sevenDayReset = pool ? pool.sevenDayReset : (usage?.sevenDayReset ?? null);
+          const stale = !pool && usage != null && now - usage.updatedAt > ROUTING_USAGE_STALE_MS;
+          const near = (pct: number | null, reset: number | null): boolean =>
+            pct != null && pct >= (dedicated ? POOL_HARD_LIMIT_PCT : PROVIDER_HARD_LIMIT) && (reset == null || reset > now);
+          options.push({
+            provider: "codex",
+            label: dedicated ? `Codex ${dedicated.limitName ?? dedicated.limitId}` : "Codex general pool",
+            windows: withCapLatch(
+              capacityWindowsWithFreshness(
+                standardCapacityWindows(fiveHour, fiveHourReset, sevenDay, sevenDayReset),
+                dedicated ? POOL_HARD_LIMIT_PCT : PROVIDER_HARD_LIMIT,
+                stale,
+                now,
+              ),
+              dedicated ? `${dedicated.limitName ?? dedicated.limitId} cap` : "live usage cap",
+              capActive,
+              dedicated ? (this.poolCapUntil.get(dedicated.limitId) ?? null) : this.codexCapUntil,
+            ),
+            hasHeadroom:
+              !this.providerStartupCoolingDown("codex") &&
+              !capActive &&
+              !near(fiveHour, fiveHourReset) &&
+              !near(sevenDay, sevenDayReset) &&
+              (!dedicated || poolHasHeadroom(dedicated, now)),
+          });
+        }
+      }
+    }
+    if (
+      providerServesRole(role, "codex") &&
+      options.length === codexStart &&
+      this.codexImplementorReady(role, demand)
+    ) {
+      const candidate = this.codexProviderCandidate(role, demand);
+      options.push({
+        provider: "codex",
+        label: candidate.capacityLabel ?? "Codex",
+        windows: candidate.hasHeadroom ? candidateCapacityWindows(candidate) : [],
+        // Trust the public readiness seam here. This branch exists only for older embedders/tests that
+        // override it without exposing Settings/auth internals; production took the full branch above.
+        hasHeadroom: true,
+      });
+    }
+
+    const grokStart = options.length;
+    if (
+      this.settings().grokEnabled &&
+      providerServesRole(role, "grok") &&
+      grokAuthAvailable() &&
+      this.grokModelAvailable()
+    ) {
+      const candidate = this.grokProviderCandidate(demand);
+      options.push({
+        provider: "grok",
+        label: candidate.capacityLabel ?? "Grok subscription",
+        windows: candidateCapacityWindows(candidate),
+        hasHeadroom: candidate.hasHeadroom,
+      });
+    }
+    if (providerServesRole(role, "grok") && options.length === grokStart && this.grokImplementorReady()) {
+      const candidate = this.grokProviderCandidate(demand);
+      options.push({ provider: "grok", label: candidate.capacityLabel ?? "Grok", windows: candidate.hasHeadroom ? candidateCapacityWindows(candidate) : [], hasHeadroom: true });
+    }
+
+    const zaiStart = options.length;
+    if (this.settings().zaiEnabled && providerServesRole(role, "zai") && this.zaiApiKey()) {
+      const candidate = this.zaiProviderCandidate(demand);
+      options.push({
+        provider: "zai",
+        label: candidate.capacityLabel ?? "z.ai coding-plan pool",
+        windows: candidateCapacityWindows(candidate),
+        hasHeadroom: candidate.hasHeadroom,
+      });
+    }
+    if (providerServesRole(role, "zai") && options.length === zaiStart && this.zaiImplementorReady()) {
+      const candidate = this.zaiProviderCandidate(demand);
+      options.push({ provider: "zai", label: candidate.capacityLabel ?? "z.ai", windows: candidate.hasHeadroom ? candidateCapacityWindows(candidate) : [], hasHeadroom: true });
+    }
+    return options;
+  }
+
+  private roleCapacityReady(option: RoleCapacityOption, demand: CapacityDemand, now = Date.now()): boolean {
+    if (!option.hasHeadroom) return false;
+    const status = assessCapacity(option.windows, demand, now).status;
+    return !demand.substantial || status !== "at-risk";
+  }
+
+  /** Earliest reset that makes any compatible pool safe for this role's workload. */
+  private nextRoleCapacityAt(role: Role, demand: CapacityDemand, now = Date.now()): number | undefined {
+    const future = this.roleCapacityOptions(role, demand, now)
+      .map((option) => nextViableAt(option.windows, demand, now))
+      .filter((at): at is number => at != null && at > now);
+    return future.length ? Math.min(...future) : undefined;
   }
 
   /** The best implementor backend OTHER than `exclude` that can take over RIGHT NOW (has headroom), or
    *  undefined when none can. Drives cross-provider failover: a capped backend hands off to whichever of
    *  the remaining ones is readiest. */
-  private nextReadyImplementor(exclude: ImplementorProvider, unavailable: ReadonlySet<ImplementorProvider> = new Set(), role?: Role): ImplementorProvider | undefined {
+  private nextReadyImplementor(
+    exclude: ImplementorProvider,
+    unavailable: ReadonlySet<ImplementorProvider> = new Set(),
+    role?: Role,
+    demand?: CapacityDemand,
+  ): ImplementorProvider | undefined {
     // The reader's only owner-channel is the in-process MCP bus, so it may only land
     // on a backend that actually serves those tools — skip the CLI text-bridge backends for it. The
     // implementor path passes no role, so it still considers every backend.
     const serves = (provider: ImplementorProvider): boolean => !role || providerServesRole(role, provider);
     const cands: ProviderCandidate[] = [];
     if (exclude !== "claude" && !unavailable.has("claude") && serves("claude")) {
-      const c = this.claudeProviderCandidate();
+      const c = this.claudeProviderCandidate(demand);
       if (c.hasHeadroom) cands.push(c);
     }
-    if (exclude !== "codex" && !unavailable.has("codex") && serves("codex") && this.codexImplementorReady(role)) cands.push(this.codexProviderCandidate(role));
-    if (exclude !== "grok" && !unavailable.has("grok") && serves("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate());
-    if (exclude !== "zai" && !unavailable.has("zai") && serves("zai") && this.zaiImplementorReady()) cands.push(this.zaiProviderCandidate());
+    if (exclude !== "codex" && !unavailable.has("codex") && serves("codex") && this.codexImplementorReady(role, demand)) cands.push(this.codexProviderCandidate(role, demand));
+    if (exclude !== "grok" && !unavailable.has("grok") && serves("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate(demand));
+    if (exclude !== "zai" && !unavailable.has("zai") && serves("zai") && this.zaiImplementorReady()) cands.push(this.zaiProviderCandidate(demand));
     if (!cands.length) return undefined;
-    return this.preferredImplementorProvider(cands);
+    return this.preferredImplementorProvider(cands, demand);
   }
 
   /** Whether the Codex backend could take an implementor RIGHT NOW — enabled, authed, not usage-capped,
@@ -2982,16 +3480,24 @@ export class ThreadManager implements OrchestratorApi {
    *  Deliberately treats "no usage reading yet" as headroom: API-key-billed Codex has no plan windows and
    *  never produces one, so requiring a reading would permanently disable the failover for those setups.
    *  A blind flip onto a secretly-capped Codex is bounded — the run 429s and flips back or parks. */
-  private codexImplementorReady(role?: Role): boolean {
+  private codexImplementorReady(role?: Role, demand?: CapacityDemand): boolean {
     if (!this.settings().codexEnabled) return false;
     const key = this.openaiApiKey();
     if (!codexAuthAvailable(!!key && /^sk-/.test(key))) return false;
     // A bounded role routed to its own dedicated allowance is unaffected by the general pool's state,
     // so it stays available when only the general pool is capped or spent. Checked BEFORE the general
-    // gates precisely so idle dedicated capacity is reachable rather than hidden behind them.
-    if (this.dedicatedPoolReadyFor(role)) return true;
+    // gates precisely so idle dedicated capacity is reachable rather than hidden behind them. Resolve
+    // the exact model too: an operator-pinned dedicated model must retain that same independence even
+    // though `dedicatedPoolFor` intentionally does not override explicit model choices.
+    if (role && roleMayUseDedicatedPool(role)) {
+      const model = this.codexRoleModel(role, demand);
+      const pools = this.codexPoolSnapshot();
+      const exactPool = pools ? poolForModel(pools, model) : undefined;
+      if (exactPool?.modelSlug) return this.codexProviderCandidate(role, demand, model).hasHeadroom;
+    }
+    if (this.dedicatedPoolReadyFor(role, demand)) return true;
     if (this.codexCapActive()) return false;
-    return this.codexProviderCandidate().hasHeadroom;
+    return this.codexProviderCandidate(role, demand).hasHeadroom;
   }
 
   /** Restore each Claude account's persisted enabled flag into the live AccountManager on boot. */
@@ -3035,9 +3541,15 @@ export class ThreadManager implements OrchestratorApi {
    *  authed + uncapped, compete with Claude under the same weekly-reset (or, with Spread usage on,
    *  lowest-weekly-usage) policy instead of overriding it. Planner/researcher/QA start on Claude and fail
    *  over to a ready CLI when Claude is exhausted. */
-  private resolveImplementorProvider(): { provider?: ImplementorProvider; error?: string; allCandidatesCapped?: boolean } {
+  private resolveImplementorProvider(demand: CapacityDemand): {
+    provider?: ImplementorProvider;
+    error?: string;
+    allCandidatesCapped?: boolean;
+    allKnownInsufficient?: boolean;
+    candidates?: ProviderCandidate[];
+  } {
     const s = this.settings();
-    const candidates: ProviderCandidate[] = [this.claudeProviderCandidate()];
+    const candidates: ProviderCandidate[] = [this.claudeProviderCandidate(demand)];
 
     // Codex: usable auth is EITHER a ChatGPT-plan `codex login` (preferred — no API billing) OR a valid
     // OpenAI API key. Enabled + authed but usage-capped → simply excluded from this dispatch (the latch
@@ -3048,7 +3560,7 @@ export class ThreadManager implements OrchestratorApi {
         return { error: "Codex is enabled but has no usable auth: no ChatGPT `codex login` was found and no valid OpenAI API key (sk-…) is set. Sign in with `codex login --device-auth` (uses your ChatGPT plan), or add an API key under Settings → Subscriptions, or turn Codex off to use Claude." };
       }
       if (this.codexCapActive()) this.hub.log("info", "Codex is usage-capped — excluding it from this dispatch until its window resets.");
-      else candidates.push(this.codexProviderCandidate());
+      else candidates.push(this.codexProviderCandidate("implementor", demand));
     }
 
     // Grok: usable auth is a `grok login` (~/.grok/auth.json) or an XAI_API_KEY. Same cap-exclusion policy.
@@ -3058,7 +3570,7 @@ export class ThreadManager implements OrchestratorApi {
       }
       if (this.grokCapActive()) this.hub.log("info", "Grok is usage-capped — excluding it from this dispatch until it frees up.");
       else if (!this.grokModelAvailable()) this.hub.log("warn", `Grok model ${this.grokModel()} is unavailable to this login; excluding Grok until the model selection is updated.`);
-      else candidates.push(this.grokProviderCandidate());
+      else candidates.push(this.grokProviderCandidate(demand));
     }
 
     // z.ai: usable auth is an API key (kv-stored UI value or ZAI_API_KEY). Same cap-exclusion policy.
@@ -3067,7 +3579,7 @@ export class ThreadManager implements OrchestratorApi {
         return { error: "z.ai is enabled but has no API key: add your z.ai key under Settings → Subscriptions (or set ZAI_API_KEY in server/.env), or turn z.ai off to use Claude." };
       }
       if (this.zaiCapActive()) this.hub.log("info", "z.ai is usage-capped — excluding it from this dispatch until its window resets.");
-      else candidates.push(this.zaiProviderCandidate());
+      else candidates.push(this.zaiProviderCandidate(demand));
     }
 
     // `preferredImplementorProvider` deliberately returns a least-bad candidate when everything is
@@ -3077,21 +3589,26 @@ export class ThreadManager implements OrchestratorApi {
     // cap path can park it. Keep the route for callers that intentionally want that no-freeze behavior,
     // but report the exhausted ladder to the pipeline gate so it can wait for the reset directly.
     const allCandidatesCapped = candidates.length > 0 && candidates.every((candidate) => !candidate.hasHeadroom);
-    const provider = this.preferredImplementorProvider(candidates);
+    const ready = candidates.filter((candidate) => candidate.hasHeadroom);
+    const capacity = preferCapacity(ready, candidateCapacityWindows, demand);
+    const allKnownInsufficient = ready.length > 0 && capacity.allKnownAtRisk;
+    const provider = this.preferredImplementorProvider(candidates, demand);
     if (candidates.length > 1) {
       const now = Date.now();
-      const parts = candidates.map(
-        (c) => `${c.provider} weekly ${fmtUsage(c.sevenDay)}${c.sevenDayReset != null ? ` reset ${untilReset(c.sevenDayReset, now)}` : ""}`,
-      );
-      this.hub.log("info", `Implementor provider: ${provider} (${parts.join("; ")}).`);
+      const parts = candidates.map((candidate) => describeProviderCapacity(candidate, demand, now));
+      this.hub.log("info", `Implementor provider: ${provider} for ${demandSummary(demand)} (${parts.join("; ")}).`);
     }
-    return { provider, allCandidatesCapped };
+    return { provider, allCandidatesCapped, allKnownInsufficient, candidates };
   }
 
   /** Hard routing gate, run once at the start of a thread's implementor stage: resolve + remember the
    *  backend. A blocked routing parks the task (failed) with a clear reason + a finding, returns null. */
-  private gateImplementorProvider(thread: Thread, opts?: { capParkOnExhaustion?: boolean }): ImplementorProvider | null {
-    const { provider, error, allCandidatesCapped } = this.resolveImplementorProvider();
+  private gateImplementorProvider(
+    thread: Thread,
+    opts?: { capParkOnExhaustion?: boolean; effort?: Effort },
+  ): ImplementorProvider | null {
+    const demand = this.capacityDemand(thread, "implementor", opts?.effort);
+    const { provider, error, allCandidatesCapped, allKnownInsufficient, candidates = [] } = this.resolveImplementorProvider(demand);
     if (!provider) {
       this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
       this.setState(thread.id, "failed", error);
@@ -3101,21 +3618,21 @@ export class ThreadManager implements OrchestratorApi {
     // is already usage-capped. Preserve the ordinary routing fallback for owner-triggered auto-review
     // fix rounds (which retain their existing human-review contract), but put resumable pipeline work
     // straight into the durable cap-park protocol and let its reset wake choose the first free backend.
-    if (allCandidatesCapped && opts?.capParkOnExhaustion) {
+    if ((allCandidatesCapped || (allKnownInsufficient && demand.substantial)) && opts?.capParkOnExhaustion) {
       this.parkForExhaustedProviders(thread.id, "implementor");
       // `settleReview` consumes the cap marker synchronously and supplies the durable auto-resume
       // message, so this fallback reason is intentionally only for a non-cap caller/race.
       this.settleReview(thread.id, "needs your review.");
       return null;
     }
-    const routed = this.routeForPick(thread.id, provider);
+    const routed = this.routeForPick(thread.id, provider, demand);
     const intent = providerIntent([thread.title, thread.rawPrompt, thread.brief].filter(Boolean).join("\n"));
     let chosen = routed;
     if (intent.preferred && this.providerReady(intent.preferred) && !intent.excluded.has(intent.preferred)) {
       chosen = intent.preferred;
     }
     if (intent.excluded.has(chosen)) {
-      const alternate = this.nextReadyImplementor(chosen, intent.excluded);
+      const alternate = this.nextReadyImplementor(chosen, intent.excluded, "implementor", demand);
       if (!alternate) {
         const names = [...intent.excluded].map(providerLabel).join(", ");
         const detail = `The task explicitly excludes ${names}, and no allowed implementor backend is currently ready.`;
@@ -3134,8 +3651,40 @@ export class ThreadManager implements OrchestratorApi {
         severity: "info",
       });
     }
+    this.noteCapacityRoute(thread, demand, chosen, candidates);
     this.implementorProvider.set(thread.id, chosen);
     return chosen;
+  }
+
+  /** Put the same quota facts that made the decision on the task, rather than hiding them in a server log. */
+  private noteCapacityRoute(
+    thread: Thread,
+    demand: CapacityDemand,
+    chosen: ImplementorProvider,
+    candidates: ProviderCandidate[],
+  ): void {
+    const selected = candidates.find((candidate) => candidate.provider === chosen);
+    if (!selected) return;
+    const assessment = assessCapacity(candidateCapacityWindows(selected), demand);
+    if (candidates.length < 2 && !demand.substantial && assessment.status === "viable") return;
+    const status = assessment.status === "viable"
+      ? "enough quota runway"
+      : assessment.status === "unknown"
+        ? "quota telemetry unavailable"
+        : "the least-risky available pool";
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "director",
+      summary: `Usage-aware routing chose ${providerLabel(chosen)} — ${status}`,
+      detail: [
+        `Workload reserve: ${demandSummary(demand)}.`,
+        ...candidates.map((candidate) => describeProviderCapacity(candidate, demand)),
+        assessment.status === "at-risk"
+          ? "No visible provider had the full reserve. Reliable mid-task failover and reset auto-resume remain armed."
+          : undefined,
+      ].filter(Boolean).join("\n"),
+      severity: assessment.status === "at-risk" ? "warning" : "info",
+    });
   }
 
   // ---- concurrency queue ----
@@ -3353,7 +3902,7 @@ export class ThreadManager implements OrchestratorApi {
     const need = this.capParked.get(threadId);
     this.capParked.delete(threadId);
     if (need) {
-      this.setState(threadId, "review", this.capParkMessage(need));
+      this.setState(threadId, "review", this.capParkMessage(threadId, need));
       this.armCapResumeWake();
     } else this.setState(threadId, "review", humanReason);
   }
@@ -3365,47 +3914,54 @@ export class ThreadManager implements OrchestratorApi {
     this.capParked.set(threadId, role);
   }
 
+  /** Auto-review is owner-triggered and deliberately does not join the pipeline cap supervisor. Refuse
+   * a known-doomed reviewer dispatch, but leave a precise finding so the owner knows when to click again. */
+  private noteManualCapacityWait(thread: Thread, role: "reviewer", demand: CapacityDemand, now = Date.now()): string {
+    const options = this.roleCapacityOptions(role, demand, now);
+    const next = this.nextRoleCapacityAt(role, demand, now);
+    const when = next != null
+      ? `The next viable reviewer pool is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
+      : "No reliable reviewer reset time is available yet; live meters are still polled.";
+    const checked = options.length
+      ? options.map((option) => describeRoutingCapacity(option, demand, now)).join("; ")
+      : "No enabled, authenticated reviewer provider is available.";
+    const detail = `Auto-review did not start because no compatible pool has safe runway for ${demandSummary(demand)}. ${when} Capacity checked: ${checked} The task remains in review; run Auto-review again after capacity becomes viable.`;
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "reviewer",
+      summary: "Auto-review is waiting for safe quota runway",
+      detail,
+      severity: "warning",
+    });
+    return detail;
+  }
+
   /** Review message for a cap-park — doubles as the supervisor's marker (CAP_PARK_PREFIX, plus the
    *  historical CAP_PARK_QA_MARK for QA-stage parks) and tells the owner it'll resume itself, naming when
    *  the soonest account frees up if we know it. Scoped honestly: it only claims "every account" when
    *  CLI backends were genuinely unavailable too (Claude→Codex/Grok failover already tried them). */
-  private capParkMessage(need: CapParkStage): string {
+  private capParkMessage(threadId: string, need: CapParkStage): string {
     const now = Date.now();
-    const codexOn = this.settings().codexEnabled;
-    const grokOn = this.settings().grokEnabled;
-    const zaiOn = this.settings().zaiEnabled;
-    const cliOn = codexOn || grokOn || zaiOn;
-    // Include durable live-run latches as well as dashboard snapshots. A provider can report a
-    // session-specific reset that the generic usage dashboard cannot see (notably Codex), and the
-    // owner-facing message must promise the same earliest wake the scheduler will honor.
-    const resets = [this.accounts.soonestResetAt(), this.codexCapUntil, this.grokCapUntil, this.zaiCapUntil];
-    if (cliOn) {
-      if (codexOn) {
-        const u = readCodexUsage();
-        resets.push(u?.fiveHourReset ?? null, u?.sevenDayReset ?? null);
-      }
-      if (grokOn) {
-        const u = readGrokUsage();
-        resets.push(u?.sevenDayReset ?? null);
-      }
-      if (zaiOn) {
-        const u = readZaiUsage();
-        resets.push(u.fiveHourReset, u.sevenDayReset);
-      }
-    }
-    const future = resets.filter((r): r is number => r != null && r > now);
-    const when = future.length ? ` Soonest account resets ${untilReset(Math.min(...future), now)}.` : "";
-    const cliParts = [codexOn ? "Codex" : null, grokOn ? "Grok" : null, zaiOn ? "z.ai" : null].filter((x): x is string => !!x);
-    const cliLabel = cliParts.length > 1 ? `${cliParts.slice(0, -1).join(", ")} and ${cliParts[cliParts.length - 1]}` : cliParts[0] ?? "";
-    const scope =
-      need === "qa"
-        ? cliOn
-          ? `every backend — Claude subscriptions and ${cliLabel} — was rate-limited during QA ${CAP_PARK_QA_MARK}`
-          : `every Claude subscription was rate-limited during QA ${CAP_PARK_QA_MARK}`
-        : cliOn
-          ? `every account — Claude subscriptions and ${cliLabel} — was rate-limited during the ${need} stage (${need} stage)`
-          : `every Claude subscription was rate-limited during the ${need} stage (${need} stage)`;
-    return `${CAP_PARK_PREFIX} — ${scope}.${when} It will resume automatically when one frees up (no manual Resume needed).`;
+    const thread = this.db.getThread(threadId);
+    const demand = thread ? this.capacityDemand(thread, need) : demandForRole(need);
+    const options = this.roleCapacityOptions(need, demand, now);
+    const hardReady = options.filter((option) => option.hasHeadroom);
+    const runwayBlocked =
+      demand.substantial &&
+      hardReady.length > 0 &&
+      hardReady.every((option) => assessCapacity(option.windows, demand, now).status === "at-risk");
+    const next = thread ? this.nextRoleCapacityAt(need, demand, now) : undefined;
+    const when = next != null
+      ? ` Next viable capacity is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
+      : " No reliable reset time is available yet; live meters are still polled.";
+    const stage = need === "qa" ? `QA ${CAP_PARK_QA_MARK}` : `${need} (${need} stage)`;
+    const reason = runwayBlocked
+      ? `no compatible pool has enough safe runway for ${demandSummary(demand)} during ${stage}`
+      : `all compatible capacity is currently capped for ${stage}`;
+    const status = options.length
+      ? ` Capacity checked: ${options.map((option) => describeRoutingCapacity(option, demand, now)).join("; ")}.`
+      : " No enabled, authenticated provider can serve this stage.";
+    return `${CAP_PARK_PREFIX} — ${reason}.${when} It will resume automatically when a compatible pool becomes viable (no manual Resume needed).${status}`;
   }
 
   /** An event the OWNER personally cares about: a task finished, needs their input, or failed. Goes to
@@ -3866,14 +4422,18 @@ export class ThreadManager implements OrchestratorApi {
         );
       }
     }
-    let acct = this.dispatchAccount();
+    const demand = this.capacityDemand(thread, role);
+    // Do not select (and potentially wake) a Claude account before the provider is known. Bounded
+    // roles can start on an independently metered Codex pool; touching Claude here would spend the
+    // staggered reserve even though the run never uses that subscription.
+    let acct: Acct | undefined;
     let resume: string | undefined = initialResume;
     let message: string | unknown[] = roleKickoff;
     let provider: ImplementorProvider = "claude";
     // A configured account is a one-shot candidate after a cap. Do not impose an arbitrary small
     // counter here: deployments can legitimately have more than three Claude subscriptions. The set
     // also prevents a misbehaving selector from cycling us back onto a known-capped account.
-    const triedClaudeAccounts = new Set<string>([acct.id]);
+    const triedClaudeAccounts = new Set<string>();
     let transientFailures = 0;
     const unavailableProviders = new Set<ImplementorProvider>();
 
@@ -3884,49 +4444,69 @@ export class ThreadManager implements OrchestratorApi {
     // drops it when the prior session was on a different backend).
     const forced = opts?.forcedProvider;
     const pref = opts?.preferredProvider;
+    let routeNaturally = true;
     if (forced && providerServesRole(role, forced)) {
       provider = forced;
+      routeNaturally = false;
     } else if (pref && pref !== "claude" && providerServesRole(role, pref)) {
-      if (this.providerReady(pref)) {
+      if (this.providerSafeForRole(pref, role, demand)) {
         provider = pref;
+        routeNaturally = false;
       } else {
         resume = undefined; // can't resume a CLI session on another backend
       }
-    } else if (!this.accounts.hasHeadroom()) {
-      // Claude is already exhausted — skip the doomed first attempt and go straight to a ready backend.
-      // nextReadyImplementor(role) keeps the MCP-dependent reader off the MCP-less CLI backends, so it
-      // lands on z.ai when available and otherwise stays on Claude (attempt, cap, park) as before.
-      const cli = this.nextReadyImplementor("claude", unavailableProviders, role);
-      if (cli) {
+    }
+    if (routeNaturally) {
+      // Natural role dispatch now considers every role-compatible pool up front. This is what lets a
+      // planner/reader/researcher spend an independent Codex model pool while it is fresh, instead of
+      // hiding that allowance until Claude has already capped.
+      const routed = this.preferredRoleProvider(role, demand);
+      if (routed.allKnownAtRisk && demand.substantial) {
+        if (role === "reviewer") this.noteManualCapacityWait(thread, role, demand);
+        else this.parkForExhaustedProviders(thread.id, role);
+        return undefined;
+      }
+      if (routed.provider) {
+        provider = routed.provider;
+        if (provider !== "claude") resume = undefined;
+      } else {
+        // Every compatible provider is already known unavailable. Do not fire one more doomed turn after
+        // a restart: park immediately and let the exact reset-time supervisor revive this role.
+        if (role === "reviewer") this.noteManualCapacityWait(thread, role, demand);
+        else this.parkForExhaustedProviders(thread.id, role);
+        return undefined;
+      }
+      if (provider !== "claude") {
+        const claudeFree = this.accounts.hasHeadroom();
         this.postFinding({
           threadId: thread.id,
           fromRole: role,
-          summary: `All Claude subscriptions are usage-capped — running ${role} on ${providerLabel(cli)}`,
-          detail: `Every enabled Claude account is at its usage limit, so the ${role} stage is starting on ${providerLabel(cli)} rather than burning a rejected Claude turn first.`,
-          severity: "warning",
+          summary: `Usage-aware routing selected ${providerLabel(provider)} for ${role}`,
+          detail: [
+            `Workload reserve: ${demandSummary(demand)}.`,
+            ...routed.candidates.map((candidate) => describeProviderCapacity(candidate, demand)),
+            !claudeFree ? "Every enabled Claude account is currently capped; this avoids a rejected Claude turn." : undefined,
+          ].filter(Boolean).join("\n"),
+          severity: claudeFree ? "info" : "warning",
         });
-        provider = cli;
-        resume = undefined;
-      } else {
-        // Every Claude subscription is already durably marked capped and no other backend can run
-        // this role. Do not fire one more doomed Claude turn after a restart: park immediately and let
-        // the reset-timed supervisor resume it when a provider is genuinely available.
-        this.parkForExhaustedProviders(thread.id, role);
-        return undefined;
       }
     }
 
     while (!this.cancelled(thread.id)) {
-      const model = provider === "codex" ? this.codexRoleModel(role) : provider === "grok" ? this.grokModel() : provider === "zai" ? this.zaiModel() : this.modelFor(acct.id, role);
-      const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : provider === "zai" ? `zai:${model}` : acct.label;
+      if (provider === "claude" && !acct) {
+        acct = this.dispatchAccount(demand);
+        triedClaudeAccounts.add(acct.id);
+      }
+      const model = provider === "codex" ? this.codexRoleModel(role, demand) : provider === "grok" ? this.grokModel() : provider === "zai" ? this.zaiModel() : this.modelFor(acct!.id, role);
+      const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : provider === "zai" ? `zai:${model}` : acct!.label;
       const effort = provider === "codex" ? this.codexEffort(model) : provider === "grok" ? this.grokEffort(model) : provider === "zai" ? this.zaiEffort() : undefined;
       const run = this.db.createRun({ threadId: thread.id, role, model, account: accountLabel, effort });
       this.emitRun(run.id);
-      const cfg = makeCfg({ token: provider === "claude" ? acct.token : undefined, resume: provider === "claude" ? resume : undefined, runId: run.id });
+      const cfg = makeCfg({ token: provider === "claude" ? acct!.token : undefined, resume: provider === "claude" ? resume : undefined, runId: run.id });
       cfg.model = model;
       let agent: AgentRunLike;
       let startMessage: string | unknown[] = message;
-      let accountId = acct.id;
+      let accountId = provider === "claude" ? acct!.id : "";
       if (provider === "codex") {
         accountId = "openai-codex";
         if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Codex");
@@ -4048,7 +4628,7 @@ export class ThreadManager implements OrchestratorApi {
         unavailableProviders.add(provider);
         // nextReadyImplementor(role) confines the MCP-dependent reader to MCP-capable backends: a flip onto
         // Codex/Grok would drop its in-process post_finding channel.
-        const next: ImplementorProvider | undefined = this.nextReadyImplementor(provider, unavailableProviders, role);
+        const next: ImplementorProvider | undefined = this.nextReadyImplementor(provider, unavailableProviders, role, demand);
         if (!next) {
           if (startupWedged) {
             this.parkForExhaustedProviders(thread.id, role);
@@ -4069,6 +4649,7 @@ export class ThreadManager implements OrchestratorApi {
         });
         this.notifyExternal(`↪ ${role} hit repeated ${fromName} API errors — continuing "${thread.title}" on ${toName}.`);
         provider = next;
+        if (next === "claude") acct = undefined;
         transientFailures = 0;
         resume = undefined;
         message = prependUserContent(roleKickoff, startupWedged
@@ -4084,12 +4665,13 @@ export class ThreadManager implements OrchestratorApi {
         else if (provider === "grok") this.noteGrokCap(agent.rateLimitInfo);
         else if (provider === "zai") this.noteZaiCap(agent.rateLimitInfo);
         unavailableProviders.add(provider);
-        const next = this.nextReadyImplementor(provider, unavailableProviders, role);
+        const next = this.nextReadyImplementor(provider, unavailableProviders, role, demand);
         if (!next) {
           this.parkForExhaustedProviders(thread.id, role);
           return res;
         }
         provider = next;
+        if (next === "claude") acct = undefined;
         transientFailures = 0;
         resume = undefined;
         message = prependUserContent(roleKickoff, `[Provider usage-limit handoff]\nContinue this ${role} stage on ${providerLabel(next)} and complete it fully.`);
@@ -4101,12 +4683,12 @@ export class ThreadManager implements OrchestratorApi {
       // still have headroom isn't an account cap — another sub's Fable pool is just as gated, and
       // parking would idle a sub with headroom. Relaunch on the SAME account: modelFor resolves the
       // fallback (Opus) for it now that classifyCap latched the pool limit.
-      if (await this.modelCapFallback(thread, role, model, acct, agent)) {
+      if (await this.modelCapFallback(thread, role, model, acct!, agent)) {
         resume = agent.sessionId ?? resume;
         message = MODEL_FALLBACK_CONTINUE_MSG;
         continue; // bounded: the latched pool makes modelFor resolve the fallback next pass, which has no fallback of its own
       }
-      const next = this.failoverAccount(acct.id);
+      const next = this.failoverAccount(acct!.id, demand);
       // Claude exhausted for this run — no other account has headroom, or the per-run failover budget is
       // spent. Before parking, keep the role alive on another ready backend — this is the "don't lose
       // planner/researcher/QA when the Claude subs are maxed" path; the reader can join it via z.ai, while
@@ -4115,7 +4697,7 @@ export class ThreadManager implements OrchestratorApi {
       // otherwise degrades to no-plan/no-research; QA otherwise parks the task to 'review' (capParked flags
       // it for the supervisor).
       if (!next || triedClaudeAccounts.has(next.id)) {
-        const cli = this.nextReadyImplementor("claude", unavailableProviders, role);
+        const cli = this.nextReadyImplementor("claude", unavailableProviders, role, demand);
         if (cli) {
           this.postFinding({
             threadId: thread.id,
@@ -4126,6 +4708,7 @@ export class ThreadManager implements OrchestratorApi {
           });
           this.notifyExternal(`↪ ${role} — all Claude subs maxed; continuing "${thread.title}" on ${providerLabel(cli)}.`);
           provider = cli;
+          acct = undefined; // the capped sub must be re-selected if a later provider hands back
           transientFailures = 0;
           resume = undefined;
           message = prependUserContent(roleKickoff, `[Claude usage-limit handoff]\nEvery Claude subscription is capped. Continue this ${role} stage on ${providerLabel(cli)} and complete it fully.`);
@@ -4271,6 +4854,7 @@ export class ThreadManager implements OrchestratorApi {
     thread: Thread,
     opts: QaRoundOpts,
   ): Promise<QaOutput | undefined> {
+    const qaDemand = this.capacityDemand(thread, "qa");
     // Fix-rounds 2..N resume the SAME QA session — a warm cache read of the diff/files/tests it
     // already ingested — instead of a fresh session that re-reads everything from scratch. QA still
     // re-runs `git diff` and the checks itself (independent verification preserved); it just doesn't
@@ -4299,18 +4883,15 @@ export class ThreadManager implements OrchestratorApi {
     if (prior && (!forcedQaProvider || prior.provider === forcedQaProvider)) {
       if (prior.provider === "claude") {
         const ageMs = sessionAgeMs(prior.sessionId);
-        if (config.resumeFullSession || (ageMs != null && ageMs < config.resumeWarmMinutes * 60_000)) {
+        if (
+          this.providerSafeForRole("claude", "qa", qaDemand) &&
+          (config.resumeFullSession || (ageMs != null && ageMs < config.resumeWarmMinutes * 60_000))
+        ) {
           resume = prior.sessionId;
           preferredProvider = "claude";
         }
       } else {
-        const ready =
-          prior.provider === "codex"
-            ? this.codexImplementorReady()
-            : prior.provider === "grok"
-              ? this.grokImplementorReady()
-              : this.zaiImplementorReady();
-        if (ready) {
+        if (this.providerSafeForRole(prior.provider, "qa", qaDemand)) {
           resume = prior.sessionId;
           preferredProvider = prior.provider;
         }
@@ -4484,29 +5065,24 @@ export class ThreadManager implements OrchestratorApi {
    *  available (only one provider enabled, or the others are capped); the caller then runs normal QA. */
   private pickDifferentQaProvider(threadId: string): ImplementorProvider | undefined {
     const impProvider = this.priorImplementorProvider(threadId) ?? "claude";
-    const ready: Record<ImplementorProvider, boolean> = {
-      claude: this.accounts.hasHeadroom(),
-      zai: this.zaiImplementorReady(),
-      codex: this.codexImplementorReady(),
-      grok: this.grokImplementorReady(),
-    };
-    const order: ImplementorProvider[] = ["claude", "zai", "codex", "grok"];
-    for (const p of order) if (p !== impProvider && ready[p]) return p;
-    return undefined;
+    const thread = this.db.getThread(threadId);
+    if (!thread) return undefined;
+    const demand = this.capacityDemand(thread, "qa");
+    const candidates = this.readyRoleCandidates("qa", demand).filter((candidate) => candidate.provider !== impProvider);
+    const capacity = preferCapacity(candidates, candidateCapacityWindows, demand);
+    if (!capacity.candidates.length || capacity.allKnownAtRisk) return undefined;
+    return this.preferredImplementorProvider(capacity.candidates, demand);
   }
 
   /** Pick a ready QA backend other than `excluded`. Used only by the opt-in QA-fixes loop after a
    *  reviewer changed files: its changes must be inspected by a different provider when one is
    *  available. The normal QA routing remains untouched while that setting is off. */
-  private pickReadyQaProviderExcept(excluded: ImplementorProvider): ImplementorProvider | undefined {
-    const ready: Record<ImplementorProvider, boolean> = {
-      claude: this.accounts.hasHeadroom(),
-      zai: this.zaiImplementorReady(),
-      codex: this.codexImplementorReady(),
-      grok: this.grokImplementorReady(),
-    };
-    const order: ImplementorProvider[] = ["claude", "zai", "codex", "grok"];
-    return order.find((provider) => provider !== excluded && ready[provider]);
+  private pickReadyQaProviderExcept(thread: Thread, excluded: ImplementorProvider): ImplementorProvider | undefined {
+    const demand = this.capacityDemand(thread, "qa");
+    const candidates = this.readyRoleCandidates("qa", demand).filter((candidate) => candidate.provider !== excluded);
+    const capacity = preferCapacity(candidates, candidateCapacityWindows, demand);
+    if (!capacity.candidates.length || capacity.allKnownAtRisk) return undefined;
+    return this.preferredImplementorProvider(capacity.candidates, demand);
   }
 
   /** The verifier after an editing QA run. Prefer the task's original implementor provider, so the
@@ -4515,23 +5091,12 @@ export class ThreadManager implements OrchestratorApi {
    *  fall back to the same provider — a fresh QA turn is still better than self-accepting an edit. */
   private qaFixVerifierProvider(threadId: string, editor: ImplementorProvider | undefined): ImplementorProvider | undefined {
     if (!editor) return undefined;
+    const thread = this.db.getThread(threadId);
+    if (!thread) return editor;
+    const demand = this.capacityDemand(thread, "qa");
     const original = this.priorImplementorProvider(threadId);
-    if (original && original !== editor && this.providerReady(original)) return original;
-    return this.pickReadyQaProviderExcept(editor) ?? editor;
-  }
-
-  private providerReady(provider: ImplementorProvider): boolean {
-    if (this.providerStartupCoolingDown(provider)) return false;
-    switch (provider) {
-      case "claude":
-        return this.accounts.hasHeadroom();
-      case "zai":
-        return this.zaiImplementorReady();
-      case "codex":
-        return this.codexImplementorReady();
-      case "grok":
-        return this.grokImplementorReady();
-    }
+    if (original && original !== editor && this.providerSafeForRole(original, "qa", demand)) return original;
+    return this.pickReadyQaProviderExcept(thread, editor) ?? editor;
   }
 
   /** Announce how different-provider QA resolved: which backend is reviewing which — or, when the toggle
@@ -4573,6 +5138,7 @@ export class ThreadManager implements OrchestratorApi {
     // Preserve Codex-only Ultra until the provider branch is known. Claude/z.ai paths clamp it to Max
     // before implementorConfig reaches the Anthropic SDK.
     const plannerEffort: Effort = opts?.effort === "ultra" ? "ultra" : resolveEffort(opts?.effort);
+    const demand = this.capacityDemand(thread, "implementor", plannerEffort);
     // Provider factory: the routing gate (gateImplementorProvider) stored the backend for this thread.
     // Codex runs the CLI (no Claude account/oauth); Claude runs the SDK on a selected subscription.
     const provider = this.implementorProvider.get(thread.id) ?? "claude";
@@ -4674,7 +5240,7 @@ export class ThreadManager implements OrchestratorApi {
       if (!opts?.resume) startKickoff = this.withOfficeNote(thread, "implementor", kickoff, true);
       agent = new ZaiAgentRun(cfg);
     } else {
-      const acct = opts?.account ?? this.dispatchAccount();
+      const acct = opts?.account ?? this.dispatchAccount(demand);
       accountId = acct.id;
       // The per-task effort is capped at this Claude account's configured maximum (default: uncapped).
       // The auto-selected model when this task has one, else the subscription's configured model (per-sub
@@ -4868,6 +5434,7 @@ export class ThreadManager implements OrchestratorApi {
     // Each account gets one attempt in this cap chain. This supports every configured subscription and
     // prevents a selector from cycling back onto a known-capped account.
     const triedClaudeAccounts = new Set<string>([currentAccountId]);
+    const demand = this.capacityDemand(thread, "implementor", effort);
     let transientFailures = 0;
     while (true) {
       const res = await this.awaitTurnResult(current, useNext);
@@ -4940,7 +5507,7 @@ export class ThreadManager implements OrchestratorApi {
       }
       // Rate-limited: fail over to another account, or give up to "review" (return undefined so the
       // caller doesn't run QA on / mark done a half-finished implementation).
-      const next = this.failoverAccount(currentAccountId);
+      const next = this.failoverAccount(currentAccountId, demand);
       const sessionId = current.sessionId ?? this.lastImplementorSession.get(thread.id);
       // No account with headroom (vs. a missing session) means a cap parked this — flag it so the
       // settle tags it for the supervisor, which resumes the task once an account frees up.
@@ -4986,6 +5553,7 @@ export class ThreadManager implements OrchestratorApi {
     qaFollows = true, // false on a manual resume (no QA loop follows), so nudges/seeds don't promise QA
     unavailableProviders: Set<ImplementorProvider> = new Set(),
   ): Promise<ResultEvent | undefined> {
+    const demand = this.capacityDemand(thread, "implementor", effort);
     let attemptFrom = this.attemptStart(thread.id);
     let res = await this.awaitImplementorResult(thread, effort, kickoff, run, accountId, useNext, continueMsg);
     let current = run;
@@ -5055,7 +5623,7 @@ export class ThreadManager implements OrchestratorApi {
       const startupWedged = failedRun.startupWedged === true;
       if (startupWedged) this.quarantineStartupWedge(from, failedRun.transientApiErrorMessage);
       unavailableProviders.add(from);
-      const next = this.nextReadyImplementor(from, unavailableProviders);
+      const next = this.nextReadyImplementor(from, unavailableProviders, "implementor", demand);
       await failedRun.stop();
       if (next) {
         this.implementorProvider.set(thread.id, next);
@@ -5106,11 +5674,14 @@ export class ThreadManager implements OrchestratorApi {
     const zaiCapped = current instanceof ZaiAgentRun && current.rateLimited;
     if (res?.isError && !this.cancelled(thread.id) && (cliCapped || zaiCapped)) {
       const from = this.implementorProvider.get(thread.id) ?? "claude";
-      if (from === "codex") this.noteCodexCap(current.rateLimitInfo);
+      if (from === "codex") {
+        const activeRunId = this.live.get(thread.id)?.runId;
+        this.noteCodexCap(current.rateLimitInfo, activeRunId ? this.db.getRun(activeRunId)?.model : undefined);
+      }
       else if (from === "grok") this.noteGrokCap(current.rateLimitInfo);
       else if (from === "zai") this.noteZaiCap(current.rateLimitInfo);
       unavailableProviders.add(from);
-      const next = this.nextReadyImplementor(from, unavailableProviders);
+      const next = this.nextReadyImplementor(from, unavailableProviders, "implementor", demand);
       // Fully end the capped CLI run BEFORE anything else — postFinding routes a warning to this.live's
       // run, so stopping first guarantees it can never resume a fresh doomed turn on the just-capped session
       // (matches the "end the implementor before the next stage" ordering used across this file).
@@ -5154,7 +5725,7 @@ export class ThreadManager implements OrchestratorApi {
       this.capParked.get(thread.id) === "implementor" &&
       this.implementorProvider.get(thread.id) === "claude"
     ) {
-      const next = this.nextReadyImplementor("claude"); // codex or grok, whichever is readiest (claude excluded)
+      const next = this.nextReadyImplementor("claude", new Set(), "implementor", demand); // best ready non-Claude backend
       if (next) {
         this.capParked.delete(thread.id);
         this.implementorProvider.set(thread.id, next);
@@ -5766,7 +6337,7 @@ export class ThreadManager implements OrchestratorApi {
     // chain; gating it as an implementor would unnecessarily block/restart work on a saturated backend.
     const stage = this.db.getThreadStageOutputs(thread.id);
     const qaOnlyRetry = pipe.qaEnabled && (stage.qaCapRetryRound != null || stage.qaInterruptedRetryRound != null);
-    if (!qaOnlyRetry && !this.gateImplementorProvider(thread, { capParkOnExhaustion: true })) return;
+    if (!qaOnlyRetry && !this.gateImplementorProvider(thread, { capParkOnExhaustion: true, effort })) return;
     try {
       await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession, directorNote, pipe);
     } finally {
@@ -6972,6 +7543,11 @@ export class ThreadManager implements OrchestratorApi {
     if (!existsSync(thread.workspace)) {
       return { ok: false, error: `Workspace "${thread.workspace}" does not exist — the reviewer can't inspect the work.` };
     }
+    const reviewerDemand = this.capacityDemand(thread, "reviewer");
+    const reviewerRoute = this.preferredRoleProvider("reviewer", reviewerDemand);
+    if (!reviewerRoute.provider || reviewerRoute.allKnownAtRisk) {
+      return { ok: false, error: this.noteManualCapacityWait(thread, "reviewer", reviewerDemand) };
+    }
     this.reviewing.add(threadId);
     // A settled task can still hold a stale live/activeRuns entry from the loop that parked it (the same
     // teardown markDone does before accepting), so the reviewer is the only agent on this thread.
@@ -7154,7 +7730,9 @@ export class ThreadManager implements OrchestratorApi {
   private resumableReviewSession(threadId: string): RoleSession | undefined {
     const prior = this.latestRoleRun(threadId, "reviewer");
     if (!prior || !providerServesRole("reviewer", prior.provider)) return undefined;
-    return this.providerReady(prior.provider) ? prior : undefined;
+    const thread = this.db.getThread(threadId);
+    if (!thread) return undefined;
+    return this.providerSafeForRole(prior.provider, "reviewer", this.capacityDemand(thread, "reviewer")) ? prior : undefined;
   }
 
   /** Run the auto-reviewer to a verdict, recovering it from the two ways it can stop without deciding:
@@ -8696,10 +9274,56 @@ function providerCandidateFromClaude(c: AccountDispatchPreview): ProviderCandida
     provider: "claude",
     hasHeadroom: c.hasHeadroom,
     fiveHour: c.fiveHour,
+    fiveHourReset: c.fiveHourReset,
     sevenDay: c.sevenDay,
     sevenDayReset: c.sevenDayReset,
     weeklySafetyPct: c.weeklySafetyPct,
+    capacityLabel: `Claude ${c.account.label}`,
+    capacityWindows: c.capacityWindows,
   };
+}
+
+function candidateCapacityWindows(candidate: ProviderCandidate): CapacityWindow[] {
+  return candidate.capacityWindows ?? standardCapacityWindows(
+    candidate.fiveHour,
+    candidate.fiveHourReset,
+    candidate.sevenDay,
+    candidate.sevenDayReset,
+  );
+}
+
+/** Add a live rejection as a real gating window. Dashboard meters can still show plenty of room after
+ * a provider returns a session-specific cap; keeping the latch in the same window set makes selection,
+ * explanations and reset simulation agree. */
+function withCapLatch(
+  windows: CapacityWindow[],
+  label: string,
+  active: boolean,
+  resetAt: number | null | undefined,
+): CapacityWindow[] {
+  return active ? [...windows, { label, usedPct: 100, resetAt: resetAt ?? null }] : windows;
+}
+
+function describeProviderCapacity(candidate: ProviderCandidate, demand: CapacityDemand, now = Date.now()): string {
+  return describeRoutingCapacity(
+    {
+      label: candidate.capacityLabel ?? providerLabel(candidate.provider),
+      windows: candidateCapacityWindows(candidate),
+    },
+    demand,
+    now,
+  );
+}
+
+function modelCapacityNote(
+  provider: ImplementorProvider,
+  model: string,
+  candidate: ProviderCandidate,
+  demand: CapacityDemand,
+): string {
+  const ordinary = describeProviderCapacity(candidate, demand);
+  if (provider !== "claude" || !fallbackModelFor(model)) return ordinary;
+  return `${model} uses a separately gated model allowance whose remaining percentage is not exposed; a live cap falls back in-session. Normal-account fallback: ${ordinary}`;
 }
 
 function providerPriority(x: ProviderCandidate, y: ProviderCandidate): number {
@@ -8734,10 +9358,6 @@ function providerWeeklyResetAt(c: ProviderCandidate): number {
 
 function providerHeadroom(pct: number | null): number {
   return 100 - (pct ?? 0);
-}
-
-function fmtUsage(n: number | null): string {
-  return n == null ? "-" : `${Math.round(n)}%`;
 }
 
 function formatTokenCount(n: number | null | undefined): string {

@@ -106,11 +106,16 @@ which drives the Claude Code binary and inherits your existing CLI login. Defaul
 Three other backends are optional, off by default, and enabled per machine under
 **Settings > Subscriptions**: **OpenAI Codex** (ChatGPT plan), **xAI Grok** (SuperGrok),
 and **Zhipu z.ai** (GLM Coding Plan). If Claude caps mid-task, work fails over to whichever
-enabled backend still has headroom instead of stopping.
+enabled backend still has headroom instead of stopping. Before a substantial run starts,
+routing compares the task's estimated quota runway against every visible account/provider/model
+pool (including Grok monthly credits and dedicated Codex model allowances); a nearly spent pool
+loses to one that can carry the work. If none can, the task shows the limiting windows and waits
+for the first reset that actually makes a compatible pool viable, then resumes automatically.
 
 **More than one Claude subscription?** Set `ACCOUNT_1_TOKEN`, `ACCOUNT_2_TOKEN` and so on
 (up to 8). Dispatches route to burn the perishable weekly allowance first, and the top bar
-shows live 5-hour and weekly usage per subscription.
+shows live 5-hour and weekly usage per subscription. Perishable-first remains the tiebreaker
+among subscriptions with enough task-sized runway.
 
 ## Quick start
 

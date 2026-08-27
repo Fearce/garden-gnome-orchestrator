@@ -414,6 +414,33 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test D2: substantial review work is not launched into a known-insufficient pool ----------------
+  console.log("\nTest D2 - auto-review reports a capacity wait instead of starting a doomed reviewer");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      const internals = h.mgr as any;
+      const resetAt = Date.now() + 45 * 60_000;
+      internals.preferredRoleProvider = () => ({ provider: "claude", candidates: [], allKnownAtRisk: true });
+      internals.roleCapacityOptions = () => [{
+        provider: "claude",
+        label: "Claude tight account",
+        hasHeadroom: true,
+        windows: [{ label: "5h", usedPct: 97, resetAt }],
+      }];
+      internals.nextRoleCapacityAt = () => resetAt;
+      const result = await h.mgr.autoReview(id);
+      check("an all-at-risk reviewer route is refused before launch", !result.ok, JSON.stringify(result));
+      check("the reviewer process was never started", h.roleCalls.length === 0, JSON.stringify(h.roleCalls));
+      check("the task remains in review", h.db.getThread(id)?.state === "review", String(h.db.getThread(id)?.state));
+      const finding = h.db.listFindings(id).find((entry) => entry.summary.includes("safe quota runway"));
+      check("the owner sees the limiting pool and next viable reset", !!finding?.detail?.includes("Claude tight account") && finding.detail.includes("next viable reviewer pool"), String(finding?.detail));
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Test E (the invariant): while a review is live, nothing spawns an implementor beside it ---------
   console.log("\nTest E — while reviewing, a resume/inject steers the reviewer instead of spawning an implementor");
   {

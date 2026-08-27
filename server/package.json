@@ -28,6 +28,7 @@
     "test:cron": "tsx src/tests/cron.test.ts",
     "test:weekly-safety": "tsx src/tests/weeklySafety.test.ts",
     "test:spread-usage": "tsx src/tests/spreadUsage.test.ts",
+    "test:capacity-routing": "tsx src/tests/capacityRouting.test.ts",
     "test:ext-wake": "tsx src/tests/extWakeProbe.test.ts",
     "test:account-usage": "tsx src/tests/accountUsageSnapshot.test.ts",
     "test:grok-runner": "tsx src/tests/grokRunner.test.ts",

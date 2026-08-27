@@ -93,11 +93,64 @@ check("an expired provider reset is distinguishable from an absent reset", usage
 
 // The real loop owns routing and persistence; only the process-spawning leaf is replaced. Constructing
 // through Object.create preserves the Codex `instanceof` cap branch used in production.
-internals.dispatchAccount = () => ({ id: "claude-a", label: "Claude A", token: undefined });
-internals.nextReadyImplementor = (from: string) => (from === "codex" ? "claude" : undefined);
+let claudeSelections = 0;
+internals.dispatchAccount = () => {
+  claudeSelections++;
+  return { id: "claude-a", label: "Claude A", token: undefined };
+};
 internals.wireRun = () => {};
 internals.officeCheckIn = () => {};
 internals.ensureGroup = () => {};
+internals.createRoleAgent = () => ({
+  capped: false,
+  rateLimited: false,
+  transientApiError: false,
+  transientApiErrorMessage: undefined,
+  sessionId: undefined,
+  start: () => {},
+  result: async () => ({ type: "result", subtype: "success", isError: false, structuredOutput: { summary: "planned" } }),
+  stop: async () => {},
+});
+const directCodex = db.createThread({ title: "Codex role leaves Claude reserve asleep", workspace, rawPrompt: "plan", brief: "plan" });
+await internals.runRole(directCodex, "planner", "Plan this.", () => ({ model: "unused" }), undefined, { forcedProvider: "codex" });
+check("a non-Claude role does not select or wake a Claude account", claudeSelections === 0, String(claudeSelections));
+
+const originalSettings = internals.settings;
+const originalOpenaiApiKey = internals.openaiApiKey;
+const originalCodexRoleModel = internals.codexRoleModel;
+const originalCodexPoolSnapshot = internals.codexPoolSnapshot;
+const originalCodexProviderCandidate = internals.codexProviderCandidate;
+const originalDedicatedPoolReadyFor = internals.dedicatedPoolReadyFor;
+const originalCodexCapActive = internals.codexCapActive;
+internals.settings = () => ({ codexEnabled: true });
+internals.openaiApiKey = () => "sk-test";
+internals.codexRoleModel = () => "gpt-dedicated";
+internals.codexPoolSnapshot = () => [{
+  limitId: "dedicated",
+  limitName: "GPT-Dedicated",
+  modelSlug: "gpt-dedicated",
+  fiveHour: 10,
+  sevenDay: 10,
+  fiveHourReset: Date.now() + 60_000,
+  sevenDayReset: Date.now() + 60_000,
+}];
+internals.codexProviderCandidate = () => ({ hasHeadroom: true });
+internals.dedicatedPoolReadyFor = () => false; // explicit model pins deliberately bypass the auto-pick helper
+internals.codexCapActive = () => true;
+check(
+  "an explicitly pinned dedicated model remains usable while the general Codex pool is capped",
+  internals.codexImplementorReady("planner") === true,
+);
+internals.settings = originalSettings;
+internals.openaiApiKey = originalOpenaiApiKey;
+internals.codexRoleModel = originalCodexRoleModel;
+internals.codexPoolSnapshot = originalCodexPoolSnapshot;
+internals.codexProviderCandidate = originalCodexProviderCandidate;
+internals.dedicatedPoolReadyFor = originalDedicatedPoolReadyFor;
+internals.codexCapActive = originalCodexCapActive;
+
+internals.dispatchAccount = () => ({ id: "claude-a", label: "Claude A", token: undefined });
+internals.nextReadyImplementor = (from: string) => (from === "codex" ? "claude" : undefined);
 internals.createRoleAgent = (provider: string) => {
   providers.push(provider);
   const cap = provider === "codex";

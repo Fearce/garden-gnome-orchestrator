@@ -125,6 +125,20 @@ Read the run trail to tell causes apart:
   is re-started at its slot by a cheap real wake turn (one-word prompt, `gpt-5.5` low effort — mini
   models 400 on ChatGPT-plan auth; `CODEX_WAKE=off` disables, `CODEX_WAKE_MODEL` overrides).
 
+**Capacity-aware routing.** Hard-cap failover/auto-resume remains the recovery layer, but dispatch now
+first reserves role-sized quota runway across every compatible allowance: each Claude account, Codex
+general and dedicated model pools, Grok weekly/monthly credits, and z.ai 5h/weekly windows. Known-viable
+capacity wins over unknown telemetry, which wins over known-at-risk capacity; weekly-safety and
+spread/perishable preferences break ties inside that tier. Short work may bridge a near reset, while
+substantial implementation/QA waits when every visible pool is forecast to expire mid-task. The park
+message names every pool and only advertises the first reset that makes all of one pool's gating windows
+viable (never an early 5h reset still blocked by weekly/monthly). The supervisor rechecks that same reserve
+before resuming. Eligible bounded roles proactively use independently metered Codex model pools without
+waking an unused Claude account. Unknown meters remain dispatchable so API-key/cold-start setups do not
+freeze. The free planner/reader pool remains a first attempt with its own full-run request/token/credit
+reservation; a miss falls through and never creates a pipeline cap park. Gate: `test:capacity-routing`
+plus the existing provider/model-pool recovery gates.
+
 ## The office (cross-agent chat)
 Concurrent tasks on the same repo would otherwise edit the same files blind. Every running agent is
 "in the office": each role gets an `office` MCP server (`bus/officeServer.ts` — `office_look`/`chat_post`/

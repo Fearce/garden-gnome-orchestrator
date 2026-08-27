@@ -7,6 +7,17 @@ import { pingUsage, type PingFailReason, type PingUsage } from "./usagePing.js";
 import type { AccountUsageEntry } from "./usageSnapshot.js";
 import { ResetStagger, WINDOW_MS } from "./resetStagger.js";
 import { logCrash } from "../crashLog.js";
+import {
+  assessCapacity,
+  capacityWindowsWithFreshness,
+  nextViableAt,
+  preferCapacity,
+  standardCapacityWindows,
+  type CapacityAssessment,
+  type CapacityDemand,
+  type CapacitySelection,
+  type CapacityWindow,
+} from "../orchestrator/capacityRouting.js";
 
 interface AccountState {
   account: Account;
@@ -63,6 +74,19 @@ export interface AccountDispatchPreview {
   fiveHourReset: number | null;
   sevenDayReset: number | null;
   weeklySafetyPct: number;
+  capacityWindows: CapacityWindow[];
+  capacity: CapacityAssessment;
+  /** Every hard-usable account had visible but insufficient runway for this demand. */
+  allKnownAtRisk: boolean;
+}
+
+/** Every enabled Claude subscription's capacity state, for honest wait messages/reset scheduling. */
+export interface AccountCapacityOption {
+  account: Account;
+  windows: CapacityWindow[];
+  assessment: CapacityAssessment;
+  hasHeadroom: boolean;
+  nextViableAt: number | null;
 }
 
 // At/above this on the tightest window, treat the account as effectively capped.
@@ -105,6 +129,27 @@ const BOOT_TRUST_MS = 30 * 60 * 1000;
 const MODEL_LIMIT_FALLBACK_MS = 5 * 60 * 60 * 1000;
 
 const tightest = (s: AccountState): number => Math.max(s.fiveHour ?? 0, s.sevenDay ?? 0);
+const accountCapacityWindows = (s: AccountState, now: number): CapacityWindow[] => {
+  const windows = capacityWindowsWithFreshness(
+    standardCapacityWindows(s.fiveHour, s.fiveHourReset, s.sevenDay, s.sevenDayReset),
+    HARD_LIMIT,
+    s.usageStale,
+    now,
+  );
+  if (s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now)) {
+    windows.push({
+      label: s.rateLimitWindow ? `${s.rateLimitWindow.replace(/_/g, " ")} cap` : "provider cap",
+      usedPct: 100,
+      resetAt: s.rateLimitResetAt,
+    });
+  }
+  return windows;
+};
+const accountHasHardHeadroom = (s: AccountState, now: number): boolean => {
+  const spent = (usedPct: number | null, resetAt: number | null): boolean =>
+    usedPct != null && usedPct >= HARD_LIMIT && (resetAt == null || resetAt > now);
+  return !spent(s.fiveHour, s.fiveHourReset) && !spent(s.sevenDay, s.sevenDayReset);
+};
 // A soft, operator-set per-sub weekly ceiling: below its `weeklySafetyPct` the account is preferred for
 // dispatch; at/above it the account is skipped IN FAVOR of a sub still under its own ceiling.
 const underWeeklySafety = (s: { sevenDay: number | null; weeklySafetyPct: number }): boolean =>
@@ -774,8 +819,8 @@ export class AccountManager {
     return this.states.get(accountId)?.account;
   }
 
-  /** Pick the best account for the next dispatch. */
-  select(): { account: Account; reason: string } {
+  /** Pick the best account for the next dispatch, reserving enough visible runway for `demand`. */
+  select(demand?: CapacityDemand): { account: Account; reason: string } {
     if (this.accounts.length <= 1) {
       // loadAccounts() always yields ≥1 account (a synthetic "logged-in" entry when no tokens are
       // configured), so accounts[0] is always defined — no synthetic fallback needed here.
@@ -786,7 +831,7 @@ export class AccountManager {
       return { account: only, reason: "single account" };
     }
     const now = Date.now();
-    const { usable, pool, allOverSafety } = this.selectionPool(now);
+    const { usable, pool, allOverSafety, capacity } = this.selectionPool(now, demand);
     // Burn the account whose weekly window resets soonest first (see bySelectionPriority) — or, when
     // "spread usage" is on, the one with the lowest weekly usage (see bySpreadUsage).
     pool.sort(this.primaryOrder(allOverSafety));
@@ -795,24 +840,28 @@ export class AccountManager {
     this.preferredId = chosen.account.id;
     this.releaseHold(chosen); // dispatch traffic starts the held window anyway — refresh the read now
     this.publish();
-    const reason = !usable.length
+    const capacitySuffix = demand && capacity
+      ? ` · ${capacity.assessments.get(chosen)?.status ?? "unknown"} runway for ${demand.label}`
+      : "";
+    const reason = (!usable.length
       ? "all accounts near limit — using the one resetting soonest"
       : !pool.some(hasBurnData)
         ? "round-robin (no burn data yet)"
         : this.spreadUsage
           ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} — spread: lowest weekly usage`
-          : `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} · resets ${untilReset(chosen.sevenDayReset, now)} — soonest weekly reset`;
+          : `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} · resets ${untilReset(chosen.sevenDayReset, now)} — soonest weekly reset`) + capacitySuffix;
     return { account: chosen.account, reason };
   }
 
   /** Non-mutating view of the account `select()` would choose. Used by provider routing so the
    *  Codex backend competes with Claude subscriptions without bumping round-robin state or the
    *  active account marker before a dispatch is actually committed. */
-  dispatchPreview(): AccountDispatchPreview {
+  dispatchPreview(demand?: CapacityDemand): AccountDispatchPreview {
     const now = Date.now();
-    const { usable, pool, allOverSafety } = this.selectionPool(now);
+    const { usable, pool, allOverSafety, capacity } = this.selectionPool(now, demand);
     pool.sort(this.primaryOrder(allOverSafety));
     const chosen = pool[0]!;
+    const capacityWindows = accountCapacityWindows(chosen, now);
     return {
       account: chosen.account,
       hasHeadroom: usable.includes(chosen),
@@ -821,6 +870,9 @@ export class AccountManager {
       fiveHourReset: chosen.fiveHourReset,
       sevenDayReset: chosen.sevenDayReset,
       weeklySafetyPct: chosen.weeklySafetyPct,
+      capacityWindows,
+      capacity: capacity?.assessments.get(chosen) ?? assessCapacity(capacityWindows, demand ?? defaultDispatchDemand(), now),
+      allKnownAtRisk: capacity?.allKnownAtRisk ?? false,
     };
   }
 
@@ -829,18 +881,25 @@ export class AccountManager {
    * cap-rejected or near the hard limit, and never falls back to the excluded account. Returns
    * null when no alternative has headroom (so the caller settles the task to review instead).
    */
-  selectFailover(excludeId: string): Account | null {
+  selectFailover(excludeId: string, demand?: CapacityDemand): Account | null {
     if (this.accounts.length <= 1) return null;
     const now = Date.now();
     const candidates = [...this.states.values()].filter((s) => {
       if (s.account.id === excludeId || !s.enabled) return false;
       const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
-      return !limited && tightest(s) < HARD_LIMIT;
+      return !limited && accountHasHardHeadroom(s, now);
     });
     if (!candidates.length) return null;
     // Honor the soft weekly ceiling here too: fail over to a sub still under its ceiling when one exists,
     // else use whichever capped-out candidate has the most headroom rather than stranding the task.
-    const safety = weeklySafetyPool(candidates);
+    const capacity = demand
+      ? preferCapacity(candidates, (candidate) => accountCapacityWindows(candidate, now), demand, now)
+      : undefined;
+    // A substantial in-flight task should leave Claude entirely (or park) when every remaining sub is
+    // forecast to cap too. Returning the least-risky one here would consume another doomed turn before
+    // ThreadManager gets a chance to use a viable provider pool.
+    if (demand?.substantial && capacity?.allKnownAtRisk) return null;
+    const safety = weeklySafetyPool(capacity?.candidates ?? candidates);
     const pool = safety.candidates;
     // Same order select() uses: soonest-resetting reserve by default, or lowest weekly usage when
     // "spread usage" is on — so failover balances the same way normal dispatch does.
@@ -898,6 +957,35 @@ export class AccountManager {
    *  `usable` predicate in select() so "has headroom" and "what select would dispatch to" never diverge. */
   hasHeadroom(): boolean {
     return this.selectionPool(Date.now()).usable.length > 0;
+  }
+
+  /**
+   * Capacity truth for every enabled subscription. Unlike `soonestResetAt`, this simulates ALL gating
+   * windows: a 5h reset does not claim to free an account whose weekly window remains exhausted.
+   */
+  capacityOptions(demand: CapacityDemand, now = Date.now()): AccountCapacityOption[] {
+    const all = [...this.states.values()];
+    const enabled = all.filter((state) => state.enabled);
+    const base = enabled.length ? enabled : all;
+    return base.map((state) => {
+      const windows = accountCapacityWindows(state, now);
+      const limited = state.rateLimited && (state.rateLimitResetAt == null || state.rateLimitResetAt > now);
+      return {
+        account: state.account,
+        windows,
+        assessment: assessCapacity(windows, demand, now),
+        hasHeadroom: !limited && accountHasHardHeadroom(state, now),
+        nextViableAt: nextViableAt(windows, demand, now),
+      };
+    });
+  }
+
+  /** Earliest reset that makes at least one enabled subscription viable for this workload. */
+  nextCapacityAt(demand: CapacityDemand, now = Date.now()): number | null {
+    const times = this.capacityOptions(demand, now)
+      .map((option) => option.nextViableAt)
+      .filter((at): at is number => at != null);
+    return times.length ? Math.min(...times) : null;
   }
 
   /** Register the callback fired after each usage refresh (periodic + reset pings). One consumer
@@ -988,7 +1076,12 @@ export class AccountManager {
     this.hub.publish({ type: "accounts", accounts: this.dto() });
   }
 
-  private selectionPool(now: number): { usable: AccountState[]; pool: AccountState[]; allOverSafety: boolean } {
+  private selectionPool(now: number, demand?: CapacityDemand): {
+    usable: AccountState[];
+    pool: AccountState[];
+    allOverSafety: boolean;
+    capacity?: CapacitySelection<AccountState>;
+  } {
     const all = [...this.states.values()];
     // Operator-disabled accounts are held out of the rotation. Safety net: if every account is
     // disabled, ignore the toggles rather than strand the pipeline (planner/researcher/QA need Claude).
@@ -996,18 +1089,34 @@ export class AccountManager {
     const base = enabledStates.length ? enabledStates : all;
     const usable = base.filter((s) => {
       const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
-      return !limited && tightest(s) < HARD_LIMIT;
+      return !limited && accountHasHardHeadroom(s, now);
     });
-    // Soft weekly ceiling: prefer usable subs still under their own `weeklySafetyPct`, so an account that
-    // crosses its ceiling sheds new work onto a fresher one WITHOUT freezing (falls through to all usable
-    // when every one is over its ceiling — see weeklySafetyPool).
-    const safety = weeklySafetyPool(usable);
+    // First keep a long task off a pool that cannot plausibly carry it. The soft weekly ceiling and the
+    // operator's spread/perishable preference are tiebreaks INSIDE that capacity tier, never above it.
+    const hardCandidates = usable.length ? usable : base;
+    const capacity = demand
+      ? preferCapacity(hardCandidates, (state) => accountCapacityWindows(state, now), demand, now)
+      : undefined;
+    const capacityCandidates = capacity?.candidates ?? hardCandidates;
+    const safety = weeklySafetyPool(capacityCandidates);
     return {
       usable,
-      pool: safety.candidates.length ? [...safety.candidates] : [...base],
+      pool: [...safety.candidates],
       allOverSafety: safety.allOver,
+      capacity,
     };
   }
+}
+
+/** Back-compat for callers that only need a display preview and supply no role context. */
+function defaultDispatchDemand(): CapacityDemand {
+  return {
+    label: "dispatch",
+    expectedDurationMs: 60 * 60_000,
+    expectedBurnPct: 0,
+    reservePct: 0,
+    substantial: false,
+  };
 }
 
 function fmt(n: number | null | undefined): string {

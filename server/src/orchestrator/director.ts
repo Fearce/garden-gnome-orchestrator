@@ -10,7 +10,6 @@ import type { DirectorTarget, ThreadManager } from "./threadManager.js";
 import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
 import type { Account } from "../accounts/account.js";
-import { untilReset } from "../accounts/accountManager.js";
 import { config, fallbackModelFor } from "../config.js";
 import { normalizeDuration } from "./timedTasks.js";
 import { clampAgentCount } from "./shotgun.js";
@@ -554,12 +553,7 @@ export class Director {
   /** Message for when every sub is capped — phrased for the ACTUAL number of configured subscriptions
    *  (1, 2, or more; never a hardcoded "Both"), naming when the soonest one frees up if we know it. */
   private allCappedMessage(): string {
-    const resetAt = this.api.accounts.soonestResetAt();
-    const when = resetAt != null ? untilReset(resetAt, Date.now()) : null;
-    const subject = "Every enabled director provider is currently capped or unavailable";
-    return when
-      ? `${subject}, so I couldn't complete this turn. A Claude window is expected to free ${when}; you can resend then.`
-      : `${subject}, so I couldn't complete this turn. Re-enable a provider with usage, or resend after a subscription resets.`;
+    return this.api.directorCapacityWaitMessage();
   }
 }
 

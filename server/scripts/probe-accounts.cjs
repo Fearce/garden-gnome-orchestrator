@@ -54,7 +54,7 @@ const HARD_LIMIT_PCT = 98;
 const BACKENDS = [
   { name: "Codex", enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", cooldownKey: "provider_startup_cooldown_codex_until", usageFile: "codex-usage-cache.json", poolCapKey: "codex_pool_cap_until" },
   { name: "Grok", enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", cooldownKey: "provider_startup_cooldown_grok_until", usageFile: "grok-usage-cache.json" },
-  { name: "z.ai", enabledKey: "setting_zai_enabled", capKey: "zai_cap_until", usageFile: "zai-usage-cache.json" },
+  { name: "z.ai", enabledKey: "setting_zai_enabled", capKey: "zai_cap_until", cooldownKey: "provider_startup_cooldown_zai_until", usageFile: "zai-usage-cache.json" },
 ];
 // Every term threadManager's *ProviderCandidate methods gate `hasHeadroom` on, and where THIS file
 // mirrors it. The ladder re-implements routing's decision by hand, so the two drift — and the drift is
@@ -72,17 +72,16 @@ const MIRRORED_HEADROOM_TERMS = {
     monthlyExhausted: "spentCredits (monthly pool)",
   },
   zaiProviderCandidate: {
+    providerStartupCoolingDown: "cooldownKey latch → reason 'startup cooldown'",
     zaiCapActive: "capKey latch → reason 'capped'",
     near: "spentWindow (5h + 7d)",
   },
   codexProviderCandidate: {
     providerStartupCoolingDown: "cooldownKey latch → reason 'startup cooldown'",
-    nearLimit: "spentWindow (5h + 7d)",
-    // The plan's DEDICATED pools (Spark): their own windows and their own latch, so a bounded role can
-    // reach Codex on one while the general pool is spent. Mirrored by dedicatedPoolRungs, which reads
-    // both — without it this readout would call Codex dead for reader/planner/researcher while an idle
-    // allowance sat right there: the same blind spot as the others, in the opposite direction.
-    dedicated: "dedicatedPoolRungs (per-pool meters + poolCapKey latch)",
+    // General and DEDICATED model pools have different latches and windows. backendState mirrors the
+    // general rung; dedicatedPoolRungs mirrors every model allowance. Together they implement the exact
+    // selected-pool decision represented by this local in codexProviderCandidate.
+    selectedPoolReady: "backendState + dedicatedPoolRungs (per-pool meters + cap latches)",
   },
 };
 

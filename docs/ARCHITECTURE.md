@@ -118,8 +118,11 @@ The Implementor row above is the **default** model, not the only one: with the
 opt-in `autoModelSelection` setting the director picks this task's implementor
 model AND effort from every backend dispatchable at that moment. It receives every model in each provider's
 active-auth live catalog (or the complete curated cold-start catalog), without a per-provider truncation, and each model
-carries its exact supported effort set after the operator's configured cap. Every such
-task is graded when it settles so the next pick reads real outcomes rather than
+carries its exact supported effort set after the operator's configured cap. Each candidate also carries
+the live capacity of the exact account/general/dedicated pool it would spend;
+known-at-risk models are omitted when a viable pool exists, and a persisted pick is revalidated against
+the same workload reserve immediately before launch.
+Every auto-selected task is graded when it settles so the next pick reads real outcomes rather than
 priors (CLAUDE.md § "Auto model selection"). Precedence is then
 `effort_override` > the pick > the planner.
 
@@ -410,6 +413,16 @@ defaults (see root CLAUDE.md doctrine).
 
 ## 10. Multi-subscription load balancing (`server/src/accounts/`)
 
+Dispatch is capacity-aware at three levels: Claude subscription, provider, and exact model pool.
+`orchestrator/capacityRouting.ts` turns each role into a conservative duration/burn/reserve estimate
+(expanded by implementor effort, plan size/risk, and a timed task's active window), then evaluates every
+visible quota window that gates the candidate. The inventory includes Claude and z.ai 5h + weekly windows,
+the Codex general and per-model 5h + weekly pools, Grok weekly + monthly credits, routing ceilings, and
+live cap latches. This builds on the existing hard-cap failover and reset supervisor; it does not replace
+their mid-run recovery. The independently implemented free planner/reader pool stays ahead of this ladder:
+its lease already reserves a whole bounded run across visible request/token/credit limits, and by design a
+free-pool miss falls through immediately instead of joining the reliable-provider cap park.
+
 Run agents across **two (or more) Claude subscriptions**, routing each dispatch
 to **burn the "perishable" weekly allowance first** — the sub whose weekly window
 resets soonest — and keeping the long-runway one in reserve for when it caps.
@@ -453,6 +466,22 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   `runRole`, implementor + QA-fix rounds via `awaitImplementorResult`) and to manual
   resume; up to 3 hops, then it settles to `review` only if *no* account has headroom (it
   never runs QA on a half-finished implementation). A webhook ping fires on each switch.
+- **Workload-sized runway, before dispatch.** Known-viable capacity wins over unmetered capacity, which
+  wins over known-at-risk capacity. Existing weekly-safety, spread-usage, and soonest-reset preferences
+  remain tiebreakers inside that capacity tier. A reset inside the estimated run reduces the amount that
+  must be available before dispatch; a reset after completion does not. Short roles may therefore bridge
+  a near reset, while substantial implementation/QA work is parked instead of knowingly starting on a
+  pool forecast to expire mid-task. An owner-triggered reviewer refuses the same known-doomed launch and
+  leaves the task in review with the next viable reset, because that manual lane deliberately does not
+  join pipeline auto-resume. Unknown telemetry remains dispatchable as a bounded fallback so
+  API-key and cold-start installations do not deadlock. The task gets a finding with its workload reserve,
+  selected provider, and every compared meter.
+- **Honest capacity waits.** A capacity park inventories every compatible account/provider/model pool and
+  simulates the combined windows at each future reset. It will not advertise or schedule a 5h wake while
+  the same pool's weekly/monthly gate remains exhausted. The task error names the limiting pool(s), the
+  next reset that would actually make one viable (or says no reliable reset is known), and the supervisor
+  rechecks the same role-sized reserve before auto-resuming. Gate: `test:capacity-routing` plus the existing
+  provider-fallback, QA-budget, auto-model, and Codex-pool gates.
 - Degrades to single-account (inherited login) when fewer than two tokens are
   configured. A bar reads `—` only before the first successful ping for that
   account.
@@ -468,6 +497,12 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   flagships' 272K, which makes it wrong for the implementor and unsafe for QA or the reviewer. Routing
   fails closed: no visible meter, no dispatchable model, or a live latch ⇒ ordinary routing. Gate:
   `test:codex-pools`; the nightly ladder readout prints each pool under the backend rungs.
+- **Separately metered model pools are real routing candidates.** Eligible bounded roles proactively compare
+  each live dedicated Codex pool with the general pool and the other providers using the same role-sized
+  runway; a pool does not need the Claude/general pool to cap first. An explicit eligible-role model pin
+  still consumes its exact pool and remains independent of a general-pool latch. Choosing a non-Claude
+  role also defers Claude account selection, so the unused subscription is not woken merely to construct
+  the run. Capability exclusions for implementor/QA/reviewer remain unchanged.
 
 ## 11. Image attachments (paste / drop / pick → vision)
 

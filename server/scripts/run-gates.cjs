@@ -30,6 +30,7 @@ const GATES = [
   "test:cron",
   "test:weekly-safety",
   "test:spread-usage",
+  "test:capacity-routing",
   "test:ext-wake",
   "test:account-usage",
   "test:grok-runner",
