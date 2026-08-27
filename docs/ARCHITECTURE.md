@@ -64,11 +64,11 @@ Model + tool policy per role:
 | Role        | Model            | permissionMode | Tools |
 |-------------|------------------|----------------|-------|
 | Director    | runtime-selected Claude / Codex / Grok / z.ai | provider-specific | Native memory + orchestration MCP on Claude/z.ai; constrained server-command bridge on Codex/Grok — **no repo writes/shell** |
-| Planner     | eligible free pool → configured paid backend | provider-specific | Read/Grep/Glob — **owns codebase reading**; routes to researcher or implementor. The free harness has no write/shell/network surface and falls back on any failure. |
+| Planner     | small-task-eligible free pool → configured reliable backend | provider-specific | Read/Grep/Glob — **owns codebase reading**; routes to researcher or implementor. Free admission requires an explicit low-effort, narrow first attempt; otherwise the planner starts on the reliable ladder. |
 | Researcher  | claude-sonnet-5  | plan           | WebSearch/WebFetch, memory, bus — **no Read/Grep/Glob** (external info only; the planner reads the repo) |
 | Implementor | claude-opus-5    | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
 | QA          | claude-opus-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); sole role that can mark a task done |
-| Reader      | eligible free pool → configured paid backend | provider-specific | Read/Grep/Glob + `git_read` (allowlisted log/show/status/diff, **no Bash**) + `post_finding` — **no Write/Edit/Bash/web** (§5, the read-only `dispatch_read` lane); answers a lookup, no QA |
+| Reader      | small-task-eligible free pool → configured reliable backend | provider-specific | Read/Grep/Glob + `git_read` (allowlisted log/show/status/diff, **no Bash**) + `post_finding` — **no Write/Edit/Bash/web** (§5, the read-only `dispatch_read` lane); broad/uncertain or repeated lookups skip free quota. |
 | Reviewer    | claude-opus-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests, browser-drives UI), bus incl. **`ask_user`** — **no Write/Edit** (§5, the on-demand auto-review); accepts a parked task as done in the owner's place, or hands it back |
 
 The **reader** is the same harness-level enforcement as QA — under `bypassPermissions` the
@@ -77,13 +77,24 @@ makes them un-invokable even though the model runs unsupervised (`readerConfig`,
 It gets read-only git history without a shell via the `git` MCP server's single `git_read` tool
 (`bus/gitReadServer.ts` → `gitService.runReadonlyGit`, allowlist `log`/`show`/`status`/`diff`).
 
-Planner and reader first attempt the **free task pool** (`freeProviders/agentRun.ts`). That provider-neutral
-loop exposes only fixed read tools, resolves real paths inside the task workspace, replays normalized
-assistant tool calls/results across OpenAI-compatible, Gemini, and Cohere transports, validates the role's
-JSON schema, and records every call in the provider quota ledger. Eligibility is fail-closed: the enabled,
-freshly revalidated free model must have explicit live or narrowly allowlisted official tool support and visible remaining quota. An error or
-missing reader finding records the free run and immediately continues through the unchanged paid-provider
-`runRole` ladder. It never serves researcher, implementor, QA, or reviewer.
+Planner and reader may attempt the **free task pool** (`freeProviders/taskPolicy.ts` →
+`freeProviders/agentRun.ts`) only after a deterministic, no-inference size gate. A reader needs the explicit
+`dispatch_read` lane; a planner needs an explicit `low` effort override. Both must be first attempts with a
+short brief and no attachment, broad/multi-file, production-sensitive, external/live, or investigative
+signal. Any uncertainty resolves to the reliable provider ladder. Persisted role-run history makes the
+first-attempt rule survive restarts and cap recovery, and a planner note received mid-run moves the re-plan
+to a reliable provider instead of buying a free continuation.
+
+The provider-neutral loop exposes only fixed read tools, resolves real paths inside the task workspace,
+replays normalized assistant tool calls/results across OpenAI-compatible, Gemini, and Cohere transports,
+validates the role's JSON schema, and records every call/token response in the provider quota ledger and
+normal run history. Provider admission is independently fail-closed: the enabled, freshly revalidated free
+model must have explicit live or narrowly allowlisted official tool support, a sufficient context window,
+fresh visible quota, and enough request/token/credit headroom for the whole bounded run. The default
+lifetime ceiling is 4 model calls, 10 tool calls, 10K tool-result characters, and 8K reported tokens, with
+no structured-output retry. An error or missing reader finding records the free run and immediately
+continues through the unchanged Claude/Codex/Grok/z.ai `runRole` ladder; a free cap never creates an
+all-providers cap park. The free pool never serves researcher, implementor, QA, or reviewer.
 
 The **director only directs** — it has no filesystem or shell tools at all, so it cannot
 investigate a repo itself; any "figure out / debug / why is X" request is forced into

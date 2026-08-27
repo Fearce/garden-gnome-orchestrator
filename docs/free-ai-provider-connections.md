@@ -2,12 +2,24 @@
 
 GG Orchestrator has nine recurring-free provider connections. Eight are authenticated on this instance; OpenRouter is implemented and ready for its first API key. Open **Settings → Free AI connections** to see every live quota chip and the separate routing state. No code or environment-file edit is required.
 
-The **Free task pool** now offloads two bounded roles before GGO spends a subscription turn:
+The **Free task pool** can offload two bounded roles, but it is deliberately a scarce-budget lane rather
+than a default execution pool:
 
-- **Planner** — read-only `Read`/`Grep`/`Glob`, plus the normal structured plan contract.
-- **Reader** (`dispatch_read`) — the same confined repo reads, allowlisted read-only git history, and the finding tool needed to return its answer.
+- **Planner** — only a first attempt whose operator-pinned effort is `low`, whose brief stays below the configured character/word limits, and whose text has no broad, risky, uncertain, external/live, or multi-file signal. It gets read-only `Read`/`Grep`/`Glob` plus the normal structured plan contract.
+- **Reader** (`dispatch_read`) — only a first attempt already placed on the explicit read lane and passing the same conservative scope checks. It gets the same confined repo reads, allowlisted read-only git history, and the finding tool needed to return its answer.
 
-These are real task runs: they appear in run history as `free:<provider>`, stream tool activity into the task feed, and add every request/token response to the provider's usage chip. A free failure never strands a task. Invalid output, unsupported tools, quota exhaustion, malformed configuration, or an outage records the failed free run and immediately starts the unchanged Claude/Codex/Grok/z.ai path.
+No effort signal means **uncertain**, not small. High/medium effort, attachments, long briefs, production or
+security work, audits/refactors/migrations, external research, and investigative scope stay on the reliable
+provider ladder. So do all retries and continuations: persisted run history prevents a restart or quota reset
+from spending another free attempt, and steering received during a free plan moves the re-plan to a reliable
+provider.
+
+These are real task runs: they appear in run history as `free:<provider>`, stream tool activity into the task
+feed, persist provider-reported tokens, and add every request/token response to the provider's usage chip. A
+single task finding explains a free selection; skipped tasks produce one concise server log line while the
+Settings summary explains the global policy. A free failure never strands a task. Invalid output, unsupported
+tools, quota exhaustion, malformed configuration, or an outage records the failed optional run and immediately
+starts the unchanged Claude/Codex/Grok/z.ai path. It cannot set the all-providers cap-park marker.
 
 Implementation, research, QA, and auto-review remain on the existing coding-agent backends. Those roles need shell/network/write/MCP/commit semantics the bounded free harness intentionally does not expose.
 
@@ -27,7 +39,14 @@ On the current GGO instance, the eight already configured connections below comp
 | NVIDIA NIM | NVIDIA Developer Program API key | Free hosted endpoint prototyping; NVIDIA publishes no numeric cap | Dynamic catalog filtered to conversational/coding model families | Honest cap-not-exposed state plus persisted request/token evidence | Live-verified on hosted GPT-OSS; the task timeout accommodates prototype cold starts |
 | Hugging Face Inference Providers | Fine-grained Hugging Face token | $0.10/month routed credit for free accounts | Live providers with explicit per-million-token prices; tasks pin the exact provider suffix | Published credit minus conservative live-price estimates for this GGO | Routes when the selected live provider reports tools |
 
-Connection and routing are deliberately separate. **Connected** means credentials and the catalog validated. **In free task pool** additionally requires an enabled connection, a selected model still verified free, explicit tool support (from live metadata or a narrow current official-model allowlist), sufficient context, visible quota remaining, and no short harness-failure cooldown. An authenticated provider without verified tool capability remains connected and keeps its usage chip, but fails closed for tasks.
+Connection, provider capacity, and task admission are deliberately separate. **Connected** means credentials
+and the catalog validated. **Capacity-ready** additionally requires an enabled connection, a selected model
+still verified free, explicit tool support (from live metadata or a narrow current official-model allowlist),
+sufficient context, a fresh visible quota signal, enough headroom for the complete bounded run, and no short
+harness-failure cooldown. **Routed** additionally requires the task itself to pass the small/first-attempt policy.
+An authenticated provider without verified capability or capacity remains connected and keeps its usage chip,
+but fails closed for autonomous tasks. Providers whose remaining allowance is not machine-visible (currently
+Gemini and NVIDIA) remain available for explicit probes but do not enter autonomous routing by default.
 
 ## Setup tonight
 
@@ -38,7 +57,7 @@ Connection and routing are deliberately separate. **Connected** means credential
 5. Choose **Connect & validate** (or **Save & validate**). This saves the secret server-side and performs model discovery/account metadata reads only. It does not run inference.
 6. Check the state, discovered/free counts, and quota chip. Select a free probe model if more than one is eligible.
 7. Choose **Test with 1 request**, read the billing warning, then confirm **Send exactly 1 request**. The server refreshes the live catalog again before sending the fixed, tiny connectivity prompt.
-8. Turn on **Use free pool for planning & read-only lookups**. This explicit opt-in is required even when credentials were saved earlier. The count beside it says how many connections can route right now; the reason at the bottom of every card explains exclusions.
+8. Turn on **Use free pool for small tasks only**. This explicit opt-in is required even when credentials were saved earlier. The count beside it says how many connections have enough capacity for one bounded task; the policy summary and each card explain exclusions.
 
 Provider prerequisites:
 
@@ -74,7 +93,7 @@ The probe logs in with `AUTH_PASSWORD` without printing it, reads provider readi
 - The live catalog/free classification is refreshed immediately before every probe or routed task. A previously free catalog entry that becomes non-zero or loses tool eligibility is rejected before a completion call.
 - OpenRouter permits only live catalog entries with exactly zero pricing in every reported billable dimension. Its documented Free Models Router is accepted only when the catalog lists it at zero price, and each request disables generic provider fallbacks. OpenRouter BYOK is an account-side override, so its setup card explicitly warns when a strict no-spend boundary is needed.
 - The free harness has no shell or write tool. File reads resolve symlinks and reject paths outside the task workspace; search is implemented in-process over a bounded workspace walk that never traverses a symlink and needs no external binary; git accepts only `log`, `show`, `status`, and `diff` through the existing hardened read path.
-- Tool calls, tool-result bytes, model calls, output tokens, and structured-output retries all have hard per-turn limits. A model that cannot finish inside them rests for ten minutes while other free providers (or the paid fallback) continue.
+- Tool calls, tool-result bytes, model calls, and reported tokens share hard **lifetime** limits across the run, so steering cannot mint a new allowance. Defaults are 4 model calls, 10 tool calls, 10K tool-result characters, 8K reported tokens, and zero structured-output retries. A model that cannot finish inside them rests for ten minutes while the reliable fallback continues.
 - The local quota ledger is keyed by a salted HMAC credential/account fingerprint. It survives restart, separates rotated keys, applies provider window timezone rules, and records rejected calls with a zero request count.
 - Every provider card always carries a usage chip. `EST`/`~` means locally calculated; “not exposed” never becomes a false zero.
 
@@ -86,6 +105,13 @@ The probe logs in with `AUTH_PASSWORD` without printing it, reads provider readi
 | GitHub Models | Rejected | GitHub retired the Models playground, catalog, inference API, and BYOK service on 2026-07-30. Copilot is a separate product. |
 | Together AI | Rejected | Current official support says there is no free trial and a credit purchase is required. |
 | OpenCode Zen | Deferred | Its current docs identify some time-limited free models, correcting the proposal's assumption. The public model catalog does not expose price or free expiry, while the account can auto-reload credit, so GGO cannot revalidate a no-spend boundary before each probe. |
+
+Thresholds have conservative environment overrides (`FREE_TASK_MAX_BRIEF_CHARS`,
+`FREE_TASK_MAX_BRIEF_WORDS`, `FREE_TASK_MAX_MODEL_CALLS`, `FREE_TASK_MAX_TOOL_CALLS`,
+`FREE_TASK_MAX_TOOL_CONTEXT_CHARS`, `FREE_TASK_MAX_TOTAL_TOKENS`,
+`FREE_TASK_STRUCTURED_RETRIES`, `FREE_TASK_MIN_REQUEST_HEADROOM`, and
+`FREE_TASK_REQUIRE_VISIBLE_QUOTA`). Raising them is an explicit operator choice; uncertain task classification
+still routes reliable.
 
 The next engineering step is extending the harness beyond read-only roles. A free **implementor** would need isolated write/shell tools, resumable sessions, steering, office/bus parity, secret-safe command execution, test/build timeouts, and the commit/push contract. Research also needs approved web/memory tools; QA/auto-review need a robust read-only shell. Until those role-specific contracts are built and tested, they stay on the mature coding-agent backends.
 

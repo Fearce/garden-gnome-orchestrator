@@ -3369,20 +3369,47 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /**
-   * Give one bounded read-only stage to the authenticated free pool before spending a subscription
-   * turn. This is deliberately outside the paid-provider loop: any unavailable model, malformed result,
-   * quota rejection, tool failure, or outage records a failed free run and returns control to the exact
-   * Claude/Codex/Grok/z.ai selection and failover path that already existed.
+   * Give ONE confidently-small, first-attempt read-only stage to the authenticated free pool before
+   * spending a subscription turn. Classification and quota admission live behind FreeProviderService's
+   * only lease seam, so broad/uncertain work and every retry/continuation fail closed to the reliable
+   * ladder. Any malformed result, quota rejection, tool failure, or outage records a failed free run and
+   * returns control to the exact Claude/Codex/Grok/z.ai selection and failover path that already existed.
    */
   private async tryFreeStructuredRole(
     thread: Thread,
     role: "planner" | "reader",
-    kickoff: string,
+    kickoff: string | unknown[],
     makeCfg: (ctx: { token: string | undefined; resume?: string; runId: string }) => AgentRunConfig,
   ): Promise<ResultEvent | undefined> {
     if (!this.freeProviders || this.cancelled(thread.id)) return undefined;
-    const session = await this.freeProviders.openTaskSession(role).catch(() => null);
-    if (!session) return undefined;
+    const routed = await this.freeProviders.routeTask({
+      role,
+      lane: thread.lane,
+      title: thread.title,
+      brief: thread.brief,
+      rawPrompt: thread.rawPrompt,
+      effortOverride: thread.effortOverride,
+      priorRoleRuns: this.db.listRuns(thread.id).filter((candidate) => candidate.role === role).length,
+      hasAttachments: typeof kickoff !== "string",
+    }).catch((error) => {
+      this.hub.log("warn", `Free-provider policy check failed for ${thread.id.slice(0, 8)} ${role}: ${String(error)} — using the reliable provider ladder.`);
+      return null;
+    });
+    if (!routed) return undefined;
+    if (!routed.session) {
+      // The policy runs even while the pool is off, but logging every ordinary task in that state would
+      // be noise. Once the owner opts in, one line per eligible role explains every select/skip decision.
+      if (routed.poolEnabled) {
+        const action = routed.policy.eligible ? "unavailable after small-task admission" : `skipped (${routed.policy.size})`;
+        this.hub.log(
+          "info",
+          `Free pool ${action} for ${thread.id.slice(0, 8)} ${role}: ${routed.availabilityReason ?? routed.policy.reason} Reliable routing continues.`,
+        );
+      }
+      return undefined;
+    }
+    if (typeof kickoff !== "string") return undefined; // policy currently rejects this before leasing
+    const session = routed.session;
 
     const run = this.db.createRun({
       threadId: thread.id,
@@ -3391,6 +3418,17 @@ export class ThreadManager implements OrchestratorApi {
       account: `free:${session.target.providerId}`,
     });
     this.emitRun(run.id);
+    this.hub.log(
+      "info",
+      `Free small-task policy selected ${session.target.providerName}/${session.target.model} for ${thread.id.slice(0, 8)} ${role}: ${routed.policy.reason}`,
+    );
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "director",
+      summary: `Small-task policy routed ${role} to ${session.target.providerName}'s free allowance`,
+      detail: `${routed.policy.reason}\n\nFirst attempt only; bounded to ${config.freeTaskPolicy.maxModelCalls} model calls, ${config.freeTaskPolicy.maxToolCalls} tool calls, and ${config.freeTaskPolicy.maxTotalTokens} reported tokens. Any failure continues automatically on the reliable provider ladder.`,
+      severity: "info",
+    });
     const cfg = makeCfg({ token: undefined, runId: run.id });
     if (typeof cfg.systemPrompt !== "string" || !cfg.outputFormat?.schema) {
       session.close();
@@ -3419,7 +3457,9 @@ export class ThreadManager implements OrchestratorApi {
     if (role === "planner") this.liveRole.set(thread.id, agent);
     agent.start(kickoff);
     let result = await agent.result();
-    if (role === "planner" && result && !result.isError) result = await this.drainDirectorNotes(thread, agent, result);
+    // A note arriving during this run changes the remaining work. Do not spend another free completion
+    // revising the plan: leave the durable note buffered and let runRole's reliable path absorb it once.
+    const needsReliableContinuation = role === "planner" && !!result && !result.isError && !!this.directorNotes.get(thread.id)?.length;
     if (role === "planner") this.liveRole.delete(thread.id);
 
     // A reader's structured `answered:true` is not enough: its finding is the actual user-facing answer.
@@ -3435,6 +3475,7 @@ export class ThreadManager implements OrchestratorApi {
           errors: ["The free reader returned a disposition without posting its answer finding."],
           costUsd: result.costUsd,
           numTurns: result.numTurns,
+          tokenUsage: result.tokenUsage,
         };
         session.markHarnessFailure(result.result ?? "Reader finding missing.");
       }
@@ -3443,7 +3484,20 @@ export class ThreadManager implements OrchestratorApi {
     await agent.stop();
     this.untrack(thread.id, agent);
     this.finishRun(run.id, result, agent);
-    if (result && !result.isError) return result;
+    if (result && !result.isError && !needsReliableContinuation) return result;
+
+    if (needsReliableContinuation) {
+      this.hub.log("info", `Free planner for ${thread.id.slice(0, 8)} completed its initial result, but new steering requires a continuation — preserving free quota and re-planning once on the reliable ladder.`);
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "planner",
+        fromRunId: run.id,
+        summary: "New steering moved the planner continuation to a reliable provider",
+        detail: "The free planner completed its bounded first attempt. A note arrived while it ran, so the orchestrator preserved the free allowance and will incorporate that note in a fresh reliable-provider plan instead of spending free quota on a continuation.",
+        severity: "note",
+      });
+      return undefined;
+    }
 
     this.postFinding({
       threadId: thread.id,
@@ -3476,7 +3530,6 @@ export class ThreadManager implements OrchestratorApi {
   ): Promise<ResultEvent | undefined> {
     if (
       (role === "planner" || role === "reader") &&
-      typeof kickoff === "string" &&
       !initialResume &&
       !opts?.preferredProvider &&
       !opts?.forcedProvider
@@ -3484,9 +3537,20 @@ export class ThreadManager implements OrchestratorApi {
       const freeResult = await this.tryFreeStructuredRole(thread, role, kickoff, makeCfg);
       if (freeResult) return freeResult;
     }
+    let roleKickoff: string | unknown[] = kickoff;
+    if (role === "planner") {
+      const notes = this.directorNotes.get(thread.id);
+      if (notes?.length) {
+        this.directorNotes.delete(thread.id);
+        roleKickoff = prependUserContent(
+          roleKickoff,
+          `[Director steering received before reliable planning]\n${notes.join("\n\n")}\n\nIncorporate this into the plan you produce now.`,
+        );
+      }
+    }
     let acct = this.dispatchAccount();
     let resume: string | undefined = initialResume;
-    let message: string | unknown[] = kickoff;
+    let message: string | unknown[] = roleKickoff;
     let provider: ImplementorProvider = "claude";
     // A configured account is a one-shot candidate after a cap. Do not impose an arbitrary small
     // counter here: deployments can legitimately have more than three Claude subscriptions. The set
@@ -3652,7 +3716,7 @@ export class ThreadManager implements OrchestratorApi {
           resume = agent.sessionId;
           message = resume
             ? `The ${providerLabel(provider)} API returned a temporary server error. Retry the interrupted work now and continue exactly where you left off.`
-            : kickoff;
+            : roleKickoff;
           continue;
         }
         unavailableProviders.add(provider);
@@ -3673,7 +3737,7 @@ export class ThreadManager implements OrchestratorApi {
         provider = next;
         transientFailures = 0;
         resume = undefined;
-        message = prependUserContent(kickoff, `[Provider outage handoff]\n${fromName} failed ${MAX_TRANSIENT_API_FAILURES} consecutive times. Continue this ${role} stage on ${toName} and complete it fully.`);
+        message = prependUserContent(roleKickoff, `[Provider outage handoff]\n${fromName} failed ${MAX_TRANSIENT_API_FAILURES} consecutive times. Continue this ${role} stage on ${toName} and complete it fully.`);
         continue;
       }
 
@@ -3692,7 +3756,7 @@ export class ThreadManager implements OrchestratorApi {
         provider = next;
         transientFailures = 0;
         resume = undefined;
-        message = prependUserContent(kickoff, `[Provider usage-limit handoff]\nContinue this ${role} stage on ${providerLabel(next)} and complete it fully.`);
+        message = prependUserContent(roleKickoff, `[Provider usage-limit handoff]\nContinue this ${role} stage on ${providerLabel(next)} and complete it fully.`);
         continue;
       }
 
@@ -3728,7 +3792,7 @@ export class ThreadManager implements OrchestratorApi {
           provider = cli;
           transientFailures = 0;
           resume = undefined;
-          message = prependUserContent(kickoff, `[Claude usage-limit handoff]\nEvery Claude subscription is capped. Continue this ${role} stage on ${providerLabel(cli)} and complete it fully.`);
+          message = prependUserContent(roleKickoff, `[Claude usage-limit handoff]\nEvery Claude subscription is capped. Continue this ${role} stage on ${providerLabel(cli)} and complete it fully.`);
           continue;
         }
         this.parkForExhaustedProviders(thread.id, role);
@@ -3741,7 +3805,7 @@ export class ThreadManager implements OrchestratorApi {
       message = resume
         ? "Your session was switched to another account after a usage limit. Continue exactly where you left off and finish."
         : prependUserContent(
-            kickoff,
+            roleKickoff,
             "[Claude usage-limit handoff]\nThe previous Claude account was rejected before it created a resumable session. Start this stage fresh on the new account, re-read the task/workspace, and complete it fully.",
           );
     }

@@ -5,8 +5,9 @@ import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import { T } from "../agents/toolNames.js";
 import { formatStructuredRoleFeed, jsonContractInstruction, parseStructuredText, type JsonSchemaLike } from "../agents/structuredText.js";
 import type { AgentRunConfig, AgentRunLike, ResultEvent, SendOpts, UserContent } from "../agents/runner.js";
+import { config } from "../config.js";
 import { runReadonlyGit } from "../git/readonlyGit.js";
-import type { AgentEvent } from "../types.js";
+import type { AgentEvent, TokenUsage } from "../types.js";
 import type {
   NormalizedCompletion,
   NormalizedCompletionRequest,
@@ -16,21 +17,22 @@ import type {
   ProviderTool,
 } from "./types.js";
 
-const MAX_MODEL_CALLS_PER_TURN = 18;
-const MAX_TOOL_CALLS_PER_TURN = 48;
+const MAX_MODEL_CALLS = config.freeTaskPolicy.maxModelCalls;
+const MAX_TOOL_CALLS = config.freeTaskPolicy.maxToolCalls;
 // Groq's smallest documented free-model allowance is 8K TPM. Tool output is replayed on every
 // subsequent turn, so a 120K-character read budget would make otherwise valid free runs reliably
 // exceed that limit. These are deliberately conservative character caps (code is often denser than
 // English) and leave room for the task brief, system contract, tool definitions, and 1K completion.
 const MAX_TOOL_RESULT_CHARS = 6_000;
-const MAX_TOOL_CONTEXT_CHARS = 10_000;
+const MAX_TOOL_CONTEXT_CHARS = config.freeTaskPolicy.maxToolContextChars;
 const MAX_READ_BYTES = 2 * 1024 * 1024;
 // Groq's published free tier is 8K TPM. A 4K reservation on both sides of one tool call makes an
 // otherwise tiny two-turn lookup deterministically exceed that allowance, because providers may count
 // the requested completion ceiling toward admission. 1K is ample for the structured planner/reader
 // contracts and lets several bounded turns fit inside the smallest verified free token window.
 const MAX_OUTPUT_TOKENS = 1_024;
-const STRUCTURED_RETRIES = 2;
+const MAX_TOTAL_TOKENS = config.freeTaskPolicy.maxTotalTokens;
+const STRUCTURED_RETRIES = config.freeTaskPolicy.structuredRetries;
 const SEARCH_SKIPPED_DIRS = new Set([".git", "node_modules", "dist", "build"]);
 const SEARCH_FILE_LIMIT = 20_000;
 const SEARCH_TIME_BUDGET_MS = 12_000;
@@ -428,6 +430,21 @@ export class FreeProviderAgentRun implements AgentRunLike {
   private readonly rootPromise: Promise<string>;
   private processing: Promise<void> | null = null;
   private closed = false;
+  // LIFETIME counters, not per `send()`. A planner steering note or accidental continuation must not
+  // receive a fresh free allowance after the initial result.
+  private modelCalls = 0;
+  private toolCalls = 0;
+  private toolContextChars = 0;
+  private structuredRetries = 0;
+  private usageSeen = false;
+  private readonly usage: TokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  };
 
   constructor(
     private readonly session: FreeProviderTaskSession,
@@ -543,25 +560,25 @@ export class FreeProviderAgentRun implements AgentRunLike {
       return this.errorResult("The free-provider read-only harness cannot safely normalize image or block-array input; falling back to the primary backend.");
     }
     this.messages.push({ role: "user", content });
-    let modelCalls = 0;
-    let toolCalls = 0;
-    let toolContextChars = 0;
-    let structuredRetries = 0;
 
     try {
       const root = await this.rootPromise;
-      while (modelCalls < MAX_MODEL_CALLS_PER_TURN) {
-        modelCalls++;
+      while (this.modelCalls < MAX_MODEL_CALLS) {
+        if (this.usageSeen && this.usage.totalTokens >= MAX_TOTAL_TOKENS) {
+          throw new Error(`The free-provider harness reached its ${MAX_TOTAL_TOKENS}-token lifetime budget.`);
+        }
+        this.modelCalls++;
         const tools = this.tools();
         const completion = await this.session.complete({
           messages: this.messages,
           tools,
           maxOutputTokens: MAX_OUTPUT_TOKENS,
         });
+        this.recordUsage(completion);
         const canonicalCalls = canonicalToolCalls(completion.toolCalls, tools);
         if (canonicalCalls.length) {
-          if (toolCalls + canonicalCalls.length > MAX_TOOL_CALLS_PER_TURN) {
-            throw new Error(`The model exceeded the ${MAX_TOOL_CALLS_PER_TURN}-tool safety limit.`);
+          if (this.toolCalls + canonicalCalls.length > MAX_TOOL_CALLS) {
+            throw new Error(`The model exceeded the ${MAX_TOOL_CALLS}-tool lifetime safety limit.`);
           }
           this.messages.push({ role: "assistant", content: completion.text, toolCalls: canonicalCalls });
           if (completion.text.trim()) this.emit({ type: "thinking", text: completion.text.trim() });
@@ -573,21 +590,24 @@ export class FreeProviderAgentRun implements AgentRunLike {
           // rather than dropping them.
           let budgetSpent = false;
           for (const call of canonicalCalls) {
-            toolCalls++;
+            this.toolCalls++;
             const parsed = this.parseArguments(call.arguments);
             this.emit({ type: "tool_use", id: call.id, name: call.name, input: parsed });
             const result = budgetSpent
               ? { content: BUDGET_SPENT_TOOL_RESULT, isError: true }
               : await this.executeTool(root, call.name, parsed);
-            const remaining = Math.max(0, MAX_TOOL_CONTEXT_CHARS - toolContextChars);
+            const remaining = Math.max(0, MAX_TOOL_CONTEXT_CHARS - this.toolContextChars);
             const bounded = budgetSpent ? result.content : truncate(result.content, Math.min(MAX_TOOL_RESULT_CHARS, remaining));
-            toolContextChars += bounded.length;
+            this.toolContextChars += bounded.length;
             this.emit({ type: "tool_result", id: call.id, content: bounded, isError: result.isError });
             this.messages.push({ role: "tool", content: bounded, toolCallId: call.id, toolName: call.name });
-            if (toolContextChars >= MAX_TOOL_CONTEXT_CHARS) budgetSpent = true;
+            if (this.toolContextChars >= MAX_TOOL_CONTEXT_CHARS) budgetSpent = true;
           }
           if (budgetSpent) {
             this.messages.push({ role: "user", content: "The read context budget is full. Stop calling tools and return your final structured result now." });
+          }
+          if (this.usageSeen && this.usage.totalTokens >= MAX_TOTAL_TOKENS) {
+            throw new Error(`The free-provider harness reached its ${MAX_TOTAL_TOKENS}-token lifetime budget before a final result.`);
           }
           continue;
         }
@@ -596,7 +616,8 @@ export class FreeProviderAgentRun implements AgentRunLike {
         const schema = this.cfg.outputFormat?.schema as JsonSchemaLike | undefined;
         const parsed = schema ? parseStructuredText(completion.text, schema) : { value: undefined };
         if (schema && !parsed.value) {
-          if (structuredRetries++ < STRUCTURED_RETRIES) {
+          if (this.structuredRetries < STRUCTURED_RETRIES && (!this.usageSeen || this.usage.totalTokens < MAX_TOTAL_TOKENS)) {
+            this.structuredRetries++;
             this.messages.push({ role: "user", content: `${parsed.error ?? "The structured result was invalid"}\nCorrect it now. Return the final JSON contract only; do not call more tools unless essential.` });
             continue;
           }
@@ -611,10 +632,11 @@ export class FreeProviderAgentRun implements AgentRunLike {
           result: completion.text,
           structuredOutput: parsed.value,
           costUsd: 0,
-          numTurns: modelCalls,
+          numTurns: this.modelCalls,
+          tokenUsage: this.tokenUsage(),
         };
       }
-      throw new Error(`The free-provider harness reached its ${MAX_MODEL_CALLS_PER_TURN}-request turn limit.`);
+      throw new Error(`The free-provider harness reached its ${MAX_MODEL_CALLS}-request lifetime limit.`);
     } catch (error) {
       const kind = providerErrorKind(error);
       if (kind === "rate-limit" || kind === "billing") this.rateLimited = true;
@@ -623,8 +645,24 @@ export class FreeProviderAgentRun implements AgentRunLike {
         this.transientApiErrorMessage = errorText(error);
       }
       if (!kind) this.session.markHarnessFailure(errorText(error));
-      return this.errorResult(errorText(error), modelCalls);
+      return this.errorResult(errorText(error), this.modelCalls);
     }
+  }
+
+  private recordUsage(completion: NormalizedCompletion): void {
+    const input = Math.max(0, completion.usage.inputTokens ?? 0);
+    const output = Math.max(0, completion.usage.outputTokens ?? 0);
+    const total = Math.max(0, completion.usage.totalTokens ?? input + output);
+    if (completion.usage.inputTokens != null || completion.usage.outputTokens != null || completion.usage.totalTokens != null) {
+      this.usageSeen = true;
+    }
+    this.usage.inputTokens += input;
+    this.usage.outputTokens += output;
+    this.usage.totalTokens += total;
+  }
+
+  private tokenUsage(): TokenUsage | undefined {
+    return this.usageSeen ? { ...this.usage } : undefined;
   }
 
   private tools(): ProviderTool[] {
@@ -675,6 +713,7 @@ export class FreeProviderAgentRun implements AgentRunLike {
       errors: [message],
       costUsd: 0,
       numTurns: turns,
+      tokenUsage: this.tokenUsage(),
     };
   }
 }

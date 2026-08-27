@@ -1,8 +1,10 @@
 import { randomBytes } from "node:crypto";
+import { config } from "../config.js";
 import type { FreeProviderTaskSession } from "./agentRun.js";
 import { redactProviderText } from "./http.js";
 import { credentialFingerprint, UsageLedger, type KvStore } from "./ledger.js";
 import { createProviderRegistry, type ProviderDefinition } from "./registry.js";
+import { classifyFreeTask, type FreeTaskPolicyDecision, type FreeTaskPolicyInput } from "./taskPolicy.js";
 import { formatUsageChip } from "./usageChip.js";
 import {
   FREE_PROVIDER_IDS,
@@ -66,9 +68,27 @@ export interface FreeProviderRoutingDTO {
   eligibleProviders: number;
   eligibleProviderIds: FreeProviderId[];
   reason: string;
+  policy: {
+    mode: "small-only";
+    summary: string;
+    maxBriefChars: number;
+    maxBriefWords: number;
+    maxModelCalls: number;
+    maxToolCalls: number;
+    maxTotalTokens: number;
+    requireVisibleQuota: boolean;
+  };
 }
 
 type RoutingDecision = { eligible: boolean; reason: string; model?: ProviderModel };
+
+export interface FreeTaskRouteResult {
+  policy: FreeTaskPolicyDecision;
+  session: FreeProviderTaskSession | null;
+  poolEnabled: boolean;
+  /** Why a policy-eligible task did not receive a lease (pool off, quota/headroom, auth, etc.). */
+  availabilityReason?: string;
+}
 
 /**
  * One Settings snapshot asks for both provider cards and the pool status. Reusing these pure
@@ -258,9 +278,11 @@ export class FreeProviderService {
 
   private routingStatusWithMemo(memo: ProviderSnapshotMemo): FreeProviderRoutingDTO {
     const enabled = this.routingEnabled();
-    const eligibleProviderIds = enabled
-      ? this.definitions.filter((definition) => this.routingDecision(definition, memo).eligible).map((definition) => definition.id)
+    const decisions = enabled
+      ? this.definitions.map((definition) => ({ definition, decision: this.taskRoutingDecision(definition, memo) }))
       : [];
+    const eligibleProviderIds = decisions.filter(({ decision }) => decision.eligible).map(({ definition }) => definition.id);
+    const unavailableReasons = [...new Set(decisions.map(({ decision }) => decision.reason).filter(Boolean))].slice(0, 3);
     return {
       enabled,
       active: enabled && eligibleProviderIds.length > 0,
@@ -268,10 +290,20 @@ export class FreeProviderService {
       eligibleProviders: eligibleProviderIds.length,
       eligibleProviderIds,
       reason: !enabled
-        ? "Free task routing is off. Connections and quota checks remain available."
+        ? "Free task routing is off. Connections and quota checks remain available; enabling it still admits only confidently small work."
         : eligibleProviderIds.length
-          ? `${eligibleProviderIds.length} connected provider${eligibleProviderIds.length === 1 ? "" : "s"} can run planning and read-only lookup tasks; every failure falls back to the existing paid backend.`
-          : "No enabled, validated free model currently reports the tool support required by the read-only task harness.",
+          ? `${eligibleProviderIds.length} connected provider${eligibleProviderIds.length === 1 ? " has" : "s have"} enough verified allowance for one bounded small task; every failure falls back to the reliable provider ladder.`
+          : `No free provider can safely admit a bounded task right now${unavailableReasons.length ? `: ${unavailableReasons.join("; ")}` : "."}`,
+      policy: {
+        mode: "small-only",
+        summary: "First attempt only: explicit read-lane lookups or narrow low-effort plans. Broad, risky, uncertain, retried, continued, and attachment-based work stays on reliable providers.",
+        maxBriefChars: config.freeTaskPolicy.maxBriefChars,
+        maxBriefWords: config.freeTaskPolicy.maxBriefWords,
+        maxModelCalls: config.freeTaskPolicy.maxModelCalls,
+        maxToolCalls: config.freeTaskPolicy.maxToolCalls,
+        maxTotalTokens: config.freeTaskPolicy.maxTotalTokens,
+        requireVisibleQuota: config.freeTaskPolicy.requireVisibleQuota,
+      },
     };
   }
 
@@ -281,15 +313,22 @@ export class FreeProviderService {
   }
 
   /**
-   * Reserve the least-used eligible provider and revalidate its live free catalog before inference.
-   * A null lease is an ordinary safe fallback signal: runRole continues on its existing backend.
+   * Apply the small-task policy, then reserve the least-used capacity-safe provider and revalidate its
+   * live free catalog before inference. A null lease is an ordinary fallback signal: ThreadManager
+   * continues through its reliable provider ladder. Keeping classification inside this only public
+   * lease seam prevents a future caller from accidentally treating the free pool as a default backend.
    */
-  async openTaskSession(role: FreeProviderTaskRole): Promise<FreeProviderTaskSession | null> {
-    if (!ROUTING_ROLES.includes(role) || !this.routingEnabled()) return null;
+  async routeTask(input: FreeTaskPolicyInput): Promise<FreeTaskRouteResult> {
+    const policy = classifyFreeTask(input);
+    const poolEnabled = this.routingEnabled();
+    if (!policy.eligible) return { policy, session: null, poolEnabled, availabilityReason: policy.reason };
+    if (!ROUTING_ROLES.includes(input.role) || !poolEnabled) {
+      return { policy, session: null, poolEnabled, availabilityReason: "The free task pool is turned off." };
+    }
     const attempted = new Set<FreeProviderId>();
     while (attempted.size < this.definitions.length) {
       const candidate = this.routingCandidates(attempted)[0];
-      if (!candidate) return null;
+      if (!candidate) return { policy, session: null, poolEnabled, availabilityReason: this.routingStatus().reason };
       attempted.add(candidate.definition.id);
       try {
         // Catalog validation is non-inference and is the hard no-paid-spill circuit breaker.
@@ -297,13 +336,13 @@ export class FreeProviderService {
       } catch {
         continue;
       }
-      const fresh = this.routingDecision(candidate.definition);
+      const fresh = this.taskRoutingDecision(candidate.definition);
       if (!fresh.eligible || !fresh.model) continue;
       const { credentials, fingerprint } = this.context(candidate.definition);
       const providerId = candidate.definition.id;
       this.routingLeases.set(providerId, (this.routingLeases.get(providerId) ?? 0) + 1);
       let closed = false;
-      return {
+      const session: FreeProviderTaskSession = {
         target: { providerId, providerName: candidate.definition.displayName, model: fresh.model.id },
         complete: (request) => this.completeTask(candidate.definition, credentials, fingerprint, fresh.model!, request),
         markHarnessFailure: (reason) => {
@@ -317,8 +356,9 @@ export class FreeProviderService {
           else this.routingLeases.delete(providerId);
         },
       };
+      return { policy, session, poolEnabled };
     }
-    return null;
+    return { policy, session: null, poolEnabled, availabilityReason: this.routingStatus().reason };
   }
 
   update(id: FreeProviderId, rawPatch: ProviderConfigPatch): FreeProviderDTO {
@@ -417,7 +457,7 @@ export class FreeProviderService {
       this.writeHealth(definition, credentials, {
         state: "ready",
         message: selected.supportsTools === true
-          ? `${normalized.filter((model) => model.isFree && !model.ineligibleReason).length} verified free model${normalized.filter((model) => model.isFree && !model.ineligibleReason).length === 1 ? "" : "s"}; ${selected.displayName} is ready for free planning and read-only lookup tasks.`
+          ? `${normalized.filter((model) => model.isFree && !model.ineligibleReason).length} verified free model${normalized.filter((model) => model.isFree && !model.ineligibleReason).length === 1 ? "" : "s"}; ${selected.displayName} is ready for conservative small-task admission.`
           : `${normalized.filter((model) => model.isFree && !model.ineligibleReason).length} verified free model${normalized.filter((model) => model.isFree && !model.ineligibleReason).length === 1 ? "" : "s"}. The selected model does not explicitly report tool support, so task routing stays fail-closed.`,
         checkedAt: new Date().toISOString(),
       });
@@ -462,7 +502,7 @@ export class FreeProviderService {
       this.recordCompletion(definition, fingerprint, selected, completion);
       this.writeHealth(definition, credentials, {
         state: "ready",
-        message: `Probe succeeded on ${completion.model}${completion.upstreamProvider ? ` via ${completion.upstreamProvider}` : ""}.${selected.supportsTools === true ? " This model is eligible for the free read-only task pool." : " Task routing still requires explicit catalog tool support."}`,
+        message: `Probe succeeded on ${completion.model}${completion.upstreamProvider ? ` via ${completion.upstreamProvider}` : ""}.${selected.supportsTools === true ? " This model can enter the small-task pool when quota admission also passes." : " Task routing still requires explicit catalog tool support."}`,
         checkedAt: new Date().toISOString(),
       });
       const latencyMs = Date.now() - started;
@@ -608,13 +648,9 @@ export class FreeProviderService {
     return stored?.enabled === true;
   }
 
-  private routingDecision(definition: ProviderDefinition, memo?: ProviderSnapshotMemo): RoutingDecision {
-    const cached = memo?.routing.get(definition.id);
-    if (cached) return cached;
-    const finish = (decision: RoutingDecision): RoutingDecision => {
-      memo?.routing.set(definition.id, decision);
-      return decision;
-    };
+  /** Model/auth/free-price safety shared by lease admission and every later tool-loop completion. */
+  private baseRoutingDecision(definition: ProviderDefinition, memo?: ProviderSnapshotMemo): RoutingDecision {
+    const finish = (decision: RoutingDecision): RoutingDecision => decision;
     const { config, credentials, fingerprint } = this.context(definition);
     if (!this.routingEnabled()) return finish({ eligible: false, reason: "The free task pool is turned off." });
     if (!config.enabled) return finish({ eligible: false, reason: "Provider connection is disabled." });
@@ -636,12 +672,80 @@ export class FreeProviderService {
     if (model.contextWindow != null && model.contextWindow < 16_000) return finish({ eligible: false, reason: `${model.displayName}'s context window is too small for repository planning.` });
     const usage = this.usage(definition, fingerprint, memo);
     if (usage.remaining != null && usage.remaining <= 0) return finish({ eligible: false, reason: "The visible free allowance is exhausted." });
-    return finish({ eligible: true, reason: `${model.displayName} can run planner and read-only reader tasks with automatic paid-backend fallback.`, model });
+    return finish({ eligible: true, reason: `${model.displayName} is verified free and tool-capable. Small-task admission still requires enough visible allowance.`, model });
+  }
+
+  /** Admission is stricter than an in-flight completion: reserve enough visible quota for the whole
+   * bounded run up front, while later turns only need the provider to remain basically eligible. */
+  private taskRoutingDecision(definition: ProviderDefinition, memo?: ProviderSnapshotMemo): RoutingDecision {
+    const cached = memo?.routing.get(definition.id);
+    if (cached) return cached;
+    const finish = (decision: RoutingDecision): RoutingDecision => {
+      memo?.routing.set(definition.id, decision);
+      return decision;
+    };
+    const base = this.baseRoutingDecision(definition, memo);
+    if (!base.eligible || !base.model) return finish(base);
+    const { fingerprint } = this.context(definition);
+    const usage = this.usage(definition, fingerprint, memo);
+    if (usage.stale) return finish({ eligible: false, reason: "The last free-quota signal is stale; refresh it before autonomous routing." });
+
+    const now = Date.now();
+    const activeSecondary = (usage.secondaryLimits ?? []).filter((limit) => !limit.resetAt || Date.parse(limit.resetAt) > now);
+    const visibleRemaining = usage.remaining != null || activeSecondary.some((limit) => limit.remaining != null);
+    if (config.freeTaskPolicy.requireVisibleQuota && !visibleRemaining) {
+      return finish({ eligible: false, reason: "Remaining free allowance is not visible, so autonomous routing fails closed." });
+    }
+
+    const requestHeadroom = Math.max(config.freeTaskPolicy.maxModelCalls, config.freeTaskPolicy.minRequestHeadroom);
+    // Every active session already reserved one complete worst-case run. Count those reservations
+    // before granting another lease so concurrent small tasks cannot all spend the same last calls.
+    const activeLeases = this.routingLeases.get(definition.id) ?? 0;
+    const requestRemaining = usage.remaining == null ? undefined : usage.remaining - activeLeases * requestHeadroom;
+    if ((usage.quotaKind === "requests" || usage.quotaKind === "mixed") && requestRemaining != null && requestRemaining < requestHeadroom) {
+      return finish({
+        eligible: false,
+        reason: `Only ${Math.max(0, requestRemaining)} unreserved request${requestRemaining === 1 ? " remains" : "s remain"}; a bounded task reserves ${requestHeadroom} to avoid timing out mid-run.`,
+      });
+    }
+
+    const tokenLimit = activeSecondary.find((limit) => /tokens?/i.test(limit.unit) && limit.remaining != null);
+    const tokenRemaining = tokenLimit?.remaining == null
+      ? undefined
+      : tokenLimit.remaining - activeLeases * config.freeTaskPolicy.maxTotalTokens;
+    if (tokenRemaining != null && tokenRemaining < config.freeTaskPolicy.maxTotalTokens) {
+      return finish({
+        eligible: false,
+        reason: `Only ${Math.max(0, tokenRemaining)} unreserved ${tokenLimit!.unit} remain in the active rate window; the bounded task budget is ${config.freeTaskPolicy.maxTotalTokens}.`,
+      });
+    }
+
+    if (usage.quotaKind === "credits-usd" && usage.remaining != null) {
+      const price = Math.max(base.model.inputPricePerMillion ?? 0, base.model.outputPricePerMillion ?? 0);
+      const required = price * config.freeTaskPolicy.maxTotalTokens / 1_000_000;
+      if (required > 0 && usage.remaining - activeLeases * required < required) {
+        return finish({ eligible: false, reason: `The visible free credit cannot cover the bounded ${config.freeTaskPolicy.maxTotalTokens}-token budget.` });
+      }
+    }
+
+    if (usage.quotaKind === "neurons" && usage.remaining != null) {
+      const units = Math.max(base.model.unitsPerMillionInput ?? 0, base.model.unitsPerMillionOutput ?? 0);
+      const required = units * config.freeTaskPolicy.maxTotalTokens / 1_000_000;
+      if (required > 0 && usage.remaining - activeLeases * required < required) {
+        return finish({ eligible: false, reason: `The visible Neuron allowance cannot cover the bounded ${config.freeTaskPolicy.maxTotalTokens}-token budget.` });
+      }
+    }
+
+    return finish({
+      eligible: true,
+      reason: `${base.model.displayName} has verified free/tool capability and enough visible headroom for one bounded small task.`,
+      model: base.model,
+    });
   }
 
   private routingCandidates(exclude: ReadonlySet<FreeProviderId>): Array<{ definition: ProviderDefinition; score: number }> {
     return this.definitions
-      .filter((definition) => !exclude.has(definition.id) && this.routingDecision(definition).eligible)
+      .filter((definition) => !exclude.has(definition.id) && this.taskRoutingDecision(definition).eligible)
       .map((definition) => {
         const { fingerprint } = this.context(definition);
         const requests = this.ledger.aggregate({
@@ -674,7 +778,7 @@ export class FreeProviderService {
     // is non-inference, so refresh before every completion and fail closed rather than silently
     // switching this pinned task to another model or risking a paid call.
     await this.refresh(definition.id);
-    const current = this.routingDecision(definition);
+    const current = this.baseRoutingDecision(definition);
     if (!current.eligible || current.model?.id !== model.id) {
       throw new ProviderRequestError(current.reason || "The free model is no longer routing-eligible.", "invalid-model");
     }
@@ -683,7 +787,7 @@ export class FreeProviderService {
       this.recordCompletion(definition, fingerprint, model, completion);
       this.writeHealth(definition, credentials, {
         state: "ready",
-        message: `Free task request succeeded on ${completion.model}${completion.upstreamProvider ? ` via ${completion.upstreamProvider}` : ""}. Planner/read-only routing is active.`,
+        message: `Free task request succeeded on ${completion.model}${completion.upstreamProvider ? ` via ${completion.upstreamProvider}` : ""}. Conservative small-task routing remains active.`,
         checkedAt: new Date().toISOString(),
       });
       this.logProbe({ event: "task", provider: definition.id, model: completion.model, upstreamProvider: completion.upstreamProvider, requestId: completion.requestId, usage: completion.usage });
@@ -803,7 +907,7 @@ export class FreeProviderService {
     const used = definition.id === "cloudflare"
       ? aggregate.estimatedUnits
       : definition.id === "mistral" || definition.id === "huggingface"
-        ? (aggregate.costUsd || undefined)
+        ? aggregate.costUsd
         : definition.id === "nvidia"
           ? undefined
           : aggregate.requests;
@@ -848,7 +952,7 @@ export class FreeProviderService {
         ? { state: "awaiting-auth", message: this.missingCredentialMessage(definition, credentials), checkedAt: null }
         : savedHealth ?? { state: "awaiting-validation", message: "Ready to validate credentials and discover models without an inference request.", checkedAt: null };
     const usage = this.usage(definition, fingerprint, memo);
-    const routing = this.routingDecision(definition, memo);
+    const routing = this.taskRoutingDecision(definition, memo);
     usage.displayLabel = formatUsageChip({ usage, state: health.state, configured, optionalCredential: definition.optionalCredential });
     return {
       id: definition.id,

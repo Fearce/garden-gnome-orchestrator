@@ -352,6 +352,14 @@ const harnessResult = await harness.result();
 await harness.stop();
 assert.equal(harnessResult?.isError, false);
 assert.equal((harnessResult?.structuredOutput as { summary?: string })?.summary, "Fixture inspected");
+assert.deepEqual(harnessResult?.tokenUsage, {
+  inputTokens: 30,
+  outputTokens: 11,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+  reasoningOutputTokens: 0,
+  totalTokens: 41,
+}, "free-provider token use is persisted on the normal run accounting surface");
 assert.equal(capturedHarnessRequests[0]?.maxOutputTokens, 1_024, "the bounded ceiling fits Groq's published 8K TPM free tier across tool turns");
 const secondHarnessMessages = capturedHarnessRequests[1]?.messages as Array<Record<string, unknown>>;
 assert.equal((secondHarnessMessages.find((message) => message.role === "tool")?.content as string).includes("answer = 42"), true);
@@ -504,6 +512,56 @@ assert.deepEqual(declaredCallIds, ["big-1", "big-2", "big-3"], "the stub issued 
 assert.deepEqual(answeredCallIds, declaredCallIds, "every declared tool_call id is answered once the read budget is spent");
 assert.match(String(budgetMessages.at(-1)?.content), /read context budget is full/i);
 
+// Scarce free allowance never gets a fresh correction/retry budget. A malformed terminal contract
+// consumes one request, records the failed optional attempt, and leaves the reliable ladder to recover.
+let malformedCalls = 0;
+const malformedHarness = new FreeProviderAgentRun({
+  target: { providerId: "stub", providerName: "Stub Free", model: "stub-tools" },
+  async complete() {
+    malformedCalls++;
+    return { text: "not the required JSON", model: "stub-tools", toolCalls: [], usage: { inputTokens: 12, outputTokens: 4, totalTokens: 16 } };
+  },
+  markHarnessFailure() {},
+  close() {},
+}, "planner", {
+  model: "stub-tools",
+  cwd: harnessRoot,
+  systemPrompt: "Return the plan contract.",
+  outputFormat: { type: "json_schema", schema: PLAN_SCHEMA },
+});
+malformedHarness.start("Plan one tiny change.");
+const malformedResult = await malformedHarness.result();
+await malformedHarness.stop();
+assert.equal(malformedResult?.isError, true);
+assert.equal(malformedCalls, 1, "invalid structured output does not spend free quota on a retry by default");
+
+let tokenBudgetCalls = 0;
+const tokenBudgetHarness = new FreeProviderAgentRun({
+  target: { providerId: "stub", providerName: "Stub Free", model: "stub-tools" },
+  async complete() {
+    tokenBudgetCalls++;
+    return {
+      text: "",
+      model: "stub-tools",
+      toolCalls: [{ id: "budget-read", name: "Read", arguments: JSON.stringify({ file_path: "fixture.ts" }) }],
+      usage: { inputTokens: 7_500, outputTokens: 500, totalTokens: 8_000 },
+    };
+  },
+  markHarnessFailure() {},
+  close() {},
+}, "planner", {
+  model: "stub-tools",
+  cwd: harnessRoot,
+  systemPrompt: "Return the plan contract.",
+  outputFormat: { type: "json_schema", schema: PLAN_SCHEMA },
+});
+tokenBudgetHarness.start("Plan one tiny change.");
+const tokenBudgetResult = await tokenBudgetHarness.result();
+await tokenBudgetHarness.stop();
+assert.equal(tokenBudgetResult?.isError, true);
+assert.equal(tokenBudgetCalls, 1, "a run that consumes the token ceiling cannot launch another free continuation call");
+assert.equal(tokenBudgetResult?.tokenUsage?.totalTokens, 8_000);
+
 // Grep and Glob run in-process. They shipped as `rg` subprocesses, which made both tools return
 // `spawn rg ENOENT` on any box without ripgrep installed — the deployment box included — so a free
 // run could read a known path but never search for one. These cover the contract they promise.
@@ -644,12 +702,22 @@ assert.equal(validated.health.state, "ready");
 assert.equal(validated.selectedModel, "vendor/coder:free", "routing prefers a catalog-attested tool model over a tool-unknown probe route");
 assert.equal(service.get("kilo").routing.eligible, true);
 assert.deepEqual(service.routingStatus().eligibleProviderIds, ["kilo"]);
-const taskSession = await service.openTaskSession("planner");
+const taskSession = (await service.routeTask({
+  role: "planner",
+  title: "Fix one README typo",
+  brief: "Change one misspelled word in README.md.",
+  effortOverride: "low",
+})).session;
 assert.equal(taskSession?.target.model, "vendor/coder:free");
 await taskSession?.complete({ messages: [{ role: "user", content: "Return a plan." }], tools: [], maxOutputTokens: 16 });
 taskSession?.close();
 assert.equal(chatCalls, 1, "a routed task uses the same metered ledger path as probes");
-const priceChangedSession = await service.openTaskSession("planner");
+const priceChangedSession = (await service.routeTask({
+  role: "planner",
+  title: "Fix one README typo",
+  brief: "Change one misspelled word in README.md.",
+  effortOverride: "low",
+})).session;
 assert.ok(priceChangedSession);
 catalogModelPaid = true;
 await assert.rejects(
@@ -661,7 +729,12 @@ priceChangedSession?.close();
 assert.equal(chatCalls, 1, "a catalog price change must fail closed without sending another inference request");
 catalogModelPaid = false;
 await service.refresh("kilo");
-const rotatedSession = await service.openTaskSession("reader");
+const rotatedSession = (await service.routeTask({
+  role: "reader",
+  lane: "read",
+  title: "Read one setting",
+  brief: "Which model is configured for the reader?",
+})).session;
 assert.ok(rotatedSession);
 service.update("kilo", { apiKey: "rotated-kilo-secret-value" });
 await assert.rejects(
@@ -710,11 +783,86 @@ await service.refresh("kilo");
 serviceStore.reads.clear();
 const serviceSnapshot = service.snapshot();
 assert.equal(serviceSnapshot.routing.eligibleProviderIds.includes("kilo"), true);
+assert.equal(serviceSnapshot.routing.policy.mode, "small-only");
+assert.equal(serviceSnapshot.routing.policy.maxModelCalls, 4);
 assert.equal(
   serviceStore.reads.get("free_ai_usage_ledger_v1"),
   serviceSnapshot.providers.length,
   "one snapshot parses the usage ledger once per provider, including the routing-ready provider",
 );
+
+// Admission reserves enough request allowance to finish the whole bounded loop. Three visible calls
+// must not buy three partial tool turns and then fail/park; exhaustion remains an ordinary no-lease.
+const serviceSalt = serviceStore.values.get("free_ai_provider_fingerprint_salt_v1")!;
+const serviceFingerprint = credentialFingerprint("kilo-secret-key-value|", serviceSalt);
+const admissionLedger = new UsageLedger(serviceStore);
+admissionLedger.record({
+  providerId: "kilo",
+  accountFingerprint: serviceFingerprint,
+  modelId: "vendor/coder:free",
+  requestCount: 190,
+  responseStatus: "ok",
+  freeClass: "RECURRING_HOURLY",
+  window: "rolling",
+});
+const reservedRouteOne = await service.routeTask({
+  role: "reader",
+  lane: "read",
+  title: "Read one setting",
+  brief: "Which model is configured for the reader?",
+});
+const reservedRouteTwo = await service.routeTask({
+  role: "reader",
+  lane: "read",
+  title: "Read another setting",
+  brief: "Which model is configured for the planner?",
+});
+const overbookedRoute = await service.routeTask({
+  role: "reader",
+  lane: "read",
+  title: "Read a third setting",
+  brief: "Which model is configured for QA?",
+});
+assert.ok(reservedRouteOne.session && reservedRouteTwo.session, "two four-call runs can reserve the eight visible requests");
+assert.equal(overbookedRoute.session, null, "in-flight reservations prevent concurrent tasks from spending the same remaining quota");
+assert.match(overbookedRoute.availabilityReason ?? "", /unreserved requests|no free provider/i);
+reservedRouteOne.session?.close();
+reservedRouteTwo.session?.close();
+admissionLedger.record({
+  providerId: "kilo",
+  accountFingerprint: serviceFingerprint,
+  modelId: "vendor/coder:free",
+  requestCount: 5,
+  responseStatus: "ok",
+  freeClass: "RECURRING_HOURLY",
+  window: "rolling",
+});
+const lowHeadroom = await service.routeTask({
+  role: "reader",
+  lane: "read",
+  title: "Read one setting",
+  brief: "Which model is configured for the reader?",
+});
+assert.equal(lowHeadroom.policy.eligible, true, "task sizing and provider capacity remain separate decisions");
+assert.equal(lowHeadroom.session, null, "a provider with fewer requests than the whole-run reservation is skipped");
+assert.match(lowHeadroom.availabilityReason ?? "", /3 requests remain|reserves 4/i);
+admissionLedger.record({
+  providerId: "kilo",
+  accountFingerprint: serviceFingerprint,
+  modelId: "vendor/coder:free",
+  requestCount: 3,
+  responseStatus: "ok",
+  freeClass: "RECURRING_HOURLY",
+  window: "rolling",
+});
+const exhaustedRoute = await service.routeTask({
+  role: "reader",
+  lane: "read",
+  title: "Read one setting",
+  brief: "Which model is configured for the reader?",
+});
+assert.equal(exhaustedRoute.session, null, "an exhausted free provider falls through without inference");
+assert.match(exhaustedRoute.availabilityReason ?? "", /exhausted|no free provider/i);
 
 // OpenRouter's current API supports a documented, zero-cost Free Models Router. Its catalog and
 // key-status read are non-inference; the eventual completion must preserve the served model while

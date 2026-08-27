@@ -266,6 +266,26 @@ export const config = {
     // Applied as API_TIMEOUT_MS in the run env only for a z.ai run.
     timeoutMs: numEnv(process.env.ZAI_TIMEOUT_MS, 3_000_000),
   },
+  // ---- Recurring-free task pool ---------------------------------------------------------------
+  // These providers have tiny request/token/credit allowances, so admission is deliberately strict:
+  // only a first-attempt read lane or an explicitly low-effort narrow planner may enter. The harness
+  // then has one LIFETIME budget (not a fresh budget per steering/retry turn). Environment overrides
+  // exist for unusually generous plans, but the conservative defaults protect the smallest tiers.
+  freeTaskPolicy: {
+    maxBriefChars: Math.max(200, Math.floor(numEnv(process.env.FREE_TASK_MAX_BRIEF_CHARS, 1_200))),
+    maxBriefWords: Math.max(25, Math.floor(numEnv(process.env.FREE_TASK_MAX_BRIEF_WORDS, 160))),
+    maxModelCalls: Math.max(1, Math.floor(numEnv(process.env.FREE_TASK_MAX_MODEL_CALLS, 4))),
+    maxToolCalls: Math.max(1, Math.floor(numEnv(process.env.FREE_TASK_MAX_TOOL_CALLS, 10))),
+    maxToolContextChars: Math.max(4_000, Math.floor(numEnv(process.env.FREE_TASK_MAX_TOOL_CONTEXT_CHARS, 10_000))),
+    maxTotalTokens: Math.max(1_000, Math.floor(numEnv(process.env.FREE_TASK_MAX_TOTAL_TOKENS, 8_000))),
+    structuredRetries: Math.max(0, Math.floor(numEnv(process.env.FREE_TASK_STRUCTURED_RETRIES, 0))),
+    // Do not launch a request-metered provider unless it can afford the whole worst-case bounded run.
+    // This prevents "3 requests left" from buying three partial tool turns and then timing out.
+    minRequestHeadroom: Math.max(1, Math.floor(numEnv(process.env.FREE_TASK_MIN_REQUEST_HEADROOM, 4))),
+    // Gemini/NVIDIA expose no numeric remaining allowance. They stay connectable/probeable, but the
+    // autonomous pool fails closed by default until a visible capacity signal exists.
+    requireVisibleQuota: process.env.FREE_TASK_REQUIRE_VISIBLE_QUOTA !== "false",
+  },
   // When every Claude account is rate-limited mid-task, the task parks in 'review' with a cap marker
   // instead of stranding the owner to hand-resume it. A supervisor re-checks this often and resumes
   // each parked task the moment any account regains headroom (a window reset / a freed sub). Set

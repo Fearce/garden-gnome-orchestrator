@@ -80,6 +80,16 @@ interface RoutingStatus {
   eligibleProviders: number;
   eligibleProviderIds: string[];
   reason: string;
+  policy?: {
+    mode: "small-only";
+    summary: string;
+    maxBriefChars: number;
+    maxBriefWords: number;
+    maxModelCalls: number;
+    maxToolCalls: number;
+    maxTotalTokens: number;
+    requireVisibleQuota: boolean;
+  };
 }
 
 interface ProviderResponse {
@@ -315,9 +325,13 @@ export function FreeProviders() {
         <label className="free-provider-toggle">
           <input type="checkbox" checked={routing?.enabled ?? false} disabled={routingBusy || !routing} onChange={(event) => void toggleRouting(event.target.checked)} />
           <span aria-hidden="true" />
-          Use free pool for planning & read-only lookups
+          Use free pool for small tasks only
         </label>
-        <p>{routing?.reason ?? "Checking routing readiness…"} Provider/model eligibility is rechecked before every task; implementation, research, and QA remain on the existing coding-agent backends.</p>
+        <p>
+          {routing?.reason ?? "Checking routing readiness…"} {routing?.policy?.summary ?? "Broad or uncertain work stays on the reliable provider ladder."}
+          {routing?.policy ? ` Each free run is capped at ${routing.policy.maxModelCalls} model calls, ${routing.policy.maxToolCalls} tool calls, and ${compact(routing.policy.maxTotalTokens)} reported tokens.` : ""}
+          {" "}Implementation, research, and QA remain on the existing coding-agent backends.
+        </p>
         {routingError ? <p className="free-provider-message bad" role="alert">{routingError}</p> : null}
       </div>
 
@@ -461,7 +475,7 @@ export function FreeProviders() {
               {errors[provider.id] ? <p className="free-provider-message bad" role="alert">{errors[provider.id]}</p> : null}
               {messages[provider.id] ? <p className="free-provider-message ok" aria-live="polite">{messages[provider.id]}</p> : null}
               <p className="free-provider-routing">
-                {provider.routing.eligible ? `In free task pool · ${provider.routing.roles.join(" + ")}` : "Not routed"} · {provider.routing.reason}
+                {provider.routing.eligible ? `Capacity-ready for small tasks · ${provider.routing.roles.join(" + ")}` : "Not routed"} · {provider.routing.reason}
               </p>
             </div>
           </details>

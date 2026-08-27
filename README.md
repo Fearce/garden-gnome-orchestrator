@@ -22,11 +22,11 @@ outcomes and live subscription headroom remain stronger signals. Local grades pe
 pipeline quality, QA, dollars, turns, time and normalized token burn (including cache/reasoning), with
 model×effort history feeding later choices even after the original task is purged.
 
-Authenticated recurring-free API providers can offload **planner** and **read-lane** runs through a
-separate path-confined, read-only tool harness. Settings shows live usage chips and the exact routing
-readiness for Gemini, Groq, Kilo, Mistral, Cohere, Cloudflare Workers AI, NVIDIA NIM, and Hugging Face;
-only a freshly verified free model with explicit live or narrowly allowlisted official tool support
-enters the pool. Any free-run failure falls back automatically to the existing subscription backends.
+Authenticated recurring-free API providers can offload only **confidently small, first-attempt** planner
+and read-lane runs through a separate path-confined, read-only tool harness. Settings shows live usage
+chips and exact capacity readiness for Gemini, Groq, Kilo, Mistral, Cohere, Cloudflare Workers AI,
+NVIDIA NIM, and Hugging Face; task admission is fail-closed for broad, risky, uncertain, retried, or
+continued work. Any free-run failure falls back automatically to the existing subscription backends.
 See [Free AI task pool](docs/free-ai-provider-connections.md).
 
 > A local cockpit for directing coding agents — not a hosted service or a
@@ -69,7 +69,7 @@ pipeline — there's no fixed sequence; each agent decides what happens next:
 
 **Read lane.** A pure read-only lookup ("read HANDOFF.md and report it", "which
 model does role X use") skips the whole pipeline: the director dispatches it with
-`dispatch_read`, which runs **one** read-only **reader** (free pool first, subscription fallback) that answers
+`dispatch_read`, which runs **one** read-only **reader** (free pool only when the lookup passes the conservative small-task/first-attempt gate; reliable-provider fallback otherwise) that answers
 by posting a finding — no planner, no implementor, no QA. Anything needing an edit
 or verification escalates back to the full pipeline instead of half-answering. The
 card shows a **READ** badge.
