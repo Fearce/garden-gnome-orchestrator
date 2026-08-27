@@ -4,7 +4,7 @@
  *
  * A ChatGPT plan is not one allowance. `account/rateLimits/read` returns `rateLimitsByLimitId`: the
  * general `codex` pool that every ordinary model draws on, PLUS a dedicated pool per model that ships
- * with its own allowance. On Kevin's plan that second pool is GPT-5.3-Codex-Spark — its own 5h AND
+ * with its own allowance. On this deployment's plan that pool is GPT-5.3-Codex-Spark — its own 5h AND
  * weekly windows, resetting on their own clock, sitting at 0% while the general weekly pool burns down.
  * We read only the top-level `rateLimits` before this, so that capacity was invisible and unroutable.
  *

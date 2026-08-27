@@ -22,6 +22,8 @@ const PORT = 4337;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DATA_DIR = path.join(os.tmpdir(), "gg-taskmode-lab");
 const HOUR = 3_600_000;
+// A label only — these fixture threads never touch disk, and the console renders the path verbatim.
+const FIXTURE_WORKSPACE = "fixture/repo";
 
 /** Block until the console's WS is connected, so a read reflects the SERVER's state rather than the
  *  client's pre-`hello` defaults. `.conn` is the console's own connection indicator. */
@@ -42,7 +44,7 @@ function seed() {
   );
   const row = (o) =>
     insert.run({
-      workspace: "C:/lab/repo",
+      workspace: FIXTURE_WORKSPACE,
       brief: "lab",
       raw: "lab",
       duration: null,
