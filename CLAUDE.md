@@ -145,7 +145,15 @@ to act on), **clickResume** (handed back by design), **otherFailure** (unclassif
 (5h/7d usage + resets, `holdUntil` stagger-hold, `extWakeAt` outside-consumer mark) with plain-English
 reads, then the **failover ladder**: Codex/Grok/z.ai availability from their `setting_*_enabled` +
 `*_cap_until` kv keys AND their own `data/<x>-usage-cache.json` meters, plus a ladder-depth line (nothing
-counts as a rung while either window is ≥98% — a sub OR a backend, latch or no latch).
+counts as a rung while either window is ≥98% — a sub OR a backend, latch or no latch). **A ChatGPT plan is
+not ONE allowance**: `account/rateLimits/read` also returns `rateLimitsByLimitId`, a dedicated pool per
+model that ships its own (GPT-5.3-Codex-Spark, live limitId `codex_bengalfox` — an opaque codename, so
+`agents/codexPools.ts` maps model→pool by normalizing `limitName`, never the id). Those pools have their
+own 5h/weekly windows, their own resets and their own cap latches (`codex_pool_cap_until`), and a cap in
+one must NEVER be read as a cap in the other. They serve only reader/planner/researcher — a capability
+rule, not thrift: the CLI ships Spark instructed never to verify its own work or run tests, and 128K
+context against the flagships' 272K, which makes it wrong for the implementor and unsafe for QA. The
+probe prints them under the ladder; gate `test:codex-pools`.
 "idle" is a stagger hold-off (GG parked its OWN 5h restart and stops pinging), NOT a globally
 unused sub — a 2nd orchestrator/service sharing the sub burns it while GG is held-blind (`accountManager.ts`).
 To SEE a chip in a given state (a lapsed weekly, a hold, a stale read) instead of only reading its numbers,
@@ -235,6 +243,44 @@ server [-- <limit> --repo <sub>]` answers "what did it choose, and was that a go
 model-lab --prefix server` drives the Settings surface headlessly (own instance, never prod). The
 LiveBench release CSV/category map is persisted in kv and refreshed every 24h; fetch failures retain the
 last good snapshot and never block dispatch. Gate: `test:livebench`.
+
+## Timed tasks and shotgun tasks (two one-off task MODES, both off by default)
+Two per-task modes on the ordinary pipeline — neither is a lane, and neither is a schedule. Set in the
+composer's task-mode row, or by the director's `dispatch` args (`duration: "8h"`, `agents: 3`) when the
+owner asks in words. `duration_ms`/`deadline_at`/`agent_count`/`parent_id`/`assignment` are nullable
+thread columns, so an ordinary task is byte-for-byte unaffected.
+
+**Timed** (`orchestrator/timedTasks.ts`) — "work on this for 8 hours". `deadline_at` is stamped ABSOLUTE
+at dispatch (time spent queued must not eat the window) and the round counters are durable in
+`stage_outputs`, so ONE window survives restarts, turn ceilings, provider hand-offs and cap parks: each
+re-enters the pipeline and re-asks `timedDecision`. The loop sits in `runImplementorQaLoop` between the
+implementor and the QA hand-off, so QA still reviews the finished work exactly once.
+**The deadline is enforced at round BOUNDARIES, never by aborting a live turn** — a mid-turn abort returns
+a success-shaped result with no output that nothing downstream can tell from a real finish (the
+`steerStructuredRole` trap), so a round running at the deadline finishes and the deadline denies the NEXT
+one. Bounded twice, because a count alone can't tell 40 useful hours from 40 no-op rounds in 90 seconds:
+`timedMaxExtensions` (40) AND a hollow-round guard (a round that returns instantly having produced no
+agent messages; 3 consecutive ⇒ close). `timedMinSliceMs` (5 min) is both the "worth starting" floor and
+the reserve held back for the closing review. Finishing EARLY is a valid outcome: the implementor writes a
+standalone `TIMED_TASK_COMPLETE: <why>` line and the window closes with time unused rather than padding
+the task. Every close posts its reason — a window never just goes quiet. Gates: `test:timed-tasks`
+(the decision function), `test:task-modes` (the loop, durably).
+
+**Shotgun** (`orchestrator/shotgun.ts`) — "use 3 agents". No worktrees (standing doctrine), so parallelism
+comes from DISJOINT OWNERSHIP in the one shared tree: one extra planner call decomposes the plan into
+work packages with non-overlapping file lists, the lead takes the first, and each other becomes a
+COLLABORATOR thread (`parent_id`) on the same workspace running the ordinary implementor path with
+`qaEnabled: false`. They share a workspace, so `ensureGroup` forms their office project room for free.
+The lead then waits at a barrier, runs ONE integration/reconcile round over the combined tree, and ONE QA
+pass reviews the result. **Overlapping ownership is a REJECTION, not a warning** — two agents in one file
+in one tree lose work silently, with no merge step to catch it — and the task then degrades to a normal
+single-agent run with the reason posted. Degrading is a first-class outcome (most tasks can't be split).
+**Collaborators BYPASS both concurrency caps** (`enqueueOrRun` early-returns on `parentId`): the lead holds
+a slot and then blocks on its children, so queueing a child behind a cap the parent occupies deadlocks the
+pair — guaranteed at `maxConcurrent: 1`. MAX_AGENTS (6) is what bounds it instead. The barrier polls
+DURABLE child state rather than holding promises, which is what makes it survive a bounce. Collaborators
+are hidden from the board (they'd be N cards per task) and shown inside the lead's detail panel.
+Gates: `test:shotgun` (ownership + validation), `test:task-modes`. Traps: `.claude/rules/task-modes.md`.
 
 ## The Git console (the in-app GitHub Desktop)
 The GitHub button beside the gear opens a repo-level git surface: a repository picker, a branch menu

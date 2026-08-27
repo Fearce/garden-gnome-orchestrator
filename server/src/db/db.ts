@@ -35,6 +35,7 @@ import type {
   Role,
   ScheduledTask,
   Severity,
+  ShotgunAssignment,
   StageOutputs,
   TaskSearchHit,
   Thread,
@@ -84,9 +85,30 @@ function rowToThread(r: Row): Thread {
     // HEAD sha at dispatch — the baseline for task-scoped Changes attribution. Null on rows created
     // before this column existed / before dispatch set it.
     baselineHead: (r.baseline_head as string | null) ?? null,
+    // Timed window (null on an ordinary task). Small scalars the card renders a live countdown from,
+    // so they belong on the DTO — unlike the heavy stage_outputs blob that holds the round counters.
+    durationMs: (r.duration_ms as number | null) ?? null,
+    deadlineAt: (r.deadline_at as number | null) ?? null,
+    // Shotgun: requested collaborator count, and — on a collaborator — its lead plus its owned share.
+    agentCount: (r.agent_count as number | null) ?? null,
+    parentId: (r.parent_id as string | null) ?? null,
+    assignment: parseAssignment(r.assignment),
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
   };
+}
+
+/** A collaborator's persisted share. Tolerant by design: a row written by an older build, or a blob
+ *  corrupted somehow, must degrade to "no assignment" (the thread then simply reads as an ordinary task)
+ *  rather than throwing inside the mapper and taking every thread listing down with it. */
+function parseAssignment(raw: unknown): ShotgunAssignment | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const v = JSON.parse(raw) as ShotgunAssignment;
+    return v && typeof v === "object" && typeof v.objective === "string" ? { ...v, files: Array.isArray(v.files) ? v.files : [] } : null;
+  } catch {
+    return null;
+  }
 }
 
 function rowToRun(r: Row): AgentRun {
@@ -338,6 +360,11 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
       "ALTER TABLE threads ADD COLUMN closed_prev_state TEXT",
       "ALTER TABLE threads ADD COLUMN baseline_head TEXT",
+      "ALTER TABLE threads ADD COLUMN duration_ms INTEGER",
+      "ALTER TABLE threads ADD COLUMN deadline_at INTEGER",
+      "ALTER TABLE threads ADD COLUMN agent_count INTEGER",
+      "ALTER TABLE threads ADD COLUMN parent_id TEXT",
+      "ALTER TABLE threads ADD COLUMN assignment TEXT",
       "ALTER TABLE chat_messages ADD COLUMN sender_name TEXT",
       "ALTER TABLE findings ADD COLUMN kind TEXT NOT NULL DEFAULT 'finding'",
       "ALTER TABLE findings ADD COLUMN path TEXT",
@@ -529,7 +556,19 @@ export class Db {
   }
 
   // ---- threads ----
-  createThread(input: { title: string; workspace: string; rawPrompt: string; brief?: string; effortOverride?: Effort | null; lane?: ThreadLane | null }): Thread {
+  createThread(input: {
+    title: string;
+    workspace: string;
+    rawPrompt: string;
+    brief?: string;
+    effortOverride?: Effort | null;
+    lane?: ThreadLane | null;
+    durationMs?: number | null;
+    deadlineAt?: number | null;
+    agentCount?: number | null;
+    parentId?: string | null;
+    assignment?: ShotgunAssignment | null;
+  }): Thread {
     const t: Thread = {
       id: newId(),
       title: input.title,
@@ -540,16 +579,38 @@ export class Db {
       error: null,
       effortOverride: input.effortOverride ?? null,
       lane: input.lane ?? null,
+      durationMs: input.durationMs ?? null,
+      deadlineAt: input.deadlineAt ?? null,
+      agentCount: input.agentCount ?? null,
+      parentId: input.parentId ?? null,
+      assignment: input.assignment ?? null,
       createdAt: now(),
       updatedAt: now(),
     };
     this.raw
       .prepare(
-        `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, effort_override, lane, created_at, updated_at)
-         VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @effortOverride, @lane, @createdAt, @updatedAt)`,
+        `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, effort_override, lane,
+                             duration_ms, deadline_at, agent_count, parent_id, assignment, created_at, updated_at)
+         VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @effortOverride, @lane,
+                @durationMs, @deadlineAt, @agentCount, @parentId, @assignment, @createdAt, @updatedAt)`,
       )
-      .run(t);
+      // better-sqlite3 binds only primitives, so the assignment rides as JSON text (the mapper parses
+      // it back); everything else on the DTO is already a scalar.
+      .run({ ...t, assignment: t.assignment ? JSON.stringify(t.assignment) : null });
     return t;
+  }
+
+  /** Collaborator threads belonging to a lead, oldest first — the order they were assigned, which is the
+   *  order the decomposition ranked them. */
+  listCollaborators(parentId: string): Thread[] {
+    return (this.raw.prepare("SELECT * FROM threads WHERE parent_id = ? ORDER BY created_at ASC").all(parentId) as Row[]).map(rowToThread);
+  }
+
+  /** Set (or clear) a task's timed work window. Managed on its own for the same reason as
+   *  `setBaselineHead`: the generic `updateThread` SQL never touches these columns, so a routine state
+   *  change cannot silently move a deadline that agents and the UI are both counting down to. */
+  setTimedWindow(id: string, durationMs: number | null, deadlineAt: number | null): void {
+    this.raw.prepare("UPDATE threads SET duration_ms = ?, deadline_at = ? WHERE id = ?").run(durationMs, deadlineAt, id);
   }
 
   getThread(id: string): Thread | null {

@@ -8,6 +8,8 @@ import { NOTE_MAX_CHARS, type ImageAttachment } from "../types.js";
 import { DIRECTOR_SERVER } from "../agents/toolNames.js";
 import { existsSync } from "node:fs";
 import { config } from "../config.js";
+import { normalizeDuration } from "../orchestrator/timedTasks.js";
+import { clampAgentCount } from "../orchestrator/shotgun.js";
 import { findWorkspaces } from "../workspace/findWorkspace.js";
 
 /**
@@ -21,6 +23,9 @@ export function createDirectorServer(
   onDispatch: (threadId: string) => void,
   scheduler: Scheduler,
   notes: OperatorNotes,
+  // The composer's task-mode picks for this turn, so a window / agent count chosen in the console applies
+  // to whatever the director dispatches from it. An explicit tool argument always wins over these.
+  getTaskMode: () => { durationMs: number | null; agentCount: number | null } = () => ({ durationMs: null, agentCount: null }),
 ): McpServerConfig {
   const askUser = tool(
     "ask_user",
@@ -90,6 +95,21 @@ export function createDirectorServer(
         .describe(
           `The ENRICHED brief for the implementor: the goal, the context you gathered (memories, constraints, conventions), what done looks like, and anything ${config.ownerName} clarified. Write it as the full spec you'd give up front — Opus 4.8 does best with the whole task stated at once.`,
         ),
+      duration: z
+        .string()
+        .optional()
+        .describe(
+          `A wall-clock WORK WINDOW for this one task, e.g. "8h", "90m", "2h30m", "1d". Set it ONLY when ${config.ownerName} asked for one in so many words ("work on this for 8 hours", "spend the afternoon on it", "keep at it until tonight"). The task then keeps finding useful work on the SAME objective until the window closes, then goes to review. This is NOT a schedule (use create_scheduled_task for anything recurring) and NOT a due date — an ordinary request must leave this unset, or it spends hours on something that wanted minutes.`,
+        ),
+      agents: z
+        .number()
+        .int()
+        .min(2)
+        .max(6)
+        .optional()
+        .describe(
+          `Run this task with several agents working AT THE SAME TIME on one objective. Set it ONLY when ${config.ownerName} asked for it explicitly ("use 3 agents", "throw a few agents at this", "shotgun it"). The work is split into non-overlapping file ownership and reconciled at the end; if it can't be split safely it quietly runs as a single agent instead. Leave unset for ordinary work — most tasks can't be parallelized, and the attempt costs an extra planning round.`,
+        ),
     },
     async (args) => {
       if (!existsSync(args.workspace)) {
@@ -103,7 +123,20 @@ export function createDirectorServer(
           isError: true,
         };
       }
-      const id = await api.dispatch({ title: args.title, workspace: args.workspace, brief: args.brief, images: getImages() });
+      const mode = getTaskMode();
+      // An explicit argument is the owner speaking through the director ("spend 8 hours on this"); the
+      // composer's pick is the standing default behind it. normalizeDuration clamps and REJECTS junk, so
+      // a hallucinated duration string can never reach dispatch as a window.
+      const durationMs = args.duration ? normalizeDuration(args.duration) : mode.durationMs;
+      const agentCount = args.agents ? clampAgentCount(args.agents) : mode.agentCount;
+      const id = await api.dispatch({
+        title: args.title,
+        workspace: args.workspace,
+        brief: args.brief,
+        images: getImages(),
+        durationMs,
+        agentCount,
+      });
       onDispatch(id); // link this turn's director messages to the new task so a search hit can jump to it
       return { content: [{ type: "text", text: `Dispatched task ${id} ("${args.title}") in ${args.workspace}.` }] };
     },

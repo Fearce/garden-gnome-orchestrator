@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
-import type { AgentRun, FeedItem, Role } from "../types.js";
+import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
 import { agentName, isCollaborationRoom, MODEL_ROLES, repoRoom } from "../types.js";
-import { canAutoReview, clock, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
-import { Elapsed, RoleElapsed } from "../lib/timing.js";
+import { canAutoReview, clock, formatDuration, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { Countdown, Elapsed, RoleElapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
@@ -230,6 +230,72 @@ function summarize(input: unknown): string {
   } catch {
     return "";
   }
+}
+
+
+/** The task-mode strip: a timed task's window, and a shotgun task's collaborators.
+ *
+ *  Renders NOTHING for an ordinary task, which is most of them — this is progressive disclosure, not a
+ *  dashboard card that sits empty. When it does render it answers the two questions those modes create
+ *  and nothing else: how long is left, and what are the other agents doing.
+ */
+function TaskMode({ thread }: { thread: Thread }) {
+  const select = useStore((s) => s.select);
+  // The stable `threads` map, then derive — a selector returning a fresh array would never be
+  // reference-equal to the previous one and would re-render this panel forever (React #185).
+  const threads = useStore((s) => s.threads);
+  const collaborators = useMemo(() => Object.values(threads).filter((t) => t.parentId === thread.id), [threads, thread.id]);
+  const lead = useStore((s) => (thread.parentId ? s.threads[thread.parentId] : undefined));
+  if (!thread.deadlineAt && !collaborators.length && !thread.parentId) return null;
+
+  return (
+    <div className="taskmode-panel">
+      {thread.deadlineAt ? (
+        <div className="taskmode-row">
+          <span className="taskmode-key mono">window</span>
+          <span className="taskmode-val">
+            {thread.durationMs ? <span className="taskmode-total">{formatDuration(thread.durationMs)}</span> : null}
+            <Countdown deadlineAt={thread.deadlineAt} className={thread.deadlineAt <= Date.now() ? "taskmode-over" : "taskmode-left"} />
+          </span>
+        </div>
+      ) : null}
+
+      {/* A collaborator says which task it belongs to and what it owns — the two things that explain
+          why it exists and why its diff is deliberately partial. */}
+      {thread.parentId ? (
+        <div className="taskmode-row">
+          <span className="taskmode-key mono">share of</span>
+          <span className="taskmode-val">
+            <button className="taskmode-link" onClick={() => select(thread.parentId!)} title="Open the lead task">
+              {lead?.title ?? "the lead task"}
+            </button>
+            {thread.assignment?.files.length ? <span className="taskmode-files mono">{thread.assignment.files.join(" · ")}</span> : null}
+          </span>
+        </div>
+      ) : null}
+
+      {collaborators.length ? (
+        <div className="taskmode-row">
+          <span className="taskmode-key mono">agents</span>
+          <span className="taskmode-val taskmode-collabs">
+            {collaborators.map((c) => (
+              <button
+                key={c.id}
+                className="taskmode-collab"
+                style={{ "--state-color": stateColor(c.state) } as CSSProperties}
+                onClick={() => select(c.id)}
+                title={`${c.title} — ${stateLabel(c.state)}${c.assignment?.files.length ? `\nowns: ${c.assignment.files.join(", ")}` : ""}`}
+              >
+                <span className="taskmode-collab-dot" aria-hidden="true" />
+                <span className="taskmode-collab-title">{c.title}</span>
+                <span className="taskmode-collab-state">{stateLabel(c.state)}</span>
+              </button>
+            ))}
+          </span>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function ThreadDetail() {
@@ -711,6 +777,8 @@ export function ThreadDetail() {
           </button>
         </div>
       )}
+
+      <TaskMode thread={thread} />
 
       <Deliverables items={deliverables} />
 

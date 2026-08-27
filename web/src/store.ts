@@ -422,6 +422,8 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   showComposerPickers: false,
   showAgentModel: true,
   skipDirectorEffort: "auto",
+  taskDurationMinutes: 0,
+  taskAgentCount: 1,
   xhighEnabled: false,
   skipDirectorRetitle: true,
   maxRecentRepos: 5,

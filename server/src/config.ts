@@ -317,6 +317,23 @@ export const config = {
   // Cap on consecutive turn-limit auto-resumes per implementor→QA loop, so a wedged implementor that
   // keeps hitting the ceiling without progressing can't spin forever — it settles to review instead.
   maxAutoResumes: Number(process.env.MAX_AUTO_RESUMES ?? 8),
+  // ---- Timed tasks (a single task with a wall-clock work window) ----
+  // Safety bounds on the extension loop, so "work on this for 8 hours" can never become an unbounded
+  // one. Both are needed: the COUNT bounds a window whose rounds are long, and the hollow-round guard
+  // bounds one whose rounds return instantly — a count alone cannot tell those two apart.
+  timedMaxExtensions: Math.max(1, Math.floor(numEnv(process.env.TIMED_MAX_EXTENSIONS, 40))),
+  // Time that must remain for another round to be worth starting. Doubles as the reserve held back for
+  // the closing integration/QA pass, so a window never consumes the review that makes its work usable.
+  timedMinSliceMs: Math.max(60_000, numEnv(process.env.TIMED_MIN_SLICE_MS, 5 * 60_000)),
+  timedMaxHollowRounds: Math.max(1, Math.floor(numEnv(process.env.TIMED_MAX_HOLLOW_ROUNDS, 3))),
+  // ---- Shotgun tasks (N collaborators on one objective, one shared checkout) ----
+  // How long the lead waits at the barrier for its collaborators before integrating anyway. A hung
+  // collaborator must not strand the lead forever; the integration pass is told which shares came back.
+  shotgunBarrierTimeoutMs: Math.max(60_000, numEnv(process.env.SHOTGUN_BARRIER_TIMEOUT_MS, 6 * 3_600_000)),
+  // How often the lead re-reads its collaborators' states at the barrier. Polling the DB (rather than
+  // holding promises) is what makes the barrier survive a restart: the states are durable, the promises
+  // would not be, and the lead is auto-resumed straight back into this wait.
+  shotgunBarrierPollMs: Math.max(1_000, numEnv(process.env.SHOTGUN_BARRIER_POLL_MS, 5_000)),
   // Current frontier Claude models and Grok 4.6 support xhigh. Keep it available by default so smart
   // selection can use every supported tier; a machine can still opt out explicitly in its local env.
   enableXhigh: process.env.ENABLE_XHIGH !== "false",

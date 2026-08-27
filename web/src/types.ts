@@ -82,6 +82,14 @@ export type Severity = "info" | "note" | "warning" | "critical";
  *  right panel's Deliverables section for inline preview / download (mirrors the server's FindingKind). */
 export type FindingKind = "finding" | "deliverable";
 
+/** One collaborator's share of a SHOTGUN task. Mirrors the server's ShotgunAssignment byte-for-byte.
+ *  The file list is the ownership contract that keeps parallel agents out of each other's files. */
+export interface ShotgunAssignment {
+  title: string;
+  objective: string;
+  files: string[];
+}
+
 export interface Thread {
   id: string;
   title: string;
@@ -93,6 +101,15 @@ export interface Thread {
   closedAt?: number | null;
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' marks a successful close
   lane?: ThreadLane | null; // 'read' = the read-only reader lane — drives the card's READ badge
+  // Timed task: the wall-clock work window. `deadlineAt` is absolute, so the card's countdown is just
+  // (deadlineAt - now) and stays right across a reload or a restart. Null = an ordinary task.
+  durationMs?: number | null;
+  deadlineAt?: number | null;
+  // Shotgun: the requested collaborator count, and — on a COLLABORATOR — its lead plus its owned share.
+  // A thread with a parentId is hidden from the main board and rendered inside its lead's detail panel.
+  agentCount?: number | null;
+  parentId?: string | null;
+  assignment?: ShotgunAssignment | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -476,6 +493,8 @@ export interface OrchestratorSettings {
   showComposerPickers: boolean; // when on, the director composer exposes the quick model + effort dropdowns (default off — hidden)
   showAgentModel: boolean; // when on, agent labels in the thread feed append the run's model + effort — "QA (Tor, Opus 4.8 High)"
   skipDirectorEffort: Effort | "auto"; // composer's implementor effort for skip-director dispatches — "auto" leaves it to the planner
+  taskDurationMinutes: number; // TIMED: minutes of wall-clock work window for the next dispatch; 0 = an ordinary task
+  taskAgentCount: number; // SHOTGUN: agents working the objective at once; 1 = an ordinary task
   xhighEnabled: boolean; // read-only: the server's ENABLE_XHIGH opt-in is on, so the xhigh tier is offerable
   skipDirectorRetitle: boolean; // when skip-director is on, mint a real title via a cheap Haiku call instead of the raw first line
   maxRecentRepos: number;

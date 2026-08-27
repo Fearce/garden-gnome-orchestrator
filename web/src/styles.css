@@ -2551,3 +2551,109 @@ button.note-from:hover { color: var(--text-dim); }
   .sched-prompt-input,
   .note-compose input { font-size: 16px; }
 }
+
+/* ── Task modes: a timed work window, and shotgun (several agents on one objective) ────────────────
+   Both share the card's existing badge-pill shape so a card never grows a new visual language — they
+   sit in the same foot row as the state/read/effort pills and differ only by hue. */
+
+/* A timed task's live countdown. Its own violet reads as "a clock", distinct from the read lane's
+   teal, the frost blue of a rate-limit freeze and the amber brand accent. Turns danger-red once the
+   window has closed, which is the moment the task stops taking new work. */
+.timed-badge {
+  --timed: oklch(0.78 0.13 300);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em; font-weight: 700;
+  padding: 2px 7px; border-radius: 100px; white-space: nowrap;
+  color: var(--timed);
+  background: color-mix(in oklch, var(--timed) 13%, transparent);
+  border: 1px solid color-mix(in oklch, var(--timed) 45%, transparent);
+}
+.timed-badge.over { --timed: var(--danger); }
+
+/* Shotgun: N agents in parallel. */
+.shotgun-badge {
+  --shot: oklch(0.82 0.15 85);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em; font-weight: 700;
+  padding: 2px 7px; border-radius: 100px; white-space: nowrap;
+  color: var(--shot);
+  background: color-mix(in oklch, var(--shot) 13%, transparent);
+  border: 1px solid color-mix(in oklch, var(--shot) 45%, transparent);
+}
+
+/* ── The composer's task-mode row ────────────────────────────────────────────────────────────────
+   Quiet when off (this is not the common case and must not compete with the prompt box), and clearly
+   lit when on — a forgotten 8-hour window or a forgotten 3-agent split is expensive, so "is it on?"
+   has to be answerable at a glance rather than by opening a dropdown. */
+.composer-taskmode {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 5px 8px; margin-bottom: 6px;
+  border: 1px solid transparent; border-radius: 8px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.composer-taskmode.on {
+  background: color-mix(in oklch, var(--accent) 7%, transparent);
+  border-color: color-mix(in oklch, var(--accent) 30%, transparent);
+}
+.taskmode-field { display: inline-flex; align-items: center; gap: 6px; }
+.taskmode-label { font-size: 10px; color: var(--text-faint); letter-spacing: 0.06em; text-transform: uppercase; }
+.taskmode-select {
+  font-family: inherit; font-size: 11.5px;
+  padding: 3px 6px; border-radius: 6px;
+  color: var(--text-dim);
+  background: var(--surface-2, transparent);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.taskmode-select:hover { color: var(--text); border-color: var(--border-strong, var(--border)); }
+.taskmode-select.lit {
+  color: var(--accent); font-weight: 600;
+  border-color: color-mix(in oklch, var(--accent) 50%, transparent);
+  background: color-mix(in oklch, var(--accent) 10%, transparent);
+}
+.taskmode-clear {
+  margin-left: auto; padding: 0 6px; line-height: 1.6;
+  font-size: 13px; color: var(--text-faint);
+  background: none; border: none; border-radius: 5px; cursor: pointer;
+}
+.taskmode-clear:hover { color: var(--danger); background: color-mix(in oklch, var(--danger) 12%, transparent); }
+
+/* ── The detail panel's task-mode strip ──────────────────────────────────────────────────────────
+   Renders only for a timed or shotgun task, so an ordinary task's panel is unchanged. */
+.taskmode-panel {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 10px; margin: 0 0 8px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: color-mix(in oklch, var(--surface-2, var(--bg)) 60%, transparent);
+}
+.taskmode-row { display: flex; align-items: baseline; gap: 10px; }
+.taskmode-key {
+  flex: 0 0 62px; font-size: 10px; color: var(--text-faint);
+  letter-spacing: 0.06em; text-transform: uppercase;
+}
+.taskmode-val { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-dim); }
+.taskmode-total { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+.taskmode-left { font-family: var(--font-mono); font-size: 11.5px; color: oklch(0.78 0.13 300); font-weight: 600; }
+.taskmode-over { font-family: var(--font-mono); font-size: 11.5px; color: var(--danger); font-weight: 600; }
+.taskmode-files { font-size: 10.5px; color: var(--text-faint); }
+.taskmode-link {
+  padding: 0; font: inherit; color: var(--accent);
+  background: none; border: none; cursor: pointer; text-align: left;
+}
+.taskmode-link:hover { text-decoration: underline; }
+.taskmode-collabs { gap: 6px; }
+/* One chip per collaborator, carrying its own state colour — the lead's panel is where you see at a
+   glance which shares are still running, which is the question a parallel task actually creates. */
+.taskmode-collab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border-radius: 100px;
+  font: inherit; font-size: 11px; color: var(--text-dim);
+  background: color-mix(in oklch, var(--state-color) 10%, transparent);
+  border: 1px solid color-mix(in oklch, var(--state-color) 35%, transparent);
+  cursor: pointer; max-width: 100%;
+}
+.taskmode-collab:hover { color: var(--text); border-color: var(--state-color); }
+.taskmode-collab-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--state-color); flex: 0 0 auto; }
+.taskmode-collab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.taskmode-collab-state {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--state-color);
+}

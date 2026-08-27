@@ -52,7 +52,7 @@ const HARD_LIMIT_PCT = 98;
 // Windows are not the only door: Grok's plan also meters a monthly CREDIT pool that routing refuses the
 // rung on, and it can run dry while the weekly window still reads room (see spentCredits).
 const BACKENDS = [
-  { name: "Codex", enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", cooldownKey: "provider_startup_cooldown_codex_until", usageFile: "codex-usage-cache.json" },
+  { name: "Codex", enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", cooldownKey: "provider_startup_cooldown_codex_until", usageFile: "codex-usage-cache.json", poolCapKey: "codex_pool_cap_until" },
   { name: "Grok", enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", cooldownKey: "provider_startup_cooldown_grok_until", usageFile: "grok-usage-cache.json" },
   { name: "z.ai", enabledKey: "setting_zai_enabled", capKey: "zai_cap_until", usageFile: "zai-usage-cache.json" },
 ];
@@ -78,6 +78,11 @@ const MIRRORED_HEADROOM_TERMS = {
   codexProviderCandidate: {
     providerStartupCoolingDown: "cooldownKey latch → reason 'startup cooldown'",
     nearLimit: "spentWindow (5h + 7d)",
+    // The plan's DEDICATED pools (Spark): their own windows and their own latch, so a bounded role can
+    // reach Codex on one while the general pool is spent. Mirrored by dedicatedPoolRungs, which reads
+    // both — without it this readout would call Codex dead for reader/planner/researcher while an idle
+    // allowance sat right there: the same blind spot as the others, in the opposite direction.
+    dedicated: "dedicatedPoolRungs (per-pool meters + poolCapKey latch)",
   },
 };
 
@@ -201,6 +206,53 @@ function readBackendUsage(file) {
   }
 }
 
+// A ChatGPT plan is not one allowance: `rateLimitsByLimitId` also carries a dedicated pool per model that
+// ships its own (Spark). Those pools serve only the BOUNDED roles (DEDICATED_POOL_ROLES in
+// agents/codexPools.ts), so they never lengthen the implementor ladder above — but they do decide whether
+// a reader/planner/researcher can reach Codex at all, which the general meters cannot show.
+const POOL_HARD_LIMIT_PCT = 95;
+
+/** The dedicated Codex pools and whether each can take a bounded role right now. Pure, like
+ *  `backendState`: `meters` is the cached usage reading, `latches` the parsed per-pool latch blob, `at`
+ *  the clock. A window counts as spent only while its reset is still ahead — a lapsed reset has rolled
+ *  over, the same rule the backend windows use. A pool with no meter at all is NOT a rung (fail-closed:
+ *  routing refuses a pool it cannot see, so the readout must not promise one). */
+function dedicatedPoolRungs(meters, latches, at) {
+  const pools = meters && Array.isArray(meters.pools) ? meters.pools : [];
+  return pools
+    .filter((p) => p && p.limitId !== "codex" && p.modelSlug)
+    .map((p) => {
+      const latchedUntil = latches[p.limitId];
+      const spent = (v, reset) => v != null && v >= POOL_HARD_LIMIT_PCT && (reset == null || reset > at);
+      const latched = Number.isFinite(latchedUntil) && latchedUntil > at;
+      const noMeter = p.fiveHour == null && p.sevenDay == null;
+      const available = !latched && !noMeter && !spent(p.fiveHour, p.fiveHourReset) && !spent(p.sevenDay, p.sevenDayReset);
+      return {
+        name: p.limitName || p.limitId,
+        model: p.modelSlug,
+        available,
+        reason: latched ? "capped" : noMeter ? "no meter" : available ? "ready" : "spent",
+        until: latched ? latchedUntil : null,
+        fiveHour: p.fiveHour == null ? null : p.fiveHour,
+        sevenDay: p.sevenDay == null ? null : p.sevenDay,
+      };
+    });
+}
+
+/** The per-pool cap latches threadManager persists as one {limitId: epochMs} blob. Absent/corrupt reads
+ *  as "nothing latched", matching loadPoolCaps, which starts clean rather than failing the boot. */
+function readPoolLatches(kv, poolCapKey) {
+  if (!poolCapKey) return {};
+  const raw = kv(poolCapKey);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 /** A sub only counts as a live rung while BOTH windows are under the hard limit — a sub sitting at 99%
  *  weekly still shows a healthy-looking 5h number but can't actually take a task. */
 function claudeHasHeadroom(usage) {
@@ -267,6 +319,31 @@ function printRoleReach(backends, claudeRungs, depth) {
         ? `  ⚠ SHORTER than the ${depth} above — the depth line overstates what these roles can reach.`
         : ""),
   );
+}
+
+/** The dedicated-pool readout. Printed only when the plan actually HAS one, so a deployment without
+ *  Spark reads exactly as before. The heading says 'bounded roles only' outright because a reader who
+ *  mistook this for implementor headroom would over-count the ladder above — the precise error the
+ *  ladder readout exists to prevent. */
+function printDedicatedPools(backends, kv, usage) {
+  for (const b of backends) {
+    if (!b.poolCapKey) continue;
+    const meters = b.usageFile ? usage(b.usageFile) : null;
+    const rungs = dedicatedPoolRungs(meters, readPoolLatches(kv, b.poolCapKey), now);
+    if (!rungs.length) continue;
+    console.log(`\n  ${b.name} dedicated pools (bounded roles only — reader/planner/researcher, never implementor or QA):`);
+    for (const r of rungs) {
+      const note =
+        r.reason === "capped"
+          ? `CAPPED — frees in ${countdown(r.until)}`
+          : r.reason === "no meter"
+            ? "no meter yet"
+            : r.reason === "spent"
+              ? "NO ROOM"
+              : "available";
+      console.log(`    ${r.available ? "✓" : "✗"} ${r.name} (${r.model})  ${note}  (5h ${pct(r.fiveHour).trim()} · 7d ${pct(r.sevenDay).trim()})`);
+    }
+  }
 }
 
 function main() {
@@ -353,6 +430,8 @@ function main() {
           : ""),
   );
 
+  printDedicatedPools(backends, kv, readBackendUsage);
+
   printRoleReach(backends, claudeRungs, depth);
 
   console.log(
@@ -370,6 +449,9 @@ if (require.main === module) main();
 
 module.exports = {
   backendState,
+  dedicatedPoolRungs,
+  readPoolLatches,
+  POOL_HARD_LIMIT_PCT,
   claudeHasHeadroom,
   roleReachPolicy,
   roleLadderDepth,

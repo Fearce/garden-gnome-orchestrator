@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
+import type { CodexPool } from "./codexPools.js";
 
 /** Codex (ChatGPT-plan) usage windows, mirroring AccountDTO's 5h/weekly meters. `primary` is the rolling
  *  5-hour window, `secondary` the weekly one — both as 0-100 used-percent with an epoch-ms reset. */
@@ -14,6 +15,12 @@ export interface CodexUsageDTO {
   planType: string | null; // "plus" | "pro" | …
   updatedAt: number; // epoch ms of the turn that produced this snapshot (for the stale check)
   wakeAt?: number | null; // 5h window idle — a cheap wake turn is scheduled at this epoch ms (stagger slot)
+  /** Every independently-metered pool on the plan (`rateLimitsByLimitId`) — the general `codex` pool
+   *  plus one per model that ships its own allowance (Spark). The four fields above stay the GENERAL
+   *  pool so every existing consumer keeps its meaning; a dedicated pool is only ever read through
+   *  `codexPools.ts`. Available from the live app-server ping only — a rollout snapshot carries just
+   *  the plan-wide windows — so it is absent until the first successful ping. */
+  pools?: CodexPool[];
 }
 
 interface RateLimitWindow {
@@ -157,6 +164,10 @@ export function readCodexUsage(): CodexUsageDTO | null {
   if (!best) return null;
   const now = Date.now();
   const wakeAt = plannedWakeAt != null && plannedWakeAt > now ? plannedWakeAt : null;
+  // Pools ride the live ping only — a rollout's `rate_limits` carries just the plan-wide windows. So
+  // attach them independently of which snapshot won `best` above, or a rollout newer than the ping
+  // (the common case while Codex is actually running turns) would silently blank the dedicated meters.
+  const pools = codexPools();
   const inferred = turnFiveHourReset(latestTurn, now);
   if ((best.fiveHourReset == null || best.fiveHourReset <= now) && inferred) {
     return {
@@ -164,9 +175,18 @@ export function readCodexUsage(): CodexUsageDTO | null {
       fiveHourReset: inferred.reset,
       fiveHourResetEstimated: inferred.estimated,
       wakeAt,
+      ...(pools ? { pools } : {}),
     };
   }
-  return { ...best, wakeAt };
+  return { ...best, wakeAt, ...(pools ? { pools } : {}) };
+}
+
+/** Every independently-metered Codex pool from the freshest live ping, or null when no fresh ping has
+ *  landed. Kept separate from `readCodexUsage` so routing can ask for pools specifically and get a
+ *  clean "we cannot see them" rather than a stale rollout's plan-wide windows dressed as a pool list. */
+export function codexPools(): CodexPool[] | null {
+  const fresh = liveCodexUsage();
+  return fresh?.pools?.length ? fresh.pools : null;
 }
 
 /** The newest REAL codex turn's own rate-limit snapshot (freshest rollout token_count in either

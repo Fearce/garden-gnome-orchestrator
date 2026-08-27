@@ -23,6 +23,24 @@ CREATE TABLE IF NOT EXISTS threads (
   -- HEAD sha of the task's repo captured at dispatch — the "before" point for scoping the Changes
   -- chip to THIS task's own diff (baseline_head..HEAD + the task's written files), excluding foreign WIP.
   baseline_head TEXT,
+  -- TIMED task: the wall-clock work window. duration_ms is what the owner ASKED for (kept so the UI can
+  -- still say "an 8h task" after the fact); deadline_at is the absolute instant it closes, which is what
+  -- is actually enforced. Absolute rather than derived, so a restart, a provider hand-off or a cap park
+  -- resumes the SAME clock instead of restarting the window. NULL on an ordinary task.
+  duration_ms   INTEGER,
+  deadline_at   INTEGER,
+  -- SHOTGUN task: how many agents the owner asked to work this objective at once. NULL/1 = ordinary.
+  -- Kept even after the split is decided so the card can show what was requested vs. what ran.
+  agent_count   INTEGER,
+  -- Set on a COLLABORATOR thread: the lead task it belongs to. No FK on purpose — the lead may be purged
+  -- while a collaborator is still being read, and a dangling parent just means the UI shows it standalone
+  -- (the same reasoning as director_messages.thread_id). Collaborators are hidden from the main board and
+  -- rendered inside the lead's detail panel instead.
+  parent_id     TEXT,
+  -- A collaborator's owned share, as JSON ({title, objective, files[]}). The file list is the OWNERSHIP
+  -- CONTRACT that keeps parallel agents from overwriting each other in the one shared working tree, so it
+  -- is persisted rather than held in memory: a resumed collaborator must be handed the same share.
+  assignment    TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );

@@ -88,3 +88,35 @@ export function RoleElapsed({ runs, className, title }: { runs: RunSpan[]; class
     </span>
   );
 }
+
+/** A `Date.now()` that ticks toward a deadline, choosing its own cadence: per-second inside the last
+ *  hour (where the seconds are worth redrawing) and every 30s above it, since a board of 8-hour tasks
+ *  would otherwise each hold a per-second interval to redraw an unchanged minute-grained string. Both
+ *  the cadence flip and the stop-at-zero are driven by state, so exactly ONE unconditional hook runs —
+ *  picking the interval with a ternary at the call site would change hook order as the clock crossed
+ *  the boundary, which React forbids. */
+function useDeadlineNow(deadlineAt: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  const fine = deadlineAt - now <= 3_600_000;
+  const done = now >= deadlineAt;
+  useEffect(() => {
+    if (done) return; // past the deadline the label is static — hold no interval at all
+    const t = setInterval(() => setNow(Date.now()), fine ? 1_000 : 30_000);
+    return () => clearInterval(t);
+  }, [fine, done]);
+  return now;
+}
+
+/** A timed task's live countdown to its deadline: "6h 12m left", or "window ended" once it passes.
+ *  The deadline is absolute, so this stays correct across a reload and a server restart with no
+ *  client-side bookkeeping. */
+export function Countdown({ deadlineAt, className, prefix }: { deadlineAt: number; className?: string; prefix?: string }) {
+  const now = useDeadlineNow(deadlineAt);
+  const left = deadlineAt - now;
+  return (
+    <span className={className} title={`Work window ends ${new Date(deadlineAt).toLocaleString()}`}>
+      {prefix ?? ""}
+      {left <= 0 ? "window ended" : `${formatDuration(left)} left`}
+    </span>
+  );
+}

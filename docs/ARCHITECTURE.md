@@ -320,6 +320,39 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   needs its exact prior context. The Haiku handoff is told **not** to restate the goal/plan (the
   kickoff already carries them authoritatively) — it captures only the session delta (decisions, work
   done, gotchas, what's left).
+- **Task modes — a wall-clock window, and N agents on one objective** (`orchestrator/timedTasks.ts`,
+  `orchestrator/shotgun.ts`). Two opt-in per-task modes on this same pipeline, not lanes and not
+  schedules. Both hang off nullable thread columns, so a task that uses neither is byte-for-byte
+  unaffected: `duration_ms`/`deadline_at` (timed) and `agent_count`/`parent_id`/`assignment` (shotgun).
+  Both hooks sit in `runImplementorQaLoop` *between* the implementor and the QA hand-off, so QA still
+  reviews the finished work exactly once.
+  - **Timed** — "work on this for 8 hours". `deadline_at` is stamped ABSOLUTE at dispatch (time spent
+    queued must not eat the window) and every round counter is durable in `stage_outputs`, so ONE
+    window survives a restart, a turn ceiling, a provider hand-off and a cap park: each re-enters the
+    pipeline and re-asks `timedDecision` rather than depending on a timer in memory. **The deadline is
+    enforced at round BOUNDARIES, never by aborting a live turn** — a mid-turn abort returns a
+    success-shaped result with no output that nothing downstream can distinguish from a real finish
+    (the `steerStructuredRole` trap), so a round running at the deadline finishes and the deadline
+    denies the *next* one. Bounded twice, because a round count alone cannot tell forty useful hours
+    from forty no-op rounds in ninety seconds: `timedMaxExtensions` AND a hollow-round guard (a round
+    that returns instantly having produced no agent messages; three consecutive ⇒ close). Finishing
+    EARLY is a first-class outcome — the implementor writes a standalone `TIMED_TASK_COMPLETE: <why>`
+    line and the window closes unused rather than padding the task. Every close posts its reason.
+  - **Shotgun** — "use 3 agents". The no-worktrees convention means parallelism cannot come from
+    isolating checkouts, so it comes from DISJOINT OWNERSHIP in the one shared tree: one extra planner
+    call decomposes the plan into work packages with non-overlapping file lists, the lead takes the
+    first, and each other becomes a COLLABORATOR thread (`parent_id`) on the same workspace running the
+    ordinary implementor path with `qaEnabled: false`. Sharing a workspace means `ensureGroup` forms
+    their office project room for free — exactly the case it was built for. The lead then waits at a
+    barrier, runs ONE integration/reconcile round over the combined tree, and ONE QA pass reviews the
+    result. **Overlapping ownership is a rejection, not a warning** (two agents in one file in one tree
+    lose work silently, with no merge step to catch it): the task degrades to a normal single-agent run
+    with the reason posted, which is a supported outcome since most tasks cannot be split. Collaborators
+    **bypass both concurrency caps** — the lead holds a slot and then blocks on its children, so queueing
+    a child behind a cap its own parent occupies deadlocks the pair; `MAX_AGENTS` bounds it instead. The
+    barrier polls DURABLE child state rather than holding promises, which is what lets an auto-resumed
+    lead re-read where its children got to after a bounce. Collaborators are hidden from the board and
+    rendered inside the lead's detail panel.
 - **Finding routing:** when a finding lands on a thread whose implementor is
   live, the manager either (a) `inject`s it as a follow-up user message, or
   (b) `interrupt → resume(sessionId)` with augmented context — chosen by
@@ -418,6 +451,18 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
 - Degrades to single-account (inherited login) when fewer than two tokens are
   configured. A bar reads `—` only before the first successful ping for that
   account.
+- **A ChatGPT plan is not one allowance** (`agents/codexPools.ts`). `account/rateLimits/read` returns
+  `rateLimitsByLimitId` beside the plan-wide windows: the general `codex` pool, plus a dedicated pool
+  per model that ships its own (GPT-5.3-Codex-Spark). Each has its own 5h/weekly windows, its own
+  resets and its own cap latch (`codex_pool_cap_until`, separate from `codex_cap_until`) — so a 429 in
+  one is never read as a cap in the other, in either direction. The model→pool link is derived by
+  normalizing the pool's human `limitName`, never its `limitId`, which is an internal codename
+  (`codex_bengalfox`) with no relation to the model slug. A dedicated pool serves **only** the bounded
+  roles — reader, planner, researcher — and that is a capability rule rather than a thrift one: the CLI
+  ships Spark instructed never to verify its own work or run tests, with a 128K context against the
+  flagships' 272K, which makes it wrong for the implementor and unsafe for QA or the reviewer. Routing
+  fails closed: no visible meter, no dispatchable model, or a live latch ⇒ ordinary routing. Gate:
+  `test:codex-pools`; the nightly ladder readout prints each pool under the backend rungs.
 
 ## 11. Image attachments (paste / drop / pick → vision)
 

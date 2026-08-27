@@ -113,6 +113,23 @@ export type Severity = "info" | "note" | "warning" | "critical";
  *  and a human `label`; everything else (summary/detail/severity) behaves like an ordinary finding. */
 export type FindingKind = "finding" | "deliverable";
 
+/**
+ * One collaborator's share of a SHOTGUN task: its own objective plus the files it EXCLUSIVELY owns.
+ *
+ * The file list is not documentation — it is the safety mechanism. Shotgun collaborators work the same
+ * checkout on the same branch (the no-worktrees convention), so nothing merges their changes and two
+ * agents editing one file destroy each other's work. Disjoint ownership is what prevents that, which is
+ * why a decomposition whose file sets intersect is rejected outright (orchestrator/shotgun.ts).
+ *
+ * Lives here rather than beside that logic because it is persisted on the thread row and mirrored to the
+ * client, so it is part of the shared contract. Mirrored byte-for-byte in web/src/types.ts.
+ */
+export interface ShotgunAssignment {
+  title: string; // short board-lane title for the collaborator thread
+  objective: string; // the collaborator's complete standalone brief
+  files: string[]; // the paths it exclusively owns; nothing outside them may be edited
+}
+
 export interface Thread {
   id: string;
   title: string;
@@ -126,6 +143,13 @@ export interface Thread {
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' means it finished correctly (drives the closed-card checkmark)
   lane?: ThreadLane | null; // dispatch lane: null = normal pipeline, 'read' = the read-only reader lane (drives the card's READ badge)
   baselineHead?: string | null; // repo HEAD sha captured at dispatch — the "before" point for scoping the Changes chip to this task's own diff; null when not a repo / legacy rows
+  // ---- Timed task: a single task with a wall-clock work window (orchestrator/timedTasks.ts) ----
+  durationMs?: number | null; // the window the owner asked for; null = an ordinary task with no window
+  deadlineAt?: number | null; // absolute epoch ms the window closes — what is actually enforced, and what the card counts down to
+  // ---- Shotgun task: N collaborators on one objective (orchestrator/shotgun.ts) ----
+  agentCount?: number | null; // collaborators the owner asked for; null/1 = an ordinary single-agent task
+  parentId?: string | null; // set on a COLLABORATOR: the lead task it belongs to (hidden from the board, shown inside the lead)
+  assignment?: ShotgunAssignment | null; // a collaborator's owned share — objective + the files it exclusively owns
   createdAt: number;
   updatedAt: number;
 }
@@ -598,6 +622,20 @@ export interface StageOutputs {
   // never reached the model: 0 turns, $0, no output). Also charged separately, and durable for the same
   // reason — a restart landing mid-retry must not hand the task an unbounded supply of full Opus reviews.
   // Counts the task's LIFETIME, which is what reconciles its QA launches; the budget is the field below.
+  // ---- Timed task counters (orchestrator/timedTasks.ts). Durable because the whole point of a work
+  //      window is that it survives what interrupts it: a restart, a turn ceiling, a provider hand-off
+  //      and a cap park all re-enter the pipeline, and each must continue the SAME window rather than
+  //      restart its budget. An in-memory counter would hand a bouncing server an unbounded loop.
+  timedExtensions?: number; // extension rounds granted so far inside the window
+  timedHollowRounds?: number; // consecutive rounds that returned instantly having produced nothing (the runaway guard)
+  timedCompleteEarly?: boolean; // the implementor declared the objective complete — the window closes, whatever time is left
+  timedFinalizing?: boolean; // the window has closed and the task is in its final integration/QA path; a restart must not re-open it
+  // ---- Shotgun counters (orchestrator/shotgun.ts) ----
+  shotgunPlanned?: boolean; // the decomposition step ran (true even when it declined to split) — sticky, so a resume never re-splits an already-running task
+  shotgunChildren?: string[]; // the collaborator thread ids, so the barrier is re-derivable after a restart instead of living in memory
+  shotgunDegraded?: string; // why this task ran single-agent after all (the owner-facing reason); absent when it genuinely parallelized
+  shotgunAssignment?: ShotgunAssignment | null; // the LEAD's own share of the split, so a resume re-hands it the same scope
+  shotgunIntegrated?: boolean; // the integration/reconcile pass ran — sticky, so a restart doesn't redo it
   qaSilentRetriesThisRound?: number; // the same retries, but only those spent on the review currently running
   // — zeroed the moment a round reaches a verdict, for the reason qaCutoffResumesThisRound exists. An empty
   // run is a property of ONE review too: a round whose retry WORKED still spent the lifetime count, so a
@@ -675,6 +713,11 @@ export interface OrchestratorSettings {
   showComposerPickers: boolean; // whether the director composer shows the quick model + effort dropdowns (default off — hidden)
   showAgentModel: boolean; // whether agent labels in the thread feed append the run's model + effort — "QA (Tor, Opus 4.8 High)"
   skipDirectorEffort: Effort | "auto"; // composer's implementor effort for skip-director dispatches — "auto" leaves it to the planner
+  // The composer's task-mode picks, applied to the task the NEXT send dispatches (both director and
+  // skip-director). Persisted like the effort pick so they survive a reload and the HTTP/HTTPS split —
+  // and rendered lit while active, because a forgotten 8h window is an expensive surprise.
+  taskDurationMinutes: number; // TIMED: minutes of wall-clock work window; 0 (default) = an ordinary task
+  taskAgentCount: number; // SHOTGUN: agents to work the objective at once; 1 (default) = an ordinary task
   xhighEnabled: boolean; // read-only — the ENABLE_XHIGH opt-in is on, so the xhigh tier is offerable
   skipDirectorRetitle: boolean; // when skip-director is on, mint a real title via a cheap Haiku call instead of the raw first line (default on)
   maxRecentRepos: number; // how many recent-repo chips the composer shows (clamped 1–20, default 5)

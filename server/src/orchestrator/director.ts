@@ -12,6 +12,8 @@ import type { Scheduler } from "./scheduler.js";
 import type { Account } from "../accounts/account.js";
 import { untilReset } from "../accounts/accountManager.js";
 import { config, fallbackModelFor } from "../config.js";
+import { normalizeDuration } from "./timedTasks.js";
+import { clampAgentCount } from "./shotgun.js";
 import { existsSync } from "node:fs";
 import { DIRECTOR_CLI_PROTOCOL, DIRECTOR_CLI_SCHEMA, executeDirectorCliAction, type DirectorCliAction } from "./directorCliBridge.js";
 
@@ -160,7 +162,14 @@ export class Director {
     // The composer's effort pick rides along: with no planner-adjacent director in the loop, the owner
     // chooses how hard the implementor works. "auto" keeps the planner (or the high default) in charge.
     const effort = this.api.settings().skipDirectorEffort;
-    const id = await this.api.dispatch({ title, workspace: ws, brief: text, images, effort: effort === "auto" ? undefined : effort });
+    const id = await this.api.dispatch({
+      title,
+      workspace: ws,
+      brief: text,
+      images,
+      effort: effort === "auto" ? undefined : effort,
+      ...this.taskModeDefaults(),
+    });
     const note = this.postDirectorNote(`Skipped the director — dispatched "${title}" straight to the pipeline (task ${id.slice(0, 8)}).`);
     // Link BOTH the prompt (precedes the task) and the confirmation note (follows it) — the note would
     // otherwise be misfiled under the next task by the history backfill's timeline heuristic.
@@ -177,6 +186,16 @@ export class Director {
     // line. Mint a proper title with a cheap Haiku call after dispatch (best-effort, never blocks the
     // pipeline) — unless the owner turned it off to save those tokens.
     if (this.api.settings().skipDirectorRetitle) void this.api.retitleFromBrief(id, text);
+  }
+
+  /** The composer's task-mode picks, normalized for dispatch: a wall-clock work window and/or a
+   *  collaborator count. Both are off by default (0 minutes / 1 agent), which is an ordinary task. */
+  private taskModeDefaults(): { durationMs: number | null; agentCount: number | null } {
+    const s = this.api.settings();
+    return {
+      durationMs: s.taskDurationMinutes > 0 ? normalizeDuration(s.taskDurationMinutes) : null,
+      agentCount: s.taskAgentCount > 1 ? clampAgentCount(s.taskAgentCount) : null,
+    };
   }
 
   /**
@@ -225,7 +244,7 @@ export class Director {
     const director = createDirectorServer(this.api, () => this.pendingImages, (threadId) => {
       this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId);
       this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
-    }, this.scheduler, this.notes);
+    }, this.scheduler, this.notes, () => this.taskModeDefaults());
     const memory = createMemoryServer(this.api.memory);
     const cfg = directorConfig({ director, memory }, this.api.directorName());
     const sessionKey = this.sessionKey(chosen);

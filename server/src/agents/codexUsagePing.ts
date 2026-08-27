@@ -8,6 +8,7 @@ import type { ResetStagger } from "../accounts/resetStagger.js";
 import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
 import { classifyRateWindows, latestTurnFiveHourReset, noteCodexPing, noteCodexWake, readCodexUsage, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
+import { GENERAL_LIMIT_ID, normalizeLimitName, type CodexPool } from "./codexPools.js";
 
 /**
  * A live Codex usage read — the ChatGPT-plan counterpart of the Claude Haiku ping. The rollout-file
@@ -57,6 +58,16 @@ interface RpcRateLimits {
   primary?: RpcWindow | null;
   secondary?: RpcWindow | null;
   planType?: string | null;
+  limitId?: string | null;
+  limitName?: string | null;
+}
+
+/** The whole `account/rateLimits/read` result. `rateLimits` is the GENERAL pool (what we have always
+ *  read); `rateLimitsByLimitId` is the per-pool map that also carries the model-specific allowances —
+ *  the idle Spark capacity that was invisible while only the former was parsed. */
+interface RpcRateLimitsResult {
+  rateLimits?: RpcRateLimits | null;
+  rateLimitsByLimitId?: Record<string, RpcRateLimits> | null;
 }
 
 /** Read the live plan-wide rate limits via `codex app-server`. Seeds auth exactly like an implementor
@@ -82,12 +93,15 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
     return null;
   }
   try {
-    const rl = await appServerRateLimits(child, timeoutMs);
+    const result = await appServerRateLimits(child, timeoutMs);
+    const rl = result?.rateLimits;
     if (!rl) return null;
+    const pools = toPools(result);
     const usage: CodexUsageDTO = {
       ...classifyRateWindows(toMeterWindow(rl.primary), toMeterWindow(rl.secondary)),
       planType: rl.planType ?? null,
       updatedAt: Date.now(),
+      ...(pools.length ? { pools } : {}),
     };
     if (usage.fiveHour == null && usage.sevenDay == null) return null; // no meter info — treat as a failed read
     noteCodexPing(usage);
@@ -97,13 +111,35 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
   }
 }
 
+/** Flatten `rateLimitsByLimitId` into our pool model. The model a dedicated pool meters is recovered
+ *  from its `limitName` (the live `limitId` is an opaque codename — `codex_bengalfox` — so matching on
+ *  it would break on the next rename); `normalizeLimitName` does that mapping in one place. */
+function toPools(result: RpcRateLimitsResult): CodexPool[] {
+  const byId = result.rateLimitsByLimitId;
+  if (!byId || typeof byId !== "object") return [];
+  const out: CodexPool[] = [];
+  for (const [limitId, rl] of Object.entries(byId)) {
+    if (!rl || typeof rl !== "object") continue;
+    const meters = classifyRateWindows(toMeterWindow(rl.primary), toMeterWindow(rl.secondary));
+    const limitName = rl.limitName ?? null;
+    out.push({
+      limitId,
+      limitName,
+      // The general pool meters everything without an allowance of its own, so it names no model.
+      modelSlug: limitId === GENERAL_LIMIT_ID ? null : normalizeLimitName(limitName),
+      ...meters,
+    });
+  }
+  return out;
+}
+
 /** Drive the minimal JSON-RPC exchange: initialize → initialized → account/rateLimits/read. */
-function appServerRateLimits(child: ChildProcess, timeoutMs: number): Promise<RpcRateLimits | null> {
+function appServerRateLimits(child: ChildProcess, timeoutMs: number): Promise<RpcRateLimitsResult | null> {
   return new Promise((resolve) => {
     let buf = "";
     let step: "init" | "read" = "init";
     const timer = setTimeout(() => resolve(null), timeoutMs);
-    const finish = (v: RpcRateLimits | null): void => {
+    const finish = (v: RpcRateLimitsResult | null): void => {
       clearTimeout(timer);
       resolve(v);
     };
@@ -126,7 +162,7 @@ function appServerRateLimits(child: ChildProcess, timeoutMs: number): Promise<Rp
         const line = buf.slice(0, i).trim();
         buf = buf.slice(i + 1);
         if (!line) continue;
-        let msg: { id?: number; result?: { rateLimits?: RpcRateLimits }; error?: unknown };
+        let msg: { id?: number; result?: RpcRateLimitsResult; error?: unknown };
         try {
           msg = JSON.parse(line) as typeof msg;
         } catch {
@@ -138,7 +174,7 @@ function appServerRateLimits(child: ChildProcess, timeoutMs: number): Promise<Rp
           send({ jsonrpc: "2.0", method: "initialized", params: {} });
           send({ jsonrpc: "2.0", id: 2, method: "account/rateLimits/read", params: {} });
         } else if (msg.id === 2) {
-          finish(msg.error ? null : (msg.result?.rateLimits ?? null));
+          finish(msg.error ? null : (msg.result ?? null));
         }
         // Anything else (notifications) is ignored.
       }

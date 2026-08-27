@@ -17,6 +17,9 @@ const {
   BACKENDS,
   HARD_LIMIT_PCT,
   MIRRORED_HEADROOM_TERMS,
+  dedicatedPoolRungs,
+  readPoolLatches,
+  POOL_HARD_LIMIT_PCT,
   roleReachPolicy,
   roleLadderDepth,
   readThreadManagerSource,
@@ -202,12 +205,80 @@ assert.equal(
 );
 assert.equal(claudeHasHeadroom({ fiveHour: 0, sevenDay: HARD_LIMIT_PCT - 1 }), true, "just under the limit is a rung");
 
+// --- dedicated pools: the readout must agree with codexPools.ts's routing rules ---------------------
+// These four cases ARE the policy: a pool is a rung only while un-latched, metered, and under the limit.
+// Each wrong answer has a specific cost — a false "available" sends a bounded role at a spent allowance
+// (retry storm), a false "spent" strands the idle capacity this whole change exists to reach.
+{
+  const POOL = (over) => ({
+    pools: [
+      { limitId: "codex", limitName: null, modelSlug: null, fiveHour: null, sevenDay: 29, fiveHourReset: null, sevenDayReset: NOW + 5 * HOUR },
+      { limitId: "codex_bengalfox", limitName: "GPT-5.3-Codex-Spark", modelSlug: "gpt-5.3-codex-spark", fiveHour: 0, sevenDay: 0, fiveHourReset: NOW + HOUR, sevenDayReset: NOW + 40 * HOUR, ...over },
+    ],
+  });
+  const only = (m, latches = {}) => dedicatedPoolRungs(m, latches, NOW);
+
+  const idle = only(POOL());
+  assert.equal(idle.length, 1, "the GENERAL pool is not a dedicated rung — only model-specific allowances are");
+  assert.equal(idle[0].model, "gpt-5.3-codex-spark", "the rung is keyed by the model its limitName names, not the opaque limitId");
+  assert.equal(idle[0].available, true, "an idle dedicated pool is a rung for bounded roles");
+
+  assert.equal(only(POOL({ sevenDay: 100 }))[0].available, false, "a spent WEEKLY window closes the pool even with the 5h idle");
+  assert.equal(only(POOL({ fiveHour: 100 }))[0].available, false, "a spent 5h window closes the pool even with the week idle");
+  assert.equal(
+    only(POOL({ sevenDay: 100, sevenDayReset: NOW - HOUR }))[0].available,
+    true,
+    "a window whose reset has PASSED has rolled over — still a rung (same rule the backend windows use)",
+  );
+  assert.equal(only(POOL({ fiveHour: POOL_HARD_LIMIT_PCT }))[0].available, false, "AT the pool hard limit is not headroom");
+  assert.equal(only(POOL({ fiveHour: POOL_HARD_LIMIT_PCT - 1 }))[0].available, true, "just under the pool hard limit is a rung");
+  assert.equal(
+    only(POOL({ fiveHour: null, sevenDay: null }))[0].available,
+    false,
+    "a pool with NO meter is not a rung — routing fails closed on an allowance it cannot see, so the readout must too",
+  );
+
+  const latched = only(POOL(), { codex_bengalfox: NOW + HOUR });
+  assert.equal(latched[0].available, false, "a live per-pool cap latch closes that pool");
+  assert.equal(latched[0].reason, "capped");
+  assert.equal(latched[0].until, NOW + HOUR, "the readout carries the pool's own retry deadline");
+  assert.equal(only(POOL(), { codex_bengalfox: NOW - HOUR })[0].available, true, "a LAPSED pool latch frees the pool");
+  // The independence that makes the whole feature safe: latching Spark must not be readable as a
+  // general-pool cap, and the general pool's own latch lives in a different key entirely.
+  assert.equal(only(POOL(), { codex: NOW + HOUR })[0].available, true, "a GENERAL-pool latch does not close a dedicated pool");
+
+  assert.deepEqual(only(null), [], "no usage cache ⇒ no dedicated rungs claimed");
+  assert.deepEqual(only({}), [], "a usage cache predating pools ⇒ no dedicated rungs claimed");
+
+  // the latch blob reader
+  assert.deepEqual(readPoolLatches(kvOf({ codex_pool_cap_until: '{"a":1}' }), "codex_pool_cap_until"), { a: 1 });
+  assert.deepEqual(readPoolLatches(kvOf({}), "codex_pool_cap_until"), {}, "an unwritten latch blob reads as nothing latched");
+  assert.deepEqual(readPoolLatches(kvOf({ codex_pool_cap_until: "{oops" }), "codex_pool_cap_until"), {}, "a corrupt blob reads as nothing latched, never a crash");
+  assert.deepEqual(readPoolLatches(kvOf({}), undefined), {}, "a backend with no pool latch key is simply poolless");
+}
+
 // --- the kv key names must still match threadManager.ts ---------------------------------------------
 // This is the load-bearing check. The probe reads these keys by literal name, so a rename on the server
 // side would leave it reading a key nobody writes — reporting every backend "available" forever, silently.
 const tm = fs.readFileSync(path.resolve(__dirname, "..", "src", "orchestrator", "threadManager.ts"), "utf8");
-const capKeys = [...tm.matchAll(/_CAP_KV_KEY = "([a-z_]+)"/g)].map((m) => m[1]);
-assert.equal(capKeys.length, 3, `expected 3 *_CAP_KV_KEY constants in threadManager.ts, found ${capKeys.length}`);
+const allCapKeys = [...tm.matchAll(/_CAP_KV_KEY = "([a-z_]+)"/g)].map((m) => m[1]);
+// A ChatGPT plan meters some models on their own allowance, so Codex persists a SECOND latch keyed by
+// pool. It is not a backend rung — it gates which models a bounded role may use INSIDE Codex — so it is
+// split out here rather than counted as one, and pinned separately below. Everything else must still be
+// a backend latch that BACKENDS reads, which is what catches a genuinely new backend.
+const POOL_CAP_KEYS = ["codex_pool_cap_until"];
+const capKeys = allCapKeys.filter((k) => !POOL_CAP_KEYS.includes(k));
+for (const key of POOL_CAP_KEYS) {
+  assert.ok(
+    allCapKeys.includes(key),
+    `threadManager.ts no longer writes the per-pool latch '${key}' — probe-accounts.cjs reads it by literal name`,
+  );
+  assert.ok(
+    BACKENDS.some((b) => b.poolCapKey === key),
+    `per-pool latch '${key}' is written but no BACKENDS entry declares it as poolCapKey — the dedicated-pool readout would miss it`,
+  );
+}
+assert.equal(capKeys.length, 3, `expected 3 backend *_CAP_KV_KEY constants in threadManager.ts, found ${capKeys.length}`);
 for (const key of capKeys) {
   assert.ok(
     BACKENDS.some((b) => b.capKey === key),
@@ -258,9 +329,13 @@ for (const b of BACKENDS) {
    *  `\r?\n` because a clone with `core.autocrlf=true` checks the source out CRLF, and a bare `\n`
    *  then matches nothing, so the gate fails on the checkout instead of on the code. */
   function headroomTerms(method) {
-    const body = new RegExp(`private ${method}\\(\\)[\\s\\S]*?hasHeadroom:([\\s\\S]*?),\\r?\\n\\s*[a-zA-Z]\\w*:`).exec(tmSrc);
+    const body = new RegExp(`private ${method}\\([^)]*\\)[\\s\\S]*?hasHeadroom:([\\s\\S]*?),\\r?\\n\\s*[a-zA-Z]\\w*:`).exec(tmSrc);
     assert.ok(body, `no ${method}() with a hasHeadroom property in threadManager.ts — the ladder mirrors a method that moved`);
     const expr = body[1]
+      // Comments FIRST: a `//` note explaining why a term is there is prose, not a routing door, and its
+      // words would otherwise be extracted as identifiers and demanded of the mirror map.
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "")
       .replace(/(["'`])(?:\\.|(?!\1)[^\\])*\1/g, "") // string arguments name a backend; they are not independent routing doors
       .replace(/this\./g, "") // `this.grokCapActive()` → `grokCapActive()`: the guard IS the term
       .replace(/\??\.\w+/g, ""); // `u?.fiveHour` → `u`: a field read is not a door, the predicate around it is

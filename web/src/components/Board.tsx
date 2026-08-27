@@ -17,7 +17,7 @@ import { useStore, type TaskSort } from "../store.js";
 import type { AgentRun, BoardView, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
 import { closesInDays, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
-import { Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
+import { Countdown, Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
 import { ScheduledTasks } from "./ScheduledTasks.js";
@@ -123,7 +123,10 @@ export function Board() {
   // Closed tasks are pulled out of the main board into the Closed holding area below; completed tasks
   // are hidden too when the owner turned that off in settings.
   const hiddenCompleted = !showCompleted ? all.filter((t) => COMPLETED_STATES.has(t.state)).length : 0;
-  const active = all.filter((t) => t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)));
+  // A shotgun COLLABORATOR is part of another task, not a task of its own: showing N of them beside
+  // their lead is exactly the card clutter the compact-UX brief rules out, and the lead's own card
+  // already reports their progress. They stay fully selectable — the lead's detail panel links to them.
+  const active = all.filter((t) => !t.parentId && t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)));
   // The id of the card currently being dragged (null when idle); declared here so `list` can freeze its
   // order mid-drag.
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -599,6 +602,11 @@ const Card = memo(function Card({
   // when the reset time itself changes.
   const capParked = isCapParked(thread);
   const frozenReset = useStore((s) => (capParked ? soonestReset(s.accounts) : null));
+  // Its parallel collaborators, if this is a shotgun lead — the COUNT only, which is all the badge
+  // needs. Selecting a primitive is load-bearing, not a micro-optimisation: a selector that builds a
+  // fresh array is never reference-equal to the last one, so Zustand sees a change on every store read
+  // and the card re-renders forever (React #185). Returning a number compares by value.
+  const collabCount = useStore((s) => Object.values(s.threads).filter((t) => t.parentId === thread.id).length);
 
   // The ✕ soft-closes a parked task (review / paused / done / failed / cancelled) — it moves to the
   // Closed list below, restorable, rather than being deleted outright. A running task shows no ✕, so
@@ -685,6 +693,16 @@ const Card = memo(function Card({
           {thread.lane === "read" ? (
             <span className="read-badge" title="Read lane — answered by a single read-only reader, no QA">
               Read
+            </span>
+          ) : null}
+          {thread.deadlineAt ? (
+            <span className={"timed-badge" + (thread.deadlineAt <= Date.now() ? " over" : "")}>
+              <Countdown deadlineAt={thread.deadlineAt} />
+            </span>
+          ) : null}
+          {collabCount ? (
+            <span className="shotgun-badge" title={`${collabCount + 1} agents working this task in parallel`}>
+              ⚡ {collabCount + 1}
             </span>
           ) : null}
           {impl?.effort ? (

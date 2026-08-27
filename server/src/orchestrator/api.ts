@@ -1,7 +1,7 @@
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import type { ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, QuestionOption, Role, Severity, Thread, ThreadLane } from "../types.js";
+import type { ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, QuestionOption, Role, Severity, ShotgunAssignment, Thread, ThreadLane } from "../types.js";
 
 export interface DispatchInput {
   title: string;
@@ -10,6 +10,16 @@ export interface DispatchInput {
   images?: ImageAttachment[];
   effort?: Effort; // pins the implementor effort for this task (skip-director composer pick) — beats the planner's
   lane?: ThreadLane | null; // 'read' routes to the single read-only reader lane (dispatch_read); null/undefined = the normal pipeline
+  // TIMED task: a wall-clock work window in ms. The deadline is stamped absolute at dispatch, so time
+  // spent queued never eats the window. Omitted/0 = an ordinary task. Validate with
+  // `timedTasks.normalizeDuration` before passing anything owner-supplied.
+  durationMs?: number | null;
+  // SHOTGUN task: how many agents should work this objective at once (2..MAX_AGENTS). 1/null = normal.
+  agentCount?: number | null;
+  // Set only when the orchestrator itself spawns a shotgun COLLABORATOR: the lead thread, and the share
+  // of the work this collaborator exclusively owns. Never set by the director or the console.
+  parentId?: string | null;
+  assignment?: ShotgunAssignment | null;
 }
 
 export interface AskUserInput {

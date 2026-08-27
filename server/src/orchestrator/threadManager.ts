@@ -13,7 +13,42 @@ import {
   type AgentRunLike,
 } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
-import { codexUsageCapped, liveCodexUsage, readCodexUsage } from "../agents/codexUsage.js";
+import { codexPools, codexUsageCapped, liveCodexUsage, readCodexUsage } from "../agents/codexUsage.js";
+import {
+  detectTimedComplete,
+  formatDuration,
+  isHollowRound,
+  remainingMs,
+  timedBriefBlock,
+  timedClosingNote,
+  timedDecision,
+  timedExtensionMessage,
+  timedWindow,
+  type TimedWindow,
+} from "./timedTasks.js";
+import {
+  MAX_AGENTS,
+  SHOTGUN_SCHEMA,
+  clampAgentCount,
+  collaboratorSettled,
+  decompositionKickoff,
+  integrationBrief,
+  isShotgun,
+  ownershipBlock,
+  validateDecomposition,
+  type CollaboratorOutcome,
+  type ShotgunAssignment,
+  type ShotgunPlan,
+} from "./shotgun.js";
+import {
+  dedicatedPoolModel,
+  describePool,
+  poolForModel,
+  poolHasHeadroom,
+  poolLatched,
+  roleMayUseDedicatedPool,
+  type CodexPool,
+} from "../agents/codexPools.js";
 import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRunner.js";
 import { noteGrokCap, readGrokUsage, grokUsageCapped } from "../agents/grokUsage.js";
 import { noteZaiCap, readZaiUsage, zaiUsageCapped } from "../agents/zaiUsage.js";
@@ -344,6 +379,8 @@ const CODEX_CAP_SOURCE_KV_KEY = "codex_cap_reset_source";
 // at which the durable latch was observed so boot reconciliation never lets an older pipeline success
 // erase a newer director-origin cap.
 const CODEX_CAP_RECORDED_AT_KV_KEY = "codex_cap_recorded_at";
+/** Per-pool Codex cap latches ({limitId: epochMs}), separate from the general pool's own latch. */
+const POOL_CAP_KV_KEY = "codex_pool_cap_until";
 // Grok's weekly scrape normally supplies the reset epoch; before it lands, a rejected turn falls back to
 // a fixed cooldown (config.grok.capCooldownMs). kv-persisted.
 const GROK_CAP_KV_KEY = "grok_cap_until";
@@ -620,6 +657,10 @@ export class ThreadManager implements OrchestratorApi {
   // auto-resume wave doesn't slam Codex again on stale-good routing. Undefined = Codex not latched-capped.
   private codexCapUntil: number | undefined;
   private codexCapUntilProviderStated = false;
+  /** Per-pool cap latches, keyed by the plan's `limitId`. Independent of `codexCapUntil` by design —
+   *  a dedicated pool (Spark) and the general pool have separate allowances and separate resets, so a
+   *  429 in one must never disable the other. Persisted so a bounce doesn't retry a known-capped pool. */
+  private readonly poolCapUntil = new Map<string, number>();
   private codexCapRecordedAt: number | undefined;
   // Epoch ms until which Grok is treated as usage-capped (route implementors elsewhere). Set when a live
   // Grok run is rejected; a fixed cooldown (no reset epoch is exposed). Persisted so a restart's auto-resume
@@ -666,6 +707,7 @@ export class ThreadManager implements OrchestratorApi {
     this.applyAccountWeeklySafety();
     this.accounts.setSpreadUsage(this.settingBool("setting_spread_usage", false));
     this.loadCodexCap();
+    this.loadPoolCaps();
     this.loadGrokCap();
     this.loadZaiCap();
     // A restart can interrupt a task after its provider has emitted a cap but before the cap latch was
@@ -1589,7 +1631,23 @@ export class ThreadManager implements OrchestratorApi {
   // ---- dispatch + pipeline ----
 
   async dispatch(input: DispatchInput): Promise<string> {
-    const thread = this.db.createThread({ title: input.title, workspace: input.workspace, rawPrompt: "", brief: input.brief, effortOverride: input.effort ?? null, lane: input.lane ?? null });
+    // The window is stamped ABSOLUTE at dispatch, not derived later from createdAt: a task that waits in
+    // 'queued' behind the concurrency cap would otherwise silently lose that waiting time out of its own
+    // work window. `deadlineAt` is the single enforced instant from here on.
+    const durationMs = input.durationMs && input.durationMs > 0 ? input.durationMs : null;
+    const thread = this.db.createThread({
+      title: input.title,
+      workspace: input.workspace,
+      rawPrompt: "",
+      brief: input.brief,
+      effortOverride: input.effort ?? null,
+      lane: input.lane ?? null,
+      durationMs,
+      deadlineAt: durationMs ? Date.now() + durationMs : null,
+      agentCount: input.agentCount ?? null,
+      parentId: input.parentId ?? null,
+      assignment: input.assignment ?? null,
+    });
     // Stamp the repo's HEAD NOW, before any agent runs — the "before" point for scoping this task's
     // Changes chip to its own diff. Captured pre-enqueue so a foreign commit that lands between here and
     // the implementor starting is still excluded (its files aren't in the task's written-file set). Null
@@ -1669,6 +1727,8 @@ export class ThreadManager implements OrchestratorApi {
       discordTokenPresent: !!this.discordBotToken(),
       discordTokenLast4: this.discordTokenLast4(),
       skipDirector: this.settingBool("setting_skip_director", false),
+      taskDurationMinutes: this.settingNum("setting_task_duration_minutes", 0, 0, 7 * 24 * 60),
+      taskAgentCount: this.settingNum("setting_task_agent_count", 1, 1, MAX_AGENTS),
       showComposerPickers: this.settingBool("setting_show_composer_pickers", false),
       showAgentModel: this.settingBool("setting_show_agent_model", true),
       skipDirectorEffort: this.skipDirectorEffort(),
@@ -2193,6 +2253,112 @@ export class ThreadManager implements OrchestratorApi {
     return resolveCodexEffort(model, requested, supported);
   }
 
+  // ---- Codex capacity pools (the plan's independently-metered allowances) ----
+
+  /** The live per-pool meters, or null when no fresh app-server ping has landed. Null is fail-CLOSED
+   *  everywhere below: without a reading we route exactly as before rather than gamble a run on an
+   *  allowance we cannot see. */
+  private codexPoolSnapshot(): CodexPool[] | null {
+    return codexPools();
+  }
+
+  /**
+   * The Codex model this ROLE should run on. A bounded role (reader/planner/researcher) is moved onto a
+   * model with its own dedicated allowance whenever that pool is visible, un-latched and has headroom —
+   * spending capacity that is otherwise wasted while the general pool burns down. Every other role, and
+   * every case where we can't see a usable pool, gets the configured Codex model unchanged.
+   *
+   * Restricted to the roles in DEDICATED_POOL_ROLES on capability grounds, not to save quota: see
+   * `codexPools.ts` for why a model instructed never to verify its own work must not be an implementor
+   * or a reviewer.
+   */
+  private codexRoleModel(role: Role): string {
+    const configured = this.providerRoleModel("codex", role);
+    if (!roleMayUseDedicatedPool(role)) return configured;
+    const pools = this.codexPoolSnapshot();
+    if (!pools) return configured;
+    // An explicit per-role override in the model matrix is the operator's decision — never override it.
+    if (this.modelOverrides()[CODEX_SUB_ID]?.[role]?.trim()) return configured;
+    const pick = dedicatedPoolModel({
+      pools,
+      role,
+      now: Date.now(),
+      dispatchable: this.codexRosterModels(),
+      capLatches: this.poolCapUntil,
+    });
+    return pick ?? configured;
+  }
+
+  /** Restore the persisted per-pool cap latches on boot (mirrors loadCodexCap for the general pool). */
+  private loadPoolCaps(): void {
+    const raw = this.db.kvGet(POOL_CAP_KV_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as Record<string, number>;
+      const now = Date.now();
+      for (const [limitId, until] of Object.entries(parsed)) {
+        if (Number.isFinite(until) && until > now) this.poolCapUntil.set(limitId, until);
+      }
+    } catch {
+      /* corrupt latch blob — start clean rather than crash the boot */
+    }
+  }
+
+  private persistPoolCaps(): void {
+    const now = Date.now();
+    const live: Record<string, number> = {};
+    for (const [limitId, until] of this.poolCapUntil) if (until > now) live[limitId] = until;
+    this.db.kvSet(POOL_CAP_KV_KEY, Object.keys(live).length ? JSON.stringify(live) : "");
+  }
+
+  /**
+   * Latch ONE dedicated pool as capped. Deliberately separate from the general Codex latch: the pools
+   * have independent allowances and independent resets, so folding a Spark 429 into `codexCapUntil`
+   * would disable a general pool that still had most of its week left (and the reverse would strand
+   * idle Spark capacity behind an exhausted general pool). Returns false when the model has no
+   * dedicated pool, so the caller falls through to the general latch.
+   */
+  private notePoolCap(model: string, info?: RateLimitInfo): boolean {
+    const pools = this.codexPoolSnapshot();
+    const pool = pools ? poolForModel(pools, model) : undefined;
+    if (!pool?.modelSlug) return false;
+    const until = this.capResetUntil(info, [pool.fiveHourReset, pool.sevenDayReset], CODEX_CAP_COOLDOWN_MS);
+    const held = this.poolCapUntil.get(pool.limitId);
+    if (held == null || until > held) {
+      this.poolCapUntil.set(pool.limitId, until);
+      this.persistPoolCaps();
+    }
+    this.hub.log(
+      "warn",
+      `Codex pool "${pool.limitName ?? pool.limitId}" hit its usage cap — bounded roles fall back to the general Codex pool until ${new Date(until).toLocaleString()}. (${describePool(pool)})`,
+    );
+    return true;
+  }
+
+  /** The dedicated pool this role would actually spend right now, or undefined when the policy, the
+   *  latches, the meters or the roster rule one out. The single resolver behind both the availability
+   *  gate and the candidate's meters, so the two can never disagree about which pool a run will use. */
+  private dedicatedPoolFor(role: Role | undefined): CodexPool | undefined {
+    if (!role || !roleMayUseDedicatedPool(role)) return undefined;
+    const pools = this.codexPoolSnapshot();
+    if (!pools) return undefined;
+    if (this.modelOverrides()[CODEX_SUB_ID]?.[role]?.trim()) return undefined; // operator pinned this role's model
+    const now = Date.now();
+    const model = dedicatedPoolModel({ pools, role, now, dispatchable: this.codexRosterModels(), capLatches: this.poolCapUntil });
+    if (!model) return undefined;
+    const pool = poolForModel(pools, model);
+    // Re-assert the two live gates on the resolved pool. dedicatedPoolModel already applied them, so
+    // this only ever holds when a pool is chosen for a model it does not meter — a mapping bug, where
+    // failing closed is the safe answer.
+    return pool && !poolLatched(this.poolCapUntil, pool.limitId, now) && poolHasHeadroom(pool, now) ? pool : undefined;
+  }
+
+  /** Whether a dedicated pool can serve this role right now — the availability half of the routing
+   *  policy, so a bounded role can still reach Codex when only the GENERAL pool is exhausted. */
+  private dedicatedPoolReadyFor(role: Role | undefined): boolean {
+    return this.dedicatedPoolFor(role) != null;
+  }
+
   /** The selected Grok implementor model. Resolution: the model-overrides matrix (grok.implementor), then
    *  the legacy `setting_grok_model` kv (migration fallback), then the built-in default. Never inherits a
    *  Claude/Codex default — those model ids are invalid for the Grok CLI. */
@@ -2392,6 +2558,14 @@ export class ThreadManager implements OrchestratorApi {
       void this.modelCatalog.refresh();
     }
     if (patch.skipDirector !== undefined) this.db.kvSet("setting_skip_director", patch.skipDirector ? "1" : "0");
+    if (patch.taskDurationMinutes !== undefined) this.db.kvSet("setting_task_duration_minutes", String(Math.max(0, Math.round(patch.taskDurationMinutes))));
+    // The SETTING's domain is {1 = off} ∪ [MIN_AGENTS..MAX_AGENTS], which is NOT clampAgentCount's
+    // domain: that clamps into the shotgun range, so it turns 1 into 2 and silently makes every
+    // subsequent task a two-agent shotgun the owner never asked for. Let "off" through untouched.
+    if (patch.taskAgentCount !== undefined) {
+      const n = Math.round(patch.taskAgentCount);
+      this.db.kvSet("setting_task_agent_count", String(n <= 1 ? 1 : clampAgentCount(n)));
+    }
     if (patch.showComposerPickers !== undefined) this.db.kvSet("setting_show_composer_pickers", patch.showComposerPickers ? "1" : "0");
     if (patch.showAgentModel !== undefined) this.db.kvSet("setting_show_agent_model", patch.showAgentModel ? "1" : "0");
     if (patch.skipDirectorEffort !== undefined && (patch.skipDirectorEffort === "auto" || CLAUDE_EFFORTS.includes(patch.skipDirectorEffort)))
@@ -2466,7 +2640,10 @@ export class ThreadManager implements OrchestratorApi {
     return now + fallbackMs;
   }
 
-  private noteCodexCap(info?: RateLimitInfo): void {
+  private noteCodexCap(info?: RateLimitInfo, model?: string): void {
+    // A rejection on a model with its OWN allowance is that pool's cap, not the plan's: latch it
+    // separately and leave the general pool (and everything routed to it) untouched.
+    if (model && this.notePoolCap(model, info)) return;
     const now = Date.now();
     const u = readCodexUsage();
     const until = this.capResetUntil(info, [u?.fiveHourReset, u?.sevenDayReset], CODEX_CAP_COOLDOWN_MS);
@@ -2727,20 +2904,27 @@ export class ThreadManager implements OrchestratorApi {
     return this.zaiProviderCandidate().hasHeadroom;
   }
 
-  private codexProviderCandidate(): ProviderCandidate {
+  private codexProviderCandidate(role?: Role): ProviderCandidate {
     const now = Date.now();
     const u = readCodexUsage();
+    // A role eligible to spend a DEDICATED allowance is metered by that pool, not the plan-wide one, so
+    // both the doors and the reported windows switch to it. Quoting the general pool's exhausted weekly
+    // for a run that will never touch it is exactly what would keep an idle pool out of the ladder —
+    // and conversely, quoting the idle pool for an implementor would claim room it cannot use.
+    const dedicated = this.dedicatedPoolFor(role);
     const nearLimit = (pct: number | null, reset: number | null): boolean =>
       pct != null && pct >= PROVIDER_HARD_LIMIT && (reset == null || reset > now);
     return {
       provider: "codex",
       hasHeadroom:
         !this.providerStartupCoolingDown("codex") &&
-        !nearLimit(u?.fiveHour ?? null, u?.fiveHourReset ?? null) &&
-        !nearLimit(u?.sevenDay ?? null, u?.sevenDayReset ?? null),
-      fiveHour: u?.fiveHour ?? null,
-      sevenDay: u?.sevenDay ?? null,
-      sevenDayReset: u?.sevenDayReset ?? null,
+        // `dedicated` is already gated on its own latch + meters (dedicatedPoolFor), so it stands in
+        // for the two window checks rather than adding to them.
+        (!!dedicated ||
+          (!nearLimit(u?.fiveHour ?? null, u?.fiveHourReset ?? null) && !nearLimit(u?.sevenDay ?? null, u?.sevenDayReset ?? null))),
+      fiveHour: dedicated ? dedicated.fiveHour : (u?.fiveHour ?? null),
+      sevenDay: dedicated ? dedicated.sevenDay : (u?.sevenDay ?? null),
+      sevenDayReset: dedicated ? dedicated.sevenDayReset : (u?.sevenDayReset ?? null),
       weeklySafetyPct: this.settings().codexWeeklySafetyPct,
     };
   }
@@ -2786,7 +2970,7 @@ export class ThreadManager implements OrchestratorApi {
       const c = this.claudeProviderCandidate();
       if (c.hasHeadroom) cands.push(c);
     }
-    if (exclude !== "codex" && !unavailable.has("codex") && serves("codex") && this.codexImplementorReady()) cands.push(this.codexProviderCandidate());
+    if (exclude !== "codex" && !unavailable.has("codex") && serves("codex") && this.codexImplementorReady(role)) cands.push(this.codexProviderCandidate(role));
     if (exclude !== "grok" && !unavailable.has("grok") && serves("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate());
     if (exclude !== "zai" && !unavailable.has("zai") && serves("zai") && this.zaiImplementorReady()) cands.push(this.zaiProviderCandidate());
     if (!cands.length) return undefined;
@@ -2799,10 +2983,14 @@ export class ThreadManager implements OrchestratorApi {
    *  Deliberately treats "no usage reading yet" as headroom: API-key-billed Codex has no plan windows and
    *  never produces one, so requiring a reading would permanently disable the failover for those setups.
    *  A blind flip onto a secretly-capped Codex is bounded — the run 429s and flips back or parks. */
-  private codexImplementorReady(): boolean {
+  private codexImplementorReady(role?: Role): boolean {
     if (!this.settings().codexEnabled) return false;
     const key = this.openaiApiKey();
     if (!codexAuthAvailable(!!key && /^sk-/.test(key))) return false;
+    // A bounded role routed to its own dedicated allowance is unaffected by the general pool's state,
+    // so it stays available when only the general pool is capped or spent. Checked BEFORE the general
+    // gates precisely so idle dedicated capacity is reachable rather than hidden behind them.
+    if (this.dedicatedPoolReadyFor(role)) return true;
     if (this.codexCapActive()) return false;
     return this.codexProviderCandidate().hasHeadroom;
   }
@@ -2956,8 +3144,19 @@ export class ThreadManager implements OrchestratorApi {
   /** Start a freshly-dispatched task's pipeline now, or hold it in 'queued' if we're at the
    *  concurrency cap. Queued tasks start (FIFO) the moment a running pipeline settles. */
   private enqueueOrRun(threadId: string): void {
-    const globalFull = this.activePipelines.size >= this.settings().maxConcurrent;
     const thread = this.db.getThread(threadId);
+    // A shotgun COLLABORATOR is exempt from both concurrency caps, and this is a correctness
+    // requirement rather than a preference: its lead is already holding a slot and is about to block
+    // waiting for it, so queueing the collaborator behind a cap the lead itself occupies deadlocks the
+    // pair outright (guaranteed at maxConcurrent=1, and reachable at any cap once enough tasks run).
+    // The owner asked for N agents on this objective; the bound that keeps that honest is MAX_AGENTS at
+    // the dispatch boundary, not a queue the parent is standing in front of. They still join
+    // activePipelines, so unrelated dispatches see the real load.
+    if (thread?.parentId) {
+      this.startPipeline(threadId);
+      return;
+    }
+    const globalFull = this.activePipelines.size >= this.settings().maxConcurrent;
     const repoFull = !!thread && this.repoAtCapacity(thread.workspace);
     if (globalFull || repoFull) {
       if (!this.dispatchQueue.includes(threadId)) this.dispatchQueue.push(threadId);
@@ -3045,6 +3244,28 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Wrap a role's kickoff text with the thread's pasted images so each isolated agent sees them. */
+  /** A collaborator's ownership block, held from the moment its lead spawned it until its own pipeline
+   *  composes a kickoff. In-memory only by design: it is re-derivable from the persisted `assignment`
+   *  (see `collaboratorOwnershipBlock`), so a restart rebuilds it rather than depending on this map. */
+  private readonly shotgunOwnership = new Map<string, string>();
+
+  /** The ownership contract folded into a collaborator's kickoff — from the live map when its lead is
+   *  still in the same process, else rebuilt from its own persisted share plus its siblings'. Ownership
+   *  is the ONLY thing keeping parallel agents out of each other's files, so it must survive a restart. */
+  private collaboratorOwnershipBlock(thread: Thread): string | undefined {
+    if (!thread.parentId || !thread.assignment) return undefined;
+    const held = this.shotgunOwnership.get(thread.id);
+    if (held) return held;
+    const siblings = this.db
+      .listCollaborators(thread.parentId)
+      .filter((t) => t.id !== thread.id && t.assignment)
+      .map((t) => ({ title: t.assignment!.title, files: t.assignment!.files }));
+    const lead = this.db.getThread(thread.parentId);
+    const leadShare = this.db.getThreadStageOutputs(thread.parentId).shotgunAssignment;
+    if (lead && leadShare) siblings.unshift({ title: leadShare.title, files: leadShare.files });
+    return ownershipBlock(thread.assignment, siblings);
+  }
+
   private kickoffContent(threadId: string, text: string): string | unknown[] {
     const blocks = [...(this.dispatchImages.get(threadId) ?? []), ...(this.threadImages.get(threadId) ?? [])];
     return contentWithImages(text, blocks);
@@ -3268,7 +3489,14 @@ export class ThreadManager implements OrchestratorApi {
       // re-run the planner/researcher and clobber that work — not even if an older build never persisted
       // planDone (the exact "planner re-ran after a restart" bug). So treat planning as settled whenever
       // a kickoff exists, independent of the per-stage *Done flags.
-      const planningSettled = saved.kickoff != null;
+      // A shotgun COLLABORATOR arrives with its objective already decided by the lead's decomposition,
+      // so it skips planning entirely (re-planning a share would just re-derive what it was handed) and
+      // runs WITHOUT its own QA loop. That second part is the important one: a per-share QA would review
+      // a deliberately partial tree — the other shares are half-written around it — and spend rounds
+      // bouncing back "incomplete" work that is complete for this share. The lead reconciles every share
+      // and ONE QA pass reviews the combined result.
+      const collaborator = !!thread.parentId;
+      const planningSettled = saved.kickoff != null || collaborator;
 
       // 1. Planner — runs first unless disabled, already done, or planning already completed. planDone
       // (mirrors researchDone) makes a deliberate "no structured plan" outcome sticky across resume.
@@ -3319,7 +3547,15 @@ export class ThreadManager implements OrchestratorApi {
       // 3. Approval gate — after the full context (plan + any research) exists, so the human sees
       //    everything before approving. Skipped on resume if already approved. Reuse the saved kickoff
       //    when planning already happened so a re-derivation can't strip a real plan down to "no plan".
-      const kickoff = saved.kickoff ?? composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled: settings.qaEnabled });
+      const qaEnabled = settings.qaEnabled && !collaborator;
+      let kickoff = saved.kickoff ?? composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled });
+      // Ownership is what keeps parallel agents out of each other's files, so it is rebuilt here (from
+      // the persisted share) rather than only at spawn time — a collaborator revived by a restart must
+      // be handed exactly the same contract, not a kickoff that has quietly lost it.
+      if (collaborator) {
+        const owned = this.collaboratorOwnershipBlock(thread);
+        if (owned) kickoff = `${kickoff}\n\n${owned}`;
+      }
       if (this.approvalMode() && !saved.approved) {
         this.setState(threadId, "awaiting_approval");
         this.hub.publish({ type: "plan.ready", threadId, brief: kickoff });
@@ -3337,9 +3573,24 @@ export class ThreadManager implements OrchestratorApi {
         }
         this.db.updateThreadStageOutputs(threadId, { approved: true });
       }
+      // A timed task tells its implementor about the window up front, so it plans work that fits rather
+      // than racing to a finish and being asked for more. Composed once and persisted with the kickoff;
+      // every later round carries its own live countdown in the extension directive.
+      const window = this.timedWindowFor(thread);
+      if (window && !saved.kickoff) kickoff = `${kickoff}\n\n${timedBriefBlock(window, Date.now())}`;
+
+      // 4. Shotgun — decide the split ONCE, spawn the collaborators, and narrow this (lead) kickoff to
+      //    its own share. A no-op for an ordinary task, a collaborator, or a task that can't be split
+      //    safely; in the last case it degrades to a normal single-agent run and says why.
+      kickoff = await this.prepareShotgun(thread, plan, kickoff);
+      if (this.cancelled(threadId)) return;
+      if (this.capParked.has(threadId)) {
+        this.settleReview(threadId, "Splitting the task across agents could not complete — needs your review.");
+        return;
+      }
       this.db.updateThreadStageOutputs(threadId, { kickoff });
 
-      // 4. Implementor → QA. On resume, pick up the implementor's prior SDK session (recovered from
+      // 5. Implementor → QA. On resume, pick up the implementor's prior SDK session (recovered from
       //    its agent_run, which survives a restart) so its work-in-progress isn't thrown away.
       //    Any director notes injected after the planner finished (during research or at the approval
       //    gate, where there was no planner to re-plan) are folded in here so they still reach the
@@ -3354,7 +3605,7 @@ export class ThreadManager implements OrchestratorApi {
       if (saved.qaCapRetryRound == null && saved.qaInterruptedRetryRound == null) await this.autoSelectModel(thread, plan);
       if (this.cancelled(threadId)) return;
       await this.runImplementorQa(thread, kickoff, this.implementorEffort(threadId, plan?.effort), this.latestImplementorSession(threadId), note, {
-        qaEnabled: settings.qaEnabled,
+        qaEnabled,
         maxQaRounds: settings.maxQaRounds,
         qaAppliesFixes: settings.qaAppliesFixes,
         autoPush: settings.autoPush,
@@ -3648,7 +3899,7 @@ export class ThreadManager implements OrchestratorApi {
     }
 
     while (!this.cancelled(thread.id)) {
-      const model = provider === "codex" ? this.codexModel() : provider === "grok" ? this.grokModel() : provider === "zai" ? this.zaiModel() : this.modelFor(acct.id, role);
+      const model = provider === "codex" ? this.codexRoleModel(role) : provider === "grok" ? this.grokModel() : provider === "zai" ? this.zaiModel() : this.modelFor(acct.id, role);
       const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : provider === "zai" ? `zai:${model}` : acct.label;
       const effort = provider === "codex" ? this.codexEffort(model) : provider === "grok" ? this.grokEffort(model) : provider === "zai" ? this.zaiEffort() : undefined;
       const run = this.db.createRun({ threadId: thread.id, role, model, account: accountLabel, effort });
@@ -3811,7 +4062,7 @@ export class ThreadManager implements OrchestratorApi {
       if (provider !== "claude") {
         // z.ai (AgentRun) signals a cap via rateLimited; the CLI backends via `.capped`.
         if (!capped) return res;
-        if (provider === "codex") this.noteCodexCap(agent.rateLimitInfo);
+        if (provider === "codex") this.noteCodexCap(agent.rateLimitInfo, model);
         else if (provider === "grok") this.noteGrokCap(agent.rateLimitInfo);
         else if (provider === "zai") this.noteZaiCap(agent.rateLimitInfo);
         unavailableProviders.add(provider);
@@ -5014,6 +5265,335 @@ export class ThreadManager implements OrchestratorApi {
     this.hub.publish({ type: "thread.message", threadId, message: m });
   }
 
+
+  // ================= TIMED TASKS — a single task with a wall-clock work window =====================
+
+  /** The window this thread runs under, or null for an ordinary task. */
+  private timedWindowFor(thread: Thread): TimedWindow | null {
+    return timedWindow(thread);
+  }
+
+  /** Whether the implementor declared the objective complete in its most recent message. Read from the
+   *  persisted message rather than the run result, so it survives the relaunch between rounds. */
+  private timedDeclaredComplete(threadId: string): boolean {
+    const last = this.db.lastMessageOf(threadId, "implementor", "text");
+    return !!last && detectTimedComplete(last.content) !== null;
+  }
+
+  /**
+   * Keep a timed task working until its window closes, then hand off to the normal final path.
+   *
+   * A no-op for an ordinary task, and for a task whose window an earlier episode already closed
+   * (`timedFinalizing`) — which is what stops a restart from re-opening a finished window.
+   *
+   * The loop only ever runs BETWEEN rounds. Nothing here interrupts a live agent: a round that is
+   * running when the deadline passes finishes normally and the deadline simply denies the next one.
+   * Aborting mid-turn would return a success-shaped result with no output, which the pipeline cannot
+   * distinguish from a genuine finish — the trap documented on `steerStructuredRole`.
+   */
+  private async runTimedWindow(
+    thread: Thread,
+    effort: Effort | undefined,
+    kickoff: string,
+    res: ResultEvent | undefined,
+    qaFollows: boolean,
+  ): Promise<ResultEvent | undefined> {
+    if (!this.timedWindowFor(thread)) return res;
+    const saved = this.db.getThreadStageOutputs(thread.id);
+    if (saved.timedFinalizing) return res;
+    let extensions = saved.timedExtensions ?? 0;
+    let hollow = saved.timedHollowRounds ?? 0;
+    let completeEarly = saved.timedCompleteEarly === true;
+
+    for (;;) {
+      if (this.cancelled(thread.id)) return res;
+      // A round that ended in error (a cap, an exhausted resume budget, a real failure) ends the
+      // window: piling more rounds onto a task that is already failing spends the remaining hours
+      // reproducing the same failure. The settle path below reports it as it would any other.
+      if (!res || res.isError) {
+        this.closeTimedWindow(thread, { reason: "The work window stopped early because a work round did not finish cleanly.", extensions });
+        return res;
+      }
+      if (!completeEarly && this.timedDeclaredComplete(thread.id)) {
+        completeEarly = true;
+        this.db.updateThreadStageOutputs(thread.id, { timedCompleteEarly: true });
+      }
+      // Re-read the window every round rather than closing over the value from entry: the thread row is
+      // the source of truth for the deadline, so a window adjusted while the task runs takes effect at
+      // the next boundary instead of being ignored for the rest of the episode.
+      const window = this.timedWindowFor(this.db.getThread(thread.id) ?? thread);
+      if (!window) {
+        this.closeTimedWindow(thread, { reason: "The work window was removed while the task was running.", extensions });
+        return res;
+      }
+      const decision = timedDecision({
+        deadlineAt: window.deadlineAt,
+        now: Date.now(),
+        extensionsUsed: extensions,
+        completeEarly,
+        hollowRounds: hollow,
+        maxExtensions: config.timedMaxExtensions,
+        minSliceMs: config.timedMinSliceMs,
+        maxHollowRounds: config.timedMaxHollowRounds,
+      });
+      if (decision.action === "finalize") {
+        this.closeTimedWindow(thread, { reason: decision.reason, extensions });
+        return res;
+      }
+
+      extensions += 1;
+      this.db.updateThreadStageOutputs(thread.id, { timedExtensions: extensions });
+      const message = timedExtensionMessage({ remainingMs: decision.remainingMs, round: extensions, maxExtensions: config.timedMaxExtensions });
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "implementor",
+        summary: `⏱ Work window round ${extensions} — ${formatDuration(decision.remainingMs)} left`,
+        detail: decision.reason,
+        severity: "info",
+      });
+      const note = this.db.addMessage({
+        threadId: thread.id,
+        role: "implementor",
+        kind: "system",
+        content: `⏱ ${decision.reason}`,
+      });
+      this.hub.publish({ type: "thread.message", threadId: thread.id, message: note });
+
+      // Same slot discipline as a QA fix-round: fully end the finished run, then relaunch through the
+      // shared resume gate (warm session when the cache is fresh, else a compressed cold seed).
+      const roundStart = Date.now();
+      await this.stopLive(thread.id);
+      if (this.cancelled(thread.id)) return res;
+      const start = await this.startResumedImplementor(
+        thread,
+        kickoff,
+        this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
+        { effort, resumeNudge: message, directorNote: message, qaFollows },
+      );
+      if (!start) return res; // cancelled while compressing the prior session
+      this.flushDirectorNotes(thread.id, start.run);
+      res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, message, qaFollows);
+      res = await this.drainQueuedImplementor(thread, effort, kickoff, res, qaFollows);
+
+      // The runaway guard. A round that came back almost instantly AND wrote nothing did no work —
+      // three of those in a row means something is wedged in a way the error paths did not catch, and
+      // the window must not spend its remaining hours repeating it. A round that produced anything, or
+      // simply took a while, resets the counter.
+      const produced = this.db.countAgentMessagesSince(thread.id, "implementor", roundStart) > 0;
+      hollow = isHollowRound(Date.now() - roundStart, produced) ? hollow + 1 : 0;
+      this.db.updateThreadStageOutputs(thread.id, { timedHollowRounds: hollow });
+    }
+  }
+
+  /** Close a timed window: mark it durably finalized (so no later episode re-opens it) and record the
+   *  reason where the owner will see it. The reason is deliberately specific — "the window ended" vs
+   *  "it finished early" vs "it was stopped because nothing was progressing" call for different
+   *  reactions, and a task must never just go quiet at its deadline. */
+  private closeTimedWindow(thread: Thread, o: { reason: string; extensions: number }): void {
+    this.db.updateThreadStageOutputs(thread.id, { timedFinalizing: true });
+    const summary = timedClosingNote({ action: "finalize", reason: o.reason, remainingMs: 0 }, o.extensions);
+    this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "⏱ Work window closed", detail: summary, severity: "note" });
+    const m = this.db.addMessage({ threadId: thread.id, role: "implementor", kind: "system", content: `⏱ ${summary}` });
+    this.hub.publish({ type: "thread.message", threadId: thread.id, message: m });
+    this.hub.log("info", `Timed task ${thread.id.slice(0, 8)} closed its window after ${o.extensions} round(s): ${o.reason}`);
+  }
+
+  // ================= SHOTGUN TASKS — N collaborators on one objective ==============================
+
+  /**
+   * Decide (once) how a shotgun task splits, spawn the collaborators, and return the LEAD's kickoff
+   * narrowed to its own share. Returns the kickoff unchanged for an ordinary task, for a collaborator
+   * (a share is never split again), and on every degrade path.
+   *
+   * `shotgunPlanned` is sticky: a resume must never re-decompose a task whose collaborators are already
+   * running, which would spawn a second set of agents onto the same tree.
+   */
+  private async prepareShotgun(thread: Thread, plan: PlanOutput | undefined, kickoff: string): Promise<string> {
+    if (thread.parentId || !isShotgun(thread.agentCount)) return kickoff;
+    const saved = this.db.getThreadStageOutputs(thread.id);
+    if (saved.shotgunPlanned) return kickoff; // already decided in an earlier episode; saved.kickoff carries the share
+    const agentCount = thread.agentCount!;
+
+    const raw = await this.runShotgunDecomposition(thread, plan, agentCount).catch((e) => {
+      this.hub.log("warn", `Shotgun decomposition failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
+      return undefined;
+    });
+    if (this.cancelled(thread.id)) return kickoff;
+    // A cap during decomposition is not a "cannot split" answer — park and let the supervisor retry the
+    // stage, rather than silently spending the owner's multi-agent request on one agent.
+    if (this.capParked.has(thread.id)) return kickoff;
+
+    const decided = validateDecomposition(raw, agentCount);
+    if (!decided.ok) return this.degradeShotgun(thread, decided.reason, kickoff);
+
+    const [mine, ...theirs] = decided.assignments;
+    if (!mine || !theirs.length) return this.degradeShotgun(thread, "the decomposition left no work for the other agents", kickoff);
+
+    // Persist BEFORE spawning: a crash between the two must leave a task that re-plans cleanly, never
+    // one whose children exist but whose parent has no record of them.
+    this.db.updateThreadStageOutputs(thread.id, { shotgunPlanned: true, shotgunAssignment: mine });
+    const children: string[] = [];
+    for (const assignment of theirs) {
+      const peers = decided.assignments.filter((a) => a !== assignment).map((a) => ({ title: a.title, files: a.files }));
+      const id = await this.dispatch({
+        title: assignment.title,
+        workspace: thread.workspace,
+        brief: [assignment.objective, "", "## The shared goal this is part of", thread.brief].join("\n"),
+        effort: thread.effortOverride ?? undefined,
+        parentId: thread.id,
+        assignment,
+        // Collaborators share the lead's deadline, so a timed shotgun has every agent working the same
+        // window rather than each starting its own clock from whenever it happened to be spawned.
+        durationMs: thread.deadlineAt ? Math.max(0, thread.deadlineAt - Date.now()) : null,
+      });
+      children.push(id);
+      this.db.updateThreadStageOutputs(thread.id, { shotgunChildren: [...children] });
+      // Held so the child's own pipeline can fold it into its kickoff without re-deriving it. Only a
+      // cache: collaboratorOwnershipBlock rebuilds the same contract from the persisted assignments
+      // when a restart empties this map.
+      this.shotgunOwnership.set(id, ownershipBlock(assignment, peers));
+    }
+
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "planner",
+      summary: `🔀 Split across ${decided.assignments.length} agents working in parallel`,
+      detail: decided.assignments.map((a) => `- "${a.title}" owns: ${a.files.join(", ")}`).join("\n"),
+      severity: "note",
+    });
+    this.hub.log("info", `Shotgun ${thread.id.slice(0, 8)} split into ${decided.assignments.length} shares (${children.length} collaborator(s) spawned).`);
+    const myPeers = theirs.map((a) => ({ title: a.title, files: a.files }));
+    return [kickoff, "", ownershipBlock(mine, myPeers), "", "## Your share of this task", mine.objective].join("\n");
+  }
+
+  /** Record why a shotgun request ran single-agent after all, and carry on as an ordinary task. This is
+   *  a supported outcome, not an error: plenty of real work cannot be split safely, and one complete
+   *  agent beats three colliding ones. The owner is told, because they asked for something else. */
+  private degradeShotgun(thread: Thread, reason: string, kickoff: string): string {
+    this.db.updateThreadStageOutputs(thread.id, { shotgunPlanned: true, shotgunDegraded: reason });
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "planner",
+      summary: `🔀 Running with one agent after all — this task can't be safely split`,
+      detail: `${reason}. Splitting it anyway would put two agents in the same files in one working tree, where they would overwrite each other, so it is running as a normal single-agent task instead.`,
+      severity: "note",
+    });
+    this.hub.log("info", `Shotgun ${thread.id.slice(0, 8)} degraded to a single agent: ${reason}`);
+    return kickoff;
+  }
+
+  /** One structured planner call: can this task be split, and if so, into which owned shares? Runs on
+   *  the planner role (it already owns repo reading, which is what naming file ownership requires). */
+  private async runShotgunDecomposition(thread: Thread, plan: PlanOutput | undefined, agentCount: number): Promise<ShotgunPlan | undefined> {
+    const kickoff = decompositionKickoff(thread.brief, planDigest(plan), agentCount);
+    const res = await this.runRole(thread, "planner", this.kickoffContent(thread.id, kickoff), ({ token, resume, runId }) => {
+      const bus = createBusServer(this, { threadId: thread.id, role: "planner", getRunId: () => runId });
+      const office = createOfficeServer(this, { threadId: thread.id, role: "planner", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
+      const cfg = plannerConfig(thread.workspace, { bus, office });
+      cfg.oauthToken = token;
+      if (resume) cfg.resume = resume;
+      cfg.outputFormat = { type: "json_schema", schema: SHOTGUN_SCHEMA };
+      return cfg;
+    });
+    return res?.structuredOutput as ShotgunPlan | undefined;
+  }
+
+  /**
+   * The barrier + integration pass. The lead waits for every collaborator to settle, then reconciles the
+   * combined tree before QA sees it.
+   *
+   * The wait polls the collaborators' DURABLE states rather than holding promises, and that is what makes
+   * it restart-safe: after a bounce the lead is auto-resumed straight back into this method and simply
+   * re-reads where its children got to. A promise map would have died with the process.
+   */
+  private async integrateShotgun(
+    thread: Thread,
+    effort: Effort | undefined,
+    kickoff: string,
+    res: ResultEvent | undefined,
+    qaFollows: boolean,
+  ): Promise<ResultEvent | undefined> {
+    if (thread.parentId) return res; // a collaborator finishes its own share and stops
+    const saved = this.db.getThreadStageOutputs(thread.id);
+    const children = saved.shotgunChildren ?? [];
+    if (!children.length || saved.shotgunIntegrated) return res;
+
+    const outcomes = await this.awaitCollaborators(thread, children);
+    if (this.cancelled(thread.id)) return res;
+    this.db.updateThreadStageOutputs(thread.id, { shotgunIntegrated: true });
+    if (!outcomes.length) return res;
+
+    // The lead's own run may have ended in error. Integration still matters — the collaborators' work is
+    // in the tree either way and someone has to make it coherent — but a failed lead has nothing to
+    // resume from, so let the normal park path report it rather than launching a doomed round.
+    if (!res || res.isError) {
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "implementor",
+        summary: "🔗 Integration skipped — the lead agent's own work didn't finish",
+        detail: `The parallel shares have settled (${outcomes.map((o) => `"${o.title}": ${o.state}`).join(", ")}) but the lead run failed, so the combined tree has NOT been reconciled. It needs a human before it can be trusted.`,
+        severity: "warning",
+      });
+      return res;
+    }
+
+    const message = integrationBrief(outcomes);
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "implementor",
+      summary: `🔗 All ${outcomes.length} parallel share(s) settled — reconciling the combined result`,
+      detail: outcomes.map((o) => `- "${o.title}" → ${o.state}${o.error ? ` (${o.error})` : ""}`).join("\n"),
+      severity: "note",
+    });
+    await this.stopLive(thread.id);
+    if (this.cancelled(thread.id)) return res;
+    const start = await this.startResumedImplementor(
+      thread,
+      kickoff,
+      this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
+      { effort, resumeNudge: message, directorNote: message, qaFollows },
+    );
+    if (!start) return res;
+    this.flushDirectorNotes(thread.id, start.run);
+    res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, message, qaFollows);
+    return this.drainQueuedImplementor(thread, effort, kickoff, res, qaFollows);
+  }
+
+  /** Block until every collaborator has settled, or the barrier times out. Bounded so one wedged
+   *  collaborator can't strand the lead forever — the integration pass is then told exactly which
+   *  shares came back and which did not, so it reconciles what exists instead of assuming. */
+  private async awaitCollaborators(thread: Thread, children: string[]): Promise<CollaboratorOutcome[]> {
+    const deadline = Date.now() + config.shotgunBarrierTimeoutMs;
+    let announced = false;
+    for (;;) {
+      const rows = children.map((id) => this.db.getThread(id)).filter((t): t is Thread => !!t);
+      const pending = rows.filter((t) => !collaboratorSettled(t.state));
+      if (!pending.length || Date.now() > deadline || this.cancelled(thread.id)) {
+        if (pending.length) {
+          this.hub.log("warn", `Shotgun ${thread.id.slice(0, 8)} stopped waiting: ${pending.length} collaborator(s) still running after ${formatDuration(config.shotgunBarrierTimeoutMs)}.`);
+        }
+        return rows.map((t) => ({
+          title: t.title,
+          state: collaboratorSettled(t.state) ? t.state : `still running (${t.state}) — the lead stopped waiting`,
+          files: t.assignment?.files ?? [],
+          error: t.error ?? null,
+        }));
+      }
+      if (!announced) {
+        announced = true;
+        this.setState(thread.id, "implementing");
+        const m = this.db.addMessage({
+          threadId: thread.id,
+          role: "implementor",
+          kind: "system",
+          content: `🔀 Share finished — waiting for ${pending.length} other agent(s) on this task before reconciling.`,
+        });
+        this.hub.publish({ type: "thread.message", threadId: thread.id, message: m });
+      }
+      await new Promise((r) => setTimeout(r, config.shotgunBarrierPollMs));
+    }
+  }
+
   /** Implementor → QA → fix, repeated until QA passes or we run out of rounds. The live
    *  implementor is stopped on every exit so a finished/parked task stops counting as live;
    *  later injects fall back to the resume path (lastImplementorSession). */
@@ -5202,6 +5782,13 @@ export class ThreadManager implements OrchestratorApi {
     // Before the hand-off: if the director queued follow-ups while the implementor worked, it does that
     // work too now (re-launched with them) instead of proceeding — the Queue button's whole point.
     res = await this.drainQueuedImplementor(thread, effort, kickoff, res, pipe.qaEnabled);
+    // A TIMED task keeps working its window from here; a SHOTGUN lead then waits for its collaborators
+    // and reconciles the combined tree. Both are no-ops for an ordinary task, and both sit BEFORE the
+    // QA hand-off on purpose — QA reviews the finished, integrated result exactly once.
+    res = await this.runTimedWindow(thread, effort, kickoff, res, pipe.qaEnabled);
+    if (this.cancelled(thread.id)) return;
+    res = await this.integrateShotgun(thread, effort, kickoff, res, pipe.qaEnabled);
+    if (this.cancelled(thread.id)) return;
     }
 
     // QA disabled — the implementor's output is final. A clean finish goes straight to 'done'
@@ -5452,6 +6039,10 @@ export class ThreadManager implements OrchestratorApi {
    *  'done' anyway — it never parks a finished task back into review. */
   private async runSelfImprovement(thread: Thread, effort: Effort | undefined, kickoff: string): Promise<void> {
     if (!this.settings().selfImproveEnabled || this.cancelled(thread.id)) return;
+    // A shotgun collaborator finished one SHARE, not a task. The reflection round is about what the whole
+    // job needed, so it belongs to the lead — running it per share would spend N bonus Opus rounds on N
+    // partial views, and each one would be reflecting on a tree the other shares are still changing.
+    if (thread.parentId) return;
     const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
     if (!session) return; // no implementor session to build on — nothing this round could reflect over
     // Two markers, two jobs. The DURABLE one survives the process: it is how markInterrupted knows a

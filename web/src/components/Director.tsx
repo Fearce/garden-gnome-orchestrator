@@ -351,6 +351,7 @@ export function Director() {
             </span>
           )}
         </div>
+        <ComposerTaskMode />
         {showPickers && <ComposerImplementorModelPickers />}
         {showPickers && skip && <ComposerEffortPickers />}
         <textarea
@@ -411,6 +412,96 @@ export function Director() {
     </>
   );
 }
+
+
+/** The two task-MODE picks: a wall-clock work window, and how many agents work the objective at once.
+ *
+ *  Both are off by default and both are expensive when on — an 8h window keeps an implementor working
+ *  all day; 3 agents spend three subscriptions at once. So the row is deliberately loud when active (a
+ *  lit chip stating the actual choice) and almost invisible when not: a forgotten setting here costs
+ *  real quota, and the app already persists composer picks server-side, so "I set that yesterday" is a
+ *  real failure mode rather than a hypothetical one.
+ *
+ *  They apply to the task the next send produces — through the director or straight past it. */
+function ComposerTaskMode() {
+  const minutes = useStore((s) => s.settings.taskDurationMinutes);
+  const agents = useStore((s) => s.settings.taskAgentCount);
+  const setSettings = useStore((s) => s.setSettings);
+  const active = minutes > 0 || agents > 1;
+
+  return (
+    <div className={"composer-taskmode" + (active ? " on" : "")} aria-label="Task mode">
+      <label className="taskmode-field">
+        <span className="taskmode-label mono">for</span>
+        <select
+          className={"taskmode-select" + (minutes > 0 ? " lit" : "")}
+          value={String(minutes)}
+          aria-label="Work window"
+          title={
+            minutes > 0
+              ? `Timed task: the implementor keeps finding useful work on this objective for ${DURATIONS.find((d) => d.min === minutes)?.label ?? minutes + "m"}, then hands off to review. It stops early if it genuinely finishes.`
+              : "Timed task — give this one task a wall-clock work window (it keeps working the same objective until the window closes, then goes to review). Off = an ordinary task."
+          }
+          onChange={(e) => setSettings({ taskDurationMinutes: Number(e.target.value) })}
+        >
+          {DURATIONS.map((d) => (
+            <option key={d.min} value={d.min}>
+              {d.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="taskmode-field">
+        <span className="taskmode-label mono">with</span>
+        <select
+          className={"taskmode-select" + (agents > 1 ? " lit" : "")}
+          value={String(agents)}
+          aria-label="Agents"
+          title={
+            agents > 1
+              ? `Shotgun task: ${agents} agents work this objective at once, each owning separate files, then one agent reconciles their work and QA reviews the result. If it can't be split safely it quietly runs as a single agent.`
+              : "Shotgun task — run several agents on this one objective at the same time, each owning separate files. Off = a single agent."
+          }
+          onChange={(e) => setSettings({ taskAgentCount: Number(e.target.value) })}
+        >
+          {AGENT_COUNTS.map((n) => (
+            <option key={n} value={n}>
+              {n === 1 ? "1 agent" : `${n} agents`}
+            </option>
+          ))}
+        </select>
+      </label>
+      {active ? (
+        <button
+          type="button"
+          className="taskmode-clear"
+          title="Back to an ordinary task"
+          aria-label="Clear task mode"
+          onClick={() => setSettings({ taskDurationMinutes: 0, taskAgentCount: 1 })}
+        >
+          ×
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** The window presets. Minutes, matching the server's `taskDurationMinutes`. Deliberately a short list
+ *  of real working spans rather than a free-text field — the durations people actually ask for are a
+ *  handful, and a typo in a free field ("80" meaning 8h) is an expensive mistake to make silently. */
+const DURATIONS: { min: number; label: string }[] = [
+  { min: 0, label: "no time limit" },
+  { min: 30, label: "30 min" },
+  { min: 60, label: "1 hour" },
+  { min: 120, label: "2 hours" },
+  { min: 240, label: "4 hours" },
+  { min: 480, label: "8 hours" },
+  { min: 720, label: "12 hours" },
+  { min: 1440, label: "24 hours" },
+];
+
+/** Mirrors MIN_AGENTS/MAX_AGENTS on the server (orchestrator/shotgun.ts); the server clamps anyway. */
+const AGENT_COUNTS = [1, 2, 3, 4, 5, 6];
 
 /** Mobile substitute for the wrapping recent-repo chips: a single dropdown row. The chips flex-wrap into
  *  several rows on a phone (a long list ate most of the composer's vertical space, pushing the transcript

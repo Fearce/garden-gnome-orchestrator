@@ -255,6 +255,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         discordBotToken: z.string().max(200),
         // Composer state, persisted server-side so it survives across the HTTP/HTTPS surfaces.
         skipDirector: z.boolean(),
+    // Bounded at the boundary as well as in the UI: these arrive from a client and drive how much
+    // quota one dispatch may spend, so the server never trusts the widget to have clamped them.
+    taskDurationMinutes: z.number().int().min(0).max(7 * 24 * 60),
+    taskAgentCount: z.number().int().min(1).max(6),
         showComposerPickers: z.boolean(),
         showAgentModel: z.boolean(),
         skipDirectorEffort: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]),
