@@ -33,9 +33,15 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
   rooms, blind to each other, under a clean `probe:office` ✓ (it only inspects rooms that FORMED). Fix:
   `repoAliases` on presence + `rooms[]` on chat; the side holding the other's remote joins BOTH rooms and
   the relay delivers once per peer, stamped with the room THAT peer knows — an older client matches a room
-  against its own key exactly. **Inert until someone runs `git remote add`** (this checkout carries
-  `mikkel` for that reason); a same-named pair is only SUGGESTED, via `online_office_unlinked` kv →
-  `probe:office`, because `Fearce/utilities` and `prismicious/utilities` really are unrelated repos.
+  against its own key exactly. **Inert until someone runs `git remote add`**; a same-named pair is only
+  SUGGESTED, via `online_office_unlinked` kv → `probe:office`, because `Fearce/utilities` and
+  `prismicious/utilities` really are unrelated repos.
+  **2026-08-27: that split no longer exists on Mikkel's box.** Every checkout there now has a single
+  remote, `origin` → `Fearce/garden-gnome-orchestrator`, so both machines key on the real repo directly
+  and the alias path is no longer what joins them. The aliasing code stays (it is what makes any future
+  contributor's fork group correctly), but do not read the war story above as a live description of the
+  setup: `prismicious/garden-gnome-orchestrator` is retired. A stale `mikkel`-style remote pointing at it
+  still MATCHES as an alias string (nothing dials it), so it degrades quietly rather than breaking a room.
 - **`server/src/office/onlineProtocol.ts` is a byte-for-byte copy of `relay/src/protocol.ts`.** Change one,
   change the other; bump `RELAY_PROTOCOL` only for a change that is NOT backward-compatible (an additive
   optional field is). Both ends refuse a mismatch at the handshake — for the office, a bump is an outage

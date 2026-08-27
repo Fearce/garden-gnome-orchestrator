@@ -11,6 +11,13 @@
 > branches as of hand-off, but that agent was still working. Everything about `master`, `upstream`,
 > `legacy` and the build is exact and re-checkable. Re-run the one-liners in §7 before acting on §3.
 
+> **2026-08-27: §1.3's push-safety ACTION REQUIRED is CLOSED, and the remote names below are stale.**
+> `prismicious` has write access to `Fearce/garden-gnome-orchestrator` (verified: `gh-capability.sh` grades
+> WRITE, `admin=false push=true`), so the writable-origin question this report left open is answered. The
+> `legacy` and `upstream` remotes are gone; every checkout now has one remote, `origin` → the real repo.
+> The rest of the audit stands as the dated record of the 2026-07-26 cutover. Full evidence:
+> `docs/remote-consolidation-2026-08-27.md`.
+
 ---
 
 ## 0. Verdict — **CONDITIONAL GO**
