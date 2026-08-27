@@ -3,7 +3,7 @@
 // Run: npm run test:free-providers --prefix server
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import Fastify from "fastify";
@@ -503,6 +503,62 @@ const answeredCallIds = budgetMessages.filter((message) => message.role === "too
 assert.deepEqual(declaredCallIds, ["big-1", "big-2", "big-3"], "the stub issued a three-call parallel batch");
 assert.deepEqual(answeredCallIds, declaredCallIds, "every declared tool_call id is answered once the read budget is spent");
 assert.match(String(budgetMessages.at(-1)?.content), /read context budget is full/i);
+
+// Grep and Glob run in-process. They shipped as `rg` subprocesses, which made both tools return
+// `spawn rg ENOENT` on any box without ripgrep installed — the deployment box included — so a free
+// run could read a known path but never search for one. These cover the contract they promise.
+await mkdir(join(harnessRoot, "nested", "deep"), { recursive: true });
+await mkdir(join(harnessRoot, "node_modules", "pkg"), { recursive: true });
+await writeFile(join(harnessRoot, "nested", "deep", "target.ts"), "const needle = \"HAYSTACK\";\n", "utf8");
+await writeFile(join(harnessRoot, "nested", "notes.md"), "nothing to find here\n", "utf8");
+await writeFile(join(harnessRoot, "node_modules", "pkg", "ignored.ts"), "const needle = \"HAYSTACK\";\n", "utf8");
+
+async function runSearchTool(name: string, args: Record<string, unknown>): Promise<string> {
+  const requests: Array<Record<string, unknown>> = [];
+  let call = 0;
+  const session: FreeProviderTaskSession = {
+    target: { providerId: "stub", providerName: "Stub Free", model: "stub-tools" },
+    async complete(request) {
+      requests.push(structuredClone(request) as Record<string, unknown>);
+      call++;
+      if (call === 1) {
+        return { text: "", model: "stub-tools", toolCalls: [{ id: "search-1", name, arguments: JSON.stringify(args) }], usage: {} };
+      }
+      return { text: "```json\n{\"summary\":\"Searched\"}\n```", model: "stub-tools", toolCalls: [], usage: {} };
+    },
+    markHarnessFailure() {},
+    close() {},
+  };
+  const run = new FreeProviderAgentRun(session, "planner", {
+    model: "stub-tools",
+    cwd: harnessRoot,
+    systemPrompt: "Inspect safely.",
+    outputFormat: { type: "json_schema", schema: PLAN_SCHEMA },
+  });
+  run.start(`Run ${name}.`);
+  await run.result();
+  await run.stop();
+  const replay = (requests[1]?.messages ?? []) as Array<Record<string, unknown>>;
+  return String(replay.find((message) => message.role === "tool")?.content ?? "");
+}
+
+const globAnyDepth = await runSearchTool("Glob", { pattern: "*.ts" });
+assert.match(globAnyDepth, /^nested\/deep\/target\.ts$/m, "a separator-free glob matches the basename at any depth");
+assert.match(globAnyDepth, /^fixture\.ts$/m, "workspace-relative paths are returned, ready to hand back to Read");
+assert.doesNotMatch(globAnyDepth, /node_modules/, "dependency and generated directories stay out of the harness");
+
+const globBraces = await runSearchTool("Glob", { pattern: "nested/**/*.{md,ts}" });
+assert.match(globBraces, /^nested\/deep\/target\.ts$/m, "** spans path segments");
+assert.match(globBraces, /^nested\/notes\.md$/m, "{a,b} alternates");
+
+const grepDefault = await runSearchTool("Grep", { pattern: "haystack" });
+assert.match(grepDefault, /^nested\/deep\/target\.ts:1:const needle = "HAYSTACK";$/m, "grep defaults to case-insensitive and reports path:line:text");
+assert.doesNotMatch(grepDefault, /node_modules/);
+
+assert.equal(await runSearchTool("Grep", { pattern: "haystack", case_sensitive: true }), "(no matches)", "case_sensitive:true is honoured");
+assert.equal(await runSearchTool("Grep", { pattern: "needle", glob: "*.md" }), "(no matches)", "the include glob filters which files are searched");
+assert.match(await runSearchTool("Grep", { pattern: "unclosed(" }), /Tool error:.*not a valid regular expression/, "an unparseable pattern is a tool error, not a harness crash");
+assert.match(await runSearchTool("Glob", { pattern: "*.txt", path: ".." }), /Tool error: Path is outside the task workspace/, "search cannot escape the workspace through its path argument");
 
 await rm(harnessRoot, { recursive: true, force: true });
 await rm(outsideFile, { force: true });

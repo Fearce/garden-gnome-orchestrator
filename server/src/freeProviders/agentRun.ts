@@ -1,6 +1,5 @@
-import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { realpath, readFile, stat } from "node:fs/promises";
+import { readdir, realpath, readFile, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import { T } from "../agents/toolNames.js";
@@ -32,6 +31,13 @@ const MAX_READ_BYTES = 2 * 1024 * 1024;
 // contracts and lets several bounded turns fit inside the smallest verified free token window.
 const MAX_OUTPUT_TOKENS = 1_024;
 const STRUCTURED_RETRIES = 2;
+const SEARCH_SKIPPED_DIRS = new Set([".git", "node_modules", "dist", "build"]);
+const SEARCH_FILE_LIMIT = 20_000;
+const SEARCH_TIME_BUDGET_MS = 12_000;
+// A model-authored pattern is compiled into a JS RegExp, which backtracks where ripgrep's
+// linear-time engine did not. Matching is synchronous on the server's only thread, so cap the
+// line length fed to it: a pathological pattern then costs a bounded slice rather than a stall.
+const SEARCH_LINE_CHAR_LIMIT = 2_000;
 const BUDGET_SPENT_TOOL_RESULT = "The read context budget for this turn is exhausted, so this tool was not run. Return your final structured result now.";
 
 type FindingSeverity = "info" | "note" | "warning" | "critical";
@@ -76,13 +82,13 @@ const READ_TOOL: ProviderTool = {
 
 const GREP_TOOL: ProviderTool = {
   name: "Grep",
-  description: "Search text inside the task workspace with ripgrep. Returns file paths, line numbers, and matching lines; never runs a shell.",
+  description: "Search text inside the task workspace by regular expression. Returns workspace-relative paths, line numbers, and matching lines; never runs a shell.",
   parameters: {
     type: "object",
     additionalProperties: false,
     required: ["pattern"],
     properties: {
-      pattern: { type: "string", description: "Rust-regex search pattern." },
+      pattern: { type: "string", description: "JavaScript regular-expression search pattern." },
       path: { type: "string", description: "Optional workspace-relative file or directory." },
       glob: { type: "string", description: "Optional include glob such as **/*.ts." },
       case_sensitive: { type: "boolean", description: "Default false." },
@@ -206,59 +212,193 @@ async function readTool(root: string, input: Record<string, unknown>): Promise<s
   return truncate(selected.map((line, index) => `${offset + index}: ${line}`).join("\n") || "(empty file)");
 }
 
-async function runBounded(command: string, args: string[], cwd: string): Promise<string> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd, shell: false, windowsHide: true });
-    let stdout = "";
-    let stderr = "";
-    let clipped = false;
-    const timer = setTimeout(() => {
-      clipped = true;
-      child.kill();
-    }, 12_000);
-    const append = (current: string, chunk: Buffer): string => {
-      if (current.length >= MAX_TOOL_RESULT_CHARS) {
-        clipped = true;
-        child.kill();
-        return current;
+/**
+ * The gitignore-style glob semantics the harness offers, reduced to what a model actually sends:
+ * `*` and `?` stay inside one path segment, `**` spans segments, and `{a,b}` alternates.
+ */
+function globToRegExp(pattern: string): RegExp {
+  let source = "";
+  let braces = 0;
+  for (let index = 0; index < pattern.length; index++) {
+    const char = pattern[index]!;
+    if (char === "*") {
+      if (pattern[index + 1] !== "*") {
+        source += "[^/]*";
+        continue;
       }
-      return current + chunk.toString("utf8").slice(0, MAX_TOOL_RESULT_CHARS - current.length);
-    };
-    child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0 && code !== 1 && !clipped) {
-        reject(new Error(stderr.trim() || `${command} exited ${code ?? "without a status"}.`));
-        return;
+      index++;
+      if (pattern[index + 1] === "/") {
+        index++;
+        source += "(?:[^/]+/)*";
+      } else {
+        source += ".*";
       }
-      const value = stdout.trim() || (code === 1 ? "(no matches)" : "(no output)");
-      resolvePromise(truncate(value + (clipped ? "\n\n[search stopped at the output/time limit]" : "")));
-    });
-  });
+      continue;
+    }
+    if (char === "?") source += "[^/]";
+    else if (char === "{") { braces++; source += "(?:"; }
+    else if (char === "}" && braces > 0) { braces--; source += ")"; }
+    else if (char === "," && braces > 0) source += "|";
+    else source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  if (braces > 0) throw new Error("Glob has an unclosed { group.");
+  return new RegExp(`^${source}$`);
+}
+
+/**
+ * A glob with no separator matches the basename at any depth, so `*.ts` finds a nested file the way
+ * ripgrep did and the way the model expects; anything with a separator matches the relative path.
+ */
+function globMatcher(pattern: string): (relativePath: string) => boolean {
+  const matches = globToRegExp(pattern);
+  if (pattern.includes("/")) return (relativePath) => matches.test(relativePath);
+  return (relativePath) => matches.test(relativePath.slice(relativePath.lastIndexOf("/") + 1));
+}
+
+interface SearchBudget {
+  deadline: number;
+  filesLeft: number;
+}
+
+function searchBudget(): SearchBudget {
+  return { deadline: Date.now() + SEARCH_TIME_BUDGET_MS, filesLeft: SEARCH_FILE_LIMIT };
+}
+
+function budgetSpent(budget: SearchBudget): boolean {
+  return budget.filesLeft <= 0 || Date.now() > budget.deadline;
+}
+
+function includeFilter(glob: string): (relativePath: string) => boolean {
+  if (!glob) return () => true;
+  try {
+    return globMatcher(glob);
+  } catch (error) {
+    throw new Error(`Glob is not valid: ${errorText(error)}`);
+  }
+}
+
+function compileSearchPattern(pattern: string, caseSensitive: boolean): RegExp {
+  try {
+    return new RegExp(pattern, caseSensitive ? "" : "i");
+  } catch (error) {
+    throw new Error(`Search pattern is not a valid regular expression: ${errorText(error)}`);
+  }
+}
+
+/**
+ * Walks `target` for accepted workspace-relative file paths. Symlinks are never traversed: ripgrep
+ * was not asked to follow them either, and skipping them holds the workspace-confinement guarantee
+ * without a realpath call per entry.
+ */
+async function collectFiles(
+  root: string,
+  target: string,
+  budget: SearchBudget,
+  accept: (relativePath: string) => boolean,
+): Promise<string[]> {
+  const relativeTo = (absolute: string): string => relative(root, absolute).split(sep).join("/");
+  if ((await stat(target)).isFile()) {
+    const only = relativeTo(target);
+    return accept(only) ? [only] : [];
+  }
+  const found: string[] = [];
+  const pending = [target];
+  while (pending.length && !budgetSpent(budget)) {
+    const directory = pending.pop()!;
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (budgetSpent(budget)) break;
+      if (entry.isSymbolicLink()) continue;
+      const absolute = resolve(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!SEARCH_SKIPPED_DIRS.has(entry.name)) pending.push(absolute);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      budget.filesLeft--;
+      const relativePath = relativeTo(absolute);
+      if (accept(relativePath)) found.push(relativePath);
+    }
+  }
+  return found.sort();
+}
+
+function searchResult(lines: readonly string[], clipped: boolean): string {
+  if (!lines.length) return clipped ? "(no matches before the search limit)" : "(no matches)";
+  return truncate(lines.join("\n") + (clipped ? "\n\n[search stopped at the output/time limit]" : ""));
+}
+
+async function grepFile(root: string, relativePath: string, matches: RegExp): Promise<string[]> {
+  const absolute = resolve(root, relativePath);
+  let content: Buffer;
+  try {
+    if ((await stat(absolute)).size > MAX_READ_BYTES) return [];
+    content = await readFile(absolute);
+  } catch {
+    return [];
+  }
+  if (content.includes(0)) return [];
+  const hits: string[] = [];
+  const lines = content.toString("utf8").replace(/\r\n/g, "\n").split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!.slice(0, SEARCH_LINE_CHAR_LIMIT);
+    if (matches.test(line)) hits.push(`${relativePath}:${index + 1}:${line.trim()}`);
+  }
+  return hits;
 }
 
 async function grepTool(root: string, input: Record<string, unknown>): Promise<string> {
   const pattern = string(input.pattern);
   if (!pattern || pattern.length > 1_000 || /[\0\r\n]/.test(pattern)) throw new Error("Search pattern is empty or too long.");
-  const searchRoot = await confinedPath(root, string(input.path) || ".");
-  const args = ["--line-number", "--no-heading", "--color", "never", "--hidden", "--glob", "!.git/**", "--glob", "!node_modules/**", "--glob", "!dist/**", "--glob", "!build/**"];
-  if (input.case_sensitive !== true) args.push("--ignore-case");
-  const glob = string(input.glob);
-  if (glob) args.push("--glob", glob);
-  args.push("--", pattern, searchRoot);
-  return runBounded("rg", args, root);
+  const matches = compileSearchPattern(pattern, input.case_sensitive === true);
+  const accept = includeFilter(string(input.glob));
+  const target = await confinedPath(root, string(input.path) || ".");
+  const budget = searchBudget();
+  const files = await collectFiles(root, target, budget, accept);
+  const hits: string[] = [];
+  let used = 0;
+  let clipped = budgetSpent(budget);
+  for (const file of files) {
+    if (used >= MAX_TOOL_RESULT_CHARS || budgetSpent(budget)) {
+      clipped = true;
+      break;
+    }
+    for (const hit of await grepFile(root, file, matches)) {
+      hits.push(hit);
+      used += hit.length + 1;
+      if (used >= MAX_TOOL_RESULT_CHARS) {
+        clipped = true;
+        break;
+      }
+    }
+  }
+  return searchResult(hits, clipped);
 }
 
 async function globTool(root: string, input: Record<string, unknown>): Promise<string> {
   const pattern = string(input.pattern);
   if (!pattern || pattern.length > 500 || /[\0\r\n]/.test(pattern)) throw new Error("Glob is empty or too long.");
-  const searchRoot = await confinedPath(root, string(input.path) || ".");
-  return runBounded("rg", ["--files", "--hidden", "--glob", pattern, "--glob", "!.git/**", "--glob", "!node_modules/**", "--glob", "!dist/**", "--glob", "!build/**", searchRoot], root);
+  const accept = includeFilter(pattern);
+  const target = await confinedPath(root, string(input.path) || ".");
+  const budget = searchBudget();
+  const files = await collectFiles(root, target, budget, accept);
+  const listed: string[] = [];
+  let used = 0;
+  let clipped = budgetSpent(budget);
+  for (const file of files) {
+    if (used >= MAX_TOOL_RESULT_CHARS) {
+      clipped = true;
+      break;
+    }
+    listed.push(file);
+    used += file.length + 1;
+  }
+  return searchResult(listed, clipped);
 }
 
 async function gitReadTool(root: string, input: Record<string, unknown>): Promise<string> {
