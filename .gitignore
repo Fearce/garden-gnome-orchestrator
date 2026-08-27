@@ -34,6 +34,11 @@ server/_*.ts
 server/_*.py
 server/_*.png
 
+# root-level agent scratch (throwaway worktrees, evidence archives, git bundles). Same _* convention
+# as above, but at the repo root: several agents share this checkout, so a stray `git add -A` would
+# otherwise sweep in tens of MB of archive bundles.
+/_*/
+
 # editor
 .vscode/
 .idea/
