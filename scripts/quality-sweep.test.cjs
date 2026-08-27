@@ -6,7 +6,7 @@
 //   1. Every step's npm script actually exists in the package.json of the directory it runs in.
 //      A typo or a renamed script currently surfaces at 3am as one dead step in an otherwise
 //      green sweep — the driver reports `✗` and moves on, exactly as designed for a real failure.
-//   2. The step numbers still cover the rule's eight sections, contiguously. A step quietly
+//   2. The step numbers still cover the rule's numbered sections, contiguously. A step quietly
 //      dropped from the array leaves a sweep that passes while never running that check.
 //   3. The transcript lands somewhere gitignored. It is regenerated in full on every run and
 //      routinely hundreds of KB; a path outside server/data would put it in `git status` and
@@ -43,7 +43,7 @@ for (const s of STEPS) {
   assert.ok(s.name && s.what, `step ${s.step} needs a name and a description — both are printed in the verdict`);
 }
 
-// --- 2. the eight sections of the rule are all still covered ----------------------------------
+// --- 2. the numbered sections of the rule are all still covered -------------------------------
 const numbers = STEPS.map((s) => s.step);
 assert.deepEqual([...numbers].sort((a, b) => a - b), numbers, "steps must be listed in ascending order — they run top to bottom");
 const covered = [...new Set(numbers)];
@@ -52,7 +52,7 @@ assert.deepEqual(
   Array.from({ length: covered.length }, (_, i) => i + 1),
   `steps must cover 1..N with no gaps — found ${covered.join(",")}, so a section of the rule has no command`,
 );
-assert.ok(covered.length >= 8, `the sweep rule has eight numbered sections; only ${covered.length} are wired up`);
+assert.ok(covered.length >= 10, `the sweep rule has ten numbered sections; only ${covered.length} are wired up`);
 
 // --- 3. the transcript cannot end up in a commit ----------------------------------------------
 const transcriptDir = path.dirname(TRANSCRIPT);

@@ -2,7 +2,7 @@
 
 When the brief is a health/quality sweep ("nightly check", "make sure everything is smooth") or you
 are auto-resumed after an orchestrator restart that already completed, run `npm run quality`
-(`scripts/quality-sweep.cjs`). It runs the eight steps below in order, **does not stop at the first
+(`scripts/quality-sweep.cjs`). It runs the numbered steps below in order, **does not stop at the first
 failure** — the point of a sweep is the whole picture, and every step is read-only — and prints a
 per-step verdict at the end. Re-check just the failures with `npm run quality -- <step numbers>`.
 Reading the output is still the job: a green exit says nothing about ladder depth, park counts or DB
@@ -177,6 +177,17 @@ provable locally, so both are checked: a line carrying THIS instance's name, and
 app's own `isCollaborationRoom` (imported from `dist`, never re-implemented) won't show. A `↳ pre-fix
 row(s)` line is a NOTE — the boundary is the kv stamp the fixed build writes on first boot, so residue the
 bug wrote can't red a healthy office forever. Gate: `test:office-health`.
+
+## 10. `npm run probe:model-catalog --prefix server` — every model and effort Auto-select can see
+Provider headroom (step 5) proves a backend can run; it does **not** prove that backend's newly granted
+models or effort tiers reached Auto-select. This probe prints the authoritative cached roster for Claude,
+Codex, Grok and z.ai with the exact effort set beside every model. For CLI-backed providers it also reads
+the CLI's current local catalog and fails on either direction of drift: a newly visible model/tier missing
+from the server cache, or a removed/hidden model the server still offers. Disabled optional providers may
+have no cache; Claude and every enabled backend may not. A newly released unknown Codex effort fails loudly
+instead of being filtered away — update the canonical effort type, runner, UI and selector together before
+accepting it. This is catalog coverage, not availability: read step 5 for caps/headroom. Gate:
+`test:model-catalog-health`.
 
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already completed — only verify live `dist` + health.

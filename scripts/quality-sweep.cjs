@@ -40,6 +40,7 @@ const STEPS = [
   { step: 7, name: "audit-secrets", what: "secrets in tree or history", script: "audit:secrets", cwd: SERVER },
   { step: 8, name: "db-size", what: "what the DB is made of", script: "probe:db-size", cwd: SERVER },
   { step: 9, name: "office", what: "the online office is two-way, not echoing itself", script: "probe:office", cwd: SERVER },
+  { step: 10, name: "model-catalog", what: "all provider models + exact effort tiers available to Auto-select", script: "probe:model-catalog", cwd: SERVER },
 ];
 
 // npm is a .cmd on Windows; Node refuses to spawn .cmd/.bat without a shell.
