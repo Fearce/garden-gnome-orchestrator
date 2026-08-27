@@ -2337,6 +2337,24 @@ export class ThreadManager implements OrchestratorApi {
     this.db.kvSet(CODEX_CAP_SOURCE_KV_KEY, "");
   }
 
+  /** A provider-stated reset is authoritative until the provider proves otherwise. The task database is
+   *  that proof when a later Codex run completed successfully: this happens after a usage reset/credit
+   *  redemption, and also prevents the legacy-QA migration from reviving an overnight cap after newer
+   *  Codex work already succeeded. Interrupted/restarted runs are deliberately ignored — they say
+   *  nothing about quota. The newest conclusive Codex outcome wins (success vs cap). */
+  private codexRecoveredAfterLastRecordedCap(): boolean {
+    const latest = this.db
+      .listAllRuns(5_000)
+      .filter(
+        (run) =>
+          run.account?.startsWith("codex:") &&
+          run.endedAt != null &&
+          (run.capFlagged === true || run.state === "done"),
+      )
+      .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))[0];
+    return latest?.state === "done" && latest.capFlagged !== true;
+  }
+
   /** Whether Codex should be treated as usage-capped right now (route implementors to Claude). True while
    *  the live-run latch is active OR the latest usage snapshot shows a window fully consumed. Clears an
    *  expired latch as a side effect so Codex is retried the moment its window resets. */
@@ -2348,8 +2366,15 @@ export class ThreadManager implements OrchestratorApi {
       // the same plan has usable headroom — model/account limits can clear between the failure and
       // the next supervisor tick. Rollout snapshots are deliberately NOT enough here: they can be
       // old, whereas liveCodexUsage is a fresh plan-wide RPC reading.
-      if (!this.codexCapUntilProviderStated && liveCodexUsage() && this.codexProviderCandidate().hasHeadroom) {
-        this.hub.log("info", "Codex live usage probe reports headroom — clearing the stale Codex cap latch.");
+      const liveHeadroom = liveCodexUsage() && this.codexProviderCandidate().hasHeadroom;
+      const recoveredAfterCap = this.codexCapUntilProviderStated && this.codexRecoveredAfterLastRecordedCap();
+      if (liveHeadroom && (!this.codexCapUntilProviderStated || recoveredAfterCap)) {
+        this.hub.log(
+          "info",
+          recoveredAfterCap
+            ? "Codex has a successful run newer than its recorded cap and live headroom — clearing the stale provider reset latch."
+            : "Codex live usage probe reports headroom — clearing the stale Codex cap latch.",
+        );
         this.clearCodexCap();
         return false;
       }

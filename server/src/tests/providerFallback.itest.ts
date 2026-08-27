@@ -142,6 +142,16 @@ try {
   check("the success-shaped cap reaches the fallback QA verdict", successCapResult?.structuredOutput === verdict);
   check("the success-shaped cap does not create a human-review park", !internals.capParked.has(successCap.id));
 
+  // A stale provider-stated latch must survive a dashboard-only contradiction, but not a newer
+  // successful run on that same backend. The latter is direct evidence that a reset/redemption made
+  // Codex usable again; interrupted deploy victims are intentionally not conclusive outcomes.
+  check("the latest recorded Codex cap remains authoritative before recovery", !internals.codexRecoveredAfterLastRecordedCap());
+  const recoveredCodex = db.createRun({ threadId: successCap.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+  db.updateRun(recoveredCodex.id, { state: "done", capFlagged: false, endedAt: Date.now() + 1_000 });
+  const interruptedAfterRecovery = db.createRun({ threadId: successCap.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+  db.updateRun(interruptedAfterRecovery.id, { state: "interrupted", endedAt: Date.now() + 2_000 });
+  check("a newer successful Codex run invalidates the older recorded cap", internals.codexRecoveredAfterLastRecordedCap());
+
   // A synchronous/pre-init Claude 429 has no session id to carry. It must fresh-start on the next
   // subscription, not treat the missing id as proof that every provider is exhausted.
   const earlyCap = db.createThread({ title: "Pre-init Claude cap fresh-starts the next account", workspace, rawPrompt: "verify", brief: "verify" });
