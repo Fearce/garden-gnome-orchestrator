@@ -115,12 +115,14 @@ const floorBump = explain(advisory, tree, () => {
 assert.equal(probed, 0, "a safe floor bump must not consult the registry");
 assert.ok(floorBump.some((l) => l.includes("a floor bump")), "the floor-bump verdict still stands");
 
-// ...and the semver-fighting path must, reaching it through explain()'s real wiring.
+// ...and the semver-fighting path must, reaching it through explain()'s real wiring. Give this
+// fixture its declared range explicitly: production intentionally reads the installed parent
+// manifest, whose version changes whenever the lockfile is refreshed.
 let asked = null;
 const fought = explain(pinned, pinnedTree, (parent, name) => {
   asked = `${parent}/${name}`;
   return { version: "7.5.1", range: "6.1.200" };
-});
+}, () => "6.1.200");
 assert.equal(asked, "officeparser/pdfjs-dist", "explain must ask the registry about the pinning parent");
 assert.ok(
   !fought.some((l) => /fights semver.*upgrade the parent/.test(l)),

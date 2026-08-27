@@ -51,7 +51,7 @@ function firstFixed(range) {
 }
 
 /** Every installed package that declares `name` as a dependency, with its declared range. */
-function dependantsOf(tree, name, nodes = []) {
+function dependantsOf(tree, name, nodes = [], rangeFor = declaredRange) {
   const out = new Map();
   const visit = (node, nodeName) => {
     if (!node || typeof node !== "object") return;
@@ -63,7 +63,7 @@ function dependantsOf(tree, name, nodes = []) {
     }
   };
   visit(tree, null);
-  return [...out.values()].map((p) => ({ ...p, range: declaredRange(p.parent, p.version, name, nodes) }));
+  return [...out.values()].map((p) => ({ ...p, range: rangeFor(p.parent, p.version, name, nodes) }));
 }
 
 /**
@@ -141,7 +141,7 @@ function upstreamRoute(dep, name, fixes, lookupLatest) {
  * does, an `overrides` floor bump is safe; if not, the override fights semver, and the
  * follow-up line says whether a parent upgrade is actually available to take instead.
  */
-function explain(advisory, tree, lookupLatest = registryLatest) {
+function explain(advisory, tree, lookupLatest = registryLatest, rangeFor = declaredRange) {
   const lines = [];
   const paths = (advisory.nodes ?? []).map((n) => n.replace(/^node_modules\//, ""));
   if (paths.length) lines.push(`installed at: ${paths.join(", ")}`);
@@ -152,7 +152,7 @@ function explain(advisory, tree, lookupLatest = registryLatest) {
   const fixes = [...new Set(ranges.map(firstFixed).filter(Boolean))].sort();
   if (fixes.length) lines.push(`clears at: ${fixes.map((f) => `>=${f}`).join(" / ")}`);
 
-  for (const dep of dependantsOf(tree, advisory.name, advisory.nodes ?? [])) {
+  for (const dep of dependantsOf(tree, advisory.name, advisory.nodes ?? [], rangeFor)) {
     if (!dep.range) {
       lines.push(`parent ${dep.parent}@${dep.version}: declared range not resolvable`);
       continue;
