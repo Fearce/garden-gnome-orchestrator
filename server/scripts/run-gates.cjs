@@ -81,6 +81,7 @@ const GATES = [
   "test:chat-steering",
   "test:auto-review",
   "test:model-select",
+  "test:model-catalog",
   "test:auto-model",
   "test:director-provider",
   "test:livebench",

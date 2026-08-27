@@ -74,6 +74,7 @@
     "test:chat-steering": "tsx src/tests/chatSteering.itest.ts",
     "test:auto-review": "tsx src/tests/autoReview.itest.ts",
     "test:model-select": "tsx src/tests/modelSelection.test.ts",
+    "test:model-catalog": "tsx src/tests/modelCatalog.test.ts",
     "test:auto-model": "tsx src/tests/autoModelSelection.itest.ts",
     "test:director-provider": "tsx src/tests/directorProvider.test.ts",
     "test:livebench": "tsx src/tests/liveBenchScores.test.ts",

@@ -622,6 +622,7 @@ export class ThreadManager implements OrchestratorApi {
       () => this.openaiApiKey(),
       () => this.zaiApiKey(),
       () => this.hub.publish({ type: "settings", settings: this.settings() }),
+      (level, message) => this.hub.log(level, message),
     );
     this.liveBench = new LiveBenchScores(db, (level, message) => this.hub.log(level, message));
     // Reads its config lazily on every notice, so flipping the toggle applies to tasks already running.

@@ -17,6 +17,12 @@ const GROK_MODELS_KEY = "cache_grok_models";
 const ZAI_MODELS_KEY = "cache_zai_models";
 const REFRESH_MS = 6 * 60 * 60 * 1000; // 6h — model access changes rarely; a boot fetch covers new grants.
 const FETCH_TIMEOUT_MS = 12_000;
+// A provider list that fails to fetch is invisible: the union with the curated fallback still yields a
+// plausible-looking dropdown, so the only symptom is a roster that quietly stops tracking the provider.
+// At a 6h cadence one transient boot failure costs a whole working day of staleness, so retry sooner —
+// bounded, because a provider that is genuinely down must not turn into a poll.
+const RETRY_MS = Number(process.env.MODEL_CATALOG_RETRY_MS ?? 5 * 60 * 1000);
+const MAX_QUICK_RETRIES = 3;
 
 /** Curated Claude fallback (most-capable first) for a fresh install or an unreachable models endpoint. */
 export const CURATED_CLAUDE_MODELS = [
@@ -130,6 +136,8 @@ export function readGrokModelsFile(): string[] {
  */
 export class ModelCatalog {
   private timer: NodeJS.Timeout | undefined;
+  private retryTimer: NodeJS.Timeout | undefined;
+  private quickRetries = 0;
 
   constructor(
     private readonly db: Db,
@@ -137,6 +145,7 @@ export class ModelCatalog {
     private readonly getOpenAiKey: () => string | undefined,
     private readonly getZaiKey: () => string | undefined,
     private readonly onChange: () => void,
+    private readonly log: (level: "info" | "warn" | "error", message: string) => void = () => {},
   ) {}
 
   start(): void {
@@ -147,6 +156,7 @@ export class ModelCatalog {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.retryTimer) clearTimeout(this.retryTimer);
   }
 
   /** Cached live Claude model ids (empty until the first successful fetch). */
@@ -189,42 +199,43 @@ export class ModelCatalog {
 
   async refresh(): Promise<void> {
     let changed = false;
+    let failed = false;
+
+    /** One provider's list. A failure keeps the last-known cache — but is reported, not swallowed: the
+     *  union with the curated fallback hides it completely otherwise. */
+    const collect = async (label: string, key: string, load: () => Promise<string[]> | undefined): Promise<void> => {
+      try {
+        const models = await load();
+        if (models?.length && this.storeIfChanged(key, models)) changed = true;
+      } catch (error) {
+        failed = true;
+        this.log("warn", `model catalog: kept the cached ${label} list — ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
 
     const token = this.accounts.firstUsableToken();
-    if (token) {
-      try {
-        const models = await fetchClaudeModels(token);
-        if (models.length && this.storeIfChanged(CLAUDE_MODELS_KEY, models)) changed = true;
-      } catch {
-        // Transient — keep the last-known cached list rather than blanking the dropdown.
-      }
-    }
-
-    const key = this.getOpenAiKey();
-    if (key) {
-      try {
-        const models = await fetchOpenAiModels(key);
-        if (models.length && this.storeIfChanged(CODEX_MODELS_KEY, models)) changed = true;
-      } catch {
-        // Transient — keep the last-known cached Codex list.
-      }
-    }
-
+    await collect("Claude", CLAUDE_MODELS_KEY, () => (token ? fetchClaudeModels(token) : undefined));
+    const openAiKey = this.getOpenAiKey();
+    await collect("Codex", CODEX_MODELS_KEY, () => (openAiKey ? fetchOpenAiModels(openAiKey) : undefined));
     const zaiKey = this.getZaiKey();
-    if (zaiKey) {
-      try {
-        const models = await fetchZaiModels(zaiKey);
-        if (models.length && this.storeIfChanged(ZAI_MODELS_KEY, models)) changed = true;
-      } catch {
-        // Transient — keep the last-known cached z.ai list.
-      }
-    }
-
-    // Grok models come from the CLI's own local cache file (no network / no auth needed); keep whatever
-    // was last cached if the file is momentarily unreadable.
-    const grokModels = readGrokModelsFile();
-    if (grokModels.length && this.storeIfChanged(GROK_MODELS_KEY, grokModels)) changed = true;
+    await collect("z.ai", ZAI_MODELS_KEY, () => (zaiKey ? fetchZaiModels(zaiKey) : undefined));
+    // Grok comes from the CLI's own local cache file (no network / no auth needed).
+    await collect("Grok", GROK_MODELS_KEY, async () => readGrokModelsFile());
 
     if (changed) this.onChange();
+    if (failed) this.scheduleRetry();
+    else this.quickRetries = 0;
+  }
+
+  /** Re-run a failed refresh well before the 6h cadence, a bounded number of times, so one transient at
+   *  boot doesn't strand every roster for the rest of the day. */
+  private scheduleRetry(): void {
+    if (this.retryTimer || this.quickRetries >= MAX_QUICK_RETRIES) return;
+    this.quickRetries++;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      void this.refresh();
+    }, RETRY_MS);
+    this.retryTimer.unref();
   }
 }
