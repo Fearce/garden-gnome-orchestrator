@@ -14,6 +14,10 @@
 //   • an empty-run fresh retry     (MAX_QA_SILENT_RETRIES  = 1, durable qaSilentRetries)
 //   • a usage-cap failover         (agent_runs.cap_flagged — relaunches on another backend)
 //
+// `qaCapRetryRound` is intentionally not a fourth arithmetic term. It is a transient marker for
+// the round currently waiting for that cap failover; the capped run's `cap_flagged` row already
+// accounts for the eventual replacement launch. Counting both would manufacture a launch.
+//
 // All three shipped AFTER the durable-budget fix (44f793b) this check was written to
 // police, so `launches > maxQaRounds` quietly stopped meaning "the loop drained its
 // budget" and started firing on healthy tasks — pointing the reader at a bug fixed a
@@ -58,6 +62,9 @@ function roundsCap(raw) {
  */
 const QA_DURABLE_COUNTERS = {
   qaRoundsUsed: { input: "roundsUsed", recoversRound: false, label: "round(s)" },
+  // Control-flow marker, not a launch tally: it stores WHICH already-charged round will be retried
+  // after every provider was capped. The cap_flagged run row is the recovery term in the arithmetic.
+  qaCapRetryRound: { input: "capRetryRound", recoversRound: false, label: "pending usage-cap retry round" },
   qaCutoffResumes: { input: "cutoffResumes", recoversRound: true, label: "turn-ceiling continuation(s)" },
   qaSilentRetries: { input: "silentRetries", recoversRound: true, label: "empty-run retry(ies)" },
   // Spends no launch of its OWN: it re-counts the subset of qaCutoffResumes charged to the review running
@@ -99,7 +106,7 @@ function accountedLaunches(input) {
  * exceeding maxQaRounds.
  */
 function qaLoopReading(input) {
-  const { cap, launches, roundsUsed, interrupted, appliesFixes } = input;
+  const { cap, launches, roundsUsed, capRetryRound, interrupted, appliesFixes } = input;
   const lines = [];
   const accounted = accountedLaunches(input);
   const parts = launchTerms().map((term) => `${num(input[term.input])} ${term.label}`);
@@ -108,6 +115,12 @@ function qaLoopReading(input) {
     lines.push(
       `  · ${interrupted} of those round(s) went to a run a restart killed before it reached a verdict — ` +
         "the round was charged before the launch, so they are already counted above, not extra.",
+    );
+  }
+  if (capRetryRound != null) {
+    lines.push(
+      `  · QA round ${capRetryRound} is waiting for a usage-cap retry; this marker names the already-charged round, ` +
+        "not another launch (the capped run's cap_flagged row accounts for its eventual replacement).",
     );
   }
 

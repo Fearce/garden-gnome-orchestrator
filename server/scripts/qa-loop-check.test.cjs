@@ -37,6 +37,20 @@ assert.equal(accountedLaunches({ roundsUsed: 10, interrupted: 2 }), 10, "an inte
   assert.doesNotMatch(text(r), /don't account for/, "double-counting casualties would invent a shortfall");
 }
 
+// A cap-only QA resume records the round number as control-flow state. The capped run itself is already
+// in roundsUsed, while its cap_flagged row accounts for the replacement launch after a provider frees up;
+// treating the marker as another counter would therefore double-count the recovery.
+{
+  assert.equal(
+    accountedLaunches({ roundsUsed: 1, capRetryRound: 1, capFailovers: 1 }),
+    2,
+    "the pending cap-retry round is not an extra launch term",
+  );
+  const r = qaLoopReading({ ...base, launches: 1, roundsUsed: 1, capRetryRound: 1, capFailovers: 1 });
+  assert.match(text(r), /QA round 1 is waiting for a usage-cap retry/);
+  assert.doesNotMatch(text(r), /1 pending usage-cap retry round/, "the marker must not enter launch arithmetic");
+}
+
 // --- THE 2026-08-17 REGRESSION ------------------------------------------------
 // The check compared QA *launches* against the *rounds* cap. Real production tasks run
 // launches well past their round count via the four separately-budgeted recoveries, so a
