@@ -58,6 +58,8 @@ sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-r
   `server/`, serving the built `web/dist` + WS/REST API.
 - Typecheck: `npm run typecheck`. Data: `server/data/orchestrator.sqlite`. Crash stacks:
   `server/data/crash.log` (written by the process guards in `server/src/crashLog.ts`).
+- Full free gate suite: `npm run test:gates` from the repo root. It streams terse progress and writes
+  the complete transcript to `server/data/gates-last.log`.
 - **Build/typecheck suddenly fails with `Cannot find module '@anthropic-ai/claude-agent-sdk'` (a wall of
   TS2307s) or `'tsc' is not recognized`?** Not your diff — a concurrent/interrupted `npm install` left
   `server/node_modules` PARTIAL (common here: many agents share one checkout). Fix: `npm install --prefix

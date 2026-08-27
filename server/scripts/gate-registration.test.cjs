@@ -13,13 +13,21 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
+const ROOT_DIR = path.resolve(SERVER_DIR, "..");
 
 // Tests that must NOT be gates. A test belongs here only if running it costs money or
 // needs live credentials; add the reason so the exemption stays reviewable.
 const NOT_FREE = new Map();
 
 const pkg = JSON.parse(fs.readFileSync(path.join(SERVER_DIR, "package.json"), "utf8"));
+const rootPkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, "package.json"), "utf8"));
 const runner = fs.readFileSync(path.join(SERVER_DIR, "scripts", "run-gates.cjs"), "utf8");
+
+assert.equal(
+  rootPkg.scripts?.["test:gates"],
+  "npm run test:gates --prefix server",
+  "the repository-root `npm run test:gates` alias must keep the full registered suite discoverable",
+);
 
 /** The GATES array literal, so a gate name mentioned only in a comment doesn't count. */
 function registeredGates() {

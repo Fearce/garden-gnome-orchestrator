@@ -17,7 +17,7 @@
  * Usage:
  *   npm run probe:console                       (repo root)
  *   npm run probe:console -- --shot out.png     save a screenshot (sweep-report evidence)
- *   npm run probe:providers                     report free-provider readiness + bundle freshness
+ *   npm run probe:providers                     verify free-provider readiness, small-only policy, and bundle freshness
  *   npm run probe:providers -- --expect-provider-ids gemini,groq,openrouter,kilo
  *   ORCH_URL=http://127.0.0.1:4317 ORCH_PASSWORD=<pw> node web/scripts/console-smoke.cjs
  *
@@ -28,6 +28,7 @@ const path = require("path");
 
 // Ignorable request noise: absent favicons and the dev-only HMR socket are not console health.
 const IGNORABLE_REQUEST = /favicon|\/@vite\/|hot-update/i;
+const SMALL_TASK_POLICY_LABEL = "Use free pool for small tasks only";
 
 function loadChromium() {
   const candidates = [process.env.PLAYWRIGHT_PATH, "playwright", "playwright-core"].filter(Boolean);
@@ -76,6 +77,7 @@ function parseOptions(argv, env = process.env) {
     forbiddenProviderIds: [],
     expectedProviderCount: null,
     expectLocalBundle: false,
+    expectSmallTaskPolicy: false,
     help: false,
   };
   const valueAfter = (flag, index) => {
@@ -88,6 +90,7 @@ function parseOptions(argv, env = process.env) {
     const arg = argv[i];
     if (arg === "--providers") options.providers = true;
     else if (arg === "--expect-local-bundle") options.expectLocalBundle = true;
+    else if (arg === "--expect-small-task-policy") options.expectSmallTaskPolicy = true;
     else if (arg === "--help" || arg === "-h") options.help = true;
     else if (arg === "--url") options.base = valueAfter(arg, i++);
     else if (arg === "--shot") options.shot = valueAfter(arg, i++);
@@ -101,7 +104,7 @@ function parseOptions(argv, env = process.env) {
     } else throw new Error(`unknown argument: ${arg}`);
   }
 
-  if (options.expectedProviderIds || options.forbiddenProviderIds.length || options.expectedProviderCount != null) {
+  if (options.expectedProviderIds || options.forbiddenProviderIds.length || options.expectedProviderCount != null || options.expectSmallTaskPolicy) {
     options.providers = true;
   }
   return options;
@@ -118,6 +121,7 @@ function usage() {
     "  --forbid-provider-ids <csv>    fail if any listed provider is exposed",
     "  --expect-provider-count <n>    require exactly n providers",
     "  --expect-local-bundle          require the served entry bundle to match local web/dist",
+    "  --expect-small-task-policy     require the small-only routing API contract and served UI label",
   ].join("\n");
 }
 
@@ -160,6 +164,46 @@ function normalizeProviderPayload(body) {
       usage: typeof provider.usage?.displayLabel === "string" ? provider.usage.displayLabel : "",
     };
   });
+}
+
+function normalizeRoutingPolicy(body) {
+  const routing = body?.routing;
+  if (!routing || typeof routing !== "object") return null;
+  const policy = routing.policy;
+  const positiveInteger = (value) => Number.isInteger(value) && value > 0 ? value : null;
+  return {
+    enabled: routing.enabled === true,
+    active: routing.active === true,
+    reason: typeof routing.reason === "string" ? routing.reason : "",
+    mode: typeof policy?.mode === "string" ? policy.mode : "",
+    summary: typeof policy?.summary === "string" ? policy.summary : "",
+    maxModelCalls: positiveInteger(policy?.maxModelCalls),
+    maxToolCalls: positiveInteger(policy?.maxToolCalls),
+    maxTotalTokens: positiveInteger(policy?.maxTotalTokens),
+    requireVisibleQuota: typeof policy?.requireVisibleQuota === "boolean" ? policy.requireVisibleQuota : null,
+  };
+}
+
+function validateSmallTaskPolicy(routing) {
+  if (!routing) return ["/api/free-providers returned no routing policy"];
+  const failures = [];
+  if (routing.mode !== "small-only") failures.push(`free routing mode is "${routing.mode || "missing"}", expected "small-only"`);
+  if (!routing.summary.trim()) failures.push("free routing policy has no owner-facing summary");
+  for (const [label, value] of [
+    ["maxModelCalls", routing.maxModelCalls],
+    ["maxToolCalls", routing.maxToolCalls],
+    ["maxTotalTokens", routing.maxTotalTokens],
+  ]) {
+    if (value == null) failures.push(`free routing policy has no positive integer ${label}`);
+  }
+  if (routing.requireVisibleQuota == null) failures.push("free routing policy does not declare whether visible quota is required");
+  return failures;
+}
+
+function validateSmallTaskBundle(bundleText) {
+  return String(bundleText).includes(SMALL_TASK_POLICY_LABEL)
+    ? []
+    : [`served UI bundle does not contain "${SMALL_TASK_POLICY_LABEL}"`];
 }
 
 function validateProviders(providers, options) {
@@ -209,6 +253,9 @@ async function main() {
   const consoleErrors = [];
   const failedRequests = [];
   let providers = null;
+  let routing = null;
+  let smallTaskBundleText = null;
+  let smallTaskBundleError = null;
 
   const browser = await chromium.launch({ headless: true });
   let page;
@@ -226,7 +273,9 @@ async function main() {
     if (options.providers) {
       const response = await page.request.get(`${base}/api/free-providers`);
       if (!response.ok()) throw new Error(`/api/free-providers failed: HTTP ${response.status()}`);
-      providers = normalizeProviderPayload(await response.json());
+      const payload = await response.json();
+      providers = normalizeProviderPayload(payload);
+      routing = normalizeRoutingPolicy(payload);
     }
 
     // Not networkidle: the selected thread pulls a burst of multi-MB /api/attachment images and the
@@ -236,6 +285,15 @@ async function main() {
     await page.waitForSelector(".topbar", { timeout: 20_000 }).catch(() => {});
     await page.waitForTimeout(2500); // let the WS hello land and the board hydrate
     view = await page.evaluate(inspect);
+    if (options.expectSmallTaskPolicy && view.bundle) {
+      try {
+        const response = await page.request.get(new URL(view.bundle, base).toString());
+        if (!response.ok()) smallTaskBundleError = `served entry bundle failed: HTTP ${response.status()}`;
+        else smallTaskBundleText = await response.text();
+      } catch (error) {
+        smallTaskBundleError = `could not read served entry bundle: ${error.message || error}`;
+      }
+    }
     if (options.shot) await page.screenshot({ path: options.shot });
   } finally {
     await browser.close();
@@ -249,6 +307,11 @@ async function main() {
   for (const e of consoleErrors) failures.push(`console error: ${e}`);
   for (const r of failedRequests) failures.push(`request failed: ${r}`);
   if (providers) failures.push(...validateProviders(providers, options));
+  if (options.expectSmallTaskPolicy) {
+    failures.push(...validateSmallTaskPolicy(routing));
+    if (smallTaskBundleError) failures.push(smallTaskBundleError);
+    else failures.push(...validateSmallTaskBundle(smallTaskBundleText));
+  }
 
   let bundleCheck = null;
   if (options.expectLocalBundle) {
@@ -269,6 +332,9 @@ async function main() {
   console.log(`         console errors=${consoleErrors.length} failed requests=${failedRequests.length}`);
   if (providers) {
     console.log(`         providers=${providers.length} — ${providers.map((provider) => `${provider.id}:${provider.state}`).join(" ")}`);
+    if (routing) {
+      console.log(`         policy=${routing.mode || "missing"}; calls=${routing.maxModelCalls ?? "?"}; tools=${routing.maxToolCalls ?? "?"}; tokens=${routing.maxTotalTokens ?? "?"}; visible-quota=${routing.requireVisibleQuota == null ? "?" : routing.requireVisibleQuota ? "required" : "optional"}`);
+    }
     for (const provider of providers) {
       const auth = provider.configured ? provider.keySource : "not configured";
       console.log(`         · ${provider.id}: ${provider.state}; auth=${auth}${provider.usage ? `; ${provider.usage}` : ""}`);
@@ -287,7 +353,17 @@ async function main() {
   return failures.length ? 1 : 0;
 }
 
-module.exports = { compareBundles, entryBundle, normalizeProviderPayload, parseOptions, validateProviders };
+module.exports = {
+  SMALL_TASK_POLICY_LABEL,
+  compareBundles,
+  entryBundle,
+  normalizeProviderPayload,
+  normalizeRoutingPolicy,
+  parseOptions,
+  validateProviders,
+  validateSmallTaskBundle,
+  validateSmallTaskPolicy,
+};
 
 if (require.main === module) {
   main().then(

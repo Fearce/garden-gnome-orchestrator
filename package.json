@@ -13,11 +13,12 @@
     "build": "npm run build --prefix web && npm run build --prefix server",
     "start": "npm run start --prefix server",
     "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix web && npm run typecheck --prefix relay",
+    "test:gates": "npm run test:gates --prefix server",
     "health": "npm run health --prefix server",
     "quality": "node scripts/quality-sweep.cjs",
     "probe:console": "node web/scripts/console-smoke.cjs",
     "preprobe:providers": "npm run test:console-probe",
-    "probe:providers": "node web/scripts/console-smoke.cjs --providers --expect-local-bundle",
+    "probe:providers": "node web/scripts/console-smoke.cjs --providers --expect-local-bundle --expect-small-task-policy",
     "test:console-probe": "node web/scripts/console-smoke.test.cjs",
     "probe:chips": "node web/scripts/check-accounts-visible.cjs"
   },

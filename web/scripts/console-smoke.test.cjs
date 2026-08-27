@@ -2,11 +2,15 @@
 const assert = require("node:assert/strict");
 
 const {
+  SMALL_TASK_POLICY_LABEL,
   compareBundles,
   entryBundle,
   normalizeProviderPayload,
+  normalizeRoutingPolicy,
   parseOptions,
   validateProviders,
+  validateSmallTaskBundle,
+  validateSmallTaskPolicy,
 } = require("./console-smoke.cjs");
 
 const defaults = parseOptions([], {});
@@ -21,6 +25,7 @@ const options = parseOptions([
   "--forbid-provider-ids", "retired-provider",
   "--expect-provider-count", "2",
   "--expect-local-bundle",
+  "--expect-small-task-policy",
 ], {});
 assert.equal(options.base, "http://127.0.0.1:4999/");
 assert.deepEqual(options.expectedProviderIds, ["gemini", "groq"], "CSV ids are trimmed and deduplicated");
@@ -28,7 +33,9 @@ assert.deepEqual(options.forbiddenProviderIds, ["retired-provider"]);
 assert.equal(options.expectedProviderCount, 2);
 assert.equal(options.providers, true);
 assert.equal(options.expectLocalBundle, true);
+assert.equal(options.expectSmallTaskPolicy, true);
 assert.equal(parseOptions(["--forbid-provider-ids", "retired"], {}).providers, true, "an assertion implies provider inspection");
+assert.equal(parseOptions(["--expect-small-task-policy"], {}).providers, true, "the policy assertion implies provider inspection");
 assert.throws(() => parseOptions(["--expect-provider-count", "2.5"], {}), /non-negative integer/);
 assert.throws(() => parseOptions(["--expect-provider-ids", "--providers"], {}), /requires a value/);
 assert.throws(() => parseOptions(["--typo"], {}), /unknown argument/);
@@ -65,4 +72,38 @@ assert.match(validateProviders(providers, { ...passing, expectedProviderCount: 3
 assert.match(validateProviders(providers, { ...passing, forbiddenProviderIds: ["groq"] })[0], /still exposed/);
 assert.match(validateProviders([...providers, providers[0]], { expectedProviderIds: null, forbiddenProviderIds: [], expectedProviderCount: null })[0], /duplicate/);
 
-console.log("console-smoke: provider and bundle assertions passed");
+const routing = normalizeRoutingPolicy({
+  routing: {
+    enabled: true,
+    active: true,
+    reason: "One provider has capacity.",
+    policy: {
+      mode: "small-only",
+      summary: "First attempt only: broad and uncertain work stays reliable.",
+      maxModelCalls: 4,
+      maxToolCalls: 10,
+      maxTotalTokens: 8_000,
+      requireVisibleQuota: true,
+    },
+  },
+});
+assert.deepEqual(routing, {
+  enabled: true,
+  active: true,
+  reason: "One provider has capacity.",
+  mode: "small-only",
+  summary: "First attempt only: broad and uncertain work stays reliable.",
+  maxModelCalls: 4,
+  maxToolCalls: 10,
+  maxTotalTokens: 8_000,
+  requireVisibleQuota: true,
+});
+assert.deepEqual(validateSmallTaskPolicy(routing), []);
+assert.match(validateSmallTaskPolicy(null)[0], /no routing policy/);
+assert.match(validateSmallTaskPolicy({ ...routing, mode: "all-tasks" })[0], /expected "small-only"/);
+assert.match(validateSmallTaskPolicy({ ...routing, maxModelCalls: null })[0], /maxModelCalls/);
+assert.match(validateSmallTaskPolicy({ ...routing, summary: "" })[0], /owner-facing summary/);
+assert.deepEqual(validateSmallTaskBundle(`before ${SMALL_TASK_POLICY_LABEL} after`), []);
+assert.match(validateSmallTaskBundle("Use free pool")[0], /served UI bundle/);
+
+console.log("console-smoke: provider, routing-policy, and bundle assertions passed");

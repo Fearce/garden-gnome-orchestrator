@@ -45,6 +45,8 @@ now has three sources: QA, a manual Mark done, and an accepted auto-review. Gate
   `server/`, serving the built `web/dist` + WS/REST API.
 - Typecheck: `npm run typecheck`. Data: `server/data/orchestrator.sqlite`. Crash stacks:
   `server/data/crash.log` (written by the process guards in `server/src/crashLog.ts`).
+- Full free gate suite: `npm run test:gates` from the repo root. It streams terse progress and writes
+  the complete transcript to `server/data/gates-last.log`.
 - Serves `http://127.0.0.1:4317` and `https://127.0.0.1:4319` (same routes; the TLS port
   exists so the HTTPS Dashboard Deck can iframe it without mixed-content blocking).
   LAN access is auth-gated via `server/.env` (`AUTH_PASSWORD` / Google). Local/LAN only.

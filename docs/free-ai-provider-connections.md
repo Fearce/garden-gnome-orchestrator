@@ -81,7 +81,12 @@ From the repository root, run the read-only live probe after changing the provid
 npm run probe:providers -- --expect-provider-ids gemini,groq,openrouter,kilo,mistral,cohere,cloudflare,nvidia,huggingface --expect-provider-count 9
 ```
 
-The probe logs in with `AUTH_PASSWORD` without printing it, reads provider readiness from the authenticated API, opens the console without clicking or mutating production state, and verifies that the entry bundle served on `:4317` is the current local `web/dist` bundle. It fails separately for a stale server registry, a forbidden/extra provider, a missing provider, or a stale static bundle, so a working web card cannot be mistaken for server code that has not reloaded.
+The probe logs in with `AUTH_PASSWORD` without printing it, reads provider readiness from the authenticated
+API, opens the console without clicking or mutating production state, verifies the live `small-only` policy
+shape and bounded-run fields, checks the served bundle for the small-task-only control, and confirms that
+bundle is the current local `web/dist` entry. It fails separately for a stale server registry, routing-policy
+drift, a forbidden/extra provider, a missing provider, stale UI semantics, or a stale static bundle, so a
+working web card cannot be mistaken for server code that has not reloaded.
 
 ## Security and failure behavior
 
