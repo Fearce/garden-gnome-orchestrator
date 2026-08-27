@@ -18,7 +18,7 @@
  *   npm run probe:console                       (repo root)
  *   npm run probe:console -- --shot out.png     save a screenshot (sweep-report evidence)
  *   npm run probe:providers                     report free-provider readiness + bundle freshness
- *   npm run probe:providers -- --expect-provider-ids gemini,groq,kilo --forbid-provider-ids openrouter
+ *   npm run probe:providers -- --expect-provider-ids gemini,groq,openrouter,kilo
  *   ORCH_URL=http://127.0.0.1:4317 ORCH_PASSWORD=<pw> node web/scripts/console-smoke.cjs
  *
  * Password defaults to AUTH_PASSWORD from server/.env. Exit 0 = pass, 1 = a real failure.

@@ -20,6 +20,7 @@ import {
   normalizeHuggingFaceModels,
   normalizeKiloModels,
   normalizeNvidiaModels,
+  normalizeOpenRouterModels,
 } from "../freeProviders/registry.js";
 import { registerFreeProviderRoutes } from "../freeProviders/routes.js";
 import { chooseFreeModel, chooseFreeTaskModel, FreeProviderService, stateForProviderError } from "../freeProviders/service.js";
@@ -30,7 +31,11 @@ import { T } from "../agents/toolNames.js";
 
 class MemoryStore implements KvStore {
   readonly values = new Map<string, string>();
-  kvGet(key: string): string | null { return this.values.get(key) ?? null; }
+  readonly reads = new Map<string, number>();
+  kvGet(key: string): string | null {
+    this.reads.set(key, (this.reads.get(key) ?? 0) + 1);
+    return this.values.get(key) ?? null;
+  }
   kvSet(key: string, value: string): void { this.values.set(key, value); }
 }
 
@@ -56,20 +61,36 @@ function usage(overrides: Partial<ProviderUsageSnapshot> = {}): ProviderUsageSna
 // Registry/capability boundary: all requested recurring providers exist. Routing eligibility is decided
 // later from saved auth + a freshly validated, explicitly tool-capable free model.
 const registry = createProviderRegistry(mockFetch(() => { throw new Error("network must not run during registration"); }));
-assert.deepEqual(registry.map((provider) => provider.id), ["gemini", "groq", "kilo", "mistral", "cohere", "cloudflare", "nvidia", "huggingface"]);
+assert.deepEqual(registry.map((provider) => provider.id), ["gemini", "groq", "openrouter", "kilo", "mistral", "cohere", "cloudflare", "nvidia", "huggingface"]);
 assert.ok(registry.every((provider) =>
   typeof provider.adapter.listModels === "function" &&
   typeof provider.adapter.complete === "function" &&
   typeof provider.adapter.stream === "function"));
 
-// Dynamic gateway pricing is fail-closed: a free-looking suffix is insufficient unless live input/output are exactly zero.
+// Dynamic gateway pricing is fail-closed: a free-looking suffix is insufficient unless every
+// live billable dimension is exactly zero.
+const openRouterModels = normalizeOpenRouterModels({ data: [
+  { id: "openrouter/free", name: "Free Models Router", context_length: 200_000, pricing: { prompt: "0", completion: "0" }, supported_parameters: ["tools", "tool_choice"] },
+  { id: "vendor/free-now:free", pricing: { prompt: "0", completion: "0", request: "0" }, context_length: 131_072, supported_parameters: ["tools"] },
+  { id: "vendor/quietly-paid:free", pricing: { prompt: "0", completion: "0", request: "0.000001" } },
+  { id: "vendor/no-price:free", pricing: {} },
+] });
+assert.equal(openRouterModels.find((model) => model.id === "openrouter/free")?.isFree, true);
+assert.equal(openRouterModels.find((model) => model.id === "openrouter/free")?.supportsTools, true);
+assert.equal(openRouterModels.find((model) => model.id === "vendor/free-now:free")?.isFree, true);
+assert.equal(openRouterModels.find((model) => model.id === "vendor/quietly-paid:free")?.isFree, false);
+assert.equal(openRouterModels.find((model) => model.id === "vendor/no-price:free")?.isFree, false);
+assert.equal(normalizeOpenRouterModels({ data: [] }).some((model) => model.id === "openrouter/free"), false, "a route absent from the live catalog must not be assumed free");
+
 const kiloModels = normalizeKiloModels({ data: [
+  { id: "kilo-auto/free", pricing: { input: 0, output: 0 }, supported_parameters: ["tools"] },
   { id: "dynamic/free:free", pricing: { input: 0, output: 0 } },
   { id: "dynamic/paid:free", pricing: { input: 0, output: 0.2 } },
 ] });
 assert.equal(kiloModels[0]?.isFree, true);
 assert.equal(kiloModels.find((model) => model.id === "dynamic/paid:free")?.isFree, false);
 assert.equal(kiloModels.find((model) => model.id === "kilo-auto/free")?.isFree, true);
+assert.equal(normalizeKiloModels({ data: [] }).some((model) => model.id === "kilo-auto/free"), false, "a route absent from the live catalog must not be assumed free");
 
 const cloudflareModels = normalizeCloudflareModels({ result: [
   { id: "51b71d5b-8bc0-4489-a107-95e542b69914", name: "@cf/qwen/qwen2.5-coder-32b-instruct", task: { name: "Text Generation" } },
@@ -128,6 +149,8 @@ assert.deepEqual(cohereModels.map((model) => model.id), ["north-mini-code"]);
 assert.equal(cohereModels[0]?.supportsTools, true);
 
 // The selected model is respected only while eligible; otherwise selection falls to a verified preference.
+const openRouterDefinition = registry.find((provider) => provider.id === "openrouter")!;
+assert.equal(chooseFreeModel(openRouterDefinition, openRouterModels, "vendor/quietly-paid:free")?.id, "openrouter/free");
 const kiloDefinition = registry.find((provider) => provider.id === "kilo")!;
 assert.equal(chooseFreeModel(kiloDefinition, kiloModels, "dynamic/paid:free")?.id, "kilo-auto/free");
 const cloudflareDefinition = registry.find((provider) => provider.id === "cloudflare")!;
@@ -228,6 +251,9 @@ assert.equal(cohereEvents.find((event) => event.type === "usage")?.usage.totalTo
 // Native Gemini and Cohere adapters normalize their documented response formats.
 const geminiBodies: Array<Record<string, unknown>> = [];
 const gemini = new GeminiAdapter(mockFetch((url, init) => {
+  assert.equal(new Headers(init?.headers).get("x-goog-api-key"), "AIza-secret-value", "Gemini API keys stay in the request header rather than a credential-bearing URL");
+  assert.equal(url.includes("AIza-secret-value"), false);
+  if (url.includes("/models?")) return json({ models: [] });
   assert.ok(url.includes(encodeURIComponent("gemini-3.5-flash")));
   geminiBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
   return json({
@@ -236,6 +262,7 @@ const gemini = new GeminiAdapter(mockFetch((url, init) => {
     usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 1, totalTokenCount: 6 },
   });
 }));
+await gemini.listModels({ apiKey: "AIza-secret-value" });
 const geminiCompletion = await gemini.complete({ apiKey: "AIza-secret-value" }, { model: "gemini-3.5-flash", messages: [{ role: "user", content: "hi" }] });
 assert.equal(geminiCompletion.text, "READY");
 assert.equal(geminiCompletion.toolCalls[0]?.name, "inspect");
@@ -397,6 +424,38 @@ assert.equal((await readerHarness.result())?.isError, false);
 await readerHarness.stop();
 assert.equal(postedFinding, "The answer: fixture.ts exports 42");
 
+// Groq's OpenAI-compatible tool models can normalize a mixed-case declaration such as `Glob` to
+// lowercase in their response. The replayed assistant call must be restored to the offered canonical
+// name before the next request, otherwise the provider rejects its own history as an undeclared tool.
+let lowercaseToolCall = 0;
+const lowercaseToolRequests: Array<Record<string, unknown>> = [];
+const lowercaseToolSession: FreeProviderTaskSession = {
+  target: { providerId: "stub", providerName: "Stub Free", model: "stub-tools" },
+  async complete(request) {
+    lowercaseToolRequests.push(structuredClone(request) as Record<string, unknown>);
+    lowercaseToolCall++;
+    if (lowercaseToolCall === 1) {
+      return { text: "", model: "stub-tools", toolCalls: [{ id: "lower-glob", name: "glob", arguments: JSON.stringify({ pattern: "fixture.ts" }) }], usage: {} };
+    }
+    return { text: "```json\n{\"summary\":\"Canonical tool replay\"}\n```", model: "stub-tools", toolCalls: [], usage: {} };
+  },
+  markHarnessFailure() {},
+  close() {},
+};
+const lowercaseToolHarness = new FreeProviderAgentRun(lowercaseToolSession, "planner", {
+  model: "stub-tools",
+  cwd: harnessRoot,
+  systemPrompt: "Inspect safely.",
+  outputFormat: { type: "json_schema", schema: PLAN_SCHEMA },
+});
+lowercaseToolHarness.start("Find fixture.ts, then return a plan.");
+assert.equal((await lowercaseToolHarness.result())?.isError, false);
+await lowercaseToolHarness.stop();
+const lowercaseReplay = (lowercaseToolRequests[1]?.messages ?? []) as Array<Record<string, unknown>>;
+const replayedAssistant = lowercaseReplay.find((message) => message.role === "assistant");
+assert.equal((replayedAssistant?.toolCalls as Array<{ name?: string }> | undefined)?.[0]?.name, "Glob", "lower-case provider output is replayed as the declared tool name");
+assert.match(String(lowercaseReplay.find((message) => message.role === "tool")?.content), /fixture\.ts/);
+
 // A parallel tool batch that exhausts the read budget mid-way must still answer EVERY tool call.
 // An OpenAI-compatible endpoint rejects an assistant turn whose tool_calls are not all answered
 // (and Gemini requires one functionResponse per functionCall), so dropping the tail poisons the
@@ -501,7 +560,11 @@ let catalogModelPaid = false;
 const sentModels: string[] = [];
 const serviceFetch = mockFetch((url, init) => {
   if (url === "https://api.kilo.ai/api/gateway/models") {
-    return json({ data: [{ id: "vendor/coder:free", name: "Coder Free", pricing: { prompt: "0", completion: catalogModelPaid ? "0.000001" : "0", request: "0" }, supported_parameters: ["tools"] }] });
+    return json({ data: [
+      { id: "kilo-auto/free", name: "Kilo Auto Free", pricing: { prompt: "0", completion: "0", request: "0" } },
+      { id: "vendor/coder:free", name: "Coder Free", pricing: { prompt: "0", completion: catalogModelPaid ? "0.000001" : "0", request: "0" }, supported_parameters: ["tools"] },
+      { id: "vendor/probe:free", name: "Probe-only Free", pricing: { prompt: "0", completion: "0", request: "0" } },
+    ] });
   }
   if (url === "https://api.kilo.ai/api/gateway/chat/completions") {
     chatCalls += 1;
@@ -534,7 +597,7 @@ assert.ok(priceChangedSession);
 catalogModelPaid = true;
 await assert.rejects(
   priceChangedSession!.complete({ messages: [{ role: "user", content: "Continue the plan." }], tools: [], maxOutputTokens: 16 }),
-  /does not explicitly report tool support|no longer routing-eligible/i,
+  /does not explicitly report tool support|no longer routing-eligible|no longer verified free/i,
   "every routed turn must revalidate live pricing before it can call a formerly free model",
 );
 priceChangedSession?.close();
@@ -561,9 +624,86 @@ assert.match(probed.provider.usage.displayLabel ?? "", /^~198 \/ 200/);
 assert.equal(JSON.stringify(probed).includes("kilo-secret"), false);
 service.update("kilo", { selectedModel: "vendor/coder:free" });
 catalogModelPaid = true;
-await service.probe("kilo");
-assert.equal(chatCalls, 3);
-assert.equal(sentModels[2], "kilo-auto/free", "a selected model whose refreshed price became non-zero must never be sent");
+await assert.rejects(
+  service.probe("kilo"),
+  /selected model is no longer verified free/i,
+  "a selected model whose refreshed price became non-zero must require an explicit new choice",
+);
+assert.equal(chatCalls, 2, "a probe confirmation must never silently switch the owner's selected model");
+assert.equal(service.get("kilo").selectedModel, "vendor/coder:free", "the DTO retains an owner choice that the refreshed catalog no longer verifies");
+assert.equal(service.get("kilo").health.state, "misconfigured", "a stale selection is actionable instead of silently routed to another model");
+assert.equal(service.get("kilo").routing.eligible, false, "an unverified selected model cannot enter automatic task routing");
+catalogModelPaid = false;
+await service.refresh("kilo");
+assert.equal(service.get("kilo").selectedModel, "vendor/coder:free", "the original selection returns when its live zero-price status recovers");
+
+// A manually selected free model stays selected while routing is on, even if it has no tool
+// metadata. The routing decision must fail closed; background validation must not rewrite the owner's
+// dropdown selection behind their back.
+service.update("kilo", { selectedModel: "vendor/probe:free" });
+await service.refresh("kilo");
+assert.equal(service.get("kilo").selectedModel, "vendor/probe:free");
+assert.equal(service.get("kilo").routing.eligible, false, "tool-unknown owner selection must be excluded from automatic task routing");
+
+// The Settings GET needs both nine cards and the routing summary. It shares one per-response
+// usage view, rather than reparsing the persisted ledger for Kilo once per card and again per
+// routing calculation.
+service.update("kilo", { selectedModel: "vendor/coder:free" });
+await service.refresh("kilo");
+serviceStore.reads.clear();
+const serviceSnapshot = service.snapshot();
+assert.equal(serviceSnapshot.routing.eligibleProviderIds.includes("kilo"), true);
+assert.equal(
+  serviceStore.reads.get("free_ai_usage_ledger_v1"),
+  serviceSnapshot.providers.length,
+  "one snapshot parses the usage ledger once per provider, including the routing-ready provider",
+);
+
+// OpenRouter's current API supports a documented, zero-cost Free Models Router. Its catalog and
+// key-status read are non-inference; the eventual completion must preserve the served model while
+// explicitly disabling generic provider fallbacks before it leaves GGO.
+let openRouterChats = 0;
+let openRouterRequest: Record<string, unknown> | undefined;
+const openRouterFetch = mockFetch((url, init) => {
+  if (url === "https://openrouter.ai/api/v1/models") {
+    return json({ data: [
+      { id: "openrouter/free", name: "Free Models Router", context_length: 200_000, pricing: { prompt: "0", completion: "0" }, supported_parameters: ["tools", "tool_choice"] },
+      { id: "vendor/free-now:free", pricing: { prompt: "0", completion: "0", request: "0" }, supported_parameters: ["tools"] },
+    ] });
+  }
+  if (url === "https://openrouter.ai/api/v1/key") {
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer openrouter-secret-key-value");
+    return json({ data: { is_free_tier: false, limit: 12, limit_remaining: 11.5, usage: 0.5 } });
+  }
+  if (url === "https://openrouter.ai/api/v1/chat/completions") {
+    openRouterChats++;
+    assert.equal(new Headers(init?.headers).get("x-openrouter-title"), "GG Orchestrator");
+    openRouterRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return json({
+      model: "vendor/free-now:free",
+      provider: "OpenRouterFreeCapacity",
+      choices: [{ message: { content: "FREE READY" } }],
+      usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6, cost: 0 },
+    });
+  }
+  throw new Error(`unexpected OpenRouter URL ${url}`);
+});
+const openRouterService = new FreeProviderService(new MemoryStore(), {}, openRouterFetch);
+openRouterService.update("openrouter", { enabled: true, apiKey: "openrouter-secret-key-value" });
+openRouterService.setRoutingEnabled(true);
+const openRouterValidated = await openRouterService.refresh("openrouter");
+assert.equal(openRouterValidated.health.state, "ready");
+assert.equal(openRouterValidated.selectedModel, "openrouter/free");
+assert.equal(openRouterValidated.usage.limit, 1_000, "the provider-reported funded tier selects OpenRouter's published higher free cap");
+assert.equal(openRouterValidated.usage.source, "local-estimate", "the request count remains an explicitly local estimate");
+assert.equal(openRouterValidated.routing.eligible, true);
+const openRouterProbe = await openRouterService.probe("openrouter");
+assert.equal(openRouterChats, 1);
+assert.equal(openRouterProbe.response.model, "vendor/free-now:free", "the actual served free model is retained in telemetry");
+assert.equal(openRouterProbe.provider.usage.remaining, 999);
+assert.deepEqual(openRouterRequest?.provider, { allow_fallbacks: false, require_parameters: true });
+assert.equal(openRouterRequest?.model, "openrouter/free");
+assert.equal(JSON.stringify(openRouterProbe).includes("openrouter-secret"), false, "OpenRouter credentials remain write-only");
 
 // Auth gate + JSON route contract; a saved secret never comes back over REST.
 const app = Fastify({ logger: false });

@@ -18,13 +18,13 @@ const options = parseOptions([
   "--url", "http://127.0.0.1:4999/",
   "--providers",
   "--expect-provider-ids", "gemini, groq,gemini",
-  "--forbid-provider-ids", "openrouter",
+  "--forbid-provider-ids", "retired-provider",
   "--expect-provider-count", "2",
   "--expect-local-bundle",
 ], {});
 assert.equal(options.base, "http://127.0.0.1:4999/");
 assert.deepEqual(options.expectedProviderIds, ["gemini", "groq"], "CSV ids are trimmed and deduplicated");
-assert.deepEqual(options.forbiddenProviderIds, ["openrouter"]);
+assert.deepEqual(options.forbiddenProviderIds, ["retired-provider"]);
 assert.equal(options.expectedProviderCount, 2);
 assert.equal(options.providers, true);
 assert.equal(options.expectLocalBundle, true);
@@ -58,7 +58,7 @@ assert.deepEqual(providers, [
 assert.throws(() => normalizeProviderPayload({}), /no providers array/);
 assert.throws(() => normalizeProviderPayload({ providers: [{}] }), /row 1 has no provider id/);
 
-const passing = { expectedProviderIds: ["gemini", "groq"], forbiddenProviderIds: ["openrouter"], expectedProviderCount: 2 };
+const passing = { expectedProviderIds: ["gemini", "groq"], forbiddenProviderIds: ["retired-provider"], expectedProviderCount: 2 };
 assert.deepEqual(validateProviders(providers, passing), []);
 assert.match(validateProviders(providers, { ...passing, expectedProviderIds: ["groq", "gemini"] })[0], /provider ids differ/);
 assert.match(validateProviders(providers, { ...passing, expectedProviderCount: 3 })[0], /provider count differs/);

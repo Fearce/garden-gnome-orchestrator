@@ -41,7 +41,7 @@ export function registerFreeProviderRoutes(app: FastifyInstance, service: FreePr
   app.get("/api/free-providers", async (req, reply) => {
     if (!requireAuth(req, reply, isAuthed)) return;
     reply.header("cache-control", "no-store");
-    return { providers: service.list(), routing: service.routingStatus() };
+    return service.snapshot();
   });
 
   app.put<{ Body: { enabled?: unknown } }>("/api/free-providers/routing", async (req, reply) => {

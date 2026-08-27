@@ -68,6 +68,19 @@ export interface FreeProviderRoutingDTO {
   reason: string;
 }
 
+type RoutingDecision = { eligible: boolean; reason: string; model?: ProviderModel };
+
+/**
+ * One Settings snapshot asks for both provider cards and the pool status. Reusing these pure
+ * read calculations prevents every card/routing check from reparsing the bounded usage ledger.
+ * It deliberately lives only for one synchronous response; writes and task routing never see a
+ * cached health, catalog, or quota value.
+ */
+interface ProviderSnapshotMemo {
+  usage: Map<string, ProviderUsageSnapshot>;
+  routing: Map<FreeProviderId, RoutingDecision>;
+}
+
 const CONFIG_PREFIX = "free_ai_provider_config_v1_";
 const MODEL_PREFIX = "free_ai_provider_models_v1_";
 const HEALTH_PREFIX = "free_ai_provider_health_v1_";
@@ -218,7 +231,7 @@ export class FreeProviderService {
   }
 
   list(): FreeProviderDTO[] {
-    return this.definitions.map((definition) => this.dto(definition));
+    return this.listWithMemo(this.snapshotMemo());
   }
 
   get(id: FreeProviderId): FreeProviderDTO {
@@ -226,9 +239,27 @@ export class FreeProviderService {
   }
 
   routingStatus(): FreeProviderRoutingDTO {
+    return this.routingStatusWithMemo(this.snapshotMemo());
+  }
+
+  /** Read the cards and summary from one consistent, per-request ledger/cache view. */
+  snapshot(): { providers: FreeProviderDTO[]; routing: FreeProviderRoutingDTO } {
+    const memo = this.snapshotMemo();
+    return { providers: this.listWithMemo(memo), routing: this.routingStatusWithMemo(memo) };
+  }
+
+  private snapshotMemo(): ProviderSnapshotMemo {
+    return { usage: new Map(), routing: new Map() };
+  }
+
+  private listWithMemo(memo: ProviderSnapshotMemo): FreeProviderDTO[] {
+    return this.definitions.map((definition) => this.dto(definition, memo));
+  }
+
+  private routingStatusWithMemo(memo: ProviderSnapshotMemo): FreeProviderRoutingDTO {
     const enabled = this.routingEnabled();
     const eligibleProviderIds = enabled
-      ? this.definitions.filter((definition) => this.routingDecision(definition).eligible).map((definition) => definition.id)
+      ? this.definitions.filter((definition) => this.routingDecision(definition, memo).eligible).map((definition) => definition.id)
       : [];
     return {
       enabled,
@@ -346,15 +377,39 @@ export class FreeProviderService {
       const models = await definition.adapter.listModels(credentials);
       const normalized = this.cleanModels(definition, models);
       this.writeModels(definition, fingerprint, normalized);
-      const selected = (this.routingEnabled() ? chooseFreeTaskModel(definition, normalized, config.selectedModel) : null) ??
-        chooseFreeModel(definition, normalized, config.selectedModel);
+      // An owner's explicit free-model choice is useful even when it cannot serve the read-only
+      // harness (for example, a model they only want to probe). Routing must fail closed for that
+      // choice; it must not silently replace it during a routine six-hour refresh. If the explicit
+      // model disappeared or became non-free, fall back to a routing-capable default when routing is
+      // enabled, otherwise use the normal probe-safe preference.
+      const explicitlySelected = config.selectedModel
+        ? normalized.find((model) => model.id === config.selectedModel && model.isFree && !model.ineligibleReason) ?? null
+        : null;
+      const selectedBecameIneligible = !!config.selectedModel && !explicitlySelected;
+      const selected = explicitlySelected ??
+        (this.routingEnabled()
+          ? chooseFreeTaskModel(definition, normalized) ?? chooseFreeModel(definition, normalized)
+          : chooseFreeModel(definition, normalized));
       if (!selected) {
         throw new ProviderRequestError(
           `Connected, but none of the ${normalized.length} discovered models is currently verified as free. No request was sent.`,
           "invalid-configuration",
         );
       }
-      if (config.selectedModel !== selected.id) this.saveSelectedModel(id, selected.id);
+      // Persist only an initial default. A saved selection may be temporarily ineligible because
+      // pricing or tool metadata changed; replacing it during refresh turns a transient catalog
+      // change into a permanent, invisible owner-choice mutation. The DTO can safely present a
+      // currently eligible fallback for validation, while the original choice is retained for a
+      // later catalog recovery or an explicit Settings change.
+      if (!config.selectedModel) this.saveSelectedModel(id, selected.id);
+      if (selectedBecameIneligible) {
+        this.writeHealth(definition, credentials, {
+          state: "misconfigured",
+          message: `The selected model ${config.selectedModel} is no longer verified free. Choose another verified free model; no inference request was sent.`,
+          checkedAt: new Date().toISOString(),
+        });
+        return this.dto(definition);
+      }
       if (definition.adapter.accountUsage) {
         const account = await definition.adapter.accountUsage(credentials);
         if (account) this.writeRemoteUsage(definition, fingerprint, { ...account, checkedAt: new Date().toISOString() } as StoredRemoteUsage);
@@ -553,26 +608,35 @@ export class FreeProviderService {
     return stored?.enabled === true;
   }
 
-  private routingDecision(definition: ProviderDefinition): { eligible: boolean; reason: string; model?: ProviderModel } {
+  private routingDecision(definition: ProviderDefinition, memo?: ProviderSnapshotMemo): RoutingDecision {
+    const cached = memo?.routing.get(definition.id);
+    if (cached) return cached;
+    const finish = (decision: RoutingDecision): RoutingDecision => {
+      memo?.routing.set(definition.id, decision);
+      return decision;
+    };
     const { config, credentials, fingerprint } = this.context(definition);
-    if (!this.routingEnabled()) return { eligible: false, reason: "The free task pool is turned off." };
-    if (!config.enabled) return { eligible: false, reason: "Provider connection is disabled." };
-    if (!this.hasRequiredCredentials(definition, credentials)) return { eligible: false, reason: this.missingCredentialMessage(definition, credentials) };
+    if (!this.routingEnabled()) return finish({ eligible: false, reason: "The free task pool is turned off." });
+    if (!config.enabled) return finish({ eligible: false, reason: "Provider connection is disabled." });
+    if (!this.hasRequiredCredentials(definition, credentials)) return finish({ eligible: false, reason: this.missingCredentialMessage(definition, credentials) });
     const health = this.readHealth(definition, credentials);
-    if (health?.state !== "ready") return { eligible: false, reason: health?.message ?? "Validate the provider before routing tasks." };
+    if (health?.state !== "ready") return finish({ eligible: false, reason: health?.message ?? "Validate the provider before routing tasks." });
     const cooldown = this.routingCooldowns.get(definition.id);
     if (cooldown && cooldown.until > Date.now()) {
-      return { eligible: false, reason: `Temporarily resting this model after a harness failure: ${cooldown.reason}` };
+      return finish({ eligible: false, reason: `Temporarily resting this model after a harness failure: ${cooldown.reason}` });
     }
     if (cooldown) this.routingCooldowns.delete(definition.id);
     const models = this.readModels(definition, fingerprint)?.models ?? [];
+    if (config.selectedModel && !models.some((candidate) => candidate.id === config.selectedModel && candidate.isFree && !candidate.ineligibleReason)) {
+      return finish({ eligible: false, reason: `The selected model ${config.selectedModel} is no longer verified free. Choose another model before routing tasks.` });
+    }
     const model = chooseFreeModel(definition, models, config.selectedModel);
-    if (!model) return { eligible: false, reason: "No currently verified free model is selected." };
-    if (model.supportsTools !== true) return { eligible: false, reason: `${model.displayName} does not explicitly report tool support; routing fails closed.` };
-    if (model.contextWindow != null && model.contextWindow < 16_000) return { eligible: false, reason: `${model.displayName}'s context window is too small for repository planning.` };
-    const usage = this.usage(definition, fingerprint);
-    if (usage.remaining != null && usage.remaining <= 0) return { eligible: false, reason: "The visible free allowance is exhausted." };
-    return { eligible: true, reason: `${model.displayName} can run planner and read-only reader tasks with automatic paid-backend fallback.`, model };
+    if (!model) return finish({ eligible: false, reason: "No currently verified free model is selected." });
+    if (model.supportsTools !== true) return finish({ eligible: false, reason: `${model.displayName} does not explicitly report tool support; routing fails closed.` });
+    if (model.contextWindow != null && model.contextWindow < 16_000) return finish({ eligible: false, reason: `${model.displayName}'s context window is too small for repository planning.` });
+    const usage = this.usage(definition, fingerprint, memo);
+    if (usage.remaining != null && usage.remaining <= 0) return finish({ eligible: false, reason: "The visible free allowance is exhausted." });
+    return finish({ eligible: true, reason: `${model.displayName} can run planner and read-only reader tasks with automatic paid-backend fallback.`, model });
   }
 
   private routingCandidates(exclude: ReadonlySet<FreeProviderId>): Array<{ definition: ProviderDefinition; score: number }> {
@@ -683,7 +747,14 @@ export class FreeProviderService {
     });
   }
 
-  private usage(definition: ProviderDefinition, fingerprint: string): ProviderUsageSnapshot {
+  private usage(definition: ProviderDefinition, fingerprint: string, memo?: ProviderSnapshotMemo): ProviderUsageSnapshot {
+    const cacheKey = `${definition.id}:${fingerprint}`;
+    const cached = memo?.usage.get(cacheKey);
+    if (cached) return cached;
+    const finish = (usage: ProviderUsageSnapshot): ProviderUsageSnapshot => {
+      memo?.usage.set(cacheKey, usage);
+      return usage;
+    };
     const policy = definition.usage;
     const aggregate = this.ledger.aggregate({
       providerId: definition.id,
@@ -703,7 +774,7 @@ export class FreeProviderService {
     if (definition.id === "groq" && remote?.rateLimit) {
       const requests = remote.rateLimit.requests;
       const tokens = remote.rateLimit.tokens;
-      return {
+      return finish({
         providerId: definition.id,
         quotaKind: "mixed",
         source: "response-header",
@@ -721,10 +792,14 @@ export class FreeProviderService {
           ...tokenSecondary,
         ],
         message: "Exact values from the latest Groq response headers; account activity elsewhere may change them.",
-      };
+      });
     }
 
     let limit = policy.limit;
+    // OpenRouter's key endpoint distinguishes its published 50/day free tier from the 1,000/day
+    // tier unlocked by a sufficiently funded account. The request count is still only GGO-local,
+    // so it remains visibly estimated even when the tier marker was provider-reported.
+    if (definition.id === "openrouter" && remote?.freeTier === false) limit = 1_000;
     const used = definition.id === "cloudflare"
       ? aggregate.estimatedUnits
       : definition.id === "mistral" || definition.id === "huggingface"
@@ -742,10 +817,12 @@ export class FreeProviderService {
         : []),
       ...tokenSecondary,
     ];
-    return {
+    return finish({
       providerId: definition.id,
       quotaKind: policy.quotaKind,
-      source: remote?.source ?? (limit != null ? "published-limit" : aggregate.requests ? "local-estimate" : "unknown"),
+      source: definition.id === "openrouter"
+        ? "local-estimate"
+        : remote?.source ?? (limit != null ? "published-limit" : aggregate.requests ? "local-estimate" : "unknown"),
       used,
       remaining: clampRemaining(limit, used),
       limit,
@@ -756,10 +833,10 @@ export class FreeProviderService {
       estimated: true,
       secondaryLimits,
       message: remote?.message ?? policy.summary,
-    };
+    });
   }
 
-  private dto(definition: ProviderDefinition): FreeProviderDTO {
+  private dto(definition: ProviderDefinition, memo?: ProviderSnapshotMemo): FreeProviderDTO {
     const { config, credentials, fingerprint, keySource } = this.context(definition);
     const models = this.readModels(definition, fingerprint)?.models ?? [];
     const selected = chooseFreeModel(definition, models, config.selectedModel);
@@ -770,8 +847,8 @@ export class FreeProviderService {
       : !configured
         ? { state: "awaiting-auth", message: this.missingCredentialMessage(definition, credentials), checkedAt: null }
         : savedHealth ?? { state: "awaiting-validation", message: "Ready to validate credentials and discover models without an inference request.", checkedAt: null };
-    const usage = this.usage(definition, fingerprint);
-    const routing = this.routingDecision(definition);
+    const usage = this.usage(definition, fingerprint, memo);
+    const routing = this.routingDecision(definition, memo);
     usage.displayLabel = formatUsageChip({ usage, state: health.state, configured, optionalCredential: definition.optionalCredential });
     return {
       id: definition.id,
@@ -793,7 +870,10 @@ export class FreeProviderService {
       keySource,
       accountIdPresent: !!credentials.accountId,
       accountIdLast4: lastFour(credentials.accountId),
-      selectedModel: selected?.id ?? config.selectedModel ?? null,
+      // Keep the owner's explicit selection visible even when a fresh catalog has made it ineligible.
+      // The card renders that state as an actionable disabled option rather than pretending a fallback
+      // was selected; routing and probes separately block until the owner picks a verified free model.
+      selectedModel: config.selectedModel ?? selected?.id ?? null,
       models,
       health,
       usage,

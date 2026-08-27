@@ -164,11 +164,14 @@ export class GeminiAdapter implements ProviderAdapter {
     const models: ProviderModel[] = [];
     let pageToken: string | undefined;
     for (let page = 0; page < 10; page += 1) {
-      const query = new URLSearchParams({ key: credentials.apiKey, pageSize: "1000" });
+      // Keep the key out of request URLs. URLs are far more likely than headers to be retained by
+      // reverse proxies, tracing, and diagnostics; Google's current REST guidance supports this
+      // header for both model discovery and generation requests.
+      const query = new URLSearchParams({ pageSize: "1000" });
       if (pageToken) query.set("pageToken", pageToken);
       const response = await requestJson<unknown>(
         `${API_ROOT}/models?${query}`,
-        { method: "GET" },
+        { method: "GET", headers: { "x-goog-api-key": credentials.apiKey } },
         { fetchImpl: this.fetchImpl, secrets: [credentials.apiKey] },
       );
       models.push(...normalizeGeminiModels(response.body));
@@ -181,10 +184,10 @@ export class GeminiAdapter implements ProviderAdapter {
 
   async complete(credentials: ProviderCredentials, input: NormalizedCompletionRequest): Promise<NormalizedCompletion> {
     if (!credentials.apiKey) throw new ProviderRequestError("Gemini API key is required.", "invalid-configuration");
-    const url = `${API_ROOT}/models/${encodeURIComponent(input.model)}:generateContent?key=${encodeURIComponent(credentials.apiKey)}`;
+    const url = `${API_ROOT}/models/${encodeURIComponent(input.model)}:generateContent`;
     const response = await requestJson<unknown>(
       url,
-      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(apiBody(input)) },
+      { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": credentials.apiKey }, body: JSON.stringify(apiBody(input)) },
       { fetchImpl: this.fetchImpl, secrets: [credentials.apiKey] },
     );
     const root = record(response.body);
@@ -200,10 +203,10 @@ export class GeminiAdapter implements ProviderAdapter {
 
   async *stream(credentials: ProviderCredentials, input: NormalizedCompletionRequest): AsyncIterable<NormalizedStreamEvent> {
     if (!credentials.apiKey) throw new ProviderRequestError("Gemini API key is required.", "invalid-configuration");
-    const url = `${API_ROOT}/models/${encodeURIComponent(input.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(credentials.apiKey)}`;
+    const url = `${API_ROOT}/models/${encodeURIComponent(input.model)}:streamGenerateContent?alt=sse`;
     const response = await providerFetch(
       url,
-      { method: "POST", headers: { "content-type": "application/json", accept: "text/event-stream" }, body: JSON.stringify(apiBody(input)) },
+      { method: "POST", headers: { "content-type": "application/json", accept: "text/event-stream", "x-goog-api-key": credentials.apiKey }, body: JSON.stringify(apiBody(input)) },
       { fetchImpl: this.fetchImpl, secrets: [credentials.apiKey] },
     );
     if (!response.ok) await throwProviderResponse(response, [credentials.apiKey]);

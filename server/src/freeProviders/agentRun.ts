@@ -11,6 +11,7 @@ import type { AgentEvent } from "../types.js";
 import type {
   NormalizedCompletion,
   NormalizedCompletionRequest,
+  NormalizedToolCall,
   ProviderMessage,
   ProviderRequestError,
   ProviderTool,
@@ -159,6 +160,22 @@ function errorText(error: unknown): string {
 
 function providerErrorKind(error: unknown): ProviderRequestError["kind"] | undefined {
   return error && typeof error === "object" && "kind" in error ? (error as ProviderRequestError).kind : undefined;
+}
+
+/**
+ * Some OpenAI-compatible model backends canonicalize a function name to lowercase in their response
+ * even though they were given a mixed-case declaration (Groq's tool-capable free models do this in
+ * practice for `Glob`). Replay must use the declaration name: providers validate every historical
+ * assistant tool call against the tools in the next request. Only map a case-insensitive match from
+ * the currently offered, capability-bounded list; an unknown name remains unknown and is rejected by
+ * the normal read-only executor.
+ */
+function canonicalToolCalls(calls: readonly NormalizedToolCall[], tools: readonly ProviderTool[]): NormalizedToolCall[] {
+  const canonical = new Map(tools.map((tool) => [tool.name.toLowerCase(), tool.name]));
+  return calls.map((call) => {
+    const name = canonical.get(call.name.toLowerCase());
+    return name && name !== call.name ? { ...call, name } : call;
+  });
 }
 
 function isInside(root: string, candidate: string): boolean {
@@ -395,16 +412,18 @@ export class FreeProviderAgentRun implements AgentRunLike {
       const root = await this.rootPromise;
       while (modelCalls < MAX_MODEL_CALLS_PER_TURN) {
         modelCalls++;
+        const tools = this.tools();
         const completion = await this.session.complete({
           messages: this.messages,
-          tools: this.tools(),
+          tools,
           maxOutputTokens: MAX_OUTPUT_TOKENS,
         });
-        if (completion.toolCalls.length) {
-          if (toolCalls + completion.toolCalls.length > MAX_TOOL_CALLS_PER_TURN) {
+        const canonicalCalls = canonicalToolCalls(completion.toolCalls, tools);
+        if (canonicalCalls.length) {
+          if (toolCalls + canonicalCalls.length > MAX_TOOL_CALLS_PER_TURN) {
             throw new Error(`The model exceeded the ${MAX_TOOL_CALLS_PER_TURN}-tool safety limit.`);
           }
-          this.messages.push({ role: "assistant", content: completion.text, toolCalls: completion.toolCalls });
+          this.messages.push({ role: "assistant", content: completion.text, toolCalls: canonicalCalls });
           if (completion.text.trim()) this.emit({ type: "thinking", text: completion.text.trim() });
           // EVERY tool call in this assistant turn must get a result message, even once the read
           // budget is spent: an OpenAI-compatible endpoint rejects an assistant turn whose
@@ -413,7 +432,7 @@ export class FreeProviderAgentRun implements AgentRunLike {
           // request instead of ending the turn, so a spent budget refuses the remaining calls
           // rather than dropping them.
           let budgetSpent = false;
-          for (const call of completion.toolCalls) {
+          for (const call of canonicalCalls) {
             toolCalls++;
             const parsed = this.parseArguments(call.arguments);
             this.emit({ type: "tool_use", id: call.id, name: call.name, input: parsed });

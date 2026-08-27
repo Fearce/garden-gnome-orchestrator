@@ -120,6 +120,20 @@ function millionPrice(raw: number | undefined): number | undefined {
   return raw < 0.001 ? raw * 1_000_000 : raw;
 }
 
+/**
+ * A gateway price can have more billable dimensions than prompt/completion (for example image,
+ * request, or reasoning tokens). A free route is eligible only when the live catalog presents
+ * both text-token prices and every supplied price dimension as an exact zero.
+ */
+function catalogIsExactlyZeroPriced(value: UnknownRecord): boolean {
+  const pricing = record(value.pricing) ?? record(value.price);
+  if (!pricing) return false;
+  const input = finite(pricing.prompt ?? pricing.input ?? pricing.input_price);
+  const output = finite(pricing.completion ?? pricing.output ?? pricing.output_price);
+  if (input !== 0 || output !== 0) return false;
+  return Object.values(pricing).every((amount) => finite(amount) === 0);
+}
+
 const GROQ_FREE_MODELS = new Set(["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"]);
 
 export function normalizeGroqModels(body: unknown): ProviderModel[] {
@@ -168,8 +182,47 @@ export function normalizeMistralModels(body: unknown): ProviderModel[] {
   });
 }
 
+/**
+ * OpenRouter's catalog advertises zero-price `:free` variants and its documented
+ * `openrouter/free` router. Do not synthesize either route: an account-visible catalog that no
+ * longer lists it is treated as unavailable, so a stale client can never make a billable call.
+ */
+export function normalizeOpenRouterModels(body: unknown): ProviderModel[] {
+  return arrayAt(body).flatMap((raw) => {
+    const value = record(raw);
+    if (!value) return [];
+    const id = idOf(value);
+    if (!id) return [];
+    const input = price(value, "prompt", "input", "input_price");
+    const output = price(value, "completion", "output", "output_price");
+    const advertisedFreeRoute = id === "openrouter/free" || id.endsWith(":free");
+    const free = advertisedFreeRoute && catalogIsExactlyZeroPriced(value);
+    const architecture = record(value.architecture);
+    const inputModalities = Array.isArray(architecture?.input_modalities) ? architecture.input_modalities : [];
+    const supported = Array.isArray(value.supported_parameters) ? value.supported_parameters : [];
+    return [{
+      providerId: "openrouter" as const,
+      id,
+      displayName: displayName(value, id),
+      contextWindow: contextWindow(value),
+      supportsStreaming: true,
+      supportsTools: supported.length ? supported.includes("tools") || supported.includes("tool_choice") : null,
+      supportsVision: inputModalities.includes("image"),
+      isFree: free,
+      freeStatusSource: "catalog-price" as const,
+      inputPricePerMillion: millionPrice(input),
+      outputPricePerMillion: millionPrice(output),
+      ineligibleReason: free
+        ? undefined
+        : advertisedFreeRoute
+          ? "The live catalog no longer verifies every billable price as exactly zero."
+          : "Only current OpenRouter :free variants and the Free Models Router are eligible.",
+    }];
+  });
+}
+
 export function normalizeKiloModels(body: unknown): ProviderModel[] {
-  const found: ProviderModel[] = arrayAt(body).flatMap((raw) => {
+  return arrayAt(body).flatMap((raw) => {
     const value = record(raw);
     if (!value) return [];
     const id = idOf(value);
@@ -195,18 +248,6 @@ export function normalizeKiloModels(body: unknown): ProviderModel[] {
       ineligibleReason: free ? undefined : freeName ? "Catalog pricing is no longer exactly zero." : "Only current free routes are eligible.",
     }];
   });
-  if (!found.some((model) => model.id === "kilo-auto/free")) {
-    found.unshift({
-      providerId: "kilo",
-      id: "kilo-auto/free",
-      displayName: "Kilo Auto Free",
-      supportsStreaming: true,
-      supportsTools: null,
-      isFree: true,
-      freeStatusSource: "provider",
-    });
-  }
-  return found;
 }
 
 export const WORKERS_AI_NEURON_RATES: Readonly<Record<string, { input: number; output: number }>> = {
@@ -323,6 +364,37 @@ function authHeaders(credentials: ProviderCredentials): Record<string, string> {
   return credentials.apiKey ? { authorization: `Bearer ${credentials.apiKey}` } : {};
 }
 
+async function openRouterUsage(credentials: ProviderCredentials, fetchImpl?: typeof fetch) {
+  if (!credentials.apiKey) return null;
+  const response = await requestJson<unknown>(
+    "https://openrouter.ai/api/v1/key",
+    { headers: authHeaders(credentials) },
+    { fetchImpl, secrets: [credentials.apiKey] },
+  );
+  const root = record(response.body);
+  const data = record(root?.data) ?? root;
+  if (!data) return null;
+  const freeTier = boolean(data.is_free_tier);
+  const keyLimit = finite(data.limit);
+  const keyLimitRemaining = finite(data.limit_remaining);
+  const keyUsage = finite(data.usage);
+  return {
+    source: "provider-api" as const,
+    secondaryLimits:
+      keyLimit != null || keyLimitRemaining != null || keyUsage != null
+        ? [{ label: "Key spending limit", limit: keyLimit, remaining: keyLimitRemaining, used: keyUsage, unit: "USD" }]
+        : undefined,
+    message: freeTier == null
+      ? "OpenRouter did not report this key's free-tier status; GGO keeps the conservative 50-request estimate."
+      : freeTier
+        ? "OpenRouter reports this as a free-tier key; GGO estimates its published 50 free-model requests/day."
+        : "OpenRouter reports a funded key; GGO estimates the published 1,000 free-model requests/day tier.",
+    // This private marker is never serialized to the client. It only chooses between OpenRouter's
+    // two published free-model request caps; usage itself remains a local, explicitly estimated ledger.
+    freeTier,
+  };
+}
+
 async function huggingFaceIdentity(credentials: ProviderCredentials, fetchImpl?: typeof fetch) {
   if (!credentials.apiKey) return null;
   await requestJson<unknown>(
@@ -340,6 +412,23 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
     completionUrl: () => "https://api.groq.com/openai/v1/chat/completions",
     headers: authHeaders,
     normalizeModels: normalizeGroqModels,
+    fetchImpl,
+  });
+  const openrouter = new OpenAiCompatibleAdapter({
+    providerId: "openrouter",
+    modelsUrl: () => "https://openrouter.ai/api/v1/models",
+    completionUrl: () => "https://openrouter.ai/api/v1/chat/completions",
+    headers: (credentials) => ({
+      ...authHeaders(credentials),
+      "HTTP-Referer": "https://github.com/Fearce/garden-gnome-orchestrator",
+      "X-OpenRouter-Title": "GG Orchestrator",
+    }),
+    normalizeModels: normalizeOpenRouterModels,
+    // OpenRouter documents the Free Models Router as zero-cost, but its generic provider routing
+    // normally allows fallbacks. Make each bounded GGO request fail rather than route through an
+    // unspecified backup endpoint, and require advertised tool support for the read-only harness.
+    decorateRequest: (body) => ({ ...body, provider: { allow_fallbacks: false, require_parameters: true } }),
+    accountUsage: (credentials) => openRouterUsage(credentials, fetchImpl),
     fetchImpl,
   });
   const kilo = new OpenAiCompatibleAdapter({
@@ -404,6 +493,25 @@ export function createOpenAiDefinitions(fetchImpl?: typeof fetch): ProviderDefin
       usage: { quotaKind: "mixed", window: "day", timeZone: "UTC", unit: "requests", localEstimate: true, summary: "Local requests until Groq returns exact request/day and token/minute headers." },
       adapter: groq,
       preferredModels: ["openai/gpt-oss-120b", "qwen/qwen3.6-27b", "openai/gpt-oss-20b"],
+    },
+    {
+      id: "openrouter",
+      displayName: "OpenRouter",
+      transport: "openai-compatible",
+      tierKind: "RECURRING_DAILY",
+      tierLabel: "Free models \u00b7 daily",
+      quotaSummary: "50 free-model requests/day, or 1,000/day after funding at least $10.",
+      docsUrl: "https://openrouter.ai/docs/faq",
+      signupUrl: "https://openrouter.ai/settings/keys",
+      credentialLabel: "OpenRouter API key",
+      credentialHelp: "Use only the live zero-price :free routes or OpenRouter Free Models Router. GGO stores the key only on this server.",
+      optionalCredential: false,
+      needsAccountId: false,
+      envKey: "OPENROUTER_API_KEY",
+      billingWarning: "GGO refreshes the live catalog before every request, permits only exact-zero free routes, and disables OpenRouter provider fallbacks. Do not configure a matching paid BYOK key if strict no-spend isolation is required.",
+      usage: { quotaKind: "requests", window: "day", timeZone: "UTC", limit: 50, unit: "free requests", localEstimate: true, summary: "Published free allowance minus requests recorded by this GGO instance." },
+      adapter: openrouter,
+      preferredModels: ["openrouter/free"],
     },
     {
       id: "kilo",
@@ -545,6 +653,6 @@ export function createProviderRegistry(fetchImpl?: typeof fetch): ProviderDefini
     adapter: new CohereAdapter(fetchImpl),
     preferredModels: ["north-mini-code", "command-a-03-2025", "command-r7b-12-2024"],
   };
-  const ordered = [gemini, byId.get("groq"), byId.get("kilo"), byId.get("mistral"), cohere, byId.get("cloudflare"), byId.get("nvidia"), byId.get("huggingface")];
+  const ordered = [gemini, byId.get("groq"), byId.get("openrouter"), byId.get("kilo"), byId.get("mistral"), cohere, byId.get("cloudflare"), byId.get("nvidia"), byId.get("huggingface")];
   return ordered.filter((definition): definition is ProviderDefinition => !!definition);
 }

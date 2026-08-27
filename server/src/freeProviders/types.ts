@@ -1,4 +1,4 @@
-export const FREE_PROVIDER_IDS = ["gemini", "groq", "kilo", "mistral", "cohere", "cloudflare", "nvidia", "huggingface"] as const;
+export const FREE_PROVIDER_IDS = ["gemini", "groq", "openrouter", "kilo", "mistral", "cohere", "cloudflare", "nvidia", "huggingface"] as const;
 
 export type FreeProviderId = (typeof FREE_PROVIDER_IDS)[number];
 export type ProviderTransport = "openai-compatible" | "native";

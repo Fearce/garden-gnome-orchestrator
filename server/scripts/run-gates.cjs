@@ -69,6 +69,8 @@ const GATES = [
   "test:zai-usage",
   "test:zai-cap",
   "test:free-providers",
+  "test:free-provider-routing",
+  "test:console-probe",
   "test:structured",
   "test:effort",
   "test:reader",
