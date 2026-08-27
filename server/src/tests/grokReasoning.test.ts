@@ -103,4 +103,20 @@ function feed(run: GrokAgentRun, lines: string[]): void {
   assert.equal(err.capped, false, "an ordinary error must not be misclassified as a usage cap");
 }
 
+// --- A plan cap can arrive as assistant text while the outer terminal says EndTurn ---
+// It must become an error so ThreadManager switches provider instead of accepting a false success.
+{
+  const notice = "You've hit your usage limit. Try again at Sep 2nd, 2030 2:23 PM.";
+  const reset = new Date("Sep 2, 2030 2:23 PM").getTime();
+  const run = new GrokAgentRun({ model: "grok-4.6", effort: "low", cwd: process.cwd() });
+  feed(run, [
+    JSON.stringify({ type: "text", data: notice }),
+    JSON.stringify({ type: "end", stopReason: "EndTurn" }),
+  ]);
+  (run as unknown as { onTurnClose(code: number | null): void }).onTurnClose(0);
+  assert.equal(run.capped, true, "an assistant-text usage cap must latch Grok before EndTurn is accepted");
+  assert.equal(run.rateLimitInfo?.resetsAt, reset, "Grok assistant-text cap preserves its stated reset");
+  assert.equal(run.lastResult?.isError, true, "a Grok EndTurn after a cap becomes a fallback error");
+}
+
 console.log("All Grok reasoning-persistence + cap-detection checks passed.");

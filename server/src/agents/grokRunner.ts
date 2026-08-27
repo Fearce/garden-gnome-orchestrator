@@ -16,7 +16,7 @@ import {
   validateAgainstSchema,
   type JsonSchemaLike,
 } from "./structuredText.js";
-import { parseUsageLimitResetAt, transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
+import { looksLikeCapNotice, parseUsageLimitResetAt, transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 
 export interface GrokRunConfig {
   /** The Grok model to run, e.g. `grok-4.6`. */
@@ -538,6 +538,10 @@ export class GrokAgentRun implements AgentRunLike {
         // A cap can also close a turn via `end` with a limit stopReason rather than an `error` event.
         const stop = ev.stopReason ?? "";
         if (RATE_LIMIT_RE.test(stop)) this.markCapped(stop);
+        // Grok can put a plan-limit rejection in the final assistant text yet label the envelope
+        // `EndTurn`. Detect the same deliberately narrow provider notice before accepting that terminal
+        // success, so the stage falls through to the shared provider-fallback path.
+        if (looksLikeCapNotice(this.textBuf)) this.markCapped(this.textBuf);
         // `MaxTurns` (or a max_turns_reached event) is an involuntary cutoff, NOT a finish — surface it as
         // error_max_turns so the pipeline silently warm-resumes it, exactly like the Claude turn ceiling.
         const cutoff = this.maxTurnsHit || /max.?turns/i.test(stop);

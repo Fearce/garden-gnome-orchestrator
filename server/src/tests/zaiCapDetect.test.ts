@@ -190,4 +190,20 @@ for (const prose of [
   assert.equal(errorEventCodex.capped, true, "a Codex error event with structured quota code is a cap too");
 }
 
+// --- A CLI can put the cap in ordinary final assistant text but label the enclosing turn a success ---
+// This exact shape used to bypass the fallback ladder: the runner accepted `turn.completed` even though
+// the only final agent message was a provider rejection.
+{
+  const notice = "You've hit your usage limit. Try again at Sep 2nd, 2030 2:23 PM.";
+  const reset = new Date("Sep 2, 2030 2:23 PM").getTime();
+  const codex = new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
+  const internal = codex as unknown as { handleEvent(event: unknown): void; onTurnClose(code: number | null): void };
+  internal.handleEvent({ type: "item.completed", item: { type: "agent_message", text: notice } });
+  internal.handleEvent({ type: "turn.completed" });
+  internal.onTurnClose(0);
+  assert.equal(codex.capped, true, "a Codex assistant-text cap must latch the backend before a success envelope is accepted");
+  assert.equal(codex.rateLimitInfo?.resetsAt, reset, "Codex assistant-text cap preserves its stated reset");
+  assert.equal(codex.lastResult?.isError, true, "a Codex success envelope after a cap becomes a fallback error");
+}
+
 console.log("z.ai cap detection: ok");

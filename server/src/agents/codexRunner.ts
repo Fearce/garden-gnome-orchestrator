@@ -9,6 +9,7 @@ import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } fr
 import { withAgentToolPath } from "./env.js";
 import { extractCliBridgeMessages } from "./officeBridge.js";
 import {
+  looksLikeCapNotice,
   parseUsageLimitResetAt,
   providerErrorLooksRateLimited,
   providerErrorText,
@@ -642,7 +643,12 @@ export class CodexAgentRun implements AgentRunLike {
         break;
       case "turn.completed":
         this.sawTerminal = true;
-        this.pendingTerminalResult = { subtype: "success", isError: false, numTurns: 1, tokenUsage: codexTokenUsage(ev.usage) };
+        // A subscription cap can arrive as the final agent_message while Codex still labels the outer
+        // turn `completed`. The message is the provider's rejection, not a successful role result:
+        // preserve it as an error so the stage fallback can switch providers.
+        this.pendingTerminalResult = this.capped
+          ? { subtype: "error", isError: true, result: this.lastAgentText || this.lastErrorMsg || "Codex hit its usage limit.", numTurns: 1, tokenUsage: codexTokenUsage(ev.usage) }
+          : { subtype: "success", isError: false, numTurns: 1, tokenUsage: codexTokenUsage(ev.usage) };
         break;
       case "turn.failed": {
         this.sawTerminal = true;
@@ -704,6 +710,10 @@ export class CodexAgentRun implements AgentRunLike {
           if (bridge.visible) {
             // Keep the raw text for structured-output parsing; humanize only what the feed shows.
             this.lastAgentText = bridge.visible;
+            // Codex can report its ChatGPT-plan limit as an ordinary final agent_message followed by
+            // `turn.completed`, with no structured error envelope. Treat only the shared narrow
+            // provider-notice form as a cap so a model merely discussing a rate-limit cannot reroute work.
+            if (looksLikeCapNotice(bridge.visible)) this.markCapped(bridge.visible);
             const display = this.cfg.outputSchema ? formatStructuredRoleFeed(bridge.visible) : bridge.visible;
             if (display.trim()) this.emit({ type: "text", text: display });
           }
