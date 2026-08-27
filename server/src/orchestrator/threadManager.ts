@@ -620,6 +620,7 @@ export class ThreadManager implements OrchestratorApi {
       db,
       accounts,
       () => this.openaiApiKey(),
+      () => this.zaiApiKey(),
       () => this.hub.publish({ type: "settings", settings: this.settings() }),
     );
     this.liveBench = new LiveBenchScores(db, (level, message) => this.hub.log(level, message));
@@ -1429,11 +1430,11 @@ export class ThreadManager implements OrchestratorApi {
     return uniq([...CURATED_GROK_MODELS, ...this.modelCatalog.grokModels(), ...selected]);
   }
 
-  /** Pickable z.ai (GLM) model ids for the Settings dropdown: curated GLM models plus the current pick.
-   *  z.ai has no live models endpoint we fetch — the plan's GLM ids are a fixed known set. */
+  /** Pickable z.ai (GLM) model ids for the Settings dropdown: whatever the key can actually access,
+   *  then the curated fallback and the current pick so a manual pin never vanishes. */
   private pickableZaiModels(): string[] {
     const selected = [this.zaiModel(), ...Object.values(this.modelOverrides()[ZAI_SUB_ID] ?? {})].filter((x): x is string => !!x);
-    return uniq([...CURATED_ZAI_MODELS, ...selected]);
+    return uniq([...this.modelCatalog.zaiModels(), ...CURATED_ZAI_MODELS, ...selected]);
   }
 
   // ---- auto model selection (the "Auto model selection" setting) ----
@@ -1642,7 +1643,9 @@ export class ThreadManager implements OrchestratorApi {
       add("grok", models, (model) => underCap(grokEffortsForModel(model), this.grokEffort(model)));
     }
     if (this.zaiImplementorReady()) {
-      add("zai", this.pickableZaiModels(), () => underCap(ZAI_EFFORTS, this.zaiEffort()));
+      const live = this.modelCatalog.zaiModels();
+      const models = live.length ? this.pickableZaiModels().filter((model) => live.includes(model)) : this.pickableZaiModels();
+      add("zai", models, () => underCap(ZAI_EFFORTS, this.zaiEffort()));
     }
     return out;
   }

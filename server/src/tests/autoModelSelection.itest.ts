@@ -223,7 +223,10 @@ async function main(): Promise<void> {
     try {
       const codex = ["gpt-a", "gpt-b", "gpt-c", "gpt-d", "gpt-e", "gpt-f"];
       const grok = ["grok-4.6", "grok-4.7", "grok-4.8", "grok-4.9", "grok-4.10"];
-      const zai = ["glm-5.1", "glm-5-turbo", "glm-4.7", "glm-4.5-air"];
+      // Deliberately NOT the curated ids: z.ai's live roster is what the key can actually reach, and a
+      // curated list is only the cold-start fallback. Stubbing the picker here would assert nothing —
+      // the shipped list sat four GLM releases behind the live endpoint under exactly that stub.
+      const zai = ["glm-9.9-unreleased", "glm-5.3", "glm-4.7"];
       h.internals.codexImplementorReady = (): boolean => true;
       h.internals.codexRosterModels = (): string[] => codex;
       h.internals.codexEffort = (): Effort => "xhigh";
@@ -232,13 +235,14 @@ async function main(): Promise<void> {
       h.internals.grokEffort = (): Effort => "xhigh";
       h.db.kvSet("cache_grok_models", JSON.stringify(grok));
       h.internals.zaiImplementorReady = (): boolean => true;
-      h.internals.pickableZaiModels = (): string[] => zai;
+      h.db.kvSet("cache_zai_models", JSON.stringify(zai));
       h.internals.zaiEffort = (): Effort => "high";
       const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
       const modelsFor = (provider: ImplementorProvider): string[] => roster.filter((candidate) => candidate.provider === provider).map((candidate) => candidate.model);
       check("all Codex models reach the selector", codex.every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
       check("all live Grok models reach the selector", grok.every((model) => modelsFor("grok").includes(model)), JSON.stringify(modelsFor("grok")));
-      check("all documented z.ai models reach the selector", zai.every((model) => modelsFor("zai").includes(model)), JSON.stringify(modelsFor("zai")));
+      check("every live z.ai model reaches the selector", zai.every((model) => modelsFor("zai").includes(model)), JSON.stringify(modelsFor("zai")));
+      check("the z.ai roster is not padded with ids the key cannot reach", modelsFor("zai").length === zai.length, JSON.stringify(modelsFor("zai")));
       check("Grok 4.6 carries Extra High into the selector", roster.find((candidate) => candidate.model === "grok-4.6")?.efforts.includes("xhigh") === true);
     } finally {
       h.dispose();

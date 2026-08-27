@@ -8,12 +8,15 @@
  *    standing between the two, so it is asserted as hard as the titler's commentary guard.
  *  - The score is what every future pick is made from. If it can't rank a clean finish above a task that
  *    burned four QA rounds, the whole feedback loop is decoration.
+ *  - The z.ai catalog parse, which decides which GLM models the selector may pick from at all. It is the
+ *    one backend with no CLI cache to cross-check it, so a bad parse silently shrinks the roster.
  *
  * Run:  npm run test:model-select   (from server/)   — or:  npx tsx src/tests/modelSelection.test.ts
  */
 
 import { buildSelectionPrompt, modelNote, parseSelection, selectImplementorModel, type ModelCandidate } from "../orchestrator/modelSelector.js";
 import { gradeSettledTask, outcomeOfState, scoreOutcome } from "../orchestrator/modelGrading.js";
+import { fetchZaiModels } from "../agents/modelCatalog.js";
 import { claudeTokenUsage } from "../agents/runner.js";
 import { codexTokenUsage } from "../agents/codexRunner.js";
 import type { AgentRun, Effort } from "../types.js";
@@ -273,6 +276,35 @@ const claudeUsage = claudeTokenUsage({
 check("Claude mixed-model usage is fully summed", claudeUsage?.totalTokens === 212 && claudeUsage.cacheReadInputTokens === 37, JSON.stringify(claudeUsage));
 const codexUsage = codexTokenUsage({ input_tokens: 100, cached_input_tokens: 60, output_tokens: 25, reasoning_output_tokens: 10, total_tokens: 125 });
 check("Codex preserves cache/reasoning detail without double-counting total", codexUsage?.totalTokens === 125 && codexUsage.cacheReadInputTokens === 60 && codexUsage.reasoningOutputTokens === 10, JSON.stringify(codexUsage));
+
+// z.ai's models endpoint answers OLDEST-first, and every picker in this app reads list position as
+// capability, so the ordering is the load-bearing part of the parse.
+const respondWith = (body: string, status: number): void => {
+  globalThis.fetch = (async () => new Response(body, { status })) as typeof fetch;
+};
+try {
+  respondWith(JSON.stringify({ data: [
+    { id: "glm-4.6", created_at: "2025-10-01T08:00:00Z" },
+    { id: "glm-5.3", created_at: "2026-08-14T00:00:00Z" },
+    { id: "glm-5.3-flash", created_at: "2026-08-14T00:00:00Z" },
+    { id: "glm-4.7", created_at: "2025-12-22T00:00:00Z" },
+    { id: "text-embedding-3", created_at: "2026-01-01T00:00:00Z" },
+  ] }), 200);
+  const zaiModels = await fetchZaiModels("test-key");
+  check("the z.ai catalog is ordered newest-first", zaiModels.join(",") === "glm-5.3,glm-5.3-flash,glm-4.7,glm-4.6", zaiModels.join(","));
+  check("a non-GLM entry never reaches a GLM picker", !zaiModels.includes("text-embedding-3"), zaiModels.join(","));
+
+  respondWith("unauthorized", 401);
+  let rejected = false;
+  try {
+    await fetchZaiModels("bad-key");
+  } catch {
+    rejected = true;
+  }
+  check("a rejected z.ai catalog fetch throws, so the last-known list is kept instead of blanked", rejected);
+} finally {
+  globalThis.fetch = realFetch;
+}
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);
 if (failed) {

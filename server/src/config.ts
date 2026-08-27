@@ -242,10 +242,11 @@ export const config = {
     // here (with the key as ANTHROPIC_AUTH_TOKEN) is the entire backend wiring.
     baseUrl: process.env.ZAI_BASE_URL?.trim() || "https://api.z.ai/api/anthropic",
     // First-boot default + the GLM models the Subscriptions selector suggests. Free-text (any id the key
-    // can access is accepted). The curated fallback mirrors z.ai's current Coding Plan roster, ordered
-    // strongest-first; GLM-4.7 remains the quota-efficient general-work default. Override with ZAI_MODEL.
-    defaultModel: process.env.ZAI_MODEL?.trim() || "glm-4.7",
-    models: ["glm-5.1", "glm-5-turbo", "glm-4.7", "glm-4.5-air"] as const,
+    // can access is accepted). This curated list is only the cold-start fallback: ModelCatalog fetches
+    // the key's real roster from `${baseUrl}/v1/models` and that wins whenever it is reachable. Ordered
+    // newest-first to match how every picker reads position. Override with ZAI_MODEL.
+    defaultModel: process.env.ZAI_MODEL?.trim() || "glm-5.3",
+    models: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.6", "glm-4.5-air", "glm-4.5"] as const,
     // z.ai's real usage/quota endpoint (Bearer key, no model turn): returns the 5-hour + weekly windows
     // (used-% + reset) and the plan tier — see zaiUsagePing. This is what feeds the chip + routing.
     usageUrl: process.env.ZAI_USAGE_URL?.trim() || "https://api.z.ai/api/monitor/usage/quota/limit",
