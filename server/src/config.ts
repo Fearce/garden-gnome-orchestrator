@@ -295,6 +295,9 @@ export const config = {
   // handed to another enabled backend. Three consecutive failures means original + two retries.
   maxTransientApiFailures: Math.max(1, Math.floor(numEnv(process.env.API_ERROR_MAX_FAILURES, 3))),
   transientApiRetryBaseMs: Math.max(0, numEnv(process.env.API_ERROR_RETRY_BASE_MS, 1_500)),
+  // A CLI that never emits its first event is locally wedged, not merely a flaky API response. Keep it
+  // out of routing long enough for its process/session state to clear while another backend takes over.
+  providerStartupCooldownMs: Math.max(1_000, numEnv(process.env.PROVIDER_STARTUP_COOLDOWN_MS, 5 * 60_000)),
   maxQaRounds: Number(process.env.MAX_QA_ROUNDS ?? 4),
   // Implementor fix-rounds the auto-reviewer may trigger before it gives up and parks the task for the
   // owner. Surfaced as an operator setting (persisted in kv) — this is just the first-boot default.

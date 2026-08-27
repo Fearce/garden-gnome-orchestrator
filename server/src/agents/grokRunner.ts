@@ -174,6 +174,7 @@ export class GrokAgentRun implements AgentRunLike {
   rateLimitInfo: RateLimitInfo | undefined;
   transientApiError = false;
   transientApiErrorMessage: string | undefined;
+  startupWedged = false;
   capped = false;
   // True once a wedged `--resume` self-healed to a fresh start. Read by the thread manager after the run
   // ends so it can stop attempting resume for this thread (resume keeps producing nothing → go fresh).
@@ -450,6 +451,12 @@ export class GrokAgentRun implements AgentRunLike {
     this.lastErrorMsg = this.sawFirstEvent
       ? `Grok emitted no output for ${secs}s — the turn appears wedged; killed by the inactivity watchdog.`
       : `Grok produced no events within ${secs}s of starting — a wedged turn; killed by the startup watchdog.`;
+    // This is direct provider-health evidence, not an ordinary task failure. Mark it explicitly instead
+    // of asking the generic text classifier to understand our own watchdog prose. The thread manager
+    // uses startupWedged to skip same-provider retries and quarantine Grok before selecting a fallback.
+    this.transientApiError = true;
+    this.transientApiErrorMessage = this.lastErrorMsg;
+    this.startupWedged = !this.sawFirstEvent;
     this.killChild();
   }
 

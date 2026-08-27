@@ -297,6 +297,7 @@ export class CodexAgentRun implements AgentRunLike {
   rateLimitInfo: RateLimitInfo | undefined;
   transientApiError = false;
   transientApiErrorMessage: string | undefined;
+  startupWedged = false;
   capped = false;
 
   private child: ChildProcess | undefined;
@@ -604,6 +605,9 @@ export class CodexAgentRun implements AgentRunLike {
     this.lastErrorMsg = this.sawFirstEvent
       ? `Codex emitted no output for ${secs}s — the turn appears wedged; killed by the inactivity watchdog.`
       : `Codex produced no events within ${secs}s of starting — a wedged \`exec resume\` (the CLI hangs at 0% CPU replaying an interrupted session); killed by the startup watchdog.`;
+    this.transientApiError = true;
+    this.transientApiErrorMessage = this.lastErrorMsg;
+    this.startupWedged = !this.sawFirstEvent;
     this.killChild();
   }
 

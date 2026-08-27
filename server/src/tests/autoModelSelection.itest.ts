@@ -412,6 +412,32 @@ async function main(): Promise<void> {
   }
 
   // -- G: the pick reaches the actual run ------------------------------------------------------------
+  console.log("\nTest F2 — an explicit provider instruction beats automatic usage/model routing");
+  {
+    const h = makeHarness();
+    try {
+      const requested = h.db.createThread({
+        title: "Use GPT for emergency recovery",
+        workspace: h.workspace,
+        rawPrompt: "Run this on GPT, not Grok.",
+        brief: "Kevin explicitly requires this recovery to run on GPT. Do not route it to Grok.",
+      });
+      h.db.updateThreadStageOutputs(requested.id, {
+        modelPick: { provider: "grok", model: "grok-4.6", effort: "high", reason: "automatic pick" },
+      });
+      h.internals.resolveImplementorProvider = () => ({ provider: "grok", allCandidatesCapped: false });
+      h.internals.providerReady = (provider: ImplementorProvider) => provider === "codex" || provider === "claude";
+      const routed = h.internals.gateImplementorProvider(thread(h, requested.id));
+      check("explicit GPT routes to Codex even when automatic routing picked Grok", routed === "codex", String(routed));
+      check("the remembered run provider is Codex", h.internals.implementorProvider.get(requested.id) === "codex", String(h.internals.implementorProvider.get(requested.id)));
+      const finding = h.db.listFindings(requested.id).find((f) => /explicit provider instruction/i.test(f.summary));
+      check("the override is visible in task history", !!finding, JSON.stringify(h.db.listFindings(requested.id)));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- G: the pick reaches the actual run ------------------------------------------------------------
   console.log("\nTest G — the run that starts is on the picked model and effort");
   {
     const h = makeHarness();

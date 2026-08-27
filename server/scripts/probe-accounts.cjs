@@ -52,8 +52,8 @@ const HARD_LIMIT_PCT = 98;
 // Windows are not the only door: Grok's plan also meters a monthly CREDIT pool that routing refuses the
 // rung on, and it can run dry while the weekly window still reads room (see spentCredits).
 const BACKENDS = [
-  { name: "Codex", enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", usageFile: "codex-usage-cache.json" },
-  { name: "Grok", enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", usageFile: "grok-usage-cache.json" },
+  { name: "Codex", enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", cooldownKey: "provider_startup_cooldown_codex_until", usageFile: "codex-usage-cache.json" },
+  { name: "Grok", enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", cooldownKey: "provider_startup_cooldown_grok_until", usageFile: "grok-usage-cache.json" },
   { name: "z.ai", enabledKey: "setting_zai_enabled", capKey: "zai_cap_until", usageFile: "zai-usage-cache.json" },
 ];
 // Every term threadManager's *ProviderCandidate methods gate `hasHeadroom` on, and where THIS file
@@ -66,6 +66,7 @@ const BACKENDS = [
 // mirror named beside each term is what has to be true.
 const MIRRORED_HEADROOM_TERMS = {
   grokProviderCandidate: {
+    providerStartupCoolingDown: "cooldownKey latch → reason 'startup cooldown'",
     grokCapActive: "capKey latch → reason 'capped'",
     nearWeekly: "spentWindow (7d)",
     monthlyExhausted: "spentCredits (monthly pool)",
@@ -75,6 +76,7 @@ const MIRRORED_HEADROOM_TERMS = {
     near: "spentWindow (5h + 7d)",
   },
   codexProviderCandidate: {
+    providerStartupCoolingDown: "cooldownKey latch → reason 'startup cooldown'",
     nearLimit: "spentWindow (5h + 7d)",
   },
 };
@@ -109,8 +111,10 @@ const pct = (v) => (v == null ? "  —" : `${String(Math.round(v)).padStart(3)}%
  *  carries the deadline routing itself is waiting on. A SPENT window is reported separately from a latched
  *  cap so the readout can say which one is holding the rung — they need different reactions (a latch
  *  self-expires; a spent weekly waits for the real reset). */
-function backendState({ enabledKey, capKey, usageFile }, kv, at, usage = () => null) {
+function backendState({ enabledKey, capKey, cooldownKey, usageFile }, kv, at, usage = () => null) {
   if (kv(enabledKey) !== "1") return { available: false, reason: "disabled" };
+  const cooldownUntil = cooldownKey ? Number(kv(cooldownKey)) : 0;
+  if (Number.isFinite(cooldownUntil) && cooldownUntil > at) return { available: false, reason: "startup cooldown", until: cooldownUntil };
   const until = Number(kv(capKey));
   if (Number.isFinite(until) && until > at) return { available: false, reason: "capped", until };
   const meters = usageFile ? usage(usageFile) : null;
@@ -319,6 +323,7 @@ function main() {
 
   const NOTE = {
     disabled: () => "disabled (not in the ladder)",
+    "startup cooldown": (s) => `STARTUP WEDGED — retry eligible in ${countdown(s.until)}`,
     capped: (s) => `CAPPED — frees in ${countdown(s.until)}`,
     // A spent window was never rejected, so there is no latch and no cooldown to count down — only the
     // real window reset, which the meters may not even name. Say which window and how full it is, or the

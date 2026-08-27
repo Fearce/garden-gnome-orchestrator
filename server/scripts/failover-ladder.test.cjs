@@ -29,7 +29,7 @@ const HOUR = 3_600_000;
 const kvOf = (map) => (key) => (key in map ? map[key] : null);
 // A meters stub, standing in for reading data/<file>. Absent file ⇒ null, exactly like a missing cache.
 const usageOf = (meters) => () => meters ?? null;
-const CODEX = { enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", usageFile: "codex-usage-cache.json" };
+const CODEX = { enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", cooldownKey: "provider_startup_cooldown_codex_until", usageFile: "codex-usage-cache.json" };
 
 // --- backendState: enabled + not cap-latched is the ONLY available state ---------------------------
 assert.deepEqual(
@@ -46,6 +46,15 @@ assert.deepEqual(
   backendState(CODEX, kvOf({ setting_codex_enabled: "1", codex_cap_until: String(NOW - HOUR) }), NOW),
   { available: true, reason: "ready", meters: null },
   "a lapsed latch frees the rung (threadManager clears it on boot; we must not out-live that)",
+);
+const cooling = backendState(CODEX, kvOf({ setting_codex_enabled: "1", provider_startup_cooldown_codex_until: String(NOW + HOUR) }), NOW);
+assert.equal(cooling.available, false, "a startup-wedged backend is temporarily removed from the ladder");
+assert.equal(cooling.reason, "startup cooldown");
+assert.equal(cooling.until, NOW + HOUR, "the readout carries the retry deadline");
+assert.equal(
+  backendState(CODEX, kvOf({ setting_codex_enabled: "1", provider_startup_cooldown_codex_until: String(NOW - HOUR) }), NOW).available,
+  true,
+  "an expired startup cooldown automatically restores the rung",
 );
 
 const capped = backendState(CODEX, kvOf({ setting_codex_enabled: "1", codex_cap_until: String(NOW + 5 * HOUR) }), NOW);
@@ -146,7 +155,7 @@ assert.equal(
 // window, and the SuperGrok plan's MONTHLY credit pool. Credits run out while the weekly still reads
 // room, so a windows-only read prints "available" for a rung routing will not send work to — the same
 // overstated-depth blind spot as the un-latched spent window, through the one door left open.
-const GROK = { enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", usageFile: "grok-usage-cache.json" };
+const GROK = { enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", cooldownKey: "provider_startup_cooldown_grok_until", usageFile: "grok-usage-cache.json" };
 const noCredits = backendState(
   GROK,
   kvOf({ setting_grok_enabled: "1" }),
@@ -252,6 +261,7 @@ for (const b of BACKENDS) {
     const body = new RegExp(`private ${method}\\(\\)[\\s\\S]*?hasHeadroom:([\\s\\S]*?),\\r?\\n\\s*[a-zA-Z]\\w*:`).exec(tmSrc);
     assert.ok(body, `no ${method}() with a hasHeadroom property in threadManager.ts — the ladder mirrors a method that moved`);
     const expr = body[1]
+      .replace(/(["'`])(?:\\.|(?!\1)[^\\])*\1/g, "") // string arguments name a backend; they are not independent routing doors
       .replace(/this\./g, "") // `this.grokCapActive()` → `grokCapActive()`: the guard IS the term
       .replace(/\??\.\w+/g, ""); // `u?.fiveHour` → `u`: a field read is not a door, the predicate around it is
     return new Set((expr.match(/[A-Za-z_$][\w$]*/g) ?? []).filter((id) => !NOISE.has(id)));

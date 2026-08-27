@@ -21,6 +21,7 @@ const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { CodexAgentRun } = await import("../agents/codexRunner.js");
+const { GrokAgentRun } = await import("../agents/grokRunner.js");
 const { parseUsageLimitResetAt, usageLimitResetWasExplicitlyElapsed } = await import("../agents/runner.js");
 
 function check(label: string, condition: boolean, detail?: string): void {
@@ -244,6 +245,59 @@ try {
   check("the pre-init fallback starts fresh instead of resuming a missing session", starts[0]?.opts.resume === undefined, JSON.stringify(starts[0]?.opts));
   check("the pre-init fallback keeps the full kickoff context", starts[0]?.message.includes("FULL KICKOFF") === true, starts[0]?.message);
   check("the pre-init fallback completes instead of cap-parking", earlyResult?.isError === false && !internals.capParked.has(earlyCap.id));
+
+  // A CLI that emits zero startup events is not retried on that same backend: one watchdog interval is
+  // enough evidence. The single completion chain quarantines it and launches exactly one healthy fallback.
+  const startupWedge = db.createThread({ title: "Grok startup wedge fails over once", workspace, rawPrompt: "fix it", brief: "fix it" });
+  let startupFallbacks = 0;
+  let wedgeStops = 0;
+  const wedgedGrok = Object.assign(Object.create(GrokAgentRun.prototype), {
+    capped: false,
+    rateLimited: false,
+    transientApiError: true,
+    transientApiErrorMessage: "Grok produced no events within 60s of starting — killed by the startup watchdog.",
+    startupWedged: true,
+    sessionId: undefined,
+    result: async () => ({ type: "result", subtype: "error", isError: true, result: "startup watchdog" }),
+    nextResult: async () => undefined,
+    stop: async () => { wedgeStops++; },
+  });
+  const healthyCodex = Object.assign(Object.create(CodexAgentRun.prototype), {
+    capped: false,
+    rateLimited: false,
+    transientApiError: false,
+    transientApiErrorMessage: undefined,
+    startupWedged: false,
+    sessionId: undefined,
+    result: async () => ({ type: "result", subtype: "success", isError: false, result: "recovered" }),
+    nextResult: async () => undefined,
+    stop: async () => {},
+  });
+  internals.nextReadyImplementor = (from: string) => from === "grok" ? "codex" : undefined;
+  internals.composeResumeKickoff = async () => "FRESH FALLBACK KICKOFF";
+  internals.startImplementor = () => {
+    startupFallbacks++;
+    internals.implementorProvider.set(startupWedge.id, "codex");
+    const healthyRun = db.createRun({ threadId: startupWedge.id, role: "implementor", model: "gpt-5.6-sol", account: "codex:gpt-5.6-sol" });
+    internals.live.set(startupWedge.id, { run: healthyCodex, runId: healthyRun.id, accountId: "openai-codex" });
+    db.addMessage({ threadId: startupWedge.id, runId: healthyRun.id, role: "implementor", kind: "text", content: "Recovered and completed the task." });
+    return { run: healthyCodex, runId: healthyRun.id, accountId: "openai-codex" };
+  };
+  const startupResult = await internals.awaitImplementorCompletion(
+    startupWedge,
+    "high",
+    "FULL KICKOFF",
+    wedgedGrok,
+    "xai-grok",
+    false,
+    "Continue where you left off.",
+    false,
+  );
+  check("a startup wedge launches exactly one fallback (no retry burst)", startupFallbacks === 1, String(startupFallbacks));
+  check("the wedged process is stopped before takeover", wedgeStops >= 1, String(wedgeStops));
+  check("the healthy fallback result completes the same chain", startupResult?.isError === false, JSON.stringify(startupResult));
+  check("the failed provider is durably cooling down", internals.providerStartupCoolingDown("grok") === true);
+  check("a reachable startup-wedge fallback never creates a review park", !internals.capParked.has(startupWedge.id));
 
   // A reader may use Codex as a read-only schema fallback, but never Grok (which has no safe owner-answer
   // channel). When Claude and z.ai are exhausted, the supervisor must therefore wake a reader on Codex

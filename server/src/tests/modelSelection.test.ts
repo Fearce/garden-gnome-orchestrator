@@ -20,6 +20,7 @@ import { CURATED_CODEX_MODELS, fetchZaiModels } from "../agents/modelCatalog.js"
 import { WAKE_MODEL } from "../agents/codexUsagePing.js";
 import { claudeTokenUsage } from "../agents/runner.js";
 import { codexTokenUsage } from "../agents/codexRunner.js";
+import { providerIntent } from "../orchestrator/providerIntent.js";
 import type { AgentRun, Effort } from "../types.js";
 
 let passed = 0;
@@ -47,6 +48,16 @@ const EFFORTS: Effort[] = ["low", "medium", "high", "max", "ultra"];
 const CTX = { candidates: CANDIDATES, efforts: EFFORTS };
 
 console.log("\n=== auto model selection — reply validation ===\n");
+
+{
+  const explicit = providerIntent("Kevin explicitly requires this recovery to run on GPT, not Grok. Do not route it to Grok.");
+  check("an explicit GPT instruction resolves to Codex", explicit.preferred === "codex", String(explicit.preferred));
+  check("an explicit negative provider instruction is preserved", explicit.excluded.has("grok"), JSON.stringify([...explicit.excluded]));
+  const diagnostic = providerIntent("Grok produced no events within 60s and failed the startup watchdog.");
+  check("an error report that merely names Grok is not a routing instruction", diagnostic.preferred === undefined && diagnostic.excluded.size === 0, JSON.stringify(diagnostic));
+  const clauses = providerIntent("Do not use Codex; switch to Claude.");
+  check("provider intent respects clause boundaries", clauses.preferred === "claude" && clauses.excluded.has("codex") && !clauses.excluded.has("claude"), JSON.stringify({ preferred: clauses.preferred, excluded: [...clauses.excluded] }));
+}
 
 {
   const pick = parseSelection('{"model":"claude-haiku-4-5-20251001","effort":"low","reason":"one-line copy edit"}', CTX);

@@ -29,6 +29,7 @@ import { OperatorNotes } from "./notes.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
 import { buildSelectionPrompt, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
+import { providerIntent } from "./providerIntent.js";
 import { LiveBenchScores } from "./liveBenchScores.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
@@ -1442,6 +1443,28 @@ export class ThreadManager implements OrchestratorApi {
           : "claude";
   }
 
+  private providerStartupCooldownKey(provider: ImplementorProvider): string {
+    return `provider_startup_cooldown_${provider}_until`;
+  }
+
+  /** A startup watchdog means the backend itself failed before the task reached a model. Persist a short
+   *  quarantine so concurrent/new tasks cannot pile onto the same wedged CLI while this task fails over. */
+  private quarantineStartupWedge(provider: ImplementorProvider, reason?: string): void {
+    const until = Date.now() + config.providerStartupCooldownMs;
+    this.db.kvSet(this.providerStartupCooldownKey(provider), String(until));
+    this.hub.log("warn", `${providerLabel(provider)} startup wedged — quarantined for ${Math.ceil(config.providerStartupCooldownMs / 60_000)}m. ${reason ?? ""}`.trim());
+  }
+
+  private providerStartupCoolingDown(provider: ImplementorProvider): boolean {
+    const key = this.providerStartupCooldownKey(provider);
+    const until = Number(this.db.kvGet(key) ?? 0);
+    if (!Number.isFinite(until) || until <= Date.now()) {
+      if (until) this.db.kvSet(key, "0");
+      return false;
+    }
+    return true;
+  }
+
   private track(threadId: string, agent: AgentRunLike): void {
     let set = this.activeRuns.get(threadId);
     if (!set) {
@@ -2652,7 +2675,7 @@ export class ThreadManager implements OrchestratorApi {
       (u.monthlyReset == null || u.monthlyReset > now);
     return {
       provider: "grok",
-      hasHeadroom: !this.grokCapActive() && !nearWeekly && !monthlyExhausted,
+      hasHeadroom: !this.providerStartupCoolingDown("grok") && !this.grokCapActive() && !nearWeekly && !monthlyExhausted,
       fiveHour: null,
       sevenDay: u.sevenDay,
       sevenDayReset: u.sevenDayReset,
@@ -2712,6 +2735,7 @@ export class ThreadManager implements OrchestratorApi {
     return {
       provider: "codex",
       hasHeadroom:
+        !this.providerStartupCoolingDown("codex") &&
         !nearLimit(u?.fiveHour ?? null, u?.fiveHourReset ?? null) &&
         !nearLimit(u?.sevenDay ?? null, u?.sevenDayReset ?? null),
       fiveHour: u?.fiveHour ?? null,
@@ -2897,7 +2921,32 @@ export class ThreadManager implements OrchestratorApi {
       this.settleReview(thread.id, "needs your review.");
       return null;
     }
-    const chosen = this.routeForPick(thread.id, provider);
+    const routed = this.routeForPick(thread.id, provider);
+    const intent = providerIntent([thread.title, thread.rawPrompt, thread.brief].filter(Boolean).join("\n"));
+    let chosen = routed;
+    if (intent.preferred && this.providerReady(intent.preferred) && !intent.excluded.has(intent.preferred)) {
+      chosen = intent.preferred;
+    }
+    if (intent.excluded.has(chosen)) {
+      const alternate = this.nextReadyImplementor(chosen, intent.excluded);
+      if (!alternate) {
+        const names = [...intent.excluded].map(providerLabel).join(", ");
+        const detail = `The task explicitly excludes ${names}, and no allowed implementor backend is currently ready.`;
+        this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Explicit provider requirement cannot be satisfied", detail, severity: "warning" });
+        this.setState(thread.id, "failed", detail);
+        return null;
+      }
+      chosen = alternate;
+    }
+    if (chosen !== routed) {
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "director",
+        summary: `Honored the task's explicit provider instruction — routing to ${providerLabel(chosen)}`,
+        detail: `Automatic usage/model routing selected ${providerLabel(routed)}, but the task explicitly requested or excluded a provider. The implementor is starting on ${providerLabel(chosen)}.`,
+        severity: "info",
+      });
+    }
     this.implementorProvider.set(thread.id, chosen);
     return chosen;
   }
@@ -3710,7 +3759,15 @@ export class ThreadManager implements OrchestratorApi {
       if (this.cancelled(thread.id) || (res && !res.isError && !capped)) return res;
 
       if (!capped && agent.transientApiError) {
-        transientFailures++;
+        const startupWedged = agent.startupWedged === true;
+        if (startupWedged) {
+          this.quarantineStartupWedge(provider, agent.transientApiErrorMessage);
+          // A zero-event startup never reached the model and is strong evidence that this backend is
+          // locally unhealthy. Do not spend two more 60s watchdog windows proving the same thing.
+          transientFailures = MAX_TRANSIENT_API_FAILURES;
+        } else {
+          transientFailures++;
+        }
         if (transientFailures < MAX_TRANSIENT_API_FAILURES) {
           await this.waitForTransientRetry(thread, role, transientFailures, provider);
           resume = agent.sessionId;
@@ -3723,13 +3780,21 @@ export class ThreadManager implements OrchestratorApi {
         // nextReadyImplementor(role) confines the MCP-dependent reader to MCP-capable backends: a flip onto
         // Codex/Grok would drop its in-process post_finding channel.
         const next: ImplementorProvider | undefined = this.nextReadyImplementor(provider, unavailableProviders, role);
-        if (!next) return res;
+        if (!next) {
+          if (startupWedged) {
+            this.parkForExhaustedProviders(thread.id, role);
+            return undefined;
+          }
+          return res;
+        }
         const fromName = providerLabel(provider);
         const toName = providerLabel(next);
         this.postFinding({
           threadId: thread.id,
           fromRole: role,
-          summary: `${fromName} API failed ${MAX_TRANSIENT_API_FAILURES} times — switched ${role} to ${toName}`,
+          summary: startupWedged
+            ? `${fromName} startup wedged — switched ${role} immediately to ${toName}`
+            : `${fromName} API failed ${MAX_TRANSIENT_API_FAILURES} times — switched ${role} to ${toName}`,
           detail: `${agent.transientApiErrorMessage ?? "The provider returned repeated temporary server errors."} The ${role} stage is continuing on ${toName}.`,
           severity: "warning",
         });
@@ -3737,7 +3802,9 @@ export class ThreadManager implements OrchestratorApi {
         provider = next;
         transientFailures = 0;
         resume = undefined;
-        message = prependUserContent(roleKickoff, `[Provider outage handoff]\n${fromName} failed ${MAX_TRANSIENT_API_FAILURES} consecutive times. Continue this ${role} stage on ${toName} and complete it fully.`);
+        message = prependUserContent(roleKickoff, startupWedged
+          ? `[Provider startup-wedge handoff]\n${fromName} emitted no startup events and was quarantined. Continue this ${role} stage on ${toName} and complete it fully.`
+          : `[Provider outage handoff]\n${fromName} failed ${MAX_TRANSIENT_API_FAILURES} consecutive times. Continue this ${role} stage on ${toName} and complete it fully.`);
         continue;
       }
 
@@ -4185,6 +4252,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private providerReady(provider: ImplementorProvider): boolean {
+    if (this.providerStartupCoolingDown(provider)) return false;
     switch (provider) {
       case "claude":
         return this.accounts.hasHeadroom();
@@ -4543,6 +4611,7 @@ export class ThreadManager implements OrchestratorApi {
       // twice (three consecutive failures total) and preserve its session whenever one was established.
       // The enclosing completion layer switches backend after the third failure.
       if (!capped && current.transientApiError) {
+        if (current.startupWedged) return res;
         transientFailures++;
         if (transientFailures >= MAX_TRANSIENT_API_FAILURES) return res;
         const provider = this.providerForRun(current);
@@ -4714,6 +4783,8 @@ export class ThreadManager implements OrchestratorApi {
     const failedRun = this.live.get(thread.id)?.run ?? current;
     if (res?.isError && failedRun.transientApiError && !this.cancelled(thread.id)) {
       const from = this.providerForRun(failedRun);
+      const startupWedged = failedRun.startupWedged === true;
+      if (startupWedged) this.quarantineStartupWedge(from, failedRun.transientApiErrorMessage);
       unavailableProviders.add(from);
       const next = this.nextReadyImplementor(from, unavailableProviders);
       await failedRun.stop();
@@ -4724,13 +4795,17 @@ export class ThreadManager implements OrchestratorApi {
         this.postFinding({
           threadId: thread.id,
           fromRole: "implementor",
-          summary: `${fromName} API failed ${MAX_TRANSIENT_API_FAILURES} times — switched this task to ${toName}`,
+          summary: startupWedged
+            ? `${fromName} startup wedged — switched this task immediately to ${toName}`
+            : `${fromName} API failed ${MAX_TRANSIENT_API_FAILURES} times — switched this task to ${toName}`,
           detail: `${failedRun.transientApiErrorMessage ?? "The provider returned repeated temporary server errors."} The task is continuing on ${toName} from the current working-tree state.`,
           severity: "warning",
         });
         this.notifyExternal(`↪ ${fromName} API errors persisted — continuing "${thread.title}" on ${toName}.`);
         const seed = await this.composeResumeKickoff(thread, kickoff, undefined, {
-          directorNote: `${fromName} returned ${MAX_TRANSIENT_API_FAILURES} consecutive temporary API errors, so you're taking over on ${toName}. Review the existing working-tree progress and finish the task completely.`,
+          directorNote: startupWedged
+            ? `${fromName} emitted no startup events and was quarantined, so you're taking over immediately on ${toName}. Review the existing working-tree progress and finish the task completely.`
+            : `${fromName} returned ${MAX_TRANSIENT_API_FAILURES} consecutive temporary API errors, so you're taking over on ${toName}. Review the existing working-tree progress and finish the task completely.`,
           qaFollows,
         });
         if (!this.cancelled(thread.id)) {
@@ -4748,6 +4823,7 @@ export class ThreadManager implements OrchestratorApi {
           );
         }
       }
+      if (startupWedged) this.capParked.set(thread.id, "implementor");
       return res;
     }
     // A CLI implementor backend (Codex or Grok) hit its usage cap mid-run → fail OVER to another ready

@@ -103,6 +103,10 @@ export interface AgentRunLike {
   /** The run ended on a retryable provider/transport failure (5xx, overload, timeout), not a usage cap. */
   transientApiError: boolean;
   transientApiErrorMessage: string | undefined;
+  /** The provider process never emitted its first event before the startup watchdog killed it.
+   *  Unlike an ordinary transient API error, retrying the same backend immediately is likely to wedge
+   *  again, so the orchestrator quarantines that backend and fails over in one step. */
+  startupWedged?: boolean;
   start(firstMessage: UserContent): this;
   onEvent(cb: (e: AgentEvent) => void): () => void;
   onEnd(cb: () => void): void;

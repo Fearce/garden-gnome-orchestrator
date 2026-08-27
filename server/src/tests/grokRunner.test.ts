@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { readFile, unlink } from "node:fs/promises";
-import { stageGrokPrompt } from "../agents/grokRunner.js";
+import { GrokAgentRun, stageGrokPrompt } from "../agents/grokRunner.js";
 
 const prompts = Array.from({ length: 32 }, (_, i) => `task-specific-prompt-${i}`);
 const paths = await Promise.all(prompts.map(stageGrokPrompt));
@@ -18,3 +18,14 @@ try {
 }
 
 console.log("All Grok runner concurrency checks passed.");
+
+const wedged = new GrokAgentRun({ model: "grok-4.6", effort: "high", cwd: process.cwd() });
+const privateRun = wedged as unknown as { turnActive: boolean; sawFirstEvent: boolean; onWatchdogTimeout(ms: number): void };
+privateRun.turnActive = true;
+privateRun.sawFirstEvent = false;
+privateRun.onWatchdogTimeout(60_000);
+assert.equal(wedged.startupWedged, true, "a zero-event watchdog must be marked as a provider startup wedge");
+assert.equal(wedged.transientApiError, true, "a startup wedge must enter the provider failover path");
+assert.match(wedged.transientApiErrorMessage ?? "", /startup watchdog/, "the failover history must keep the exact watchdog reason");
+
+console.log("Grok startup-watchdog classification passed.");
