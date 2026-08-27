@@ -3,10 +3,12 @@
 **Question asked:** *"Is this running on my fork or the real branch? It's very confusing, I think we
 should remove the fork from github."*
 
-**Short answer:** it was never running on the fork. The live orchestrator runs from a **third** checkout
-nobody's notes mentioned, and that checkout's `master` is a strict ancestor of the real repo. The
-confusion was real, but it came from three checkouts and three GitHub repos with overlapping names, not
-from running fork code.
+**Short answer:** it was never running on the fork. The live orchestrator runs from a **third** checkout,
+`projects\garden-gnome-orchestrator`, and that checkout's `master` is a strict ancestor of the real repo.
+(Mikkel's own notes did record this, in `Claude\notes\claude-orchestrator-leverage.md`, dated at the
+2026-08-10 cutover. The task brief that prompted this work did not, which is itself part of the answer:
+the topology was documented in one place and stale in another.) The confusion was real, but it came from
+three checkouts and three GitHub repos with overlapping names, not from running fork code.
 
 Everything below was verified on disk and against the GitHub API on 2026-08-27. Ancestry claims use
 `git merge-base --is-ancestor` and `git rev-list --not <every fork ref>`, never a ref-name comparison:
@@ -171,6 +173,21 @@ re-baseline `master` reads **behind 54**, both of which are true and were previo
 Changing a git remote is config only. The running service was not restarted and its working tree was not
 touched. The doc commit in this change was made in a detached `git worktree`, so the shared checkout's
 `HEAD` and working tree were never moved either.
+
+### One thing removing `upstream` did break, and it is fixed
+
+`~/.claude/scripts/start-orchestrator.sh` (what `/orchestrator` runs) had `REMOTE="upstream"` hardcoded,
+from back when `origin` was the fork. With `upstream` gone from the live checkout it failed outright:
+
+```
+$ git fetch upstream master
+fatal: 'upstream' does not appear to be a git repository
+```
+
+It now reads `REMOTE="origin"`, which fetches and merges the same real repo it always meant. If anything
+else on the box still names an `upstream` remote for one of these checkouts, it needs the same one-word
+change. `~/Claude/tools/push-preview.sh` mentions the old three-remote layout in its header comment only,
+so it keeps working (it takes the remote as `-r`, default `origin`).
 
 ---
 
