@@ -396,7 +396,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   spreadUsage: false,
   codexEnabled: false,
   codexModel: "gpt-5.6-sol",
-  codexEffort: "max",
+  codexEffort: "ultra",
   codexWeeklySafetyPct: 100,
   hasOpenaiKey: false,
   openaiKeyLast4: null,
@@ -431,6 +431,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   modelDefaults: {},
   claudeModels: [],
   codexModels: [],
+  codexModelEfforts: {},
   grokModels: [],
 };
 

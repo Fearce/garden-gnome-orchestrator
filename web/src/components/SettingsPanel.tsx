@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CODEX_SUB_ID, EFFORTS, GROK_SUB_ID, MODEL_ROLES, ZAI_EFFORTS, ZAI_SUB_ID, codexEffortsForModel, grokEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type ZaiEffort } from "../types.js";
+import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_EFFORTS, ZAI_SUB_ID, codexEffortsForModel, grokEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type ZaiEffort } from "../types.js";
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
 import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
@@ -750,7 +750,7 @@ function AccountEffort({ accountId }: { accountId: string }) {
   const xhighEnabled = useStore((s) => s.settings.xhighEnabled);
   const setSettings = useStore((s) => s.setSettings);
   const value = caps[accountId] ?? "max";
-  const options = EFFORTS.filter((e) => e !== "xhigh" || xhighEnabled);
+  const options = CLAUDE_EFFORTS.filter((e) => e !== "xhigh" || xhighEnabled);
   const onChange = (v: string) => {
     const next: Record<string, Effort> = { ...caps };
     if (v === "max") delete next[accountId];
@@ -1182,13 +1182,18 @@ function ZaiUsageReadout({ usage }: { usage: import("../types.js").ZaiUsageDTO |
 function CodexEffortField() {
   const effort = useStore((s) => s.settings.codexEffort);
   const model = useStore((s) => s.settings.codexModel);
+  const modelEfforts = useStore((s) => s.settings.codexModelEfforts);
   const setSettings = useStore((s) => s.setSettings);
-  const options = codexEffortsForModel(model);
+  const options = modelEfforts[model] ?? codexEffortsForModel(model);
   return (
     <>
       <EffortCapField value={effort} options={options} onChange={(v) => setSettings({ codexEffort: v as CodexEffort })} />
       <div className="sub-msg dim">
-        {options.includes("max") ? "GPT-5.6 supports Max." : "This model supports up to Extra High. Choose a GPT-5.6 model to enable Max."}
+        {options.includes("ultra")
+          ? "Ultra adds automatic task delegation for this model."
+          : options.includes("max")
+            ? "This model supports Max."
+            : "This model supports up to Extra High."}
       </div>
     </>
   );

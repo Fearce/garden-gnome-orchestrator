@@ -40,10 +40,10 @@ const CANDIDATES: ModelCandidate[] = [
   { provider: "claude", model: "claude-haiku-4-5-20251001", efforts: ["low", "medium", "high"], note: modelNote("claude", "claude-haiku-4-5-20251001") },
   { provider: "claude", model: "claude-sonnet-4-6", efforts: ["low", "medium", "high", "max"], note: modelNote("claude", "claude-sonnet-4-6") },
   { provider: "claude", model: "claude-opus-4-8", efforts: ["low", "medium", "high", "xhigh", "max"], note: modelNote("claude", "claude-opus-4-8") },
-  { provider: "codex", model: "gpt-5.6-sol", efforts: ["low", "medium", "high", "xhigh", "max"], note: modelNote("codex", "gpt-5.6-sol") },
+  { provider: "codex", model: "gpt-5.6-sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], note: modelNote("codex", "gpt-5.6-sol") },
   { provider: "zai", model: "glm-4.7", efforts: ["low", "medium", "high"], note: modelNote("zai", "glm-4.7") },
 ];
-const EFFORTS: Effort[] = ["low", "medium", "high", "max"];
+const EFFORTS: Effort[] = ["low", "medium", "high", "max", "ultra"];
 const CTX = { candidates: CANDIDATES, efforts: EFFORTS };
 
 console.log("\n=== auto model selection — reply validation ===\n");

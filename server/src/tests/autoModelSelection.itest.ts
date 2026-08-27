@@ -175,13 +175,19 @@ const thread = (h: Harness, id: string): Thread => h.db.getThread(id)!;
 async function main(): Promise<void> {
   console.log("\n=== auto model selection — pipeline wiring (real machinery) ===\n");
 
-  console.log("Test defaults — the former top Grok tier migrates to the new top tier once");
+  console.log("Test defaults — former top provider tiers migrate to the new top tier once");
   {
-    const h = makeHarness((db) => db.kvSet("setting_grok_effort", "high"));
+    const h = makeHarness((db) => {
+      db.kvSet("setting_grok_effort", "high");
+      db.kvSet("setting_codex_effort", "max");
+    });
     try {
       check("the old no-cap High default migrates to Extra High", h.mgr.settings().grokEffort === "xhigh", h.mgr.settings().grokEffort);
       h.mgr.setSettings({ grokEffort: "high" });
       check("a later explicit High cap is preserved", h.mgr.settings().grokEffort === "high", h.mgr.settings().grokEffort);
+      check("the old no-cap Max Codex default migrates to Ultra", h.mgr.settings().codexEffort === "ultra", h.mgr.settings().codexEffort);
+      h.mgr.setSettings({ codexEffort: "max" });
+      check("a later explicit Codex Max cap is preserved", h.mgr.settings().codexEffort === "max", h.mgr.settings().codexEffort);
     } finally {
       h.dispose();
     }
@@ -221,7 +227,7 @@ async function main(): Promise<void> {
   {
     const h = makeHarness();
     try {
-      const codex = ["gpt-a", "gpt-b", "gpt-c", "gpt-d", "gpt-e", "gpt-f"];
+      const codex = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
       const grok = ["grok-4.6", "grok-4.7", "grok-4.8", "grok-4.9", "grok-4.10"];
       // Deliberately NOT the curated ids: z.ai's live roster is what the key can actually reach, and a
       // curated list is only the cold-start fallback. Stubbing the picker here would assert nothing —
@@ -229,7 +235,10 @@ async function main(): Promise<void> {
       const zai = ["glm-9.9-unreleased", "glm-5.3", "glm-4.7"];
       h.internals.codexImplementorReady = (): boolean => true;
       h.internals.codexRosterModels = (): string[] => codex;
-      h.internals.codexEffort = (): Effort => "xhigh";
+      h.internals.codexSupportedEfforts = (model: string): Effort[] => model === "gpt-5.6-sol"
+        ? ["low", "medium", "high", "xhigh", "max", "ultra"]
+        : ["low", "medium", "high", "xhigh"];
+      h.internals.codexEffort = (): Effort => "ultra";
       h.internals.grokImplementorReady = (): boolean => true;
       h.internals.pickableGrokModels = (): string[] => grok;
       h.internals.grokEffort = (): Effort => "xhigh";
@@ -240,6 +249,7 @@ async function main(): Promise<void> {
       const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
       const modelsFor = (provider: ImplementorProvider): string[] => roster.filter((candidate) => candidate.provider === provider).map((candidate) => candidate.model);
       check("all Codex models reach the selector", codex.every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
+      check("Codex Ultra reaches the selector when the live model advertises it", roster.find((candidate) => candidate.model === "gpt-5.6-sol")?.efforts.includes("ultra") === true);
       check("all live Grok models reach the selector", grok.every((model) => modelsFor("grok").includes(model)), JSON.stringify(modelsFor("grok")));
       check("every live z.ai model reaches the selector", zai.every((model) => modelsFor("zai").includes(model)), JSON.stringify(modelsFor("zai")));
       check("the z.ai roster is not padded with ids the key cannot reach", modelsFor("zai").length === zai.length, JSON.stringify(modelsFor("zai")));

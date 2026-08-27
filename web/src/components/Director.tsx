@@ -6,7 +6,7 @@ import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
-import { CODEX_SUB_ID, DEFAULT_SUB_ID, EFFORTS, codexEffortsForModel, type CodexEffort, type DirectorItem, type DirectorMessage, type DirectorStatus, type Effort, type OrchestratorSettings, type Role, type TaskSearchHit } from "../types.js";
+import { CLAUDE_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, codexEffortsForModel, type CodexEffort, type DirectorItem, type DirectorMessage, type DirectorStatus, type Effort, type OrchestratorSettings, type Role, type TaskSearchHit } from "../types.js";
 import { codexModelOptions } from "../lib/models.js";
 import { effortLabel, modelLabel, stateColor, stateLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
@@ -511,16 +511,19 @@ function ComposerEffortPickers() {
   const codexEffort = useStore((s) => s.settings.codexEffort);
   const codexEnabled = useStore((s) => s.settings.codexEnabled);
   const codexModel = useStore((s) => s.settings.codexModel);
+  const codexModelEfforts = useStore((s) => s.settings.codexModelEfforts);
   const xhighEnabled = useStore((s) => s.settings.xhighEnabled);
   const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
   const setSettings = useStore((s) => s.setSettings);
-  const claudeTiers = EFFORTS.filter((t) => t !== "xhigh" || xhighEnabled);
+  const claudeTiers = CLAUDE_EFFORTS.filter((t) => t !== "xhigh" || xhighEnabled);
   const claudeTitle = `How hard the Claude implementor works on tasks dispatched directly. Auto = ${
     plannerEnabled ? "the planner's per-task pick" : "the built-in default (high) — the planner is off"
   }; a concrete tier overrides it.`;
-  const codexTiers = codexEffortsForModel(codexModel);
-  const codexTitle = codexTiers.includes("max")
-    ? "Codex CLI reasoning effort (model_reasoning_effort). GPT-5.6 supports Max; this global cap applies to every Codex run."
+  const codexTiers = codexModelEfforts[codexModel] ?? codexEffortsForModel(codexModel);
+  const codexTitle = codexTiers.includes("ultra")
+    ? "Codex CLI effort cap. Ultra adds automatic delegation for this model; the cap applies to every Codex run."
+    : codexTiers.includes("max")
+      ? "Codex CLI reasoning effort cap. This model supports Max."
     : "Codex CLI reasoning effort (model_reasoning_effort). This model supports up to Extra High; pick GPT-5.6 to enable Max.";
 
   return (

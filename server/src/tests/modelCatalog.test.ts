@@ -44,6 +44,20 @@ const grokHome = mkdtempSync(join(tmpdir(), "ggo-catalog-"));
 writeFileSync(join(grokHome, "models_cache.json"), JSON.stringify({ models: { "grok-4.6": {} } }), "utf8");
 const { config } = await import("../config.js");
 (config.grok as { home: string }).home = grokHome;
+// Codex and Grok use the same filename under different homes in production; keep separate temp roots.
+const codexHome = mkdtempSync(join(tmpdir(), "ggo-codex-catalog-"));
+(config.codex as { home: string }).home = codexHome;
+writeFileSync(
+  join(codexHome, "models_cache.json"),
+  JSON.stringify({
+    models: [
+      { slug: "gpt-5.6-sol", visibility: "list", supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"].map((effort) => ({ effort })) },
+      { slug: "gpt-5.4-mini", visibility: "list", supported_reasoning_levels: ["low", "medium", "high", "xhigh"].map((effort) => ({ effort })) },
+      { slug: "codex-auto-review", visibility: "hide", supported_reasoning_levels: [{ effort: "max" }] },
+    ],
+  }),
+  "utf8",
+);
 
 const logs: string[] = [];
 let changes = 0;
@@ -80,6 +94,9 @@ try {
 
   check("a provider listed BEFORE the failure still stored", kv.get("cache_claude_models") === JSON.stringify(["claude-opus-5"]), String(kv.get("cache_claude_models")));
   check("a provider listed AFTER the failure still stored", kv.get("cache_grok_models") === JSON.stringify(["grok-4.6"]), String(kv.get("cache_grok_models")));
+  check("the ChatGPT Codex CLI roster is cached independently of the API key", catalog.codexCliModels().map((m) => m.id).join(",") === "gpt-5.6-sol,gpt-5.4-mini", JSON.stringify(catalog.codexCliModels()));
+  check("the CLI's exact Ultra capability reaches the catalog", catalog.codexCliEfforts("gpt-5.6-sol")?.at(-1) === "ultra", JSON.stringify(catalog.codexCliEfforts("gpt-5.6-sol")));
+  check("hidden Codex service models are not offered as implementors", !catalog.codexCliModels().some((m) => m.id === "codex-auto-review"), JSON.stringify(catalog.codexCliModels()));
 
   // The retry is what keeps one transient at boot from costing six hours; MODEL_CATALOG_RETRY_MS is 10ms here.
   zaiFails = false;
@@ -94,6 +111,7 @@ try {
   globalThis.fetch = realFetch;
   catalog.stop();
   rmSync(grokHome, { recursive: true, force: true });
+  rmSync(codexHome, { recursive: true, force: true });
 }
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);

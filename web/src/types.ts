@@ -9,27 +9,32 @@ export const ROLES = ["director", "planner", "researcher", "implementor", "qa", 
 /** Dispatch lane: undefined/null = the normal pipeline, 'read' = the read-only reader lane (dispatch_read). */
 export type ThreadLane = "read";
 
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
-export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+/** Cross-provider ordering. Ultra is Codex-only; Claude controls must use CLAUDE_EFFORTS. */
+export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+export const CLAUDE_EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 const CLAUDE_BASE_EFFORTS: Effort[] = ["low", "medium", "high"];
 const CLAUDE_MAX_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
 
 /** Exact documented effort set for a Claude model. Unknown/older ids get the universally safe base set. */
 export function claudeEffortsForModel(model: string): readonly Effort[] {
   const id = model.trim().toLowerCase();
-  if (/^claude-(?:fable-5|mythos-5|opus-5|opus-4-(?:7|8)|sonnet-5)(?:[-.]|$)/.test(id)) return EFFORTS;
+  if (/^claude-(?:fable-5|mythos-5|opus-5|opus-4-(?:7|8)|sonnet-5)(?:[-.]|$)/.test(id)) return CLAUDE_EFFORTS;
   if (/^claude-(?:opus-4-6|sonnet-4-6|mythos-preview)(?:[-.]|$)/.test(id)) return CLAUDE_MAX_EFFORTS;
   return CLAUDE_BASE_EFFORTS;
 }
-export type CodexEffort = "low" | "medium" | "high" | "xhigh" | "max";
-/** All known Codex effort values. GPT-5.6 is the first supported family with `max`; earlier Codex
- * models stop at `xhigh`, so render the model-specific subset with `codexEffortsForModel`. */
-export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max"];
+export type CodexEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+/** All Codex CLI effort values. The settings payload carries each live model's exact subset. */
+export const CODEX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const CODEX_PRE_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
+const CODEX_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
-/** Mirrors server/src/types.ts. GPT-5.6 aliases and snapshots accept `max`. */
+/** Cold-start mirror of server/src/types.ts; prefer settings.codexModelEfforts once connected. */
 export function codexEffortsForModel(model: string): readonly CodexEffort[] {
-  return /^gpt-5\.6(?:[-.]|$)/i.test(model.trim()) ? CODEX_EFFORTS : CODEX_PRE_MAX_EFFORTS;
+  const id = model.trim();
+  if (/^(?:gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
+  if (/^(?:gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
+  return CODEX_PRE_MAX_EFFORTS;
 }
 export const GROK_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 export type GrokEffort = (typeof GROK_EFFORTS)[number];
@@ -485,6 +490,7 @@ export interface OrchestratorSettings {
   modelDefaults: Partial<Record<Role, string>>;
   claudeModels: string[];
   codexModels: string[];
+  codexModelEfforts: Record<string, CodexEffort[]>; // exact live Codex CLI effort set per model
   grokModels: string[]; // read-only: pickable Grok model ids
   zaiModels: string[]; // read-only: pickable z.ai GLM model ids
 }
@@ -542,6 +548,7 @@ export type SettingsPatch = Partial<
     | "modelDefaults"
     | "claudeModels"
     | "codexModels"
+    | "codexModelEfforts"
     | "grokModels"
     | "zaiModels"
   >
@@ -552,6 +559,11 @@ export const CODEX_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
+  "gpt-daybreak-blue-latest",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex-spark",
 ] as const;
 
 /** Grok models suggested when the live list hasn't loaded yet. */

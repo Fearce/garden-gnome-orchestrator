@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import { config } from "../config.js";
+import { CODEX_EFFORTS, codexEffortsForModel, type CodexEffort } from "../types.js";
 
 // The pickable-model lists power the Settings model dropdowns. We fetch them LIVE from each provider's
 // models endpoint so a newly-granted model (e.g. Fable 5) shows up on its own, and cache the result in
@@ -13,6 +14,7 @@ import { config } from "../config.js";
 
 const CLAUDE_MODELS_KEY = "cache_claude_models";
 const CODEX_MODELS_KEY = "cache_codex_models";
+const CODEX_CLI_MODELS_KEY = "cache_codex_cli_models";
 const GROK_MODELS_KEY = "cache_grok_models";
 const ZAI_MODELS_KEY = "cache_zai_models";
 const REFRESH_MS = 6 * 60 * 60 * 1000; // 6h — model access changes rarely; a boot fetch covers new grants.
@@ -45,6 +47,11 @@ export const CURATED_GROK_MODELS = [...config.grok.models];
 /** Curated z.ai (GLM) fallback, mirroring config.zai.models, for a fresh install or an unreachable
  *  models endpoint. The live list from fetchZaiModels is authoritative whenever it is available. */
 export const CURATED_ZAI_MODELS = [...config.zai.models];
+
+export interface CodexCliModel {
+  id: string;
+  efforts: CodexEffort[];
+}
 
 /** Dedup preserving first-seen order, dropping blanks. */
 export function uniq(ids: (string | undefined | null)[]): string[] {
@@ -114,6 +121,34 @@ export async function fetchZaiModels(key: string): Promise<string[]> {
   return uniq(entries.map((m) => m.id));
 }
 
+/** Read the authenticated Codex CLI's own catalog. ChatGPT-plan auth has no usable `/v1/models`
+ * endpoint, so this file is the authoritative roster and capability matrix for that mode. Hidden
+ * service models are deliberately excluded: the CLI itself does not offer them as runnable choices. */
+export function readCodexModelsFile(): CodexCliModel[] {
+  const file = join(config.codex.home, "models_cache.json");
+  if (!existsSync(file)) return [];
+  try {
+    const body = JSON.parse(readFileSync(file, "utf8")) as {
+      models?: Array<{
+        slug?: string;
+        visibility?: string;
+        supported_reasoning_levels?: Array<{ effort?: string }>;
+      }>;
+    };
+    const out: CodexCliModel[] = [];
+    for (const model of body.models ?? []) {
+      const id = model.slug?.trim();
+      if (!id || model.visibility === "hide") continue;
+      const efforts = uniq((model.supported_reasoning_levels ?? []).map((level) => level.effort))
+        .filter((effort): effort is CodexEffort => CODEX_EFFORTS.includes(effort as CodexEffort));
+      out.push({ id, efforts: efforts.length ? efforts : [...codexEffortsForModel(id)] });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 /** List the Grok models the CLI has cached for this login. The `grok` CLI writes ~/.grok/models_cache.json
  *  (a free, local file refreshed after each session) with a `models` map keyed by model id — read it
  *  directly rather than spawning the CLI. Returns the non-hidden ids, or an empty list when absent/corrupt. */
@@ -169,6 +204,31 @@ export class ModelCatalog {
     return this.readCache(CODEX_MODELS_KEY);
   }
 
+  /** Models and exact effort sets advertised by the authenticated Codex CLI (ChatGPT-plan auth). */
+  codexCliModels(): CodexCliModel[] {
+    const raw = this.db.kvGet(CODEX_CLI_MODELS_KEY);
+    if (!raw) return [];
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (!Array.isArray(value)) return [];
+      return value.flatMap((entry): CodexCliModel[] => {
+        if (!entry || typeof entry !== "object") return [];
+        const row = entry as { id?: unknown; efforts?: unknown };
+        if (typeof row.id !== "string" || !Array.isArray(row.efforts)) return [];
+        const efforts = row.efforts.filter(
+          (effort): effort is CodexEffort => typeof effort === "string" && CODEX_EFFORTS.includes(effort as CodexEffort),
+        );
+        return efforts.length ? [{ id: row.id, efforts }] : [];
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  codexCliEfforts(model: string): readonly CodexEffort[] | undefined {
+    return this.codexCliModels().find((entry) => entry.id.toLowerCase() === model.trim().toLowerCase())?.efforts;
+  }
+
   /** Cached live Grok model ids (empty until the first refresh reads the CLI's models cache). */
   grokModels(): string[] {
     return this.readCache(GROK_MODELS_KEY);
@@ -190,8 +250,8 @@ export class ModelCatalog {
     }
   }
 
-  private storeIfChanged(key: string, ids: string[]): boolean {
-    const next = JSON.stringify(ids);
+  private storeIfChanged(key: string, value: unknown): boolean {
+    const next = JSON.stringify(value);
     if (this.db.kvGet(key) === next) return false;
     this.db.kvSet(key, next);
     return true;
@@ -217,6 +277,10 @@ export class ModelCatalog {
     await collect("Claude", CLAUDE_MODELS_KEY, () => (token ? fetchClaudeModels(token) : undefined));
     const openAiKey = this.getOpenAiKey();
     await collect("Codex", CODEX_MODELS_KEY, () => (openAiKey ? fetchOpenAiModels(openAiKey) : undefined));
+    // ChatGPT-plan Codex access is catalogued locally by the CLI, independently of an optional API key.
+    // Persist the full capability rows so settings and auto-select survive a transiently missing file.
+    const codexCli = readCodexModelsFile();
+    if (codexCli.length && this.storeIfChanged(CODEX_CLI_MODELS_KEY, codexCli)) changed = true;
     const zaiKey = this.getZaiKey();
     await collect("z.ai", ZAI_MODELS_KEY, () => (zaiKey ? fetchZaiModels(zaiKey) : undefined));
     // Grok comes from the CLI's own local cache file (no network / no auth needed).

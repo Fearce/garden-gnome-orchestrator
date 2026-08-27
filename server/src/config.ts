@@ -143,16 +143,17 @@ export const config = {
     // ChatGPT-plan auth does not give us an OpenAI /v1/models list, even when Codex can run it.
     // Override the default with CODEX_MODEL.
     defaultModel: process.env.CODEX_MODEL?.trim() || "gpt-5.6-sol",
-    // These are the five the CLI's own bundled models.json presents (`GPT-5.6 Sol/Terra/Luna`,
-    // `GPT-5.5`, `GPT-5.4`), most-capable first. Under ChatGPT-plan auth this list IS the whole Codex
-    // roster auto-select can reach, so a model missing here is a model it can never pick — gpt-5.5 in
-    // particular is the one codexUsagePing wakes the 5h window with, i.e. proven to run on that auth.
+    // Cold-start fallback for the CLI's visible catalog, most-capable first. models_cache.json is
+    // authoritative under ChatGPT-plan auth; hidden service-only ids are not implementor choices.
     models: [
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
+      "gpt-daybreak-blue-latest",
       "gpt-5.5",
       "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex-spark",
     ] as const,
     // The Codex CLI is a global npm install; we spawn its bin/codex.js with this node binary directly
     // (PATH-independent, no .cmd shim). Override CODEX_BIN_JS to point at a different install.

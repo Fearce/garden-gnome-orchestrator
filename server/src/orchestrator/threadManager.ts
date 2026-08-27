@@ -62,7 +62,7 @@ import type {
   Thread,
   ZaiEffort,
 } from "../types.js";
-import { agentKey, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
+import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
 import type { LocalAgentSnapshot, OnlineOffice } from "../office/onlineOffice.js";
 import { OFFICE_ROOM as ONLINE_OFFICE_ROOM } from "../office/onlineProtocol.js";
 import type { RelayChat, RelayPresentAgent } from "../office/onlineProtocol.js";
@@ -129,7 +129,7 @@ function sanitizeAccountEffortCaps(input: Record<string, Effort>): Record<string
   const out: Record<string, Effort> = {};
   for (const [id, eff] of Object.entries(input ?? {})) {
     if (typeof id !== "string" || id.length > 64) continue;
-    if (typeof eff === "string" && EFFORTS.includes(eff) && eff !== "max") out[id] = eff;
+    if (typeof eff === "string" && CLAUDE_EFFORTS.includes(eff) && eff !== "max") out[id] = eff;
     if (Object.keys(out).length >= MAX_MODEL_SUB_ENTRIES) break;
   }
   return out;
@@ -478,6 +478,7 @@ type CapParkStage = "planner" | "researcher" | "implementor" | "qa" | "reader";
  *  a restart is an entry — so this guard has to be durable, not in-memory. */
 const REMOTE_CHAT_SEEN_KV = "online_office_seen_chat";
 const GROK_XHIGH_DEFAULT_MIGRATION_KV = "migration_grok_xhigh_default_v1";
+const CODEX_ULTRA_DEFAULT_MIGRATION_KV = "migration_codex_ultra_default_v1";
 /** How many relay message ids to remember. Comfortably above `ROOM_HISTORY` (60) per shared room, so a
  *  replayed backlog is still recognised after a bounce; trimmed oldest-first. */
 const REMOTE_CHAT_SEEN_MAX = 500;
@@ -662,12 +663,17 @@ export class ThreadManager implements OrchestratorApi {
     this.applyUsagePollInterval();
   }
 
-  /** Preserve the meaning of the old Grok `high` default after 4.6 added xhigh: it meant "no cap" when
-   *  high was the top selectable tier. Migrate it once; a later explicit High selection stays High. */
+  /** Preserve old "highest available" defaults when a provider adds a new top tier. Each marker is
+   * independent so an installation that already migrated Grok still receives the newer Codex migration. */
   private migrateProviderDefaults(): void {
-    if (this.db.kvGet(GROK_XHIGH_DEFAULT_MIGRATION_KV)) return;
-    if (this.db.kvGet("setting_grok_effort") === "high") this.db.kvSet("setting_grok_effort", "xhigh");
-    this.db.kvSet(GROK_XHIGH_DEFAULT_MIGRATION_KV, "1");
+    if (!this.db.kvGet(CODEX_ULTRA_DEFAULT_MIGRATION_KV)) {
+      if (this.db.kvGet("setting_codex_effort") === "max") this.db.kvSet("setting_codex_effort", "ultra");
+      this.db.kvSet(CODEX_ULTRA_DEFAULT_MIGRATION_KV, "1");
+    }
+    if (!this.db.kvGet(GROK_XHIGH_DEFAULT_MIGRATION_KV)) {
+      if (this.db.kvGet("setting_grok_effort") === "high") this.db.kvSet("setting_grok_effort", "xhigh");
+      this.db.kvSet(GROK_XHIGH_DEFAULT_MIGRATION_KV, "1");
+    }
   }
 
   /** Kick off the live model-list catalog (boot fetch + slow refresh). Called from index.ts after the
@@ -1350,6 +1356,9 @@ export class ThreadManager implements OrchestratorApi {
       modelDefaults: { ...config.models },
       claudeModels: this.pickableClaudeModels(),
       codexModels: this.pickableCodexModels(),
+      codexModelEfforts: Object.fromEntries(
+        this.pickableCodexModels().map((model) => [model, [...this.codexSupportedEfforts(model)]]),
+      ),
       grokModels: this.pickableGrokModels(),
     };
   }
@@ -1419,13 +1428,21 @@ export class ThreadManager implements OrchestratorApi {
     return uniq([...this.codexRosterModels(), ...selected]);
   }
 
-  /** Every model the Codex runner's active auth can actually use. The runner prefers ChatGPT login, whose
-   *  current supported roster is the curated GPT-5.6 family. Only API-key auth may consume the API key's
-   *  live /v1/models list; mixing that list into a ChatGPT run creates choices the CLI rejects. */
+  /** Every model the Codex runner's active auth can actually use. ChatGPT auth uses the CLI's own live
+   * catalog; API-key auth uses `/v1/models`. Mixing them would offer models the active credential rejects. */
   private codexRosterModels(): string[] {
-    if (chatgptLoginAvailable()) return CURATED_CODEX_MODELS;
+    if (chatgptLoginAvailable()) {
+      const cli = this.modelCatalog.codexCliModels().map((model) => model.id);
+      return cli.length ? cli : CURATED_CODEX_MODELS;
+    }
     const live = this.modelCatalog.codexModels();
     return live.length ? live : CURATED_CODEX_MODELS;
+  }
+
+  /** Exact CLI-advertised tiers under ChatGPT auth; documented family fallbacks cover cold start and
+   * API-key models, whose `/v1/models` response carries no effort-capability metadata. */
+  private codexSupportedEfforts(model: string): readonly CodexEffort[] {
+    return (chatgptLoginAvailable() ? this.modelCatalog.codexCliEfforts(model) : undefined) ?? codexEffortsForModel(model);
   }
 
   /** Pickable Grok model ids for the Settings dropdown: curated defaults first, then any additional models
@@ -1640,7 +1657,7 @@ export class ThreadManager implements OrchestratorApi {
       add("claude", this.claudeRosterModels(), (model) => underCap(claudeEffortsForModel(model), cap));
     }
     if (this.codexImplementorReady()) {
-      add("codex", this.codexRosterModels(), (model) => underCap(codexEffortsForModel(model), this.codexEffort(model)));
+      add("codex", this.codexRosterModels(), (model) => underCap(this.codexSupportedEfforts(model), this.codexEffort(model)));
     }
     if (this.grokImplementorReady()) {
       const live = this.modelCatalog.grokModels();
@@ -1655,7 +1672,7 @@ export class ThreadManager implements OrchestratorApi {
     return out;
   }
 
-  /** Union of the exact per-candidate effort sets, kept in canonical low→max order for the JSON schema. */
+  /** Union of the exact per-candidate effort sets, kept in canonical low→ultra order for the JSON schema. */
   private selectableEfforts(candidates: ModelCandidate[]): Effort[] {
     return EFFORTS.filter((effort) => candidates.some((candidate) => candidate.efforts.includes(effort)));
   }
@@ -1842,13 +1859,12 @@ export class ThreadManager implements OrchestratorApi {
     );
   }
 
-  /** The Codex CLI reasoning-effort override, normalized to the selected model's accepted range.
-   * GPT-5.6 accepts `max`; earlier Codex models cap at `xhigh`. */
+  /** The Codex CLI effort cap, normalized to the selected model's live accepted range. */
   private codexEffort(model = this.codexModel()): CodexEffort {
     const v = this.db.kvGet("setting_codex_effort")?.trim();
-    const supported = codexEffortsForModel(model);
+    const supported = this.codexSupportedEfforts(model);
     const requested = CODEX_EFFORTS.includes(v as CodexEffort) ? (v as CodexEffort) : supported.at(-1)!;
-    return resolveCodexEffort(model, requested);
+    return resolveCodexEffort(model, requested, supported);
   }
 
   /** The selected Grok implementor model. Resolution: the model-overrides matrix (grok.implementor), then
@@ -1945,7 +1961,7 @@ export class ThreadManager implements OrchestratorApi {
       if (!v || typeof v !== "object" || Array.isArray(v)) return {};
       const out: Record<string, Effort> = {};
       for (const [id, eff] of Object.entries(v as Record<string, unknown>)) {
-        if (typeof eff === "string" && EFFORTS.includes(eff as Effort)) out[id] = eff as Effort;
+        if (typeof eff === "string" && CLAUDE_EFFORTS.includes(eff as Effort)) out[id] = eff as Effort;
       }
       return out;
     } catch {
@@ -1967,7 +1983,7 @@ export class ThreadManager implements OrchestratorApi {
    *  resolveEffort — so the dropdown never claims a tier this machine can't send. */
   private skipDirectorEffort(): Effort | "auto" {
     const v = this.db.kvGet("setting_skip_director_effort")?.trim();
-    if (!v || !EFFORTS.includes(v as Effort)) return "auto";
+    if (!v || !CLAUDE_EFFORTS.includes(v as Effort)) return "auto";
     return v === "xhigh" && !config.enableXhigh ? "high" : (v as Effort);
   }
 
@@ -2052,7 +2068,7 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.skipDirector !== undefined) this.db.kvSet("setting_skip_director", patch.skipDirector ? "1" : "0");
     if (patch.showComposerPickers !== undefined) this.db.kvSet("setting_show_composer_pickers", patch.showComposerPickers ? "1" : "0");
     if (patch.showAgentModel !== undefined) this.db.kvSet("setting_show_agent_model", patch.showAgentModel ? "1" : "0");
-    if (patch.skipDirectorEffort !== undefined && (patch.skipDirectorEffort === "auto" || EFFORTS.includes(patch.skipDirectorEffort)))
+    if (patch.skipDirectorEffort !== undefined && (patch.skipDirectorEffort === "auto" || CLAUDE_EFFORTS.includes(patch.skipDirectorEffort)))
       this.db.kvSet("setting_skip_director_effort", patch.skipDirectorEffort);
     if (patch.skipDirectorRetitle !== undefined) this.db.kvSet("setting_skip_director_retitle", patch.skipDirectorRetitle ? "1" : "0");
     if (patch.maxRecentRepos !== undefined) this.db.kvSet("setting_max_recent_repos", String(patch.maxRecentRepos));
@@ -3693,7 +3709,9 @@ export class ThreadManager implements OrchestratorApi {
     this.setState(thread.id, "implementing");
     // Claude uses the planner's per-task effort (with the xhigh gate applied). Codex has its own
     // operator-selected reasoning effort because the CLI takes a persistent model_reasoning_effort.
-    const plannerEffort = resolveEffort(opts?.effort);
+    // Preserve Codex-only Ultra until the provider branch is known. Claude/z.ai paths clamp it to Max
+    // before implementorConfig reaches the Anthropic SDK.
+    const plannerEffort: Effort = opts?.effort === "ultra" ? "ultra" : resolveEffort(opts?.effort);
     // Provider factory: the routing gate (gateImplementorProvider) stored the backend for this thread.
     // Codex runs the CLI (no Claude account/oauth); Claude runs the SDK on a selected subscription.
     const provider = this.implementorProvider.get(thread.id) ?? "claude";

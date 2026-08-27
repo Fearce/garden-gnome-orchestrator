@@ -33,11 +33,14 @@ eq("high over a low cap → low", clampEffort("high", "low"), "low");
 eq("uncapped (max cap) never lowers a request", clampEffort("xhigh", "max"), "xhigh");
 
 console.log("\nCodex model effort support");
-eq("GPT-5.6 exposes Max", codexEffortsForModel("gpt-5.6-sol").at(-1), "max");
-eq("GPT-5.6 snapshots expose Max", codexEffortsForModel("gpt-5.6-terra-2026-07-01").at(-1), "max");
+eq("GPT-5.6 Sol exposes Ultra", codexEffortsForModel("gpt-5.6-sol").at(-1), "ultra");
+eq("GPT-5.6 Terra snapshots expose Ultra", codexEffortsForModel("gpt-5.6-terra-2026-07-01").at(-1), "ultra");
+eq("GPT-5.6 Luna stops at Max", codexEffortsForModel("gpt-5.6-luna").at(-1), "max");
+eq("Daybreak Blue exposes Ultra", codexEffortsForModel("gpt-daybreak-blue-latest").at(-1), "ultra");
 eq("GPT-5.3 Codex stops at Extra High", codexEffortsForModel("gpt-5.3-codex").at(-1), "xhigh");
 eq("legacy Codex safely lowers a stale Max setting", resolveCodexEffort("gpt-5.3-codex", "max"), "xhigh");
 eq("GPT-5.6 keeps Max", resolveCodexEffort("gpt-5.6-sol", "max"), "max");
+eq("Luna safely lowers a stale Ultra setting", resolveCodexEffort("gpt-5.6-luna", "ultra"), "max");
 
 console.log("\nClaude and Grok model effort support");
 eq("Claude Opus 4.8 exposes all five tiers", claudeEffortsForModel("claude-opus-4-8").join(","), "low,medium,high,xhigh,max");

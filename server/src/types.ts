@@ -33,15 +33,18 @@ export type ThreadState =
   | "cancelled"
   | "closed"; // soft-closed: kept in the DB (restorable) but off the main board; auto-purged after 30d
 
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
-export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+/** Canonical cross-provider ordering. `ultra` is a Codex CLI execution tier (reasoning plus automatic
+ * delegation), not a Claude SDK effort; provider-specific helpers below expose only valid subsets. */
+export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+export const CLAUDE_EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 const CLAUDE_BASE_EFFORTS: Effort[] = ["low", "medium", "high"];
 const CLAUDE_MAX_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
 
 /** Exact documented effort set for a Claude model. Unknown/older ids get the universally safe base set. */
 export function claudeEffortsForModel(model: string): readonly Effort[] {
   const id = model.trim().toLowerCase();
-  if (/^claude-(?:fable-5|mythos-5|opus-5|opus-4-(?:7|8)|sonnet-5)(?:[-.]|$)/.test(id)) return EFFORTS;
+  if (/^claude-(?:fable-5|mythos-5|opus-5|opus-4-(?:7|8)|sonnet-5)(?:[-.]|$)/.test(id)) return CLAUDE_EFFORTS;
   if (/^claude-(?:opus-4-6|sonnet-4-6|mythos-preview)(?:[-.]|$)/.test(id)) return CLAUDE_MAX_EFFORTS;
   return CLAUDE_BASE_EFFORTS;
 }
@@ -53,20 +56,28 @@ export function resolveClaudeEffort(model: string, effort: Effort): Effort {
   const requested = EFFORTS.indexOf(effort);
   return [...supported].reverse().find((tier) => EFFORTS.indexOf(tier) < requested) ?? "high";
 }
-/** All known Codex effort values. GPT-5.6 is the first supported family with `max`; earlier Codex
- * models stop at `xhigh`, so callers must use `codexEffortsForModel` before spawning a run. */
-export const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+/** All Codex CLI effort values. `ultra` adds automatic delegation and is advertised only by selected
+ * models in the CLI catalog; callers must use the model-specific live capability set when available. */
+export const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type CodexEffort = (typeof CODEX_EFFORTS)[number];
 const CODEX_PRE_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
+const CODEX_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
-/** GPT-5.6 and its snapshots support the newer `max` reasoning effort. */
+/** Cold-start fallback before the CLI catalog is available. Sol, Terra, and Daybreak advertise Ultra;
+ * the rest of the GPT-5.6 family reaches Max, while earlier general models stop at Extra High. */
 export function codexEffortsForModel(model: string): readonly CodexEffort[] {
-  return /^gpt-5\.6(?:[-.]|$)/i.test(model.trim()) ? CODEX_EFFORTS : CODEX_PRE_MAX_EFFORTS;
+  const id = model.trim();
+  if (/^(?:gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
+  if (/^(?:gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
+  return CODEX_PRE_MAX_EFFORTS;
 }
 
-/** Never send `max` to a Codex model that only accepts up to `xhigh`. */
-export function resolveCodexEffort(model: string, effort: CodexEffort): CodexEffort {
-  return codexEffortsForModel(model).includes(effort) ? effort : "xhigh";
+/** Coerce a stale or cross-model setting down to the nearest tier the selected Codex model accepts. */
+export function resolveCodexEffort(model: string, effort: CodexEffort, live?: readonly CodexEffort[]): CodexEffort {
+  const supported = live?.length ? live : codexEffortsForModel(model);
+  if (supported.includes(effort)) return effort;
+  const requested = CODEX_EFFORTS.indexOf(effort);
+  return [...supported].reverse().find((tier) => CODEX_EFFORTS.indexOf(tier) < requested) ?? supported.at(-1) ?? "high";
 }
 export const GROK_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 export type GrokEffort = (typeof GROK_EFFORTS)[number];
@@ -671,6 +682,7 @@ export interface OrchestratorSettings {
   modelDefaults: Partial<Record<Role, string>>; // read-only: the built-in per-role defaults (config.models)
   claudeModels: string[]; // read-only: pickable Claude model ids (live ∪ curated ∪ selected), most-capable first
   codexModels: string[]; // read-only: pickable Codex/OpenAI model ids (live ∪ curated ∪ selected)
+  codexModelEfforts: Record<string, CodexEffort[]>; // read-only: exact CLI-advertised effort set per Codex model
   grokModels: string[]; // read-only: pickable Grok model ids (curated ∪ live ∪ selected)
 }
 

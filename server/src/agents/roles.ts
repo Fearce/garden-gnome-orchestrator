@@ -137,15 +137,18 @@ export const REVIEWER_SCHEMA: Record<string, unknown> = {
 /** Gate the `xhigh` effort tier behind the ENABLE_XHIGH opt-in. This is the single chokepoint that
  *  guarantees actual prevention: a stale DB row, a resumed run, or any legacy plan that still carries
  *  `xhigh` is coerced down to `high` here, so it can never reach the real SDK `options.effort`. */
-export function resolveEffort(effort?: Effort): Effort {
+export function resolveEffort(effort?: Effort): Exclude<Effort, "ultra"> {
   const requested = effort ?? "high";
   if (requested === "xhigh" && !config.enableXhigh) return "high";
+  // Ultra is a Codex CLI execution mode, not an Anthropic SDK effort. If a Codex-selected task later
+  // fails over to Claude/z.ai, preserve the highest supported SDK tier instead of leaking an invalid value.
+  if (requested === "ultra") return "max";
   return requested;
 }
 
 /** Cap a per-task effort at a subscription's configured maximum — the director/planner still picks the
  *  effort per task (so a tiny task stays cheap), but never exceeds `cap`. Returns the lower of the two on
- *  the shared low→max ordinal, so a Codex/Grok cap (which tops out below Claude's `max`) also bounds a
+ *  the shared low→ultra ordinal, so a Codex/Grok cap also bounds a
  *  Claude-tier request down into that backend's valid range. */
 export function clampEffort(effort: Effort, cap: Effort): Effort {
   return EFFORTS.indexOf(effort) <= EFFORTS.indexOf(cap) ? effort : cap;
