@@ -65,11 +65,11 @@ Model + tool policy per role:
 |-------------|------------------|----------------|-------|
 | Director    | runtime-selected Claude / Codex / Grok / z.ai | provider-specific | Native memory + orchestration MCP on Claude/z.ai; constrained server-command bridge on Codex/Grok — **no repo writes/shell** |
 | Planner     | eligible free pool → configured paid backend | provider-specific | Read/Grep/Glob — **owns codebase reading**; routes to researcher or implementor. The free harness has no write/shell/network surface and falls back on any failure. |
-| Researcher  | claude-sonnet-4-6| plan           | WebSearch/WebFetch, memory, bus — **no Read/Grep/Glob** (external info only; the planner reads the repo) |
-| Implementor | claude-opus-4-8  | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
-| QA          | claude-opus-4-8  | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); sole role that can mark a task done |
+| Researcher  | claude-sonnet-5  | plan           | WebSearch/WebFetch, memory, bus — **no Read/Grep/Glob** (external info only; the planner reads the repo) |
+| Implementor | claude-opus-5    | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
+| QA          | claude-opus-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); sole role that can mark a task done |
 | Reader      | eligible free pool → configured paid backend | provider-specific | Read/Grep/Glob + `git_read` (allowlisted log/show/status/diff, **no Bash**) + `post_finding` — **no Write/Edit/Bash/web** (§5, the read-only `dispatch_read` lane); answers a lookup, no QA |
-| Reviewer    | claude-opus-4-8  | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests, browser-drives UI), bus incl. **`ask_user`** — **no Write/Edit** (§5, the on-demand auto-review); accepts a parked task as done in the owner's place, or hands it back |
+| Reviewer    | claude-opus-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests, browser-drives UI), bus incl. **`ask_user`** — **no Write/Edit** (§5, the on-demand auto-review); accepts a parked task as done in the owner's place, or hands it back |
 
 The **reader** is the same harness-level enforcement as QA — under `bypassPermissions` the
 `disallowedTools` denylist is a HARD block, so listing `Write`/`Edit`/`Bash`/`WebFetch`/… there

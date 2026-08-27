@@ -20,7 +20,7 @@ curl -s -b /tmp/cj.txt http://127.0.0.1:4317/api/threads
 (Google sign-in also works, but the password is simplest for headless agents. Local/LAN only.)
 
 A director's console for running Claude Code agents: a provider-neutral **director** enriches a
-prompt, runs a planner + researcher, then dispatches Opus 4.8 **implementor** workers you
+prompt, runs a planner + researcher, then dispatches Opus 5 **implementor** workers you
 can inject into mid-work. Node/Fastify API (`server/`) + React/Vite console (`web/`), single origin.
 
 **Read lane (`dispatch_read`).** A pure read-only lookup ("read HANDOFF.md and report it", "which
@@ -185,7 +185,7 @@ Read the run trail to tell causes apart:
   another sub with headroom. A cap on a **Fable** model is first classified (`classifyCap`: fresh Haiku
   usage ping — Fable's allowance is its OWN gated pool, separate from the 5h/weekly windows): normal
   windows still free ⇒ the run resumes on the SAME account with `config.fableFallbackModel` (default
-  `claude-opus-4-8`, env `FABLE_FALLBACK_MODEL`), the pool cap is latched per (sub, model) until its
+  `claude-opus-5`, env `FABLE_FALLBACK_MODEL`), the pool cap is latched per (sub, model) until its
   reset (5h self-expiry when unknown), `modelFor` resolves the fallback for every role meanwhile, and
   the account chip shows a "Fable → Opus" tag. If EVERY sub is capped, an implementor fails over to the CODEX,
   Grok, or z.ai backend when one is enabled+authed with headroom (fresh seed for the CLI backends — a Claude session

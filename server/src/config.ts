@@ -115,24 +115,24 @@ export const config = {
     channelId: process.env.DISCORD_CHANNEL_ID || undefined,
   },
   models: {
-    director: "claude-sonnet-4-6",
-    planner: "claude-opus-4-8",
-    researcher: "claude-sonnet-4-6",
-    implementor: "claude-opus-4-8",
-    qa: "claude-opus-4-8",
+    director: "claude-sonnet-5",
+    planner: "claude-opus-5",
+    researcher: "claude-sonnet-5",
+    implementor: "claude-opus-5",
+    qa: "claude-opus-5",
     // The single-agent read-only "reader" lane (dispatch_read). Sonnet, not Haiku: misrouting TO the
     // reader is the unsafe direction (it has no QA behind it), so it's biased to capability — a Sonnet
     // reader that occasionally escalates beats a Haiku one that half-answers. Configurable like any role.
-    reader: "claude-sonnet-4-6",
+    reader: "claude-sonnet-5",
     // The on-demand auto-reviewer (the "auto-review & mark done" button). It stands in for the owner's
     // own final review and can settle a task 'done', so it gets the strongest model — a cheap reviewer
     // that waves work through is the exact failure this button must not have.
-    reviewer: "claude-opus-4-8",
+    reviewer: "claude-opus-5",
   },
   // Fable access is gated by its OWN usage pool, separate from the normal 5h/weekly windows. When a
   // Fable run is rejected while those windows still show headroom, dispatch falls back to this model
   // on the SAME subscription until the Fable pool frees up (see fallbackModelFor / classifyCap).
-  fableFallbackModel: process.env.FABLE_FALLBACK_MODEL?.trim() || "claude-opus-4-8",
+  fableFallbackModel: process.env.FABLE_FALLBACK_MODEL?.trim() || "claude-opus-5",
   // ---- OpenAI Codex (second, optional agent backend) ----
   // Implementors can be routed here normally. Structured roles stay on Claude unless repeated transient
   // API failures force an outage failover, at which point the CLI's structured-output adapter takes over.
