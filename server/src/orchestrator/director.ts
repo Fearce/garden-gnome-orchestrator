@@ -404,7 +404,7 @@ export class Director {
       this.settleTurn();
       return;
     }
-    const outcome = await executeDirectorCliAction(action, this.api, this.scheduler, this.notes, this.pendingImages);
+    const outcome = await executeDirectorCliAction(action, this.api, this.scheduler, this.notes, this.pendingImages, () => this.taskModeDefaults());
     if (this.run !== run || this.pending === undefined) return;
     if (outcome.toolName) this.hub.publish({ type: "director.tool", name: outcome.toolName, input: outcome.toolInput });
     if (outcome.dispatchedId) {

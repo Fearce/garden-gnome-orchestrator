@@ -77,6 +77,7 @@ try {
   const fakeApi = {
     dispatch: async (input: Record<string, unknown>) => { dispatched = input; return "task-123"; },
   } as unknown as InstanceType<typeof ThreadManager>;
+  const lastDispatch = (): Record<string, unknown> | undefined => dispatched;
   const outcome = await executeDirectorCliAction(
     { kind: "dispatch", title: "Fix capped dispatch", workspace, brief: "Make provider failover work." },
     fakeApi,
@@ -84,7 +85,41 @@ try {
     {} as OperatorNotes,
     [],
   );
-  check("CLI bridge executes a real dispatch action", outcome.dispatchedId === "task-123" && dispatched?.workspace === workspace, JSON.stringify(outcome));
+  check("CLI bridge executes a real dispatch action", outcome.dispatchedId === "task-123" && lastDispatch()?.workspace === workspace, JSON.stringify(outcome));
+  dispatched = undefined;
+  const modeOutcome = await executeDirectorCliAction(
+    { kind: "dispatch", title: "Carry modes", workspace, brief: "Use the selected task mode." },
+    fakeApi,
+    {} as Scheduler,
+    {} as OperatorNotes,
+    [],
+    () => ({ durationMs: 8 * 3_600_000, agentCount: 3 }),
+  );
+  check(
+    "CLI bridge carries composer task-mode defaults into full dispatch",
+    modeOutcome.dispatchedId === "task-123" && lastDispatch()?.durationMs === 8 * 3_600_000 && lastDispatch()?.agentCount === 3,
+    JSON.stringify(lastDispatch()),
+  );
+  dispatched = undefined;
+  await executeDirectorCliAction(
+    { kind: "dispatch", title: "Override modes", workspace, brief: "Use explicit modes.", duration: "30m", agents: 2 },
+    fakeApi,
+    {} as Scheduler,
+    {} as OperatorNotes,
+    [],
+    () => ({ durationMs: 8 * 3_600_000, agentCount: 3 }),
+  );
+  check("explicit CLI task-mode fields override the composer defaults", lastDispatch()?.durationMs === 30 * 60_000 && lastDispatch()?.agentCount === 2, JSON.stringify(lastDispatch()));
+  dispatched = undefined;
+  await executeDirectorCliAction(
+    { kind: "dispatch_read", title: "Read only", workspace, brief: "Read the repo.", duration: "30m", agents: 2 },
+    fakeApi,
+    {} as Scheduler,
+    {} as OperatorNotes,
+    [],
+    () => ({ durationMs: 8 * 3_600_000, agentCount: 3 }),
+  );
+  check("CLI read-lane dispatch ignores task modes like the MCP read tool", lastDispatch()?.durationMs === undefined && lastDispatch()?.agentCount === undefined && lastDispatch()?.lane === "read", JSON.stringify(lastDispatch()));
   let reviewedId: string | undefined;
   fakeApi.autoReview = async (threadId: string) => { reviewedId = threadId; return { ok: true, state: "reviewing" }; };
   const review = await executeDirectorCliAction(

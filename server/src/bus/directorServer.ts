@@ -97,6 +97,7 @@ export function createDirectorServer(
         ),
       duration: z
         .string()
+        .refine((v) => normalizeDuration(v) != null, "Use a duration like 8h, 90m, 2h30m, or 1d.")
         .optional()
         .describe(
           `A wall-clock WORK WINDOW for this one task, e.g. "8h", "90m", "2h30m", "1d". Set it ONLY when ${config.ownerName} asked for one in so many words ("work on this for 8 hours", "spend the afternoon on it", "keep at it until tonight"). The task then keeps finding useful work on the SAME objective until the window closes, then goes to review. This is NOT a schedule (use create_scheduled_task for anything recurring) and NOT a due date — an ordinary request must leave this unset, or it spends hours on something that wanted minutes.`,

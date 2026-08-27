@@ -6,6 +6,8 @@ import type { ThreadManager } from "./threadManager.js";
 import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
 import { findWorkspaces } from "../workspace/findWorkspace.js";
+import { normalizeDuration } from "./timedTasks.js";
+import { clampAgentCount } from "./shotgun.js";
 
 /** Codex/Grok cannot attach the in-process director MCP server. They instead return one constrained
  *  command per turn; this module executes it through the exact same orchestrator APIs and sends the
@@ -28,6 +30,8 @@ export const DIRECTOR_CLI_SCHEMA: JsonSchemaLike = {
     title: { type: "string" },
     workspace: { type: "string" },
     brief: { type: "string" },
+    duration: { type: "string" },
+    agents: { type: "number" },
     threadId: { type: "string" },
     mode: { type: "string", enum: ["append", "interrupt"] },
     header: { type: "string" },
@@ -59,6 +63,8 @@ export interface DirectorCliAction {
   title?: string;
   workspace?: string;
   brief?: string;
+  duration?: string;
+  agents?: number;
   threadId?: string;
   mode?: "append" | "interrupt";
   header?: string;
@@ -92,7 +98,8 @@ Commands and fields:
 - reply: message
 - ask_user: header, question, options?, multiSelect?
 - find_workspace: query
-- dispatch / dispatch_read: title, workspace, brief
+- dispatch: title, workspace, brief, duration?, agents?
+- dispatch_read: title, workspace, brief
 - list_threads
 - thread_status: threadId
 - inject: threadId, message, mode (append|interrupt)
@@ -120,6 +127,7 @@ export async function executeDirectorCliAction(
   scheduler: Scheduler,
   notes: OperatorNotes,
   images: ImageAttachment[],
+  getTaskMode: () => { durationMs: number | null; agentCount: number | null } = () => ({ durationMs: null, agentCount: null }),
 ): Promise<DirectorCliOutcome> {
   if (action.kind === "reply") return { final: required(action, "message") };
   const toolInput = { ...action, kind: undefined };
@@ -150,7 +158,21 @@ export async function executeDirectorCliAction(
         if (!existsSync(workspace)) return outcome(action.kind, `ERROR: workspace "${workspace}" does not exist. Confirm the exact path and retry.`);
         const title = required(action, "title");
         const brief = required(action, "brief");
-        const id = await api.dispatch({ title, workspace, brief, images, ...(action.kind === "dispatch_read" ? { lane: "read" as const } : {}) });
+        const mode = getTaskMode();
+        const explicitDuration = action.kind === "dispatch" && action.duration != null;
+        const durationMs = explicitDuration ? normalizeDuration(action.duration) : mode.durationMs;
+        if (explicitDuration && durationMs == null) {
+          return outcome("dispatch", `ERROR: duration "${action.duration}" is not a valid work window. Use forms like "8h", "90m", "2h30m" or omit it.`);
+        }
+        const explicitAgents = action.kind === "dispatch" && action.agents != null;
+        const agentCount = explicitAgents ? clampAgentCount(action.agents!) : mode.agentCount;
+        const id = await api.dispatch({
+          title,
+          workspace,
+          brief,
+          images,
+          ...(action.kind === "dispatch_read" ? { lane: "read" as const } : { durationMs, agentCount }),
+        });
         return outcome(action.kind, `Dispatched task ${id} ("${title}") in ${workspace}.`, id);
       }
       case "list_threads": {

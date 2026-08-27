@@ -191,7 +191,7 @@ async function main() {
     if (child) child.kill();
     killInstance(PORT);
   }
-  process.exit(check.summary() ? 0 : 1);
+  process.exit(check.summary());
 }
 
 main().catch((e) => {
