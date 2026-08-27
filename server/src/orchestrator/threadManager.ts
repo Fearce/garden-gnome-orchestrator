@@ -1680,7 +1680,7 @@ export class ThreadManager implements OrchestratorApi {
     if (this.codexImplementorReady()) {
       add("codex", "openai-codex", "Codex", allModels ? this.codexRosterModels() : [this.providerRoleModel("codex", "director")]);
     }
-    if (this.settings().grokEnabled && grokAuthAvailable() && !this.grokCapActive()) {
+    if (this.grokProviderReady()) {
       const live = this.modelCatalog.grokModels();
       const models = allModels
         ? (live.length ? live : this.pickableGrokModels())
@@ -1695,7 +1695,8 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Is a previously-selected target still dispatchable? The director remains sticky while true; it
-   *  reselects only on a real provider/account cap (or the operator disabling/removing that backend). */
+   *  reselects only on a provider/account cap, hard usage ceiling, or the operator disabling/removing
+   *  that backend. */
   directorTargetReady(target: DirectorTarget): boolean {
     if (target.provider === "claude") {
       const a = this.accounts.dto().find((x) => x.id === target.accountId);
@@ -1705,7 +1706,7 @@ export class ThreadManager implements OrchestratorApi {
     if (target.provider === "codex") return this.codexImplementorReady();
     if (target.provider === "grok") {
       const live = this.modelCatalog.grokModels();
-      return this.settings().grokEnabled && grokAuthAvailable() && !this.grokCapActive() && (!live.length || live.includes(target.model));
+      return this.grokProviderReady() && (!live.length || live.includes(target.model));
     }
     return this.zaiImplementorReady();
   }
@@ -2508,14 +2509,19 @@ export class ThreadManager implements OrchestratorApi {
     };
   }
 
-  /** Whether the Grok backend could take an implementor RIGHT NOW — enabled, signed in, and not
-   *  usage-capped. Used by the failover ladder + cap supervisor so "every account is rate-limited" is only
-   *  ever claimed when Grok genuinely can't step in either. */
-  private grokImplementorReady(): boolean {
+  /** Whether Grok is enabled, authenticated, and below the shared hard usage ceiling. This intentionally
+   *  does not inspect the selected implementor model: director routing validates each target model itself. */
+  private grokProviderReady(): boolean {
     if (!this.settings().grokEnabled) return false;
     if (!grokAuthAvailable()) return false;
-    if (!this.grokModelAvailable()) return false;
-    return !this.grokCapActive();
+    return this.grokProviderCandidate().hasHeadroom;
+  }
+
+  /** Whether the Grok backend could take an implementor RIGHT NOW — provider-ready and compatible with
+   *  the selected implementor model. Used by the failover ladder + cap supervisor so "every account is
+   *  rate-limited" is only ever claimed when Grok genuinely can't step in either. */
+  private grokImplementorReady(): boolean {
+    return this.grokProviderReady() && this.grokModelAvailable();
   }
 
   /** z.ai's dispatch candidate. 5-hour + weekly used-% and resets come from the GLM Coding Plan's quota
@@ -2596,7 +2602,7 @@ export class ThreadManager implements OrchestratorApi {
    *  undefined when none can. Drives cross-provider failover: a capped backend hands off to whichever of
    *  the remaining ones is readiest. */
   private nextReadyImplementor(exclude: ImplementorProvider, unavailable: ReadonlySet<ImplementorProvider> = new Set(), role?: Role): ImplementorProvider | undefined {
-    // A structured role whose only owner-channel is the in-process MCP bus (reader/reviewer) may only land
+    // The reader's only owner-channel is the in-process MCP bus, so it may only land
     // on a backend that actually serves those tools — skip the CLI text-bridge backends for it. The
     // implementor path passes no role, so it still considers every backend.
     const serves = (provider: ImplementorProvider): boolean => !role || providerServesRole(role, provider);
@@ -2667,7 +2673,7 @@ export class ThreadManager implements OrchestratorApi {
    *  authed + uncapped, compete with Claude under the same weekly-reset (or, with Spread usage on,
    *  lowest-weekly-usage) policy instead of overriding it. Planner/researcher/QA start on Claude and fail
    *  over to a ready CLI when Claude is exhausted. */
-  private resolveImplementorProvider(): { provider?: ImplementorProvider; error?: string } {
+  private resolveImplementorProvider(): { provider?: ImplementorProvider; error?: string; allCandidatesCapped?: boolean } {
     const s = this.settings();
     const candidates: ProviderCandidate[] = [this.claudeProviderCandidate()];
 
@@ -2702,6 +2708,13 @@ export class ThreadManager implements OrchestratorApi {
       else candidates.push(this.zaiProviderCandidate());
     }
 
+    // `preferredImplementorProvider` deliberately returns a least-bad candidate when everything is
+    // over a soft/hard limit, so ordinary dispatch never freezes merely because usage telemetry is
+    // imperfect. Pipeline starts need to know that distinction, though: launching this fallback when
+    // every already-configured backend is known capped burns a doomed provider turn before the normal
+    // cap path can park it. Keep the route for callers that intentionally want that no-freeze behavior,
+    // but report the exhausted ladder to the pipeline gate so it can wait for the reset directly.
+    const allCandidatesCapped = candidates.length > 0 && candidates.every((candidate) => !candidate.hasHeadroom);
     const provider = this.preferredImplementorProvider(candidates);
     if (candidates.length > 1) {
       const now = Date.now();
@@ -2710,16 +2723,27 @@ export class ThreadManager implements OrchestratorApi {
       );
       this.hub.log("info", `Implementor provider: ${provider} (${parts.join("; ")}).`);
     }
-    return { provider };
+    return { provider, allCandidatesCapped };
   }
 
   /** Hard routing gate, run once at the start of a thread's implementor stage: resolve + remember the
    *  backend. A blocked routing parks the task (failed) with a clear reason + a finding, returns null. */
-  private gateImplementorProvider(thread: Thread): ImplementorProvider | null {
-    const { provider, error } = this.resolveImplementorProvider();
+  private gateImplementorProvider(thread: Thread, opts?: { capParkOnExhaustion?: boolean }): ImplementorProvider | null {
+    const { provider, error, allCandidatesCapped } = this.resolveImplementorProvider();
     if (!provider) {
       this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
       this.setState(thread.id, "failed", error);
+      return null;
+    }
+    // Pipeline starts must never spend a known-doomed turn when every currently configured backend
+    // is already usage-capped. Preserve the ordinary routing fallback for owner-triggered auto-review
+    // fix rounds (which retain their existing human-review contract), but put resumable pipeline work
+    // straight into the durable cap-park protocol and let its reset wake choose the first free backend.
+    if (allCandidatesCapped && opts?.capParkOnExhaustion) {
+      this.parkForExhaustedProviders(thread.id, "implementor");
+      // `settleReview` consumes the cap marker synchronously and supplies the durable auto-resume
+      // message, so this fallback reason is intentionally only for a non-cap caller/race.
+      this.settleReview(thread.id, "needs your review.");
       return null;
     }
     const chosen = this.routeForPick(thread.id, provider);
@@ -3337,8 +3361,8 @@ export class ThreadManager implements OrchestratorApi {
       }
     } else if (!this.accounts.hasHeadroom()) {
       // Claude is already exhausted — skip the doomed first attempt and go straight to a ready backend.
-      // nextReadyImplementor(role) keeps reader/reviewer off the MCP-less CLI backends, so they land on z.ai
-      // when it's up and otherwise stay on Claude (attempt, cap, park) exactly as before.
+      // nextReadyImplementor(role) keeps the MCP-dependent reader off the MCP-less CLI backends, so it
+      // lands on z.ai when available and otherwise stays on Claude (attempt, cap, park) as before.
       const cli = this.nextReadyImplementor("claude", unavailableProviders, role);
       if (cli) {
         this.postFinding({
@@ -3481,8 +3505,8 @@ export class ThreadManager implements OrchestratorApi {
           continue;
         }
         unavailableProviders.add(provider);
-        // nextReadyImplementor(role) confines reader/reviewer to MCP-capable backends: a flip onto Codex/Grok
-        // would drop the in-process bus and silently strip the role's post_finding/ask_user channel.
+        // nextReadyImplementor(role) confines the MCP-dependent reader to MCP-capable backends: a flip onto
+        // Codex/Grok would drop its in-process post_finding channel.
         const next: ImplementorProvider | undefined = this.nextReadyImplementor(provider, unavailableProviders, role);
         if (!next) return res;
         const fromName = providerLabel(provider);
@@ -3534,8 +3558,9 @@ export class ThreadManager implements OrchestratorApi {
       const next = this.failoverAccount(acct.id);
       // Claude exhausted for this run — no other account has headroom, or the per-run failover budget is
       // spent. Before parking, keep the role alive on another ready backend — this is the "don't lose
-      // planner/researcher/QA when the Claude subs are maxed" path, and reader/reviewer now join it via z.ai
-      // (nextReadyImplementor(role) keeps them off the MCP-less CLI backends). A planner/researcher cap
+      // planner/researcher/QA when the Claude subs are maxed" path; the reader can join it via z.ai, while
+      // the reviewer can use any role-serving fallback. (nextReadyImplementor(role) excludes the reader
+      // from the MCP-less CLI backends.) A planner/researcher cap
       // otherwise degrades to no-plan/no-research; QA otherwise parks the task to 'review' (capParked flags
       // it for the supervisor).
       if (!next || triedClaudeAccounts.has(next.id)) {
@@ -4714,7 +4739,7 @@ export class ThreadManager implements OrchestratorApi {
     // chain; gating it as an implementor would unnecessarily block/restart work on a saturated backend.
     const stage = this.db.getThreadStageOutputs(thread.id);
     const qaOnlyRetry = pipe.qaEnabled && (stage.qaCapRetryRound != null || stage.qaInterruptedRetryRound != null);
-    if (!qaOnlyRetry && !this.gateImplementorProvider(thread)) return;
+    if (!qaOnlyRetry && !this.gateImplementorProvider(thread, { capParkOnExhaustion: true })) return;
     try {
       await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession, directorNote, pipe);
     } finally {

@@ -38,8 +38,9 @@ class StubAccounts {
   effectiveUtilization(): number | null { return null; }
   soonestResetAt(): number | null { return null; }
   hasHeadroom(): boolean { return this.headroom; }
+  isModelLimited(_accountId: string, _model: string): boolean { return false; }
   dispatchPreview(): Record<string, unknown> {
-    return { account: { id: "claude-a", label: "Claude A" }, hasHeadroom: true, fiveHour: 0, sevenDay: 0, fiveHourReset: null, sevenDayReset: null, weeklySafetyPct: 100 };
+    return { account: { id: "claude-a", label: "Claude A" }, hasHeadroom: this.headroom, fiveHour: 0, sevenDay: 0, fiveHourReset: null, sevenDayReset: null, weeklySafetyPct: 100 };
   }
   auxToken(): string | undefined { return undefined; }
   setPingInterval(_ms: number): void {}
@@ -56,6 +57,7 @@ const accountStub = new StubAccounts();
 const manager = new ThreadManager(db, new EventHub(), new FileMemoryService(join(root, "memory")), accountStub as unknown as AccountManager);
 const thread = db.createThread({ title: "QA falls back after a Codex cap", workspace, rawPrompt: "verify", brief: "verify" });
 const internals = manager as any;
+const realGrokImplementorReady = internals.grokImplementorReady;
 const providers: string[] = [];
 const verdict: QaOutput = { pass: true, summary: "Claude completed the review", issues: [] };
 
@@ -254,6 +256,21 @@ try {
   check("all-capped routing does not retry the saturated provider", doomedStarts === 0, String(doomedStarts));
   check("all-capped routing marks the QA stage for durable auto-resume", noProviderResult === undefined && internals.capParked.get(noProvider.id) === "qa", String(internals.capParked.get(noProvider.id)));
   internals.capParked.delete(noProvider.id);
+
+  // The implementor has its own initial routing gate rather than runRole. When every configured
+  // backend is already known capped, that gate must park immediately too: selecting Claude's
+  // deliberate "least bad" no-freeze candidate would otherwise burn one rejected provider turn on
+  // every supervisor wake before awaitImplementorResult can mark the durable park.
+  const noImplementorProvider = db.createThread({ title: "All capped implementor providers do not get retried", workspace, rawPrompt: "implement", brief: "implement" });
+  let implementorStarts = 0;
+  internals.startResumedImplementor = async () => {
+    implementorStarts++;
+    throw new Error("a known-capped implementor provider must not launch");
+  };
+  await internals.runImplementorQa(noImplementorProvider, "IMPLEMENTOR KICKOFF", undefined, undefined, undefined, { qaEnabled: true, maxQaRounds: 1 });
+  check("all-capped implementor routing does not launch a saturated provider", implementorStarts === 0, String(implementorStarts));
+  check("all-capped implementor routing creates a durable auto-resume park", (db.getThread(noImplementorProvider.id)?.error ?? "").startsWith("⏳ Auto-resume pending"), db.getThread(noImplementorProvider.id)?.error ?? undefined);
+  check("all-capped implementor routing parks in review instead of failing the task", db.getThread(noImplementorProvider.id)?.state === "review", db.getThread(noImplementorProvider.id)?.state ?? undefined);
   accountStub.headroom = true;
 
   // The durable CAP marker is what lets the supervisor recover after a process restart. Exercise the
@@ -270,6 +287,44 @@ try {
   await Promise.resolve();
   check("the cap supervisor invokes the normal resume path when a provider frees up", resumedId === parked.id, resumedId);
   check("the cap supervisor changes the durable park into the resume-aware failed entry", db.getThread(parked.id)?.state === "failed", db.getThread(parked.id)?.state);
+
+  // Every readiness path must use Grok's hard 98% routing ceiling, not merely its 100% cap latch.
+  // Otherwise an all-capped pipeline is parked, the supervisor sees Grok as ready at 98%, and it
+  // immediately re-enters the same doomed pipeline on every tick.
+  internals.grokImplementorReady = realGrokImplementorReady;
+  const originalXaiApiKey = process.env.XAI_API_KEY;
+  const originalGrokCandidate = internals.grokProviderCandidate;
+  const originalGrokModelAvailable = internals.grokModelAvailable;
+  const originalCatalogGrokModels = internals.modelCatalog.grokModels;
+  try {
+    process.env.XAI_API_KEY = "test-grok-routing-key";
+    db.kvSet("setting_grok_enabled", "1");
+    internals.grokProviderCandidate = () => ({ provider: "grok", hasHeadroom: false });
+    check("a Grok provider at its hard safety ceiling is not ready for cap recovery", !internals.grokImplementorReady());
+    check("the director excludes Grok at its hard safety ceiling", !internals.directorTargets().some((target: { provider: string }) => target.provider === "grok"));
+    check(
+      "a sticky Grok director target becomes unready at its hard safety ceiling",
+      !internals.directorTargetReady({ key: "grok|xai-grok|test", provider: "grok", accountId: "xai-grok", accountLabel: "Grok", model: "test" }),
+    );
+
+    // A director target is model-specific. Its readiness must use the shared provider-cap test while
+    // validating the target model, not the separately selected implementor model.
+    internals.grokProviderCandidate = () => ({ provider: "grok", hasHeadroom: true });
+    internals.grokModelAvailable = () => false;
+    internals.modelCatalog.grokModels = () => ["director-model"];
+    check("a stale Grok implementor model does not hide available director models", internals.directorTargets(true).some((target: { provider: string; model: string }) => target.provider === "grok" && target.model === "director-model"));
+    check(
+      "a sticky available Grok director target ignores an unrelated stale implementor model",
+      internals.directorTargetReady({ key: "grok|xai-grok|director-model", provider: "grok", accountId: "xai-grok", accountLabel: "Grok", model: "director-model" }),
+    );
+  } finally {
+    internals.grokProviderCandidate = originalGrokCandidate;
+    internals.grokModelAvailable = originalGrokModelAvailable;
+    internals.modelCatalog.grokModels = originalCatalogGrokModels;
+    if (originalXaiApiKey === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = originalXaiApiKey;
+    db.kvSet("setting_grok_enabled", "0");
+  }
 
   // No fixed failover count may strand a later configured Claude subscription. The legacy counter
   // stopped after three switches even though config supports more accounts; each prior account caps,
