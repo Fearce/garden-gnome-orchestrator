@@ -10,7 +10,7 @@ import { CLAUDE_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, codexEffortsForModel, typ
 import { codexModelOptions } from "../lib/models.js";
 import { effortLabel, modelLabel, stateColor, stateLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
-import { useColumnResize } from "./useColumnResize.js";
+import { columnDragMax, useColumnResize } from "./useColumnResize.js";
 
 // The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
 // not localStorage — the console is served on both an HTTP and an HTTPS origin (the tablet Deck iframes
@@ -120,14 +120,14 @@ export function Director() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastSentRef = useRef(""); // last sent prompt, recalled with ↑ when the field is empty
 
-  // Drag the rail's right edge to resize, mirroring the detail panel. Width is clamped so the
-  // board (and an open detail panel) always keep room; persisted via the store.
+  // Drag the rail's right edge to resize, mirroring the detail panel. Persisted via the store.
+  // 760 is the rail's own ceiling; everything about how it shares the row with the board and the
+  // detail lives in `columnDragMax`, which the detail's handle uses too so the two cannot drift.
   const startResize = useColumnResize(
     useCallback(
       (clientX: number) => {
         const { selectedThreadId, detailWidth } = useStore.getState();
-        const reserved = 320 + (selectedThreadId ? detailWidth : 0) + 16;
-        const max = Math.min(760, window.innerWidth - reserved);
+        const max = Math.min(760, columnDragMax(selectedThreadId ? detailWidth : null));
         setDirectorWidth(Math.min(Math.max(clientX, 280), Math.max(280, max)));
       },
       [setDirectorWidth],

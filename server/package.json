@@ -15,6 +15,7 @@
     "discord-lab": "node scripts/discord-lab.cjs",
     "git-lab": "node scripts/git-console-lab.cjs",
     "inject-lab": "node scripts/inject-lab.cjs",
+    "layout-lab": "node scripts/layout-lab.cjs",
     "model-lab": "node scripts/model-select-lab.cjs",
     "deploy": "node scripts/deploy.cjs",
     "notes-lab": "node scripts/notes-lab.cjs",

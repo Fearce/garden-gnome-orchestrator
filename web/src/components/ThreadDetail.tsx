@@ -7,7 +7,7 @@ import { Countdown, Elapsed, RoleElapsed } from "../lib/timing.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
-import { useColumnResize } from "./useColumnResize.js";
+import { columnDragMax, useColumnResize } from "./useColumnResize.js";
 import { Markdown } from "./Markdown.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
@@ -559,7 +559,11 @@ export function ThreadDetail() {
   const startResize = useColumnResize(
     useCallback(
       (clientX: number) => {
-        const max = Math.max(420, window.innerWidth - 480);
+        // The rail is the sibling here, and it isn't one while it's hidden (that band has its own
+        // two-track template). The old bound, `innerWidth - 480`, reserved a constant for a column
+        // that is itself draggable, so a wide rail plus a wide drag summed past the viewport.
+        const { railHidden, directorWidth } = useStore.getState();
+        const max = Math.max(360, columnDragMax(railHidden ? null : directorWidth));
         setDetailWidth(Math.min(Math.max(window.innerWidth - clientX, 360), max));
       },
       [setDetailWidth],

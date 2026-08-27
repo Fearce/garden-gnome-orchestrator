@@ -31,8 +31,10 @@ boots/kills/authenticates it (bogus tokens so the boot ping can't start a real 5
 owner, never by process name). A "lab" is a committed script on top of it that seeds its own state and
 drives one surface — copy the closest of `chip-lab.cjs` (accounts strip), `git-console-lab.cjs` (Git
 console + fixture repo), `tablet-lab.cjs` (both tablet orientations in a TOUCH context),
-`model-select-lab.cjs` (a Settings toggle's round-trip + a server-fed table) and `inject-lab.cjs`
-(state-conditional button labels + a click that must not kill the task). Never against live prod.
+`model-select-lab.cjs` (a Settings toggle's round-trip + a server-fed table), `inject-lab.cjs`
+(state-conditional button labels + a click that must not kill the task) and `layout-lab.cjs` (the
+workbench's columns, with the rail/detail widths replayed from a BIGGER monitor, across every band
+and both drag handles). Never against live prod.
 **Read `lab-harness.cjs`'s header first** — selectors, `has-text` vs `text-is`, touch context, clipboard
 permissions and CSS load order are all in there; instance mechanics are in project memory
 `browser-test-throwaway-instance`.

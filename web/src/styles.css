@@ -379,22 +379,41 @@ button { font-family: inherit; cursor: pointer; }
 }
 .card-chatroom:hover { background: color-mix(in oklch, var(--accent) 20%, transparent); }
 
+/* The two side tracks are DRAGGED widths replayed from localStorage, so their value has no
+   relationship to the window they are replayed into: the drag clamps in ThreadDetail / Director are
+   evaluated against `window.innerWidth` at drag time and never re-applied, and the value also
+   travels between monitors (and machines) with the browser profile. As FIXED tracks they made the
+   grid wider than its own container, and `overflow: hidden` then sheared the third column off at the
+   right. A 1400px detail beside a 760px rail in a 1200px window left a 120px sliver of the panel on
+   screen with every label cut mid-word, which is the long-standing "sidepanel doesn't align" bug.
+
+   `minmax(0, <width>)` is what fixes it, and the asymmetry is the whole point: the saved width is the
+   track's MAXIMUM, not its size. While it fits, grid hands each side track exactly what was dragged
+   and the board keeps the rest; when it doesn't, the side tracks give ground to the board's
+   `minmax(320px, 1fr)` floor instead of overflowing. Nothing is clamped destructively, so widening
+   the window restores the dragged width to the pixel, which a JS re-clamp on resize could not do.
+   Every track therefore stays inside the container at every width. The two drag handles are held to
+   the same arithmetic by `columnDragMax` (components/useColumnResize.ts) so a drag stops where the
+   pane stops instead of banking a width the grid has already refused. Gate: `npm run layout-lab
+   --prefix server`, which replays an oversized persisted pair across every band. */
 .workbench {
   display: grid;
-  grid-template-columns: var(--rail-w, 384px) 1fr;
+  grid-template-columns: minmax(0, var(--rail-w, 384px)) minmax(320px, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
-.workbench.detail-open { grid-template-columns: var(--rail-w, 384px) minmax(320px, 1fr) var(--detail-w, 480px); }
+.workbench.detail-open {
+  grid-template-columns: minmax(0, var(--rail-w, 384px)) minmax(320px, 1fr) minmax(0, var(--detail-w, 480px));
+}
 /* Desktop-only: hiding the director rail + resizable detail — kept out of the compact
    single-pane layout (which overrides .workbench at max-width:899.98px) via min-width.
    This bound MUST track the compact block's: it is the more specific selector (two classes),
    so a persisted railHidden would out-rank the single-pane override and blank the Director
    pane, while its bare `1fr` track (min-content minimum) balloons past the viewport. */
 @media (min-width: 900px) {
-  .workbench.rail-hidden { grid-template-columns: 1fr; }
-  .workbench.rail-hidden.detail-open { grid-template-columns: minmax(320px, 1fr) var(--detail-w, 480px); }
+  .workbench.rail-hidden { grid-template-columns: minmax(0, 1fr); }
+  .workbench.rail-hidden.detail-open { grid-template-columns: minmax(320px, 1fr) minmax(0, var(--detail-w, 480px)); }
   .workbench.rail-hidden > .rail { display: none; }
 }
 
@@ -2371,11 +2390,22 @@ button.note-from:hover { color: var(--text-dim); }
      line with the name truncating, and the search bar hides behind its header icon until tapped. */
   .rail-head { padding: 8px 12px; }
   .rail-head-row { flex-wrap: nowrap; gap: 8px; }
-  .rail-head .who { flex: 1 1 auto; }
+  /* The name is `flex: 1 1 auto` beside a rigid action row, so the gates were served first and the
+     name got the remainder: 29px at 1100 (rendering as "C…"), 0px at 1000. Same shape as the
+     sidepanel bug this block sits below, one layer down: a flex child with no floor beside a sibling
+     that cannot yield. Truncating with an ellipsis is the intended degradation here, but only down to
+     a width that still says WHICH conversation this is, so give the name that floor and let the gates
+     scroll sideways past it. That is the trade `.detail-controls` and `.feed-filter` already make in
+     this block, with the same fade standing in for a scrollbar a finger cannot see. */
+  .rail-head .who { flex: 1 1 auto; min-width: 104px; }
   .rail-head-title h2,
   .rail-head-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rail-head-actions { flex: 0 0 auto; gap: 6px; }
-  .agent-toggles { flex-wrap: nowrap; gap: 4px; }
+  .rail-head-actions { flex: 0 1 auto; gap: 6px; }
+  /* No fade mask here, unlike .detail-controls below: that one is a block-level flex row, so when its
+     content fits the fade lands on empty space. This is an inline-flex strip sized to its content, so
+     a mask would dim the last gate's edge at every width that has room for it. */
+  .agent-toggles { flex-wrap: nowrap; gap: 4px; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .agent-toggles > * { flex: 0 0 auto; }
   .rail-search-toggle {
     display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
     width: 36px; height: var(--tap-sm); border-radius: var(--r-sm);
