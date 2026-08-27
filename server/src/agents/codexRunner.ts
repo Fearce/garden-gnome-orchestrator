@@ -12,7 +12,7 @@ import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOp
 import { formatStructuredRoleFeed, parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
 
 export interface CodexRunConfig {
-  /** The Codex model to run, e.g. `codex-mini-latest`. */
+  /** The Codex model to run, e.g. `gpt-5.6-sol`. */
   model: string;
   /** Codex CLI reasoning effort, passed as model_reasoning_effort. */
   effort: CodexEffort;

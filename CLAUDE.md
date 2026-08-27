@@ -208,8 +208,11 @@ Read the run trail to tell causes apart:
 On, the implementor's model + effort become a per-task judgement: just before the implementor stage,
 `orchestrator/modelSelector.ts` makes ONE no-tools structured judgement on whichever provider currently has
 headroom, weighing the brief, the planner's read of the repo, graded local history, a daily cached LiveBench
-category/effort prior, and the roster of models **dispatchable right now** (each enabled+authed+uncapped
-backend: Claude Haiku→Sonnet→Opus→Fable, Codex, Grok, GLM). Exact LiveBench rows are distinguished from
+category/effort prior, and the roster of models **dispatchable right now**. The roster is exhaustive, not
+representative: every live Claude model, every live Grok model, every Codex model exposed by the active
+ChatGPT/API-key auth catalog, and every documented GLM Coding Plan model on each enabled+authed+uncapped backend. Each entry names
+its exact model-compatible effort tiers after the operator's backend/account cap; no fixed per-provider slice
+or global effort list can hide a usable choice. Exact LiveBench rows are distinguished from
 explicitly labelled older same-family priors; local outcomes and role/tool fit outrank the benchmark. The reply is validated against that roster and
 the PROVIDER comes from the matched entry, never the reply, so a hallucinated id can't reach a spawn; two
 unusable replies fall back to normal routing (a dispatch is never blocked). The pick persists in

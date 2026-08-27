@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CODEX_SUB_ID, EFFORTS, GROK_EFFORTS, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, codexEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role } from "../types.js";
+import { CODEX_SUB_ID, EFFORTS, GROK_SUB_ID, MODEL_ROLES, ZAI_EFFORTS, ZAI_SUB_ID, codexEffortsForModel, grokEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type ZaiEffort } from "../types.js";
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
 import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
@@ -949,7 +949,7 @@ function SubscriptionsSection() {
         {settings.grokSignedIn ? <GrokUsageReadout usage={grokUsage} /> : null}
 
         <GrokModels />
-        <EffortCapField value={settings.grokEffort} options={GROK_EFFORTS} onChange={(v) => setSettings({ grokEffort: v as GrokEffort })} />
+        <EffortCapField value={settings.grokEffort} options={grokEffortsForModel(settings.grokModel)} onChange={(v) => setSettings({ grokEffort: v as GrokEffort })} />
         <GrokWeeklySafety />
       </SubCard>
 
@@ -1029,7 +1029,7 @@ function SubscriptionsSection() {
         {settings.zaiKeyPresent ? <ZaiUsageReadout usage={zaiUsage} /> : null}
 
         <ZaiModels />
-        <EffortCapField value={settings.zaiEffort} options={GROK_EFFORTS} onChange={(v) => setSettings({ zaiEffort: v as GrokEffort })} />
+        <EffortCapField value={settings.zaiEffort} options={ZAI_EFFORTS} onChange={(v) => setSettings({ zaiEffort: v as ZaiEffort })} />
         <ZaiWeeklySafety />
       </SubCard>
     </div>

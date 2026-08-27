@@ -35,6 +35,24 @@ export type ThreadState =
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+const CLAUDE_BASE_EFFORTS: Effort[] = ["low", "medium", "high"];
+const CLAUDE_MAX_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
+
+/** Exact documented effort set for a Claude model. Unknown/older ids get the universally safe base set. */
+export function claudeEffortsForModel(model: string): readonly Effort[] {
+  const id = model.trim().toLowerCase();
+  if (/^claude-(?:fable-5|mythos-5|opus-5|opus-4-(?:7|8)|sonnet-5)(?:[-.]|$)/.test(id)) return EFFORTS;
+  if (/^claude-(?:opus-4-6|sonnet-4-6|mythos-preview)(?:[-.]|$)/.test(id)) return CLAUDE_MAX_EFFORTS;
+  return CLAUDE_BASE_EFFORTS;
+}
+
+/** Coerce an unsupported Claude tier downward without ever spending more effort than requested. */
+export function resolveClaudeEffort(model: string, effort: Effort): Effort {
+  const supported = claudeEffortsForModel(model);
+  if (supported.includes(effort)) return effort;
+  const requested = EFFORTS.indexOf(effort);
+  return [...supported].reverse().find((tier) => EFFORTS.indexOf(tier) < requested) ?? "high";
+}
 /** All known Codex effort values. GPT-5.6 is the first supported family with `max`; earlier Codex
  * models stop at `xhigh`, so callers must use `codexEffortsForModel` before spawning a run. */
 export const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -50,8 +68,19 @@ export function codexEffortsForModel(model: string): readonly CodexEffort[] {
 export function resolveCodexEffort(model: string, effort: CodexEffort): CodexEffort {
   return codexEffortsForModel(model).includes(effort) ? effort : "xhigh";
 }
-export type GrokEffort = "low" | "medium" | "high";
-export const GROK_EFFORTS: GrokEffort[] = ["low", "medium", "high"];
+export const GROK_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+export type GrokEffort = (typeof GROK_EFFORTS)[number];
+const GROK_PRE_XHIGH_EFFORTS: GrokEffort[] = ["low", "medium", "high"];
+
+/** Grok 4.6+ accepts xhigh; older cached models safely stop at high. */
+export function grokEffortsForModel(model: string): readonly GrokEffort[] {
+  const match = /^grok-(\d+)\.(\d+)(?:[-.]|$)/i.exec(model.trim());
+  const supportsXhigh = !!match && (Number(match[1]) > 4 || (Number(match[1]) === 4 && Number(match[2]) >= 6));
+  return supportsXhigh ? GROK_EFFORTS : GROK_PRE_XHIGH_EFFORTS;
+}
+
+export const ZAI_EFFORTS = ["low", "medium", "high"] as const;
+export type ZaiEffort = (typeof ZAI_EFFORTS)[number];
 
 export type AgentRunState =
   | "starting"
@@ -608,7 +637,7 @@ export interface OrchestratorSettings {
   // the in-process bus/office MCP tools and can also take failover for planner/researcher/QA.
   zaiEnabled: boolean;
   zaiModel: string; // the resolved z.ai GLM implementor model (mirrors modelOverrides.zai.implementor; kept for the chip + back-compat)
-  zaiEffort: GrokEffort; // z.ai reasoning effort cap (low/medium/high), applied to the SDK run like the other backends
+  zaiEffort: ZaiEffort; // z.ai reasoning effort cap (low/medium/high), applied to the SDK run like the other backends
   zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (default 100 = off): at/above this z.ai weekly utilization, new tasks route to another backend
   zaiKeyPresent: boolean; // read-only — an API key is stored (env or kv); the raw key is never broadcast
   zaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field

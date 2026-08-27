@@ -32,7 +32,7 @@ export const PLAN_SCHEMA: Record<string, unknown> = {
     },
     risks: { type: "array", items: { type: "string" } },
     openQuestions: { type: "array", items: { type: "string" } },
-    // `xhigh` is offered to the planner only when ENABLE_XHIGH is set (a Max-5-only tier); otherwise
+    // `xhigh` is offered to the planner when enabled for this machine; otherwise
     // the json_schema enum omits it entirely, so the planner's structured output literally cannot emit it.
     effort: { type: "string", enum: config.enableXhigh ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "max"] },
     parallelism: { type: "string" },

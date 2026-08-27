@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store.js";
 import { effortLabel, isCapParked, modelLabel } from "../lib/format.js";
-import type { AccountDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO, ZaiUsageDTO } from "../types.js";
+import type { AccountDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO, ZaiEffort, ZaiUsageDTO } from "../types.js";
 
 const clamp = (pct: number | null): number => (pct == null ? 0 : Math.min(100, Math.max(0, pct)));
 const label = (pct: number | null): string => (pct == null ? "—" : `${Math.round(pct)}%`);
@@ -138,7 +138,7 @@ function ZaiChip({
   enabled: boolean;
   hasAuth: boolean;
   model: string;
-  effort: GrokEffort;
+  effort: ZaiEffort;
   live: boolean;
   usage: ZaiUsageDTO | null;
   now: number;

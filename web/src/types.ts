@@ -11,6 +11,16 @@ export type ThreadLane = "read";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+const CLAUDE_BASE_EFFORTS: Effort[] = ["low", "medium", "high"];
+const CLAUDE_MAX_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
+
+/** Exact documented effort set for a Claude model. Unknown/older ids get the universally safe base set. */
+export function claudeEffortsForModel(model: string): readonly Effort[] {
+  const id = model.trim().toLowerCase();
+  if (/^claude-(?:fable-5|mythos-5|opus-5|opus-4-(?:7|8)|sonnet-5)(?:[-.]|$)/.test(id)) return EFFORTS;
+  if (/^claude-(?:opus-4-6|sonnet-4-6|mythos-preview)(?:[-.]|$)/.test(id)) return CLAUDE_MAX_EFFORTS;
+  return CLAUDE_BASE_EFFORTS;
+}
 export type CodexEffort = "low" | "medium" | "high" | "xhigh" | "max";
 /** All known Codex effort values. GPT-5.6 is the first supported family with `max`; earlier Codex
  * models stop at `xhigh`, so render the model-specific subset with `codexEffortsForModel`. */
@@ -21,8 +31,19 @@ const CODEX_PRE_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
 export function codexEffortsForModel(model: string): readonly CodexEffort[] {
   return /^gpt-5\.6(?:[-.]|$)/i.test(model.trim()) ? CODEX_EFFORTS : CODEX_PRE_MAX_EFFORTS;
 }
-export type GrokEffort = "low" | "medium" | "high";
-export const GROK_EFFORTS: GrokEffort[] = ["low", "medium", "high"];
+export const GROK_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+export type GrokEffort = (typeof GROK_EFFORTS)[number];
+const GROK_PRE_XHIGH_EFFORTS: GrokEffort[] = ["low", "medium", "high"];
+
+/** Grok 4.6+ accepts xhigh; older cached models safely stop at high. */
+export function grokEffortsForModel(model: string): readonly GrokEffort[] {
+  const match = /^grok-(\d+)\.(\d+)(?:[-.]|$)/i.exec(model.trim());
+  const supportsXhigh = !!match && (Number(match[1]) > 4 || (Number(match[1]) === 4 && Number(match[2]) >= 6));
+  return supportsXhigh ? GROK_EFFORTS : GROK_PRE_XHIGH_EFFORTS;
+}
+
+export const ZAI_EFFORTS = ["low", "medium", "high"] as const;
+export type ZaiEffort = (typeof ZAI_EFFORTS)[number];
 
 /** Live backend/model for the director. This is server runtime state, not a settings-derived guess. */
 export interface DirectorStatus {
@@ -434,7 +455,7 @@ export interface OrchestratorSettings {
   // Claude Agent SDK via z.ai's Anthropic-compatible endpoint, so it keeps the bus/office MCP tools.
   zaiEnabled: boolean;
   zaiModel: string;
-  zaiEffort: GrokEffort; // z.ai reasoning-effort cap (low/medium/high)
+  zaiEffort: ZaiEffort; // z.ai reasoning-effort cap (low/medium/high)
   zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (100 = off): above it, tasks route off z.ai
   zaiKeyPresent: boolean; // read-only: an API key is stored (raw key never reaches the client)
   zaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
@@ -531,19 +552,13 @@ export const CODEX_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
-  "gpt-5.5",
-  "gpt-5.1-codex-max",
-  "gpt-5.3-codex",
-  "gpt-5.2-codex",
-  "gpt-5.1-codex-mini",
-  "codex-mini-latest",
 ] as const;
 
 /** Grok models suggested when the live list hasn't loaded yet. */
-export const GROK_MODELS = ["grok-4.5"] as const;
+export const GROK_MODELS = ["grok-4.6"] as const;
 
 /** z.ai (GLM) models suggested for the picker — the plan's fixed GLM id set (most-capable first curated). */
-export const ZAI_MODELS = ["glm-4.6", "glm-4.7", "glm-5.2", "glm-5-turbo"] as const;
+export const ZAI_MODELS = ["glm-5.1", "glm-5-turbo", "glm-4.7", "glm-4.5-air"] as const;
 
 // ---- the real-git "Changes" surface (mirrors server/src/gitService.ts) ----
 

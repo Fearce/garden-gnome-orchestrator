@@ -28,7 +28,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
-import type { ImplementorProvider, ModelPick, Thread } from "../types.js";
+import type { Effort, ImplementorProvider, ModelPick, Thread } from "../types.js";
 
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
@@ -102,11 +102,12 @@ interface Harness {
 
 const realFetch = globalThis.fetch;
 
-function makeHarness(): Harness {
+function makeHarness(beforeManager?: (db: InstanceType<typeof Db>) => void): Harness {
   const dir = mkdtempSync(join(tmpdir(), "auto-model-"));
   const workspace = join(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
   const db = new Db(join(dir, "orchestrator.sqlite"));
+  beforeManager?.(db);
   const hub = new EventHub();
   const memory = new FileMemoryService(join(dir, "memory"));
   const mgr = new ThreadManager(db, hub, memory, new StubAccounts() as unknown as AccountManager);
@@ -174,26 +175,71 @@ const thread = (h: Harness, id: string): Thread => h.db.getThread(id)!;
 async function main(): Promise<void> {
   console.log("\n=== auto model selection — pipeline wiring (real machinery) ===\n");
 
-  // -- roster: direct successors replace retired same-tier models in automatic choices ------------
-  console.log("Test roster — newest available Claude generation represents each capability tier");
+  console.log("Test defaults — the former top Grok tier migrates to the new top tier once");
+  {
+    const h = makeHarness((db) => db.kvSet("setting_grok_effort", "high"));
+    try {
+      check("the old no-cap High default migrates to Extra High", h.mgr.settings().grokEffort === "xhigh", h.mgr.settings().grokEffort);
+      h.mgr.setSettings({ grokEffort: "high" });
+      check("a later explicit High cap is preserved", h.mgr.settings().grokEffort === "high", h.mgr.settings().grokEffort);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- roster: every live model and its exact effort set are available to automatic choices -------
+  console.log("Test roster — every accessible model and supported effort tier reaches auto-selection");
   {
     const h = makeHarness();
     try {
-      // Deliberately put the predecessors first: provider/cache ordering must not decide capability.
-      h.db.kvSet("cache_claude_models", JSON.stringify([
+      const live = [
         "claude-opus-4-8",
         "claude-sonnet-4-6",
         "claude-opus-5",
         "claude-sonnet-5",
         HAIKU,
-      ]));
+      ];
+      h.db.kvSet("cache_claude_models", JSON.stringify(live));
       const roster = h.internals.claudeRosterModels() as string[];
       const pickable = h.internals.pickableClaudeModels() as string[];
-      check("Opus 5 is the automatic Opus candidate", roster.includes("claude-opus-5"), JSON.stringify(roster));
-      check("Opus 4.8 is not offered beside its direct successor", !roster.includes("claude-opus-4-8"), JSON.stringify(roster));
-      check("Sonnet 5 is the automatic Sonnet candidate", roster.includes("claude-sonnet-5"), JSON.stringify(roster));
-      check("Sonnet 4.6 is not offered beside its successor", !roster.includes("claude-sonnet-4-6"), JSON.stringify(roster));
-      check("older Claude models remain available for a manual compatibility pin", pickable.includes("claude-opus-4-8"), JSON.stringify(pickable));
+      check("every live Claude model is an automatic candidate", live.every((model) => roster.includes(model)), JSON.stringify(roster));
+      check("the live roster is not padded with inaccessible curated ids", roster.length === live.length, JSON.stringify(roster));
+      check("manual pickers still union live and curated models", pickable.length > roster.length && pickable.includes("claude-fable-5"), JSON.stringify(pickable));
+      const candidates = h.internals.implementorModelRoster() as { model: string; efforts: Effort[] }[];
+      const opus = candidates.find((candidate) => candidate.model === "claude-opus-4-8");
+      const sonnet = candidates.find((candidate) => candidate.model === "claude-sonnet-4-6");
+      const haiku = candidates.find((candidate) => candidate.model === HAIKU);
+      check("Opus 4.8 exposes all five effort levels", opus?.efforts.join(",") === "low,medium,high,xhigh,max", JSON.stringify(opus));
+      check("Sonnet 4.6 exposes Max but not unsupported Extra High", sonnet?.efforts.join(",") === "low,medium,high,max", JSON.stringify(sonnet));
+      check("Haiku exposes only its supported effort levels", haiku?.efforts.join(",") === "low,medium,high", JSON.stringify(haiku));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("Test roster — CLI and GLM providers are not truncated");
+  {
+    const h = makeHarness();
+    try {
+      const codex = ["gpt-a", "gpt-b", "gpt-c", "gpt-d", "gpt-e", "gpt-f"];
+      const grok = ["grok-4.6", "grok-4.7", "grok-4.8", "grok-4.9", "grok-4.10"];
+      const zai = ["glm-5.1", "glm-5-turbo", "glm-4.7", "glm-4.5-air"];
+      h.internals.codexImplementorReady = (): boolean => true;
+      h.internals.codexRosterModels = (): string[] => codex;
+      h.internals.codexEffort = (): Effort => "xhigh";
+      h.internals.grokImplementorReady = (): boolean => true;
+      h.internals.pickableGrokModels = (): string[] => grok;
+      h.internals.grokEffort = (): Effort => "xhigh";
+      h.db.kvSet("cache_grok_models", JSON.stringify(grok));
+      h.internals.zaiImplementorReady = (): boolean => true;
+      h.internals.pickableZaiModels = (): string[] => zai;
+      h.internals.zaiEffort = (): Effort => "high";
+      const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
+      const modelsFor = (provider: ImplementorProvider): string[] => roster.filter((candidate) => candidate.provider === provider).map((candidate) => candidate.model);
+      check("all Codex models reach the selector", codex.every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
+      check("all live Grok models reach the selector", grok.every((model) => modelsFor("grok").includes(model)), JSON.stringify(modelsFor("grok")));
+      check("all documented z.ai models reach the selector", zai.every((model) => modelsFor("zai").includes(model)), JSON.stringify(modelsFor("zai")));
+      check("Grok 4.6 carries Extra High into the selector", roster.find((candidate) => candidate.model === "grok-4.6")?.efforts.includes("xhigh") === true);
     } finally {
       h.dispose();
     }
@@ -343,9 +389,9 @@ async function main(): Promise<void> {
       h.mgr.setSettings({ zaiEnabled: true, zaiApiKey: "test-key" });
       const crossed = h.seed();
       check("usage routing alone would pick Claude here", h.internals.gateImplementorProvider(thread(h, crossed)) === "claude", String(h.internals.implementorProvider.get(crossed)));
-      h.db.updateThreadStageOutputs(crossed, { modelPick: { provider: "zai", model: "glm-4.6", effort: "high", reason: "r" } });
+      h.db.updateThreadStageOutputs(crossed, { modelPick: { provider: "zai", model: "glm-4.7", effort: "high", reason: "r" } });
       check("a pick overrides usage routing when its backend is ready", h.internals.gateImplementorProvider(thread(h, crossed)) === "zai", String(h.internals.implementorProvider.get(crossed)));
-      check("…and that backend gets the picked model", h.internals.pickedModel(crossed, "zai") === "glm-4.6", String(h.internals.pickedModel(crossed, "zai")));
+      check("…and that backend gets the picked model", h.internals.pickedModel(crossed, "zai") === "glm-4.7", String(h.internals.pickedModel(crossed, "zai")));
     } finally {
       h.dispose();
     }

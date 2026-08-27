@@ -33,11 +33,11 @@ function check(label: string, cond: boolean, detail?: string): void {
 }
 
 const CANDIDATES: ModelCandidate[] = [
-  { provider: "claude", model: "claude-haiku-4-5-20251001", note: modelNote("claude", "claude-haiku-4-5-20251001") },
-  { provider: "claude", model: "claude-sonnet-4-6", note: modelNote("claude", "claude-sonnet-4-6") },
-  { provider: "claude", model: "claude-opus-4-8", note: modelNote("claude", "claude-opus-4-8") },
-  { provider: "codex", model: "gpt-5.6-sol", note: modelNote("codex", "gpt-5.6-sol") },
-  { provider: "zai", model: "glm-4.6", note: modelNote("zai", "glm-4.6") },
+  { provider: "claude", model: "claude-haiku-4-5-20251001", efforts: ["low", "medium", "high"], note: modelNote("claude", "claude-haiku-4-5-20251001") },
+  { provider: "claude", model: "claude-sonnet-4-6", efforts: ["low", "medium", "high", "max"], note: modelNote("claude", "claude-sonnet-4-6") },
+  { provider: "claude", model: "claude-opus-4-8", efforts: ["low", "medium", "high", "xhigh", "max"], note: modelNote("claude", "claude-opus-4-8") },
+  { provider: "codex", model: "gpt-5.6-sol", efforts: ["low", "medium", "high", "xhigh", "max"], note: modelNote("codex", "gpt-5.6-sol") },
+  { provider: "zai", model: "glm-4.7", efforts: ["low", "medium", "high"], note: modelNote("zai", "glm-4.7") },
 ];
 const EFFORTS: Effort[] = ["low", "medium", "high", "max"];
 const CTX = { candidates: CANDIDATES, efforts: EFFORTS };
@@ -82,15 +82,15 @@ for (const bad of [
 {
   // A good pick must not be thrown away over an effort tier we simply don't offer — that would cost a
   // whole extra call (or the fallback) for a field with a safe default.
-  const pick = parseSelection('{"model":"glm-4.6","effort":"ludicrous","reason":"x"}', CTX);
+  const pick = parseSelection('{"model":"glm-4.7","effort":"ludicrous","reason":"x"}', CTX);
   check("an unknown effort degrades to high rather than voiding the pick", pick?.effort === "high", JSON.stringify(pick));
-  const gated = parseSelection('{"model":"glm-4.6","effort":"xhigh","reason":"x"}', CTX);
-  check("an effort not offered to this machine (xhigh) degrades too", gated?.effort === "high", JSON.stringify(gated));
+  const gated = parseSelection('{"model":"glm-4.7","effort":"xhigh","reason":"x"}', CTX);
+  check("an effort not supported by the selected model degrades too", gated?.effort === "high", JSON.stringify(gated));
 }
 
 {
   const long = "x ".repeat(400);
-  const pick = parseSelection(`{"model":"glm-4.6","effort":"high","reason":"${long}"}`, CTX);
+  const pick = parseSelection(`{"model":"glm-4.7","effort":"high","reason":"${long}"}`, CTX);
   check("a runaway reason is clipped", (pick?.reason.length ?? 0) <= 200, String(pick?.reason.length));
 }
 
@@ -105,11 +105,12 @@ console.log("\n=== the prompt carries what the decision needs ===\n");
     candidates: CANDIDATES,
     efforts: EFFORTS,
     repoStats: [{ provider: "claude", model: "claude-sonnet-4-6", picks: 3, avgScore: 88, doneRate: 0.67, avgQaRounds: 1.3, avgCostUsd: 2.5, avgTotalTokens: 120_000, avgInputTokens: 100_000, avgOutputTokens: 12_000, avgCacheTokens: 8_000, avgReasoningTokens: 0, tokenSampleRate: 1, avgMinutes: 14 }],
-    globalStats: [{ provider: "zai", model: "glm-4.6", picks: 9, avgScore: 52, doneRate: 0.33, avgQaRounds: 2.4, avgCostUsd: 1.1, avgTotalTokens: 240_000, avgInputTokens: 200_000, avgOutputTokens: 40_000, avgCacheTokens: 0, avgReasoningTokens: 0, tokenSampleRate: 0.8, avgMinutes: 31 }],
+    globalStats: [{ provider: "zai", model: "glm-4.7", picks: 9, avgScore: 52, doneRate: 0.33, avgQaRounds: 2.4, avgCostUsd: 1.1, avgTotalTokens: 240_000, avgInputTokens: 200_000, avgOutputTokens: 40_000, avgCacheTokens: 0, avgReasoningTokens: 0, tokenSampleRate: 0.8, avgMinutes: 31 }],
     repoEffortStats: [{ provider: "claude", model: "claude-sonnet-4-6", effort: "medium", picks: 2, avgScore: 94, doneRate: 1, avgQaRounds: 1, avgCostUsd: 1.5, avgTotalTokens: 80_000, avgInputTokens: 68_000, avgOutputTokens: 8_000, avgCacheTokens: 4_000, avgReasoningTokens: 0, tokenSampleRate: 1, avgMinutes: 9 }],
     globalEffortStats: [],
   });
   check("every dispatchable model is offered by exact id", CANDIDATES.every((c) => prompt.includes(c.model)), "a candidate is missing from the roster block");
+  check("each candidate's exact effort set is offered", CANDIDATES.every((c) => prompt.includes(`effort ${c.efforts.join(" | ")}`)), "candidate effort coverage missing");
   check("the planner's read of the repo is included", prompt.includes("web/src/x.tsx"), "plan text missing");
   check("the repo's own history is included", prompt.includes("avg score 88"), "repo stats missing");
   check("the global history is included", prompt.includes("avg score 52"), "global stats missing");
@@ -170,9 +171,9 @@ const baseCtx = {
 {
   // A model that named something off-roster gets ONE corrective retry — telling it plainly to copy an id
   // usually works, and the alternative (giving up) costs the whole feature for that task.
-  stubModel(['{"model":"gpt-4o","effort":"high","reason":"nope"}', '{"model":"glm-4.6","effort":"high","reason":"fine"}']);
+  stubModel(['{"model":"gpt-4o","effort":"high","reason":"nope"}', '{"model":"glm-4.7","effort":"high","reason":"fine"}']);
   const pick = await selectImplementorModel(baseCtx, "tok", "claude-sonnet-4-6");
-  check("an off-roster reply is retried once, then accepted", pick?.model === "glm-4.6" && sent.length === 2, `${JSON.stringify(pick)} calls=${sent.length}`);
+  check("an off-roster reply is retried once, then accepted", pick?.model === "glm-4.7" && sent.length === 2, `${JSON.stringify(pick)} calls=${sent.length}`);
   check("the retry tells the model exactly what went wrong", /copied EXACTLY/.test(sent[1] ?? ""), "no corrective suffix");
 }
 

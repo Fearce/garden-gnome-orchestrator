@@ -26,6 +26,8 @@ export interface ModelCandidate {
   provider: ImplementorProvider;
   model: string;
   note: string;
+  /** Exact effort tiers this model/backend can accept under the operator's configured ceiling. */
+  efforts: Effort[];
 }
 
 export interface SelectionContext {
@@ -51,7 +53,7 @@ const PROVIDER_LABEL: Record<ImplementorProvider, string> = {
 
 /**
  * A short, factual note on what a model is, keyed off its family. This exists because a model id alone
- * ("glm-4.6", "gpt-5.6-sol") tells the selector nothing about cost or capability, and a selector guessing
+ * ("glm-5.1", "gpt-5.6-sol") tells the selector nothing about cost or capability, and a selector guessing
  * at that is exactly the failure this feature is supposed to fix. Kept descriptive — the historical
  * scoreboard, not this line, is what should move the decision once there is any history.
  */
@@ -93,7 +95,9 @@ function statBlock(stats: ModelStat[], emptyNote: string): string {
 
 /** The whole prompt, built as one message. Exported so a gate can assert its content without a network call. */
 export function buildSelectionPrompt(ctx: SelectionContext): string {
-  const roster = ctx.candidates.map((c) => `- ${c.model} — ${PROVIDER_LABEL[c.provider]}: ${c.note}`).join("\n");
+  const roster = ctx.candidates
+    .map((c) => `- ${c.model} — ${PROVIDER_LABEL[c.provider]} — effort ${c.efforts.join(" | ")}: ${c.note}`)
+    .join("\n");
   return [
     "You are choosing which AI coding model will IMPLEMENT one task in an autonomous pipeline, and how hard it should think.",
     "",
@@ -111,7 +115,7 @@ export function buildSelectionPrompt(ctx: SelectionContext): string {
     roster,
     "",
     "## Effort levels",
-    `${ctx.efforts.join(" | ")} — how much reasoning the model spends per turn. Each backend's own ceiling is applied automatically, so ask for what the task deserves.`,
+    `${ctx.efforts.join(" | ")} — how much reasoning the model spends per turn. Each model's exact available subset is shown beside it above; choose only a tier listed for the model you pick.`,
     "",
     "## How earlier auto-picked tasks actually scored",
     "100 = accepted with no human involvement; 40 = the task ended up needing a human; each QA fix-round past the first costs 12 more. Dollars, tokens, turns and time cover the WHOLE pipeline, so a cheap model that needed three QA rounds reads as expensive here. Prefer this evidence over your priors about these models. Never treat $0 as free when token burn is known.",
@@ -158,7 +162,8 @@ function extractJsonObject(text: string): unknown {
  * Validate a raw reply into a pick, or null. The model id must match the roster EXACTLY (case- and
  * whitespace-insensitively) — the provider comes from the matched roster entry, never from the reply, so
  * a model that names the wrong backend can't route a task to a CLI that has no such model. An
- * unrecognized effort degrades to `high` rather than voiding an otherwise good pick.
+ * unrecognized or model-incompatible effort degrades to that candidate's `high` tier rather than
+ * voiding an otherwise good pick. Every implementor backend supports high, so the fallback is safe.
  */
 export function parseSelection(text: string, ctx: Pick<SelectionContext, "candidates" | "efforts">): ModelPick | null {
   const obj = extractJsonObject(text);
@@ -168,7 +173,8 @@ export function parseSelection(text: string, ctx: Pick<SelectionContext, "candid
   const wanted = raw.model.trim().toLowerCase();
   const candidate = ctx.candidates.find((c) => c.model.toLowerCase() === wanted);
   if (!candidate) return null;
-  const effort = ctx.efforts.find((e) => e === String(raw.effort ?? "").trim().toLowerCase()) ?? "high";
+  const requested = String(raw.effort ?? "").trim().toLowerCase();
+  const effort = candidate.efforts.find((e) => e === requested) ?? "high";
   const reason = typeof raw.reason === "string" ? raw.reason.trim().replace(/\s+/g, " ").slice(0, MAX_REASON_CHARS) : "";
   return { provider: candidate.provider, model: candidate.model, effort, reason };
 }

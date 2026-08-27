@@ -61,7 +61,7 @@ try {
   mgr.setSettings({ codexEnabled: true, modelOverrides: { codex: { director: "gpt-director" } } });
   internals.codexImplementorReady = (): boolean => true;
   internals.codexProviderCandidate = () => ({ provider: "codex", hasHeadroom: true, fiveHour: 20, sevenDay: 30, sevenDayReset: Date.now() + 86_400_000, weeklySafetyPct: 100 });
-  internals.pickableCodexModels = (): string[] => ["gpt-smart-a", "gpt-smart-b"];
+  internals.codexRosterModels = (): string[] => ["gpt-smart-a", "gpt-smart-b"];
 
   const configured = mgr.directorTargets(false);
   check("capped Claude is excluded", configured.every((t) => t.provider !== "claude"), JSON.stringify(configured));

@@ -14,7 +14,7 @@ const OWNER = config.ownerName;
 // set, agents commit-only (never push) any repo whose origin contains it; unset = push every repo.
 const NO_PUSH = config.noPushRepoPattern;
 
-// `xhigh` is a Max-5-only effort tier, gated behind ENABLE_XHIGH. When it's off we drop the tier
+// `xhigh` is a frontier-model effort tier, gated behind ENABLE_XHIGH. When it's off we drop the tier
 // from the planner's effort menu entirely so the planner never believes it exists or tries to pick
 // it — matching the json_schema enum, which also omits it (see PLAN_SCHEMA in roles.ts).
 const XHIGH_TIER = config.enableXhigh

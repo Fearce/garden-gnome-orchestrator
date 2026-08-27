@@ -142,17 +142,11 @@ export const config = {
     // these are just quick picks, most-capable first. Keep GPT-5.6 in this curated fallback because
     // ChatGPT-plan auth does not give us an OpenAI /v1/models list, even when Codex can run it.
     // Override the default with CODEX_MODEL.
-    defaultModel: process.env.CODEX_MODEL?.trim() || "gpt-5.5",
+    defaultModel: process.env.CODEX_MODEL?.trim() || "gpt-5.6-sol",
     models: [
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gpt-5.5",
-      "gpt-5.1-codex-max",
-      "gpt-5.3-codex",
-      "gpt-5.2-codex",
-      "gpt-5.1-codex-mini",
-      "codex-mini-latest",
     ] as const,
     // The Codex CLI is a global npm install; we spawn its bin/codex.js with this node binary directly
     // (PATH-independent, no .cmd shim). Override CODEX_BIN_JS to point at a different install.
@@ -248,10 +242,10 @@ export const config = {
     // here (with the key as ANTHROPIC_AUTH_TOKEN) is the entire backend wiring.
     baseUrl: process.env.ZAI_BASE_URL?.trim() || "https://api.z.ai/api/anthropic",
     // First-boot default + the GLM models the Subscriptions selector suggests. Free-text (any id the key
-    // can access is accepted). glm-4.6 is the proven, quota-efficient coding-plan default; the newer
-    // glm-4.7 / glm-5.2 / glm-5-turbo are offered as pickable alternatives. Override with ZAI_MODEL.
-    defaultModel: process.env.ZAI_MODEL?.trim() || "glm-4.6",
-    models: ["glm-4.6", "glm-4.7", "glm-5.2", "glm-5-turbo"] as const,
+    // can access is accepted). The curated fallback mirrors z.ai's current Coding Plan roster, ordered
+    // strongest-first; GLM-4.7 remains the quota-efficient general-work default. Override with ZAI_MODEL.
+    defaultModel: process.env.ZAI_MODEL?.trim() || "glm-4.7",
+    models: ["glm-5.1", "glm-5-turbo", "glm-4.7", "glm-4.5-air"] as const,
     // z.ai's real usage/quota endpoint (Bearer key, no model turn): returns the 5-hour + weekly windows
     // (used-% + reset) and the plan tier — see zaiUsagePing. This is what feeds the chip + routing.
     usageUrl: process.env.ZAI_USAGE_URL?.trim() || "https://api.z.ai/api/monitor/usage/quota/limit",
@@ -292,11 +286,9 @@ export const config = {
   // Cap on consecutive turn-limit auto-resumes per implementor→QA loop, so a wedged implementor that
   // keeps hitting the ceiling without progressing can't spin forever — it settles to review instead.
   maxAutoResumes: Number(process.env.MAX_AUTO_RESUMES ?? 8),
-  // The `xhigh` implementor effort tier maps to a Max-5-only Anthropic API effort. It's OFF by
-  // default so the shared repo never selects or sends it for accounts without that subscription
-  // (the planner can't emit it, and any stale/legacy xhigh is coerced down to `high` at dispatch).
-  // Opt back in per-machine by setting ENABLE_XHIGH=true in a local, gitignored server/.env.
-  enableXhigh: process.env.ENABLE_XHIGH === "true",
+  // Current frontier Claude models and Grok 4.6 support xhigh. Keep it available by default so smart
+  // selection can use every supported tier; a machine can still opt out explicitly in its local env.
+  enableXhigh: process.env.ENABLE_XHIGH !== "false",
   // Resume strategy. A *recent* resume hits a still-warm prompt cache (≈1h TTL on a subscription),
   // so a normal full resume is cheap AND keeps full fidelity — we only compress once the cache has
   // likely gone cold. resumeWarmMinutes is that boundary (default 40, safely under the 1h TTL):

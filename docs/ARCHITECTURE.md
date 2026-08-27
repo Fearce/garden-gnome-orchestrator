@@ -105,7 +105,9 @@ mode the composer's own effort dropdown pins one onto the dispatch
 
 The Implementor row above is the **default** model, not the only one: with the
 opt-in `autoModelSelection` setting the director picks this task's implementor
-model AND effort from every backend dispatchable at that moment, and every such
+model AND effort from every backend dispatchable at that moment. It receives every model in each provider's
+active-auth live catalog (or the complete curated cold-start catalog), without a per-provider truncation, and each model
+carries its exact supported effort set after the operator's configured cap. Every such
 task is graded when it settles so the next pick reads real outcomes rather than
 priors (CLAUDE.md § "Auto model selection"). Precedence is then
 `effort_override` > the pick > the planner.

@@ -19,7 +19,7 @@ import {
 import { transientApiErrorInfo, type AgentRunLike, type ResultEvent, type SendOpts, type UserContent } from "./runner.js";
 
 export interface GrokRunConfig {
-  /** The Grok model to run, e.g. `grok-4.5`. */
+  /** The Grok model to run, e.g. `grok-4.6`. */
   model: string;
   /** Grok CLI reasoning effort, passed as --reasoning-effort. */
   effort: GrokEffort;

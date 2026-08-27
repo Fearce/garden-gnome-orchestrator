@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CODEX_EFFORTS } from "../types.js";
+import { CODEX_EFFORTS, GROK_EFFORTS, ZAI_EFFORTS } from "../types.js";
 import type { CodexUsageDTO } from "../agents/codexUsage.js";
 import type { GrokUsageDTO } from "../agents/grokUsage.js";
 import type { ZaiUsageDTO } from "../agents/zaiUsage.js";
@@ -232,12 +232,12 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         codexWeeklySafetyPct: z.number().int().min(1).max(100),
         grokEnabled: z.boolean(),
         grokModel: z.string().min(1).max(64),
-        grokEffort: z.enum(["low", "medium", "high"]),
+        grokEffort: z.enum(GROK_EFFORTS),
         grokWeeklySafetyPct: z.number().int().min(1).max(100),
         // Zhipu z.ai (GLM Coding Plan) backend.
         zaiEnabled: z.boolean(),
         zaiModel: z.string().min(1).max(64),
-        zaiEffort: z.enum(["low", "medium", "high"]),
+        zaiEffort: z.enum(ZAI_EFFORTS),
         zaiWeeklySafetyPct: z.number().int().min(1).max(100),
         // Write-only: the raw z.ai API key is accepted here and stored server-side, never echoed back.
         // An empty string clears it (falls back to ZAI_API_KEY). The broadcast carries only zaiKeyPresent/last4.
