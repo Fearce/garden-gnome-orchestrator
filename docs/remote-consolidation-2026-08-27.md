@@ -238,6 +238,33 @@ Danger Zone, **Delete this repository**.
 
 ---
 
+## 4½. Revised end-state, same day: the migrated branches were removed from the real repo too
+
+> **CLOSED, 2026-08-27, later the same afternoon.** Mikkel revised the target once §2–§4 above had
+> already landed: keep every migrated commit safe (locally + in the bundle archive), but don't leave
+> ten extra branches sitting on someone else's (Fearce's) repo just because that's where the rescue
+> happened to land them — *"it's kind of rude to add so many branches to someone else's repo."*
+>
+> All ten branches §2.2 pushed were deleted from `origin` (`git push origin --delete <branch>`, not the
+> `gh` admin API, which still 403s the same way) **after** re-confirming, per branch, that the exact
+> pushed sha is reachable from a local branch in this checkout **and** from
+> `_fork-archive-2026-08-27\prismicious-fork-all-branches.bundle` (`git bundle list-heads` /
+> `git bundle verify`). No branch was deleted without both. `master` was never touched, and the ten
+> local branches + the bundle are untouched on disk — this was a remote-only operation.
+>
+> `gh api repos/Fearce/garden-gnome-orchestrator/branches` now lists exactly one branch: `master`. The
+> table in §2.2 above is kept as-written because it is the accurate record of what was proven reachable
+> from the real repo at push time (the safety property this whole doc exists to establish) — read it as
+> "was pushed to and confirmed on Fearce", not as "still there today". Full per-branch sha/preservation
+> table is in the QA finding on this task's blackboard, posted the same time as this edit.
+>
+> Two closed PRs (`Fearce` #11, #12) still show "the compare/diff is unavailable" the same way they did
+> once the fork was deleted (§4) — their head branches are gone from both places now. No change from the
+> risk already accepted and recorded in §4; this section doesn't reopen that call, just notes the branch
+> that carried it is no longer on `origin` either.
+
+---
+
 ## 5. After the deletion, nothing points at a dead remote
 
 - No checkout references the fork any more (§3).
