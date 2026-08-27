@@ -713,7 +713,11 @@ export class ThreadManager implements OrchestratorApi {
     let recovered = 0;
     for (const thread of this.db.listThreads()) {
       if (thread.state !== "review" && thread.state !== "failed") continue;
-      if (!/^QA could not complete — needs your review\b/i.test(thread.error ?? "")) continue;
+      // Older settleReview paths did not use one stable suffix: some wrote "needs your review",
+      // while a raw provider rejection produced `QA could not complete — <provider text>`. The
+      // latest QA run is the authority below, so accept either terminal QA shape here and still
+      // require positive cap/capacity evidence before converting it to an automatic retry.
+      if (!/^QA could not complete —\s+/i.test(thread.error ?? "")) continue;
       const stage = this.db.getThreadStageOutputs(thread.id);
       if (!stage.kickoff || stage.qaCapRetryRound != null) continue;
       const latestQa = this.db

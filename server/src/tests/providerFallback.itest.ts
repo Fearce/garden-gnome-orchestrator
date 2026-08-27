@@ -384,6 +384,24 @@ try {
     error: "You've hit your usage limit. Try again at Sep 2nd, 2026 2:23 PM.",
     endedAt: Date.now(),
   });
+  const legacyCapacityThread = legacyDb.createThread({
+    title: "Legacy Codex QA model-capacity park",
+    workspace: legacyWorkspace,
+    rawPrompt: "verify",
+    brief: "verify",
+  });
+  legacyDb.updateThread(legacyCapacityThread.id, {
+    state: "review",
+    error: "QA could not complete — Selected model is at capacity. Please try a different model.",
+  });
+  legacyDb.updateThreadStageOutputs(legacyCapacityThread.id, { kickoff: "KICKOFF: completed implementation", qaRoundsUsed: 4 });
+  const legacyCapacityRun = legacyDb.createRun({ threadId: legacyCapacityThread.id, role: "qa", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+  legacyDb.updateRun(legacyCapacityRun.id, {
+    state: "error",
+    capFlagged: false,
+    error: "Selected model is at capacity. Please try a different model.",
+    endedAt: Date.now(),
+  });
   const legacyZaiThread = legacyDb.createThread({
     title: "Legacy z.ai QA usage-limit park",
     workspace: legacyWorkspace,
@@ -433,6 +451,8 @@ try {
   }
   const legacyInternals = legacyManager as any;
   check("legacy Codex cap parks are converted to the auto-resume marker", (legacyDb.getThread(legacyThread.id)?.error ?? "").startsWith("⏳ Auto-resume pending"));
+  check("raw Codex model-capacity QA parks are converted to the auto-resume marker", (legacyDb.getThread(legacyCapacityThread.id)?.error ?? "").startsWith("⏳ Auto-resume pending"));
+  check("model-capacity recovery preserves the charged QA round", legacyDb.getThreadStageOutputs(legacyCapacityThread.id).qaCapRetryRound === 4, String(legacyDb.getThreadStageOutputs(legacyCapacityThread.id).qaCapRetryRound));
   check("legacy QA recovery preserves the charged QA round", legacyDb.getThreadStageOutputs(legacyThread.id).qaCapRetryRound === 2, String(legacyDb.getThreadStageOutputs(legacyThread.id).qaCapRetryRound));
   check("an interrupted active QA cap restores its later Codex reset before retry", legacyInternals.codexCapUntil === activeReset, String(legacyInternals.codexCapUntil));
   check("legacy z.ai account labels latch z.ai before requeue", legacyInternals.zaiCapUntil === statedReset, String(legacyInternals.zaiCapUntil));
