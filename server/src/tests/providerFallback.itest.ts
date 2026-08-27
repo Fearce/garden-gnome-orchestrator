@@ -433,11 +433,13 @@ try {
   legacyDb.updateThread(activeQaThread.id, { state: "qa" });
   legacyDb.updateThreadStageOutputs(activeQaThread.id, { kickoff: "KICKOFF: completed implementation", qaRoundsUsed: 3 });
   const activeQaRun = legacyDb.createRun({ threadId: activeQaThread.id, role: "qa", model: "gpt-5.6", account: "codex:gpt-5.6" });
+  const activeQaEndedAt = Date.now() + 10_000;
+  legacyDb.raw.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(activeQaEndedAt - 500, activeQaRun.id);
   legacyDb.updateRun(activeQaRun.id, {
     state: "error",
     capFlagged: true,
     error: "You've hit your usage limit. Try again at Sep 3rd, 2026 2:23 PM.",
-    endedAt: Date.now(),
+    endedAt: activeQaEndedAt,
   });
   // This fixture needs boot reconciliation to inspect a live QA state, but it must not launch a real
   // async pipeline against the temporary database after this test closes it.

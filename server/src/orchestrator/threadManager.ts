@@ -747,7 +747,15 @@ export class ThreadManager implements OrchestratorApi {
    * migration. Retaining only the latest reset per account avoids replaying a long run history. */
   private restoreRecordedProviderCapLatches(): void {
     const now = Date.now();
-    const latestByAccount = new Map<string, { error?: string; reset?: number; capped: boolean; endedAt: number; startedAt: number }>();
+    const latestByAccount = new Map<string, { account: string; error?: string; reset?: number; capped: boolean; endedAt: number; startedAt: number }>();
+    // CLI quota is plan-wide, while run.account includes the selected model (`codex:gpt-...`). A
+    // success on one Codex model therefore disproves an older cap recorded on another model too.
+    const outcomeKey = (account: string): string => {
+      if (account.startsWith("codex:")) return "codex";
+      if (account.startsWith("grok:")) return "grok";
+      if (account === "zai" || account.startsWith("zai:")) return "zai";
+      return account;
+    };
     for (const thread of this.db.listThreads()) {
       for (const run of this.db.listRuns(thread.id)) {
         if (!run.account || run.endedAt == null) continue;
@@ -757,14 +765,24 @@ export class ThreadManager implements OrchestratorApi {
         // history (which can resurrect an already-disproved multi-day latch after a later short
         // model-capacity rejection).
         if (!capped && run.state !== "done") continue;
-        const prior = latestByAccount.get(run.account);
+        const key = outcomeKey(run.account);
+        const prior = latestByAccount.get(key);
         if (prior && (prior.endedAt > run.endedAt || (prior.endedAt === run.endedAt && prior.startedAt >= run.startedAt))) continue;
         const reset = capped && run.error ? parseUsageLimitResetAt(run.error, now) : undefined;
-        latestByAccount.set(run.account, { error: run.error ?? undefined, reset, capped, endedAt: run.endedAt, startedAt: run.startedAt });
+        latestByAccount.set(key, { account: run.account, error: run.error ?? undefined, reset, capped, endedAt: run.endedAt, startedAt: run.startedAt });
       }
     }
-    const restorable = [...latestByAccount.entries()].filter(([, outcome]) => outcome.capped && outcome.error && outcome.reset != null && outcome.reset > now);
-    for (const [account, outcome] of restorable) this.latchLegacyProviderCap(account, outcome.error!);
+    // loadCodexCap ran first, so reconciliation must actively remove a persisted historical reset when
+    // the newest outcome disproves it. A newer reset-less capacity rejection gets a non-authoritative
+    // fallback latch; the fresh live headroom probe may then clear it immediately.
+    const codexOutcome = latestByAccount.get("codex");
+    if (codexOutcome && (!codexOutcome.capped || codexOutcome.reset == null || codexOutcome.reset <= now)) {
+      this.clearCodexCap();
+      if (codexOutcome.capped) this.noteCodexCap({ status: "rejected", resetSource: "fallback" });
+    }
+
+    const restorable = [...latestByAccount.values()].filter((outcome) => outcome.capped && outcome.error && outcome.reset != null && outcome.reset > now);
+    for (const outcome of restorable) this.latchLegacyProviderCap(outcome.account, outcome.error!);
     if (restorable.length) {
       this.hub.log("warn", `Restored ${restorable.length} recorded provider usage-cap ${restorable.length === 1 ? "latch" : "latches"} before auto-resume.`);
     }
