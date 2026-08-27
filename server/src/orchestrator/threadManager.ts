@@ -2235,6 +2235,14 @@ export class ThreadManager implements OrchestratorApi {
     await this.liveBench.prepareForSelection();
     const demand = this.capacityDemand(thread, "implementor", thread.effortOverride ?? plan?.effort);
     const candidates = this.implementorModelRoster(demand);
+    // An empty roster means no backend is dispatchable/has safe runway for this workload RIGHT NOW — a
+    // transient capacity state the cap-park protocol is about to wait out, not a selection attempt that
+    // failed. Latching `null` below would silently disable auto-selection for the rest of the episode,
+    // so the task would come back from its capacity park on the configured default model instead.
+    if (!candidates.length) {
+      this.hub.log("warn", `Auto model selection found no dispatchable model with safe runway for ${thread.id.slice(0, 8)} — using the configured model; it will re-select if this task resumes with capacity.`);
+      return undefined;
+    }
     const workspace = normalizeWorkspace(thread.workspace);
     const selection = {
       title: thread.title,

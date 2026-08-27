@@ -323,6 +323,36 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- C2: an EMPTY roster is a capacity wait, not a spent attempt -------------------------------------
+  // A substantial task dispatched while every compatible pool is capped/at-risk gets an empty roster and
+  // then cap-parks. Recording the "already failed" latch there would leave auto-selection permanently off
+  // for the episode, so the task would resume on the configured default model once capacity returned.
+  console.log("\nTest C2 — no dispatchable pool is a wait, and auto-selection survives the capacity park");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ autoModelSelection: true });
+      const id = h.seed();
+      const realRoster = h.internals.implementorModelRoster.bind(h.internals);
+      h.internals.implementorModelRoster = (): unknown[] => [];
+      h.reply(pickReply(HAIKU));
+      const parked = await h.internals.autoSelectModel(thread(h, id));
+      check("no pick is returned while no pool has runway", parked === undefined, JSON.stringify(parked));
+      check("no provider turn is spent on an empty roster", h.calls() === 0, String(h.calls()));
+      check(
+        "the episode is NOT latched as a failed attempt",
+        h.db.getThreadStageOutputs(id).modelPick === undefined,
+        JSON.stringify(h.db.getThreadStageOutputs(id).modelPick),
+      );
+      h.internals.implementorModelRoster = realRoster;
+      h.reply(pickReply(HAIKU));
+      const resumed = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick | undefined;
+      check("the capacity-resumed task still auto-selects", resumed?.model === HAIKU, JSON.stringify(resumed));
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- D: effort precedence ---------------------------------------------------------------------------
   console.log("\nTest D — effort: an operator pin beats the pick, the pick beats the planner");
   {
