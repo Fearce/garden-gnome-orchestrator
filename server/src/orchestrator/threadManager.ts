@@ -4215,7 +4215,8 @@ export class ThreadManager implements OrchestratorApi {
       //    everything before approving. Skipped on resume if already approved. Reuse the saved kickoff
       //    when planning already happened so a re-derivation can't strip a real plan down to "no plan".
       const qaEnabled = settings.qaEnabled && (route?.useQa ?? true) && !collaborator;
-      let kickoff = saved.kickoff ?? composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled });
+      const plannerRuns = settings.plannerEnabled && (route?.usePlanner ?? true) && !collaborator;
+      let kickoff = saved.kickoff ?? composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled, plannerRuns, route });
       // Ownership is what keeps parallel agents out of each other's files, so it is rebuilt here (from
       // the persisted share) rather than only at spawn time — a collaborator revived by a restart must
       // be handed exactly the same contract, not a kickoff that has quietly lost it.
@@ -9033,12 +9034,20 @@ function composeKickoff(
   thread: Thread,
   plan: PlanOutput | undefined,
   research: ResearchOutput | undefined,
-  opts: { autoPush: boolean; qaEnabled: boolean },
+  opts: { autoPush: boolean; qaEnabled: boolean; plannerRuns: boolean; route?: RouteDecision },
 ): string {
   const parts: string[] = [`# Task: ${thread.title}`, "", "## Brief", thread.brief, ""];
 
-  parts.push("## Plan (from the planner)");
+  if (opts.route) {
+    parts.push(
+      "## Selected Route",
+      `For this task: ${opts.plannerRuns ? "planning" : "no planning"}, ${opts.qaEnabled ? "QA" : "no QA"}. ${opts.route.reason}`,
+      "",
+    );
+  }
+
   if (plan) {
+    parts.push("## Plan (from the planner)");
     parts.push(plan.summary, "");
     const steps = plan.steps ?? [];
     if (steps.length) {
@@ -9052,7 +9061,12 @@ function composeKickoff(
     if (plan.openQuestions?.length) parts.push(`Open questions: ${plan.openQuestions.join("; ")}`);
     if (plan.parallelism) parts.push(`Parallelism: ${plan.parallelism}`);
   } else {
-    parts.push("(planner produced no structured plan — proceed from the brief and your own analysis)");
+    parts.push(
+      "## Planner Handoff",
+      opts.plannerRuns
+        ? "The planner did not return a structured handoff; proceed from the brief and your own repository inspection."
+        : "No planner was selected for this task; proceed from the brief and your own repository inspection.",
+    );
   }
   parts.push("");
 

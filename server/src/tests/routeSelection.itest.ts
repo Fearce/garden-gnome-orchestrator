@@ -151,6 +151,9 @@ async function main(): Promise<void> {
         "a route notice explains the pick in the thread's own history",
         h.db.listMessages(id).some((m: { kind: string; content: string }) => m.kind === "system" && /route selected/i.test(m.content) && /no planning/i.test(m.content)),
       );
+      const kickoff = h.db.getThreadStageOutputs(id).kickoff ?? "";
+      check("implementor kickoff names the selected implementor-only route", /For this task: no planning, no QA/i.test(kickoff), kickoff);
+      check("skipped planner is not described as a failed/empty planner", !/planner produced no structured plan/i.test(kickoff), kickoff);
     } finally {
       h.dispose();
     }
