@@ -5,7 +5,7 @@
 // Run: node scripts/crashlog-scan.test.cjs
 
 const assert = require("node:assert/strict");
-const { scanCrashLog, isFaultEntry } = require("./crashlog-scan.cjs");
+const { scanCrashLog, isFaultEntry, parseCrashLogEntries } = require("./crashlog-scan.cjs");
 
 // isFaultEntry — the label-based path catches the two labels the guards write for real faults even
 // with no stack; the stack-frame / Error-line paths future-proof against a new fault label.
@@ -66,6 +66,12 @@ const LOG = [
   entry("2026-07-25T04:10:00.000Z", "inputQueue.overflow", "dropping oldest of 5 buffered input messages (consumer stalled)"), // string-bodied fault
   entry("2026-07-25T04:11:00.000Z", "codex.stdoutOverflow", "dropped 12345 bytes of newline-less stdout"), // string-bodied fault
 ].join("");
+
+const parsed = parseCrashLogEntries(LOG);
+assert.equal(parsed.length, 13, "the shared record parser returns every dated entry once");
+assert.equal(parsed[0].label, "memory high-water rss=114MB", "the parser separates the opener label");
+assert.equal(parsed[0].ts, Date.parse("2026-07-24T11:16:55.310Z"), "the parser preserves millisecond timestamps");
+assert.match(parsed[1].body, /old-fault/, "the parser preserves the record body for fault classification");
 
 const DAY0 = Date.parse("2026-07-25T00:00:00.000Z");
 const scan = scanCrashLog(LOG, DAY0);

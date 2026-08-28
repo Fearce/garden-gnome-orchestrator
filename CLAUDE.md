@@ -138,6 +138,10 @@ there's NO `backend` column — the backend is encoded in `model`, e.g. `grok-4.
 read, not an inference from absent findings and expiring kv latches; `probe:task-runs` prints it).
 For one task's full trail + per-model cost/turn totals + a QA-loop budget check, run
 `npm run probe:task-runs --prefix server -- <thread-id|title-substring>` (read-only, safe while prod is up).
+Its control-flow timeline joins run starts/ends (including account + `cap_flagged`), routing/capacity
+findings, owner/supervisor system messages, and matching `crash.log` boot/reconcile records on one clock.
+Every event shows system-local time beside explicit UTC; do not hand-convert SQLite epochs when the owner
+quotes a local time. Add `--prompt` to print the exact saved routing prompt when provider intent is disputed.
 Read its QA-loop check as written: the budget is the durable `qaRoundsUsed` vs `maxQaRounds`, NOT the QA
 run count — a turn-ceiling continuation, an empty-run retry and a cap failover each spend a *launch* while
 recovering one *round*, so launches legitimately exceed the cap. And when `qaAppliesFixes` is on (it is, in

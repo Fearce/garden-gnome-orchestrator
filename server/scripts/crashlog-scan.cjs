@@ -40,6 +40,27 @@ function isFaultEntry(label, body) {
   return FAULT_LABEL.test(label) || STACK_FRAME.test(body) || ERROR_LINE.test(body);
 }
 
+/** Parse every crash.log record once so health and per-task incident traces share the record boundary. */
+function parseCrashLogEntries(text) {
+  const entries = [];
+  // Split before each `[<iso>]` opener; a non-empty preamble remains an undated record so callers that
+  // scan for faults can continue to fail safe rather than silently dropping malformed evidence.
+  const chunks = String(text).split(/(?=^\[\d{4}-\d{2}-\d{2}T)/m);
+  for (const raw of chunks) {
+    if (!raw.trim()) continue;
+    const lines = raw.split(/\r?\n/);
+    const firstLine = lines[0] || "";
+    const tsMatch = firstLine.match(/\[(\d{4}-\d{2}-\d{2}T[^\]]+)\]/);
+    const parsed = tsMatch ? Date.parse(tsMatch[1]) : NaN;
+    entries.push({
+      ts: Number.isFinite(parsed) ? parsed : null,
+      label: firstLine.replace(/^\[[^\]]*\]\s*/, "").trim(),
+      body: lines.slice(1).join("\n"),
+    });
+  }
+  return entries;
+}
+
 /**
  * Parse crash.log into the faults and lifecycle notes that fall inside `[sinceMs, now]`. Entries are
  * split on a leading `[<iso>]` opener; an undated entry is treated as in-window (safer to surface than
@@ -50,17 +71,10 @@ function scanCrashLog(text, sinceMs) {
   const faults = [];
   const lifecycle = { "memory high-water": 0, "memory pressure": 0, signal: 0, exit: 0, boot: 0, "restart reconcile": 0, warning: 0, other: 0 };
   const inWindow = (ts) => !Number.isFinite(ts) || ts >= sinceMs;
-  // Split before each `[<iso>]` opener; the leading chunk (preamble before the first entry) is empty.
-  const chunks = String(text).split(/(?=^\[\d{4}-\d{2}-\d{2}T)/m);
-  for (const raw of chunks) {
-    if (!raw.trim()) continue;
-    const lines = raw.split(/\r?\n/);
-    const firstLine = lines[0] || "";
-    const tsMatch = firstLine.match(/\[(\d{4}-\d{2}-\d{2}T[^\]]+)\]/);
-    const ts = tsMatch ? Date.parse(tsMatch[1]) : NaN;
+  for (const entry of parseCrashLogEntries(text)) {
+    const ts = entry.ts ?? NaN;
+    const { label, body } = entry;
     if (!inWindow(ts)) continue;
-    const label = firstLine.replace(/^\[[^\]]*\]\s*/, "").trim();
-    const body = lines.slice(1).join("\n");
     if (isFaultEntry(label, body)) {
       faults.push({ ts: Number.isFinite(ts) ? ts : null, label });
     } else {
@@ -71,4 +85,4 @@ function scanCrashLog(text, sinceMs) {
   return { faults, lifecycle };
 }
 
-module.exports = { scanCrashLog, isFaultEntry };
+module.exports = { scanCrashLog, isFaultEntry, parseCrashLogEntries };

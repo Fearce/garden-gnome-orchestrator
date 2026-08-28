@@ -4,11 +4,15 @@
 //   node scripts/probe-task-runs.cjs <thread-id | title-substring>
 //   node scripts/probe-task-runs.cjs 66695c82
 //   node scripts/probe-task-runs.cjs "grok usage"
+//   node scripts/probe-task-runs.cjs 66695c82 --prompt
 //   npm run probe:task-runs --prefix server -- 66695c82
 //
 // What it shows:
-//   • the thread's state/error, then every agent_run in order (role · model · state · cost · turns ·
-//     duration · error) — the run trail CLAUDE.md's "Debugging a failed task" section tells you to read.
+//   • the thread's state/error, then every agent_run in order (role · model · account · state · cost ·
+//     turns · duration · error) — the run trail CLAUDE.md's "Debugging a failed task" section names.
+//   • one control-flow timeline joining runs, findings (including capacity reservations), owner/supervisor
+//     messages, and server boot/reconcile records. It prints system-local time AND explicit UTC so an
+//     owner's "around 15:17" and SQLite's epoch no longer look two hours apart.
 //   • per-(role,model) totals, and a state breakdown (done / error / interrupted / running).
 //   • an auto-review trace: every reviewer hand-back / acceptance finding, and the next run it caused.
 //     This answers the otherwise expensive question "did the reviewer send a fixable issue back to an
@@ -22,17 +26,27 @@
 // claude-*). Don't SELECT backend (SqliteError). `interrupted` = a server restart killed the run
 // (markInterrupted), not the agent; null cost on such rows still burned real tokens before the kill.
 
+const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 const { qaLoopReading, roundsCap } = require("./qa-loop-check.cjs");
+const { collectTaskTimeline, renderTaskTimeline, utcStamp } = require("./task-timeline.cjs");
 
-const arg = process.argv.slice(2).join(" ").trim();
+const argv = process.argv.slice(2);
+const showPrompt = argv.includes("--prompt");
+const arg = argv.filter((value) => value !== "--prompt").join(" ").trim();
 if (!arg) {
-  console.error("usage: node scripts/probe-task-runs.cjs <thread-id | title-substring>");
+  console.error("usage: node scripts/probe-task-runs.cjs <thread-id | title-substring> [--prompt]");
   process.exit(2);
 }
 
-const dbPath = path.resolve(__dirname, "..", "data", "orchestrator.sqlite");
+const dbPath = process.env.ORCH_DB
+  ? path.resolve(process.env.ORCH_DB)
+  : path.resolve(__dirname, "..", "data", "orchestrator.sqlite");
+const crashLogPath = process.env.ORCH_CRASH_LOG
+  ? path.resolve(process.env.ORCH_CRASH_LOG)
+  : path.resolve(__dirname, "..", "data", "crash.log");
+const timeZone = process.env.ORCH_TIME_ZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
 const db = new Database(dbPath, { readonly: true });
 db.pragma("busy_timeout = 5000");
 
@@ -45,7 +59,7 @@ function short(s, n = 90) {
   return t.length > n ? t.slice(0, n - 1) + "…" : t;
 }
 function iso(ms) {
-  return ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 19) : null;
+  return utcStamp(ms);
 }
 // A malformed blob must not take down the whole trail at the last section, after the
 // expensive part has already printed.
@@ -85,8 +99,17 @@ console.log({
   state: thread.state,
   lane: thread.lane,
   created: iso(thread.created_at),
+  updated: iso(thread.updated_at),
+  assignment: short(thread.assignment, 120),
+  effortOverride: thread.effort_override,
+  brief: short(thread.brief, 300),
   error: short(thread.error, 120),
 });
+
+if (showPrompt) {
+  section("saved routing prompt");
+  console.log(thread.raw_prompt || thread.brief || "(no saved prompt)");
+}
 
 const runs = db
   .prepare("SELECT * FROM agent_runs WHERE thread_id = ? ORDER BY started_at ASC")
@@ -106,6 +129,8 @@ for (const r of runs) {
   console.log({
     role: r.role,
     model: r.model,
+    account: r.account,
+    effort: r.effort,
     state: r.state,
     cost: r.cost_usd != null ? Number(r.cost_usd.toFixed(3)) : null,
     turns: r.num_turns,
@@ -118,6 +143,32 @@ for (const r of runs) {
     ...(silent(r) ? { output: "⚠ NONE — never reached the model" } : {}),
   });
 }
+
+const findings = db
+  .prepare(
+    `SELECT from_role, summary, detail, severity, kind, created_at
+     FROM findings WHERE thread_id = ? ORDER BY created_at ASC`,
+  )
+  .all(thread.id);
+const controlMessages = db
+  .prepare(
+    `SELECT role, kind, content, created_at
+     FROM messages
+     WHERE thread_id = ? AND (kind = 'system' OR role = 'user')
+     ORDER BY created_at ASC`,
+  )
+  .all(thread.id);
+let crashText = "";
+let crashLogState = crashLogPath;
+try {
+  crashText = fs.readFileSync(crashLogPath, "utf8");
+} catch (error) {
+  crashLogState = error?.code === "ENOENT" ? `${crashLogPath} (not present)` : `${crashLogPath} (${error?.message ?? error})`;
+}
+const timeline = collectTaskTimeline({ thread, runs, findings, messages: controlMessages, crashText });
+section(`control-flow timeline (${timeZone || "local time"} + UTC; ${timeline.length} events)`);
+console.log(`  crash lifecycle source: ${crashLogState}`);
+for (const line of renderTaskTimeline(timeline, timeZone)) console.log(line);
 
 const silentRuns = runs.filter(silent);
 if (silentRuns.length) {

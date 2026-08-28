@@ -56,6 +56,7 @@ const GATES = [
   "test:run-classify",
   "test:cap-flag",
   "test:crashlog-scan",
+  "test:task-timeline",
   "test:process-build",
   "test:background-startup",
   "test:usage-ping",
