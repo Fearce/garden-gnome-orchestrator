@@ -413,17 +413,24 @@ export class DirectorSupervisor {
 
   /** Compatibility alias for deterministic maintenance/test callers. */
   async runNow(): Promise<void> {
-    return this.runNowInternal();
+    return this.runNowInternal(false);
   }
 
-  /** Explicit operator sweep used only by the console's Run now command. It performs one bounded full
-   * candidate scan while preserving cooldown, budget, action gates and notification dedupe. */
+  /** Explicit operator sweep used only by the console's Run now command. It bypasses unattended
+   * cooldown/budget guards but retains the single-flight queue, action gates and notification dedupe. */
   async runManualNow(): Promise<void> {
-    return this.runNowInternal();
+    return this.runNowInternal(true);
   }
 
-  private async runNowInternal(): Promise<void> {
+  private async runNowInternal(manualOverride: boolean): Promise<void> {
     if (!this.enabled) return;
+    if (!manualOverride) {
+      for (const task of this.host.db.listThreads()) {
+        if (ACTIVE_STATES.has(task.state) || PARKED_STATES.has(task.state)) this.enqueue(task.id, "manual");
+      }
+      await this.drain();
+      return;
+    }
     if (this.manualSweepPromise) return this.manualSweepPromise;
 
     const candidates = this.host.db.listThreads().filter((t) => ACTIVE_STATES.has(t.state) || PARKED_STATES.has(t.state));
@@ -642,10 +649,11 @@ export class DirectorSupervisor {
 
     // A routine phase-change transparency row must not hide a later high-signal lifecycle transition.
     // Failed/review transitions and contradictory parked+live states are each one distinct state_change,
-    // so bypassing the cooldown there preserves immediate diagnosis/delegation without creating a
-    // flapping retry loop. Manual sweeps are still bounded by the same per-task cooldown and budget
-    // limits as unattended checks.
+    // so bypassing the cooldown here preserves immediate diagnosis/delegation without creating a
+    // flapping retry loop.
+    const isManualOverride = trigger === "manual" && this.manualSweep?.state === "running";
     const bypassCooldown =
+      isManualOverride ||
       trigger === "state_change" &&
       (thread.state === "failed" || thread.state === "review" || (PARKED_STATES.has(thread.state) && hasLiveRun));
     const lastAt = this.host.db.lastSupervisorEventAt(threadId);
@@ -653,9 +661,12 @@ export class DirectorSupervisor {
 
     const budget = this.host.db.supervisorBudgetToday(startOfDayMs());
     if (
-      budget.checkins >= this.cfg.maxCheckinsPerDay ||
-      budget.costUsd >= this.cfg.maxCostUsdPerDay ||
-      budget.totalTokens + TOKEN_RESERVATION_PER_CHECKIN > this.cfg.maxTokensPerDay
+      !isManualOverride &&
+      (
+        budget.checkins >= this.cfg.maxCheckinsPerDay ||
+        budget.costUsd >= this.cfg.maxCostUsdPerDay ||
+        budget.totalTokens + TOKEN_RESERVATION_PER_CHECKIN > this.cfg.maxTokensPerDay
+      )
     ) {
       this.record(
         thread,
