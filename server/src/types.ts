@@ -493,8 +493,8 @@ export type RouteScope = "narrow" | "standard" | "broad";
  * Task-aware pipeline route: whether THIS task benefits from the planner and/or QA, independent of
  * whether those roles are enabled (enabled = available; forcing them on every task regardless of size is
  * exactly what this decision replaces). Computed once per pipeline episode (sticky, like `planDone`) and
- * persisted so a resume never re-classifies mid-task. `reason`/`signals` are what the console shows Kevin
- * so the pick is explainable, not a silent omission. See `orchestrator/routeSelection.ts`.
+ * persisted so a resume never re-classifies mid-task. `reason`/`signals` are what the console shows the
+ * owner so the pick is explainable, not a silent omission. See `orchestrator/routeSelection.ts`.
  */
 export interface RouteDecision {
   usePlanner: boolean;
