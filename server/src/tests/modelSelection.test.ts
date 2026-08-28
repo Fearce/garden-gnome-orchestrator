@@ -107,6 +107,11 @@ for (const bad of [
   check("an unknown effort degrades to high rather than voiding the pick", pick?.effort === "high", JSON.stringify(pick));
   const gated = parseSelection('{"model":"glm-4.7","effort":"xhigh","reason":"x"}', CTX);
   check("an effort not supported by the selected model degrades too", gated?.effort === "high", JSON.stringify(gated));
+  const lowOnly = parseSelection('{"model":"glm-4.7","effort":"xhigh","reason":"x"}', {
+    candidates: [{ ...CANDIDATES[4]!, efforts: ["low"] }],
+    efforts: ["low"],
+  });
+  check("effort fallback respects an operator-capped roster", lowOnly?.effort === "low", JSON.stringify(lowOnly));
 }
 
 {
@@ -216,6 +221,8 @@ const baseCtx = {
   stubModel(['{"model":"claude-sonnet-4-6","effort":"high","reason":"x"}']);
   const only = await selectImplementorModel({ ...baseCtx, candidates: [CANDIDATES[1]!] }, "tok", "claude-sonnet-4-6");
   check("one dispatchable model → taken without paying for a call", only?.model === "claude-sonnet-4-6" && sent.length === 0, `${JSON.stringify(only)} calls=${sent.length}`);
+  const lowOnly = await selectImplementorModel({ ...baseCtx, candidates: [{ ...CANDIDATES[1]!, efforts: ["low"] }], efforts: ["low"] }, "tok", "claude-sonnet-4-6");
+  check("one dispatchable model still respects its advertised effort cap", lowOnly?.effort === "low" && sent.length === 0, `${JSON.stringify(lowOnly)} calls=${sent.length}`);
   const none = await selectImplementorModel({ ...baseCtx, candidates: [] }, "tok", "claude-sonnet-4-6");
   check("no dispatchable model → null, no call", none === null && sent.length === 0, JSON.stringify(none));
 }

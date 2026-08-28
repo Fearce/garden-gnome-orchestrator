@@ -66,7 +66,7 @@ import { createMemoryServer } from "../bus/memoryServer.js";
 import { OperatorNotes } from "./notes.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
-import { buildSelectionPrompt, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
+import { buildSelectionPrompt, defaultCandidateEffort, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
 import { providerIntent } from "./providerIntent.js";
 import { LiveBenchScores } from "./liveBenchScores.js";
 import {
@@ -2259,7 +2259,7 @@ export class ThreadManager implements OrchestratorApi {
     let pick: ModelPick | null = null;
     if (candidates.length === 1) {
       const only = candidates[0]!;
-      pick = { provider: only.provider, model: only.model, effort: "high", reason: "only dispatchable model" };
+      pick = { provider: only.provider, model: only.model, effort: defaultCandidateEffort(only), reason: "only dispatchable model" };
     } else if (candidates.length > 1) {
       const schema = {
         type: "object", additionalProperties: false, required: ["model", "effort", "reason"],

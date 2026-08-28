@@ -11,7 +11,7 @@
 // roster) returns null and the caller falls back to normal usage-based routing — a dispatch is never
 // blocked by this, and a hallucinated model id never reaches a spawn.
 
-import type { Effort, ImplementorProvider, ModelEffortStat, ModelPick, ModelStat } from "../types.js";
+import { EFFORTS, type Effort, type ImplementorProvider, type ModelEffortStat, type ModelPick, type ModelStat } from "../types.js";
 
 const SELECTOR_TIMEOUT_MS = 45_000;
 const MAX_OUTPUT_TOKENS = 300;
@@ -69,6 +69,15 @@ export function modelNote(provider: ImplementorProvider, model: string): string 
   if (id.includes("fable")) return "frontier reasoning, drawn from its own separate limited allowance — worth spending on genuinely hard work";
   if (id.includes("opus")) return "the strongest Claude tier; multi-file features, subtle debugging, long-horizon work";
   return "general-purpose coding model";
+}
+
+export function defaultCandidateEffort(candidate: Pick<ModelCandidate, "efforts">): Effort {
+  if (candidate.efforts.includes("high")) return "high";
+  for (let i = EFFORTS.length - 1; i >= 0; i--) {
+    const effort = EFFORTS[i]!;
+    if (candidate.efforts.includes(effort)) return effort;
+  }
+  return "high";
 }
 
 function clip(s: string, n: number): string {
@@ -177,7 +186,7 @@ export function parseSelection(text: string, ctx: Pick<SelectionContext, "candid
   const candidate = ctx.candidates.find((c) => c.model.toLowerCase() === wanted);
   if (!candidate) return null;
   const requested = String(raw.effort ?? "").trim().toLowerCase();
-  const effort = candidate.efforts.find((e) => e === requested) ?? "high";
+  const effort = candidate.efforts.find((e) => e === requested) ?? defaultCandidateEffort(candidate);
   const reason = typeof raw.reason === "string" ? raw.reason.trim().replace(/\s+/g, " ").slice(0, MAX_REASON_CHARS) : "";
   return { provider: candidate.provider, model: candidate.model, effort, reason };
 }
@@ -238,7 +247,7 @@ export async function selectImplementorModel(
   // One dispatchable model = nothing to choose; skip the call rather than pay for a foregone conclusion.
   if (ctx.candidates.length === 1) {
     const only = ctx.candidates[0]!;
-    return { provider: only.provider, model: only.model, effort: "high", reason: "only dispatchable model" };
+    return { provider: only.provider, model: only.model, effort: defaultCandidateEffort(only), reason: "only dispatchable model" };
   }
   const prompt = buildSelectionPrompt(ctx);
   const first = await ask(prompt, token, selectorModel).catch(() => null);
