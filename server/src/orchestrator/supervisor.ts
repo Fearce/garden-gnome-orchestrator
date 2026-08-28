@@ -527,8 +527,14 @@ export class DirectorSupervisor {
       return;
     }
 
+    // A routine phase-change transparency row must not hide a later high-signal lifecycle transition.
+    // Failed tasks and contradictory parked+live states are each one distinct state_change, so bypassing
+    // the cooldown here preserves immediate diagnosis without creating a flapping retry loop.
+    const bypassCooldown =
+      trigger === "state_change" &&
+      (thread.state === "failed" || (PARKED_STATES.has(thread.state) && hasLiveRun));
     const lastAt = this.host.db.lastSupervisorEventAt(threadId);
-    if (lastAt != null && Date.now() - lastAt < this.cfg.taskCooldownMs) return; // recently examined — say nothing
+    if (!bypassCooldown && lastAt != null && Date.now() - lastAt < this.cfg.taskCooldownMs) return; // recently examined — say nothing
 
     const budget = this.host.db.supervisorBudgetToday(startOfDayMs());
     if (

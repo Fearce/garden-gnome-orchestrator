@@ -198,6 +198,27 @@ async function main(): Promise<void> {
       f.close();
     }
   }
+  {
+    const f = fixture();
+    try {
+      const task = makeTask(f.db, "phase checked then failing", "planning");
+      const supervisor = f.create();
+      supervisor.setEnabled(true);
+      const implementing = f.db.updateThread(task.id, { state: "implementing" })!;
+      f.hub.publish({ type: "thread.upsert", thread: implementing });
+      await waitFor(() => f.db.listSupervisorEvents().length === 1);
+      check("a healthy phase-change check is recorded first", f.getJudgeCalls() === 0 && f.db.listSupervisorEvents()[0]!.kind === "check");
+
+      const failed = f.db.updateThread(task.id, { state: "failed", error: "retries exhausted" })!;
+      f.hub.publish({ type: "thread.upsert", thread: failed });
+      await waitFor(() => f.findings.length === 1);
+      check("a later failed transition bypasses routine-check cooldown", f.getJudgeCalls() === 1 && f.findings.length === 1);
+      await settleHubPass();
+      supervisor.setEnabled(false);
+    } finally {
+      f.close();
+    }
+  }
 
   console.log("director supervisor: token budget reservation");
   {
