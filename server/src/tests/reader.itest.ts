@@ -158,6 +158,12 @@ async function testFinalizeDisposition(): Promise<void> {
     },
   });
   const manager = new ThreadManager(db, hub, memory, accounts);
+  // The constructor's startCapSupervisor arms an UNSTORED one-shot setTimeout ("sweep shortly after
+  // start", AUTO_RESUME_DELAY_MS = 4s) with no handle to clear — it's unref'd, so it never blocks THIS
+  // function returning, but a LATER section's real polling timers keep the process alive long enough for
+  // it to still fire against this section's already-closed DB. No-op the method it calls.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (manager as any).resumeCapParked = (): void => {};
 
   const mkRead = (title: string) =>
     db.createThread({ title, workspace: dataDir, rawPrompt: "", brief: title, lane: "read" });
@@ -175,13 +181,22 @@ async function testFinalizeDisposition(): Promise<void> {
     check("readerDone persisted (no re-run on resume)", db.getThreadStageOutputs(answered.id).readerDone === true);
     check("the answer finding survives the close (readable on a closed thread)", db.listFindings(answered.id).some((f) => /answered the lookup read-only/.test(f.summary)));
 
-    // 2. ESCALATED → parked in 'review', NEVER auto-closed (must be re-dispatched through the full pipeline).
+    // 2. ESCALATED → finalizeReader is a pure "what happened" seam: it records the disposition (warning
+    // finding + a durable readerEscalation record) and returns it, but does NOT settle the task itself —
+    // promoting it into the normal pipeline is runPipeline's job (handleReadLane/promoteEscalatedReadTask,
+    // exercised in section E below), so a direct finalizeReader call leaves the thread exactly where it
+    // was (still 'queued', never closed) with the escalation durably recorded for the caller to act on.
     const escalated = mkRead("read: refactor the pipeline");
-    await manager.finalizeReader(escalated, asResult({ structuredOutput: { answered: false, escalated: true, answer: "Needs edits.", reason: "needs edits" } }));
+    const out = await manager.finalizeReader(escalated, asResult({ structuredOutput: { answered: false, escalated: true, answer: "Needs edits.", reason: "needs edits" } }));
     const e = db.getThread(escalated.id);
-    check("escalated read task parks in 'review' (not closed)", e?.state === "review", `got ${e?.state}`);
+    check("finalizeReader returns the escalated disposition", out?.escalated === true, JSON.stringify(out));
+    check("escalated read task is left in place (not settled here)", e?.state === "intake", `got ${e?.state}`);
     check("escalated read task is NOT closed", e?.state !== "closed");
-    check("escalated posts a warning finding for re-dispatch", db.listFindings(escalated.id).some((f) => f.severity === "warning" && /escalated/i.test(f.summary)));
+    check("escalated posts a warning finding", db.listFindings(escalated.id).some((f) => f.severity === "warning" && /escalated/i.test(f.summary)));
+    check(
+      "escalated durably records readerEscalation (reason + answer) for restart recovery",
+      db.getThreadStageOutputs(escalated.id).readerEscalation?.answer === "Needs edits." && db.getThreadStageOutputs(escalated.id).readerEscalation?.reason === "needs edits",
+    );
 
     // 3a. ERRORED (isError) → parked in 'review', NEVER auto-closed (must stay visible so it isn't lost).
     const errored = mkRead("read: this run crashed");
@@ -220,7 +235,12 @@ async function testPromotedReadRestartResume(): Promise<void> {
   const manager = new ThreadManager(db, hub, memory, accounts);
   const internals = manager as unknown as {
     resumeImplementorOnly: (thread: unknown, message?: string) => Promise<void>;
+    resumeCapParked: () => void;
   };
+  // See section C's identical comment: the constructor arms an unstored "sweep shortly after start"
+  // timeout that survives this section's own (fast, synchronous-ish) run and can fire later, against an
+  // already-closed DB, once a LATER section's real polling keeps the process alive long enough.
+  internals.resumeCapParked = (): void => {};
 
   try {
     const thread = db.createThread({ title: "read then correct", workspace: dataDir, rawPrompt: "", brief: "count", lane: "read" });
@@ -243,12 +263,147 @@ async function testPromotedReadRestartResume(): Promise<void> {
   }
 }
 
+// ---- E. Reader escalation → automatic promotion into the normal pipeline, in the SAME run -----------
+// The old design left an escalation as a dead end: park in 'review', and hope a human/director notices
+// and calls `dispatch` again as a brand-new task. This exercises the fix end-to-end against a REAL
+// runPipeline (only runRole + the implementor-spawning leaves are stubbed — no `claude` subprocess, no
+// quota — per threadmanager-itest.md's "stub at the right depth" guidance): the same thread id must reach
+// 'done' without ever settling to 'review', with its lane cleared, its brief carrying the reader's
+// evidence, and the planner/QA forced on regardless of the (narrow-reading) original brief text — the
+// reader itself already established this needed more than a lookup.
+async function testEscalationPromotion(): Promise<void> {
+  console.log("\nE. Reader escalation — automatic promotion into the normal pipeline (no re-dispatch)");
+
+  const dataDir = mkdtempSync(join(tmpdir(), "reader-escalate-"));
+  const db = new Db(join(dataDir, "orchestrator.sqlite"));
+  const hub = new EventHub();
+  const memory = new FileMemoryService();
+  const accounts = new AccountManager(config.accounts, hub, config.accountPingMs, {
+    stagger: new ResetStagger(),
+    persist: {
+      load: (id: string) => { const v = db.kvGet(`account_usage_${id}`); try { return v ? JSON.parse(v) : null; } catch { return null; } },
+      save: (id: string, u: unknown) => db.kvSet(`account_usage_${id}`, JSON.stringify(u)),
+    },
+  });
+  const manager = new ThreadManager(db, hub, memory, accounts);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = manager as any;
+  // This section dispatches through the REAL pipeline and polls with real timers, unlike the other
+  // sections here — long enough for the constructor's own (unref'd, but still live) cap-supervisor /
+  // token-resume timers to matter. Clear them immediately, before anything can arm/fire them, rather
+  // than only in `finally` (taskModes.itest.ts's harness does the same).
+  if (internals.capSupervisor) clearInterval(internals.capSupervisor);
+  if (internals.tokenResumeTimer) clearTimeout(internals.tokenResumeTimer);
+  if (internals.capResumeWake) clearTimeout(internals.capResumeWake);
+  // Belt-and-suspenders: this test's own polling keeps the event loop alive long enough for a stray
+  // (unref'd) supervisor tick from an EARLIER section's un-cleared ThreadManager instance to still land
+  // mid-test, well after this section's own DB is closed. None of this test's stubs ever cap-park
+  // anything, so the supervisor has nothing real to do here — no-op it outright.
+  internals.resumeCapParked = (): void => {};
+
+  const roleCalls: string[] = [];
+  const canned: Record<string, ResultEvent> = {
+    reader: {
+      type: "result",
+      subtype: "success",
+      isError: false,
+      structuredOutput: {
+        answered: false,
+        escalated: true,
+        answer: "Found the auth check at src/auth.ts but couldn't verify the fix without running the test suite.",
+        reason: "needs a code change and a test run",
+      },
+    },
+    planner: { type: "result", subtype: "success", isError: false, structuredOutput: { summary: "plan", steps: [], risks: [], openQuestions: [], nextAgent: "implementor" } },
+    qa: { type: "result", subtype: "success", isError: false, structuredOutput: { pass: true, summary: "looks good", issues: [] } },
+  };
+  // Stub at the depth threadmanager-itest.md recommends: runRole covers planner/researcher/reader/qa
+  // uniformly (every real routing/capacity decision inside it is bypassed on purpose — not what this test
+  // is about); gateImplementorProvider + the implementor-spawning leaves cover the non-structured
+  // implementor path the same way taskModes.itest.ts does.
+  internals.runRole = async (_t: unknown, role: string): Promise<ResultEvent | undefined> => {
+    roleCalls.push(role);
+    return canned[role];
+  };
+  internals.gateImplementorProvider = (): string => "claude";
+  internals.stopLive = async (): Promise<void> => {};
+  internals.flushDirectorNotes = (): void => {};
+  internals.startResumedImplementor = async (): Promise<{ run: unknown; accountId: string }> => ({ run: { send() {} }, accountId: "acct1" });
+  internals.awaitImplementorCompletion = async (): Promise<ResultEvent> => ({ type: "result", subtype: "success", isError: false });
+  internals.drainQueuedImplementor = async (_t: unknown, _e: unknown, _k: string, res: ResultEvent | undefined): Promise<ResultEvent | undefined> => res;
+
+  const TERMINAL = new Set(["done", "review", "failed", "cancelled"]);
+  const pollTerminal = async (id: string, timeoutMs = 4000): Promise<string> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const t = db.getThread(id);
+      if (t && TERMINAL.has(t.state)) return t.state;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return db.getThread(id)?.state ?? "gone";
+  };
+
+  try {
+    // A narrow-READING brief on purpose — the point is that the ESCALATION forces the full route, not
+    // the text itself. If the classifier alone decided, this brief could plausibly read as narrow.
+    const id = await manager.dispatch({ title: "read: does the login flow check X", workspace: dataDir, brief: "read: does the login flow check X", lane: "read" });
+    const state = await pollTerminal(id);
+    check("escalated read task reaches 'done' via the normal pipeline (never stuck in review)", state === "done", `got ${state}`);
+    const finalThread = db.getThread(id);
+    check("lane is cleared after promotion (READ badge drops)", finalThread?.lane == null, `got ${finalThread?.lane}`);
+    check("still the SAME thread id — no second dispatch, no orphaned card", finalThread?.id === id);
+    check("brief carries the reader's evidence forward", (finalThread?.brief ?? "").includes("Found the auth check at src/auth.ts"));
+    const decision = db.getThreadStageOutputs(id).routeDecision;
+    check("route was forced to the full pipeline by the escalation, not the (narrow-reading) brief text", decision?.usePlanner === true && decision?.useQa === true, JSON.stringify(decision));
+    check("reader ran exactly once (no duplicate investigation)", roleCalls.filter((r) => r === "reader").length === 1, roleCalls.join(","));
+    check("planner ran (forced by the escalation)", roleCalls.includes("planner"), roleCalls.join(","));
+    check("qa ran (forced by the escalation)", roleCalls.includes("qa"), roleCalls.join(","));
+    check(
+      "a promotion notice is in the thread's own visible history",
+      db.listMessages(id).some((m) => m.kind === "system" && /promoted to the normal pipeline/i.test(m.content)),
+    );
+    check(
+      "a route notice is in the thread's own visible history too",
+      db.listMessages(id).some((m) => m.kind === "system" && /route selected/i.test(m.content)),
+    );
+
+    // Restart-recovery idempotency: a restart landing after the escalation was durably recorded
+    // (finalizeReader's readerEscalation) but before the promotion/fall-through completed — thread still
+    // 'queued', lane still 'read'. Re-entering the pipeline must recover from the durable record WITHOUT
+    // re-running the reader (no duplicate investigation) and still promote to completion.
+    const stuck = db.createThread({ title: "read: stuck mid-promotion", workspace: dataDir, rawPrompt: "", brief: "read: does Y exist", lane: "read" });
+    db.updateThreadStageOutputs(stuck.id, { readerDone: true, readerEscalation: { reason: "needs a change", answer: "Partial evidence from before the restart." } });
+    roleCalls.length = 0;
+    internals.startPipeline(stuck.id);
+    const stuckState = await pollTerminal(stuck.id);
+    check("restart-recovered escalation still promotes to completion (not stuck in 'queued' forever)", stuckState === "done", `got ${stuckState}`);
+    check("restart recovery never re-runs the reader", !roleCalls.includes("reader"), roleCalls.join(","));
+    check("restart recovery still runs the forced full pipeline", roleCalls.includes("planner") && roleCalls.includes("qa"), roleCalls.join(","));
+    check("restart-recovered thread's lane is cleared too", db.getThread(stuck.id)?.lane == null);
+    check(
+      "restart recovery doesn't post a duplicate escalation finding (it wasn't posted again — only the original finalizeReader run would)",
+      db.listFindings(stuck.id).filter((f) => f.severity === "warning" && /escalated/i.test(f.summary)).length === 0,
+    );
+  } finally {
+    // Unlike the other sections here, this one dispatches through the REAL pipeline long enough for the
+    // (unref'd, but still live while our own polling timers keep the loop alive) cap supervisor / token
+    // resume timers to fire — after the DB is closed, crashing the whole process. Clear them first, same
+    // as taskModes.itest.ts's harness.
+    if (internals.capSupervisor) clearInterval(internals.capSupervisor);
+    if (internals.tokenResumeTimer) clearTimeout(internals.tokenResumeTimer);
+    if (internals.capResumeWake) clearTimeout(internals.capResumeWake);
+    try { db.raw.close(); } catch { /* already closed */ }
+    try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* windows file lock — harmless */ }
+  }
+}
+
 // ---- run -------------------------------------------------------------------------------------------
 console.log("Reader lane (Option C) — read-only enforcement test");
 await testToolset();
 await testGitAllowlist();
 await testFinalizeDisposition();
 await testPromotedReadRestartResume();
+await testEscalationPromotion();
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);
 if (failed > 0) {

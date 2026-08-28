@@ -236,7 +236,11 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         </Group>
 
         <p className="settings-note">
-          Agent toggles (planner · researcher · QA) live in the top bar — flip them per task before dispatching.
+          Agent toggles (planner · researcher · QA) live in the top bar. ON makes a stage available, not
+          mandatory — the pipeline still routes each task to the smallest route it actually needs
+          (implementor-only for a narrow, low-risk change; planning + QA for anything broader or riskier),
+          and explains the pick in the task's own history. Turn a toggle OFF to hard-disable that stage
+          for every task regardless of what routing would pick.
         </p>
       </div>
     </div>

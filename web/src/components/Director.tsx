@@ -789,8 +789,12 @@ function MicToggle() {
   );
 }
 
-/** The per-task pipeline gates, in the Director header where tasks are composed/dispatched. Each
- *  gates a stage server-side (planner/researcher/QA) — flip them before sending to shape the next task. */
+/** The per-task pipeline gates, in the Director header where tasks are composed/dispatched. ON makes a
+ *  stage AVAILABLE — not mandatory: the server still picks the smallest route a given task actually
+ *  needs (implementor-only for a narrow, low-risk change; planning + QA for anything broader or riskier),
+ *  and explains that pick in the task's own history. OFF is the only true "never" — it removes the stage
+ *  from every task regardless of what routing would have picked. Flip OFF before sending to hard-disable
+ *  a stage for the next task; leave ON (the default) and trust the per-task routing otherwise. */
 function AgentToggles() {
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
@@ -802,8 +806,8 @@ function AgentToggles() {
       key: "plannerEnabled",
       role: "planner",
       label: "Plan",
-      onTitle: "Planner ON — click to skip planning and dispatch straight to the implementor",
-      offTitle: "Planner OFF — tasks skip planning and go straight to the implementor. Click to re-enable.",
+      onTitle: "Planner AVAILABLE — the pipeline runs it only for tasks that benefit (see the task's own \"Route selected\" note). Click to disable it entirely, for every task.",
+      offTitle: "Planner DISABLED — never runs, even for a task that would benefit. Click to make it available again (routing still decides per task).",
     },
     {
       key: "researcherEnabled",
@@ -816,8 +820,8 @@ function AgentToggles() {
       key: "qaEnabled",
       role: "qa",
       label: "QA",
-      onTitle: "QA ON — click to skip the QA review loop (implementor output becomes final)",
-      offTitle: "QA OFF — the implementor's output is final, with no QA review loop. Click to re-enable.",
+      onTitle: "QA AVAILABLE — the pipeline runs it only for tasks that benefit (see the task's own \"Route selected\" note). Click to disable it entirely, for every task.",
+      offTitle: "QA DISABLED — never runs, even for a task that would benefit. Click to make it available again (routing still decides per task).",
     },
   ];
 

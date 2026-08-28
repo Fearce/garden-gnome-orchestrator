@@ -24,6 +24,8 @@
     "tablet-lab": "node scripts/tablet-lab.cjs",
     "test:token-freeze": "tsx src/tests/tokenFreezeResume.itest.ts",
     "test:reader": "tsx src/tests/reader.itest.ts",
+    "test:route-selection": "tsx src/tests/routeSelection.test.ts",
+    "test:route-pipeline": "tsx src/tests/routeSelection.itest.ts",
     "test:structured": "tsx src/tests/structuredText.itest.ts",
     "test:effort": "tsx src/tests/effortCap.itest.ts",
     "test:cron": "tsx src/tests/cron.test.ts",

@@ -485,6 +485,25 @@ export interface ReaderOutput {
   reason?: string; // when escalated: the one-line reason
 }
 
+/** How broad/risky a task's own text reads, per `orchestrator/routeSelection.ts`'s deterministic
+ *  classifier — "narrow" (implementor only), "standard" or "broad" (both keep the planner + QA). */
+export type RouteScope = "narrow" | "standard" | "broad";
+
+/**
+ * Task-aware pipeline route: whether THIS task benefits from the planner and/or QA, independent of
+ * whether those roles are enabled (enabled = available; forcing them on every task regardless of size is
+ * exactly what this decision replaces). Computed once per pipeline episode (sticky, like `planDone`) and
+ * persisted so a resume never re-classifies mid-task. `reason`/`signals` are what the console shows Kevin
+ * so the pick is explainable, not a silent omission. See `orchestrator/routeSelection.ts`.
+ */
+export interface RouteDecision {
+  usePlanner: boolean;
+  useQa: boolean;
+  scope: RouteScope;
+  reason: string; // one-line, owner-facing explanation
+  signals: string[]; // the matched signal names behind `reason`, for the console/audit trail
+}
+
 /** The auto-review verdict — the owner's own accept/hand-back decision, delegated to one agent. It is
  *  the ONLY thing that decides the outcome: `accept` settles the parked task 'done', anything else hands
  *  it back to 'review' with `issues` naming what a human still has to look at. */
@@ -584,6 +603,15 @@ export interface StageOutputs {
   approved?: boolean; // the plan cleared the approval gate — don't re-prompt on resume
   kickoff?: string | null; // the composed brief the implementor was handed (record of what it got)
   readerDone?: boolean; // the read-lane reader stage ran (answered or escalated) — don't re-run/double-post on resume
+  // The reader's disposition when it escalated (needs full pipeline) — persisted BEFORE the task is
+  // promoted into the normal pipeline, so a restart landing in that gap can recover the exact escalation
+  // (handleReadLane) instead of re-running the reader or leaving the task stuck in 'queued' forever.
+  readerEscalation?: { reason: string; answer: string } | null;
+  // Task-aware route (routeSelection.ts): whether the planner and/or QA run for THIS task, independent of
+  // whether they're enabled. Computed once per pipeline episode and persisted so a resume never
+  // reclassifies mid-task (the brief may since have grown an escalation block, which must not flip an
+  // already-running episode's route).
+  routeDecision?: RouteDecision | null;
   qaRoundsUsed?: number; // QA rounds already spent in the current implementor→QA episode — persisted so a
   // `qaCapRetryRound` is set when this already-charged QA attempt was provider-capped. It makes
   // auto-resume rerun QA directly (never the finished implementor), including at the normal round cap.

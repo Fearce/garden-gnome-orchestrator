@@ -192,30 +192,57 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   and broadcasting `thread.removed`. `closed_at`/`closed_prev_state` are written only by
   `closeThread`/`restoreThread` (never the generic `updateThread` SQL), so a normal state change can't
   clobber them; `closed_prev_state` stays off the `Thread` DTO.
-- **Agent-routed, planner-first.** `runPipeline` has no fixed sequence — each stage
-  decides the next. The planner runs first (reads the repo, plans) and its structured
-  output declares `nextAgent` (a `PLAN_SCHEMA` required field): `"researcher"` when the
-  task needs external info, else `"implementor"`. The researcher (when invoked) gathers
-  **external-only** context and always hands to the implementor. The implementor always
-  hands off to QA. QA returns `pass` → `done`, or issues → back to the implementor,
-  looping up to `config.maxQaRounds`; **QA is the only role that can declare a task done**
-  (else it settles to `review`). The optional approval gate (§12) fires after the plan +
-  any research exist, before the implementor.
-- **Read lane (`dispatch_read`) — a single-agent short-circuit.** A thread dispatched with
-  `lane: "read"` (the director's `dispatch_read` tool) skips the whole planner→implementor→QA
-  pipeline: `runPipeline` sees the lane and runs ONE read-only **reader** (`runReader` → Sonnet,
-  the §3 read-only toolset), which answers a pure lookup by posting the answer as a finding — no
-  planner, no QA. It's for the ~1% of tasks that are answered just by reading (the cost/benefit
-  analysis's Option C): seconds-to-minutes and a fraction of the cost of the three-Opus pipeline a
-  trivial read otherwise pays for. Its disposition is a lean structured output (`ReaderOutput`):
-  `answered` → `done`; `escalated` → it posts a `warning` "needs full pipeline because …" finding
-  and parks in `review` so the director re-dispatches through the normal `dispatch`. **The reader
-  never half-answers** — anything needing an edit, a build/test, verification, or a broad multi-file
+- **Agent-routed, planner-first — and task-aware.** `runPipeline` has no fixed sequence — each
+  stage decides the next. Whether the planner and/or QA run at all for a given task is itself a
+  decision, computed once per pipeline episode by `orchestrator/routeSelection.ts`'s
+  `selectRoute()` (a pure, deterministic function of the task's own title/brief text plus a few
+  structural dispatch signals — shotgun, a multi-hour timed window, an operator-pinned heavy
+  effort — no model call). **Enabling planner/QA (the top-bar toggles / `plannerEnabled`,
+  `qaEnabled`) makes a stage AVAILABLE, not mandatory** — the route decides whether THIS task
+  actually uses it, and the two ANDed together are the real gate (`settings.plannerEnabled &&
+  route.usePlanner`, `settings.qaEnabled && route.useQa && !collaborator`). A narrow, contained,
+  low-risk change (a typo fix, a single-file rename, a version bump) runs the implementor alone;
+  anything broader, riskier (security/auth, money, data/migrations, production/infra), or itself
+  ambiguous ("investigate why…", "figure out the best way to…") keeps both — the classifier
+  biases conservative on anything not confidently narrow, mirroring the read lane's own
+  "misrouting to the cheap path is the unsafe direction" rule. The pick is persisted
+  (`stage_outputs.routeDecision`, sticky across resume — never reclassified mid-episode) and
+  announced as a system message in the task's own feed ("🧭 Route selected — …"), so it's visible
+  as a deliberate choice, not a silent omission. When the planner DOES run, its structured output
+  declares `nextAgent` (a `PLAN_SCHEMA` required field): `"researcher"` when the task needs
+  external info, else `"implementor"`. The researcher (when invoked) gathers **external-only**
+  context and always hands to the implementor. The implementor always hands off to QA when QA is
+  in the route. QA returns `pass` → `done`, or issues → back to the implementor, looping up to
+  `config.maxQaRounds`; **QA is the only role that can declare a task done** when it's in the
+  route (else it settles to `review`) — with QA routed around, a clean implementor finish goes
+  straight to `done` instead. The optional approval gate (§12) fires after the plan + any
+  research exist, before the implementor.
+- **Read lane (`dispatch_read`) — a single-agent short-circuit, immune to route selection.** A
+  thread dispatched with `lane: "read"` (the director's `dispatch_read` tool) skips the whole
+  planner→implementor→QA pipeline and the route decision above entirely: `runPipeline` sees the
+  lane and runs ONE read-only **reader** (`runReader` → Sonnet, the §3 read-only toolset), which
+  answers a pure lookup by posting the answer as a finding — no planner, no QA, regardless of the
+  operator's settings. It's for the ~1% of tasks that are answered just by reading (the
+  cost/benefit analysis's Option C): seconds-to-minutes and a fraction of the cost of the
+  three-Opus pipeline a trivial read otherwise pays for. Its disposition is a lean structured
+  output (`ReaderOutput`): `answered` → `done`; `escalated` → **automatically promoted into the
+  normal pipeline, in place** (`handleReadLane`/`promoteEscalatedReadTask`) — it posts a
+  `warning` "needs full pipeline because …" finding, durably records the disposition
+  (`readerEscalation`), clears `lane` (so the READ badge drops and the thread can never re-enter
+  this branch — the structural loop guard), appends its evidence to the brief so the planner/
+  implementor inherit the investigation instead of repeating it, and falls through into the SAME
+  `runPipeline` call — no new dispatch, no new thread id, no click required. The escalation itself
+  forces the full route (planner + QA), overriding the classifier: the reader already established
+  this needed more than a lookup, which is exactly the ambiguity signal that warrants both. A
+  restart landing between the escalation being recorded and the promotion completing recovers
+  from the durable `readerEscalation` record rather than re-running the reader. **The reader never
+  half-answers** — anything needing an edit, a build/test, verification, or a broad multi-file
   investigation is an escalation, not a guess. `readerDone` is a sticky stage marker (like
-  `planDone`) so a restart mid-read can't re-run the reader and double-post. The card shows a distinct
-  **READ** badge (`lane === "read"`), since no QA ran. Sonnet, not Haiku, is the reader's default
-  because misrouting *to* the reader is the unsafe direction — it has no QA behind it — so the lane
-  is biased to capability (`config.models.reader`, configurable like every role's model).
+  `planDone`) so a restart mid-read can't re-run the reader and double-post. The card shows a
+  distinct **READ** badge (`lane === "read"`) until an escalation clears it. Sonnet, not Haiku, is
+  the reader's default because misrouting *to* the reader is the unsafe direction — it has no QA
+  behind it — so the lane is biased to capability (`config.models.reader`, configurable like every
+  role's model).
 - **Auto-review (`thread.autoReview`) — the owner's own review, delegated.** A task parked in
   `review` is waiting for *you*. The detail panel's **Auto-review & mark done** button hands that
   decision to one **reviewer** agent instead (`autoReview` → `runAutoReview`): the thread flips to

@@ -20,17 +20,30 @@ curl -s -b /tmp/cj.txt http://127.0.0.1:4317/api/threads
 (Google sign-in also works, but the password is simplest for headless agents. Local/LAN only.)
 
 A director's console for running Claude Code agents: a provider-neutral **director** enriches a
-prompt, runs a planner + researcher, then dispatches Opus 5 **implementor** workers you
-can inject into mid-work. Node/Fastify API (`server/`) + React/Vite console (`web/`), single origin.
+prompt, dispatches into a pipeline that self-assembles the smallest capable route — a planner and/or
+researcher when the work benefits, always an Opus 5 **implementor** worker you can inject into
+mid-work. Node/Fastify API (`server/`) + React/Vite console (`web/`), single origin.
+
+**Task-aware route selection (planner/QA are AVAILABLE, not mandatory).** The `plannerEnabled`/
+`qaEnabled` top-bar toggles make a stage available, not forced onto every task —
+`orchestrator/routeSelection.ts`'s deterministic `selectRoute()` (pure function of the brief text +
+a few structural signals, no model call) decides per task whether it benefits, ANDed with the
+setting at each gate. Narrow/contained/low-risk (typo, single-file rename, version bump) runs the
+implementor alone; broad, risk-bearing (security/auth, money, data/migrations, prod/infra), or
+itself ambiguous ("investigate why…") keeps both — bias conservative when unsure. Sticky per episode
+(`stage_outputs.routeDecision`) and announced in the task's own feed ("🧭 Route selected — …"). OFF
+remains the only true "never". Gates: `test:route-selection`, `test:route-pipeline`. ARCHITECTURE.md §5.
 
 **Read lane (`dispatch_read`).** A pure read-only lookup ("read HANDOFF.md and report it", "which
-model does role X use", "explain how Z works") can skip the whole planner→implementor→QA pipeline:
-the director dispatches it with `dispatch_read`, which runs ONE cheap **reader** (Sonnet) that answers
-by posting a finding — read-only enforced at the harness level (Read/Grep/Glob + an allowlisted
-`git_read`, no Write/Edit/Bash), no QA. The reader **escalates rather than half-answers**: anything
-needing an edit/build/verification/broad investigation gets a "needs full pipeline" finding and parks
-for a normal re-dispatch. Bias toward the full `dispatch` when unsure — misrouting to Opus is safe,
-misrouting a real task to the reader is not. The card shows a **READ** badge. See ARCHITECTURE.md §5.
+model does role X use", "explain how Z works") skips the whole pipeline AND route selection: the
+director dispatches it with `dispatch_read`, running ONE cheap **reader** (Sonnet) that answers by
+posting a finding — read-only enforced at the harness level (Read/Grep/Glob + `git_read`, no
+Write/Edit/Bash), no QA regardless of settings. The reader **escalates rather than half-answers**:
+anything needing an edit/build/verification/broad investigation is **automatically promoted into the
+normal pipeline, in place** — same thread id, no re-dispatch — forcing the full route and folding
+its findings into the brief; a restart mid-promotion recovers from the durable `readerEscalation`
+record instead of re-running the reader. Bias toward the full `dispatch` when unsure. The card shows
+a **READ** badge until an escalation clears it. See ARCHITECTURE.md §5.
 
 **Auto-review (`thread.autoReview`).** A task parked in `review` is waiting on Kevin; the detail
 panel's "Auto-review & mark done" button delegates that call to one **reviewer** agent (Opus,

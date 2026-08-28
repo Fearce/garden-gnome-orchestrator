@@ -689,6 +689,19 @@ export class Db {
     this.raw.prepare("UPDATE threads SET baseline_head = ? WHERE id = ?").run(sha, id);
   }
 
+  /** Promote an escalated read-lane task into the normal pipeline, in place: clear `lane` (so the READ
+   *  badge drops and the thread can never re-enter the read-lane branch of runPipeline again — the
+   *  structural guard against an escalation loop) and replace `brief` with the reader's evidence appended.
+   *  Managed on its own like `setBaselineHead`/`setTimedWindow` — the generic updateThread SQL never
+   *  touches `lane`, so a routine state change can't accidentally clear the badge on an unrelated task. */
+  promoteReadLane(id: string, brief: string): Thread | null {
+    const current = this.getThread(id);
+    if (!current) return null;
+    const at = now();
+    this.raw.prepare(`UPDATE threads SET lane=NULL, brief=@brief, updated_at=@at WHERE id=@id`).run({ id, brief, at });
+    return { ...current, lane: null, brief, updatedAt: at };
+  }
+
   /** Permanently delete a thread and all its children. agent_runs/findings/messages drop via FK
    *  ON DELETE CASCADE (the foreign_keys pragma is asserted in the constructor). questions.thread_id
    *  is nullable with NO FK — a question can be threadless — so its rows are deleted explicitly.
