@@ -2684,6 +2684,12 @@ button.note-from:hover { color: var(--text-dim); }
 }
 .taskmode-clear:hover { color: var(--danger); background: color-mix(in oklch, var(--danger) 12%, transparent); }
 
+@media (pointer: coarse) and (max-width: 1365.98px) {
+  .composer-taskmode { padding-top: 2px; padding-bottom: 2px; margin-bottom: 4px; }
+  .taskmode-select { min-height: var(--tap); }
+  .taskmode-clear { min-height: var(--tap); min-width: var(--tap); }
+}
+
 /* ── The detail panel's task-mode strip ──────────────────────────────────────────────────────────
    Renders only for a timed or shotgun task, so an ordinary task's panel is unchanged. */
 .taskmode-panel {
