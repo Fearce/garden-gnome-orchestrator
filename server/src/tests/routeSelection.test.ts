@@ -52,6 +52,18 @@ console.log("\nNarrow, contained changes → implementor only");
   const d = route("Fix the off-by-one error in the pagination calculation in utils.ts.");
   check("well-scoped one-file bug fix routes narrow", d.scope === "narrow", JSON.stringify(d));
 }
+{
+  const d = route("Fix the typo in README.md, then run the test suite.");
+  check("a contained change with explicit verification selects QA without planning", d.scope === "standard" && d.usePlanner === false && d.useQa === true, JSON.stringify(d));
+}
+{
+  const d = selectRoute({
+    title: "read: fix a README typo",
+    brief: "Fix the typo in README.md.",
+    readerEscalation: { reason: "requires an edit", answer: "The typo is in README.md." },
+  });
+  check("a reader escalation for an obvious narrow edit does not force planner or QA", d.scope === "narrow" && d.usePlanner === false && d.useQa === false, JSON.stringify(d));
+}
 
 // ---- broad/risky: every explicit dimension named in the brief ------------------------------------
 console.log("\nBroad or risk-bearing work → keep planning + QA");

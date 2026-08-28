@@ -19,6 +19,12 @@ export interface RouteInput {
   timedHours?: number;
   /** Operator-pinned implementor effort at dispatch, if any (a skip-director composer pick). */
   effortOverride?: Effort | null;
+  /**
+   * Evidence from a reader-lane escalation. It informs the normal route, but is not an override:
+   * an obvious one-file edit may still go directly to the implementor, while evidence of a broad
+   * investigation or independent verification selects the stages that actually help.
+   */
+  readerEscalation?: { reason?: string; answer?: string } | null;
 }
 
 interface Signal {
@@ -57,6 +63,13 @@ const NARROW_SIGNALS: Signal[] = [
   { name: "small, contained fix", re: /\b(one[- ]line|single file|small fix|quick fix|minor (?:fix|change|tweak)|tiny|trivial|simple fix)\b/i },
   { name: "version bump", re: /\b(bump (?:the )?version|version bump|update (?:a |the )?dependency version)\b/i },
   { name: "comment/doc edit", re: /\b(update (?:a |the )?comment|fix (?:a |the )?comment|add (?:a )?comment|fix (?:a |the )?docstring)\b/i },
+];
+
+// A contained task can need an independent check without needing a separate planning pass. Keep this
+// deliberately specific: a normal request to merely "test" an idea is still classified by the broader
+// structural/ambiguity policy below, while an explicit build/test/verification requirement earns QA.
+const VERIFICATION_SIGNALS: Signal[] = [
+  { name: "explicit verification", re: /\b(?:verify|verification|independent check|regression check|test suite|run (?:the )?(?:tests|test suite|build|typecheck|lint)|build (?:and|\/|\+)|typecheck|lint)\b/i },
 ];
 
 const HEAVY_EFFORTS = new Set<Effort>(["xhigh", "max", "ultra"]);
@@ -105,8 +118,9 @@ const NARROW_FILE_LIMIT = 2;
  *                  or is itself open-ended ("investigate", "figure out why") always keeps both roles.
  *   - "narrow"   → implementor only. Reached ONLY when no risk/ambiguity signal fired AND the brief is
  *                  short, references at most a couple of files, and is not a compound (multi-part) ask.
- *   - "standard" → keep the planner AND QA. The default whenever neither of the above is confidently
- *                  true — bias conservative, exactly like the reader lane's "misrouting to the cheap path
+ *   - "standard" → add only the missing support for a contained task (currently QA alone for an
+ *                  explicit verification need); otherwise the conservative default keeps both roles when
+ *                  the task is not confidently narrow, exactly like the reader lane's "misrouting to the cheap path
  *                  is the unsafe direction" rule.
  *
  * Deterministic and explainable: identical input always yields the identical decision, and every decision
@@ -114,6 +128,10 @@ const NARROW_FILE_LIMIT = 2;
  */
 export function selectRoute(input: RouteInput): RouteDecision {
   const text = `${input.title}\n${input.brief}`;
+  const escalationText = input.readerEscalation ? `${input.readerEscalation.reason ?? ""}\n${input.readerEscalation.answer ?? ""}` : "";
+  // Reader evidence is task evidence, not a blanket "full pipeline" flag. Including it means an
+  // escalation that discovered auth/data/production risk retains the safeguards those terms warrant.
+  const evidenceText = escalationText ? `${text}\n${escalationText}` : text;
 
   if (input.shotgun) {
     return {
@@ -125,7 +143,7 @@ export function selectRoute(input: RouteInput): RouteDecision {
     };
   }
 
-  const riskHits = matches(text, RISK_SIGNALS);
+  const riskHits = matches(evidenceText, RISK_SIGNALS);
   const fileCount = countFileMentions(text);
   const compoundCount = countCompoundMarkers(text);
   const wordCount = countWords(text);
@@ -150,6 +168,21 @@ export function selectRoute(input: RouteInput): RouteDecision {
   const narrowHits = matches(text, NARROW_SIGNALS);
   const narrowWordLimit = narrowHits.length > 0 ? NARROW_WORD_LIMIT_HINTED : NARROW_WORD_LIMIT_UNHINTED;
   if (wordCount >= NARROW_WORD_MIN && wordCount <= narrowWordLimit && fileCount <= NARROW_FILE_LIMIT && compoundCount === 0) {
+    const verificationHits = matches(evidenceText, VERIFICATION_SIGNALS);
+    if (verificationHits.length > 0) {
+      const signals = [
+        `short, single-scope brief (${wordCount} words${fileCount ? `, ${fileCount} file ref(s)` : ""})`,
+        ...narrowHits,
+        ...verificationHits,
+      ];
+      return {
+        usePlanner: false,
+        useQa: true,
+        scope: "standard" as RouteScope,
+        reason: `contained change with an explicit verification need (${signals.join("; ")}) — implementor + QA, no planning needed`,
+        signals,
+      };
+    }
     const signals = [`short, single-scope brief (${wordCount} words${fileCount ? `, ${fileCount} file ref(s)` : ""})`, ...narrowHits];
     return {
       usePlanner: false,

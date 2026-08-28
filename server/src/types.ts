@@ -10,7 +10,7 @@ export function isRole(v: string): v is Role {
   return (ROLES as readonly string[]).includes(v);
 }
 
-/** Dispatch lane. Absent/null = the normal planner→implementor→QA pipeline; 'read' = the cheap
+/** Dispatch lane. Absent/null = the normal task-aware implementation route (planner/QA optional); 'read' = the cheap
  *  single-agent read-only reader lane (dispatch_read) — one Sonnet reader answers a lookup and escalates
  *  rather than half-answering, no QA. Persisted on the thread so it survives resume and drives the badge. */
 export type ThreadLane = "read";
@@ -486,7 +486,8 @@ export interface ReaderOutput {
 }
 
 /** How broad/risky a task's own text reads, per `orchestrator/routeSelection.ts`'s deterministic
- *  classifier — "narrow" (implementor only), "standard" or "broad" (both keep the planner + QA). */
+ *  classifier — "narrow" (implementor only), "standard" (the smallest added support, such as QA), or
+ *  "broad" (planner + QA). */
 export type RouteScope = "narrow" | "standard" | "broad";
 
 /**
@@ -603,10 +604,11 @@ export interface StageOutputs {
   approved?: boolean; // the plan cleared the approval gate — don't re-prompt on resume
   kickoff?: string | null; // the composed brief the implementor was handed (record of what it got)
   readerDone?: boolean; // the read-lane reader stage ran (answered or escalated) — don't re-run/double-post on resume
-  // The reader's disposition when it escalated (needs full pipeline) — persisted BEFORE the task is
-  // promoted into the normal pipeline, so a restart landing in that gap can recover the exact escalation
+  // The reader's disposition when it escalated (needs implementation capability) — persisted BEFORE the task is
+  // promoted into the normal route, so a restart landing in that gap can recover the exact escalation
   // (handleReadLane) instead of re-running the reader or leaving the task stuck in 'queued' forever.
-  readerEscalation?: { reason: string; answer: string } | null;
+  // originalBrief classifies the owner request rather than our appended reader handoff prose.
+  readerEscalation?: { reason: string; answer: string; originalBrief?: string } | null;
   // Task-aware route (routeSelection.ts): whether the planner and/or QA run for THIS task, independent of
   // whether they're enabled. Computed once per pipeline episode and persisted so a resume never
   // reclassifies mid-task (the brief may since have grown an escalation block, which must not flip an

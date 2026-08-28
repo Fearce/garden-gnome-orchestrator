@@ -202,8 +202,9 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   actually uses it, and the two ANDed together are the real gate (`settings.plannerEnabled &&
   route.usePlanner`, `settings.qaEnabled && route.useQa && !collaborator`). A narrow, contained,
   low-risk change (a typo fix, a single-file rename, a version bump) runs the implementor alone;
+  a contained change with an explicit build/test/verification need can select QA without planning;
   anything broader, riskier (security/auth, money, data/migrations, production/infra), or itself
-  ambiguous ("investigate why…", "figure out the best way to…") keeps both — the classifier
+  ambiguous ("investigate why…", "figure out the best way to…") selects both — the classifier
   biases conservative on anything not confidently narrow, mirroring the read lane's own
   "misrouting to the cheap path is the unsafe direction" rule. The pick is persisted
   (`stage_outputs.routeDecision`, sticky across resume — never reclassified mid-episode) and
@@ -231,9 +232,10 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   (`readerEscalation`), clears `lane` (so the READ badge drops and the thread can never re-enter
   this branch — the structural loop guard), appends its evidence to the brief so the planner/
   implementor inherit the investigation instead of repeating it, and falls through into the SAME
-  `runPipeline` call — no new dispatch, no new thread id, no click required. The escalation itself
-  forces the full route (planner + QA), overriding the classifier: the reader already established
-  this needed more than a lookup, which is exactly the ambiguity signal that warrants both. A
+  `runPipeline` call — no new dispatch, no new thread id, no click required. Its reason and partial
+  answer are task evidence for the same deterministic route selection, not a blanket full-route
+  override: an obvious narrow edit can go directly to the implementor, explicit verification can add
+  QA without planning, and broad/risky evidence keeps both safeguards. A
   restart landing between the escalation being recorded and the promotion completing recovers
   from the durable `readerEscalation` record rather than re-running the reader. **The reader never
   half-answers** — anything needing an edit, a build/test, verification, or a broad multi-file

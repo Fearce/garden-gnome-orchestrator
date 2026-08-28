@@ -791,7 +791,8 @@ function MicToggle() {
 
 /** The per-task pipeline gates, in the Director header where tasks are composed/dispatched. ON makes a
  *  stage AVAILABLE — not mandatory: the server still picks the smallest route a given task actually
- *  needs (implementor-only for a narrow, low-risk change; planning + QA for anything broader or riskier),
+ *  needs (implementor-only for a narrow, low-risk change; QA without planning for contained explicit
+ *  verification; planning + QA for anything broader or riskier),
  *  and explains that pick in the task's own history. OFF is the only true "never" — it removes the stage
  *  from every task regardless of what routing would have picked. Flip OFF before sending to hard-disable
  *  a stage for the next task; leave ON (the default) and trust the per-task routing otherwise. */

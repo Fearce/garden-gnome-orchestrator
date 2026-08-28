@@ -40,8 +40,8 @@ director dispatches it with `dispatch_read`, running ONE cheap **reader** (Sonne
 posting a finding — read-only enforced at the harness level (Read/Grep/Glob + `git_read`, no
 Write/Edit/Bash), no QA regardless of settings. The reader **escalates rather than half-answers**:
 anything needing an edit/build/verification/broad investigation is **automatically promoted into the
-normal pipeline, in place** — same thread id, no re-dispatch — forcing the full route and folding
-its findings into the brief; a restart mid-promotion recovers from the durable `readerEscalation`
+normal pipeline, in place** — same thread id, no re-dispatch — selecting the appropriate task-aware
+route from its evidence and folding its findings into the brief; a restart mid-promotion recovers from the durable `readerEscalation`
 record instead of re-running the reader. Bias toward the full `dispatch` when unsure. The card shows
 a **READ** badge until an escalation clears it. See ARCHITECTURE.md §5.
 

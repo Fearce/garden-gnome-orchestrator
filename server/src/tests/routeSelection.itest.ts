@@ -179,6 +179,16 @@ async function main(): Promise<void> {
   {
     const h = makeHarness();
     try {
+      const qaOnlyId = await h.manager.dispatch({ title: "verified typo fix", workspace: process.cwd(), brief: "Fix the typo in README.md, then run the test suite." });
+      const qaOnlyState = await h.pollTerminal(qaOnlyId);
+      await h.waitIdle(qaOnlyId);
+      check("contained verified task reaches 'done'", qaOnlyState === "done", `got ${qaOnlyState}`);
+      check("planner is not run when only QA adds value", !h.roleCalls.includes("planner"), h.roleCalls.join(","));
+      check("QA is run for the explicit verification need", h.roleCalls.includes("qa"), h.roleCalls.join(","));
+      const qaOnlyDecision = h.db.getThreadStageOutputs(qaOnlyId).routeDecision;
+      check("route persists QA-only standard", qaOnlyDecision?.scope === "standard" && qaOnlyDecision.usePlanner === false && qaOnlyDecision.useQa === true, JSON.stringify(qaOnlyDecision));
+
+      h.roleCalls.length = 0;
       h.manager.setSettings({ plannerEnabled: false, qaEnabled: false });
       const id = await h.manager.dispatch({ title: "2fa", workspace: process.cwd(), brief: BROAD_BRIEF });
       const state = await h.pollTerminal(id);

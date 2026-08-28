@@ -31,16 +31,15 @@ console for that problem.
 A dispatched task is a **thread**, and the pipeline assembles itself. There is no fixed
 sequence: each agent decides what happens next.
 
-- **Planner, always first.** Reads the codebase, writes the plan, and declares what comes
-  next: a researcher, if the task needs information that is not in the repo, or straight
-  to the implementor.
+- **Planner, task-selected.** Available for broad, ambiguous, or high-risk work, where it
+  reads the codebase, writes the plan, and can request external research. Enabled means
+  available, not automatically used for every task.
 - **Researcher, optional and external only.** Web search, library docs, changelogs, issue
   threads. It deliberately does not read the codebase, because that is the planner's job.
-- **Implementor.** Does the work. It is fully autonomous and it *cannot* declare itself
-  done; it always hands off.
-- **QA.** Reviews and tests against the brief. It is the only role that can mark a task
-  **done**, and it can bounce work back to the implementor with concrete fixes, looping
-  until the task passes or runs out of rounds.
+- **Implementor.** Does change/build work. It is the only role required for such a task.
+- **QA, task-selected.** Independently reviews and tests work where verification matters;
+  it can bounce concrete fixes back to the implementor. A clean, contained task deliberately
+  routed without QA finishes after the implementor verifies its own work.
 
 Each finished stage is persisted, so a task that dies mid-pipeline (crash, restart,
 rate limit) resumes from where it stopped rather than starting over.
@@ -48,8 +47,8 @@ rate limit) resumes from where it stopped rather than starting over.
 **A pure lookup skips all of it.** "Which module owns the feature-flag cache?" does not
 need a planner or a QA round, so the director dispatches it down a **read lane**: one
 read-only agent answers by posting a finding, and the card gets a `READ` badge. If the
-question turns out to need an edit, it escalates to the full pipeline instead of
-half-answering.
+question turns out to need an edit, it automatically promotes the same task to the
+smallest capable implementation route instead of half-answering.
 
 **When a task parks for your review, you can delegate that too.** "Auto-review and mark
 done" hands your review to a reviewer agent that inspects the change, runs the project's

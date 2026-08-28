@@ -172,6 +172,18 @@ async function testFinalizeDisposition(): Promise<void> {
 
   try {
     // 1. ANSWERED read-only → 'done' (owner is notified) → auto-closed (lands in the closed tray, no manual step).
+    // After a restart only the durable feed attachment remains; kickoffContent must rehydrate it so
+    // an escalated reader hand-off cannot lose the owner's screenshot before implementation starts.
+    const attachmentThread = mkRead("read: screenshot handoff");
+    const image = db.addAttachment({ name: "evidence.png", mediaType: "image/png", data: "aW1hZ2U=" });
+    db.addMessage({ threadId: attachmentThread.id, role: "director", kind: "system", content: "Image attached to the brief.", attachments: [image] });
+    const rehydrated = (manager as unknown as { kickoffContent: (threadId: string, text: string) => unknown }).kickoffContent(attachmentThread.id, "continue");
+    check(
+      "a persisted image is rehydrated for a reader escalation hand-off after restart",
+      Array.isArray(rehydrated) && (rehydrated as Array<{ type?: string; source?: { data?: string } }>).some((block) => block.type === "image" && block.source?.data === "aW1hZ2U="),
+      JSON.stringify(rehydrated),
+    );
+
     const answered = mkRead("read: which model does the reader use");
     await manager.finalizeReader(answered, asResult({ structuredOutput: { answered: true, escalated: false, answer: "The reader answer." } }));
     const a = db.getThread(answered.id);
@@ -194,8 +206,10 @@ async function testFinalizeDisposition(): Promise<void> {
     check("escalated read task is NOT closed", e?.state !== "closed");
     check("escalated posts a warning finding", db.listFindings(escalated.id).some((f) => f.severity === "warning" && /escalated/i.test(f.summary)));
     check(
-      "escalated durably records readerEscalation (reason + answer) for restart recovery",
-      db.getThreadStageOutputs(escalated.id).readerEscalation?.answer === "Needs edits." && db.getThreadStageOutputs(escalated.id).readerEscalation?.reason === "needs edits",
+      "escalated durably records readerEscalation (original brief + reason + answer) for restart recovery",
+      db.getThreadStageOutputs(escalated.id).readerEscalation?.answer === "Needs edits." &&
+        db.getThreadStageOutputs(escalated.id).readerEscalation?.reason === "needs edits" &&
+        db.getThreadStageOutputs(escalated.id).readerEscalation?.originalBrief === "read: refactor the pipeline",
     );
 
     // 3a. ERRORED (isError) → parked in 'review', NEVER auto-closed (must stay visible so it isn't lost).
@@ -344,8 +358,8 @@ async function testEscalationPromotion(): Promise<void> {
   };
 
   try {
-    // A narrow-READING brief on purpose — the point is that the ESCALATION forces the full route, not
-    // the text itself. If the classifier alone decided, this brief could plausibly read as narrow.
+    // This request names login/auth and asks for a test run, so task evidence selects planning and QA.
+    // An escalation never blanket-forces either role; a narrow edit can still go implementor-only.
     const id = await manager.dispatch({ title: "read: does the login flow check X", workspace: dataDir, brief: "read: does the login flow check X", lane: "read" });
     const state = await pollTerminal(id);
     check("escalated read task reaches 'done' via the normal pipeline (never stuck in review)", state === "done", `got ${state}`);
@@ -354,10 +368,10 @@ async function testEscalationPromotion(): Promise<void> {
     check("still the SAME thread id — no second dispatch, no orphaned card", finalThread?.id === id);
     check("brief carries the reader's evidence forward", (finalThread?.brief ?? "").includes("Found the auth check at src/auth.ts"));
     const decision = db.getThreadStageOutputs(id).routeDecision;
-    check("route was forced to the full pipeline by the escalation, not the (narrow-reading) brief text", decision?.usePlanner === true && decision?.useQa === true, JSON.stringify(decision));
+    check("route selects planning and QA from the auth/test evidence", decision?.usePlanner === true && decision?.useQa === true, JSON.stringify(decision));
     check("reader ran exactly once (no duplicate investigation)", roleCalls.filter((r) => r === "reader").length === 1, roleCalls.join(","));
-    check("planner ran (forced by the escalation)", roleCalls.includes("planner"), roleCalls.join(","));
-    check("qa ran (forced by the escalation)", roleCalls.includes("qa"), roleCalls.join(","));
+    check("planner ran because the selected route needs it", roleCalls.includes("planner"), roleCalls.join(","));
+    check("qa ran because the selected route needs it", roleCalls.includes("qa"), roleCalls.join(","));
     check(
       "a promotion notice is in the thread's own visible history",
       db.listMessages(id).some((m) => m.kind === "system" && /promoted to the normal pipeline/i.test(m.content)),
@@ -372,17 +386,36 @@ async function testEscalationPromotion(): Promise<void> {
     // 'queued', lane still 'read'. Re-entering the pipeline must recover from the durable record WITHOUT
     // re-running the reader (no duplicate investigation) and still promote to completion.
     const stuck = db.createThread({ title: "read: stuck mid-promotion", workspace: dataDir, rawPrompt: "", brief: "read: does Y exist", lane: "read" });
-    db.updateThreadStageOutputs(stuck.id, { readerDone: true, readerEscalation: { reason: "needs a change", answer: "Partial evidence from before the restart." } });
+    db.updateThreadStageOutputs(stuck.id, {
+      readerDone: true,
+      readerEscalation: { reason: "needs a one-file edit", answer: "Partial evidence from before the restart.", originalBrief: "Fix the typo in README.md." },
+    });
     roleCalls.length = 0;
     internals.startPipeline(stuck.id);
     const stuckState = await pollTerminal(stuck.id);
     check("restart-recovered escalation still promotes to completion (not stuck in 'queued' forever)", stuckState === "done", `got ${stuckState}`);
     check("restart recovery never re-runs the reader", !roleCalls.includes("reader"), roleCalls.join(","));
-    check("restart recovery still runs the forced full pipeline", roleCalls.includes("planner") && roleCalls.includes("qa"), roleCalls.join(","));
+    check("restart recovery selects the narrow implementor-only route rather than forcing planner/QA", !roleCalls.includes("planner") && !roleCalls.includes("qa"), roleCalls.join(","));
     check("restart-recovered thread's lane is cleared too", db.getThread(stuck.id)?.lane == null);
     check(
       "restart recovery doesn't post a duplicate escalation finding (it wasn't posted again — only the original finalizeReader run would)",
       db.listFindings(stuck.id).filter((f) => f.severity === "warning" && /escalated/i.test(f.summary)).length === 0,
+    );
+
+    // A manual Retry is a fresh agent attempt, but not a new user task. It wipes ordinary run output
+    // while retaining the reader handoff needed to classify the original narrow edit correctly.
+    await manager.cancelThread(stuck.id);
+    roleCalls.length = 0;
+    const retry = await manager.retryThread(stuck.id);
+    const retriedState = await pollTerminal(stuck.id);
+    check("retry starts the same promoted task instead of requiring a new dispatch", retry.ok && retriedState === "done", JSON.stringify({ retry, retriedState }));
+    check("retry never reruns the reader after its lane was cleared", !roleCalls.includes("reader"), roleCalls.join(","));
+    check("retry retains reader evidence and keeps the narrow implementor-only route", !roleCalls.includes("planner") && !roleCalls.includes("qa"), roleCalls.join(","));
+    check(
+      "retry reclassifies from the original brief plus durable reader evidence",
+      db.getThreadStageOutputs(stuck.id).readerEscalation?.originalBrief === "Fix the typo in README.md." &&
+        db.getThreadStageOutputs(stuck.id).routeDecision?.scope === "narrow",
+      JSON.stringify(db.getThreadStageOutputs(stuck.id)),
     );
   } finally {
     // Unlike the other sections here, this one dispatches through the REAL pipeline long enough for the

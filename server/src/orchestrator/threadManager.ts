@@ -134,6 +134,7 @@ import type { RelayChat, RelayPresentAgent } from "../office/onlineProtocol.js";
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
 const MAX_MODEL_SUB_ENTRIES = 64;
+const IMAGE_MEDIA_TYPES = new Set<ImageAttachment["mediaType"]>(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 /** A concrete backend/model/account the provider-neutral director can start on. `key` is persisted by
  *  Director so auto-selection happens once and is reused until this target loses headroom. */
@@ -3877,9 +3878,28 @@ export class ThreadManager implements OrchestratorApi {
     return ownershipBlock(thread.assignment, siblings);
   }
 
+  /** Rehydrate images from their durable feed attachments after a server restart. In-memory blocks are
+   *  preferred while this process owns the task, so an ordinary hand-off doesn't send the same image
+   *  twice. A reader escalation then carries the original screenshots into the selected normal route,
+   *  including when a restart landed between the reader finding and the promoted implementor. */
+  private persistedImageBlocks(threadId: string): ImageBlock[] {
+    const seen = new Set<string>();
+    const blocks: ImageBlock[] = [];
+    for (const message of this.db.listMessages(threadId)) {
+      for (const ref of message.attachments ?? []) {
+        if (seen.has(ref.id) || !IMAGE_MEDIA_TYPES.has(ref.mediaType as ImageAttachment["mediaType"])) continue;
+        seen.add(ref.id);
+        const attachment = this.db.getAttachment(ref.id);
+        if (!attachment || !IMAGE_MEDIA_TYPES.has(attachment.mediaType as ImageAttachment["mediaType"])) continue;
+        blocks.push(toImageBlock({ name: attachment.name, mediaType: attachment.mediaType as ImageAttachment["mediaType"], dataBase64: attachment.data }));
+      }
+    }
+    return blocks;
+  }
+
   private kickoffContent(threadId: string, text: string): string | unknown[] {
-    const blocks = [...(this.dispatchImages.get(threadId) ?? []), ...(this.threadImages.get(threadId) ?? [])];
-    return contentWithImages(text, blocks);
+    const inMemory = [...(this.dispatchImages.get(threadId) ?? []), ...(this.threadImages.get(threadId) ?? [])];
+    return contentWithImages(text, inMemory.length ? inMemory : this.persistedImageBlocks(threadId));
   }
 
   approvalMode(): boolean {
@@ -4073,11 +4093,11 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /**
-   * The agent-routed pipeline. There is no fixed sequence: the **planner always runs first**,
-   * reads the codebase, and routes to either a **researcher** (external info) or straight to the
-   * **implementor**; the implementor always hands off to **QA**; and QA is the only role that can
-   * declare the task done (or bounce it back to the implementor). The shape is
-   *   planner → [researcher →] implementor → QA → [implementor → QA → …].
+   * The agent-routed pipeline has no compulsory planner/QA sequence. A deterministic route pick decides
+   * whether this task needs planning and/or QA; the implementor is the only required change/build role.
+   * When selected, the planner routes to researcher-or-implementor and QA can bounce fixes; otherwise a
+   * clean implementor result settles directly. Common shapes are
+   *   implementor | implementor → QA | planner → [researcher →] implementor → QA → ….
    *
    * It is also resume-aware: every completed stage is persisted (updateThreadStageOutputs), so a
    * task that died mid-pipeline re-enters here (via resumeThread on a 'failed' thread) and skips
@@ -4109,18 +4129,16 @@ export class ThreadManager implements OrchestratorApi {
     const settings = this.settings();
     const saved = this.db.getThreadStageOutputs(threadId);
     try {
-      // Read lane (dispatch_read): short-circuit the whole planner→implementor→QA pipeline to a single
+      // Read lane (dispatch_read): short-circuit the normal task-aware implementation route to a single
       // read-only reader stage. readerDone (mirroring planDone) makes the answer sticky across resume, so
       // a server restart mid-read can't re-run the reader and double-post the answer. releaseSlot still
       // runs in `finally`. An ESCALATION is not a dead end: handleReadLane promotes the task in place
       // (clears the lane, folds the reader's evidence into the brief) and returns the updated thread so
       // this SAME run falls through into the normal pipeline below — no new dispatch, no click required.
-      let escalatedFromReader = false;
       if (thread.lane === "read") {
         const promoted = await this.handleReadLane(thread, directorNote, saved);
         if (!promoted) return; // answered / errored / unrecoverable restart — already settled by finalizeReader
         thread = promoted;
-        escalatedFromReader = true;
       }
 
       // A persisted kickoff means this task already cleared the whole pre-implementor phase (planner +
@@ -4140,7 +4158,7 @@ export class ThreadManager implements OrchestratorApi {
       // Task-aware route: whether THIS task benefits from the planner and/or QA, independent of whether
       // those roles are enabled below (enabled = available, not mandatory — routeSelection.ts). Skipped
       // for a collaborator — its planner/QA gates are already forced by `collaborator` regardless.
-      const route = collaborator ? undefined : this.resolveRoute(thread, settings, escalatedFromReader);
+      const route = collaborator ? undefined : this.resolveRoute(thread, settings);
 
       // 1. Planner — runs first unless disabled, routed around, already done, or planning already
       // completed. planDone (mirrors researchDone) makes a deliberate "no structured plan" outcome sticky
@@ -4292,28 +4310,37 @@ export class ThreadManager implements OrchestratorApi {
   /** Task-aware pipeline route (routeSelection.ts): whether THIS task benefits from the planner and/or
    *  QA, independent of whether those roles are enabled (the settings gates AND this at each call site).
    *  Sticky — computed and announced once per pipeline episode, then read back from stage_outputs on
-   *  every later resume so a task can't reclassify mid-episode. A reader escalation always forces the
-   *  full route: the reader itself already decided this needed more than a lookup, and that ambiguity is
-   *  exactly the signal that warrants planning and verification (never re-derived from the now-mutated
-   *  brief, which would risk a narrow read on text the escalation itself appended). */
-  private resolveRoute(thread: Thread, settings: OrchestratorSettings, escalatedFromReader: boolean): RouteDecision {
+   *  every later resume so a task can't reclassify mid-episode. A reader escalation contributes evidence
+   *  to the same task-aware classifier; it is not a blanket full-route override. The original brief is
+   *  preserved in readerEscalation so our appended handoff prose cannot falsely broaden a narrow edit.
+   */
+  private resolveRoute(thread: Thread, settings: OrchestratorSettings): RouteDecision {
     const existing = this.db.getThreadStageOutputs(thread.id).routeDecision;
     if (existing) return existing;
-    const decision: RouteDecision = escalatedFromReader
-      ? {
-          usePlanner: true,
-          useQa: true,
-          scope: "broad",
-          reason: "promoted from the read-only lane — the reader itself flagged this as needing more than a lookup",
-          signals: ["reader escalation"],
-        }
-      : selectRoute({
-          title: thread.title,
-          brief: thread.brief,
-          shotgun: (thread.agentCount ?? 1) > 1,
-          timedHours: thread.durationMs ? thread.durationMs / 3_600_000 : undefined,
-          effortOverride: thread.effortOverride,
-        });
+    // Keep reader evidence through a manual Retry too. A retry clears its route decision, but the
+    // reader's conclusion is still part of the same user task and must not be mistaken for broad work
+    // merely because its handoff prose was appended to the brief.
+    const readerEscalation = this.db.getThreadStageOutputs(thread.id).readerEscalation;
+    if (readerEscalation) {
+      const decision = selectRoute({
+        title: thread.title,
+        brief: readerEscalation.originalBrief ?? thread.brief,
+        shotgun: (thread.agentCount ?? 1) > 1,
+        timedHours: thread.durationMs ? thread.durationMs / 3_600_000 : undefined,
+        effortOverride: thread.effortOverride,
+        readerEscalation,
+      });
+      this.db.updateThreadStageOutputs(thread.id, { routeDecision: decision });
+      this.announceRoute(thread.id, decision, settings);
+      return decision;
+    }
+    const decision = selectRoute({
+      title: thread.title,
+      brief: thread.brief,
+      shotgun: (thread.agentCount ?? 1) > 1,
+      timedHours: thread.durationMs ? thread.durationMs / 3_600_000 : undefined,
+      effortOverride: thread.effortOverride,
+    });
     this.db.updateThreadStageOutputs(thread.id, { routeDecision: decision });
     this.announceRoute(thread.id, decision, settings);
     return decision;
@@ -4923,7 +4950,7 @@ export class ThreadManager implements OrchestratorApi {
   /** The read lane's entry point inside runPipeline. Returns null once the task is fully settled by the
    *  reader itself (answered → done+closed; errored, or a restart with no recoverable disposition →
    *  review). Returns the PROMOTED (lane-cleared) thread when the reader ESCALATED, so the caller falls
-   *  through into the normal planner→implementor→QA pipeline in the very same run — no separate dispatch,
+   *  through into the normal task-aware implementation route in the very same run — no separate dispatch,
    *  no new thread id, no click required. That fall-through is what turns the escalation from a dead end
    *  (the old design: park in review, wait for a human/director to notice and call `dispatch` again) into
    *  a complete hand-off. */
@@ -5040,7 +5067,9 @@ export class ThreadManager implements OrchestratorApi {
         summary: `Reader escalated — needs the full pipeline${out.reason ? `: ${out.reason}` : ""}`,
         severity: "warning",
       });
-      this.db.updateThreadStageOutputs(thread.id, { readerEscalation: { reason: out.reason ?? "", answer: out.answer ?? "" } });
+      this.db.updateThreadStageOutputs(thread.id, {
+        readerEscalation: { reason: out.reason ?? "", answer: out.answer ?? "", originalBrief: thread.brief },
+      });
       return out;
     }
     // Answered read-only. The answer already landed as a finding, so record the disposition, settle 'done'

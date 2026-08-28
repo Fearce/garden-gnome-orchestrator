@@ -295,7 +295,7 @@ export function createDirectorServer(
 
   const createScheduledTask = tool(
     "create_scheduled_task",
-    `Create a RECURRING task: a prompt that runs in a target repo on a cron schedule. Each fire dispatches a normal task through the full pipeline (planner→implementor→QA), using whatever provider/model is active — just like a one-off dispatch, but automatic. ONLY use this when ${config.ownerName} EXPLICITLY asked to schedule a task — they said "schedule"/"scheduled task"/"cron job" in so many words. A cadence mentioned inside an ordinary request ("every morning", "nightly", "weekly") is NOT enough: dispatch that once instead. Resolve the repo path first (find_workspace) if you don't have it. ${cronHelp}`,
+    `Create a RECURRING task: a prompt that runs in a target repo on a cron schedule. Each fire dispatches a normal task through the same task-aware route selection as a one-off dispatch (planner/QA are available, not forced), using whatever provider/model is active — just like a one-off dispatch, but automatic. ONLY use this when ${config.ownerName} EXPLICITLY asked to schedule a task — they said "schedule"/"scheduled task"/"cron job" in so many words. A cadence mentioned inside an ordinary request ("every morning", "nightly", "weekly") is NOT enough: dispatch that once instead. Resolve the repo path first (find_workspace) if you don't have it. ${cronHelp}`,
     {
       title: z.string().describe("Short title for each dispatched run (the board-lane label)."),
       workspace: z.string().describe("Absolute path of the EXISTING repo/dir the prompt runs in."),
