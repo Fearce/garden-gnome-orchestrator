@@ -17,8 +17,8 @@
 //      every one of them wins its own hit test (a control that is *painted* on screen but covered by an
 //      overlapping sibling is the exact defect above, and geometry alone cannot see it).
 //   2. THE MANUAL SWEEP, end to end over the real WS API — with today's automated check-in budget
-//      deliberately seeded as spent, "Run now" must still examine every eligible task while reporting
-//      that model-backed check-ins are held by the daily budget.
+//      deliberately seeded as spent, "Run now" must still examine every eligible task instead of
+//      skipping them, and the console must say so.
 //
 // Scope: this lab owns the SUPERVISOR surface. `phone-lab.cjs` is the sibling that sweeps every board
 // view for reachability at the same widths; the one board-tab hit test kept below is the direct symptom
@@ -309,8 +309,8 @@ async function drivePass(page, { name, width, height }, shotDir) {
 }
 
 /** The manual sweep, driven once through the real console at the narrowest width: click Run now with
- *  the day's budget already spent and assert the server examined every eligible task while keeping
- *  model-backed check-ins bounded by that budget. */
+ *  the day's budget already spent and assert the server examined every eligible task anyway. The
+ *  provider call may still fail honestly, but never because the unattended budget was already spent. */
 async function driveManualSweep(page) {
   console.log(`\n════ MANUAL SWEEP — budget spent, bounded operator sweep, end to end`);
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
@@ -331,7 +331,7 @@ async function driveManualSweep(page) {
 
   check("the console reports the manual sweep's own result", /examined/i.test(result), JSON.stringify(result));
   check("…naming the three eligible tasks it swept", /\b3\b/.test(result), JSON.stringify(result));
-  check("and the bounded check-in limitation", /budget/i.test(result) && !/capacity/i.test(result), JSON.stringify(result));
+  check("and the real external limitation, not the daily budget", /capacity/i.test(result) && !/budget/i.test(result), JSON.stringify(result));
 
   const rows = await page.$$eval(".supervisor-row", (els) =>
     els
@@ -341,9 +341,9 @@ async function driveManualSweep(page) {
   const manual = await page.$$eval(".supervisor-row .supervisor-meta", (els) => els.map((e) => e.textContent).filter((t) => /manual/.test(t)));
   check("the sweep wrote manual-triggered audit rows", manual.length >= 3, `${manual.length} manual rows`);
   check(
-    "manual audit rows explain the daily check-in budget",
-    rows.some((t) => /daily check-in budget reached/i.test(t)),
-    rows.join(" | "),
+    "no task was skipped for the daily check-in budget",
+    !rows.some((t) => /daily check-in budget reached/i.test(t)),
+    rows.filter((t) => /budget/i.test(t)).join(" | "),
   );
   check("the sweep added rows to the audit trail", (await page.$$eval(".supervisor-row", (r) => r.length)) > before);
 
