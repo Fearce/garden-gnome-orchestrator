@@ -25,11 +25,26 @@ const HOUR = 3_600_000;
 // A label only — these fixture threads never touch disk, and the console renders the path verbatim.
 const FIXTURE_WORKSPACE = "fixture/repo";
 
-/** Block until the console's WS is connected, so a read reflects the SERVER's state rather than the
- *  client's pre-`hello` defaults. `.conn` is the console's own connection indicator. */
-async function waitForLiveSocket(page) {
-  await page.waitForFunction(() => document.querySelector(".conn")?.textContent?.trim().toLowerCase() === "live", null, { timeout: 30_000 });
-  await page.waitForTimeout(250); // let the hello-driven re-render flush
+/** Block until the console has processed its server-authoritative WS `hello` frame. The connection
+ * indicator flips before that payload lands; account chips are created only by `hello`, so they are
+ * the durable signal documented by the shared lab harness. */
+async function waitForServerHello(page) {
+  await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+}
+
+/** Assert a reload has rendered the values which came back from the server, rather than the client's
+ * neutral defaults or an optimistic pre-reload selection. Polling the two fields also tolerates React's
+ * post-hello render on a busy host without concealing a genuinely stale persisted setting. */
+async function waitForTaskModeSettings(page, duration, agents) {
+  await page.waitForFunction(
+    ({ duration, agents }) => {
+      const window = document.querySelector(".composer-taskmode select[aria-label='Work window']");
+      const collaborators = document.querySelector(".composer-taskmode select[aria-label='Agents']");
+      return window?.value === duration && collaborators?.value === agents;
+    },
+    { duration, agents },
+    { timeout: 30_000 },
+  );
 }
 
 /** Seed the rows the surfaces read. Done directly against the throwaway DB after boot, so no agent
@@ -105,7 +120,7 @@ async function main() {
     // 28s while plain HTTP answers in ms. A busy box must not read as a broken feature.
     await page.goto(`${BASE}/`, { timeout: 45_000 }).catch(() => page.goto(`${BASE}/`, { timeout: 45_000 }));
     await page.waitForSelector(".topbar", { timeout: 45_000 });
-    await waitForLiveSocket(page);
+    await waitForServerHello(page);
     await page.waitForSelector(".card", { timeout: 45_000 });
 
     // ---- the board ------------------------------------------------------------------------------
@@ -175,10 +190,11 @@ async function main() {
     // The composer renders IMMEDIATELY from the client's default settings and only adopts the server's
     // once the WS `hello` lands, so reading the select the moment the element exists races that frame
     // and reads the default every time — a green-looking check that proves nothing, and a red one that
-    // blames the feature. Wait for the socket to actually be live first.
+    // blames the feature. Wait for `hello` and for its concrete persisted values first.
     await page.reload({ timeout: 45_000 });
     await page.waitForSelector(".composer-taskmode", { timeout: 45_000 });
-    await waitForLiveSocket(page);
+    await waitForServerHello(page);
+    await waitForTaskModeSettings(page, "480", "3");
     check("the window pick survived a reload (server-persisted)", (await page.$eval(durSel, (e) => e.value)) === "480", await page.$eval(durSel, (e) => e.value));
     check("the agent pick survived a reload", (await page.$eval(agtSel, (e) => e.value)) === "3", await page.$eval(agtSel, (e) => e.value));
 
@@ -187,7 +203,8 @@ async function main() {
     await page.waitForTimeout(600);
     await page.reload({ timeout: 45_000 });
     await page.waitForSelector(".composer-taskmode", { timeout: 45_000 });
-    await waitForLiveSocket(page);
+    await waitForServerHello(page);
+    await waitForTaskModeSettings(page, "0", "1");
     check("clearing resets the window", (await page.$eval(durSel, (e) => e.value)) === "0", await page.$eval(durSel, (e) => e.value));
     check("clearing resets the agent count", (await page.$eval(agtSel, (e) => e.value)) === "1", await page.$eval(agtSel, (e) => e.value));
 
