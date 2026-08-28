@@ -149,6 +149,48 @@ internals.codexProviderCandidate = originalCodexProviderCandidate;
 internals.dedicatedPoolReadyFor = originalDedicatedPoolReadyFor;
 internals.codexCapActive = originalCodexCapActive;
 
+// Initial dispatch and cap recovery already wait when every visible pool is forecast to expire
+// mid-task. The failover seam must apply the same reserve or a first provider cap can bypass both
+// guards and launch a second known-doomed substantial turn.
+const originalClaudeProviderCandidate = internals.claudeProviderCandidate;
+const originalCodexImplementorReady = internals.codexImplementorReady;
+const originalGrokReadyForRunway = internals.grokImplementorReady;
+const originalZaiReadyForRunway = internals.zaiImplementorReady;
+const substantialDemand = {
+  label: "substantial implementation",
+  expectedDurationMs: 150 * 60_000,
+  expectedBurnPct: 26,
+  reservePct: 4,
+  substantial: true,
+};
+const risky = (provider: string, usedPct: number) => ({
+  provider,
+  hasHeadroom: true,
+  fiveHour: usedPct,
+  fiveHourReset: Date.now() + 4 * 60 * 60_000,
+  sevenDay: 20,
+  sevenDayReset: Date.now() + 5 * 24 * 60 * 60_000,
+});
+internals.claudeProviderCandidate = () => risky("claude", 90);
+internals.codexImplementorReady = () => true;
+internals.codexProviderCandidate = () => risky("codex", 80);
+internals.grokImplementorReady = () => false;
+internals.zaiImplementorReady = () => false;
+check(
+  "substantial failover waits when every fallback is known at risk",
+  internals.nextReadyImplementor("zai", new Set(), "implementor", substantialDemand) === undefined,
+);
+internals.codexProviderCandidate = () => risky("codex", 67);
+check(
+  "substantial failover immediately selects a viable Codex pool",
+  internals.nextReadyImplementor("zai", new Set(), "implementor", substantialDemand) === "codex",
+);
+internals.claudeProviderCandidate = originalClaudeProviderCandidate;
+internals.codexImplementorReady = originalCodexImplementorReady;
+internals.codexProviderCandidate = originalCodexProviderCandidate;
+internals.grokImplementorReady = originalGrokReadyForRunway;
+internals.zaiImplementorReady = originalZaiReadyForRunway;
+
 internals.dispatchAccount = () => ({ id: "claude-a", label: "Claude A", token: undefined });
 internals.nextReadyImplementor = (from: string) => (from === "codex" ? "claude" : undefined);
 internals.createRoleAgent = (provider: string) => {

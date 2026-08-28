@@ -93,6 +93,10 @@ console.log("\n=== auto model selection — reply validation ===\n");
   check("a true provider-first Codex exclusion still wins", providerFirstExclusion.preferred === "claude" && providerFirstExclusion.excluded.has("codex"), JSON.stringify({ preferred: providerFirstExclusion.preferred, excluded: [...providerFirstExclusion.excluded] }));
   const passiveExclusion = providerIntent("Codex must not be used for this task. Use Claude.");
   check("a true passive Codex exclusion still wins", passiveExclusion.preferred === "claude" && passiveExclusion.excluded.has("codex"), JSON.stringify({ preferred: passiveExclusion.preferred, excluded: [...passiveExclusion.excluded] }));
+  const reasonedExclusion = providerIntent("Codex is not allowed for this task because its capacity is unreliable. Use Claude.");
+  check("a capacity rationale does not erase a genuine provider ban", reasonedExclusion.preferred === "claude" && reasonedExclusion.excluded.has("codex"), JSON.stringify({ preferred: reasonedExclusion.preferred, excluded: [...reasonedExclusion.excluded] }));
+  const dynamicPoolGuard = providerIntent("Codex must not be used when its general pool is exhausted. Use Claude until capacity returns.");
+  check("a dynamic pool safeguard is not frozen into a provider exclusion", dynamicPoolGuard.preferred === "claude" && !dynamicPoolGuard.excluded.has("codex"), JSON.stringify({ preferred: dynamicPoolGuard.preferred, excluded: [...dynamicPoolGuard.excluded] }));
   const retainCodex = providerIntent("Use Codex. Do not exclude Codex and do not switch away from Codex.");
   check("negated exclusions and retention language preserve Codex", retainCodex.preferred === "codex" && !retainCodex.excluded.has("codex"), JSON.stringify({ preferred: retainCodex.preferred, excluded: [...retainCodex.excluded] }));
 }

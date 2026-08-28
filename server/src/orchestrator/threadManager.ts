@@ -3566,9 +3566,9 @@ export class ThreadManager implements OrchestratorApi {
     return future.length ? Math.min(...future) : undefined;
   }
 
-  /** The best implementor backend OTHER than `exclude` that can take over RIGHT NOW (has headroom), or
-   *  undefined when none can. Drives cross-provider failover: a capped backend hands off to whichever of
-   *  the remaining ones is readiest. */
+  /** The best implementor backend OTHER than `exclude` that can take over RIGHT NOW, or undefined when
+   * none can. Substantial work requires task-sized runway here just as it does at initial dispatch and
+   * supervisor recovery; otherwise a cap failover can bypass both guards and burn another doomed turn. */
   private nextReadyImplementor(
     exclude: ImplementorProvider,
     unavailable: ReadonlySet<ImplementorProvider> = new Set(),
@@ -3588,6 +3588,8 @@ export class ThreadManager implements OrchestratorApi {
     if (exclude !== "grok" && !unavailable.has("grok") && serves("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate(demand));
     if (exclude !== "zai" && !unavailable.has("zai") && serves("zai") && this.zaiImplementorReady()) cands.push(this.zaiProviderCandidate(demand));
     if (!cands.length) return undefined;
+    const capacity = demand ? preferCapacity(cands, candidateCapacityWindows, demand) : undefined;
+    if (demand?.substantial && capacity?.allKnownAtRisk) return undefined;
     return this.preferredImplementorProvider(cands, demand);
   }
 

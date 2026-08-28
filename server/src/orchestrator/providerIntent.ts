@@ -12,7 +12,8 @@ const TERMS: Record<ImplementorProvider, string> = {
   zai: "(?:z\\.?ai|glm)",
 };
 
-const CAPACITY_SCOPE = /\b(?:capacity|quota|pool|model|window|runway|headroom|meter|allowance|limit|exhausted|capped|spent|unavailable|at[- ]risk|unsafe)\b/i;
+const CAPACITY_RESOURCE = /\b(?:capacity|quota|pool|model|window|runway|headroom|meter|allowance|limit)\b/i;
+const CAPACITY_STATE = /\b(?:exhausted|capped|spent|unavailable|at[- ]risk|unsafe)\b/i;
 const ROUTING_SIGNAL = /\b(?:use|prefer|require|run|route|dispatch|switch|choose|select|pick)\b/i;
 
 /** Keep intent inside sentence/semicolon clauses. The old parser let a generic `not` reach 100
@@ -21,11 +22,32 @@ function clauses(text: string): string[] {
   return text.match(/[^.!?;\n]+(?:[.!?;]+|$)/g)?.map((clause) => clause.trim()).filter(Boolean) ?? [];
 }
 
-function capacityScoped(clause: string, start: number, end: number): boolean {
-  // Include both modifiers before the provider ("an exhausted Codex pool") and the resource noun
-  // immediately after it ("Codex model pool"). Capacity policy is enforced by the router, not by
-  // excluding the entire provider named in a pool-specific safeguard.
-  return CAPACITY_SCOPE.test(clause.slice(Math.max(0, start - 8), Math.min(clause.length, end + 64)));
+/** True only when the negative phrase targets a metered resource (or is conditional on one), not when
+ * capacity merely explains a genuine provider ban. "Do not use an exhausted Codex pool" belongs to the
+ * live capacity router; "do not use Codex because its quota is unreliable" still excludes Codex. */
+function targetsCapacityResource(clause: string, start: number, end: number, term: string): boolean {
+  const matched = clause.slice(start, end);
+  if (CAPACITY_RESOURCE.test(matched)) return true;
+
+  const after = clause.slice(end, Math.min(clause.length, end + 80));
+  const resourceAfterProvider = new RegExp(
+    `^\\s*(?:(?:'s|\\u2019s)\\s+)?(?:(?:general|dedicated|model|five[- ]hour|5h|weekly|monthly|${CAPACITY_STATE.source})\\s+){0,3}${CAPACITY_RESOURCE.source}`,
+    "i",
+  );
+  if (resourceAfterProvider.test(after)) return true;
+
+  // A provider-level-looking sentence can still be a dynamic pool safeguard: "Codex must not be used
+  // when its general pool is exhausted." The live meter decides that condition on every dispatch.
+  const capacityCondition = new RegExp(
+    `^\\s*(?:when|while|if|unless)\\b[^.!?;\\n]{0,64}${CAPACITY_RESOURCE.source}`,
+    "i",
+  );
+  if (capacityCondition.test(after)) return true;
+
+  // Cover the compact adjective form ("do not use capped Codex") without letting a capacity reason
+  // later in the clause erase an unconditional provider instruction.
+  const stateBeforeProvider = new RegExp(`${CAPACITY_STATE.source}\\s+(?:the\\s+)?${term}\\b`, "i");
+  return stateBeforeProvider.test(matched) || stateBeforeProvider.test(clause.slice(Math.max(0, start - 32), end));
 }
 
 function hasExplicitExclusion(parts: string[], term: string): boolean {
@@ -54,7 +76,7 @@ function hasExplicitExclusion(parts: string[], term: string): boolean {
       pattern.lastIndex = 0;
       for (const match of clause.matchAll(pattern)) {
         const start = match.index ?? 0;
-        if (!retention.test(match[0]) && !capacityScoped(clause, start, start + match[0].length)) return true;
+        if (!retention.test(match[0]) && !targetsCapacityResource(clause, start, start + match[0].length, term)) return true;
       }
     }
 
@@ -64,7 +86,7 @@ function hasExplicitExclusion(parts: string[], term: string): boolean {
       const prefix = clause.slice(Math.max(0, start - 18), start);
       if (
         !/(?:do\s+not|don['’]t|never|must\s+not)\s*$/i.test(prefix) &&
-        !capacityScoped(clause, start, start + match[0].length)
+        !targetsCapacityResource(clause, start, start + match[0].length, term)
       ) {
         return true;
       }
@@ -75,7 +97,7 @@ function hasExplicitExclusion(parts: string[], term: string): boolean {
     contrast.lastIndex = 0;
     for (const match of clause.matchAll(contrast)) {
       const start = match.index ?? 0;
-      if (ROUTING_SIGNAL.test(clause.slice(0, start)) && !capacityScoped(clause, start, start + match[0].length)) return true;
+      if (ROUTING_SIGNAL.test(clause.slice(0, start)) && !targetsCapacityResource(clause, start, start + match[0].length, term)) return true;
     }
   }
   return false;
