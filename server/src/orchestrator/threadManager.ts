@@ -2133,7 +2133,7 @@ export class ThreadManager implements OrchestratorApi {
       settingSources: [],
       outputFormat: { type: "json_schema", schema: schema as Record<string, unknown> },
       includePartialMessages: false,
-      maxTurns: SUPERVISOR_JUDGE_MAX_TURNS,
+      maxTurns: 2,
     };
     const agent = this.createDirectorAgent(target, cfg, { cliSchema: schema });
     const off = agent.onEvent((e) => {
@@ -2165,7 +2165,7 @@ export class ThreadManager implements OrchestratorApi {
       settingSources: [],
       outputFormat: { type: "json_schema", schema: schema as Record<string, unknown> },
       includePartialMessages: false,
-      maxTurns: 2,
+      maxTurns: SUPERVISOR_JUDGE_MAX_TURNS,
     };
     const agent = this.createDirectorAgent(target, cfg, { cliSchema: schema });
     const off = agent.onEvent((e) => {

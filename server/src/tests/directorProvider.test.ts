@@ -14,6 +14,7 @@ const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { Director } = await import("../orchestrator/director.js");
 const { executeDirectorCliAction } = await import("../orchestrator/directorCliBridge.js");
 const { directorSafetyArgs } = await import("../agents/codexRunner.js");
+const { SUPERVISOR_JUDGE_MAX_TURNS } = await import("../orchestrator/supervisor.js");
 
 let passed = 0;
 let failed = 0;
@@ -67,6 +68,29 @@ try {
   check("capped Claude is excluded", configured.every((t) => t.provider !== "claude"), JSON.stringify(configured));
   check("Codex remains a director target", configured.length === 1 && configured[0]?.model === "gpt-director", JSON.stringify(configured));
   check("usage-aware fallback chooses Codex", mgr.preferredDirectorTarget(configured)?.provider === "codex");
+
+  const originalCreateDirectorAgent = mgr.createDirectorAgent.bind(mgr);
+  let capture: "supervisor" | "generic" = "supervisor";
+  let supervisorTurns: number | undefined;
+  let genericTurns: number | undefined;
+  internals.createDirectorAgent = (_target: unknown, cfg: { maxTurns?: number }) => {
+    if (capture === "supervisor") supervisorTurns = cfg.maxTurns;
+    else genericTurns = cfg.maxTurns;
+    return {
+      rateLimited: false,
+      onEvent: () => () => {},
+      start: () => {},
+      result: async () => ({ isError: false, structuredOutput: { ok: true }, costUsd: 0, tokenUsage: { totalTokens: 1 } }),
+      stop: async () => {},
+    };
+  };
+  const simpleSchema = { type: "object", additionalProperties: true };
+  await mgr.supervisorJudge("inspect this task", simpleSchema);
+  capture = "generic";
+  await mgr.askDirectorJson("pick a model", simpleSchema, configured[0]);
+  internals.createDirectorAgent = originalCreateDirectorAgent;
+  check("supervisor judgement uses its bounded eight-turn ceiling", supervisorTurns === SUPERVISOR_JUDGE_MAX_TURNS, String(supervisorTurns));
+  check("generic director JSON calls keep the cheaper two-turn ceiling", genericTurns === 2, String(genericTurns));
 
   const autoTargets = mgr.directorTargets(true);
   internals.askDirectorJson = async (): Promise<unknown> => ({ key: autoTargets.find((t: { model: string }) => t.model === "gpt-smart-b")?.key });
