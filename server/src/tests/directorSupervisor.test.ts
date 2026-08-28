@@ -381,9 +381,22 @@ async function main(): Promise<void> {
       await supervisor.runNow();
       check("a provider-cap/no-capacity check records the condition without a destructive fallback", f.recoveries.length === 0 && f.db.listSupervisorEvents().some((e) => e.threadId === capped.id && e.kind === "error"));
 
+      const progressed = makeTask(f.db, "progress during alert", "implementing", true);
+      f.setVerdict({ action: "alert", message: "needs owner", reasoning: "looked stale before progress landed", requiresOwner: true });
+      f.setBeforeJudge(() => {
+        f.db.addFinding({ threadId: progressed.id, fromRole: "implementor", summary: "Fresh same-state progress", severity: "info" });
+      });
+      await supervisor.runNow();
+      f.setBeforeJudge(undefined);
+      check(
+        "a same-state progress update discards a stale owner-facing verdict",
+        !f.findings.some((x) => x.threadId === progressed.id) &&
+          f.db.listSupervisorEvents().some((e) => e.threadId === progressed.id && e.kind === "skip" && e.summary.includes("fresh activity")),
+      );
+
       // The act() boundary alone already refuses a recovery on 'cancelled', so the first check in this
       // block cannot see the fresh-state re-read. This one can: a benign comment verdict must not land
-      // on a task the owner cancelled while the judge call was in flight — anything else means the
+      // on a task the owner cancelled while the judge call was in flight - anything else means the
       // supervisor nags dead work. (Thread-scoped on purpose: earlier scenarios own their own findings.)
       const cancelledLate = makeTask(f.db, "cancel during comment", "implementing", true);
       f.setVerdict({ action: "comment", message: "a note", reasoning: "no live run", requiresOwner: false });

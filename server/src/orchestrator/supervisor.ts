@@ -520,6 +520,7 @@ export class DirectorSupervisor {
     const liveIds = new Set(this.host.db.listActiveRuns().map((r) => r.threadId));
     const lastActivity = this.host.db.lastActivityAt(threadId);
     const hasLiveRun = liveIds.has(threadId);
+    const observedActivityAt = Math.max(thread.updatedAt, lastActivity ?? 0);
     let assessment = assess(thread, { hasLiveRun, lastActivityAt: lastActivity, now: Date.now(), cfg: this.cfg });
 
     // A new non-cap failure is rare and merits a concise diagnosis now, not six hours later. Restrict
@@ -611,7 +612,21 @@ export class DirectorSupervisor {
     // never act on a task the owner (or another mechanism) has since moved on from.
     const fresh = this.host.db.getThread(threadId);
     if (!fresh || fresh.state === "cancelled" || fresh.state !== thread.state) {
-      this.record(thread, trigger, "skip", verdict.action, `task moved on before acting (now ${fresh?.state ?? "gone"}) — verdict discarded`, true, judged);
+      this.record(thread, trigger, "skip", verdict.action, `task moved on before acting (now ${fresh?.state ?? "gone"}) - verdict discarded`, true, judged);
+      return;
+    }
+    const freshHasLiveRun = this.host.db.listActiveRuns().some((run) => run.threadId === threadId);
+    const freshActivityAt = Math.max(fresh.updatedAt, this.host.db.lastActivityAt(threadId) ?? 0);
+    if (freshHasLiveRun !== hasLiveRun || freshActivityAt > observedActivityAt) {
+      this.record(
+        fresh,
+        trigger,
+        "skip",
+        verdict.action,
+        `task produced fresh activity before acting - verdict discarded`,
+        true,
+        judged,
+      );
       return;
     }
 
