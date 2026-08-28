@@ -410,8 +410,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("note.create"), body: z.string().min(1).max(2000), url: z.string().max(600).optional() }),
   z.object({ type: z.literal("note.delete"), id: z.string() }),
   z.object({ type: z.literal("note.clear") }),
-  // Director Supervisor: an explicit "run now" pass over every current candidate task (per-task cooldown
-  // still applies — see orchestrator/supervisor.ts).
+  // Director Supervisor: an explicit full pass over every current candidate task. It intentionally
+  // bypasses unattended cooldown/daily-budget guards; action, single-flight and notification safety
+  // gates remain in DirectorSupervisor.
   z.object({ type: z.literal("supervisor.runNow") }),
   z.object({ type: z.literal("snapshot.request") }),
 ]);
