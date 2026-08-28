@@ -353,8 +353,28 @@ async function main(): Promise<void> {
       await supervisor.runNow();
       check("cancelled work is never revived after a stale judgement", f.getJudgeCalls() === 1 && f.recoveries.length === 0 && f.findings.length === 0);
 
-      const stale = makeTask(f.db, "no receiver for correction", "qa", true);
+      const qaRecovery = makeTask(f.db, "qa is not cold-resumable", "qa", true);
       f.setBeforeJudge(undefined);
+      f.setVerdict({ action: "trigger_recovery", message: "resume qa", reasoning: "no QA runner is live", requiresOwner: true });
+      await supervisor.runNow();
+      check(
+        "a stale QA lane is not reported as autonomously recovered",
+        f.recoveries.length === 0 &&
+          f.findings.length === 0 &&
+          f.db.listSupervisorEvents().some((e) => e.threadId === qaRecovery.id && e.kind === "skip" && e.summary.includes("qa is not safe")),
+      );
+
+      const planningRecovery = makeTask(f.db, "planning is not implementor-resumable", "planning", true);
+      f.setVerdict({ action: "trigger_recovery", message: "resume planning", reasoning: "no planner is live", requiresOwner: true });
+      await supervisor.runNow();
+      check(
+        "a stale planning lane is not cold-resumed past its planned stages",
+        f.recoveries.length === 0 &&
+          f.findings.length === 0 &&
+          f.db.listSupervisorEvents().some((e) => e.threadId === planningRecovery.id && e.kind === "skip" && e.summary.includes("planning is not safe")),
+      );
+
+      const stale = makeTask(f.db, "no receiver for correction", "qa", true);
       f.setVerdict({ action: "inject_correction", message: "do this", reasoning: "test boundary", requiresOwner: false });
       await supervisor.runNow();
       check("a correction is discarded when no live agent can receive it", f.findings.length === 0 && f.db.listSupervisorEvents().some((e) => e.threadId === stale.id && e.kind === "skip"));

@@ -327,7 +327,7 @@ export function buildPrompt(d: Digest): string {
     "- none: nothing actually warrants acting — the deterministic flag was a false alarm or it's fine to keep waiting.",
     "- comment: append a short, useful note to the task's findings. Non-urgent, does not interrupt anything.",
     "- inject_correction: post an urgent correction through the normal director-injection path. Only when you have real evidence the task is off track and a live or already-materializing agent could act on it right now.",
-    "- trigger_recovery: resume the task from where it left off (the same effect as a human clicking Resume) — appropriate when it looks stalled/dropped rather than genuinely blocked or intentionally waiting.",
+    "- trigger_recovery: resume the task from where it left off (the same effect as a human clicking Resume) — appropriate for failed work or dropped implementor work. For planning/research/QA/reviewer-lane anomalies, prefer alert/comment unless the task is already live and can receive inject_correction.",
     "- alert: this needs the owner's attention — a real blocker, exhausted retries, or a decision only they can make. Nothing you can safely do yourself.",
     "- cleanup: the task is done and healthy; just record that you looked.",
     "",
@@ -677,8 +677,12 @@ export class DirectorSupervisor {
       case "trigger_recovery": {
         const live = this.host.db.listActiveRuns().some((run) => run.threadId === thread.id);
         // Review is an owner decision, not a crash. A live task has already recovered without us.
-        if (live || (!ACTIVE_STATES.has(thread.state) && thread.state !== "failed")) {
-          return { ok: false, reason: `recovery skipped - ${live ? "the task is live again" : `${thread.state} requires an owner decision`}` };
+        // Planning/researching/QA/reviewing need their owning lane or the resume-aware failed pipeline;
+        // the manual Resume path would otherwise no-op (QA/reviewing) or skip planned stages
+        // (planning/researching) by cold-starting an implementor-only resume.
+        const safelyRecoverable = thread.state === "failed" || thread.state === "implementing";
+        if (live || !safelyRecoverable) {
+          return { ok: false, reason: `recovery skipped - ${live ? "the task is live again" : `${thread.state} is not safe for autonomous recovery`}` };
         }
         const recovery = await this.host.resumeThread(thread.id, `Supervisor: ${message}`);
         if (!recovery.ok) return { ok: false, reason: `recovery declined - ${recovery.error ?? "the task could not be resumed"}` };
