@@ -12,11 +12,11 @@ The contract every module builds against. Read this before touching code.
                                         │ dispatch(threadId, brief)
                                         ▼
         ┌───────────────── THREAD (one task, one lane) ─────────────────┐
-        │   agent-routed: each stage decides the next                   │
+        │   task-aware: smallest capable route per task                 │
         │                                                               │
-        │   PLANNER ─▶ [RESEARCHER] ─▶ IMPLEMENTOR (Opus 4.8) ⇄ QA      │
-        │   reads repo   external       does the work in    reviews;    │
-        │   + routes     info only      the repo            sole "done" │
+        │   [PLANNER ─▶ [RESEARCHER] ─▶] IMPLEMENTOR (Opus 4.8) [⇄ QA]  │
+        │    reads repo    external       does the work in     reviews  │
+        │    + routes      info only      the repo            if needed │
         │                                     ▲                         │
         └─────────────────────────────────────┼─────────────────────────┘
                                               │ inject / interrupt+resume
@@ -24,9 +24,9 @@ The contract every module builds against. Read this before touching code.
 ```
 
 The **director** owns the conversation with the user. Each dispatched task
-becomes a **thread** that runs an **agent-routed** pipeline: the planner runs
-first and routes to a researcher or straight to the implementor; the implementor
-always hands off to QA; QA alone can declare the task done (§5). The **message
+becomes a **thread** that runs a **task-aware** pipeline: every change/build
+task gets an implementor, while the planner, researcher and QA stages run only
+when the selected route calls for them (§5). The **message
 bus** lets any agent surface a finding; the **thread manager** decides whether
 that finding should be injected into a running implementor (live) or held for
 the director.
@@ -67,7 +67,7 @@ Model + tool policy per role:
 | Planner     | small-task-eligible free pool → configured reliable backend | provider-specific | Read/Grep/Glob — **owns codebase reading**; routes to researcher or implementor. Free admission requires an explicit low-effort, narrow first attempt; otherwise the planner starts on the reliable ladder. |
 | Researcher  | claude-sonnet-5  | plan           | WebSearch/WebFetch, memory, bus — **no Read/Grep/Glob** (external info only; the planner reads the repo) |
 | Implementor | claude-opus-5    | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
-| QA          | claude-opus-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); sole role that can mark a task done |
+| QA          | claude-opus-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); runs only when the selected route needs independent review |
 | Reader      | small-task-eligible free pool → configured reliable backend | provider-specific | Read/Grep/Glob + `git_read` (allowlisted log/show/status/diff, **no Bash**) + `post_finding` — **no Write/Edit/Bash/web** (§5, the read-only `dispatch_read` lane); broad/uncertain or repeated lookups skip free quota. |
 | Reviewer    | claude-opus-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests, browser-drives UI), bus incl. **`ask_user`** — **no Write/Edit** (§5, the on-demand auto-review); accepts a parked task as done in the owner's place, or hands it back |
 
@@ -192,8 +192,8 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   and broadcasting `thread.removed`. `closed_at`/`closed_prev_state` are written only by
   `closeThread`/`restoreThread` (never the generic `updateThread` SQL), so a normal state change can't
   clobber them; `closed_prev_state` stays off the `Thread` DTO.
-- **Agent-routed, planner-first — and task-aware.** `runPipeline` has no fixed sequence — each
-  stage decides the next. Whether the planner and/or QA run at all for a given task is itself a
+- **Agent-routed and task-aware.** `runPipeline` has no fixed mandatory sequence — the selected
+  stages decide the next. Whether the planner and/or QA run at all for a given task is itself a
   decision, computed once per pipeline episode by `orchestrator/routeSelection.ts`'s
   `selectRoute()` (a pure, deterministic function of the task's own title/brief text plus a few
   structural dispatch signals — shotgun, a multi-hour timed window, an operator-pinned heavy
@@ -320,7 +320,8 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
 - **Resumability.** Each completed stage's output is persisted to `threads.stage_outputs`
   (JSON; additive read-merge-write so a later stage never clobbers an earlier one). A
   `failed` thread re-enters `runPipeline`, which skips the stages already saved and
-  continues from the failure point (then runs QA). Each stage has a sticky "done" marker
+  continues from the failure point, including QA only when the selected route includes it. Each stage
+  has a sticky "done" marker
   (`planDone`/`researchDone`/`approved`) so a stage that legitimately produced *nothing* (e.g. the
   planner returned no structured plan) isn't re-run on resume — a re-run would be a wasted Opus pass.
   A `review`/`done`/`paused` thread instead takes
