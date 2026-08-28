@@ -4137,10 +4137,32 @@ export class ThreadManager implements OrchestratorApi {
     return this.settingBool("setting_discord_notify", false) && !!this.discordBotToken() && !!this.discordChannelId();
   }
 
+  /** Supervisor corrections are urgent steering, not recovery. Only send one if ThreadManager currently
+   *  has a live/materializing recipient that the normal injection gates know how to reach. */
+  async injectSupervisorCorrection(threadId: string, message: string): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "Task no longer exists." };
+    if (thread.state === "cancelled" || thread.state === "closed") {
+      return { ok: false, state: thread.state, error: "Task is no longer active." };
+    }
+    const reachable =
+      this.live.has(threadId) ||
+      this.liveRole.has(threadId) ||
+      this.liveQa.has(threadId) ||
+      this.liveReviewer.has(threadId) ||
+      this.resuming.has(threadId) ||
+      this.reviewing.has(threadId) ||
+      this.selfImproving.has(threadId);
+    if (!reachable) {
+      return { ok: false, state: thread.state, error: "No live agent remains to receive the correction." };
+    }
+    return this.injectThread(threadId, message, "interrupt");
+  }
+
   /** Supervisor notices are Discord-only. They never spill into the generic webhook while the separately
    *  configured Phone notifications toggle is disabled. */
   notifySupervisor(kind: "done" | "input" | "failed", title: string, detail?: string, repo?: string): void {
-    this.discord.notify({ kind, title: `Supervisor: ${title}`, detail, repo });
+    this.discord.notify({ kind, title: title.startsWith("Supervisor:") ? title : `Supervisor: ${title}`, detail, repo });
   }
 
   /** The supervisor's live snapshot for the console (WS hello + the supervisor.* broadcast). */

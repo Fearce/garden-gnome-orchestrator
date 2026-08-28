@@ -54,12 +54,14 @@ interface Fixture {
   db: Db;
   hub: EventHub;
   findings: PostFindingInput[];
+  injections: { threadId: string; message: string }[];
   notices: { kind: string; title: string; detail?: string }[];
   recoveries: string[];
   autoReviews: string[];
   getJudgeCalls(): number;
   setVerdict(verdict: Verdict | null): void;
   setBeforeJudge(action: (() => void) | undefined): void;
+  setCorrectionCanLand(on: boolean): void;
   setDiscord(on: boolean): void;
   create(config?: Partial<SupervisorConfig>): DirectorSupervisor;
   close(): void;
@@ -70,11 +72,13 @@ function fixture(): Fixture {
   const db = new Db(join(dir, "orchestrator.sqlite"));
   const hub = new EventHub();
   const findings: PostFindingInput[] = [];
+  const injections: { threadId: string; message: string }[] = [];
   const notices: { kind: string; title: string; detail?: string }[] = [];
   const recoveries: string[] = [];
   const autoReviews: string[] = [];
   let calls = 0;
   let discord = false;
+  let correctionCanLand = false;
   let beforeJudge: (() => void) | undefined;
   let next: Verdict | null = { action: "comment", message: "A bounded note is useful.", reasoning: "The task has no live run.", requiresOwner: false };
 
@@ -97,6 +101,11 @@ function fixture(): Fixture {
       findings.push(input);
       return db.addFinding(input);
     },
+    async injectSupervisorCorrection(threadId: string, message: string): Promise<ThreadActionResult> {
+      if (!correctionCanLand) return { ok: false, state: db.getThread(threadId)?.state, error: "no live correction target" };
+      injections.push({ threadId, message });
+      return { ok: true, state: db.getThread(threadId)?.state };
+    },
     async resumeThread(threadId: string): Promise<ThreadActionResult> {
       recoveries.push(threadId);
       return { ok: true, state: "queued" };
@@ -116,6 +125,7 @@ function fixture(): Fixture {
     db,
     hub,
     findings,
+    injections,
     notices,
     recoveries,
     autoReviews,
@@ -125,6 +135,9 @@ function fixture(): Fixture {
     },
     setBeforeJudge: (action) => {
       beforeJudge = action;
+    },
+    setCorrectionCanLand: (on) => {
+      correctionCanLand = on;
     },
     setDiscord: (on) => {
       discord = on;
@@ -331,6 +344,17 @@ async function main(): Promise<void> {
       f.setVerdict({ action: "inject_correction", message: "do this", reasoning: "test boundary", requiresOwner: false });
       await supervisor.runNow();
       check("a correction is discarded when no live agent can receive it", f.findings.length === 0 && f.db.listSupervisorEvents().some((e) => e.threadId === stale.id && e.kind === "skip"));
+
+      const receivingCorrection = makeTask(f.db, "live correction receiver", "implementing", true);
+      f.db.createRun({ threadId: receivingCorrection.id, role: "implementor", model: "test-model" });
+      f.setCorrectionCanLand(true);
+      f.setVerdict({ action: "inject_correction", message: "fix the drift", reasoning: "a live agent can apply it", requiresOwner: false });
+      await supervisor.runNow();
+      f.setCorrectionCanLand(false);
+      check(
+        "a correction that has a live receiver uses the injection path, not a passive finding",
+        f.injections.some((x) => x.threadId === receivingCorrection.id && x.message.includes("fix the drift")) && !f.findings.some((x) => x.threadId === receivingCorrection.id),
+      );
 
       const silentLive = makeTask(f.db, "silent live run", "implementing", true);
       f.db.createRun({ threadId: silentLive.id, role: "implementor", model: "test-model" });

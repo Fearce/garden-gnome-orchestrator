@@ -59,6 +59,10 @@ export interface SupervisorHost {
   readonly hub: EventHub;
   supervisorJudge(prompt: string, schema: JsonSchemaLike): Promise<SupervisorJudgement | null>;
   postFinding(input: PostFindingInput): Finding;
+  /** Send a supervisor correction through ThreadManager's normal injection gates. The host decides
+   *  whether a live/materializing agent can actually receive it; the supervisor must not turn a
+   *  correction into a cold resume. */
+  injectSupervisorCorrection(threadId: string, message: string): Promise<ThreadActionResult>;
   resumeThread(threadId: string, message?: string): Promise<ThreadActionResult>;
   /** Delegate a normal human-review park to the existing reviewer. The reviewer, not the supervisor,
    *  remains the only autonomous path that may accept work as done. */
@@ -322,7 +326,7 @@ export function buildPrompt(d: Digest): string {
     "- start_auto_review: hand a normal newly-completed review park to the existing reviewer, which can inspect the workspace and either accept it as done or hand it back. Prefer this over claiming completion yourself. Never use it for a cap-park, an owner approval/input wait, or a task that is not in review.",
     "- none: nothing actually warrants acting — the deterministic flag was a false alarm or it's fine to keep waiting.",
     "- comment: append a short, useful note to the task's findings. Non-urgent, does not interrupt anything.",
-    "- inject_correction: post an urgent correction that reaches a live agent immediately. Only when you have real evidence the task is off track and a live agent could act on it right now.",
+    "- inject_correction: post an urgent correction through the normal director-injection path. Only when you have real evidence the task is off track and a live or already-materializing agent could act on it right now.",
     "- trigger_recovery: resume the task from where it left off (the same effect as a human clicking Resume) — appropriate when it looks stalled/dropped rather than genuinely blocked or intentionally waiting.",
     "- alert: this needs the owner's attention — a real blocker, exhausted retries, or a decision only they can make. Nothing you can safely do yourself.",
     "- cleanup: the task is done and healthy; just record that you looked.",
@@ -647,10 +651,13 @@ export class DirectorSupervisor {
         this.host.postFinding({ threadId: thread.id, fromRole: "director", summary: `Supervisor: ${clip(message, 140)}`, detail: verdict.reasoning || null, severity: "note" });
         return { ok: true };
       case "inject_correction":
-        if (!this.host.db.listActiveRuns().some((run) => run.threadId === thread.id)) {
-          return { ok: false, reason: "correction skipped - no live agent remains to receive it" };
+        {
+          const correction = await this.host.injectSupervisorCorrection(
+            thread.id,
+            `Supervisor correction: ${message}${verdict.reasoning && verdict.reasoning !== message ? `\nReason: ${verdict.reasoning}` : ""}`,
+          );
+          if (!correction.ok) return { ok: false, reason: `correction skipped - ${correction.error ?? "no live agent remains to receive it"}` };
         }
-        this.host.postFinding({ threadId: thread.id, fromRole: "director", summary: `Supervisor correction: ${clip(message, 140)}`, detail: verdict.reasoning || null, severity: "critical" });
         return { ok: true };
       case "trigger_recovery": {
         const live = this.host.db.listActiveRuns().some((run) => run.threadId === thread.id);
