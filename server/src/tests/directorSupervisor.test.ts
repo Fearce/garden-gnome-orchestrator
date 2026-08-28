@@ -268,6 +268,33 @@ async function main(): Promise<void> {
       f.close();
     }
   }
+  {
+    const f = fixture();
+    try {
+      const task = makeTask(f.db, "phase checked then reviewed", "planning");
+      f.setVerdict({
+        action: "start_auto_review",
+        message: "The implementation handoff is complete; verify it with the reviewer.",
+        reasoning: "A normal review park is eligible for the existing verifier.",
+        requiresOwner: false,
+      });
+      const supervisor = f.create();
+      supervisor.setEnabled(true);
+      const implementing = f.db.updateThread(task.id, { state: "implementing" })!;
+      f.hub.publish({ type: "thread.upsert", thread: implementing });
+      await waitFor(() => f.db.listSupervisorEvents().length === 1);
+      check("a healthy phase-change check is recorded before review", f.getJudgeCalls() === 0 && f.db.listSupervisorEvents()[0]!.kind === "check");
+
+      const review = f.db.updateThread(task.id, { state: "review", error: "implementation finished; needs review" })!;
+      f.hub.publish({ type: "thread.upsert", thread: review });
+      await waitFor(() => f.autoReviews.length === 1);
+      check("a later review transition bypasses routine-check cooldown", f.getJudgeCalls() === 1 && f.autoReviews[0] === task.id);
+      await settleHubPass();
+      supervisor.setEnabled(false);
+    } finally {
+      f.close();
+    }
+  }
 
   console.log("director supervisor: token budget reservation");
   {
