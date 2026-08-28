@@ -934,7 +934,7 @@ export type ClientCommand =
 
 export type SupervisorTrigger = "state_change" | "stall_sweep" | "manual";
 export type SupervisorEventKind = "check" | "action" | "skip" | "error";
-export type SupervisorAction = "comment" | "inject_correction" | "trigger_recovery" | "alert" | "cleanup";
+export type SupervisorAction = "comment" | "inject_correction" | "trigger_recovery" | "start_auto_review" | "alert" | "cleanup";
 
 export interface SupervisorEvent {
   id: string;

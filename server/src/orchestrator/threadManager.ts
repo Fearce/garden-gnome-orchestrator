@@ -90,7 +90,7 @@ import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import { DiscordNotifier, parseChannelId, type OwnerNotice } from "./discordNotify.js";
-import { DirectorSupervisor, type SupervisorJudgement } from "./supervisor.js";
+import { DirectorSupervisor, SUPERVISOR_JUDGE_MAX_TURNS, type SupervisorJudgement } from "./supervisor.js";
 import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
 import type { FreeProviderService } from "../freeProviders/service.js";
 import { config, fallbackModelFor } from "../config.js";
@@ -2114,7 +2114,7 @@ export class ThreadManager implements OrchestratorApi {
       settingSources: [],
       outputFormat: { type: "json_schema", schema: schema as Record<string, unknown> },
       includePartialMessages: false,
-      maxTurns: 2,
+      maxTurns: SUPERVISOR_JUDGE_MAX_TURNS,
     };
     const agent = this.createDirectorAgent(target, cfg, { cliSchema: schema });
     const off = agent.onEvent((e) => {

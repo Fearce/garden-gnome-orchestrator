@@ -276,14 +276,15 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   lifecycle transitions and queues all evaluations through one single-flight drain; an adaptive backstop
   sweep catches dropped work (5 minutes with candidates, exponential 2–30-minute idle backoff). Each pass
   first reads only durable task facts — state, active runs, messages, findings and run history. It invokes a
-  no-tools, two-turn structured director judgement only for a newly failed non-cap task, a real stall
-  (no live run past the per-state threshold), or a review/failed park left untouched for six hours. The
+  no-tools, eight-turn structured director judgement only for a newly failed non-cap task, a real stall,
+  a normal review transition, or a review/failed park left untouched for six hours. The
   15-minute per-task cooldown and
-  durable 60-check-in/$3/120K-token daily cap bound cost across restarts.
+  durable 60-check-in/$3/480K-token daily cap bound cost across restarts.
 
   The verdict may append a finding, issue a critical correction only to a still-live agent, call the normal
-  resume path for a dropped active/old failed task, or flag an owner blocker; it cannot cancel, retry,
-  delete, mark done, revive cancelled work, or resume an owner-review/approval state. Each check, skip,
+  resume path for a dropped active/old failed task, delegate a normal review park to the existing
+  auto-reviewer (whose accepting verdict alone can mark done), or flag an owner blocker; it cannot cancel,
+  retry, delete, directly mark done, revive cancelled work, or resume an owner-review/approval state. Each check, skip,
   verdict/action, compact token/cost record, and Discord-send decision is persisted in `supervisor_events`
   and broadcast to the Supervisor board tab. Discord is consulted only when its own Phone notifications
   configuration is complete; per-task plus durable global cooldowns eliminate restart or flapping duplicates.

@@ -60,6 +60,9 @@ export interface SupervisorHost {
   supervisorJudge(prompt: string, schema: JsonSchemaLike): Promise<SupervisorJudgement | null>;
   postFinding(input: PostFindingInput): Finding;
   resumeThread(threadId: string, message?: string): Promise<ThreadActionResult>;
+  /** Delegate a normal human-review park to the existing reviewer. The reviewer, not the supervisor,
+   *  remains the only autonomous path that may accept work as done. */
+  autoReview(threadId: string): Promise<ThreadActionResult>;
   supervisorDiscordReady(): boolean;
   /** Forward one high-signal event to the owner's phone — reuses the same Discord config/permission/
    *  serialization every other owner notice goes through; a no-op when the integration is off. */
@@ -103,10 +106,18 @@ const TASK_COOLDOWN_MS = 15 * 60_000;
  *  of flapping tasks. Deterministic checks keep running past this; only the agent call stops. */
 const MAX_CHECKINS_PER_DAY = 60;
 const MAX_COST_USD_PER_DAY = 3;
-const MAX_TOKENS_PER_DAY = 120_000;
-// No runner exposes a reliable output-token ceiling across every provider. Reserve this modest allowance
-// before a check-in; paired with the 2-turn/no-tools contract, it keeps the daily token guard conservative.
-const TOKEN_RESERVATION_PER_CHECKIN = 2_000;
+// Preserve the originally intended 60-check-in daily runway after raising a single judgement from two
+// to eight turns: 60 reservations x 8K tokens. The separate $3 cap remains the tighter practical cost
+// control when a provider reports prices.
+const MAX_TOKENS_PER_DAY = 480_000;
+// No runner exposes a reliable output-token ceiling across every provider. Reserve enough room for the
+// fuller eight-turn no-tools judgement before a check-in, so the durable daily token guard remains useful.
+const TOKEN_RESERVATION_PER_CHECKIN = 8_000;
+
+/** Two turns routinely cut off the first meaningful judgement before it could inspect a handoff and
+ *  return the required JSON. Eight no-tools turns leave room to reason and self-correct, while the
+ *  single-flight queue plus daily cost/token ceilings still bound this as an operator, not a swarm. */
+export const SUPERVISOR_JUDGE_MAX_TURNS = 8;
 
 /** Sweep cadence: a short, responsive interval the instant there's real work to watch, exponential
  *  backoff up to a long ceiling once nothing is active at all. */
@@ -180,7 +191,7 @@ const VERDICT_SCHEMA: JsonSchemaLike = {
   additionalProperties: false,
   required: ["action", "message", "reasoning", "requiresOwner"],
   properties: {
-    action: { type: "string", enum: ["none", "comment", "inject_correction", "trigger_recovery", "alert", "cleanup"] },
+    action: { type: "string", enum: ["none", "comment", "inject_correction", "trigger_recovery", "start_auto_review", "alert", "cleanup"] },
     message: { type: "string" },
     reasoning: { type: "string" },
     requiresOwner: { type: "boolean" },
@@ -308,6 +319,7 @@ export function buildPrompt(d: Digest): string {
     d.messagesText,
     "",
     "## Your options",
+    "- start_auto_review: hand a normal newly-completed review park to the existing reviewer, which can inspect the workspace and either accept it as done or hand it back. Prefer this over claiming completion yourself. Never use it for a cap-park, an owner approval/input wait, or a task that is not in review.",
     "- none: nothing actually warrants acting — the deterministic flag was a false alarm or it's fine to keep waiting.",
     "- comment: append a short, useful note to the task's findings. Non-urgent, does not interrupt anything.",
     "- inject_correction: post an urgent correction that reaches a live agent immediately. Only when you have real evidence the task is off track and a live agent could act on it right now.",
@@ -323,7 +335,7 @@ export function buildPrompt(d: Digest): string {
 export function parseVerdict(output: unknown): SupervisorVerdict | null {
   if (!output || typeof output !== "object") return null;
   const raw = output as Record<string, unknown>;
-  const actions: SupervisorAction[] = ["comment", "inject_correction", "trigger_recovery", "alert", "cleanup"];
+  const actions: SupervisorAction[] = ["comment", "inject_correction", "trigger_recovery", "start_auto_review", "alert", "cleanup"];
   const action = typeof raw.action === "string" && (actions as string[]).includes(raw.action) ? (raw.action as SupervisorAction) : null;
   if (raw.action !== "none" && !action) return null;
   return {
@@ -518,6 +530,24 @@ export class DirectorSupervisor {
       };
     }
 
+    // A normal review park is the one state where the supervisor can safely be self-sufficient: it may
+    // delegate the owner's review to the established, read-only auto-reviewer. This is deliberately a
+    // lifecycle/manual signal only, never a sweep of old review backlog, and autoReview itself rechecks
+    // the state, cap marker, workspace and capacity before it starts anything.
+    if (
+      !assessment.eligible &&
+      thread.state === "review" &&
+      !hasLiveRun &&
+      !CAP_PARK_MARKER.test(thread.error ?? "") &&
+      (trigger === "state_change" || trigger === "manual")
+    ) {
+      assessment = {
+        eligible: true,
+        loggable: true,
+        reason: "task newly entered normal review - inspect its handoff and decide whether the existing auto-reviewer can verify it",
+      };
+    }
+
     if (!assessment.eligible) {
       // Log a routine phase change (transparency) but never spam the log every sweep tick for a task
       // that's simply, unremarkably, still working.
@@ -630,6 +660,21 @@ export class DirectorSupervisor {
         const recovery = await this.host.resumeThread(thread.id, `Supervisor: ${message}`);
         if (!recovery.ok) return { ok: false, reason: `recovery declined - ${recovery.error ?? "the task could not be resumed"}` };
         this.host.postFinding({ threadId: thread.id, fromRole: "director", summary: `Supervisor resumed this task: ${clip(message, 140)}`, detail: verdict.reasoning || null, severity: "note" });
+        return { ok: true };
+      }
+      case "start_auto_review": {
+        if (thread.state !== "review" || CAP_PARK_MARKER.test(thread.error ?? "")) {
+          return { ok: false, reason: "auto-review skipped - only a normal review park is eligible" };
+        }
+        const review = await this.host.autoReview(thread.id);
+        if (!review.ok) return { ok: false, reason: `auto-review declined - ${review.error ?? "the reviewer could not be started"}` };
+        this.host.postFinding({
+          threadId: thread.id,
+          fromRole: "director",
+          summary: `Supervisor delegated review: ${clip(message, 140)}`,
+          detail: verdict.reasoning || "The reviewer now owns the acceptance decision; the supervisor did not mark this task done.",
+          severity: "note",
+        });
         return { ok: true };
       }
       case "alert":

@@ -60,7 +60,9 @@ only: it never edits or commits.
 Supervisor**. It is off by default; when on, it uses lifecycle checks and an adaptive
 backstop sweep, spending a short no-tools agent judgement only for genuinely stalled or
 forgotten work. Every check, reason, action, token/cost estimate and notification decision
-appears in its Supervisor tab. Its action set is intentionally small: note, live-agent
+appears in its Supervisor tab. A normal review handoff can be delegated to the existing
+auto-reviewer, which alone can inspect the workspace and accept a task as done; the supervisor
+never directly accepts work. Its action set is intentionally small: note, live-agent
 correction, safe resume, or owner alert — never cancel, retry, delete, or mark a task done.
 
 ## A look around

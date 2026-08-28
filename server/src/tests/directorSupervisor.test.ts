@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../db/db.js";
 import { EventHub } from "../events.js";
-import { DirectorSupervisor, type SupervisorConfig, type SupervisorHost, type SupervisorJudgement } from "../orchestrator/supervisor.js";
+import { DirectorSupervisor, SUPERVISOR_JUDGE_MAX_TURNS, type SupervisorConfig, type SupervisorHost, type SupervisorJudgement } from "../orchestrator/supervisor.js";
 import type { Finding, Thread, ThreadState } from "../types.js";
 import type { PostFindingInput, ThreadActionResult } from "../orchestrator/api.js";
 import type { JsonSchemaLike } from "../agents/structuredText.js";
@@ -56,6 +56,7 @@ interface Fixture {
   findings: PostFindingInput[];
   notices: { kind: string; title: string; detail?: string }[];
   recoveries: string[];
+  autoReviews: string[];
   getJudgeCalls(): number;
   setVerdict(verdict: Verdict | null): void;
   setBeforeJudge(action: (() => void) | undefined): void;
@@ -71,6 +72,7 @@ function fixture(): Fixture {
   const findings: PostFindingInput[] = [];
   const notices: { kind: string; title: string; detail?: string }[] = [];
   const recoveries: string[] = [];
+  const autoReviews: string[] = [];
   let calls = 0;
   let discord = false;
   let beforeJudge: (() => void) | undefined;
@@ -99,6 +101,10 @@ function fixture(): Fixture {
       recoveries.push(threadId);
       return { ok: true, state: "queued" };
     },
+    async autoReview(threadId: string): Promise<ThreadActionResult> {
+      autoReviews.push(threadId);
+      return { ok: true, state: "reviewing" };
+    },
     supervisorDiscordReady: () => discord,
     notifySupervisor(kind, title, detail): void {
       notices.push({ kind, title, detail });
@@ -112,6 +118,7 @@ function fixture(): Fixture {
     findings,
     notices,
     recoveries,
+    autoReviews,
     getJudgeCalls: () => calls,
     setVerdict: (verdict) => {
       next = verdict;
@@ -131,6 +138,7 @@ function fixture(): Fixture {
 }
 
 async function main(): Promise<void> {
+  check("supervisor check-ins have a sufficient but bounded turn ceiling", SUPERVISOR_JUDGE_MAX_TURNS === 8);
   console.log("director supervisor: default-off and efficient activation");
   {
     const f = fixture();
@@ -220,12 +228,53 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("director supervisor: autonomous review handoff");
+  {
+    const f = fixture();
+    try {
+      const task = makeTask(f.db, "ready for delegated review", "implementing");
+      f.setVerdict({
+        action: "start_auto_review",
+        message: "The implementation handoff is complete; verify it with the reviewer.",
+        reasoning: "A normal review park is eligible for the existing verifier.",
+        requiresOwner: false,
+      });
+      const supervisor = f.create();
+      supervisor.setEnabled(true);
+      const review = f.db.updateThread(task.id, { state: "review", error: "implementation finished; needs review" })!;
+      f.hub.publish({ type: "thread.upsert", thread: review });
+      await waitFor(() => f.autoReviews.length === 1);
+      check(
+        "a newly normal review park receives one bounded judgement and starts the existing auto-reviewer",
+        f.getJudgeCalls() === 1 && f.autoReviews[0] === task.id && f.findings.some((finding) => finding.threadId === task.id && finding.summary.startsWith("Supervisor delegated review:")),
+      );
+
+      await supervisor.runNow();
+      check("review handoff respects the task cooldown and does not start duplicate reviewers", f.autoReviews.length === 1);
+
+      const cancelledReview = makeTask(f.db, "cancel before delegated review", "review");
+      f.setBeforeJudge(() => f.db.updateThread(cancelledReview.id, { state: "cancelled" }));
+      await supervisor.runNow();
+      f.setBeforeJudge(undefined);
+      check("a review cancelled during judgement is never handed to auto-review", f.autoReviews.length === 1 && f.db.getThread(cancelledReview.id)!.state === "cancelled");
+
+      const capPark = makeTask(f.db, "capacity-owned review park", "review", true);
+      f.db.updateThread(capPark.id, { error: "Auto-resume pending - capacity is exhausted" });
+      await supervisor.runNow();
+      check("a capacity-owned review park is never handed to auto-review", f.autoReviews.length === 1 && f.getJudgeCalls() === 2);
+      await settleHubPass();
+      supervisor.setEnabled(false);
+    } finally {
+      f.close();
+    }
+  }
+
   console.log("director supervisor: token budget reservation");
   {
     const f = fixture();
     try {
       makeTask(f.db, "first token-bounded stall", "planning", true);
-      const supervisor = f.create({ maxTokensPerDay: 2_100 });
+      const supervisor = f.create({ maxTokensPerDay: 8_100 });
       supervisor.setEnabled(true);
       await supervisor.runNow();
       makeTask(f.db, "second token-bounded stall", "planning", true);

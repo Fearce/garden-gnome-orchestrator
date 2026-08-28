@@ -157,6 +157,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             on={settings.directorSupervisorEnabled}
             onChange={(v) => setSettings({ directorSupervisorEnabled: v })}
           />
+          <p className="settings-note tight">
+            A normal review handoff may be delegated to Auto-review, which verifies the workspace and can mark it done only on an accepted reviewer verdict. The supervisor never directly accepts work.
+          </p>
         </Group>
 
         <Group label="Director">

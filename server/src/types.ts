@@ -875,7 +875,7 @@ export type SupervisorEventKind = "check" | "action" | "skip" | "error";
  *  existing finding-routing path); 'trigger_recovery' calls the same `resumeThread` the manual Resume
  *  button uses; 'alert' surfaces a concise question/notice for the owner; 'cleanup' is a settle-time audit
  *  record with no tree/state mutation. Never a destructive action (no cancel/retry/delete). */
-export type SupervisorAction = "comment" | "inject_correction" | "trigger_recovery" | "alert" | "cleanup";
+export type SupervisorAction = "comment" | "inject_correction" | "trigger_recovery" | "start_auto_review" | "alert" | "cleanup";
 
 /** One durable row of the supervisor's own audit trail — a check, a skip, or a bounded action — so the
  *  console can show not just its current state but WHY it acted or didn't. Cascades with its thread like
