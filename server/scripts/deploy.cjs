@@ -77,7 +77,7 @@ function porcelainPath(line) {
 
 // ---- shelling out ----
 
-const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", stdio: "pipe", ...opts });
+const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", stdio: "pipe", windowsHide: true, ...opts });
 const git = (args, cwd = REPO) => run("git", args, { cwd }).trim();
 const ps = (script) => run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]).trim();
 
@@ -90,7 +90,11 @@ function head() {
 }
 
 function statusLines() {
-  return git(["status", "--porcelain"]).split("\n").map((l) => l.trimEnd()).filter(Boolean);
+  return parseStatusOutput(run("git", ["status", "--porcelain"], { cwd: REPO }));
+}
+
+function parseStatusOutput(out) {
+  return out.split(/\r?\n/).map((l) => l.trimEnd()).filter(Boolean);
 }
 
 // ---- the two build paths ----
@@ -319,7 +323,7 @@ async function main() {
   process.exit(0);
 }
 
-module.exports = { planBuild, porcelainPath, restartLookedLikeANoop };
+module.exports = { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput };
 
 if (require.main === module) {
   main().catch((e) => {

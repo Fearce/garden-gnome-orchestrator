@@ -6,7 +6,7 @@
 // Both happened on 2026-08-24 in the same afternoon. `planBuild` is pure, so the whole decision is held
 // here without a build, a temp tree, or a restart.
 const assert = require("node:assert/strict");
-const { planBuild, porcelainPath, restartLookedLikeANoop } = require("./deploy.cjs");
+const { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput } = require("./deploy.cjs");
 
 let checks = 0;
 const check = (name, cond) => {
@@ -63,6 +63,10 @@ console.log("deploy plan: the two halves are judged separately");
 
 console.log("deploy plan: porcelain shapes that would otherwise read as a different file");
 {
+  const raw = " M server/src/orchestrator/threadManager.ts\n";
+  const parsed = parseStatusOutput(raw);
+  check("the first unstaged line keeps its porcelain status columns", parsed[0] === " M server/src/orchestrator/threadManager.ts");
+  check("a first-line unstaged source still forces head-only", planBuild(parsed).server === "head-only");
   check("a rename reports its NEW path", porcelainPath('R  server/src/a.ts -> server/src/b.ts') === "server/src/b.ts");
   check("a renamed source still forces head-only", planBuild(['R  docs/a.md -> server/src/b.ts']).server === "head-only");
   check("a quoted path is unquoted", porcelainPath('?? "server/src/a b.ts"') === "server/src/a b.ts");
