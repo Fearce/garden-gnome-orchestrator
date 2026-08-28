@@ -83,6 +83,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     modelStats: ctx.db.modelStats(),
     notes: ctx.notes.list(),
     onlineOffice: ctx.onlineOffice.status(),
+    supervisor: ctx.manager.supervisorSnapshot(),
   };
 }
 
@@ -324,6 +325,9 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       break;
     case "note.clear":
       ctx.notes.clear();
+      break;
+    case "supervisor.runNow":
+      await ctx.manager.supervisorRunNow();
       break;
     case "snapshot.request":
       send(socket, buildHello(ctx));

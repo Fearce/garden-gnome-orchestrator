@@ -90,6 +90,7 @@ import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import { DiscordNotifier, parseChannelId, type OwnerNotice } from "./discordNotify.js";
+import { DirectorSupervisor, type SupervisorJudgement } from "./supervisor.js";
 import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
 import type { FreeProviderService } from "../freeProviders/service.js";
 import { config, fallbackModelFor } from "../config.js";
@@ -121,6 +122,7 @@ import type {
   Role,
   RouteDecision,
   StageOutputs,
+  SupervisorSnapshot,
   Thread,
   ZaiEffort,
 } from "../types.js";
@@ -717,6 +719,9 @@ export class ThreadManager implements OrchestratorApi {
   private readonly liveBench: LiveBenchScores;
   // Posts the owner's phone notifications (task done / needs you / failed) to their Discord channel.
   private readonly discord: DiscordNotifier;
+  // The Director Supervisor watchdog (off by default) — see orchestrator/supervisor.ts. Standalone over a
+  // narrow SupervisorHost view of this manager, so its logic never entangles with the pipeline internals.
+  private readonly supervisor: DirectorSupervisor;
 
   constructor(
     readonly db: Db,
@@ -740,6 +745,7 @@ export class ThreadManager implements OrchestratorApi {
       () => ({ enabled: this.settingBool("setting_discord_notify", false), token: this.discordBotToken(), channelId: this.discordChannelId() }),
       (level, message) => this.hub.log(level, message),
     );
+    this.supervisor = new DirectorSupervisor(this);
     this.markInterrupted();
     this.applyAccountEnabled();
     this.applyAccountWeeklySafety();
@@ -780,6 +786,9 @@ export class ThreadManager implements OrchestratorApi {
     // Honor a persisted "Fast usage polling" opt-in on boot — set before accounts.start() arms the
     // ping timer in index.ts, so the first interval already uses the chosen cadence.
     this.applyUsagePollInterval();
+    // Boot-apply the supervisor toggle — without this it silently reverts to off on every restart even
+    // when the operator turned it on (see add-a-setting.md's 3-touch pattern).
+    this.supervisor.setEnabled(this.settings().directorSupervisorEnabled);
   }
 
   /** Preserve old "highest available" defaults when a provider adds a new top tier. Each marker is
@@ -1795,6 +1804,7 @@ export class ThreadManager implements OrchestratorApi {
         this.pickableCodexModels().map((model) => [model, [...this.codexSupportedEfforts(model)]]),
       ),
       grokModels: this.pickableGrokModels(),
+      directorSupervisorEnabled: this.settingBool("setting_director_supervisor_enabled", false),
     };
   }
 
@@ -2116,6 +2126,45 @@ export class ThreadManager implements OrchestratorApi {
     await agent.stop().catch(() => {});
     if (this.directorRunCapped(target, agent)) this.noteDirectorProviderCap(target);
     return result && !result.isError ? result.structuredOutput ?? null : null;
+  }
+
+  /** The Director Supervisor's own cheap bounded judgement call — same no-tools, capacity-aware shape as
+   *  askDirectorJson (including cross-provider fallback via preferredDirectorTarget), but additionally
+   *  reports what it cost so the supervisor can keep a visible, bounded budget. Kept as its own method
+   *  (rather than widening askDirectorJson's return shape) so every other caller's contract is untouched. */
+  async supervisorJudge(prompt: string, schema: JsonSchemaLike): Promise<SupervisorJudgement | null> {
+    const target = this.preferredDirectorTarget();
+    if (!target) return null;
+    mkdirSync(join(config.dataDir, "director-sandbox"), { recursive: true });
+    const cfg: AgentRunConfig = {
+      model: target.model,
+      cwd: join(config.dataDir, "director-sandbox"),
+      systemPrompt: "Return only the requested structured answer. Do not use tools or inspect files.",
+      permissionMode: "plan",
+      allowedTools: [],
+      disallowedTools: ["Read", "Grep", "Glob", "Write", "Edit", "NotebookEdit", "Bash", "AskUserQuestion"],
+      settingSources: [],
+      outputFormat: { type: "json_schema", schema: schema as Record<string, unknown> },
+      includePartialMessages: false,
+      maxTurns: 2,
+    };
+    const agent = this.createDirectorAgent(target, cfg, { cliSchema: schema });
+    const off = agent.onEvent((e) => {
+      if (e.type === "rate_limit" && target.provider === "claude") this.accounts.updateFromRateLimit(target.accountId, e.info);
+    });
+    agent.start(`${prompt}\n\nReturn exactly one JSON object matching the supplied schema.`);
+    const result = await agent.result().catch(() => undefined);
+    off();
+    await agent.stop().catch(() => {});
+    if (this.directorRunCapped(target, agent)) this.noteDirectorProviderCap(target);
+    if (!result || result.isError) return null;
+    return {
+      output: result.structuredOutput ?? null,
+      costUsd: result.costUsd ?? 0,
+      tokenUsage: result.tokenUsage,
+      model: target.model,
+      provider: target.provider,
+    };
   }
 
   /** Smart director choice: one judgement for the stable director job, then Director persists the key
@@ -2739,6 +2788,10 @@ export class ThreadManager implements OrchestratorApi {
     if (patch.taskAgentCount !== undefined) {
       const n = Math.round(patch.taskAgentCount);
       this.db.kvSet("setting_task_agent_count", String(n <= 1 ? 1 : clampAgentCount(n)));
+    }
+    if (patch.directorSupervisorEnabled !== undefined) {
+      this.db.kvSet("setting_director_supervisor_enabled", patch.directorSupervisorEnabled ? "1" : "0");
+      this.supervisor.setEnabled(patch.directorSupervisorEnabled);
     }
     if (patch.showComposerPickers !== undefined) this.db.kvSet("setting_show_composer_pickers", patch.showComposerPickers ? "1" : "0");
     if (patch.showAgentModel !== undefined) this.db.kvSet("setting_show_agent_model", patch.showAgentModel ? "1" : "0");
@@ -3992,6 +4045,27 @@ export class ThreadManager implements OrchestratorApi {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content: `[orchestrator] ${text}` }),
     }).catch(() => {});
+  }
+
+  /** The supervisor must not create a false "sent" record while Phone notifications is off or incomplete. */
+  supervisorDiscordReady(): boolean {
+    return this.settingBool("setting_discord_notify", false) && !!this.discordBotToken() && !!this.discordChannelId();
+  }
+
+  /** Supervisor notices are Discord-only. They never spill into the generic webhook while the separately
+   *  configured Phone notifications toggle is disabled. */
+  notifySupervisor(kind: "done" | "input" | "failed", title: string, detail?: string, repo?: string): void {
+    this.discord.notify({ kind, title: `Supervisor: ${title}`, detail, repo });
+  }
+
+  /** The supervisor's live snapshot for the console (WS hello + the supervisor.* broadcast). */
+  supervisorSnapshot(): SupervisorSnapshot {
+    return this.supervisor.snapshot();
+  }
+
+  /** An explicit "run now" from the console — one immediate pass over every current candidate task. */
+  async supervisorRunNow(): Promise<void> {
+    await this.supervisor.runNow();
   }
 
   private cancelled(threadId: string): boolean {

@@ -57,6 +57,13 @@ checks, and asks you directly about anything only you can decide. It then marks 
 done in your place or hands it back with the reasons it could not sign off. It reviews
 only: it never edits or commits.
 
+**Need a careful watch without an always-on swarm?** Settings can opt into **Director
+Supervisor**. It is off by default; when on, it uses lifecycle checks and an adaptive
+backstop sweep, spending a short no-tools agent judgement only for genuinely stalled or
+forgotten work. Every check, reason, action, token/cost estimate and notification decision
+appears in its Supervisor tab. Its action set is intentionally small: note, live-agent
+correction, safe resume, or owner alert — never cancel, retry, delete, or mark a task done.
+
 ## A look around
 
 Open a task and you get its whole trail: which agents ran, what they cost, what they

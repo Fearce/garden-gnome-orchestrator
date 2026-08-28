@@ -51,6 +51,7 @@ const GATES = [
   "test:auto-title",
   "test:voice-announce",
   "test:discord-notify",
+  "test:director-supervisor",
   "test:run-error",
   "test:run-classify",
   "test:cap-flag",

@@ -248,6 +248,29 @@ CREATE TABLE IF NOT EXISTS model_grades (
   graded_at    INTEGER
 );
 
+-- Director Supervisor: a lightweight watchdog over active tasks (Settings, off by default). One row per
+-- check/skip/action pass, so the console can show not just current state but WHY it acted or didn't --
+-- the feature's transparency requirement. Cascades with its thread like findings/agent_runs: this is
+-- task-scoped observability, not a ledger meant to outlive a purge. thread_id is nullable for a pass
+-- with no single task to point at.
+CREATE TABLE IF NOT EXISTS supervisor_events (
+  id               TEXT PRIMARY KEY,
+  thread_id        TEXT REFERENCES threads(id) ON DELETE CASCADE,
+  thread_title     TEXT,
+  workspace        TEXT,
+  trigger          TEXT NOT NULL,
+  kind             TEXT NOT NULL,
+  action           TEXT,
+  summary          TEXT NOT NULL,
+  detail           TEXT,
+  used_agent       INTEGER NOT NULL DEFAULT 0,
+  cost_usd         REAL,
+  total_tokens     INTEGER,
+  model            TEXT,
+  notified_discord INTEGER NOT NULL DEFAULT 0,
+  created_at       INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_thread     ON agent_runs(thread_id);
 CREATE INDEX IF NOT EXISTS idx_grades_model    ON model_grades(graded_model);
 CREATE INDEX IF NOT EXISTS idx_findings_thread ON findings(thread_id);
@@ -255,4 +278,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_questions_thread ON questions(thread_id);
 CREATE INDEX IF NOT EXISTS idx_chat_room       ON chat_messages(room, created_at);
 CREATE INDEX IF NOT EXISTS idx_notes_thread    ON operator_notes(thread_id);
+CREATE INDEX IF NOT EXISTS idx_supervisor_events_thread  ON supervisor_events(thread_id);
+CREATE INDEX IF NOT EXISTS idx_supervisor_events_created ON supervisor_events(created_at);
 `;

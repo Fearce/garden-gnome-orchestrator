@@ -37,6 +37,10 @@ import type {
   Severity,
   ShotgunAssignment,
   StageOutputs,
+  SupervisorAction,
+  SupervisorEvent,
+  SupervisorEventKind,
+  SupervisorTrigger,
   TaskSearchHit,
   Thread,
   ThreadLane,
@@ -224,6 +228,26 @@ function rowToOperatorNote(r: Row): OperatorNote {
     workspace: (r.workspace as string | null) ?? null,
     fromRole: (r.from_role as Role | null) ?? null,
     fromName: (r.from_name as string | null) ?? null,
+    createdAt: r.created_at as number,
+  };
+}
+
+function rowToSupervisorEvent(r: Row): SupervisorEvent {
+  return {
+    id: r.id as string,
+    threadId: (r.thread_id as string | null) ?? null,
+    threadTitle: (r.thread_title as string | null) ?? null,
+    workspace: (r.workspace as string | null) ?? null,
+    trigger: r.trigger as SupervisorTrigger,
+    kind: r.kind as SupervisorEventKind,
+    action: (r.action as SupervisorAction | null) ?? null,
+    summary: r.summary as string,
+    detail: (r.detail as string | null) ?? null,
+    usedAgent: !!r.used_agent,
+    costUsd: r.cost_usd == null ? null : Number(r.cost_usd),
+    totalTokens: r.total_tokens == null ? null : Number(r.total_tokens),
+    model: (r.model as string | null) ?? null,
+    notifiedDiscord: !!r.notified_discord,
     createdAt: r.created_at as number,
   };
 }
@@ -1811,6 +1835,111 @@ export class Db {
   getAttachment(id: string): { name: string; mediaType: string; data: string } | null {
     const r = this.raw.prepare("SELECT name, media_type, data FROM attachments WHERE id = ?").get(id) as Row | undefined;
     return r ? { name: r.name as string, mediaType: r.media_type as string, data: r.data as string } : null;
+  }
+
+  // ---- Director Supervisor: its own audit trail (orchestrator/supervisor.ts) ----
+
+  recordSupervisorEvent(input: {
+    threadId?: string | null;
+    threadTitle?: string | null;
+    workspace?: string | null;
+    trigger: SupervisorTrigger;
+    kind: SupervisorEventKind;
+    action?: SupervisorAction | null;
+    summary: string;
+    detail?: string | null;
+    usedAgent?: boolean;
+    costUsd?: number | null;
+    totalTokens?: number | null;
+    model?: string | null;
+    notifiedDiscord?: boolean;
+  }): SupervisorEvent {
+    const e: SupervisorEvent = {
+      id: newId(),
+      threadId: input.threadId ?? null,
+      threadTitle: input.threadTitle ?? null,
+      workspace: input.workspace ?? null,
+      trigger: input.trigger,
+      kind: input.kind,
+      action: input.action ?? null,
+      summary: input.summary,
+      detail: input.detail ?? null,
+      usedAgent: input.usedAgent ?? false,
+      costUsd: input.costUsd ?? null,
+      totalTokens: input.totalTokens ?? null,
+      model: input.model ?? null,
+      notifiedDiscord: input.notifiedDiscord ?? false,
+      createdAt: now(),
+    };
+    this.raw
+      .prepare(
+        `INSERT INTO supervisor_events(id, thread_id, thread_title, workspace, trigger, kind, action, summary, detail, used_agent, cost_usd, total_tokens, model, notified_discord, created_at)
+         VALUES(@id, @threadId, @threadTitle, @workspace, @trigger, @kind, @action, @summary, @detail, @usedAgent, @costUsd, @totalTokens, @model, @notifiedDiscord, @createdAt)`,
+      )
+      .run({ ...e, usedAgent: e.usedAgent ? 1 : 0, notifiedDiscord: e.notifiedDiscord ? 1 : 0 });
+    return e;
+  }
+
+  /** Newest first, capped — the transparency panel's recent list, not the full history. */
+  listSupervisorEvents(limit = 100): SupervisorEvent[] {
+    return (this.raw.prepare("SELECT * FROM supervisor_events ORDER BY created_at DESC LIMIT ?").all(limit) as Row[]).map(rowToSupervisorEvent);
+  }
+
+  /** Today's (since `sinceMs`) bounded-check-in usage — the supervisor's daily budget guardrail reads
+   *  this instead of a separate counter, so the cap survives a restart with nothing extra to keep in sync. */
+  supervisorBudgetToday(sinceMs: number): { checkins: number; costUsd: number; totalTokens: number } {
+    const row = this.raw
+      .prepare("SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS cost, COALESCE(SUM(total_tokens), 0) AS tokens FROM supervisor_events WHERE used_agent = 1 AND created_at >= ?")
+      .get(sinceMs) as { n: number; cost: number; tokens: number };
+    return { checkins: row.n, costUsd: row.cost, totalTokens: row.tokens };
+  }
+
+  /** How many distinct tasks the supervisor flagged with an owner-facing action (alert/recovery) in the
+   *  last `sinceMs` window and haven't since settled — the transparency panel's "watching" count. */
+  supervisorWatchingCount(sinceMs: number): number {
+    const row = this.raw
+      .prepare(
+        `SELECT COUNT(DISTINCT se.thread_id) AS n
+           FROM supervisor_events se
+           JOIN threads t ON t.id = se.thread_id
+          WHERE se.action IN ('alert', 'trigger_recovery') AND se.created_at >= ?
+            AND t.state NOT IN ('done', 'cancelled', 'closed')`,
+      )
+      .get(sinceMs) as { n: number };
+    return row.n;
+  }
+
+  /** The most recent supervisor pass (of any kind) over one task — the per-task cooldown read. */
+  lastSupervisorEventAt(threadId: string): number | null {
+    const row = this.raw.prepare("SELECT MAX(created_at) AS t FROM supervisor_events WHERE thread_id = ?").get(threadId) as { t: number | null };
+    return row?.t ?? null;
+  }
+
+  /** Whether the supervisor has taken an owner-facing action (alert/recovery) on this task recently — used
+   *  to decide whether its later `done` deserves the "closed the loop" phone notice. */
+  lastSupervisorWatchAt(threadId: string): number | null {
+    const row = this.raw
+      .prepare("SELECT MAX(created_at) AS t FROM supervisor_events WHERE thread_id = ? AND action IN ('alert', 'trigger_recovery')")
+      .get(threadId) as { t: number | null };
+    return row?.t ?? null;
+  }
+
+  /** Whether a Discord notice already went out for this exact task+action recently — the per-(thread,
+   *  action) dedupe/cooldown that keeps a flapping task from paging the phone repeatedly. */
+  lastSupervisorNoticeAt(threadId?: string, action?: SupervisorAction): number | null {
+    const row = threadId && action
+      ? this.raw
+          .prepare("SELECT MAX(created_at) AS t FROM supervisor_events WHERE thread_id = ? AND action = ? AND notified_discord = 1")
+          .get(threadId, action) as { t: number | null }
+      : this.raw.prepare("SELECT MAX(created_at) AS t FROM supervisor_events WHERE notified_discord = 1").get() as { t: number | null };
+    return row?.t ?? null;
+  }
+
+  /** Epoch ms of the most recent message in a thread (any role/kind), or null — the cheapest available
+   *  read of "is anything actually happening here", for the supervisor's stall detection. */
+  lastActivityAt(threadId: string): number | null {
+    const row = this.raw.prepare("SELECT MAX(created_at) AS t FROM messages WHERE thread_id = ?").get(threadId) as { t: number | null };
+    return row?.t ?? null;
   }
 }
 

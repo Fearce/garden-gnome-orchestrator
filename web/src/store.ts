@@ -35,6 +35,7 @@ import type {
   ScheduledTask,
   ServerEvent,
   SettingsPatch,
+  SupervisorSnapshot,
   TaskSearchHit,
   Thread,
 } from "./types.js";
@@ -174,6 +175,9 @@ interface State {
   // The owner's note list (server-authoritative): short pointers agents leave for them — a branch to
   // review, a PR to merge — shown in the Notes board view, cleared by the owner one note at a time.
   notes: OperatorNote[];
+  // Director Supervisor: the watchdog's live state (enabled, in-flight-pass flag, budget, recent audit
+  // trail) — server-authoritative, shown in the Supervisor board view. Neutral/off until hello lands.
+  supervisor: SupervisorSnapshot;
   // The Online Office: this machine's link to a shared relay, and the agents other machines have working
   // right now. Server-authoritative — never mirrored locally on write; the `office.online` broadcast is
   // the only writer. Neutral (off, nobody remote) until the socket's hello lands.
@@ -256,6 +260,7 @@ interface State {
   addNote: (body: string, url?: string) => void;
   deleteNote: (id: string) => void;
   clearNotes: () => void;
+  runSupervisorNow: () => void;
   // The Online Office's three operator actions. Same optimism-free contract as everything else
   // server-authoritative: send, and let the `office.online` broadcast reconcile.
   joinOnlineOffice: (input: { url: string; code: string; instanceName: string }) => void;
@@ -362,6 +367,15 @@ const saveTaskOrder = (ids: string[]): void => lsSet(TASK_ORDER_KEY, JSON.string
 /** What the Online Office looks like before the socket's hello lands, and whenever it is switched off.
  *  Must read as "not joined, nobody remote" — the panel's Join form is what should show on a fresh
  *  console, not a half-populated connected state. */
+const IDLE_SUPERVISOR: SupervisorSnapshot = {
+  enabled: false,
+  running: false,
+  watching: 0,
+  lastCheckAt: null,
+  budget: { date: "", checkinsToday: 0, costUsdToday: 0, tokensToday: 0, maxCheckinsPerDay: 0, maxCostUsdPerDay: 0, maxTokensPerDay: 0 },
+  events: [],
+};
+
 const OFFLINE_OFFICE: OnlineOfficeDTO = {
   enabled: false,
   url: "",
@@ -435,6 +449,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   codexModels: [],
   codexModelEfforts: {},
   grokModels: [],
+  directorSupervisorEnabled: false,
 };
 
 // A server that predates the settings broadcast (or any partial payload) must never null out the
@@ -551,6 +566,7 @@ export const useStore = create<State>((set) => ({
   notice: null,
   schedules: [],
   notes: [],
+  supervisor: IDLE_SUPERVISOR,
   onlineOffice: OFFLINE_OFFICE,
   officeJoining: false,
   officeJoinError: null,
@@ -714,6 +730,7 @@ export const useStore = create<State>((set) => ({
   },
   deleteNote: (id) => sendCommand({ type: "note.delete", id }),
   clearNotes: () => sendCommand({ type: "note.clear" }),
+  runSupervisorNow: () => sendCommand({ type: "supervisor.runNow" }),
   joinOnlineOffice: ({ url, code, instanceName }) => {
     set({ officeJoining: true, officeJoinError: null });
     sendCommand({ type: "office.join", url: url.trim(), code: code.trim(), instanceName: instanceName.trim() });
@@ -863,7 +880,7 @@ function applyEvent(ev: ServerEvent): void {
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, directorStatus: ev.directorStatus ?? null, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}), ...(ev.notes ? { notes: ev.notes } : {}), ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}) });
+      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, directorStatus: ev.directorStatus ?? null, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}), ...(ev.notes ? { notes: ev.notes } : {}), ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}), ...(ev.supervisor ? { supervisor: ev.supervisor } : {}) });
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
@@ -902,6 +919,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "schedules":
       useStore.setState({ schedules: ev.schedules });
+      break;
+    case "supervisor":
+      useStore.setState({ supervisor: ev.supervisor });
       break;
     case "model.stats":
       useStore.setState({ modelStats: ev.stats });

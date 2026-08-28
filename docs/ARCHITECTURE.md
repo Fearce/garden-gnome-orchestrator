@@ -269,6 +269,22 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   review carries the backend that produced it (`resumableReviewSession`): a session id doesn't travel, and a
   "carry on" nudge means nothing to a session that never heard the question — when that backend can't take
   the run, the recovery is a fresh full review instead. Gate: `test:auto-review`.
+- **Director Supervisor — opt-in, bounded operations.** Settings → **Director Supervisor** defaults off;
+  while off it owns no timer and spends no agent turn. When enabled, `DirectorSupervisor` subscribes to
+  lifecycle transitions and queues all evaluations through one single-flight drain; an adaptive backstop
+  sweep catches dropped work (5 minutes with candidates, exponential 2–30-minute idle backoff). Each pass
+  first reads only durable task facts — state, active runs, messages, findings and run history. It invokes a
+  no-tools, two-turn structured director judgement only for a newly failed non-cap task, a real stall
+  (no live run past the per-state threshold), or a review/failed park left untouched for six hours. The
+  15-minute per-task cooldown and
+  durable 60-check-in/$3/120K-token daily cap bound cost across restarts.
+
+  The verdict may append a finding, issue a critical correction only to a still-live agent, call the normal
+  resume path for a dropped active/old failed task, or flag an owner blocker; it cannot cancel, retry,
+  delete, mark done, revive cancelled work, or resume an owner-review/approval state. Each check, skip,
+  verdict/action, compact token/cost record, and Discord-send decision is persisted in `supervisor_events`
+  and broadcast to the Supervisor board tab. Discord is consulted only when its own Phone notifications
+  configuration is complete; per-task plus durable global cooldowns eliminate restart or flapping duplicates.
 - **A hand-back buys a fix round, not a trip to your desk** (`runReviewFixRound`). Because the reviewer
   is read-only, what blocks a task is routinely work an implementor finishes in a minute — the case this
   was built for handed back a whole task because a report file sat outside the workspace, costing a

@@ -22,6 +22,7 @@ import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
 import { ScheduledTasks } from "./ScheduledTasks.js";
 import { OperatorNotes } from "./OperatorNotes.js";
+import { SupervisorPanel } from "./SupervisorPanel.js";
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -230,6 +231,8 @@ export function Board() {
         <ScheduledTasks />
       ) : boardView === "notes" ? (
         <OperatorNotes />
+      ) : boardView === "supervisor" ? (
+        <SupervisorPanel />
       ) : (
         <>
           {list.length === 0 ? (
@@ -281,6 +284,7 @@ function BoardTabs() {
     tasks: null,
     notes: useStore((s) => s.notes.length),
     schedules: useStore((s) => s.schedules.length),
+    supervisor: useStore((s) => (s.supervisor.enabled ? s.supervisor.watching : null)),
   };
   return (
     <div className="board-tabs">
@@ -302,6 +306,7 @@ const BOARD_TABS: { view: BoardView; label: string; title: string }[] = [
   { view: "tasks", label: "Tasks", title: "Back to the task board" },
   { view: "notes", label: "Notes", title: "Branches, PRs and reminders waiting on you" },
   { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },
+  { view: "supervisor", label: "Supervisor", title: "The Director Supervisor watchdog: its state, budget and recent checks/actions" },
 ];
 
 /** The board sort control: a quiet trigger in the header that opens a listbox of sort options, reusing

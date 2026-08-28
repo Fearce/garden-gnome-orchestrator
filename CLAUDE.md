@@ -454,6 +454,31 @@ same thing to click), and a task holds ≤5 (oldest evicted, never refused). The
 and becomes an `href`, so http(s) is enforced at BOTH ends — service refuses, render degrades to text.
 Gates `test:notes` + `test:office-bridge`; `npm run notes-lab --prefix server`.
 
+## Director Supervisor (Settings → Director Supervisor, off by default)
+**Off means off:** no timer, agent turn, or DB scan is armed; the one live event subscription returns on
+one boolean check so a toggle can take effect without reconnecting browsers. **On** adds a single-flight,
+event-first watchdog (`orchestrator/supervisor.ts`): state transitions enqueue a deterministic health pass,
+and a backstop sweep runs every 5 minutes while it has active/parked work to watch, but exponentially backs
+off from 2 to 30 minutes while idle. It reads state, live runs, recent findings/messages and run history
+before spending a model turn.
+
+Only a newly failed non-cap task, a materially stalled active task (no live run past its state-specific
+15–25 minute threshold), or a review/failed park forgotten for 6 hours earns the no-tools structured
+check-in. It uses the current
+capacity-ready director target, has a 2-turn ceiling, and is guarded by a 15-minute per-task cooldown plus
+a durable daily ceiling of 60 check-ins / $3 / 120K tokens. The compact model, token, cost, reason, skipped/action result
+and phone-send flag live in `supervisor_events`, so the Supervisor tab can show the last check, budget and
+audit trail across restart. A restart rehydrates the event-backed cooldown and the global phone cooldown;
+it never starts a second loop.
+
+The action boundary is deliberately narrow: it can append a normal note, send a critical correction only
+to a still-live agent, safely call the existing Resume path only for a dropped active run or old failed task,
+or surface a warning alert. It does **not** cancel/retry/delete, mark work done, revive cancelled work, or
+resume a human-review/approval wait. A done transition gets a no-agent cleanup audit row only. Supervisor
+phone notices are Discord-only and only high-signal alerts, owner-visible recoveries, or a watched task's
+subsequent completion; disabled/incomplete Phone notifications sends nothing. Per-task and global durable
+cooldowns prevent a flapping task or a restart from buzzing repeatedly. Gate: `test:director-supervisor`.
+
 ## Phone notifications (Settings → Phone notifications, off by default)
 On, a Discord message when a task settles **done**, needs the owner's **input** (a review park or an
 `ask_user`), or **fails**. `orchestrator/discordNotify.ts` is standalone (config getter + log callback, no

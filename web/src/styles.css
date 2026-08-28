@@ -2327,6 +2327,44 @@ button.note-from:hover { color: var(--text-dim); }
   background: color-mix(in oklch, var(--ok) 14%, transparent);
 }
 
+/* ---- Director Supervisor transparency panel (Supervisor board view) ----
+   A read-only audit trail (mirrors the notes list's inbox shape) plus a status line and a "run now"
+   trigger. The kind icon is the only strong colour, matching the notes list's restraint. */
+.supervisor-view { display: flex; flex-direction: column; min-height: 0; }
+.supervisor-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; min-height: 26px; flex-wrap: wrap; }
+.supervisor-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-faint); }
+.supervisor-state .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.supervisor-state.on .dot { background: var(--ok); }
+.supervisor-state.on { color: var(--text); }
+.supervisor-budget-note {
+  font-size: 12px; color: var(--warn); background: color-mix(in oklch, var(--warn) 12%, var(--bg-1));
+  border: 1px solid color-mix(in oklch, var(--warn) 35%, var(--line)); border-radius: var(--r-sm); padding: 8px 10px; margin-bottom: 10px;
+}
+
+.supervisor-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.supervisor-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 12px;
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px;
+}
+.supervisor-kind {
+  display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; margin-top: 2px;
+  background: var(--bg-2); color: var(--text-faint);
+}
+.supervisor-row.k-action .supervisor-kind { color: var(--accent); background: color-mix(in oklch, var(--accent) 14%, var(--bg-2)); }
+.supervisor-row.k-error .supervisor-kind { color: var(--danger); background: color-mix(in oklch, var(--danger) 14%, var(--bg-2)); }
+.supervisor-row.k-skip .supervisor-kind { color: var(--text-dim); }
+
+.supervisor-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.supervisor-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 13.5px; color: var(--text); line-height: 1.35; }
+.supervisor-task {
+  appearance: none; background: none; border: none; padding: 0; font: inherit; cursor: pointer;
+  color: var(--accent); border-bottom: 1px dotted color-mix(in oklch, var(--accent) 55%, transparent);
+}
+.supervisor-task:disabled { color: var(--text-faint); border-bottom-color: transparent; cursor: default; }
+.supervisor-text { overflow-wrap: anywhere; }
+.supervisor-detail { font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.supervisor-meta { font-size: 11px; }
+
 /* ==========================================================================================
    TOUCH / TABLET
    Three blocks, deliberately the LAST thing in this file. Every rule below overrides a base

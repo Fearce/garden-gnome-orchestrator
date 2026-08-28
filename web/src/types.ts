@@ -132,7 +132,7 @@ export interface ScheduledTask {
 }
 
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
-export type BoardView = "tasks" | "notes" | "schedules";
+export type BoardView = "tasks" | "notes" | "schedules" | "supervisor";
 
 /** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
 export const NOTE_MAX_CHARS = 255;
@@ -512,6 +512,8 @@ export interface OrchestratorSettings {
   codexModelEfforts: Record<string, CodexEffort[]>; // exact live Codex CLI effort set per model
   grokModels: string[]; // read-only: pickable Grok model ids
   zaiModels: string[]; // read-only: pickable z.ai GLM model ids
+  // Director Supervisor watchdog (off by default) — see server/src/orchestrator/supervisor.ts.
+  directorSupervisorEnabled: boolean;
 }
 
 /** The five agent roles a model can be picked for. Mirrors the server's MODEL_ROLES. */
@@ -803,6 +805,7 @@ export type ServerEvent =
       modelStats: ModelStat[];
       notes: OperatorNote[];
       onlineOffice: OnlineOfficeDTO;
+      supervisor: SupervisorSnapshot;
     }
   | { type: "office.online"; office: OnlineOfficeDTO }
   | { type: "office.join.result"; ok: boolean; error: string | null }
@@ -810,6 +813,7 @@ export type ServerEvent =
   | { type: "model.stats"; stats: ModelStat[] }
   | { type: "schedules"; schedules: ScheduledTask[] }
   | { type: "notes"; notes: OperatorNote[] }
+  | { type: "supervisor"; supervisor: SupervisorSnapshot }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
   | { type: "zai.usage"; usage: ZaiUsageDTO | null }
@@ -915,7 +919,49 @@ export type ClientCommand =
   | { type: "note.create"; body: string; url?: string }
   | { type: "note.delete"; id: string }
   | { type: "note.clear" }
+  | { type: "supervisor.runNow" }
   | { type: "snapshot.request" };
+
+// ---- Director Supervisor: a lightweight watchdog over active tasks (mirrors server/src/types.ts) ----
+
+export type SupervisorTrigger = "state_change" | "stall_sweep" | "manual";
+export type SupervisorEventKind = "check" | "action" | "skip" | "error";
+export type SupervisorAction = "comment" | "inject_correction" | "trigger_recovery" | "alert" | "cleanup";
+
+export interface SupervisorEvent {
+  id: string;
+  threadId?: string | null;
+  threadTitle?: string | null;
+  workspace?: string | null;
+  trigger: SupervisorTrigger;
+  kind: SupervisorEventKind;
+  action?: SupervisorAction | null;
+  summary: string;
+  detail?: string | null;
+  usedAgent: boolean;
+  costUsd?: number | null;
+  totalTokens?: number | null;
+  model?: string | null;
+  notifiedDiscord: boolean;
+  createdAt: number;
+}
+
+export interface SupervisorSnapshot {
+  enabled: boolean;
+  running: boolean;
+  watching: number;
+  lastCheckAt?: number | null;
+  budget: {
+    date: string;
+    checkinsToday: number;
+    costUsdToday: number;
+    tokensToday: number;
+    maxCheckinsPerDay: number;
+    maxCostUsdPerDay: number;
+    maxTokensPerDay: number;
+  };
+  events: SupervisorEvent[];
+}
 
 // ---- client-only view models ----
 

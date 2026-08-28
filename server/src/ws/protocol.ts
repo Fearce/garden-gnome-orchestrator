@@ -21,6 +21,7 @@ import type {
   Question,
   Role,
   ScheduledTask,
+  SupervisorSnapshot,
   TaskSearchHit,
   Thread,
 } from "../types.js";
@@ -74,6 +75,7 @@ export type ServerEvent =
       modelStats: ModelStat[];
       notes: OperatorNote[];
       onlineOffice: OnlineOfficeDTO;
+      supervisor: SupervisorSnapshot;
     }
   | { type: "accounts"; accounts: AccountDTO[] }
   // Auto model selection's scoreboard — per-model averages over every graded auto-picked task.
@@ -83,6 +85,9 @@ export type ServerEvent =
   | { type: "schedules"; schedules: ScheduledTask[] }
   // The owner's note list, rebroadcast whole on every post/delete (hard-capped, so it stays small).
   | { type: "notes"; notes: OperatorNote[] }
+  // The Director Supervisor's whole live state (enabled, in-flight-pass flag, budget, recent audit
+  // trail), rebroadcast on every enable/disable and every pass — small and capped like notes/schedules.
+  | { type: "supervisor"; supervisor: SupervisorSnapshot }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
   | { type: "zai.usage"; usage: ZaiUsageDTO | null }
@@ -259,7 +264,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     // quota one dispatch may spend, so the server never trusts the widget to have clamped them.
     taskDurationMinutes: z.number().int().min(0).max(7 * 24 * 60),
     taskAgentCount: z.number().int().min(1).max(6),
-        showComposerPickers: z.boolean(),
+    // Director Supervisor watchdog (off by default) — see orchestrator/supervisor.ts.
+    directorSupervisorEnabled: z.boolean(),
+    showComposerPickers: z.boolean(),
         showAgentModel: z.boolean(),
         skipDirectorEffort: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]),
         skipDirectorRetitle: z.boolean(),
@@ -401,6 +408,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("note.create"), body: z.string().min(1).max(2000), url: z.string().max(600).optional() }),
   z.object({ type: z.literal("note.delete"), id: z.string() }),
   z.object({ type: z.literal("note.clear") }),
+  // Director Supervisor: an explicit "run now" pass over every current candidate task (per-task cooldown
+  // still applies — see orchestrator/supervisor.ts).
+  z.object({ type: z.literal("supervisor.runNow") }),
   z.object({ type: z.literal("snapshot.request") }),
 ]);
 

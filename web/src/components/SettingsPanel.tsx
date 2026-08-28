@@ -150,6 +150,15 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           <ModelScoreboard enabled={settings.autoModelSelection} />
         </Group>
 
+        <Group label="Director Supervisor">
+          <ToggleRow
+            label="Watch active tasks"
+            hint="Off (default): no background work at all. On: a lightweight watchdog checks active tasks — event-driven on state changes plus an adaptive-backoff sweep — and spends a cheap bounded agent judgement only on a new failure, a real stall/anomaly, or review/failed work that has been forgotten. It may append a comment, post an urgent correction, resume a stalled task the same way the Resume button does, or flag it for you — never cancel, retry, or touch anything you cancelled. Bounded by a per-task cooldown and a daily check-in budget. See the Supervisor tab for its live state and audit trail."
+            on={settings.directorSupervisorEnabled}
+            onChange={(v) => setSettings({ directorSupervisorEnabled: v })}
+          />
+        </Group>
+
         <Group label="Director">
           <TextRow
             label="Director name"

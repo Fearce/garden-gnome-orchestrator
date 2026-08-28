@@ -764,6 +764,8 @@ export interface OrchestratorSettings {
   codexModels: string[]; // read-only: pickable Codex/OpenAI model ids (live ∪ curated ∪ selected)
   codexModelEfforts: Record<string, CodexEffort[]>; // read-only: exact CLI-advertised effort set per Codex model
   grokModels: string[]; // read-only: pickable Grok model ids (curated ∪ live ∪ selected)
+  // ---- Director Supervisor: a lightweight watchdog over active tasks (orchestrator/supervisor.ts) ----
+  directorSupervisorEnabled: boolean; // off (default) — no background work at all. on — deterministic health checks plus an occasional cheap bounded agent check-in on tasks that look stalled, anomalous, or forgotten.
 }
 
 /** The implementor backend chosen at dispatch by the subscription toggles. */
@@ -847,3 +849,67 @@ export type AgentEvent =
       terminalReason?: string;
     }
   | { type: "error"; message: string };
+
+// ---- Director Supervisor: a lightweight watchdog over active tasks (orchestrator/supervisor.ts) ----
+// Off by default (directorSupervisorEnabled above); when on it watches active tasks event-driven (thread
+// state transitions) plus an adaptive-backoff periodic sweep for tasks that stopped producing events
+// entirely, running cheap deterministic checks first and spending a bounded no-tools agent judgement
+// call only when a task looks newly active, stalled, anomalous, or reaches review/done/error.
+
+/** What caused one supervisor pass over a task: a live state transition, the periodic backoff sweep
+ *  catching something the event path missed, or an operator-triggered "run now". */
+export type SupervisorTrigger = "state_change" | "stall_sweep" | "manual";
+
+/** What a pass concluded: 'check' = a deterministic, no-agent pass (routine, logged for transparency);
+ *  'action' = it took one of the bounded actions below; 'skip' = a trigger fired and the (possibly
+ *  agent-judged) verdict was "nothing warrants acting"; 'error' = the pass itself failed to complete. */
+export type SupervisorEventKind = "check" | "action" | "skip" | "error";
+
+/** The bounded, reversible action set a supervisor pass may take. 'comment' appends context as a normal
+ *  finding; 'inject_correction' posts a `critical`-severity finding (interrupts a live run via the
+ *  existing finding-routing path); 'trigger_recovery' calls the same `resumeThread` the manual Resume
+ *  button uses; 'alert' surfaces a concise question/notice for the owner; 'cleanup' is a settle-time audit
+ *  record with no tree/state mutation. Never a destructive action (no cancel/retry/delete). */
+export type SupervisorAction = "comment" | "inject_correction" | "trigger_recovery" | "alert" | "cleanup";
+
+/** One durable row of the supervisor's own audit trail — a check, a skip, or a bounded action — so the
+ *  console can show not just its current state but WHY it acted or didn't. Cascades with its thread like
+ *  findings/agent_runs (task-scoped observability, not a ledger meant to outlive a purge); `threadId` is
+ *  null only for a pass with no single task to point at. Mirrored in web/src/types.ts. */
+export interface SupervisorEvent {
+  id: string;
+  threadId?: string | null;
+  threadTitle?: string | null;
+  workspace?: string | null;
+  trigger: SupervisorTrigger;
+  kind: SupervisorEventKind;
+  action?: SupervisorAction | null;
+  summary: string;
+  detail?: string | null;
+  usedAgent: boolean; // whether the cheap bounded check-in ran (vs. a deterministic-only pass)
+  costUsd?: number | null;
+  totalTokens?: number | null;
+  model?: string | null;
+  notifiedDiscord: boolean;
+  createdAt: number;
+}
+
+/** The supervisor's live, whole-state snapshot broadcast to the console — small and bounded, like notes/
+ *  schedules. `events` is the most recent slice (newest first), not the full audit trail. Mirrored in
+ *  web/src/types.ts. */
+export interface SupervisorSnapshot {
+  enabled: boolean;
+  running: boolean; // a pass is in flight right now (the "single active pass" guardrail, made visible)
+  watching: number; // tasks currently flagged with an owner-facing action, not yet settled
+  lastCheckAt?: number | null;
+  budget: {
+    date: string; // YYYY-MM-DD, server-local — the check-in/cost/token window
+    checkinsToday: number; // bounded agent check-ins actually run today
+    costUsdToday: number;
+    tokensToday: number;
+    maxCheckinsPerDay: number;
+    maxCostUsdPerDay: number;
+    maxTokensPerDay: number;
+  };
+  events: SupervisorEvent[];
+}
