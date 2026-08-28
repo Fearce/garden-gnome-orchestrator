@@ -216,7 +216,7 @@ export function createDirectorServer(
 
   const inject = tool(
     "inject",
-    "Feed new information into a RUNNING task's implementor. 'append' queues it for the implementor's next step; 'interrupt' stops it now and hands it the message immediately (use when the new info invalidates what it's currently doing).",
+    "Feed new information into a running task. 'append' sends it to the active agent when possible and queues it for the implementor. 'interrupt' stops an active implementor, or supersedes active QA and returns the task to implementation.",
     {
       threadId: z.string(),
       message: z.string().describe("The information / new instruction for the implementor."),
@@ -225,7 +225,7 @@ export function createDirectorServer(
     async (args) => {
       const r = await api.injectThread(args.threadId, args.message, args.mode);
       return {
-        content: [{ type: "text", text: r.ok ? `Injected into ${args.threadId} (${args.mode}).` : `Failed: ${r.error}` }],
+        content: [{ type: "text", text: r.ok ? `${r.message ?? `Injected into ${args.threadId} (${args.mode}).`} Current state: ${r.state ?? "unchanged"}.` : `Failed: ${r.error}` }],
         isError: !r.ok,
       };
     },
@@ -233,12 +233,12 @@ export function createDirectorServer(
 
   const interruptThread = tool(
     "interrupt_thread",
-    "Pause a running task's implementor (it stops at the next safe point and waits). Resume later by injecting or via the board.",
+    "Interrupt a running task. During implementation this pauses the implementor; during QA this stops/supersedes QA and returns the task to implementation.",
     { threadId: z.string() },
     async (args) => {
       const r = await api.interruptThread(args.threadId);
       return {
-        content: [{ type: "text", text: r.ok ? `Paused ${args.threadId}.` : `Failed: ${r.error}` }],
+        content: [{ type: "text", text: r.ok ? `${r.message ?? `Interrupted ${args.threadId}.`} Current state: ${r.state ?? "unchanged"}.` : `Failed: ${r.error}` }],
         isError: !r.ok,
       };
     },

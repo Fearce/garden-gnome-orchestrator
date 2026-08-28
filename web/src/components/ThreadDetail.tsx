@@ -478,11 +478,8 @@ export function ThreadDetail() {
   // The auto-review control is live only on a genuine review park: a frozen task resumes itself (there's
   // no finished work to judge yet) and a task already being reviewed shows its progress instead.
   const autoReviewable = canAutoReview(thread);
-  // While a reviewer owns the slot there is no implementor to stop, and one-shot reviewers can't be
-  // interrupted without destroying their verdict — so say what the server will actually do instead.
-  // The two lanes differ, and the text must not blur it: a QA-stage inject is ALSO queued for the
-  // implementor (the QA gate routes it both ways), but an auto-review-stage inject only reaches the
-  // reviewer — nothing on that lane drains the implementor queue, so don't promise a hand-off there.
+  // QA and auto-review are both structured reviewers, but the operator intent differs: interrupting QA
+  // returns the task to implementation, while auto-review still only accepts steering as a plain send.
   const qaStage = thread.state === "qa";
   const reviewerOwnsSlot = qaStage || thread.state === "reviewing";
 
@@ -498,6 +495,7 @@ export function ThreadDetail() {
   };
 
   const isLive = thread.state === "implementing";
+  const canInterrupt = isLive || qaStage;
   // Resume covers a failed task too: the pipeline is resume-aware and re-runs from the stage that
   // died (reusing saved plan/research and the implementor's prior session) instead of from scratch.
   const isResumable = thread.state === "paused" || thread.state === "review" || thread.state === "failed";
@@ -637,14 +635,14 @@ export function ThreadDetail() {
               </div>
             )}
             <div className="detail-controls">
-              {isLive && (
+              {canInterrupt && (
                 <button
                   className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
                   onClick={() => { if (!frozen) interrupt(id); }}
                   disabled={frozen}
-                  title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
+                  title={frozen ? FROZEN_CONTROL_TOOLTIP : qaStage ? "Stop QA and return this task to the implementor" : undefined}
                 >
-                  ⏸ Interrupt
+                  {qaStage ? "Stop QA" : "⏸ Interrupt"}
                 </button>
               )}
               {isResumable && (
@@ -911,7 +909,7 @@ export function ThreadDetail() {
               frozen
                 ? FROZEN_CONTROL_TOOLTIP
                 : qaStage
-                  ? "Nothing to stop while the reviewer has the task — this goes to the reviewer and is queued for the implementor, same as Inject"
+                  ? "Stop QA now and return this task to the implementor with this instruction"
                   : reviewerOwnsSlot
                     ? "Nothing to stop while the auto-reviewer has the task — this reaches the reviewer, same as Inject"
                     : "Stop the implementor now and hand it this immediately"

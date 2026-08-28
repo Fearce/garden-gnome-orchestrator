@@ -102,8 +102,8 @@ Commands and fields:
 - dispatch_read: title, workspace, brief
 - list_threads
 - thread_status: threadId
-- inject: threadId, message, mode (append|interrupt)
-- interrupt_thread: threadId
+- inject: threadId, message, mode (append|interrupt). During QA, append steers QA and queues for the implementor; interrupt stops/supersedes QA and returns the task to implementation.
+- interrupt_thread: threadId (pauses implementation, or stops/supersedes active QA and returns the task to implementation)
 - auto_review: threadId (start the app's auto-reviewer for a task parked in review)
 - read_findings: threadId? (omit for all)
 - post_operator_note: note, url?
@@ -198,12 +198,12 @@ export async function executeDirectorCliAction(
       case "inject": {
         const threadId = required(action, "threadId");
         const r = await api.injectThread(threadId, required(action, "message"), action.mode ?? "append");
-        return outcome("inject", r.ok ? `Injected into ${threadId} (${action.mode ?? "append"}).` : `ERROR: ${r.error}`);
+        return outcome("inject", r.ok ? `${r.message ?? `Injected into ${threadId} (${action.mode ?? "append"}).`} Current state: ${r.state ?? "unchanged"}.` : `ERROR: ${r.error}`);
       }
       case "interrupt_thread": {
         const threadId = required(action, "threadId");
         const r = await api.interruptThread(threadId);
-        return outcome("interrupt_thread", r.ok ? `Paused ${threadId}.` : `ERROR: ${r.error}`);
+        return outcome("interrupt_thread", r.ok ? `${r.message ?? `Interrupted ${threadId}.`} Current state: ${r.state ?? "unchanged"}.` : `ERROR: ${r.error}`);
       }
       case "auto_review": {
         const threadId = required(action, "threadId");

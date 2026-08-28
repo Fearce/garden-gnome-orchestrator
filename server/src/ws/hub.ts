@@ -4,6 +4,7 @@ import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { Director } from "../orchestrator/director.js";
+import type { ThreadActionResult } from "../orchestrator/api.js";
 import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { RepoActionDTO, RepoConsole } from "../orchestrator/repoConsole.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
@@ -48,6 +49,10 @@ function send(socket: WebSocket, event: ServerEvent): void {
   // text/state events still get through so the UI converges.
   if (socket.bufferedAmount > 2_000_000 && STREAMING_EVENTS.has(event.type)) return;
   socket.send(JSON.stringify(event));
+}
+
+function sendThreadAction(socket: WebSocket, threadId: string, action: string, result: ThreadActionResult): void {
+  send(socket, { type: "thread.action", threadId, action, ok: result.ok, state: result.state, error: result.error, message: result.message, result });
 }
 
 // Bound the connect/snapshot frame so it can't grow without limit as months of history pile up.
@@ -120,7 +125,7 @@ export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
   });
 }
 
-async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientCommand): Promise<void> {
+export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientCommand): Promise<void> {
   switch (cmd.type) {
     case "prompt.new":
       ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images, cmd.source);
@@ -132,25 +137,25 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       ctx.manager.resolveQuestion(cmd.questionId, cmd.answer);
       break;
     case "thread.inject":
-      await ctx.manager.injectThread(cmd.threadId, cmd.message, cmd.mode, cmd.images);
+      sendThreadAction(socket, cmd.threadId, "inject", await ctx.manager.injectThread(cmd.threadId, cmd.message, cmd.mode, cmd.images));
       break;
     case "thread.interrupt":
-      await ctx.manager.interruptThread(cmd.threadId);
+      sendThreadAction(socket, cmd.threadId, "interrupt", await ctx.manager.interruptThread(cmd.threadId));
       break;
     case "thread.resume":
-      await ctx.manager.resumeThread(cmd.threadId, cmd.message);
+      sendThreadAction(socket, cmd.threadId, "resume", await ctx.manager.resumeThread(cmd.threadId, cmd.message));
       break;
     case "thread.cancel":
-      await ctx.manager.cancelThread(cmd.threadId);
+      sendThreadAction(socket, cmd.threadId, "cancel", await ctx.manager.cancelThread(cmd.threadId));
       break;
     case "thread.retry":
-      await ctx.manager.retryThread(cmd.threadId);
+      sendThreadAction(socket, cmd.threadId, "retry", await ctx.manager.retryThread(cmd.threadId));
       break;
     case "thread.rename":
       ctx.manager.renameThread(cmd.threadId, cmd.title);
       break;
     case "thread.markDone":
-      await ctx.manager.markDone(cmd.threadId);
+      sendThreadAction(socket, cmd.threadId, "markDone", await ctx.manager.markDone(cmd.threadId));
       break;
     case "thread.autoReview": {
       const result = await ctx.manager.autoReview(cmd.threadId);
@@ -158,13 +163,14 @@ async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientComma
       // time (a task that just re-parked on a cap, a workspace that moved) — surface it instead of
       // leaving a click that visibly did nothing.
       if (!result.ok && result.error) ctx.hub.log("warn", result.error);
+      sendThreadAction(socket, cmd.threadId, "autoReview", result);
       break;
     }
     case "thread.close":
-      await ctx.manager.closeThread(cmd.threadId);
+      sendThreadAction(socket, cmd.threadId, "close", await ctx.manager.closeThread(cmd.threadId));
       break;
     case "thread.restore":
-      ctx.manager.restoreThread(cmd.threadId);
+      sendThreadAction(socket, cmd.threadId, "restore", ctx.manager.restoreThread(cmd.threadId));
       break;
     case "thread.dismiss":
       ctx.manager.dismissThread(cmd.threadId);

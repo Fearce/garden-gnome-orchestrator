@@ -1145,6 +1145,13 @@ function applyEvent(ev: ServerEvent): void {
       if (fi) pushFeed(ev.threadId, fi);
       break;
     }
+    case "thread.action":
+      if (!ev.ok) {
+        const message = ev.error ?? ev.message ?? "The task state changed before the server could apply that control.";
+        useStore.setState({ notice: { level: "warn", title: "Task control failed", message } });
+        notify("Task control failed", message);
+      }
+      break;
     case "run.upsert":
       useStore.setState((s) => ({ runs: { ...s.runs, [ev.run.id]: ev.run } }));
       break;

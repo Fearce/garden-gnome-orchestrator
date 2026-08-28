@@ -78,6 +78,13 @@ export type ThreadState =
 export type AgentRunState = "starting" | "running" | "idle" | "interrupted" | "done" | "error";
 export type Severity = "info" | "note" | "warning" | "critical";
 
+export interface ThreadActionResult {
+  ok: boolean;
+  state?: ThreadState;
+  error?: string;
+  message?: string;
+}
+
 /** A normal blackboard finding, or a `deliverable` — a file the agent produced, surfaced in the
  *  right panel's Deliverables section for inline preview / download (mirrors the server's FindingKind). */
 export type FindingKind = "finding" | "deliverable";
@@ -846,6 +853,7 @@ export type ServerEvent =
   // thread row) before the fresh pipeline streams in.
   | { type: "thread.reset"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
+  | { type: "thread.action"; threadId: string; action: string; ok: boolean; state?: ThreadState; error?: string; message?: string; result: ThreadActionResult }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }

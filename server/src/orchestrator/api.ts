@@ -47,7 +47,8 @@ export interface PostFindingInput {
 export interface ThreadActionResult {
   ok: boolean;
   error?: string;
-  state?: string;
+  state?: Thread["state"];
+  message?: string;
 }
 
 export interface ChatPostInput {

@@ -5,6 +5,7 @@ import type { GrokUsageDTO } from "../agents/grokUsage.js";
 import type { ZaiUsageDTO } from "../agents/zaiUsage.js";
 import type { GitFileDiff, GitStatus, GitSummary } from "../gitService.js";
 import type { RepoCommitDetail } from "../git/repoOps.js";
+import type { ThreadActionResult } from "../orchestrator/api.js";
 import type { RepoActionDTO, RepoRef, RepoStateDTO } from "../orchestrator/repoConsole.js";
 import type { OnlineOfficeDTO } from "../office/onlineOffice.js";
 import type {
@@ -131,6 +132,7 @@ export type ServerEvent =
   // so the client prunes that stale slice (keeping the thread row) before the fresh pipeline streams in.
   | { type: "thread.reset"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
+  | { type: "thread.action"; threadId: string; action: string; ok: boolean; state?: Thread["state"]; error?: string; message?: string; result: ThreadActionResult }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
