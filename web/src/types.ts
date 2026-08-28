@@ -957,6 +957,16 @@ export interface SupervisorEvent {
 export interface SupervisorSnapshot {
   enabled: boolean;
   running: boolean;
+  manualSweep?: {
+    state: "running" | "complete" | "stopped";
+    startedAt: number;
+    completedAt?: number | null;
+    candidateCount: number;
+    examinedCount: number;
+    budgetLimitedCount: number;
+    capacityLimitedCount: number;
+    errorCount: number;
+  } | null;
   watching: number;
   lastCheckAt?: number | null;
   budget: {

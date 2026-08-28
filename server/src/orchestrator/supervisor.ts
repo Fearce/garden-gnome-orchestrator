@@ -360,6 +360,20 @@ export class DirectorSupervisor {
   private readonly queue: { threadId: string; trigger: SupervisorTrigger }[] = [];
   private readonly queued = new Set<string>();
   private drainPromise: Promise<void> | undefined;
+  private manualSweep:
+    | {
+        state: "running" | "complete" | "stopped";
+        startedAt: number;
+        completedAt?: number;
+        candidateCount: number;
+        examinedCount: number;
+        budgetLimitedCount: number;
+        capacityLimitedCount: number;
+        errorCount: number;
+        resolve: () => void;
+      }
+    | undefined;
+  private manualSweepPromise: Promise<void> | undefined;
   private lastCheckAt: number | undefined;
   private lastDiscordAt = 0;
 
@@ -392,19 +406,51 @@ export class DirectorSupervisor {
       this.sweepTimer = undefined;
       this.queue.length = 0;
       this.queued.clear();
+      this.finishManualSweep("stopped");
     }
     this.broadcast();
   }
 
-  /** An explicit "run now" — one immediate pass over every current candidate task, cooldown still
-   *  respected per task (so repeated clicks don't spend the budget for nothing). Resolves once every
-   *  enqueued task has been evaluated. */
+  /** Compatibility alias for deterministic maintenance/test callers. */
   async runNow(): Promise<void> {
+    return this.runNowInternal();
+  }
+
+  /** Explicit operator sweep used only by the console's Run now command. It examines every current
+   * candidate while retaining cooldown/budget guards, the single-flight queue, action gates and
+   * notification dedupe. */
+  async runManualNow(): Promise<void> {
+    return this.runNowInternal();
+  }
+
+  private async runNowInternal(): Promise<void> {
     if (!this.enabled) return;
-    for (const t of this.host.db.listThreads()) {
-      if (ACTIVE_STATES.has(t.state) || PARKED_STATES.has(t.state)) this.enqueue(t.id, "manual");
+    if (this.manualSweepPromise) return this.manualSweepPromise;
+
+    const candidates = this.host.db.listThreads().filter((t) => ACTIVE_STATES.has(t.state) || PARKED_STATES.has(t.state));
+    let resolve!: () => void;
+    const completion = new Promise<void>((done) => {
+      resolve = done;
+    });
+    this.manualSweepPromise = completion;
+    this.manualSweep = {
+      state: "running",
+      startedAt: Date.now(),
+      candidateCount: candidates.length,
+      examinedCount: 0,
+      budgetLimitedCount: 0,
+      capacityLimitedCount: 0,
+      errorCount: 0,
+      resolve,
+    };
+    this.broadcast();
+    if (candidates.length === 0) {
+      this.finishManualSweep("complete");
+      return completion;
     }
-    await this.drain();
+    for (const task of candidates) this.enqueue(task.id, "manual");
+    void this.drain();
+    return completion;
   }
 
   snapshot(): SupervisorSnapshot {
@@ -413,6 +459,18 @@ export class DirectorSupervisor {
     return {
       enabled: this.enabled,
       running: this.running,
+      manualSweep: this.manualSweep
+        ? {
+            state: this.manualSweep.state,
+            startedAt: this.manualSweep.startedAt,
+            completedAt: this.manualSweep.completedAt ?? null,
+            candidateCount: this.manualSweep.candidateCount,
+            examinedCount: this.manualSweep.examinedCount,
+            budgetLimitedCount: this.manualSweep.budgetLimitedCount,
+            capacityLimitedCount: this.manualSweep.capacityLimitedCount,
+            errorCount: this.manualSweep.errorCount,
+          }
+        : null,
       watching: this.host.db.supervisorWatchingCount(Date.now() - 7 * 24 * 60 * 60_000),
       // lastCheckAt is a display cache while this process lives. The durable event row is the restart
       // authority, so the console never loses its "last check" line after a normal server bounce.
@@ -443,7 +501,9 @@ export class DirectorSupervisor {
   }
 
   private enqueue(threadId: string, trigger: SupervisorTrigger): void {
-    const key = `${threadId}:${trigger === "state_change" ? "state_change" : "sweep"}`;
+    // A queued unattended pass must not swallow an explicit operator pass. Concurrent manual clicks are
+    // coalesced by `manualSweepPromise` before reaching this queue.
+    const key = `${threadId}:${trigger === "manual" ? "manual" : trigger === "state_change" ? "state_change" : "sweep"}`;
     if (this.queued.has(key)) return;
     this.queued.add(key);
     this.queue.push({ threadId, trigger });
@@ -476,13 +536,15 @@ export class DirectorSupervisor {
   private async drainQueue(): Promise<void> {
     while (this.queue.length) {
       const item = this.queue.shift()!;
-      this.queued.delete(`${item.threadId}:${item.trigger === "state_change" ? "state_change" : "sweep"}`);
+      this.queued.delete(`${item.threadId}:${item.trigger === "manual" ? "manual" : item.trigger === "state_change" ? "state_change" : "sweep"}`);
       this.running = true;
       this.broadcast();
       try {
         await this.evaluate(item.threadId, item.trigger);
       } catch (e) {
         this.host.hub.log("warn", `Supervisor pass on ${item.threadId.slice(0, 8)} failed: ${String(e)}`);
+      } finally {
+        if (item.trigger === "manual") this.markManualCandidateExamined();
       }
       this.running = false;
     }
@@ -505,6 +567,23 @@ export class DirectorSupervisor {
     for (const t of candidates) this.enqueue(t.id, "stall_sweep");
     this.sweepIntervalMs = candidates.length ? this.cfg.activeSweepMs : Math.min(this.sweepIntervalMs * 2, this.cfg.maxSweepMs);
     this.scheduleSweep(this.sweepIntervalMs);
+  }
+
+  private markManualCandidateExamined(): void {
+    if (!this.manualSweep || this.manualSweep.state !== "running") return;
+    this.manualSweep.examinedCount++;
+    if (this.manualSweep.examinedCount >= this.manualSweep.candidateCount) this.finishManualSweep("complete");
+    else this.broadcast();
+  }
+
+  private finishManualSweep(state: "complete" | "stopped"): void {
+    if (!this.manualSweep || this.manualSweep.state !== "running") return;
+    this.manualSweep.state = state;
+    this.manualSweep.completedAt = Date.now();
+    const resolve = this.manualSweep.resolve;
+    this.manualSweepPromise = undefined;
+    resolve();
+    this.broadcast();
   }
 
   private async evaluate(threadId: string, trigger: SupervisorTrigger): Promise<void> {
@@ -757,6 +836,15 @@ export class DirectorSupervisor {
       model: judged?.model ?? null,
       notifiedDiscord,
     });
+    // The manual result is intentionally an operator-facing summary, not a claim that every task needed
+    // or received a model-backed check-in. Keep budget/capacity/errors visible beside the examined count.
+    if (trigger === "manual" && this.manualSweep?.state === "running") {
+      if (kind === "skip" && /daily check-in budget reached/i.test(summary)) this.manualSweep.budgetLimitedCount++;
+      if (kind === "error") {
+        this.manualSweep.errorCount++;
+        if (/no capacity/i.test(summary)) this.manualSweep.capacityLimitedCount++;
+      }
+    }
     // The event timestamp is the durable definition of a visible supervisor check. Mirroring it in
     // memory keeps this process's snapshot cheap while making the restart snapshot byte-for-byte
     // consistent with the persisted audit trail.

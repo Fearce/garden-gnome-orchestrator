@@ -370,6 +370,7 @@ const saveTaskOrder = (ids: string[]): void => lsSet(TASK_ORDER_KEY, JSON.string
 const IDLE_SUPERVISOR: SupervisorSnapshot = {
   enabled: false,
   running: false,
+  manualSweep: null,
   watching: 0,
   lastCheckAt: null,
   budget: { date: "", checkinsToday: 0, costUsdToday: 0, tokensToday: 0, maxCheckinsPerDay: 0, maxCostUsdPerDay: 0, maxTokensPerDay: 0 },

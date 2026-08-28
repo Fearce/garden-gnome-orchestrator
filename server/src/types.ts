@@ -905,6 +905,18 @@ export interface SupervisorEvent {
 export interface SupervisorSnapshot {
   enabled: boolean;
   running: boolean; // a pass is in flight right now (the "single active pass" guardrail, made visible)
+  /** The latest operator-requested full pass. It reports progress separately from per-task audit rows
+   * while still respecting the daily agent-check-in budget and cooldown guardrails. */
+  manualSweep?: {
+    state: "running" | "complete" | "stopped";
+    startedAt: number;
+    completedAt?: number | null;
+    candidateCount: number;
+    examinedCount: number;
+    budgetLimitedCount: number;
+    capacityLimitedCount: number;
+    errorCount: number;
+  } | null;
   watching: number; // tasks currently flagged with an owner-facing action, not yet settled
   lastCheckAt?: number | null;
   budget: {

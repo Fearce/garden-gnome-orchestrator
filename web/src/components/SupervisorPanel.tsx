@@ -1,20 +1,16 @@
 import { useStore } from "../store.js";
-import type { SupervisorEvent } from "../types.js";
+import type { SupervisorEvent, SupervisorSnapshot } from "../types.js";
 import { useCoarseNow } from "../lib/timing.js";
 import { since } from "../lib/format.js";
 
-/**
- * The Director Supervisor's transparency panel: is it on, is a pass running right now, today's bounded
- * check-in budget, and the recent audit trail — every check/skip/action it took and why. Rendered by the
- * Board in place of the task lanes when the header toggle is on "Supervisor" (mirrors OperatorNotes).
- * The on/off toggle itself lives in Settings (one source of truth for the flag); this panel is read-only
- * plus a "run now" trigger for an immediate pass.
- */
+/** The Supervisor's live audit trail and its explicit operator sweep. Settings owns the on/off
+ * switch; this view shows the unattended budget and the manual full-sweep result distinctly. */
 export function SupervisorPanel() {
   const supervisor = useStore((s) => s.supervisor);
   const runNow = useStore((s) => s.runSupervisorNow);
   const now = useCoarseNow();
-  const { enabled, running, watching, lastCheckAt, budget, events } = supervisor;
+  const { enabled, running, manualSweep, watching, lastCheckAt, budget, events } = supervisor;
+  const manualRunning = manualSweep?.state === "running";
   const budgetSpent =
     (budget.maxCheckinsPerDay > 0 && budget.checkinsToday >= budget.maxCheckinsPerDay) ||
     (budget.maxCostUsdPerDay > 0 && budget.costUsdToday >= budget.maxCostUsdPerDay) ||
@@ -25,30 +21,35 @@ export function SupervisorPanel() {
       <div className="supervisor-toolbar">
         <span className={"supervisor-state" + (enabled ? " on" : " off")}>
           <span className="dot" aria-hidden="true" />
-          {enabled ? (running ? "Running a pass…" : "Watching") : "Off"}
+          {enabled ? (manualRunning ? "Running your full sweep..." : running ? "Running a pass..." : "Watching") : "Off"}
         </span>
         {enabled ? (
-          <span className="faint mono" style={{ fontSize: 11 }}>
-            {watching} watching · {budget.checkinsToday}/{budget.maxCheckinsPerDay} check-ins today · $
-            {budget.costUsdToday.toFixed(2)}/{budget.maxCostUsdPerDay.toFixed(2)} today · {budget.tokensToday.toLocaleString()}/
-            {budget.maxTokensPerDay.toLocaleString()} tok
+          <span className="faint mono supervisor-budget">
+            {watching} watching · {budget.checkinsToday}/{budget.maxCheckinsPerDay} check-ins today · ${budget.costUsdToday.toFixed(2)}/{budget.maxCostUsdPerDay.toFixed(2)} today · {budget.tokensToday.toLocaleString()}/{budget.maxTokensPerDay.toLocaleString()} tok
             {lastCheckAt ? ` · last check ${since(now, lastCheckAt)} ago` : ""}
           </span>
         ) : (
-          <span className="faint" style={{ fontSize: 11 }}>
-            Off — no background work. Turn it on in Settings → Director Supervisor.
-          </span>
+          <span className="faint supervisor-budget">Off - no background work. Turn it on in Settings -&gt; Director Supervisor.</span>
         )}
         {enabled ? (
-          <button className="btn ghost sm" title="Run one immediate pass over every active/parked task" onClick={runNow} disabled={running}>
-            {running ? "Running…" : "Run now"}
+          <button
+            className="btn ghost sm supervisor-run"
+            title="Run a full immediate pass over every eligible active or parked task, even if the unattended daily check-in limit is spent"
+            onClick={runNow}
+            disabled={manualRunning}
+          >
+            {manualRunning ? "Running..." : running ? "Running..." : "Run now"}
           </button>
         ) : null}
       </div>
 
       {budgetSpent ? (
-        <div className="supervisor-budget-note">Daily check-in budget reached — deterministic checks keep running; the agent check-in resumes tomorrow.</div>
+        <div className="supervisor-budget-note">
+          Automated daily check-in budget reached - deterministic checks keep running. Run now remains an operator override and performs a full sweep; genuine provider limits are reported in its result.
+        </div>
       ) : null}
+
+      {manualSweep ? <ManualSweepStatus sweep={manualSweep} /> : null}
 
       {events.length === 0 ? (
         <div className="empty">
@@ -61,8 +62,8 @@ export function SupervisorPanel() {
         </div>
       ) : (
         <ul className="supervisor-list">
-          {events.map((e) => (
-            <SupervisorRow key={e.id} event={e} now={now} />
+          {events.map((event) => (
+            <SupervisorRow key={event.id} event={event} now={now} />
           ))}
         </ul>
       )}
@@ -70,11 +71,28 @@ export function SupervisorPanel() {
   );
 }
 
+function ManualSweepStatus({ sweep }: { sweep: NonNullable<SupervisorSnapshot["manualSweep"]> }) {
+  const progress = `${sweep.examinedCount} of ${sweep.candidateCount}`;
+  if (sweep.state === "running") {
+    return <div className="supervisor-sweep running" aria-live="polite">Manual full sweep in progress - examined {progress} eligible tasks. The operator override bypasses the unattended daily limit.</div>;
+  }
+  if (sweep.state === "stopped") {
+    return <div className="supervisor-sweep stopped">Manual full sweep stopped after examining {progress} eligible tasks.</div>;
+  }
+  const limitations = [];
+  if (sweep.capacityLimitedCount > 0) {
+    limitations.push(`${sweep.capacityLimitedCount} check-in${sweep.capacityLimitedCount === 1 ? " was" : "s were"} unavailable because of provider capacity.`);
+  }
+  if (sweep.errorCount > 0) {
+    limitations.push(`${sweep.errorCount} check-in${sweep.errorCount === 1 ? " returned" : "s returned"} an external error; see the audit rows.`);
+  }
+  return <div className="supervisor-sweep complete" aria-live="polite">Manual full sweep complete - examined {progress} eligible tasks.{limitations.length ? ` ${limitations.join(" ")}` : ""}</div>;
+}
+
 function SupervisorRow({ event, now }: { event: SupervisorEvent; now: number }) {
   const select = useStore((s) => s.select);
   const setBoardView = useStore((s) => s.setBoardView);
   const thread = useStore((s) => (event.threadId ? s.threads[event.threadId] : undefined));
-
   const openTask = () => {
     if (!thread) return;
     setBoardView("tasks");
@@ -83,25 +101,17 @@ function SupervisorRow({ event, now }: { event: SupervisorEvent; now: number }) 
 
   return (
     <li className={"supervisor-row k-" + event.kind}>
-      <span className="supervisor-kind" title={KIND_LABEL[event.kind]} aria-label={KIND_LABEL[event.kind]}>
-        <KindIcon kind={event.kind} />
-      </span>
+      <span className="supervisor-kind" title={KIND_LABEL[event.kind]} aria-label={KIND_LABEL[event.kind]}><KindIcon kind={event.kind} /></span>
       <div className="supervisor-main">
         <div className="supervisor-summary">
-          {event.threadTitle ? (
-            <button className="supervisor-task link" disabled={!thread} onClick={openTask} title={thread ? "Open this task" : "Task no longer on the board"}>
-              {event.threadTitle}
-            </button>
-          ) : null}
+          {event.threadTitle ? <button className="supervisor-task link" disabled={!thread} onClick={openTask} title={thread ? "Open this task" : "Task no longer on the board"}>{event.threadTitle}</button> : null}
           <span className="supervisor-text">{event.summary}</span>
         </div>
         {event.detail ? <div className="supervisor-detail faint">{event.detail}</div> : null}
         <div className="supervisor-meta faint mono">
-          {event.trigger}
-          {event.action ? ` · ${event.action}` : ""}
+          {event.trigger}{event.action ? ` · ${event.action}` : ""}
           {event.usedAgent ? ` · ${event.model ?? "agent"}${event.costUsd ? ` · $${event.costUsd.toFixed(3)}` : ""}${event.totalTokens ? ` · ${event.totalTokens} tok` : ""}` : " · deterministic"}
-          {event.notifiedDiscord ? " · 🔔 sent" : ""}
-          {" · "}
+          {event.notifiedDiscord ? " · notification sent" : ""}{" · "}
           <time title={new Date(event.createdAt).toLocaleString()}>{since(now, event.createdAt)} ago</time>
         </div>
       </div>
@@ -110,7 +120,7 @@ function SupervisorRow({ event, now }: { event: SupervisorEvent; now: number }) 
 }
 
 const KIND_LABEL: Record<SupervisorEvent["kind"], string> = {
-  check: "Routine check — nothing warranted acting",
+  check: "Routine check - nothing warranted acting",
   action: "Took a bounded action",
   skip: "A trigger fired but nothing warranted acting",
   error: "The pass itself failed to complete",
@@ -118,33 +128,8 @@ const KIND_LABEL: Record<SupervisorEvent["kind"], string> = {
 
 function KindIcon({ kind }: { kind: SupervisorEvent["kind"] }) {
   const common = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
-  if (kind === "action") {
-    return (
-      <svg {...common}>
-        <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />
-      </svg>
-    );
-  }
-  if (kind === "error") {
-    return (
-      <svg {...common}>
-        <circle cx="12" cy="12" r="10" />
-        <line x1="12" y1="8" x2="12" y2="12" />
-        <line x1="12" y1="16" x2="12.01" y2="16" />
-      </svg>
-    );
-  }
-  if (kind === "skip") {
-    return (
-      <svg {...common}>
-        <circle cx="12" cy="12" r="10" />
-        <path d="M8 12h8" />
-      </svg>
-    );
-  }
-  return (
-    <svg {...common}>
-      <path d="m5 12 5 5L20 7" />
-    </svg>
-  );
+  if (kind === "action") return <svg {...common}><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" /></svg>;
+  if (kind === "error") return <svg {...common}><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>;
+  if (kind === "skip") return <svg {...common}><circle cx="12" cy="12" r="10" /><path d="M8 12h8" /></svg>;
+  return <svg {...common}><path d="m5 12 5 5L20 7" /></svg>;
 }

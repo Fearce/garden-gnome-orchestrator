@@ -4180,7 +4180,7 @@ export class ThreadManager implements OrchestratorApi {
 
   /** An explicit "run now" from the console — one immediate pass over every current candidate task. */
   async supervisorRunNow(): Promise<void> {
-    await this.supervisor.runNow();
+    await this.supervisor.runManualNow();
   }
 
   private cancelled(threadId: string): boolean {
