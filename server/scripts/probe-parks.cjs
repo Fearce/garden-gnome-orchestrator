@@ -47,7 +47,6 @@ const STALL_MARKERS = [
   /QA could not complete/i, // the QA round itself never produced a verdict
   /Reader could not complete/i,
   /disposition was lost to a restart/i, // a reader answer that a bounce ate — re-dispatch
-  /Reader escalated to the full pipeline/i, // read lane refused it; nothing re-dispatches on its own
   /Resume failed to start/i,
   /Auto-review failed to run/i,
   /could\s?n(?:o|['’])t reach a verdict/i, // auto-review ran but settled nothing

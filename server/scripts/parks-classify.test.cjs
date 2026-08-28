@@ -35,7 +35,6 @@ for (const err of [
   "QA could not complete — Stopped at the per-session turn ceiling (error_max_turns) — an involuntary cutoff, not a crash.",
   "Reader could not complete — needs your review (or a full re-dispatch).",
   "Reader completed but its disposition was lost to a restart — re-dispatch to re-run it.",
-  "Reader escalated to the full pipeline: needs an edit — re-dispatch with the normal `dispatch`.",
   "Resume failed to start — needs your review.",
   "Auto-review failed to run: Error: spawn ENOENT",
   "Auto-review couldn't reach a verdict — the review run came back empty — still needs your review.",
@@ -67,6 +66,15 @@ for (const err of [
 // A stall marker plus the generic review tail must read as the STALL — the ordering that keeps a task
 // nothing will resume out of the "by design, ignore it" bucket.
 assert.equal(cls("QA could not complete — needs your review."), "stalled", "stall markers outrank the generic tail");
+
+// Reader escalation no longer parks. It is promoted in place into the normal pipeline, so keeping the
+// former dead-end wording in this classifier would make the health sweep prescribe a manual re-dispatch
+// for a task that is already running again.
+assert.equal(
+  cls("Reader escalated — needs the full pipeline: needs an edit"),
+  "unknown",
+  "an in-place reader escalation is not a parked task needing a human nudge",
+);
 
 // --- unknown is a signal, not a dumping ground -------------------------------------------------------
 assert.equal(cls(""), "unknown", "an empty park message classifies rather than throwing");
@@ -216,7 +224,6 @@ const LITERALS = [
   "QA could not complete",
   "Reader could not complete",
   "disposition was lost to a restart",
-  "Reader escalated to the full pipeline",
   "Resume failed to start",
   "Auto-review failed to run",
   "reach a verdict",
