@@ -251,8 +251,15 @@ function ApprovalToggle() {
 }
 
 function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePane) => void }) {
+  const boardView = useStore((s) => s.boardView);
+  const setBoardView = useStore((s) => s.setBoardView);
+  const openBoardView = (view: "tasks" | "supervisor") => {
+    setBoardView(view);
+    setPane("board");
+  };
+
   return (
-    <nav className="mobile-nav">
+    <nav className="mobile-nav" aria-label="Mobile navigation">
       <button
         className={"mnav-btn" + (pane === "director" ? " on" : "")}
         aria-current={pane === "director" ? "page" : undefined}
@@ -264,9 +271,9 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
         Director
       </button>
       <button
-        className={"mnav-btn" + (pane === "board" ? " on" : "")}
-        aria-current={pane === "board" ? "page" : undefined}
-        onClick={() => setPane("board")}
+        className={"mnav-btn" + (pane === "board" && boardView !== "supervisor" ? " on" : "")}
+        aria-current={pane === "board" && boardView !== "supervisor" ? "page" : undefined}
+        onClick={() => openBoardView("tasks")}
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <rect width="7" height="7" x="3" y="3" rx="1" />
@@ -275,6 +282,17 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
           <rect width="7" height="7" x="3" y="14" rx="1" />
         </svg>
         Tasks
+      </button>
+      <button
+        className={"mnav-btn" + (pane === "board" && boardView === "supervisor" ? " on" : "")}
+        aria-current={pane === "board" && boardView === "supervisor" ? "page" : undefined}
+        onClick={() => openBoardView("supervisor")}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M20 13c0 5-3.5 7.5-7.7 9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2.2 0 4.7-1.2 6.3-2.7a1 1 0 0 1 1.4 0C14.3 3.8 16.8 5 19 5a1 1 0 0 1 1 1z" />
+          <path d="M9 12l2 2 4-4" />
+        </svg>
+        Supervisor
       </button>
     </nav>
   );
