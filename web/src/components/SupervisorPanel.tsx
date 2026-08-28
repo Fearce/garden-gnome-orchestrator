@@ -34,9 +34,9 @@ export function SupervisorPanel() {
         {enabled ? (
           <button
             className="btn ghost sm supervisor-run"
-            title="Run a full immediate pass over every eligible active or parked task, even if the unattended daily check-in limit is spent"
+            title="Run a full immediate pass over every eligible active or parked task; model-backed check-ins still respect cooldown and daily budget"
             onClick={runNow}
-            disabled={manualRunning}
+            disabled={running}
           >
             {manualRunning ? "Running..." : running ? "Running..." : "Run now"}
           </button>
@@ -45,7 +45,7 @@ export function SupervisorPanel() {
 
       {budgetSpent ? (
         <div className="supervisor-budget-note">
-          Automated daily check-in budget reached - deterministic checks keep running. Run now remains an operator override and performs a full sweep; genuine provider limits are reported in its result.
+          Automated daily check-in budget reached - deterministic checks keep running. Run now still examines eligible tasks; model-backed check-ins resume when the daily budget resets.
         </div>
       ) : null}
 
@@ -74,12 +74,15 @@ export function SupervisorPanel() {
 function ManualSweepStatus({ sweep }: { sweep: NonNullable<SupervisorSnapshot["manualSweep"]> }) {
   const progress = `${sweep.examinedCount} of ${sweep.candidateCount}`;
   if (sweep.state === "running") {
-    return <div className="supervisor-sweep running" aria-live="polite">Manual full sweep in progress - examined {progress} eligible tasks. The operator override bypasses the unattended daily limit.</div>;
+    return <div className="supervisor-sweep running" aria-live="polite">Manual full sweep in progress - examined {progress} eligible tasks.</div>;
   }
   if (sweep.state === "stopped") {
     return <div className="supervisor-sweep stopped">Manual full sweep stopped after examining {progress} eligible tasks.</div>;
   }
   const limitations = [];
+  if (sweep.budgetLimitedCount > 0) {
+    limitations.push(`${sweep.budgetLimitedCount} check-in${sweep.budgetLimitedCount === 1 ? " was" : "s were"} held by the daily budget.`);
+  }
   if (sweep.capacityLimitedCount > 0) {
     limitations.push(`${sweep.capacityLimitedCount} check-in${sweep.capacityLimitedCount === 1 ? " was" : "s were"} unavailable because of provider capacity.`);
   }

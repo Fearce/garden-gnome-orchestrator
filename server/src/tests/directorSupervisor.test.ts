@@ -216,7 +216,7 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log("director supervisor: manual operator override");
+  console.log("director supervisor: manual operator sweep");
   {
     const f = fixture();
     try {
@@ -228,23 +228,23 @@ async function main(): Promise<void> {
       await supervisor.runManualNow();
       const first = supervisor.snapshot().manualSweep;
       check(
-        "manual Run now examines every eligible task after the unattended daily budget would be spent",
-        f.getJudgeCalls() === 2 && first?.state === "complete" && first.examinedCount === 2 && first.budgetLimitedCount === 0,
+        "manual Run now examines every eligible task while keeping model check-ins budgeted",
+        f.getJudgeCalls() === 1 && first?.state === "complete" && first.examinedCount === 2 && first.budgetLimitedCount === 1,
       );
       check(
-        "manual audit rows never claim the daily budget blocked the operator override",
-        !f.db.listSupervisorEvents().some((event) => event.trigger === "manual" && /daily check-in budget reached/i.test(event.summary)),
+        "manual audit rows explain when the daily budget held a model check-in",
+        f.db.listSupervisorEvents().some((event) => event.trigger === "manual" && /daily check-in budget reached/i.test(event.summary)),
       );
 
       const automatic = makeTask(f.db, "background budget guard", "failed", true);
       f.hub.publish({ type: "thread.upsert", thread: automatic });
       await waitFor(() => f.db.listSupervisorEvents().some((event) => event.threadId === automatic.id && /daily check-in budget reached/i.test(event.summary)));
-      check("the unattended state-change path still obeys the daily budget", f.getJudgeCalls() === 2);
+      check("the unattended state-change path still obeys the daily budget", f.getJudgeCalls() === 1);
 
       await supervisor.runManualNow();
       check(
         "a later manual request starts a fresh full sweep after the prior one completed",
-        f.getJudgeCalls() > 2 && supervisor.snapshot().manualSweep?.examinedCount === 3,
+        f.getJudgeCalls() === 1 && supervisor.snapshot().manualSweep?.examinedCount === 3,
       );
       supervisor.setEnabled(false);
     } finally {
