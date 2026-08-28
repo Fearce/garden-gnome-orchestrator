@@ -177,6 +177,20 @@ async function main(): Promise<void> {
       f.close();
     }
   }
+  {
+    const f = fixture();
+    try {
+      const task = makeTask(f.db, "recent finding is progress", "implementing", true);
+      f.db.addFinding({ threadId: task.id, fromRole: "implementor", summary: "Fresh handoff/progress evidence", severity: "info" });
+      const supervisor = f.create();
+      supervisor.setEnabled(true);
+      await supervisor.runNow();
+      check("recent findings count as activity and avoid a false stalled-task check-in", f.getJudgeCalls() === 0 && f.db.listSupervisorEvents().length === 0);
+      supervisor.setEnabled(false);
+    } finally {
+      f.close();
+    }
+  }
 
   console.log("director supervisor: bounded check-ins, cooldown and budget");
   {

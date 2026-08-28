@@ -1938,10 +1938,20 @@ export class Db {
     return row?.t ?? null;
   }
 
-  /** Epoch ms of the most recent message in a thread (any role/kind), or null — the cheapest available
-   *  read of "is anything actually happening here", for the supervisor's stall detection. */
+  /** Epoch ms of the most recent task-visible activity, or null. Messages are the common progress
+   *  signal, but findings/deliverables are durable task history too, so they also reset the
+   *  supervisor's no-progress clock. */
   lastActivityAt(threadId: string): number | null {
-    const row = this.raw.prepare("SELECT MAX(created_at) AS t FROM messages WHERE thread_id = ?").get(threadId) as { t: number | null };
+    const row = this.raw
+      .prepare(
+        `SELECT MAX(t) AS t
+           FROM (
+             SELECT MAX(created_at) AS t FROM messages WHERE thread_id = ?
+             UNION ALL
+             SELECT MAX(created_at) AS t FROM findings WHERE thread_id = ?
+           )`,
+      )
+      .get(threadId, threadId) as { t: number | null };
     return row?.t ?? null;
   }
 }
