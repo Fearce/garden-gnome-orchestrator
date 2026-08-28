@@ -566,6 +566,10 @@ export function providerServesRole(role: Role, provider: ImplementorProvider): b
 }
 /** The roles `runRole` drives: every non-implementor agent, each one-shot and schema-bound. */
 type StructuredRole = "planner" | "researcher" | "qa" | "reader" | "reviewer";
+type QaStopOutcome =
+  | { status: "stopped" }
+  | { status: "no-live-handle" }
+  | { status: "failed"; error: string };
 /** A pipeline stage that can be paused solely because every provider is quota-capped.  This is kept
  * separate from `Role`: auto-review is an owner-initiated, post-pipeline action and must never be
  * restarted as though it were a normal pipeline. */
@@ -649,6 +653,10 @@ export class ThreadManager implements OrchestratorApi {
   // or supersedes it and resumes the implementor. Either path must never wake/spawn an implementor beside
   // active QA — that's what put two agents in one slot. liveQa holds the steerable/stoppable QA run.
   private readonly liveQa = new Map<string, AgentRunLike>();
+  // A QA verdict has already failed and the loop is awaiting the normal fix-round implementor resume.
+  // State remains 'qa' and liveQa is absent during session compression, so interrupt/inject commands in
+  // this window must join that already-starting implementor instead of creating a QA-supersede resume.
+  private readonly qaFixHandoff = new Set<string>();
   // Same idea for the on-demand auto-reviewer: it owns the slot alone while it decides the task's fate,
   // so an inject/resume must reach IT rather than wake an implementor beside it.
   private readonly liveReviewer = new Map<string, AgentRunLike>();
@@ -4864,8 +4872,9 @@ export class ThreadManager implements OrchestratorApi {
       if (role === "reviewer") this.liveReviewer.delete(thread.id);
       await agent.stop();
       this.untrack(thread.id, agent);
-      this.finishRun(run.id, res, agent);
-      if (role === "qa" && this.qaSuperseded(thread.id)) return undefined;
+      const qaWasSuperseded = role === "qa" && this.qaSuperseded(thread.id);
+      this.finishRun(run.id, res, agent, qaWasSuperseded ? "interrupted" : undefined);
+      if (qaWasSuperseded) return undefined;
       if (this.cancelled(thread.id) || (res && !res.isError && !capped)) return res;
 
       if (!capped && agent.transientApiError) {
@@ -7082,12 +7091,13 @@ export class ThreadManager implements OrchestratorApi {
       // two are identical so startResumedImplementor de-dups them. State stays "qa" across the (possibly
       // awaited) compression — startImplementor flips it to "implementing" only once the run is live — so
       // an inject/resume during that window routes to the QA buffer rather than spawning a second agent.
+      this.qaFixHandoff.add(thread.id);
       const start = await this.startResumedImplementor(
         thread,
         kickoff,
         this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
         { effort, resumeNudge: fixMsg, directorNote: fixMsg, qaFollows: true },
-      );
+      ).finally(() => this.qaFixHandoff.delete(thread.id));
       if (!start) return; // cancelled while compressing the prior session for the resume
       this.flushDirectorNotes(thread.id, start.run);
       res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, fixMsg);
@@ -7143,8 +7153,6 @@ export class ThreadManager implements OrchestratorApi {
         at: Date.now(),
         messages: text ? [...previous, text] : previous,
       },
-      qaCapRetryRound: undefined,
-      qaInterruptedRetryRound: undefined,
     });
   }
 
@@ -7167,15 +7175,18 @@ export class ThreadManager implements OrchestratorApi {
     this.queuedForImplementor.delete(threadId);
   }
 
-  private async stopQaForImplementor(threadId: string): Promise<boolean> {
-    const qa = this.liveQa.get(threadId);
-    if (!qa) return false;
+  private clearQaSupersedeMarker(threadId: string): void {
+    this.db.updateThreadStageOutputs(threadId, { qaSuperseded: undefined });
+  }
+
+  private async stopQaForImplementor(threadId: string, qa = this.liveQa.get(threadId)): Promise<QaStopOutcome> {
+    if (!qa) return { status: "no-live-handle" };
     try {
       await qa.stop();
-      return true;
+      return { status: "stopped" };
     } catch (e) {
       this.hub.log("warn", `Could not stop QA for ${threadId.slice(0, 8)}: ${String(e)}`);
-      return false;
+      return { status: "failed", error: String(e) };
     }
   }
 
@@ -7386,18 +7397,56 @@ export class ThreadManager implements OrchestratorApi {
       if (images?.length) {
         this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
       }
-      this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
-      if (mode === "interrupt") {
-        this.hub.log("info", "[INJECT] QA in progress - superseding QA and returning to the implementor");
-        this.rememberQaSupersede(threadId, message);
-        this.resuming.add(threadId);
-        this.setState(threadId, "implementing");
-        const stopped = await this.stopQaForImplementor(threadId);
+      const qa = this.liveQa.get(threadId);
+      const inFixHandoff = this.qaFixHandoff.has(threadId);
+      if (!qa && inFixHandoff) {
+        this.bufferDirectorNote(threadId, message);
         const m = this.db.addMessage({
           threadId,
           role: "director",
           kind: "system",
-          content: `↪ interrupt requested (QA is ${stopped ? "stopping" : "being superseded"}; returning to the implementor): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+          content: `↪ ${mode === "interrupt" ? "interrupt requested" : "injected"} (QA already handed back; queued for the active implementor resume): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+          attachments: injectRefs(),
+        });
+        this.hub.publish({ type: "thread.message", threadId, message: m });
+        this.touchThread(threadId);
+        return {
+          ok: true,
+          state: "qa",
+          message: "QA is already returning this task to implementation; instruction queued for that implementor resume.",
+        };
+      }
+      if (mode === "interrupt") {
+        if (!qa) {
+          return {
+            ok: false,
+            state: "qa",
+            error: "QA has no live stop handle right now. The task is likely between QA runner processes; retry the interrupt when QA is visible again or when the implementor starts.",
+          };
+        }
+        this.hub.log("info", "[INJECT] QA in progress - superseding QA and returning to the implementor");
+        this.rememberQaSupersede(threadId, message);
+        const stopped = await this.stopQaForImplementor(threadId, qa);
+        if (stopped.status === "failed") {
+          this.clearQaSupersedeMarker(threadId);
+          const m = this.db.addMessage({
+            threadId,
+            role: "director",
+            kind: "system",
+            content: `↪ interrupt failed (QA is still running): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}\n${stopped.error}`,
+            attachments: injectRefs(),
+          });
+          this.hub.publish({ type: "thread.message", threadId, message: m });
+          this.touchThread(threadId);
+          return { ok: false, state: "qa", error: `Could not stop QA: ${stopped.error}` };
+        }
+        this.resuming.add(threadId);
+        this.setState(threadId, "implementing");
+        const m = this.db.addMessage({
+          threadId,
+          role: "director",
+          kind: "system",
+          content: `↪ interrupt requested (QA is stopping; returning to the implementor): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
           attachments: injectRefs(),
         });
         this.hub.publish({ type: "thread.message", threadId, message: m });
@@ -7405,15 +7454,15 @@ export class ThreadManager implements OrchestratorApi {
         return {
           ok: true,
           state: "implementing",
-          message: stopped ? "QA stop requested; implementor resume queued." : "QA superseded; implementor resume queued.",
+          message: "QA stop requested; implementor resume queued.",
         };
       }
       this.hub.log("info", "[INJECT] QA in progress - steering QA and queuing for the implementor, not re-spawning one");
       // No handle while the state is "qa" means a mid-QA account failover (runRole dropped the old handle
       // and hasn't registered the relaunched one) or the fix-round window after QA returned but before the
-      // re-launched implementor goes live. Either way the queue above is what carries the note.
-      const qa = this.liveQa.get(threadId);
+      // re-launched implementor goes live. Either way the queue below is what carries the note.
       if (qa) this.steerStructuredRole(qa, message, images);
+      this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
       const m = this.db.addMessage({
         threadId,
         role: "director",
@@ -7647,22 +7696,57 @@ export class ThreadManager implements OrchestratorApi {
   async interruptThread(threadId: string): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (thread?.state === "qa") {
+      const qa = this.liveQa.get(threadId);
+      if (!qa && this.qaFixHandoff.has(threadId)) {
+        const m = this.db.addMessage({
+          threadId,
+          role: "director",
+          kind: "system",
+          content: "↪ interrupt requested (QA already handed back; waiting for the active implementor resume)",
+        });
+        this.hub.publish({ type: "thread.message", threadId, message: m });
+        this.touchThread(threadId);
+        return {
+          ok: true,
+          state: "qa",
+          message: "QA is already returning this task to implementation; waiting for that implementor resume.",
+        };
+      }
+      if (!qa) {
+        return {
+          ok: false,
+          state: "qa",
+          error: "QA has no live stop handle right now. The task is likely between QA runner processes; retry the interrupt when QA is visible again or when the implementor starts.",
+        };
+      }
       this.rememberQaSupersede(threadId);
+      const stopped = await this.stopQaForImplementor(threadId, qa);
+      if (stopped.status === "failed") {
+        this.clearQaSupersedeMarker(threadId);
+        const m = this.db.addMessage({
+          threadId,
+          role: "director",
+          kind: "system",
+          content: `↪ interrupt failed (QA is still running)\n${stopped.error}`,
+        });
+        this.hub.publish({ type: "thread.message", threadId, message: m });
+        this.touchThread(threadId);
+        return { ok: false, state: "qa", error: `Could not stop QA: ${stopped.error}` };
+      }
       this.resuming.add(threadId);
       this.setState(threadId, "implementing");
-      const stopped = await this.stopQaForImplementor(threadId);
       const m = this.db.addMessage({
         threadId,
         role: "director",
         kind: "system",
-        content: `↪ interrupt requested (QA is ${stopped ? "stopping" : "being superseded"}; returning to the implementor)`,
+        content: "↪ interrupt requested (QA is stopping; returning to the implementor)",
       });
       this.hub.publish({ type: "thread.message", threadId, message: m });
       this.touchThread(threadId);
       return {
         ok: true,
         state: "implementing",
-        message: stopped ? "QA stop requested; implementor resume queued." : "QA superseded; implementor resume queued.",
+        message: "QA stop requested; implementor resume queued.",
       };
     }
     const live = this.live.get(threadId);
@@ -7882,6 +7966,7 @@ export class ThreadManager implements OrchestratorApi {
     this.pendingResumeMsgs.delete(threadId);
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
+    this.qaFixHandoff.delete(threadId);
     this.liveReviewer.delete(threadId);
     this.reviewing.delete(threadId);
     this.directorNotes.delete(threadId);
@@ -7932,6 +8017,7 @@ export class ThreadManager implements OrchestratorApi {
     this.queuedForImplementor.delete(threadId);
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
+    this.qaFixHandoff.delete(threadId);
     this.liveReviewer.delete(threadId);
     this.reviewing.delete(threadId);
     this.capParked.delete(threadId);
@@ -8405,6 +8491,7 @@ export class ThreadManager implements OrchestratorApi {
     // A task settles to 'review' straight out of the QA loop, so a mid-QA account failover can leave a
     // stale liveQa handle behind (the window the QA-inject gate also guards) — drop it so it can't leak.
     this.liveQa.delete(threadId);
+    this.qaFixHandoff.delete(threadId);
     this.liveReviewer.delete(threadId);
     this.directorNotes.delete(threadId);
     this.queuedForImplementor.delete(threadId);
@@ -9131,12 +9218,18 @@ export class ThreadManager implements OrchestratorApi {
     if (run) this.hub.publish({ type: "run.upsert", run });
   }
 
-  private finishRun(runId: string, res: Extract<AgentEvent, { type: "result" }> | undefined, agent: AgentRunLike): void {
+  private finishRun(
+    runId: string,
+    res: Extract<AgentEvent, { type: "result" }> | undefined,
+    agent: AgentRunLike,
+    stateOverride?: AgentRunState,
+  ): void {
+    const state: AgentRunState = stateOverride ?? (res ? (res.isError ? "error" : "done") : "interrupted");
     this.db.updateRun(runId, {
       // A structured role that ends without a result was interrupted (cancellation, restart, or a
       // runner teardown), not successful. Besides keeping the run trail truthful, this must match
       // finalizeRun so such a row cannot be mistaken for proof that Codex recovered from a cap.
-      state: res ? (res.isError ? "error" : "done") : "interrupted",
+      state,
       // Persist the failure reason so a dead run is diagnosable instead of a silent error row.
       error: res?.isError ? runErrorText(res) : null,
       capFlagged: capFlaggedBy(agent),

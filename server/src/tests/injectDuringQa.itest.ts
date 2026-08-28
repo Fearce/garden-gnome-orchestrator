@@ -86,10 +86,12 @@ function sendText(content: unknown): string {
  */
 class FakeRun {
   readonly sends: { text: string; opts?: SendOpts }[] = [];
+  sessionId?: string;
   interrupts = 0;
   stops = 0;
   aborted = false;
   stopped = false;
+  stopError?: Error;
   send(content: unknown, opts?: SendOpts): void {
     this.sends.push({ text: sendText(content), opts });
     if (opts?.priority === "now") this.aborted = true;
@@ -100,6 +102,7 @@ class FakeRun {
   }
   async stop(): Promise<void> {
     this.stops++;
+    if (this.stopError) throw this.stopError;
     this.stopped = true;
     this.aborted = true;
   }
@@ -195,7 +198,11 @@ const runLoop = (h: Harness, id: string, maxQaRounds = 4): Promise<void> =>
  * `liveQa` exactly as the real `runRole` does, then hands control to `whileLive` — that callback is the
  * test's window to inject "while QA is running". An aborted turn returns the verdict-less result.
  */
-function stubQaRunRole(h: Harness, whileLive: (qa: FakeRun) => Promise<void>, opts: { staleVerdictAfterStop?: boolean } = {}): FakeRun[] {
+function stubQaRunRole(
+  h: Harness,
+  whileLive: (qa: FakeRun) => Promise<void>,
+  opts: { staleVerdictAfterStop?: boolean; verdicts?: Array<{ pass: boolean; summary: string; changed: boolean }> } = {},
+): FakeRun[] {
   const agents: FakeRun[] = [];
   h.internals.runRole = async (t: Thread, role: string): Promise<unknown> => {
     const agent = new FakeRun();
@@ -205,9 +212,12 @@ function stubQaRunRole(h: Harness, whileLive: (qa: FakeRun) => Promise<void>, op
     await whileLive(agent);
     h.internals.liveQa.delete(t.id);
     const stopped = agent.stopped || agent.aborted;
-    const res = stopped && !opts.staleVerdictAfterStop ? ABORTED : verdictResult({ pass: true, summary: "verified", changed: false });
-    h.db.updateRun(run.id, { sessionId: "qa-session", state: res === ABORTED ? "interrupted" : "done", endedAt: Date.now() });
-    return res;
+    const verdict = opts.verdicts?.[agents.length - 1] ?? { pass: true, summary: "verified", changed: false };
+    const res = stopped && !opts.staleVerdictAfterStop ? ABORTED : verdictResult(verdict);
+    const superseded = h.internals.qaSuperseded(t.id) === true;
+    agent.sessionId = "qa-session";
+    h.internals.finishRun(run.id, res, agent, superseded ? "interrupted" : undefined);
+    return superseded ? undefined : res;
   };
   return agents;
 }
@@ -272,25 +282,29 @@ async function main(): Promise<void> {
     }
   }
 
-  // -- Test C: the fix-round window (state 'qa', no live QA handle) still records the return intent ----
+  // -- Test C: the fix-round window (state 'qa', no live QA handle) joins the existing handoff ---------
   // QA has returned but the re-launched implementor isn't live yet, so there is nothing to steer. The
-  // note must not spawn an implementor beside the pipeline, and must not be dropped.
-  console.log("\nTest C — an interrupt with no live QA handle supersedes QA without side-spawning");
+  // note must not spawn an implementor beside the pipeline, must not be dropped, and must not arm a
+  // second QA-supersede resume.
+  console.log("\nTest C — an interrupt in the QA-fix handoff is queued for that same resume");
   {
     const h = makeHarness();
     try {
       const id = seedTask(h);
       h.db.updateThread(id, { state: "qa" });
+      h.internals.qaFixHandoff.add(id);
       let spawned = 0;
       h.internals.startResumedImplementor = async (): Promise<unknown> => {
         spawned++;
         return { run: new FakeRun(), accountId: "acct-a" };
       };
       const r = await h.mgr.injectThread(id, "use the addon options panel", "interrupt");
-      check("the inject was accepted as an implementation resume", r.ok && r.state === "implementing", JSON.stringify(r));
-      check("the visible task state moved out of qa", h.db.getThread(id)?.state === "implementing", `state=${h.db.getThread(id)?.state}`);
+      check("the inject was accepted in the existing qa handoff", r.ok && r.state === "qa", JSON.stringify(r));
+      check("the visible task state stayed truthful until the implementor is live", h.db.getThread(id)?.state === "qa", `state=${h.db.getThread(id)?.state}`);
       check("no implementor was spawned beside the pipeline", spawned === 0, `spawns=${spawned}`);
-      check("the note is remembered for the implementor resume", h.db.getThreadStageOutputs(id).qaSuperseded?.messages.some((m) => m.includes("addon options")) === true, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
+      check("no QA supersede marker was armed", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
+      check("the note is buffered for the active implementor resume", (h.internals.directorNotes.get(id) ?? []).some((m: string) => m.includes("addon options")), JSON.stringify(h.internals.directorNotes.get(id)));
+      check("the note is not queued as a later follow-up", !(h.internals.queuedForImplementor.get(id) ?? []).some((m: string) => m.includes("addon options")), JSON.stringify(h.internals.queuedForImplementor.get(id)));
       await settle();
     } finally {
       h.dispose();
@@ -317,6 +331,8 @@ async function main(): Promise<void> {
       await runLoop(h, id);
       check("the first QA run was stopped", agents[0]!.stops === 1 && agents[0]!.stopped, `stops=${agents[0]!.stops}`);
       check("the stale pass did not finish the pipeline directly", agents.length === 2, `qaRuns=${agents.length}`);
+      const qaRuns = h.db.listRuns(id).filter((r) => r.role === "qa").sort((a, b) => a.startedAt - b.startedAt);
+      check("the superseded stale QA run was persisted as interrupted", qaRuns[0]?.state === "interrupted", JSON.stringify(qaRuns.map((r) => ({ role: r.role, state: r.state }))));
       check("the task settled done only after a fresh QA pass", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
       check(
         "the resumed implementor received the no-message QA interrupt context",
@@ -452,6 +468,91 @@ async function main(): Promise<void> {
       );
       check("QA rechecked the same charged round once after implementation resumed", agents.length === 1, `qaRuns=${agents.length}`);
       check("the persisted QA supersede marker was cleared", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test J: interrupt during the normal QA-fix handoff must not create a second resume -------------
+  console.log("\nTest J — interrupt during the QA-to-fix handoff joins that one implementor resume");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const starts: Array<{ nudge: string; run: FakeRun }> = [];
+      const handoffDeliveries: string[][] = [];
+      let injectedDuringFixHandoff = false;
+      h.internals.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string }): Promise<{ run: FakeRun; accountId: string; account: { id: string } }> => {
+        const run = new FakeRun();
+        starts.push({ nudge: opts?.resumeNudge ?? "", run });
+        if (starts.length === 2 && !injectedDuringFixHandoff) {
+          injectedDuringFixHandoff = true;
+          const r = await h.mgr.injectThread(id, "normal messages and Discord must provide real conversation context", "interrupt");
+          check("the handoff interrupt was accepted into the existing fix resume", r.ok && r.state === "qa", JSON.stringify(r));
+        }
+        return { run, accountId: "acct-a", account: { id: "acct-a" } };
+      };
+      h.internals.flushDirectorNotes = (threadId: string, run: FakeRun): void => {
+        const notes = h.internals.directorNotes.get(threadId);
+        if (!notes?.length) return;
+        h.internals.directorNotes.delete(threadId);
+        handoffDeliveries.push([...notes]);
+        run.send(notes.join("\n\n"));
+      };
+      const agents = stubQaRunRole(h, async () => {}, {
+        verdicts: [
+          { pass: false, summary: "context extraction still reads toolbar labels", changed: false },
+          { pass: true, summary: "verified after fix", changed: false },
+        ],
+      });
+      await runLoop(h, id, 4);
+      const deliveryCount = handoffDeliveries.flat().filter((m) => m.includes("normal messages and Discord")).length;
+      check("the task settled after the normal fix path", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check("exactly one initial implementation plus one QA fix implementation ran", starts.length === 2, `starts=${starts.length}`);
+      check("exactly one failed QA and one final QA pass ran", agents.length === 2, `qaRuns=${agents.length}`);
+      check("the injected handoff instruction was delivered exactly once", deliveryCount === 1, JSON.stringify(handoffDeliveries));
+      check("the handoff instruction was not left as a later queued follow-up", !h.drained.some((q) => q.some((m) => m.includes("normal messages and Discord"))), JSON.stringify(h.drained));
+      check("no QA supersede marker leaked into the next QA pass", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test K: a rejected QA stop is reported as failure, not a successful queued resume --------------
+  console.log("\nTest K — QA stop rejection returns an actionable command failure");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "qa" });
+      h.internals.queuedForImplementor.set(id, ["preserve earlier queued work"]);
+      const qa = new FakeRun();
+      qa.stopError = new Error("simulated stop failure");
+      h.internals.liveQa.set(id, qa);
+      const sent: Array<Record<string, unknown>> = [];
+      const socket = {
+        OPEN: 1,
+        readyState: 1,
+        bufferedAmount: 0,
+        send(raw: unknown) {
+          sent.push(JSON.parse(String(raw)));
+        },
+      };
+      await handleCommand({ manager: h.mgr } as Parameters<typeof handleCommand>[0], socket as unknown as Parameters<typeof handleCommand>[1], {
+        type: "thread.inject",
+        threadId: id,
+        message: "this should fail visibly",
+        mode: "interrupt",
+      });
+      const action = sent.find((e) => e.type === "thread.action");
+      check("the socket sent a failed thread.action acknowledgment", action?.ok === false, JSON.stringify(sent));
+      check("the failed acknowledgment keeps the task in qa", action?.state === "qa" && h.db.getThread(id)?.state === "qa", JSON.stringify(action));
+      check("the failed acknowledgment names the stop failure", String(action?.error ?? "").includes("simulated stop failure"), JSON.stringify(action));
+      check("the QA run was not marked stopped", qa.stops === 1 && !qa.stopped && !qa.aborted, `stops=${qa.stops} stopped=${qa.stopped} aborted=${qa.aborted}`);
+      check("the transient supersede marker was cleared", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
+      check("older queued implementor work was preserved", JSON.stringify(h.internals.queuedForImplementor.get(id)) === JSON.stringify(["preserve earlier queued work"]), JSON.stringify(h.internals.queuedForImplementor.get(id)));
       await settle();
     } finally {
       h.dispose();
