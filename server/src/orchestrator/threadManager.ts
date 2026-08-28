@@ -6696,20 +6696,21 @@ export class ThreadManager implements OrchestratorApi {
     // Fresh dispatch = 0; a retry nulls stage_outputs, so it resets too.
     const savedQa = this.db.getThreadStageOutputs(thread.id);
     const startingQaSupersede = pipe.qaEnabled ? this.qaSupersedeMessages(thread.id) : null;
+    let priorRounds = pipe.qaEnabled ? savedQa.qaRoundsUsed ?? 0 : 0;
     if (startingQaSupersede) {
       const supersedeNote = qaSupersedeResumeNudge(startingQaSupersede);
       directorNote = [directorNote, supersedeNote].filter((s): s is string => Boolean(s)).join("\n\n") || undefined;
+      priorRounds = Math.max(0, priorRounds - 1);
       this.db.updateThreadStageOutputs(thread.id, {
         qaCapRetryRound: undefined,
         qaInterruptedRetryRound: undefined,
-        qaRoundsUsed: Math.max(0, (savedQa.qaRoundsUsed ?? 0) - 1),
+        qaRoundsUsed: priorRounds,
       });
     }
     const qaCapRetryRound = pipe.qaEnabled && !startingQaSupersede ? savedQa.qaCapRetryRound : undefined;
     const qaInterruptedRetryRound = pipe.qaEnabled && !startingQaSupersede ? savedQa.qaInterruptedRetryRound : undefined;
     const qaRetryRound = qaCapRetryRound ?? qaInterruptedRetryRound;
     const qaOnlyRetry = qaRetryRound != null;
-    const priorRounds = pipe.qaEnabled ? savedQa.qaRoundsUsed ?? 0 : 0;
     if (pipe.qaEnabled && !qaOnlyRetry && priorRounds >= pipe.maxQaRounds) {
       // A prior episode already spent the full QA budget and an interrupt re-entered before it could park.
       // Don't re-run the implementor + a fresh QA pass on the (already usage-heavy) backend — park it.
@@ -6728,43 +6729,46 @@ export class ThreadManager implements OrchestratorApi {
       ? { type: "result", subtype: "success", isError: false }
       : undefined;
     if (!qaOnlyRetry) {
-    const start = await this.startResumedImplementor(thread, kickoff, resumeSession, {
-      effort,
-      resumeNudge: pipe.qaEnabled
-        ? "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done."
-        : "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. QA review is disabled for this task — verify your own work, then commit per the doctrine.",
-      // A steering note from the Resume/inject that re-entered the pipeline — delivered to the
-      // implementor (woven into the seed/kickoff or sent with the nudge) so it isn't silently lost.
-      directorNote,
-      qaFollows: pipe.qaEnabled,
-    });
-    if (!start) return; // cancelled while compressing the prior session for the resume
-    if (startingQaSupersede) this.clearQaSupersede(thread.id);
-    // A cold resume compresses the prior session first (an await), and runPipeline already folded the
-    // notes that existed before that into the kickoff. Any note injected DURING that window was buffered
-    // (state was still pre-implementor) after the fold — deliver it now that the implementor is live, so
-    // it isn't stranded in the buffer. Notes arriving after this point hit the live-inject path directly.
-    this.flushDirectorNotes(thread.id, start.run);
-    res = await this.awaitImplementorCompletion(
-      thread,
-      effort,
-      kickoff,
-      start.run,
-      start.accountId,
-      false,
-      "Continue exactly where you left off and finish the task completely.",
-      pipe.qaEnabled,
-    );
-    // Before the hand-off: if the director queued follow-ups while the implementor worked, it does that
-    // work too now (re-launched with them) instead of proceeding — the Queue button's whole point.
-    res = await this.drainQueuedImplementor(thread, effort, kickoff, res, pipe.qaEnabled);
-    // A TIMED task keeps working its window from here; a SHOTGUN lead then waits for its collaborators
-    // and reconciles the combined tree. Both are no-ops for an ordinary task, and both sit BEFORE the
-    // QA hand-off on purpose — QA reviews the finished, integrated result exactly once.
-    res = await this.runTimedWindow(thread, effort, kickoff, res, pipe.qaEnabled);
-    if (this.cancelled(thread.id)) return;
-    res = await this.integrateShotgun(thread, effort, kickoff, res, pipe.qaEnabled);
-    if (this.cancelled(thread.id)) return;
+      const initialResumeNudge = startingQaSupersede && directorNote
+        ? directorNote
+        : pipe.qaEnabled
+          ? "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done."
+          : "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. QA review is disabled for this task - verify your own work, then commit per the doctrine.";
+      const start = await this.startResumedImplementor(thread, kickoff, resumeSession, {
+        effort,
+        resumeNudge: initialResumeNudge,
+        // A steering note from the Resume/inject that re-entered the pipeline — delivered to the
+        // implementor (woven into the seed/kickoff or sent with the nudge) so it isn't silently lost.
+        directorNote,
+        qaFollows: pipe.qaEnabled,
+      });
+      if (!start) return; // cancelled while compressing the prior session for the resume
+      if (startingQaSupersede) this.clearQaSupersede(thread.id);
+      // A cold resume compresses the prior session first (an await), and runPipeline already folded the
+      // notes that existed before that into the kickoff. Any note injected DURING that window was buffered
+      // (state was still pre-implementor) after the fold — deliver it now that the implementor is live, so
+      // it isn't stranded in the buffer. Notes arriving after this point hit the live-inject path directly.
+      this.flushDirectorNotes(thread.id, start.run);
+      res = await this.awaitImplementorCompletion(
+        thread,
+        effort,
+        kickoff,
+        start.run,
+        start.accountId,
+        false,
+        "Continue exactly where you left off and finish the task completely.",
+        pipe.qaEnabled,
+      );
+      // Before the hand-off: if the director queued follow-ups while the implementor worked, it does that
+      // work too now (re-launched with them) instead of proceeding — the Queue button's whole point.
+      res = await this.drainQueuedImplementor(thread, effort, kickoff, res, pipe.qaEnabled);
+      // A TIMED task keeps working its window from here; a SHOTGUN lead then waits for its collaborators
+      // and reconciles the combined tree. Both are no-ops for an ordinary task, and both sit BEFORE the
+      // QA hand-off on purpose — QA reviews the finished, integrated result exactly once.
+      res = await this.runTimedWindow(thread, effort, kickoff, res, pipe.qaEnabled);
+      if (this.cancelled(thread.id)) return;
+      res = await this.integrateShotgun(thread, effort, kickoff, res, pipe.qaEnabled);
+      if (this.cancelled(thread.id)) return;
     }
 
     // QA disabled — the implementor's output is final. A clean finish goes straight to 'done'

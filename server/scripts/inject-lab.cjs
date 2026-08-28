@@ -2,7 +2,7 @@
 // prove: the two button tooltips are state-CONDITIONAL, so only a render says which text the console
 // actually shows while a reviewer owns the slot; and "Interrupt & inject" on a task in `qa` has to
 // survive the whole click → socket → injectThread round-trip, which is the regression this exists for
-// (it used to abort QA's turn and park the task in `review` — server side, gate `test:inject-qa`).
+// (it used to leave QA running while merely recording the injection — server side, gate `test:inject-qa`).
 // Boots its own throwaway instance, seeds one task each in `qa`, `reviewing` and `implementing`,
 // and drives all three. Not in GATES: it needs a browser + an instance, like the other labs.
 const fs = require("node:fs");
@@ -62,7 +62,7 @@ async function openTask(page, title) {
     check("QA-stage Inject tooltip names the reviewer", /Send to the reviewer now/.test(qa.inject ?? ""), qa.inject);
     check("QA-stage Inject tooltip promises the implementor hand-off", /queue it for the implementor/.test(qa.inject ?? ""), qa.inject);
     check("QA-stage Interrupt tooltip stops promising to stop an implementor", !/Stop the implementor/.test(qa.interrupt ?? ""), qa.interrupt);
-    check("QA-stage Interrupt tooltip says what it really does", /Nothing to stop while the reviewer has the task/.test(qa.interrupt ?? ""), qa.interrupt);
+    check("QA-stage Interrupt tooltip says what it really does", /Stop QA now and return this task to the implementor/.test(qa.interrupt ?? ""), qa.interrupt);
 
     await openTask(page, "WORKING TASK");
     const impl = await titles(page);
@@ -84,12 +84,12 @@ async function openTask(page, title) {
     await page.fill(".inject-bar textarea", "swap the button for an item blacklist");
     await page.click('.inject-bar .row button:text-is("Interrupt & inject")');
     await page.waitForFunction(
-      () => [...document.querySelectorAll(".fi .body, .feed *")].some((n) => (n.textContent ?? "").includes("queued for the implementor")),
+      () => [...document.querySelectorAll(".fi .body, .feed *")].some((n) => (n.textContent ?? "").includes("returning to the implementor")),
       { timeout: 20000 },
     );
     const badge = (await page.textContent(".detail-head .badge")) ?? "";
     check("the task did NOT flip to review on the click", !/review/i.test(badge), badge);
-    check("...it is still in the QA stage", /qa/i.test(badge), badge);
+    check("...it visibly returned toward implementation", /implementing/i.test(badge), badge);
 
     await page.screenshot({ path: path.join(dataDir, "qa-inject-row.png") });
     console.log(`\nscreenshot: ${path.join(dataDir, "qa-inject-row.png")}`);

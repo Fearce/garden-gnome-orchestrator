@@ -432,6 +432,32 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test I: a restart after the QA interrupt marker keeps the same QA round budget -----------------
+  console.log("\nTest I — persisted QA interrupt returns to implementation without burning an extra QA round");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThreadStageOutputs(id, {
+        qaRoundsUsed: 1,
+        qaSuperseded: { at: Date.now(), messages: ["finish the keyboard input branch before QA checks again"] },
+      });
+      const agents = stubQaRunRole(h, async () => {});
+      await runLoop(h, id, 1);
+      check("the persisted QA interrupt did not park at the round ceiling", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check(
+        "the resumed implementor received the persisted interrupt instruction",
+        h.resumes.some((m) => m.includes("keyboard input branch") && m.includes("QA was interrupted")),
+        JSON.stringify(h.resumes),
+      );
+      check("QA rechecked the same charged round once after implementation resumed", agents.length === 1, `qaRuns=${agents.length}`);
+      check("the persisted QA supersede marker was cleared", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS ✅" : "FAIL ❌"} — ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {
     console.log("Failures:");
