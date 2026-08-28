@@ -2693,9 +2693,10 @@ export class ThreadManager implements OrchestratorApi {
     return cap === "xhigh" && !config.enableXhigh ? "high" : cap;
   }
 
-  /** The composer's implementor-effort pick for skip-director dispatches. "auto" (default) leaves the
-   *  planner's per-task pick in charge; a concrete tier is snapshotted onto the thread at dispatch and
-   *  beats the plan. A stored `xhigh` degrades to `high` while the ENABLE_XHIGH opt-in is off, mirroring
+  /** The composer's implementor-effort pick for skip-director dispatches. "auto" (default) lets the
+   *  task route inherit a planner pick when planning runs, otherwise the implementor uses its default
+   *  effort. A concrete tier is snapshotted onto the thread at dispatch and beats the plan.
+   *  A stored `xhigh` degrades to `high` while the ENABLE_XHIGH opt-in is off, mirroring
    *  resolveEffort — so the dropdown never claims a tier this machine can't send. */
   private skipDirectorEffort(): Effort | "auto" {
     const v = this.db.kvGet("setting_skip_director_effort")?.trim();
@@ -7633,8 +7634,8 @@ export class ThreadManager implements OrchestratorApi {
     return { ok: true, state: "cancelled" };
   }
 
-  /** Restart a cancelled task from the very beginning: re-run the whole pipeline (planner →
-   *  [researcher →] implementor → QA) from the brief the director first dispatched, as if freshly
+  /** Restart a cancelled task from the very beginning: re-run the task-aware pipeline from the brief the
+   *  director first dispatched, as if freshly
    *  created. Wipes the prior attempt's runs, findings, feed and every saved stage output — so no
    *  stale plan is reused and, crucially, no dead implementor SDK session gets resumed (runPipeline
    *  would otherwise pick it up via latestImplementorSession) — tells clients to drop that stale

@@ -144,8 +144,8 @@ export function selectRoute(input: RouteInput): RouteDecision {
   }
 
   const riskHits = matches(evidenceText, RISK_SIGNALS);
-  const fileCount = countFileMentions(text);
-  const compoundCount = countCompoundMarkers(text);
+  const fileCount = countFileMentions(evidenceText);
+  const compoundCount = countCompoundMarkers(evidenceText);
   const wordCount = countWords(text);
 
   const structural: string[] = [];

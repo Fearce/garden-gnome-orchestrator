@@ -283,8 +283,7 @@ async function testPromotedReadRestartResume(): Promise<void> {
 // runPipeline (only runRole + the implementor-spawning leaves are stubbed — no `claude` subprocess, no
 // quota — per threadmanager-itest.md's "stub at the right depth" guidance): the same thread id must reach
 // 'done' without ever settling to 'review', with its lane cleared, its brief carrying the reader's
-// evidence, and the planner/QA forced on regardless of the (narrow-reading) original brief text — the
-// reader itself already established this needed more than a lookup.
+// evidence, and the task-aware route selected from the original brief plus that evidence.
 async function testEscalationPromotion(): Promise<void> {
   console.log("\nE. Reader escalation — automatic promotion into the normal pipeline (no re-dispatch)");
 

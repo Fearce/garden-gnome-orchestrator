@@ -56,7 +56,6 @@ export function Director() {
   const sendPrompt = useStore((s) => s.sendPrompt);
   const sendDirect = useStore((s) => s.sendDirect);
   const cancelDirector = useStore((s) => s.cancelDirector);
-  const plannerEnabled = useStore((s) => s.settings.plannerEnabled);
   const directorName = useStore((s) => s.settings.directorName);
   // Runtime truth from the server. The director can move between Claude, Codex, Grok and z.ai when a
   // subscription caps, so deriving this label from the default Claude setting would immediately lie.
@@ -156,9 +155,6 @@ export function Director() {
     return () => ro.disconnect();
   }, []);
 
-  // In skip mode the message enters the pipeline at its first active stage — planner if it's on,
-  // otherwise the implementor (the researcher only ever runs after the planner, never first).
-  const firstStage = plannerEnabled ? "planner" : "implementor";
   const directNeedsWs = skip && !ws.trim();
 
   // Promote a just-dispatched repo to the front (deduped, capped) and persist server-side; remove drops
@@ -276,7 +272,7 @@ export function Director() {
           {items.length === 0 && (
             <div className="faint" style={{ fontSize: 13 }}>
               Tell the Director what you want. It pulls your memories, asks anything it needs to avoid steering wrong, then
-              dispatches a planned, researched task to an Opus 4.8 implementor.
+              dispatches the smallest capable route for the task.
             </div>
           )}
           {items.map((it) => (
@@ -337,7 +333,7 @@ export function Director() {
             aria-checked={skip}
             title={
               skip
-                ? `Skip-director ON — your message bypasses the director and dispatches straight to the ${firstStage}. Click to send via the director.`
+                ? 'Skip-director ON — your message bypasses the director and dispatches straight to the task-aware pipeline. The task history shows the selected route. Click to send via the director.'
                 : "Skip-director OFF — your message goes to the director, which enriches and dispatches. Click to send straight to the pipeline."
             }
             onClick={() => setSettings({ skipDirector: !skip })}
@@ -346,8 +342,8 @@ export function Director() {
             Skip director
           </button>
           {skip && (
-            <span className="mode-hint mono" title={`The first active pipeline stage is the ${firstStage}.`}>
-              direct → {firstStage}
+            <span className="mode-hint mono" title="The server selects the smallest capable route after dispatch.">
+              direct → routed
             </span>
           )}
         </div>
@@ -358,7 +354,7 @@ export function Director() {
           value={text}
           placeholder={
             skip
-              ? `Direct to ${firstStage} — set the repo path below.  (⌘/Ctrl+Enter to send)`
+              ? "Direct to task-aware route — set the repo path below.  (⌘/Ctrl+Enter to send)"
               : "Describe a task…  (paste or drop images · ⌘/Ctrl+Enter to send)"
           }
           onChange={(e) => setText(e.target.value)}
@@ -608,7 +604,7 @@ function ComposerEffortPickers() {
   const setSettings = useStore((s) => s.setSettings);
   const claudeTiers = CLAUDE_EFFORTS.filter((t) => t !== "xhigh" || xhighEnabled);
   const claudeTitle = `How hard the Claude implementor works on tasks dispatched directly. Auto = ${
-    plannerEnabled ? "the planner's per-task pick" : "the built-in default (high) — the planner is off"
+    plannerEnabled ? "the planner's per-task pick when planning runs; otherwise the built-in default (high)" : "the built-in default (high) — the planner is off"
   }; a concrete tier overrides it.`;
   const codexTiers = codexModelEfforts[codexModel] ?? codexEffortsForModel(codexModel);
   const codexTitle = codexTiers.includes("ultra")
@@ -631,7 +627,7 @@ function ComposerEffortPickers() {
           title={claudeTitle}
           onChange={(e) => setSettings({ skipDirectorEffort: e.target.value as Effort | "auto" })}
         >
-          <option value="auto">{plannerEnabled ? "Auto (planner decides)" : "Auto (high)"}</option>
+          <option value="auto">{plannerEnabled ? "Auto (route decides)" : "Auto (high)"}</option>
           {claudeTiers.map((t) => (
             <option key={t} value={t}>
               {t}

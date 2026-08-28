@@ -492,7 +492,7 @@ export interface OrchestratorSettings {
   skipDirector: boolean;
   showComposerPickers: boolean; // when on, the director composer exposes the quick model + effort dropdowns (default off — hidden)
   showAgentModel: boolean; // when on, agent labels in the thread feed append the run's model + effort — "QA (Tor, Opus 4.8 High)"
-  skipDirectorEffort: Effort | "auto"; // composer's implementor effort for skip-director dispatches — "auto" leaves it to the planner
+  skipDirectorEffort: Effort | "auto"; // composer's implementor effort for skip-director dispatches — "auto" inherits a planner pick only when planning runs
   taskDurationMinutes: number; // TIMED: minutes of wall-clock work window for the next dispatch; 0 = an ordinary task
   taskAgentCount: number; // SHOTGUN: agents working the objective at once; 1 = an ordinary task
   xhighEnabled: boolean; // read-only: the server's ENABLE_XHIGH opt-in is on, so the xhigh tier is offerable

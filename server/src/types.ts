@@ -745,7 +745,7 @@ export interface OrchestratorSettings {
   skipDirector: boolean; // composer's skip-director mode — persists so "on" stays on next time it opens
   showComposerPickers: boolean; // whether the director composer shows the quick model + effort dropdowns (default off — hidden)
   showAgentModel: boolean; // whether agent labels in the thread feed append the run's model + effort — "QA (Tor, Opus 4.8 High)"
-  skipDirectorEffort: Effort | "auto"; // composer's implementor effort for skip-director dispatches — "auto" leaves it to the planner
+  skipDirectorEffort: Effort | "auto"; // composer's implementor effort for skip-director dispatches — "auto" inherits a planner pick only when planning runs
   // The composer's task-mode picks, applied to the task the NEXT send dispatches (both director and
   // skip-director). Persisted like the effort pick so they survive a reload and the HTTP/HTTPS split —
   // and rendered lit while active, because a forgotten 8h window is an expensive surprise.

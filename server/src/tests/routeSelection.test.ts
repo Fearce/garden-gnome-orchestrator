@@ -64,6 +64,14 @@ console.log("\nNarrow, contained changes → implementor only");
   });
   check("a reader escalation for an obvious narrow edit does not force planner or QA", d.scope === "narrow" && d.usePlanner === false && d.useQa === false, JSON.stringify(d));
 }
+{
+  const d = selectRoute({
+    title: "read: update the logger",
+    brief: "Update the logger references.",
+    readerEscalation: { reason: "requires edits", answer: "The read found affected references in a.ts, b.ts, c.ts and d.ts." },
+  });
+  check("reader escalation evidence can broaden a short original brief", d.scope === "broad" && d.usePlanner === true && d.useQa === true, JSON.stringify(d));
+}
 
 // ---- broad/risky: every explicit dimension named in the brief ------------------------------------
 console.log("\nBroad or risk-bearing work → keep planning + QA");
