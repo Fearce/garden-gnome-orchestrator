@@ -29,7 +29,7 @@ export interface GrokRunConfig {
   /** Full fresh-start kickoff used to self-heal a wedged `--resume`: if a resume turn produces ZERO
    *  events, the runner retries ONCE as a fresh turn with this prompt — the prior working-tree edits
    *  already live on disk, so the fresh session re-reads them and continues. Omit to disable self-heal. */
-  freshFallback?: string;
+  freshFallback?: UserContent;
   /** When set, the turn is constrained to JSON matching this schema (`--json-schema`). The Grok CLI
    *  puts the validated object on the `end` event as `structuredOutput`; we also fall back to parsing
    *  the streamed text so a multi-turn role (planner/QA) still yields a pipeline-usable result. */
@@ -175,6 +175,7 @@ export class GrokAgentRun implements AgentRunLike {
   transientApiError = false;
   transientApiErrorMessage: string | undefined;
   startupWedged = false;
+  startupWedgeScope: "session" | "provider" | undefined;
   capped = false;
   // True once a wedged `--resume` self-healed to a fresh start. Read by the thread manager after the run
   // ends so it can stop attempting resume for this thread (resume keeps producing nothing → go fresh).
@@ -326,6 +327,10 @@ export class GrokAgentRun implements AgentRunLike {
     this.sawFirstEvent = false;
     this.isResumeTurn = !!resumeId;
     this.lastErrorMsg = undefined;
+    this.transientApiError = false;
+    this.transientApiErrorMessage = undefined;
+    this.startupWedged = false;
+    this.startupWedgeScope = undefined;
     this.pendingTerminalResult = undefined;
     this.stdoutBuf = "";
     this.textBuf = "";
@@ -450,13 +455,16 @@ export class GrokAgentRun implements AgentRunLike {
     const secs = Math.round(ms / 1000);
     this.lastErrorMsg = this.sawFirstEvent
       ? `Grok emitted no output for ${secs}s — the turn appears wedged; killed by the inactivity watchdog.`
-      : `Grok produced no events within ${secs}s of starting — a wedged turn; killed by the startup watchdog.`;
+      : this.isResumeTurn
+        ? `Grok produced no events within ${secs}s of a resumed session — the session is wedged; killed by the startup watchdog.`
+        : `Grok produced no events within ${secs}s of a fresh start — the provider process failed to initialize; killed by the startup watchdog.`;
     // This is direct provider-health evidence, not an ordinary task failure. Mark it explicitly instead
     // of asking the generic text classifier to understand our own watchdog prose. The thread manager
     // uses startupWedged to skip same-provider retries and quarantine Grok before selecting a fallback.
     this.transientApiError = true;
     this.transientApiErrorMessage = this.lastErrorMsg;
     this.startupWedged = !this.sawFirstEvent;
+    this.startupWedgeScope = this.startupWedged ? (this.isResumeTurn ? "session" : "provider") : undefined;
     this.killChild();
   }
 
@@ -762,7 +770,7 @@ export class GrokAgentRun implements AgentRunLike {
       this.lastResult = undefined;
       this.lastErrorMsg = undefined;
       this.emit({ type: "text", text: "⚠️ Grok `--resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved." });
-      void this.runTurn(this.cfg.freshFallback, undefined);
+      void this.runTurn(toText(this.cfg.freshFallback), undefined);
       return;
     }
     // Structured role (planner/QA) finished a successful turn but yielded no schema-valid object —

@@ -53,6 +53,32 @@ const CANDIDATES: ModelCandidate[] = [
 const EFFORTS: Effort[] = ["low", "medium", "high", "max", "ultra"];
 const CTX = { candidates: CANDIDATES, efforts: EFFORTS };
 
+// These are the exact persisted briefs from the two tasks whose provider-intent gate failed before
+// either could start. Keep the full prose: the regression is the interaction between a routing
+// directive and unrelated capacity/disruption language far later in the same real-world prompt.
+const FAILED_PROVIDER_INTENT_BRIEFS = {
+  "0587c3f4-8bc7-4ef7-8406-cfa49b196fea": `Investigate and permanently fix the wrongful capacity freeze observed on active task fe529d83-61fc-4e77-93d1-098e67e3598e (“Retrieve bearer token and configure keyboard input”). Do not interrupt, restart, inject into, or otherwise disrupt that task: it auto-resumed around 15:19 on codex:gpt-5.6-terra and must continue.
+
+Incident facts to trace from exact persisted run history, routing decisions, capacity telemetry, supervisor/resume events, and deployment/restart records: around 15:17 the task was parked claiming all compatible implementor capacity was capped and advertising next capacity in 28m. At that time the Codex UI reportedly showed roughly 33% five-hour capacity remaining and Codex general weekly capacity healthy. A QA run was interrupted around the deployment/restart, an immediately-following Claude retry was capped, and Codex was only selected on the next supervisor sweep roughly two minutes later. Determine the precise race/ordering/staleness/error-classification cause(s), including why usable Codex was excluded initially and why the user-facing park message predicted 28m despite viable Codex capacity.
+
+Implement a general, robust fix—not a one-off override—for capacity reservation/routing, failover, supervisor resumption, interrupted QA handling, and park-message eligibility/next-reset calculation as applicable. Preserve intended safeguards: model-pool-specific limits, provider compatibility, meaningful runway checks, and no dispatch onto genuinely exhausted capacity. Ensure a viable Codex pool is considered promptly when Claude caps or a restart interrupts QA, and that displayed wait estimates never imply all capacity is blocked when an eligible compatible pool is available.
+
+Add focused regression coverage reproducing this incident’s ordering/race and verifying immediate correct Codex selection or accurate non-park behavior, plus correct park-message wording/calculation. Run the relevant targeted tests and broader gates proportionate to the changed routing logic. Inspect existing decisions/docs before proposing architectural changes; retain established capacity-aware routing behavior where correct.
+
+Work on the active branch, commit using Conventional Commits, and push when complete unless the origin is Vota (then commit only, never push). Because this changes server code on Windows, deploy via the supported \`npm run deploy --prefix server\` atomic deployment path—not stop/start or a hand-built shared artifact—then verify the live build with the supported verification path after resume. Leave a concise evidence-backed handoff covering root cause, fix, tests, deployment/live verification, and any remaining risk. No placeholders or half-measures.`,
+  "91dfc2bc-da27-418b-86f1-6a8bb07d1eb7": `Repair both related orchestration defects and deploy the fix.
+
+Routing directive: run the implementor on Codex. Codex is expressly allowed and required for this repair. Capacity safeguards apply to individual model pools and real-time availability; they must not be converted into a provider-level exclusion. The prior task 0587c3f4-8bc7-4ef7-8406-cfa49b196fea failed immediately because provider-intent routing falsely classified its capacity-safety language as excluding Codex. Fix that classification and add a regression reproducing this exact failed-task intent: an explicit Codex requirement plus discussion of pool exhaustion/safe dispatch must route to Codex rather than fail as incompatible.
+
+Also complete the original incident repair for active Android task fe529d83-61fc-4e77-93d1-098e67e3598e (“Retrieve bearer token and configure keyboard input”). Around 15:17 it was parked as all compatible implementor capacity capped with next capacity in 28m despite approximately 33% Codex five-hour capacity and healthy Codex general weekly capacity. It auto-resumed around 15:19 on codex:gpt-5.6-terra. Trace exact persisted run history, provider/model intent, capacity telemetry, reservation decisions, supervisor/resume events, and deployment/restart records. Pay particular attention to the QA interruption around deployment/restart, the immediately capped Claude retry, why a viable Codex route was selected only on the next supervisor sweep, and why the park message advertised 28m. Implement a general race-safe fix across routing, capacity reservation, failover, interrupted-QA recovery, supervisor resumption, and user-facing park-message calculation as warranted. Add regressions for this exact sequence as well as the provider-intent incident.
+
+Preserve genuine capacity protections and correct pool-specific fallback behavior. A task must promptly use an eligible viable Codex pool; a truly unavailable pool must not make Codex itself ineligible or produce a misleading all-capacity park statement.
+
+Do not manually interrupt, inject into, pause, or otherwise alter the currently running Android task fe529d83-61fc-4e77-93d1-098e67e3598e. Avoid unnecessary disruption; if server deployment necessarily triggers the platform’s designed restart/resume path, use only the supported Windows atomic deployment flow and confirm the Android task resumes safely afterward.
+
+Use the active branch, inspect established decisions before architectural changes, run focused and proportionate broader tests, commit with a Conventional Commit, and push unless the origin is Vota (then commit only). Because server code changes are expected, deploy via \`npm run deploy --prefix server\` only; never stop/start or hand-build the shared artifact. After automatic resume, run the supported live verification and leave evidence of root causes, regressions, deployment, live-build verification, and active Android-task continuity. No placeholders or partial fixes.`,
+} as const;
+
 console.log("\n=== auto model selection — reply validation ===\n");
 
 {
@@ -63,6 +89,42 @@ console.log("\n=== auto model selection — reply validation ===\n");
   check("an error report that merely names Grok is not a routing instruction", diagnostic.preferred === undefined && diagnostic.excluded.size === 0, JSON.stringify(diagnostic));
   const clauses = providerIntent("Do not use Codex; switch to Claude.");
   check("provider intent respects clause boundaries", clauses.preferred === "claude" && clauses.excluded.has("codex") && !clauses.excluded.has("claude"), JSON.stringify({ preferred: clauses.preferred, excluded: [...clauses.excluded] }));
+  const providerFirstExclusion = providerIntent("Codex is not allowed for this task; use Claude.");
+  check("a true provider-first Codex exclusion still wins", providerFirstExclusion.preferred === "claude" && providerFirstExclusion.excluded.has("codex"), JSON.stringify({ preferred: providerFirstExclusion.preferred, excluded: [...providerFirstExclusion.excluded] }));
+  const passiveExclusion = providerIntent("Codex must not be used for this task. Use Claude.");
+  check("a true passive Codex exclusion still wins", passiveExclusion.preferred === "claude" && passiveExclusion.excluded.has("codex"), JSON.stringify({ preferred: passiveExclusion.preferred, excluded: [...passiveExclusion.excluded] }));
+  const retainCodex = providerIntent("Use Codex. Do not exclude Codex and do not switch away from Codex.");
+  check("negated exclusions and retention language preserve Codex", retainCodex.preferred === "codex" && !retainCodex.excluded.has("codex"), JSON.stringify({ preferred: retainCodex.preferred, excluded: [...retainCodex.excluded] }));
+}
+
+{
+  const wrongfulFreeze = providerIntent(FAILED_PROVIDER_INTENT_BRIEFS["0587c3f4-8bc7-4ef7-8406-cfa49b196fea"]);
+  check(
+    "exact task 0587 brief does not turn its disruption warning into a Codex exclusion",
+    !wrongfulFreeze.excluded.has("codex"),
+    JSON.stringify({ preferred: wrongfulFreeze.preferred, excluded: [...wrongfulFreeze.excluded] }),
+  );
+
+  const repair = providerIntent(FAILED_PROVIDER_INTENT_BRIEFS["91dfc2bc-da27-418b-86f1-6a8bb07d1eb7"]);
+  check(
+    "exact task 91df brief preserves its required Codex route",
+    repair.preferred === "codex" && !repair.excluded.has("codex"),
+    JSON.stringify({ preferred: repair.preferred, excluded: [...repair.excluded] }),
+  );
+
+  for (const directive of [
+    "Use Codex. Do not use an exhausted Codex model pool; choose a viable pool.",
+    "Codex is allowed. Avoid capped Codex capacity and preserve healthy pools.",
+    "Codex is required. Do not dispatch onto exhausted capacity or disrupt running tasks.",
+    "Use Codex. Avoid disrupting the active Codex task while this repair runs.",
+  ]) {
+    const intent = providerIntent(directive);
+    check(
+      `positive Codex directive survives unrelated safety prose: ${directive.split(".")[0]}`,
+      intent.preferred === "codex" && !intent.excluded.has("codex"),
+      JSON.stringify({ preferred: intent.preferred, excluded: [...intent.excluded] }),
+    );
+  }
 }
 
 {

@@ -66,18 +66,18 @@ const BACKENDS = [
 // mirror named beside each term is what has to be true.
 const MIRRORED_HEADROOM_TERMS = {
   grokProviderCandidate: {
-    providerStartupCoolingDown: "cooldownKey latch → reason 'startup cooldown'",
-    grokCapActive: "capKey latch → reason 'capped'",
+    startupCooldownUntil: "cooldownKey latch → reason 'startup cooldown'",
+    capActive: "capKey latch → reason 'capped'",
     nearWeekly: "spentWindow (7d)",
     monthlyExhausted: "spentCredits (monthly pool)",
   },
   zaiProviderCandidate: {
-    providerStartupCoolingDown: "cooldownKey latch → reason 'startup cooldown'",
-    zaiCapActive: "capKey latch → reason 'capped'",
+    startupCooldownUntil: "cooldownKey latch → reason 'startup cooldown'",
+    capActive: "capKey latch → reason 'capped'",
     near: "spentWindow (5h + 7d)",
   },
   codexProviderCandidate: {
-    providerStartupCoolingDown: "cooldownKey latch → reason 'startup cooldown'",
+    startupCooldownUntil: "cooldownKey latch → reason 'startup cooldown'",
     // General and DEDICATED model pools have different latches and windows. backendState mirrors the
     // general rung; dedicatedPoolRungs mirrors every model allowance. Together they implement the exact
     // selected-pool decision represented by this local in codexProviderCandidate.

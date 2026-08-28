@@ -299,6 +299,262 @@ try {
   check("the pre-init fallback keeps the full kickoff context", starts[0]?.message.includes("FULL KICKOFF") === true, starts[0]?.message);
   check("the pre-init fallback completes instead of cap-parking", earlyResult?.isError === false && !internals.capParked.has(earlyCap.id));
 
+  // Exact fe529d83 incident ordering: a QA-only retry was superseded back to implementation, bypassing
+  // the normal initial provider gate. startImplementor therefore defaulted to Claude without a provider
+  // map entry; when Claude capped, the old reverse-failover guard saw undefined instead of "claude" and
+  // left viable Codex capacity parked until the next two-minute supervisor sweep.
+  const directQaRace = db.createThread({
+    title: "fe529d83 direct-QA return immediately uses viable Codex",
+    workspace,
+    rawPrompt: "continue",
+    brief: "continue",
+  });
+  let cappedClaudeStops = 0;
+  let immediateCodexStarts = 0;
+  const cappedClaude = {
+    rateLimited: true,
+    transientApiError: false,
+    capped: false,
+    sessionId: undefined,
+    rateLimitInfo: { status: "rejected", resetsAt: Date.now() + 28 * 60_000 },
+    result: async () => ({ type: "result", subtype: "error", isError: true, result: "usage limit reached" }),
+    nextResult: async () => undefined,
+    stop: async () => { cappedClaudeStops++; },
+  };
+  const recoveredCodexAgent = Object.assign(Object.create(CodexAgentRun.prototype), {
+    rateLimited: false,
+    transientApiError: false,
+    capped: false,
+    sessionId: undefined,
+    result: async () => ({ type: "result", subtype: "success", isError: false, result: "recovered immediately" }),
+    nextResult: async () => undefined,
+    stop: async () => {},
+  });
+  internals.failoverAccount = () => null;
+  internals.acctById = () => null;
+  internals.nextReadyImplementor = (from: string) => from === "claude" ? "codex" : undefined;
+  internals.composeResumeKickoff = async () => "FRESH CODEX TAKEOVER";
+  internals.startImplementor = () => {
+    immediateCodexStarts++;
+    internals.implementorProvider.set(directQaRace.id, "codex");
+    const run = db.createRun({ threadId: directQaRace.id, role: "implementor", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+    internals.live.set(directQaRace.id, { run: recoveredCodexAgent, runId: run.id, accountId: "openai-codex" });
+    db.addMessage({ threadId: directQaRace.id, runId: run.id, role: "implementor", kind: "text", content: "Recovered on Codex without waiting for a supervisor sweep." });
+    return { run: recoveredCodexAgent, runId: run.id, accountId: "openai-codex" };
+  };
+  internals.implementorProvider.delete(directQaRace.id); // reproduce the skipped-gate state
+  const directQaResult = await internals.awaitImplementorCompletion(
+    directQaRace,
+    "high",
+    "FULL KICKOFF",
+    cappedClaude,
+    "claude-a",
+    false,
+    "Continue exactly where you left off.",
+    true,
+  );
+  check("the direct-QA race hands capped Claude to Codex immediately", immediateCodexStarts === 1, String(immediateCodexStarts));
+  check("the capped Claude process stops before Codex takes over", cappedClaudeStops === 1, String(cappedClaudeStops));
+  check("the immediate Codex takeover completes the original chain", directQaResult?.isError === false, JSON.stringify(directQaResult));
+  check("the direct-QA race never remains capacity-parked", !internals.capParked.has(directQaRace.id));
+
+  // The old message ignored a ready pool, discarded its current viability timestamp, then advertised a
+  // different provider's 28-minute reset as though every compatible pool were capped.
+  const realRoleCapacityOptions = internals.roleCapacityOptions;
+  const realNextRoleCapacityAt = internals.nextRoleCapacityAt;
+  const messageNow = Date.now();
+  let futureResetConsulted = false;
+  internals.roleCapacityOptions = () => [
+    {
+      provider: "claude",
+      label: "Claude A",
+      hasHeadroom: false,
+      windows: [{ label: "5h", usedPct: 100, resetAt: messageNow + 28 * 60_000 }],
+    },
+    {
+      provider: "codex",
+      label: "Codex general pool",
+      hasHeadroom: true,
+      windows: [
+        { label: "5h", usedPct: 67, resetAt: messageNow + 2 * 60 * 60_000 },
+        { label: "weekly", usedPct: 20, resetAt: messageNow + 5 * 24 * 60 * 60_000, burnWeight: 0.35 },
+      ],
+    },
+  ];
+  internals.nextRoleCapacityAt = () => {
+    futureResetConsulted = true;
+    return messageNow + 28 * 60_000;
+  };
+  const readyMessage = internals.capParkMessage(directQaRace.id, "implementor");
+  check("a park message reports the viable Codex pool as ready now", readyMessage.includes("Codex general pool has viable capacity now"), readyMessage);
+  check("a ready pool suppresses the misleading all-capacity-capped claim", !readyMessage.includes("all compatible capacity is currently capped"), readyMessage);
+  check("a ready pool suppresses an irrelevant future reset estimate", !futureResetConsulted && !readyMessage.includes("Next viable capacity is expected"), readyMessage);
+  internals.roleCapacityOptions = realRoleCapacityOptions;
+  internals.nextRoleCapacityAt = realNextRoleCapacityAt;
+
+  // A capacity park created during final unwind used to wait for CAP_RETRY_MS even after its slot became
+  // free. Queue fairness remains first, then the same supervisor scan runs synchronously.
+  const realPumpQueue = internals.pumpQueue;
+  const realResumeCapParked = internals.resumeCapParked;
+  const recoveryOrder: string[] = [];
+  internals.pumpQueue = () => recoveryOrder.push("queue");
+  internals.resumeCapParked = () => recoveryOrder.push("capacity");
+  internals.recoverReleasedCapacity();
+  check("slot release immediately rechecks capacity parks after queued work", recoveryOrder.join(" -> ") === "queue -> capacity", recoveryOrder.join(" -> "));
+  internals.pumpQueue = realPumpQueue;
+  internals.resumeCapParked = realResumeCapParked;
+
+  // Exact 9c53928a-cf11-4c44-ae27-7f2427038e07 reviewer path: the resumed Codex process emits
+  // nothing. The structured-role loop drops only that session and retries Codex fresh; it neither
+  // quarantines Codex nor redirects unrelated tasks away from a healthy provider.
+  const reviewerSessionWedge = db.createThread({
+    title: "9c53928a reviewer resume wedge retries Codex fresh",
+    workspace,
+    rawPrompt: "review",
+    brief: "review",
+  });
+  const reviewerProviders: string[] = [];
+  const reviewerConfigs: Array<{ resume?: string; freshFallback?: unknown }> = [];
+  const reviewerStarts: unknown[] = [];
+  const reviewerAgents = [
+    {
+      capped: false,
+      rateLimited: false,
+      transientApiError: true,
+      transientApiErrorMessage: "Codex exec resume produced zero events.",
+      startupWedged: true,
+      startupWedgeScope: "session",
+      sessionId: "wedged-reviewer-session",
+      start: (message: unknown) => { reviewerStarts.push(message); },
+      result: async () => ({ type: "result", subtype: "error", isError: true, result: "startup watchdog" }),
+      nextResult: async () => undefined,
+      stop: async () => {},
+    },
+    {
+      capped: false,
+      rateLimited: false,
+      transientApiError: false,
+      transientApiErrorMessage: undefined,
+      startupWedged: false,
+      sessionId: "fresh-reviewer-session",
+      start: (message: unknown) => { reviewerStarts.push(message); },
+      result: async () => ({ type: "result", subtype: "success", isError: false, structuredOutput: { accept: true, summary: "reviewed", issues: [] } }),
+      nextResult: async () => undefined,
+      stop: async () => {},
+    },
+  ];
+  const realWaitForTransientRetry = internals.waitForTransientRetry;
+  const realCreateRoleAgentForReviewer = internals.createRoleAgent;
+  internals.waitForTransientRetry = async () => {};
+  internals.createRoleAgent = (provider: string, create: () => unknown) => {
+    reviewerProviders.push(provider);
+    const concrete = create() as { cfg?: { resume?: string; freshFallback?: unknown } };
+    reviewerConfigs.push(concrete.cfg ?? {});
+    return reviewerAgents.shift();
+  };
+  db.kvSet("provider_startup_cooldown_codex_until", "0");
+  const reviewerResult = await internals.runRole(
+    reviewerSessionWedge,
+    "reviewer",
+    "FULL REVIEWER KICKOFF",
+    () => ({ model: "unused" }),
+    "wedged-reviewer-session",
+    { forcedProvider: "codex" },
+  );
+  check("a session-wedged Codex reviewer retries fresh on Codex", reviewerProviders.join(" -> ") === "codex -> codex" && reviewerResult?.isError === false, reviewerProviders.join(" -> "));
+  check("the resumed reviewer carries a full fresh-start self-heal kickoff", reviewerConfigs[0]?.resume === "wedged-reviewer-session" && JSON.stringify(reviewerConfigs[0]?.freshFallback).includes("FULL REVIEWER KICKOFF"), JSON.stringify(reviewerConfigs[0]));
+  check("the fresh reviewer attempt receives the complete role kickoff", JSON.stringify(reviewerStarts[1]).includes("FULL REVIEWER KICKOFF"), JSON.stringify(reviewerStarts));
+  check("the reviewer session wedge never persists a Codex cooldown", !internals.providerStartupCoolingDown("codex"));
+  internals.waitForTransientRetry = realWaitForTransientRetry;
+  internals.createRoleAgent = realCreateRoleAgentForReviewer;
+
+  // The fleet-freeze incident came from a zero-event Codex REVIEWER resume. That failure belongs to one
+  // saved session: it may fail over/fresh-start this task, but it must not persist a provider cooldown
+  // that rejects every unrelated Codex dispatch after a server restart.
+  const sessionWedgeThread = db.createThread({ title: "Resumed Codex wedge stays session-scoped", workspace, rawPrompt: "review", brief: "review" });
+  let sessionWedgeFallbacks = 0;
+  const wedgedCodexResume = Object.assign(Object.create(CodexAgentRun.prototype), {
+    capped: false,
+    rateLimited: false,
+    transientApiError: true,
+    transientApiErrorMessage: "Codex exec resume produced no events before the startup watchdog.",
+    startupWedged: true,
+    startupWedgeScope: "session",
+    sessionId: "poisoned-codex-session",
+    result: async () => ({ type: "result", subtype: "error", isError: true, result: "startup watchdog" }),
+    nextResult: async () => undefined,
+    stop: async () => {},
+  });
+  const healthyClaudeAfterSessionWedge = {
+    capped: false,
+    rateLimited: false,
+    transientApiError: false,
+    startupWedged: false,
+    sessionId: undefined,
+    result: async () => ({ type: "result", subtype: "success", isError: false, result: "continued fresh" }),
+    nextResult: async () => undefined,
+    stop: async () => {},
+  };
+  db.kvSet("provider_startup_cooldown_codex_until", "0");
+  internals.nextReadyImplementor = (from: string) => from === "codex" ? "claude" : undefined;
+  internals.composeResumeKickoff = async () => "FRESH SESSION-WEDGE TAKEOVER";
+  internals.startImplementor = () => {
+    sessionWedgeFallbacks++;
+    internals.implementorProvider.set(sessionWedgeThread.id, "claude");
+    const run = db.createRun({ threadId: sessionWedgeThread.id, role: "implementor", model: "claude-test", account: "Claude A" });
+    internals.live.set(sessionWedgeThread.id, { run: healthyClaudeAfterSessionWedge, runId: run.id, accountId: "claude-a" });
+    db.addMessage({ threadId: sessionWedgeThread.id, runId: run.id, role: "implementor", kind: "text", content: "Continued after only the saved Codex session wedged." });
+    return { run: healthyClaudeAfterSessionWedge, runId: run.id, accountId: "claude-a" };
+  };
+  internals.implementorProvider.set(sessionWedgeThread.id, "codex");
+  const sessionWedgeResult = await internals.awaitImplementorCompletion(
+    sessionWedgeThread,
+    "high",
+    "FULL KICKOFF",
+    wedgedCodexResume,
+    "openai-codex",
+    false,
+    "Continue exactly where you left off.",
+    true,
+  );
+  check("a resumed Codex session wedge still recovers the affected task", sessionWedgeFallbacks === 1 && sessionWedgeResult?.isError === false, JSON.stringify(sessionWedgeResult));
+  check("a resumed Codex session wedge does not set a provider cooldown", !internals.providerStartupCoolingDown("codex"), db.kvGet("provider_startup_cooldown_codex_until") ?? "missing");
+  const realCodexReadyAfterSessionWedge = internals.codexImplementorReady;
+  internals.codexImplementorReady = () => true;
+  check("a resumed Codex session wedge leaves unrelated new Codex work eligible", internals.providerReady("codex") === true);
+  internals.codexImplementorReady = realCodexReadyAfterSessionWedge;
+
+  // Booting from the same durable semantics must still revive cap parks with their saved session intact:
+  // a session-scoped wedge wrote no fleet-wide cooldown for the next process to inherit.
+  const bootRoot = mkdtempSync(join(tmpdir(), "provider-fallback-session-wedge-boot-"));
+  const bootWorkspace = join(bootRoot, "workspace");
+  mkdirSync(bootWorkspace, { recursive: true });
+  const bootDb = new Db(join(bootRoot, "orchestrator.sqlite"));
+  const bootPark = bootDb.createThread({ title: "Boot revives saved Codex cap park", workspace: bootWorkspace, rawPrompt: "continue", brief: "continue" });
+  const savedRun = bootDb.createRun({ threadId: bootPark.id, role: "implementor", model: "gpt-5.6-terra", account: "codex:gpt-5.6-terra" });
+  bootDb.updateRun(savedRun.id, { state: "interrupted", sessionId: "saved-codex-after-boot", error: "interrupted by a server restart", endedAt: Date.now() });
+  bootDb.updateThread(bootPark.id, { state: "review", error: "⏳ Auto-resume pending — provider recovery (implementor stage)." });
+  const bootManager = bootFixtureManager(bootDb, bootRoot);
+  const bootInternals = bootManager as any;
+  let bootResumed: string | undefined;
+  bootInternals.roleCapacityOptions = () => [{
+    provider: "codex",
+    label: "Codex general pool",
+    hasHeadroom: true,
+    windows: [{ label: "5h", usedPct: 20, resetAt: Date.now() + 60_000 }],
+  }];
+  bootInternals.resumeThread = async (id: string) => {
+    bootResumed = id;
+    return { ok: true, state: "implementing" };
+  };
+  bootInternals.resumeCapParked();
+  await Promise.resolve();
+  check("boot recovery resumes a parked task after only its prior session wedged", bootResumed === bootPark.id, bootResumed);
+  check("boot recovery preserves the parked task's saved Codex session", bootInternals.latestImplementorSession(bootPark.id) === "saved-codex-after-boot", bootInternals.latestImplementorSession(bootPark.id));
+  check("boot recovery inherits no session-wedge provider cooldown", !bootInternals.providerStartupCoolingDown("codex"));
+  bootDb.raw.close();
+  rmSync(bootRoot, { recursive: true, force: true });
+
   // A CLI that emits zero startup events is not retried on that same backend: one watchdog interval is
   // enough evidence. The single completion chain quarantines it and launches exactly one healthy fallback.
   const startupWedge = db.createThread({ title: "Grok startup wedge fails over once", workspace, rawPrompt: "fix it", brief: "fix it" });
@@ -310,6 +566,7 @@ try {
     transientApiError: true,
     transientApiErrorMessage: "Grok produced no events within 60s of starting — killed by the startup watchdog.",
     startupWedged: true,
+    startupWedgeScope: "provider",
     sessionId: undefined,
     result: async () => ({ type: "result", subtype: "error", isError: true, result: "startup watchdog" }),
     nextResult: async () => undefined,
@@ -351,6 +608,43 @@ try {
   check("the healthy fallback result completes the same chain", startupResult?.isError === false, JSON.stringify(startupResult));
   check("the failed provider is durably cooling down", internals.providerStartupCoolingDown("grok") === true);
   check("a reachable startup-wedge fallback never creates a review park", !internals.capParked.has(startupWedge.id));
+
+  // A genuine fresh-start cooldown is availability, not quota. Put it in the same window inventory so
+  // readiness, capacity prose, and the supervisor's exact wake time cannot disagree.
+  const realCooldownPoolSnapshot = internals.codexPoolSnapshot;
+  const realCooldownRoleOptions = internals.roleCapacityOptions;
+  const cooldownNow = Date.now();
+  const exactCooldownReset = cooldownNow + 5 * 60_000;
+  db.kvSet("provider_startup_cooldown_codex_until", String(exactCooldownReset));
+  internals.codexPoolSnapshot = () => [{
+    limitId: "cooldown-test",
+    limitName: "Cooldown test pool",
+    modelSlug: "gpt-cooldown-test",
+    fiveHour: 20,
+    sevenDay: 20,
+    fiveHourReset: cooldownNow + 2 * 60 * 60_000,
+    sevenDayReset: cooldownNow + 5 * 24 * 60 * 60_000,
+  }];
+  const cooldownDemand = internals.capacityDemand(startupWedge, "implementor", "high");
+  const cooldownCandidate = internals.codexProviderCandidate("implementor", cooldownDemand, "gpt-cooldown-test");
+  const cooldownWindows = cooldownCandidate.capacityWindows ?? [];
+  const cooldownWindow = cooldownWindows.find((window: { label: string }) => window.label === "startup health cooldown");
+  check("a real provider cooldown is an explicit capacity window", cooldownWindow?.usedPct === 100 && cooldownWindow.resetAt === exactCooldownReset, JSON.stringify(cooldownCandidate.capacityWindows));
+  check("the cooldown window and readiness share the same blocker", cooldownCandidate.hasHeadroom === false, JSON.stringify(cooldownCandidate));
+  internals.roleCapacityOptions = () => [{
+    provider: "codex",
+    label: "Codex Cooldown test pool",
+    windows: cooldownWindows,
+    hasHeadroom: cooldownCandidate.hasHeadroom,
+  }];
+  const exactNext = internals.nextRoleCapacityAt("implementor", cooldownDemand, cooldownNow);
+  check("startup cooldown is the exact next viable time", exactNext === exactCooldownReset, `expected=${exactCooldownReset} actual=${exactNext}`);
+  const cooldownMessage = internals.capParkMessage(startupWedge.id, "implementor");
+  check("capacity text names startup health instead of claiming usage exhaustion", cooldownMessage.includes("startup health cooldown") && !cooldownMessage.includes("all compatible capacity is currently capped"), cooldownMessage);
+  check("capacity text quotes the actual cooldown reset", cooldownMessage.includes(new Date(exactCooldownReset).toLocaleString()), cooldownMessage);
+  internals.roleCapacityOptions = realCooldownRoleOptions;
+  internals.codexPoolSnapshot = realCooldownPoolSnapshot;
+  db.kvSet("provider_startup_cooldown_codex_until", "0");
 
   // A reader may use Codex as a read-only schema fallback, but never Grok (which has no safe owner-answer
   // channel). When Claude and z.ai are exhausted, the supervisor must therefore wake a reader on Codex

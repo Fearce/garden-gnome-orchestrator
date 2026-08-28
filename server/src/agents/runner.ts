@@ -17,6 +17,7 @@ import type { AgentEvent, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 
 export type UserContent = string | unknown[];
+export type StartupWedgeScope = "session" | "provider";
 
 export type SystemPromptSpec =
   | string
@@ -104,9 +105,10 @@ export interface AgentRunLike {
   transientApiError: boolean;
   transientApiErrorMessage: string | undefined;
   /** The provider process never emitted its first event before the startup watchdog killed it.
-   *  Unlike an ordinary transient API error, retrying the same backend immediately is likely to wedge
-   *  again, so the orchestrator quarantines that backend and fails over in one step. */
+   *  Session scope means only a resumed CLI session wedged and may be self-healed fresh; provider scope
+   *  means even a fresh process failed to start, so the orchestrator may quarantine that backend. */
   startupWedged?: boolean;
+  startupWedgeScope?: StartupWedgeScope;
   start(firstMessage: UserContent): this;
   onEvent(cb: (e: AgentEvent) => void): () => void;
   onEnd(cb: () => void): void;

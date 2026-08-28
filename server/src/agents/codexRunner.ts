@@ -36,7 +36,7 @@ export interface CodexRunConfig {
    *  turn produces ZERO events (the CLI can hang at 0% CPU replaying an interrupted gpt-5 session), the
    *  runner retries ONCE as a fresh `exec` with this prompt — the prior apply_patch edits already live
    *  in the working tree, so the fresh session re-reads them and continues. Omit to disable self-heal. */
-  freshFallback?: string;
+  freshFallback?: UserContent;
   /** Codex has no office MCP tools. A standalone `OFFICE[team|office]: ...` line in its assistant
    *  message is intercepted here and posted through the orchestrator's real office chat backend. */
   onOfficeChat?: (scope: ChatScope, body: string) => void;
@@ -298,6 +298,7 @@ export class CodexAgentRun implements AgentRunLike {
   transientApiError = false;
   transientApiErrorMessage: string | undefined;
   startupWedged = false;
+  startupWedgeScope: "session" | "provider" | undefined;
   capped = false;
 
   private child: ChildProcess | undefined;
@@ -486,6 +487,10 @@ export class CodexAgentRun implements AgentRunLike {
     this.sawFirstEvent = false;
     this.isResumeTurn = !!resumeId;
     this.lastErrorMsg = undefined;
+    this.transientApiError = false;
+    this.transientApiErrorMessage = undefined;
+    this.startupWedged = false;
+    this.startupWedgeScope = undefined;
     this.pendingTerminalResult = undefined;
     this.stdoutBuf = "";
     this.lastAgentText = "";
@@ -604,10 +609,13 @@ export class CodexAgentRun implements AgentRunLike {
     const secs = Math.round(ms / 1000);
     this.lastErrorMsg = this.sawFirstEvent
       ? `Codex emitted no output for ${secs}s — the turn appears wedged; killed by the inactivity watchdog.`
-      : `Codex produced no events within ${secs}s of starting — a wedged \`exec resume\` (the CLI hangs at 0% CPU replaying an interrupted session); killed by the startup watchdog.`;
+      : this.isResumeTurn
+        ? `Codex produced no events within ${secs}s of starting — a wedged \`exec resume\` (the CLI hangs at 0% CPU replaying an interrupted session); killed by the startup watchdog.`
+        : `Codex produced no events within ${secs}s of a fresh start — the provider process failed to initialize; killed by the startup watchdog.`;
     this.transientApiError = true;
     this.transientApiErrorMessage = this.lastErrorMsg;
     this.startupWedged = !this.sawFirstEvent;
+    this.startupWedgeScope = this.startupWedged ? (this.isResumeTurn ? "session" : "provider") : undefined;
     this.killChild();
   }
 
@@ -825,7 +833,7 @@ export class CodexAgentRun implements AgentRunLike {
       this.lastResult = undefined;
       this.lastErrorMsg = undefined;
       this.emit({ type: "text", text: "⚠️ Codex `exec resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved." });
-      void this.runTurn(this.cfg.freshFallback, undefined, this.firstImages);
+      void this.runTurn(toText(this.cfg.freshFallback), undefined, this.firstImages);
       return;
     }
     // The process exited without a terminal turn event AND it wasn't an intentional interrupt —

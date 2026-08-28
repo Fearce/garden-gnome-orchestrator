@@ -429,6 +429,7 @@ const GROK_CAP_RECORDED_AT_KV_KEY = "grok_cap_recorded_at";
 const ZAI_CAP_KV_KEY = "zai_cap_until";
 const ZAI_CAP_RECORDED_AT_KV_KEY = "zai_cap_recorded_at";
 const PROVIDER_HARD_LIMIT = 98;
+const STARTUP_HEALTH_COOLDOWN_LABEL = "startup health cooldown";
 // Provider usage caches older than their normal polling horizon are availability hints, not current
 // runway. Hard-limit holds remain conservative; apparent headroom becomes unknown (see capacityRouting).
 const ROUTING_USAGE_STALE_MS = 40 * 60_000;
@@ -1545,6 +1546,12 @@ export class ThreadManager implements OrchestratorApi {
           : "claude";
   }
 
+  /** Only a zero-event FRESH process is evidence that the provider is unhealthy. A resume wedge belongs
+   * to one saved CLI session; both CLI runners can discard that session and retry from workspace state. */
+  private isProviderStartupWedge(agent: AgentRunLike): boolean {
+    return agent.startupWedged === true && agent.startupWedgeScope !== "session";
+  }
+
   private providerStartupCooldownKey(provider: ImplementorProvider): string {
     return `provider_startup_cooldown_${provider}_until`;
   }
@@ -1557,14 +1564,18 @@ export class ThreadManager implements OrchestratorApi {
     this.hub.log("warn", `${providerLabel(provider)} startup wedged — quarantined for ${Math.ceil(config.providerStartupCooldownMs / 60_000)}m. ${reason ?? ""}`.trim());
   }
 
-  private providerStartupCoolingDown(provider: ImplementorProvider): boolean {
+  private providerStartupCooldownUntil(provider: ImplementorProvider, now = Date.now()): number | undefined {
     const key = this.providerStartupCooldownKey(provider);
     const until = Number(this.db.kvGet(key) ?? 0);
-    if (!Number.isFinite(until) || until <= Date.now()) {
+    if (!Number.isFinite(until) || until <= now) {
       if (until) this.db.kvSet(key, "0");
-      return false;
+      return undefined;
     }
-    return true;
+    return until;
+  }
+
+  private providerStartupCoolingDown(provider: ImplementorProvider, now = Date.now()): boolean {
+    return this.providerStartupCooldownUntil(provider, now) != null;
   }
 
   private track(threadId: string, agent: AgentRunLike): void {
@@ -2043,6 +2054,11 @@ export class ThreadManager implements OrchestratorApi {
   directorCapacityWaitMessage(now = Date.now()): string {
     const demand = demandForRole("director");
     const options = this.roleCapacityOptions("director", demand, now);
+    const startupCooling = options.some((option) => option.windows.some((window) =>
+      window.label === STARTUP_HEALTH_COOLDOWN_LABEL &&
+      window.usedPct === 100 &&
+      (window.resetAt == null || window.resetAt > now),
+    ));
     const next = this.nextRoleCapacityAt("director", demand, now);
     const reset = next != null
       ? ` The next viable pool is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
@@ -2050,7 +2066,10 @@ export class ThreadManager implements OrchestratorApi {
     const status = options.length
       ? ` Capacity checked: ${options.map((option) => describeRoutingCapacity(option, demand, now)).join("; ")}.`
       : " No enabled, authenticated provider is available.";
-    return `Every enabled director target is capped, lacks safe runway, or is unavailable, so I couldn't complete this turn.${reset}${status} Resend after capacity frees; routing will reselect automatically.`;
+    const reason = startupCooling
+      ? "A compatible director provider is temporarily unavailable during a startup health cooldown, so I couldn't complete this turn."
+      : "Every enabled director target is usage-capped, lacks safe runway, or is unavailable, so I couldn't complete this turn.";
+    return `${reason}${reset}${status} Resend after capacity frees; routing will reselect automatically.`;
   }
 
   /** Construct the concrete runner for a director target. Claude/z.ai retain the native MCP tools in
@@ -3096,6 +3115,7 @@ export class ThreadManager implements OrchestratorApi {
     const now = Date.now();
     const u = readGrokUsage();
     const capActive = this.grokCapActive();
+    const startupCooldownUntil = this.providerStartupCooldownUntil("grok", now);
     const nearWeekly =
       u.sevenDay != null && u.sevenDay >= PROVIDER_HARD_LIMIT && (u.sevenDayReset == null || u.sevenDayReset > now);
     const monthlyPct = u.monthlyUsed != null && u.monthlyLimit != null && u.monthlyLimit > 0
@@ -3109,26 +3129,29 @@ export class ThreadManager implements OrchestratorApi {
       provider: "grok",
       // Keep the actual latch guard in this expression: probe-accounts.cjs structurally mirrors every
       // dispatch door so its operator-facing failover ladder cannot overstate usable capacity.
-      hasHeadroom: !this.providerStartupCoolingDown("grok") && !this.grokCapActive() && !nearWeekly && !monthlyExhausted,
+      hasHeadroom: startupCooldownUntil == null && !capActive && !nearWeekly && !monthlyExhausted,
       fiveHour: null,
       fiveHourReset: null,
       sevenDay: u.sevenDay,
       sevenDayReset: u.sevenDayReset,
       weeklySafetyPct: this.settings().grokWeeklySafetyPct,
       capacityLabel: "Grok subscription",
-      capacityWindows: withCapLatch(
-        capacityWindowsWithFreshness(
-          [
-            { label: "weekly", usedPct: u.sevenDay, resetAt: u.sevenDayReset },
-            { label: "monthly credits", usedPct: monthlyPct, resetAt: u.monthlyReset },
-          ],
-          PROVIDER_HARD_LIMIT,
-          u.stale === true,
-          now,
+      capacityWindows: withStartupHealthCooldown(
+        withCapLatch(
+          capacityWindowsWithFreshness(
+            [
+              { label: "weekly", usedPct: u.sevenDay, resetAt: u.sevenDayReset },
+              { label: "monthly credits", usedPct: monthlyPct, resetAt: u.monthlyReset },
+            ],
+            PROVIDER_HARD_LIMIT,
+            u.stale === true,
+            now,
+          ),
+          "live usage cap",
+          capActive,
+          this.grokCapUntil,
         ),
-        "live usage cap",
-        capActive,
-        this.grokCapUntil,
+        startupCooldownUntil,
       ),
     };
   }
@@ -3156,13 +3179,14 @@ export class ThreadManager implements OrchestratorApi {
     const now = Date.now();
     const u = readZaiUsage();
     const capActive = this.zaiCapActive();
+    const startupCooldownUntil = this.providerStartupCooldownUntil("zai", now);
     const near = (pct: number | null, reset: number | null): boolean =>
       pct != null && pct >= PROVIDER_HARD_LIMIT && (reset == null || reset > now);
     return {
       provider: "zai",
       hasHeadroom:
-        !this.providerStartupCoolingDown("zai") &&
-        !this.zaiCapActive() &&
+        startupCooldownUntil == null &&
+        !capActive &&
         !near(u.fiveHour, u.fiveHourReset) &&
         !near(u.sevenDay, u.sevenDayReset),
       fiveHour: u.fiveHour,
@@ -3171,16 +3195,19 @@ export class ThreadManager implements OrchestratorApi {
       sevenDayReset: u.sevenDayReset,
       weeklySafetyPct: this.settings().zaiWeeklySafetyPct,
       capacityLabel: "z.ai coding-plan pool",
-      capacityWindows: withCapLatch(
-        capacityWindowsWithFreshness(
-          standardCapacityWindows(u.fiveHour, u.fiveHourReset, u.sevenDay, u.sevenDayReset),
-          PROVIDER_HARD_LIMIT,
-          u.stale === true,
-          now,
+      capacityWindows: withStartupHealthCooldown(
+        withCapLatch(
+          capacityWindowsWithFreshness(
+            standardCapacityWindows(u.fiveHour, u.fiveHourReset, u.sevenDay, u.sevenDayReset),
+            PROVIDER_HARD_LIMIT,
+            u.stale === true,
+            now,
+          ),
+          "live usage cap",
+          capActive,
+          this.zaiCapUntil,
         ),
-        "live usage cap",
-        capActive,
-        this.zaiCapUntil,
+        startupCooldownUntil,
       ),
     };
   }
@@ -3198,6 +3225,7 @@ export class ThreadManager implements OrchestratorApi {
   private codexProviderCandidate(role?: Role, demand?: CapacityDemand, modelOverride?: string): ProviderCandidate {
     const now = Date.now();
     const u = readCodexUsage();
+    const startupCooldownUntil = this.providerStartupCooldownUntil("codex", now);
     // A role eligible to spend a DEDICATED allowance is metered by that pool, not the plan-wide one, so
     // both the doors and the reported windows switch to it. Quoting the general pool's exhausted weekly
     // for a run that will never touch it is exactly what would keep an idle pool out of the ladder —
@@ -3216,16 +3244,19 @@ export class ThreadManager implements OrchestratorApi {
     const sevenDay = pool ? pool.sevenDay : (u?.sevenDay ?? null);
     const sevenDayReset = pool ? pool.sevenDayReset : (u?.sevenDayReset ?? null);
     const stale = !pool && u != null && now - u.updatedAt > ROUTING_USAGE_STALE_MS;
-    const capacityWindows = withCapLatch(
-      capacityWindowsWithFreshness(
-        standardCapacityWindows(fiveHour, fiveHourReset, sevenDay, sevenDayReset),
-        dedicated ? POOL_HARD_LIMIT_PCT : PROVIDER_HARD_LIMIT,
-        stale,
-        now,
+    const capacityWindows = withStartupHealthCooldown(
+      withCapLatch(
+        capacityWindowsWithFreshness(
+          standardCapacityWindows(fiveHour, fiveHourReset, sevenDay, sevenDayReset),
+          dedicated ? POOL_HARD_LIMIT_PCT : PROVIDER_HARD_LIMIT,
+          stale,
+          now,
+        ),
+        dedicated ? `${dedicated.limitName ?? dedicated.limitId} cap` : "live usage cap",
+        poolCapped,
+        dedicated ? (this.poolCapUntil.get(dedicated.limitId) ?? null) : this.codexCapUntil,
       ),
-      dedicated ? `${dedicated.limitName ?? dedicated.limitId} cap` : "live usage cap",
-      poolCapped,
-      dedicated ? (this.poolCapUntil.get(dedicated.limitId) ?? null) : this.codexCapUntil,
+      startupCooldownUntil,
     );
     const selectedPoolReady =
       !poolCapped &&
@@ -3235,7 +3266,7 @@ export class ThreadManager implements OrchestratorApi {
     return {
       provider: "codex",
       hasHeadroom:
-        !this.providerStartupCoolingDown("codex") &&
+        startupCooldownUntil == null &&
         // probe-accounts mirrors this exact general-or-dedicated pool decision as separate ladder rungs.
         selectedPoolReady,
       fiveHour: fiveHour,
@@ -3337,6 +3368,7 @@ export class ThreadManager implements OrchestratorApi {
    * focused test harnesses that provide only hasHeadroom/dispatchPreview source-compatible; unknown
    * windows are safer than fabricating quota. */
   private claudeCapacityOptions(demand: CapacityDemand, now = Date.now()): ClaudeCapacityOption[] {
+    const startupCooldownUntil = this.providerStartupCooldownUntil("claude", now);
     const api = this.accounts as unknown as {
       capacityOptions?: (demand: CapacityDemand, now?: number) => Array<{
         account: { id: string; label: string };
@@ -3353,8 +3385,8 @@ export class ThreadManager implements OrchestratorApi {
         provider: "claude",
         accountId: option.account.id,
         label: `Claude ${option.account.label}`,
-        windows: option.windows,
-        hasHeadroom: option.hasHeadroom,
+        windows: withStartupHealthCooldown(option.windows, startupCooldownUntil),
+        hasHeadroom: option.hasHeadroom && startupCooldownUntil == null,
       }));
     }
     if (typeof api.dispatchPreview === "function") {
@@ -3363,16 +3395,25 @@ export class ThreadManager implements OrchestratorApi {
         provider: "claude",
         accountId: preview.account.id,
         label: `Claude ${preview.account.label}`,
-        windows: preview.capacityWindows ?? standardCapacityWindows(
-          preview.fiveHour,
-          preview.fiveHourReset,
-          preview.sevenDay,
-          preview.sevenDayReset,
+        windows: withStartupHealthCooldown(
+          preview.capacityWindows ?? standardCapacityWindows(
+            preview.fiveHour,
+            preview.fiveHourReset,
+            preview.sevenDay,
+            preview.sevenDayReset,
+          ),
+          startupCooldownUntil,
         ),
-        hasHeadroom: preview.hasHeadroom ?? api.hasHeadroom(),
+        hasHeadroom: (preview.hasHeadroom ?? api.hasHeadroom()) && startupCooldownUntil == null,
       }];
     }
-    return [{ provider: "claude", accountId: "claude", label: "Claude", windows: [], hasHeadroom: api.hasHeadroom() }];
+    return [{
+      provider: "claude",
+      accountId: "claude",
+      label: "Claude",
+      windows: withStartupHealthCooldown([], startupCooldownUntil),
+      hasHeadroom: api.hasHeadroom() && startupCooldownUntil == null,
+    }];
   }
 
   /** Every independently metered allowance that could serve this role. Unlike provider candidates,
@@ -3406,6 +3447,7 @@ export class ThreadManager implements OrchestratorApi {
 
         const seenPools = new Set<string>();
         const generalCapActive = this.codexCapActive();
+        const startupCooldownUntil = this.providerStartupCooldownUntil("codex", now);
         for (const model of models) {
           const pool = pools ? poolForModel(pools, model) : undefined;
           const poolKey = pool?.limitId ?? "general";
@@ -3425,19 +3467,22 @@ export class ThreadManager implements OrchestratorApi {
           options.push({
             provider: "codex",
             label: dedicated ? `Codex ${dedicated.limitName ?? dedicated.limitId}` : "Codex general pool",
-            windows: withCapLatch(
-              capacityWindowsWithFreshness(
-                standardCapacityWindows(fiveHour, fiveHourReset, sevenDay, sevenDayReset),
-                dedicated ? POOL_HARD_LIMIT_PCT : PROVIDER_HARD_LIMIT,
-                stale,
-                now,
+            windows: withStartupHealthCooldown(
+              withCapLatch(
+                capacityWindowsWithFreshness(
+                  standardCapacityWindows(fiveHour, fiveHourReset, sevenDay, sevenDayReset),
+                  dedicated ? POOL_HARD_LIMIT_PCT : PROVIDER_HARD_LIMIT,
+                  stale,
+                  now,
+                ),
+                dedicated ? `${dedicated.limitName ?? dedicated.limitId} cap` : "live usage cap",
+                capActive,
+                dedicated ? (this.poolCapUntil.get(dedicated.limitId) ?? null) : this.codexCapUntil,
               ),
-              dedicated ? `${dedicated.limitName ?? dedicated.limitId} cap` : "live usage cap",
-              capActive,
-              dedicated ? (this.poolCapUntil.get(dedicated.limitId) ?? null) : this.codexCapUntil,
+              startupCooldownUntil,
             ),
             hasHeadroom:
-              !this.providerStartupCoolingDown("codex") &&
+              startupCooldownUntil == null &&
               !capActive &&
               !near(fiveHour, fiveHourReset) &&
               !near(sevenDay, sevenDayReset) &&
@@ -3850,6 +3895,14 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
+  /** A cap park can be written while its current pipeline still owns the last concurrency slot. Recheck
+   * immediately after any slot release so already-viable fallback capacity is not stranded until the
+   * periodic supervisor sweep. FIFO queued work gets first claim; the cap supervisor fills what remains. */
+  private recoverReleasedCapacity(): void {
+    this.pumpQueue();
+    this.resumeCapParked();
+  }
+
   private dropFromQueue(threadId: string): void {
     const i = this.dispatchQueue.indexOf(threadId);
     if (i >= 0) this.dispatchQueue.splice(i, 1);
@@ -4028,19 +4081,31 @@ export class ThreadManager implements OrchestratorApi {
     const thread = this.db.getThread(threadId);
     const demand = thread ? this.capacityDemand(thread, need) : demandForRole(need);
     const options = this.roleCapacityOptions(need, demand, now);
+    const ready = options.filter((option) => this.roleCapacityReady(option, demand, now));
+    const startupCooling = options.filter((option) => option.windows.some((window) =>
+      window.label === STARTUP_HEALTH_COOLDOWN_LABEL &&
+      window.usedPct === 100 &&
+      (window.resetAt == null || window.resetAt > now),
+    ));
     const hardReady = options.filter((option) => option.hasHeadroom);
     const runwayBlocked =
       demand.substantial &&
       hardReady.length > 0 &&
       hardReady.every((option) => assessCapacity(option.windows, demand, now).status === "at-risk");
-    const next = thread ? this.nextRoleCapacityAt(need, demand, now) : undefined;
-    const when = next != null
-      ? ` Next viable capacity is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
-      : " No reliable reset time is available yet; live meters are still polled.";
+    const next = ready.length === 0 && thread ? this.nextRoleCapacityAt(need, demand, now) : undefined;
+    const when = ready.length
+      ? ` ${ready.map((option) => option.label).join(", ")} has viable capacity now; recovery will start as soon as a pipeline slot is available.`
+      : next != null
+        ? ` Next viable capacity is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
+        : " No reliable reset time is available yet; live meters are still polled.";
     const stage = need === "qa" ? `QA ${CAP_PARK_QA_MARK}` : `${need} (${need} stage)`;
-    const reason = runwayBlocked
-      ? `no compatible pool has enough safe runway for ${demandSummary(demand)} during ${stage}`
-      : `all compatible capacity is currently capped for ${stage}`;
+    const reason = ready.length
+      ? `${stage} is waiting to recover after its prior provider capped`
+      : startupCooling.length
+        ? `${stage} is waiting for the ${startupCooling.map((option) => option.label).join(", ")} startup health cooldown`
+      : runwayBlocked
+        ? `no compatible pool has enough safe runway for ${demandSummary(demand)} during ${stage}`
+        : `all compatible capacity is currently capped for ${stage}`;
     const status = options.length
       ? ` Capacity checked: ${options.map((option) => describeRoutingCapacity(option, demand, now)).join("; ")}.`
       : " No enabled, authenticated provider can serve this stage.";
@@ -4116,7 +4181,7 @@ export class ThreadManager implements OrchestratorApi {
       if (this.activePipelineToken.get(threadId) !== slotToken) return;
       this.activePipelineToken.delete(threadId);
       this.activePipelines.delete(threadId);
-      this.pumpQueue();
+      this.recoverReleasedCapacity();
     };
     // The slot above is the task's first real opportunity to work. Stamp the durable deadline here,
     // not at dispatch, so time spent queued behind other pipelines never eats an owner's work window.
@@ -4678,6 +4743,7 @@ export class ThreadManager implements OrchestratorApi {
       let accountId = provider === "claude" ? acct!.id : "";
       if (provider === "codex") {
         accountId = "openai-codex";
+        const fullKickoff = cliRoleKickoff(cfg, roleKickoff, role, "Codex");
         if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Codex");
         agent = this.createRoleAgent("codex", () => new CodexAgentRun({
           model,
@@ -4685,6 +4751,7 @@ export class ThreadManager implements OrchestratorApi {
           cwd: thread.workspace,
           apiKey: this.openaiApiKey() ?? "",
           resume,
+          freshFallback: resume ? fullKickoff : undefined,
           outputSchema: cfg.outputFormat?.schema,
           // A reader may inspect files/git through Codex's shell, but its lane contract is immutable:
           // enforce the same read-only sandbox used by the director instead of the implementor bypass.
@@ -4701,12 +4768,14 @@ export class ThreadManager implements OrchestratorApi {
         }));
       } else if (provider === "grok") {
         accountId = "xai-grok";
+        const fullKickoff = cliRoleKickoff(cfg, roleKickoff, role, "Grok");
         if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Grok");
         agent = this.createRoleAgent("grok", () => new GrokAgentRun({
           model,
           effort: this.grokEffort(model),
           cwd: thread.workspace,
           resume,
+          freshFallback: resume ? fullKickoff : undefined,
           outputSchema: cfg.outputFormat?.schema,
           onOfficeChat: (scope, body) => {
             this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
@@ -4779,7 +4848,8 @@ export class ThreadManager implements OrchestratorApi {
 
       if (!capped && agent.transientApiError) {
         const startupWedged = agent.startupWedged === true;
-        if (startupWedged) {
+        const providerStartupWedged = this.isProviderStartupWedge(agent);
+        if (providerStartupWedged) {
           this.quarantineStartupWedge(provider, agent.transientApiErrorMessage);
           // A zero-event startup never reached the model and is strong evidence that this backend is
           // locally unhealthy. Do not spend two more 60s watchdog windows proving the same thing.
@@ -4789,7 +4859,9 @@ export class ThreadManager implements OrchestratorApi {
         }
         if (transientFailures < MAX_TRANSIENT_API_FAILURES) {
           await this.waitForTransientRetry(thread, role, transientFailures, provider);
-          resume = agent.sessionId;
+          // A session-scoped startup wedge must not replay the same poisoned session. Retry this provider
+          // fresh; if that fresh process also emits nothing it is provider-scoped and quarantined.
+          resume = startupWedged ? undefined : agent.sessionId;
           message = resume
             ? `The ${providerLabel(provider)} API returned a temporary server error. Retry the interrupted work now and continue exactly where you left off.`
             : roleKickoff;
@@ -4800,7 +4872,7 @@ export class ThreadManager implements OrchestratorApi {
         // Codex/Grok would drop its in-process post_finding channel.
         const next: ImplementorProvider | undefined = this.nextReadyImplementor(provider, unavailableProviders, role, demand);
         if (!next) {
-          if (startupWedged) {
+          if (providerStartupWedged) {
             this.parkForExhaustedProviders(thread.id, role);
             return undefined;
           }
@@ -4811,8 +4883,10 @@ export class ThreadManager implements OrchestratorApi {
         this.postFinding({
           threadId: thread.id,
           fromRole: role,
-          summary: startupWedged
+          summary: providerStartupWedged
             ? `${fromName} startup wedged — switched ${role} immediately to ${toName}`
+            : startupWedged
+              ? `${fromName} saved session wedged — restarted ${role} on ${toName}`
             : `${fromName} API failed ${MAX_TRANSIENT_API_FAILURES} times — switched ${role} to ${toName}`,
           detail: `${agent.transientApiErrorMessage ?? "The provider returned repeated temporary server errors."} The ${role} stage is continuing on ${toName}.`,
           severity: "warning",
@@ -4822,8 +4896,10 @@ export class ThreadManager implements OrchestratorApi {
         if (next === "claude") acct = undefined;
         transientFailures = 0;
         resume = undefined;
-        message = prependUserContent(roleKickoff, startupWedged
+        message = prependUserContent(roleKickoff, providerStartupWedged
           ? `[Provider startup-wedge handoff]\n${fromName} emitted no startup events and was quarantined. Continue this ${role} stage on ${toName} and complete it fully.`
+          : startupWedged
+            ? `[Session resume-wedge handoff]\nA saved ${fromName} session emitted no startup events, but the provider remains healthy for unrelated work. Continue this ${role} stage fresh on ${toName} and complete it fully.`
           : `[Provider outage handoff]\n${fromName} failed ${MAX_TRANSIENT_API_FAILURES} consecutive times. Continue this ${role} stage on ${toName} and complete it fully.`);
         continue;
       }
@@ -5380,6 +5456,10 @@ export class ThreadManager implements OrchestratorApi {
     // Provider factory: the routing gate (gateImplementorProvider) stored the backend for this thread.
     // Codex runs the CLI (no Claude account/oauth); Claude runs the SDK on a selected subscription.
     const provider = this.implementorProvider.get(thread.id) ?? "claude";
+    // Direct QA retries and legacy resume paths can reach here without the initial routing gate. Persist
+    // the resolved default too: mid-run failover must never mistake an absent map entry for an unknown
+    // provider and strand a capped Claude run while Codex is ready.
+    this.implementorProvider.set(thread.id, provider);
     let agent: AgentRunLike;
     let runId: string;
     let accountId: string;
@@ -5859,7 +5939,8 @@ export class ThreadManager implements OrchestratorApi {
     if (res?.isError && failedRun.transientApiError && !this.cancelled(thread.id)) {
       const from = this.providerForRun(failedRun);
       const startupWedged = failedRun.startupWedged === true;
-      if (startupWedged) this.quarantineStartupWedge(from, failedRun.transientApiErrorMessage);
+      const providerStartupWedged = this.isProviderStartupWedge(failedRun);
+      if (providerStartupWedged) this.quarantineStartupWedge(from, failedRun.transientApiErrorMessage);
       unavailableProviders.add(from);
       const next = this.nextReadyImplementor(from, unavailableProviders, "implementor", demand);
       await failedRun.stop();
@@ -5870,16 +5951,20 @@ export class ThreadManager implements OrchestratorApi {
         this.postFinding({
           threadId: thread.id,
           fromRole: "implementor",
-          summary: startupWedged
+          summary: providerStartupWedged
             ? `${fromName} startup wedged — switched this task immediately to ${toName}`
+            : startupWedged
+              ? `${fromName} saved session wedged — restarted this task on ${toName}`
             : `${fromName} API failed ${MAX_TRANSIENT_API_FAILURES} times — switched this task to ${toName}`,
           detail: `${failedRun.transientApiErrorMessage ?? "The provider returned repeated temporary server errors."} The task is continuing on ${toName} from the current working-tree state.`,
           severity: "warning",
         });
         this.notifyExternal(`↪ ${fromName} API errors persisted — continuing "${thread.title}" on ${toName}.`);
         const seed = await this.composeResumeKickoff(thread, kickoff, undefined, {
-          directorNote: startupWedged
+          directorNote: providerStartupWedged
             ? `${fromName} emitted no startup events and was quarantined, so you're taking over immediately on ${toName}. Review the existing working-tree progress and finish the task completely.`
+            : startupWedged
+              ? `A saved ${fromName} session emitted no startup events, but the provider remains available to unrelated work. Take over fresh on ${toName}, review the existing working-tree progress, and finish the task completely.`
             : `${fromName} returned ${MAX_TRANSIENT_API_FAILURES} consecutive temporary API errors, so you're taking over on ${toName}. Review the existing working-tree progress and finish the task completely.`,
           qaFollows,
         });
@@ -5898,7 +5983,7 @@ export class ThreadManager implements OrchestratorApi {
           );
         }
       }
-      if (startupWedged) this.capParked.set(thread.id, "implementor");
+      if (providerStartupWedged) this.capParked.set(thread.id, "implementor");
       return res;
     }
     // A CLI implementor backend (Codex or Grok) hit its usage cap mid-run → fail OVER to another ready
@@ -5961,7 +6046,7 @@ export class ThreadManager implements OrchestratorApi {
       res === undefined &&
       !this.cancelled(thread.id) &&
       this.capParked.get(thread.id) === "implementor" &&
-      this.implementorProvider.get(thread.id) === "claude"
+      this.providerForRun(current) === "claude"
     ) {
       const next = this.nextReadyImplementor("claude", new Set(), "implementor", demand); // best ready non-Claude backend
       if (next) {
@@ -7697,7 +7782,7 @@ export class ThreadManager implements OrchestratorApi {
       this.implementorProvider.delete(thread.id);
       this.autoResumes.delete(thread.id);
       this.codexResumeWedged.delete(thread.id); // a fresh dispatch's first session may resume fine
-      this.pumpQueue();
+      this.recoverReleasedCapacity();
     };
     // Same hard routing gate as the pipeline: a manual resume / cold inject must also respect the
     // subscription toggles. A blocked routing parks the task (failed, set by the gate) and stops here.
@@ -7998,7 +8083,7 @@ export class ThreadManager implements OrchestratorApi {
       // than let it leak into an unrelated later run of this thread (runPipeline's finally does the same).
       this.directorNotes.delete(thread.id);
       this.activePipelines.delete(thread.id);
-      this.pumpQueue();
+      this.recoverReleasedCapacity();
     }
   }
 
@@ -9740,6 +9825,12 @@ function withCapLatch(
   resetAt: number | null | undefined,
 ): CapacityWindow[] {
   return active ? [...windows, { label, usedPct: 100, resetAt: resetAt ?? null }] : windows;
+}
+
+function withStartupHealthCooldown(windows: CapacityWindow[], resetAt: number | undefined): CapacityWindow[] {
+  return resetAt == null
+    ? windows
+    : [...windows, { label: STARTUP_HEALTH_COOLDOWN_LABEL, usedPct: 100, resetAt }];
 }
 
 function describeProviderCapacity(candidate: ProviderCandidate, demand: CapacityDemand, now = Date.now()): string {
