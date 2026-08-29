@@ -201,7 +201,7 @@ interface State {
   // Stop the director when it's busy but spinning (looping without replying or dispatching).
   cancelDirector: () => void;
   answer: (questionId: string, answer: string) => void;
-  inject: (threadId: string, message: string, mode: "append" | "interrupt" | "queue", images?: ImageAttachment[]) => void;
+  inject: (threadId: string, message: string, mode: "append" | "interrupt" | "queue", images?: ImageAttachment[]) => Promise<boolean>;
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   cancel: (threadId: string) => void;
@@ -468,6 +468,12 @@ const PER_RUN_CAP = 800;
 const FEED_HARD_CAP = 5000;
 
 let socket: WebSocket | null = null;
+const pendingThreadActions: Array<{
+  threadId: string;
+  action: string;
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (ok: boolean) => void;
+}> = [];
 
 // Keep the proxied WS tunnel alive and self-heal missed events. A reverse proxy
 // (Nginx proxy_read_timeout 60s) silently half-closes an idle WS during the
@@ -498,6 +504,47 @@ function sendCommand(cmd: ClientCommand): boolean {
     return true;
   }
   return false;
+}
+
+function sendThreadActionCommand(cmd: ClientCommand, action: string, threadId: string): Promise<boolean> {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const pending = {
+      threadId,
+      action,
+      resolve,
+      timer: setTimeout(() => {
+        const i = pendingThreadActions.indexOf(pending);
+        if (i >= 0) pendingThreadActions.splice(i, 1);
+        resolve(false);
+      }, 30_000),
+    };
+    pendingThreadActions.push(pending);
+    try {
+      socket!.send(JSON.stringify(cmd));
+    } catch {
+      const i = pendingThreadActions.indexOf(pending);
+      if (i >= 0) pendingThreadActions.splice(i, 1);
+      clearTimeout(pending.timer);
+      resolve(false);
+    }
+  });
+}
+
+function resolvePendingThreadAction(threadId: string, action: string, ok: boolean): void {
+  const index = pendingThreadActions.findIndex((pending) => pending.threadId === threadId && pending.action === action);
+  if (index < 0) return;
+  const [pending] = pendingThreadActions.splice(index, 1);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pending.resolve(ok);
+}
+
+function failPendingThreadActions(): void {
+  for (const pending of pendingThreadActions.splice(0)) {
+    clearTimeout(pending.timer);
+    pending.resolve(false);
+  }
 }
 
 export const useStore = create<State>((set) => ({
@@ -600,7 +647,7 @@ export const useStore = create<State>((set) => ({
   cancelDirector: () => sendCommand({ type: "director.cancel" }),
   answer: (questionId, answer) => sendCommand({ type: "question.answer", questionId, answer }),
   inject: (threadId, message, mode, images) =>
-    sendCommand({ type: "thread.inject", threadId, message, mode, images: images?.length ? images : undefined }),
+    sendThreadActionCommand({ type: "thread.inject", threadId, message, mode, images: images?.length ? images : undefined }, "inject", threadId),
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
@@ -1147,6 +1194,7 @@ function applyEvent(ev: ServerEvent): void {
       break;
     }
     case "thread.action":
+      resolvePendingThreadAction(ev.threadId, ev.action, ev.ok);
       if (!ev.ok) {
         const message = ev.error ?? ev.message ?? "The task state changed before the server could apply that control.";
         useStore.setState({ notice: { level: "warn", title: "Task control failed", message } });
@@ -1349,6 +1397,7 @@ export function connect(): void {
   };
   ws.onclose = (e) => {
     clearTimers();
+    failPendingThreadActions();
     useStore.setState({ connected: false });
     if (e.code === 4401) {
       useStore.setState({ authRequired: true, authed: false });

@@ -530,14 +530,15 @@ export function ThreadDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showAgentModel, modelSig]);
 
-  const doInject = (mode: "append" | "interrupt" | "queue") => {
+  const doInject = async (mode: "append" | "interrupt" | "queue") => {
     // Frozen tasks accept no manual inject/interrupt — the server auto-resumes them. Guard the handler
     // itself (not just the disabled attribute) so a keyboard ⌘/Ctrl+Enter can't slip an inject through.
     if (frozen) return;
     const t = msg.trim();
     if (!t) return;
     lastSentRef.current = t;
-    inject(id, t, mode, att.images);
+    const sent = await inject(id, t, mode, att.images);
+    if (!sent) return;
     setMsg("");
     att.clear();
   };

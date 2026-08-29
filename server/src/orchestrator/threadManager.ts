@@ -11,6 +11,8 @@ import {
   providerErrorLooksRateLimited,
   type AgentRunConfig,
   type AgentRunLike,
+  type SendOpts,
+  type UserContent,
 } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { codexPools, codexUsageCapped, liveCodexUsage, readCodexUsage } from "../agents/codexUsage.js";
@@ -95,6 +97,7 @@ import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
 import type { FreeProviderService } from "../freeProviders/service.js";
 import { config, fallbackModelFor } from "../config.js";
 import { execFile } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
@@ -226,6 +229,57 @@ interface LiveImplementor {
   run: AgentRunLike;
   runId: string;
   accountId: string;
+}
+
+class LabQaAgentRun implements AgentRunLike {
+  readonly emitter = new EventEmitter();
+  sessionId: string | undefined = "lab-qa-fixture";
+  finished = false;
+  lastResult: ResultEvent | undefined;
+  rateLimited = false;
+  rateLimitInfo: RateLimitInfo | undefined;
+  transientApiError = false;
+  transientApiErrorMessage: string | undefined;
+
+  start(_firstMessage: UserContent): this {
+    this.emitter.emit("event", { type: "init", sessionId: this.sessionId });
+    return this;
+  }
+
+  onEvent(cb: (e: AgentEvent) => void): () => void {
+    this.emitter.on("event", cb);
+    return () => this.emitter.off("event", cb);
+  }
+
+  onEnd(cb: () => void): void {
+    this.emitter.once("end", cb);
+  }
+
+  send(_content: UserContent, _opts?: SendOpts): void {}
+
+  async interrupt(): Promise<void> {
+    await this.stop();
+  }
+
+  async setModel(_model?: string): Promise<void> {}
+
+  async setPermissionMode(_mode: unknown): Promise<void> {}
+
+  endInput(): void {}
+
+  async stop(): Promise<void> {
+    if (this.finished) return;
+    this.finished = true;
+    this.emitter.emit("end");
+  }
+
+  result(): Promise<ResultEvent | undefined> {
+    return new Promise(() => {});
+  }
+
+  nextResult(): Promise<ResultEvent | undefined> {
+    return this.result();
+  }
 }
 
 /** A resumable agent session: the id AND the backend that produced it. Session ids are provider-specific
@@ -1387,7 +1441,11 @@ export class ThreadManager implements OrchestratorApi {
       // QA begins only after the implementor has stopped and its completed work is durable. A restart
       // here must retry that charged review directly, not relaunch the implementor and duplicate work.
       if (t.state === "qa") {
-        this.db.updateThreadStageOutputs(t.id, { qaInterruptedRetryRound: Math.max(1, stage.qaRoundsUsed ?? 0) });
+        if (stage.qaFixHandoff) {
+          this.qaFixHandoff.add(t.id);
+        } else {
+          this.db.updateThreadStageOutputs(t.id, { qaInterruptedRetryRound: Math.max(1, stage.qaRoundsUsed ?? 0) });
+        }
       }
       this.db.updateThread(t.id, { state: "failed", error: RESTART_AUTO_RESUME_MSG });
       // A fresh interruption is a fresh episode: what the budget below counts is how many boots in a row
@@ -3960,9 +4018,33 @@ export class ThreadManager implements OrchestratorApi {
     return blocks;
   }
 
-  private kickoffContent(threadId: string, text: string): string | unknown[] {
+  private attachmentImageBlocks(attachmentIds: string[] | undefined): ImageBlock[] {
+    const seen = new Set<string>();
+    const blocks: ImageBlock[] = [];
+    for (const id of attachmentIds ?? []) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const attachment = this.db.getAttachment(id);
+      if (!attachment || !IMAGE_MEDIA_TYPES.has(attachment.mediaType as ImageAttachment["mediaType"])) continue;
+      blocks.push(toImageBlock({ name: attachment.name, mediaType: attachment.mediaType as ImageAttachment["mediaType"], dataBase64: attachment.data }));
+    }
+    return blocks;
+  }
+
+  private kickoffContent(threadId: string, text: string, extraImages: ImageBlock[] = []): UserContent {
     const inMemory = [...(this.dispatchImages.get(threadId) ?? []), ...(this.threadImages.get(threadId) ?? [])];
-    return contentWithImages(text, inMemory.length ? inMemory : this.persistedImageBlocks(threadId));
+    const base = inMemory.length ? inMemory : this.persistedImageBlocks(threadId);
+    return contentWithImages(text, uniqueImageBlocks([...base, ...extraImages]));
+  }
+
+  private implementorStartContent(
+    threadId: string,
+    resumeKickoff: string,
+    freshKickoff: string,
+    resume: boolean,
+    images: ImageBlock[] = [],
+  ): UserContent {
+    return resume ? contentWithImages(resumeKickoff, images) : this.kickoffContent(threadId, freshKickoff, images);
   }
 
   approvalMode(): boolean {
@@ -4382,7 +4464,7 @@ export class ThreadManager implements OrchestratorApi {
       // Pick the implementor model only when implementation will actually run. A capped or
       // restart-interrupted QA retry has durable completed implementation, so an extra model-selection
       // call would waste a provider turn and could itself derail the handoff.
-      if (saved.qaCapRetryRound == null && saved.qaInterruptedRetryRound == null) await this.autoSelectModel(thread, plan);
+      if (saved.qaCapRetryRound == null && saved.qaInterruptedRetryRound == null && saved.qaFixHandoff == null) await this.autoSelectModel(thread, plan);
       if (this.cancelled(threadId)) return;
       await this.runImplementorQa(thread, kickoff, this.implementorEffort(threadId, plan?.effort), this.latestImplementorSession(threadId), note, {
         qaEnabled,
@@ -5477,7 +5559,7 @@ export class ThreadManager implements OrchestratorApi {
   private startImplementor(
     thread: Thread,
     kickoff: string,
-    opts?: { resume?: string; effort?: Effort; account?: Acct; freshFallback?: string },
+    opts?: { resume?: string; effort?: Effort; account?: Acct; freshFallback?: UserContent; images?: ImageBlock[] },
   ): { run: AgentRunLike; runId: string; accountId: string } {
     this.setState(thread.id, "implementing");
     // Claude uses the planner's per-task effort (with the xhigh gate applied). Codex has its own
@@ -5630,11 +5712,9 @@ export class ThreadManager implements OrchestratorApi {
       this.stopping.delete(thread.id);
       this.finalizeRun(runId, agent);
     });
-    // Wrap pasted images into the kickoff only when STARTING a fresh session. On a resume the prior
-    // session already holds them in context, so re-attaching the base64 would re-bill vision tokens
-    // for no gain (and a failover can relaunch several times). Both backends honor the image blocks —
-    // Claude natively, Codex by materializing them to temp files and attaching via `codex --image`.
-    agent.start(opts?.resume ? kickoff : this.kickoffContent(thread.id, startKickoff));
+    // Base dispatch images stay on fresh kickoffs; explicit resume images are owner-provided handoff
+    // context such as QA-interrupt attachments and must travel with the resumed turn.
+    agent.start(this.implementorStartContent(thread.id, kickoff, startKickoff, !!opts?.resume, opts?.images));
     return { run: agent, runId, accountId };
   }
 
@@ -5663,6 +5743,7 @@ export class ThreadManager implements OrchestratorApi {
       /** The prior session must NOT be continued in place (it returned empty) — take the fresh-session path
        *  for this backend: a compressed handoff seed on Claude/z.ai, a fresh CLI kickoff on Codex/Grok. */
       forceFresh?: boolean;
+      images?: ImageBlock[];
     },
   ): Promise<LiveImplementor | null> {
     if (this.cancelled(thread.id)) return null; // cancelled before we got here
@@ -5685,7 +5766,7 @@ export class ThreadManager implements OrchestratorApi {
     if (!resumeSession) {
       const extras = [restartNote, opts.directorNote].filter(Boolean);
       const text = extras.length ? `${baseKickoff}\n\n${extras.join("\n\n")}` : baseKickoff;
-      return this.startImplementor(thread, text, { effort: opts.effort, account: opts.account });
+      return this.startImplementor(thread, text, { effort: opts.effort, account: opts.account, images: opts.images });
     }
     // A CLI backend (Codex or Grok) resumes by its own session id via the CLI — there is no local Claude
     // transcript to age-check or Haiku-compress, so the warm/cold gate below (keyed on transcript mtime)
@@ -5713,10 +5794,16 @@ export class ThreadManager implements OrchestratorApi {
         const why = opts.forceFresh ? "the prior session returned empty" : `${label} resume previously wedged`;
         this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: ${why} — starting a fresh session directly.`);
         const freshText = [baseKickoff, continuation].filter(Boolean).join("\n\n");
-        return this.startImplementor(thread, freshText, { effort: opts.effort, account: opts.account });
+        return this.startImplementor(thread, freshText, { effort: opts.effort, account: opts.account, images: opts.images });
       }
       this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: resuming the ${label} session ${resumeSession.slice(0, 8)} via the CLI.`);
-      return this.startImplementor(thread, continuation, { effort: opts.effort, resume: resumeSession, account: opts.account, freshFallback: freshKickoff });
+      return this.startImplementor(thread, continuation, {
+        effort: opts.effort,
+        resume: resumeSession,
+        account: opts.account,
+        freshFallback: contentWithImages(freshKickoff, opts.images ?? []),
+        images: opts.images,
+      });
     }
     const ageMs = sessionAgeMs(resumeSession);
     const warm = ageMs != null && ageMs < config.resumeWarmMinutes * 60_000;
@@ -5737,7 +5824,7 @@ export class ThreadManager implements OrchestratorApi {
         opts.resumeNudge,
         opts.directorNote && opts.directorNote !== opts.resumeNudge && opts.directorNote,
       ].filter(Boolean);
-      return this.startImplementor(thread, parts.join("\n\n"), { effort: opts.effort, resume: resumeSession, account: opts.account });
+      return this.startImplementor(thread, parts.join("\n\n"), { effort: opts.effort, resume: resumeSession, account: opts.account, images: opts.images });
     }
     // Cold cache: composeResumeKickoff compresses the prior session (Haiku + git) and logs how. This
     // is the only awaited step, so re-check cancellation after it before spending an Opus start.
@@ -5749,7 +5836,7 @@ export class ThreadManager implements OrchestratorApi {
       restartNote,
     });
     if (this.cancelled(thread.id)) return null; // user cancelled while we were compressing
-    return this.startImplementor(thread, seed, { effort: opts.effort, account: opts.account });
+    return this.startImplementor(thread, seed, { effort: opts.effort, account: opts.account, images: opts.images });
   }
 
   /** The implementor's next real turn outcome — skipping any turn the owner's steering ABORTED.
@@ -6692,7 +6779,7 @@ export class ThreadManager implements OrchestratorApi {
     // A QA-only retry already has a finished implementation and routes through runRole's QA fallback
     // chain; gating it as an implementor would unnecessarily block/restart work on a saturated backend.
     const stage = this.db.getThreadStageOutputs(thread.id);
-    const qaOnlyRetry = pipe.qaEnabled && !stage.qaSuperseded && (stage.qaCapRetryRound != null || stage.qaInterruptedRetryRound != null);
+    const qaOnlyRetry = pipe.qaEnabled && !stage.qaSuperseded && !stage.qaFixHandoff && (stage.qaCapRetryRound != null || stage.qaInterruptedRetryRound != null);
     if (!qaOnlyRetry && !this.gateImplementorProvider(thread, { capParkOnExhaustion: true, effort })) return;
     try {
       await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession, directorNote, pipe);
@@ -6814,6 +6901,7 @@ export class ThreadManager implements OrchestratorApi {
     // Fresh dispatch = 0; a retry nulls stage_outputs, so it resets too.
     const savedQa = this.db.getThreadStageOutputs(thread.id);
     const startingQaSupersede = pipe.qaEnabled ? this.qaSupersedeMessages(thread.id) : null;
+    const pendingQaFixHandoff = pipe.qaEnabled ? this.qaFixHandoffPayload(thread.id) : null;
     let priorRounds = pipe.qaEnabled ? savedQa.qaRoundsUsed ?? 0 : 0;
     if (startingQaSupersede) {
       const supersedeNote = qaSupersedeResumeNudge(startingQaSupersede);
@@ -6825,11 +6913,11 @@ export class ThreadManager implements OrchestratorApi {
         qaRoundsUsed: priorRounds,
       });
     }
-    const qaCapRetryRound = pipe.qaEnabled && !startingQaSupersede ? savedQa.qaCapRetryRound : undefined;
-    const qaInterruptedRetryRound = pipe.qaEnabled && !startingQaSupersede ? savedQa.qaInterruptedRetryRound : undefined;
+    const qaCapRetryRound = pipe.qaEnabled && !startingQaSupersede && !pendingQaFixHandoff ? savedQa.qaCapRetryRound : undefined;
+    const qaInterruptedRetryRound = pipe.qaEnabled && !startingQaSupersede && !pendingQaFixHandoff ? savedQa.qaInterruptedRetryRound : undefined;
     const qaRetryRound = qaCapRetryRound ?? qaInterruptedRetryRound;
     const qaOnlyRetry = qaRetryRound != null;
-    if (pipe.qaEnabled && !qaOnlyRetry && priorRounds >= pipe.maxQaRounds) {
+    if (pipe.qaEnabled && !qaOnlyRetry && !pendingQaFixHandoff && priorRounds >= pipe.maxQaRounds) {
       // A prior episode already spent the full QA budget and an interrupt re-entered before it could park.
       // Don't re-run the implementor + a fresh QA pass on the (already usage-heavy) backend — park it.
       this.postFinding({
@@ -6847,6 +6935,32 @@ export class ThreadManager implements OrchestratorApi {
       ? { type: "result", subtype: "success", isError: false }
       : undefined;
     if (!qaOnlyRetry) {
+      if (pendingQaFixHandoff) {
+        this.qaFixHandoff.add(thread.id);
+        const delivered = {
+          messages: uniqueText(pendingQaFixHandoff.messages ?? []),
+          attachmentIds: uniqueText(pendingQaFixHandoff.attachmentIds ?? []),
+        };
+        const resumeNudge = this.qaFixHandoffResumeNudge(pendingQaFixHandoff);
+        const start = await this.startResumedImplementor(
+          thread,
+          kickoff,
+          this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
+          {
+            effort,
+            resumeNudge,
+            directorNote: resumeNudge,
+            qaFollows: true,
+            images: this.qaFixHandoffImages(pendingQaFixHandoff),
+          },
+        );
+        if (!start) return; // cancelled while compressing the prior session for the resume
+        this.flushQaFixHandoffDelta(thread.id, start.run, delivered);
+        this.clearQaFixHandoff(thread.id);
+        this.flushDirectorNotes(thread.id, start.run);
+        res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, resumeNudge, true);
+        res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
+      } else {
       const initialResumeNudge = startingQaSupersede && directorNote
         ? directorNote
         : pipe.qaEnabled
@@ -6859,6 +6973,7 @@ export class ThreadManager implements OrchestratorApi {
         // implementor (woven into the seed/kickoff or sent with the nudge) so it isn't silently lost.
         directorNote,
         qaFollows: pipe.qaEnabled,
+        images: startingQaSupersede ? this.qaSupersedeImages(thread.id) : undefined,
       });
       if (!start) return; // cancelled while compressing the prior session for the resume
       if (startingQaSupersede) this.clearQaSupersede(thread.id);
@@ -6887,6 +7002,7 @@ export class ThreadManager implements OrchestratorApi {
       if (this.cancelled(thread.id)) return;
       res = await this.integrateShotgun(thread, effort, kickoff, res, pipe.qaEnabled);
       if (this.cancelled(thread.id)) return;
+      }
     }
 
     // QA disabled — the implementor's output is final. A clean finish goes straight to 'done'
@@ -7093,16 +7209,23 @@ export class ThreadManager implements OrchestratorApi {
       // two are identical so startResumedImplementor de-dups them. State stays "qa" across the (possibly
       // awaited) compression — startImplementor flips it to "implementing" only once the run is live — so
       // an inject/resume during that window routes to the QA buffer rather than spawning a second agent.
-      this.qaFixHandoff.add(thread.id);
+      const handoff = this.rememberQaFixHandoff(thread.id, fixMsg);
+      const deliveredHandoff = {
+        messages: uniqueText(handoff.messages ?? []),
+        attachmentIds: uniqueText(handoff.attachmentIds ?? []),
+      };
+      const resumeNudge = this.qaFixHandoffResumeNudge(handoff);
       const start = await this.startResumedImplementor(
         thread,
         kickoff,
         this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
-        { effort, resumeNudge: fixMsg, directorNote: fixMsg, qaFollows: true },
-      ).finally(() => this.qaFixHandoff.delete(thread.id));
+        { effort, resumeNudge, directorNote: resumeNudge, qaFollows: true, images: this.qaFixHandoffImages(handoff) },
+      );
       if (!start) return; // cancelled while compressing the prior session for the resume
+      this.flushQaFixHandoffDelta(thread.id, start.run, deliveredHandoff);
+      this.clearQaFixHandoff(thread.id);
       this.flushDirectorNotes(thread.id, start.run);
-      res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, fixMsg);
+      res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, resumeNudge);
       // Honor anything queued during this fix round too, before we loop back to QA.
       res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
     }
@@ -7146,14 +7269,16 @@ export class ThreadManager implements OrchestratorApi {
     return !!this.db.getThreadStageOutputs(threadId).qaSuperseded;
   }
 
-  private rememberQaSupersede(threadId: string, message?: string): void {
+  private rememberQaSupersede(threadId: string, message?: string, attachmentRefs?: AttachmentRef[]): void {
     const stage = this.db.getThreadStageOutputs(threadId);
     const previous = qaSupersedeMessagesFrom(stage);
+    const attachmentIds = uniqueText([...(stage.qaSuperseded?.attachmentIds ?? []), ...attachmentIdsFromRefs(attachmentRefs)]);
     const text = message?.trim();
     this.db.updateThreadStageOutputs(threadId, {
       qaSuperseded: {
         at: Date.now(),
         messages: text ? [...previous, text] : previous,
+        ...(attachmentIds.length ? { attachmentIds } : {}),
       },
     });
   }
@@ -7179,6 +7304,80 @@ export class ThreadManager implements OrchestratorApi {
 
   private clearQaSupersedeMarker(threadId: string): void {
     this.db.updateThreadStageOutputs(threadId, { qaSuperseded: undefined });
+  }
+
+  private qaSupersedeImages(threadId: string): ImageBlock[] {
+    return this.attachmentImageBlocks(this.db.getThreadStageOutputs(threadId).qaSuperseded?.attachmentIds);
+  }
+
+  private qaFixHandoffPayload(threadId: string): NonNullable<StageOutputs["qaFixHandoff"]> | null {
+    const handoff = this.db.getThreadStageOutputs(threadId).qaFixHandoff;
+    return handoff && typeof handoff.resumeNudge === "string" && handoff.resumeNudge.trim() ? handoff : null;
+  }
+
+  private rememberQaFixHandoff(threadId: string, resumeNudge: string): NonNullable<StageOutputs["qaFixHandoff"]> {
+    const previous = this.qaFixHandoffPayload(threadId);
+    const handoff = {
+      at: previous?.at ?? Date.now(),
+      resumeNudge,
+      messages: previous?.messages?.length ? uniqueText(previous.messages) : undefined,
+      attachmentIds: previous?.attachmentIds?.length ? uniqueText(previous.attachmentIds) : undefined,
+    };
+    this.qaFixHandoff.add(threadId);
+    this.db.updateThreadStageOutputs(threadId, { qaFixHandoff: handoff });
+    return handoff;
+  }
+
+  private appendQaFixHandoffInstruction(threadId: string, message: string, attachmentRefs?: AttachmentRef[]): NonNullable<StageOutputs["qaFixHandoff"]> {
+    const previous = this.qaFixHandoffPayload(threadId);
+    const text = message.trim();
+    const messages = uniqueText([...(previous?.messages ?? []), ...(text ? [text] : [])]);
+    const attachmentIds = uniqueText([...(previous?.attachmentIds ?? []), ...attachmentIdsFromRefs(attachmentRefs)]);
+    const handoff = {
+      at: previous?.at ?? Date.now(),
+      resumeNudge: previous?.resumeNudge ?? acknowledgedInjection("QA is returning this task to implementation. Apply the appended instruction(s) before QA re-checks."),
+      ...(messages.length ? { messages } : {}),
+      ...(attachmentIds.length ? { attachmentIds } : {}),
+    };
+    this.qaFixHandoff.add(threadId);
+    this.db.updateThreadStageOutputs(threadId, { qaFixHandoff: handoff });
+    return handoff;
+  }
+
+  private qaFixHandoffResumeNudge(handoff: NonNullable<StageOutputs["qaFixHandoff"]>): string {
+    const messages = uniqueText(handoff.messages ?? []);
+    if (!messages.length) return handoff.resumeNudge;
+    return [
+      handoff.resumeNudge,
+      acknowledgedInjection(`[Instruction(s) received while QA was returning this task to implementation]\n${messages.map((m, i) => `${i + 1}. ${m}`).join("\n")}`),
+    ].join("\n\n");
+  }
+
+  private qaFixHandoffImages(handoff: NonNullable<StageOutputs["qaFixHandoff"]> | null): ImageBlock[] {
+    return this.attachmentImageBlocks(handoff?.attachmentIds);
+  }
+
+  private flushQaFixHandoffDelta(
+    threadId: string,
+    run: AgentRunLike,
+    delivered: { messages?: string[]; attachmentIds?: string[] },
+  ): void {
+    const current = this.qaFixHandoffPayload(threadId);
+    if (!current) return;
+    const deliveredMessages = new Set(uniqueText(delivered.messages ?? []));
+    const deliveredIds = new Set(uniqueText(delivered.attachmentIds ?? []));
+    const messages = uniqueText(current.messages ?? []).filter((m) => !deliveredMessages.has(m));
+    const attachmentIds = uniqueText(current.attachmentIds ?? []).filter((id) => !deliveredIds.has(id));
+    if (!messages.length && !attachmentIds.length) return;
+    const text = messages.length
+      ? `[Additional instruction(s) received while QA was returning this task to implementation]\n${messages.map((m, i) => `${i + 1}. ${m}`).join("\n")}`
+      : "[Additional image attachment(s) received while QA was returning this task to implementation.]";
+    run.send(contentWithImages(acknowledgedInjection(text), this.attachmentImageBlocks(attachmentIds)), { priority: "now" });
+  }
+
+  private clearQaFixHandoff(threadId: string): void {
+    this.qaFixHandoff.delete(threadId);
+    this.db.updateThreadStageOutputs(threadId, { qaFixHandoff: undefined });
   }
 
   private async stopQaForImplementor(threadId: string, qa = this.liveQa.get(threadId)): Promise<QaStopOutcome> {
@@ -7218,7 +7417,7 @@ export class ThreadManager implements OrchestratorApi {
         thread,
         kickoff,
         this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
-        { effort, resumeNudge: resumeMsg, directorNote: resumeMsg, qaFollows: true },
+        { effort, resumeNudge: resumeMsg, directorNote: resumeMsg, qaFollows: true, images: this.qaSupersedeImages(thread.id) },
       );
     } catch (e) {
       this.hub.log("warn", `QA interrupt on ${thread.id.slice(0, 8)} could not start the implementor: ${String(e)}`);
@@ -7320,6 +7519,27 @@ export class ThreadManager implements OrchestratorApi {
 
   // ---- live thread controls ----
 
+  installLabQaRun(threadId: string): ThreadActionResult {
+    if (process.env.ORCH_LAB_FIXTURES !== "1") return { ok: false, error: "Lab fixtures are disabled." };
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (thread.state !== "qa") return { ok: false, state: thread.state, error: `Lab QA fixtures can only attach to a task in qa (this one is ${thread.state}).` };
+    if (this.liveQa.has(threadId)) return { ok: true, state: "qa", message: "Lab QA handle already attached." };
+    const row = this.db.createRun({ threadId, role: "qa", model: "lab-qa-fixture", account: "lab" });
+    this.emitRun(row.id);
+    const agent = new LabQaAgentRun();
+    this.wireRun(agent, threadId, row.id, "qa", "lab");
+    this.track(threadId, agent);
+    this.liveQa.set(threadId, agent);
+    agent.onEnd(() => {
+      if (this.liveQa.get(threadId) === agent) this.liveQa.delete(threadId);
+      this.untrack(threadId, agent);
+      this.finalizeRun(row.id, agent);
+    });
+    agent.start("Lab QA fixture: wait until a test stops this run.");
+    return { ok: true, state: "qa", message: "Lab QA handle attached." };
+  }
+
   /** Deliver owner steering to a SCHEMA-BOUND one-shot role (QA, the auto-reviewer) — as a plain queued
    *  message, never as an interrupt, whatever mode the owner picked.
    *
@@ -7376,7 +7596,8 @@ export class ThreadManager implements OrchestratorApi {
       if (this.live.has(threadId) || thread.state === "qa") {
         this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
       } else {
-        this.bufferDirectorNote(threadId, message);
+        const refs = injectRefs();
+        this.appendQaFixHandoffInstruction(threadId, message, refs);
       }
       if (images?.length) this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
       const m = this.db.addMessage({
@@ -7396,19 +7617,17 @@ export class ThreadManager implements OrchestratorApi {
     // means "stop this review and return the task to implementation" so the cancelled/stale QA verdict
     // cannot settle the task after the owner has changed course.
     if (thread?.state === "qa") {
-      if (images?.length) {
-        this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
-      }
       const qa = this.liveQa.get(threadId);
-      const inFixHandoff = this.qaFixHandoff.has(threadId);
+      const inFixHandoff = this.qaFixHandoff.has(threadId) || !!this.qaFixHandoffPayload(threadId);
       if (!qa && inFixHandoff) {
-        this.bufferDirectorNote(threadId, message);
+        const refs = injectRefs();
+        this.appendQaFixHandoffInstruction(threadId, message, refs);
         const m = this.db.addMessage({
           threadId,
           role: "director",
           kind: "system",
           content: `↪ ${mode === "interrupt" ? "interrupt requested" : "injected"} (QA already handed back; queued for the active implementor resume): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
-          attachments: injectRefs(),
+          attachments: refs,
         });
         this.hub.publish({ type: "thread.message", threadId, message: m });
         this.touchThread(threadId);
@@ -7427,7 +7646,8 @@ export class ThreadManager implements OrchestratorApi {
           };
         }
         this.hub.log("info", "[INJECT] QA in progress - superseding QA and returning to the implementor");
-        this.rememberQaSupersede(threadId, message);
+        const refs = injectRefs();
+        this.rememberQaSupersede(threadId, message, refs);
         const stopped = await this.stopQaForImplementor(threadId, qa);
         if (stopped.status === "failed") {
           this.clearQaSupersedeMarker(threadId);
@@ -7436,7 +7656,7 @@ export class ThreadManager implements OrchestratorApi {
             role: "director",
             kind: "system",
             content: `↪ interrupt failed (QA is still running): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}\n${stopped.error}`,
-            attachments: injectRefs(),
+            attachments: refs,
           });
           this.hub.publish({ type: "thread.message", threadId, message: m });
           this.touchThread(threadId);
@@ -7449,7 +7669,7 @@ export class ThreadManager implements OrchestratorApi {
           role: "director",
           kind: "system",
           content: `↪ interrupt requested (QA is stopping; returning to the implementor): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
-          attachments: injectRefs(),
+          attachments: refs,
         });
         this.hub.publish({ type: "thread.message", threadId, message: m });
         this.touchThread(threadId);
@@ -7463,6 +7683,9 @@ export class ThreadManager implements OrchestratorApi {
       // No handle while the state is "qa" means a mid-QA account failover (runRole dropped the old handle
       // and hasn't registered the relaunched one) or the fix-round window after QA returned but before the
       // re-launched implementor goes live. Either way the queue below is what carries the note.
+      if (images?.length) {
+        this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
+      }
       if (qa) this.steerStructuredRole(qa, message, images);
       this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
       const m = this.db.addMessage({
@@ -7699,7 +7922,7 @@ export class ThreadManager implements OrchestratorApi {
     const thread = this.db.getThread(threadId);
     if (thread?.state === "qa") {
       const qa = this.liveQa.get(threadId);
-      if (!qa && this.qaFixHandoff.has(threadId)) {
+      if (!qa && (this.qaFixHandoff.has(threadId) || !!this.qaFixHandoffPayload(threadId))) {
         const m = this.db.addMessage({
           threadId,
           role: "director",
@@ -7785,8 +8008,12 @@ export class ThreadManager implements OrchestratorApi {
     if (thread.state === "qa") {
       if (message?.trim()) {
         const qa = this.liveQa.get(threadId);
-        if (qa) this.steerStructuredRole(qa, message);
-        this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
+        if (!qa && (this.qaFixHandoff.has(threadId) || !!this.qaFixHandoffPayload(threadId))) {
+          this.appendQaFixHandoffInstruction(threadId, message);
+        } else {
+          if (qa) this.steerStructuredRole(qa, message);
+          this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
+        }
       }
       return { ok: true, state: "qa" };
     }
@@ -7968,7 +8195,7 @@ export class ThreadManager implements OrchestratorApi {
     this.pendingResumeMsgs.delete(threadId);
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
-    this.qaFixHandoff.delete(threadId);
+    this.clearQaFixHandoff(threadId);
     this.liveReviewer.delete(threadId);
     this.reviewing.delete(threadId);
     this.directorNotes.delete(threadId);
@@ -8019,7 +8246,7 @@ export class ThreadManager implements OrchestratorApi {
     this.queuedForImplementor.delete(threadId);
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
-    this.qaFixHandoff.delete(threadId);
+    this.clearQaFixHandoff(threadId);
     this.liveReviewer.delete(threadId);
     this.reviewing.delete(threadId);
     this.capParked.delete(threadId);
@@ -8493,7 +8720,7 @@ export class ThreadManager implements OrchestratorApi {
     // A task settles to 'review' straight out of the QA loop, so a mid-QA account failover can leave a
     // stale liveQa handle behind (the window the QA-inject gate also guards) — drop it so it can't leak.
     this.liveQa.delete(threadId);
-    this.qaFixHandoff.delete(threadId);
+    this.clearQaFixHandoff(threadId);
     this.liveReviewer.delete(threadId);
     this.directorNotes.delete(threadId);
     this.queuedForImplementor.delete(threadId);
@@ -9644,6 +9871,10 @@ function qaSupersedeMessagesFrom(stage: StageOutputs): string[] {
   return Array.isArray(raw) ? raw.filter((m): m is string => typeof m === "string" && !!m.trim()).map((m) => m.trim()) : [];
 }
 
+function attachmentIdsFromRefs(refs: AttachmentRef[] | undefined): string[] {
+  return uniqueText((refs ?? []).map((ref) => ref.id));
+}
+
 function uniqueText(messages: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -9651,6 +9882,18 @@ function uniqueText(messages: string[]): string[] {
     if (seen.has(msg)) continue;
     seen.add(msg);
     out.push(msg);
+  }
+  return out;
+}
+
+function uniqueImageBlocks(blocks: ImageBlock[]): ImageBlock[] {
+  const seen = new Set<string>();
+  const out: ImageBlock[] = [];
+  for (const block of blocks) {
+    const key = `${block.source.media_type}:${block.source.data}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(block);
   }
   return out;
 }

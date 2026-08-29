@@ -34,7 +34,7 @@ async function openTask(page, title) {
   requireBuild();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "inject-tip-"));
   killInstance(PORT);
-  const child = await boot({ dataDir, port: PORT });
+  const child = await boot({ dataDir, port: PORT, env: { ORCH_LAB_FIXTURES: "1" } });
   let code = 1;
   try {
     // Seed straight into the instance's own DB, then let the boot-loaded state serve it over the socket.
@@ -47,6 +47,7 @@ async function openTask(page, title) {
     ins.run("11111111-1111-4111-8111-111111111111", "REVIEWED TASK", "p", "b", process.cwd(), "qa", now, now);
     ins.run("22222222-2222-4222-8222-222222222222", "WORKING TASK", "p", "b", process.cwd(), "implementing", now - 1000, now - 1000);
     ins.run("33333333-3333-4333-8333-333333333333", "AUTOREVIEWED TASK", "p", "b", process.cwd(), "reviewing", now - 2000, now - 2000);
+    ins.run("44444444-4444-4444-8444-444444444444", "NO HANDLE QA TASK", "p", "b", process.cwd(), "qa", now - 3000, now - 3000);
     db.close();
 
     const chromium = loadChromium();
@@ -54,6 +55,8 @@ async function openTask(page, title) {
     const ctx = await browser.newContext({ viewport: { width: 1500, height: 950 } });
     const page = await ctx.newPage();
     await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
+    const liveFixture = await page.request.post(`http://127.0.0.1:${PORT}/api/lab/live-qa/11111111-1111-4111-8111-111111111111`);
+    check("the happy-path QA task has a real live QA fixture", liveFixture.ok(), await liveFixture.text().catch(() => ""));
     await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
     await page.waitForSelector(".accounts .acct", { timeout: 30000 }); // hello landed
 
@@ -78,6 +81,17 @@ async function openTask(page, title) {
     check("auto-review Inject tooltip promises no implementor hand-off", !/queue it for the implementor/.test(ar.inject ?? ""), ar.inject);
     check("auto-review Interrupt tooltip stops promising to stop an implementor", !/Stop the implementor/.test(ar.interrupt ?? ""), ar.interrupt);
     check("auto-review Interrupt tooltip says what it really does", /Nothing to stop while the auto-reviewer has the task/.test(ar.interrupt ?? ""), ar.interrupt);
+
+    await openTask(page, "NO HANDLE QA TASK");
+    await page.fill(".inject-bar textarea", "this should stay typed when no QA handle exists");
+    await page.click('.inject-bar .row button:text-is("Interrupt & inject")');
+    await page.waitForFunction(
+      () => document.body.textContent?.includes("QA has no live stop handle right now"),
+      { timeout: 20000 },
+    );
+    const failedBadge = (await page.textContent(".detail-head .badge")) ?? "";
+    check("the no-live QA path stays visibly in QA", /qa/i.test(failedBadge), failedBadge);
+    check("the failed no-live path retains the typed directive", (await page.inputValue(".inject-bar textarea")).includes("no QA handle"), await page.inputValue(".inject-bar textarea"));
 
     // ...and the click itself, end to end through the socket: a task in `qa` must survive it.
     await openTask(page, "REVIEWED TASK");

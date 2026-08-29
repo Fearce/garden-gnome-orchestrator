@@ -22,7 +22,7 @@ process.env.CAP_RETRY_MS = "0"; // no cap-supervisor interval during the test
 process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
 
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
@@ -79,13 +79,19 @@ function sendText(content: unknown): string {
     .join("\n");
 }
 
+function sendImageCount(content: unknown): number {
+  return Array.isArray(content)
+    ? content.filter((b) => b && typeof b === "object" && (b as { type?: string }).type === "image").length
+    : 0;
+}
+
 /**
  * A running agent, faithful on the one axis this test is about: how it reacts to steering. A `priority:
  * "now"` send and an `interrupt()` both abort the turn — that is what the CLI does, and what makes a
  * reverted fix show up here as a dead task rather than as a failed flag assertion.
  */
 class FakeRun {
-  readonly sends: { text: string; opts?: SendOpts }[] = [];
+  readonly sends: { text: string; images: number; opts?: SendOpts }[] = [];
   sessionId?: string;
   interrupts = 0;
   stops = 0;
@@ -93,7 +99,7 @@ class FakeRun {
   stopped = false;
   stopError?: Error;
   send(content: unknown, opts?: SendOpts): void {
-    this.sends.push({ text: sendText(content), opts });
+    this.sends.push({ text: sendText(content), images: sendImageCount(content), opts });
     if (opts?.priority === "now") this.aborted = true;
   }
   async interrupt(): Promise<void> {
@@ -116,15 +122,18 @@ const verdictResult = (structuredOutput: { pass: boolean; summary: string; chang
   isError: false,
   structuredOutput,
 });
+const IMG = { name: "qa-note.png", mediaType: "image/png" as const, dataBase64: "iVBORw0KGgo=" };
 
 interface Harness {
   mgr: InstanceType<typeof ThreadManager>;
   db: InstanceType<typeof Db>;
+  dir: string;
   workspace: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   internals: any;
   drained: string[][];
   resumes: string[];
+  resumeImages: number[];
   dispose(): void;
 }
 
@@ -141,8 +150,10 @@ function makeHarness(): Harness {
   const internals = mgr as any;
   const drained: string[][] = [];
   const resumes: string[] = [];
-  internals.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string }): Promise<{ run: FakeRun; accountId: string; account: { id: string } }> => {
+  const resumeImages: number[] = [];
+  internals.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string; images?: unknown[] }): Promise<{ run: FakeRun; accountId: string; account: { id: string } }> => {
     if (opts?.resumeNudge) resumes.push(opts.resumeNudge);
+    resumeImages.push(opts?.images?.length ?? 0);
     return { run: new FakeRun(), accountId: "acct-a", account: { id: "acct-a" } };
   };
   internals.awaitImplementorCompletion = async (): Promise<{ isError: boolean }> => ({ isError: false });
@@ -163,10 +174,12 @@ function makeHarness(): Harness {
   return {
     mgr,
     db,
+    dir,
     workspace,
     internals,
     drained,
     resumes,
+    resumeImages,
     dispose() {
       if (internals.capSupervisor) clearInterval(internals.capSupervisor);
       db.raw.close();
@@ -235,7 +248,7 @@ async function main(): Promise<void> {
       const agents = stubQaRunRole(h, async () => {
         if (injected) return;
         injected = true;
-        const r = await h.mgr.injectThread(id, "scrap the button, add an item blacklist instead", "interrupt");
+        const r = await h.mgr.injectThread(id, "scrap the button, add an item blacklist instead", "interrupt", [IMG]);
         check("the interrupt was accepted as an implementation resume", r.ok && r.state === "implementing", JSON.stringify(r));
       });
       await runLoop(h, id);
@@ -250,6 +263,7 @@ async function main(): Promise<void> {
         h.resumes.some((m) => m.includes("item blacklist") && m.includes("QA was interrupted")),
         JSON.stringify(h.resumes),
       );
+      check("the attached QA interrupt image reached the resumed implementor", h.resumeImages.some((n) => n === 1), JSON.stringify(h.resumeImages));
       const feed = h.db.listMessages(id).map((m) => m.content);
       check("the feed says QA is being returned to the implementor", feed.some((c) => c.includes("interrupt requested") && c.includes("returning to the implementor")), JSON.stringify(feed.filter((c) => c.includes("interrupt")).slice(0, 3)));
       check("the durable QA supersede marker was cleared after resume", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
@@ -303,7 +317,8 @@ async function main(): Promise<void> {
       check("the visible task state stayed truthful until the implementor is live", h.db.getThread(id)?.state === "qa", `state=${h.db.getThread(id)?.state}`);
       check("no implementor was spawned beside the pipeline", spawned === 0, `spawns=${spawned}`);
       check("no QA supersede marker was armed", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
-      check("the note is buffered for the active implementor resume", (h.internals.directorNotes.get(id) ?? []).some((m: string) => m.includes("addon options")), JSON.stringify(h.internals.directorNotes.get(id)));
+      check("the note is persisted for the active implementor resume", (h.db.getThreadStageOutputs(id).qaFixHandoff?.messages ?? []).some((m) => m.includes("addon options")), JSON.stringify(h.db.getThreadStageOutputs(id).qaFixHandoff));
+      check("the old in-memory note buffer was not used", !(h.internals.directorNotes.get(id) ?? []).some((m: string) => m.includes("addon options")), JSON.stringify(h.internals.directorNotes.get(id)));
       check("the note is not queued as a later follow-up", !(h.internals.queuedForImplementor.get(id) ?? []).some((m: string) => m.includes("addon options")), JSON.stringify(h.internals.queuedForImplementor.get(id)));
       await settle();
     } finally {
@@ -481,9 +496,8 @@ async function main(): Promise<void> {
     try {
       const id = seedTask(h);
       const starts: Array<{ nudge: string; run: FakeRun }> = [];
-      const handoffDeliveries: string[][] = [];
       let injectedDuringFixHandoff = false;
-      h.internals.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string }): Promise<{ run: FakeRun; accountId: string; account: { id: string } }> => {
+      h.internals.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string; images?: unknown[] }): Promise<{ run: FakeRun; accountId: string; account: { id: string } }> => {
         const run = new FakeRun();
         starts.push({ nudge: opts?.resumeNudge ?? "", run });
         if (starts.length === 2 && !injectedDuringFixHandoff) {
@@ -493,13 +507,6 @@ async function main(): Promise<void> {
         }
         return { run, accountId: "acct-a", account: { id: "acct-a" } };
       };
-      h.internals.flushDirectorNotes = (threadId: string, run: FakeRun): void => {
-        const notes = h.internals.directorNotes.get(threadId);
-        if (!notes?.length) return;
-        h.internals.directorNotes.delete(threadId);
-        handoffDeliveries.push([...notes]);
-        run.send(notes.join("\n\n"));
-      };
       const agents = stubQaRunRole(h, async () => {}, {
         verdicts: [
           { pass: false, summary: "context extraction still reads toolbar labels", changed: false },
@@ -507,15 +514,171 @@ async function main(): Promise<void> {
         ],
       });
       await runLoop(h, id, 4);
-      const deliveryCount = handoffDeliveries.flat().filter((m) => m.includes("normal messages and Discord")).length;
+      const deliveryCount = starts.flatMap((start) => start.run.sends).filter((send) => send.text.includes("normal messages and Discord")).length;
       check("the task settled after the normal fix path", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
       check("exactly one initial implementation plus one QA fix implementation ran", starts.length === 2, `starts=${starts.length}`);
       check("exactly one failed QA and one final QA pass ran", agents.length === 2, `qaRuns=${agents.length}`);
-      check("the injected handoff instruction was delivered exactly once", deliveryCount === 1, JSON.stringify(handoffDeliveries));
+      check("the injected handoff instruction was delivered exactly once", deliveryCount === 1, JSON.stringify(starts.map((start) => start.run.sends)));
       check("the handoff instruction was not left as a later queued follow-up", !h.drained.some((q) => q.some((m) => m.includes("normal messages and Discord"))), JSON.stringify(h.drained));
+      check("the durable QA-fix handoff marker was cleared", !h.db.getThreadStageOutputs(id).qaFixHandoff, JSON.stringify(h.db.getThreadStageOutputs(id).qaFixHandoff));
       check("no QA supersede marker leaked into the next QA pass", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
       await settle();
     } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test K-A: no-live QA interrupt with an image must fail without queuing that image -------------
+  console.log("\nTest K-A - no-live QA interrupt with an image fails without leaking the attachment");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "qa" });
+      const before = (h.db.raw.prepare("SELECT count(*) count FROM attachments").get() as { count: number }).count;
+      const r = await h.mgr.injectThread(id, "this cannot stop a missing QA handle", "interrupt", [IMG]);
+      const after = (h.db.raw.prepare("SELECT count(*) count FROM attachments").get() as { count: number }).count;
+      check("the no-live QA interrupt is rejected", !r.ok && r.state === "qa", JSON.stringify(r));
+      check("the rejected no-live interrupt did not persist the image blob", after === before, `before=${before} after=${after}`);
+      check("the rejected no-live interrupt did not leave model image blocks queued", !h.internals.threadImages.has(id), JSON.stringify(h.internals.threadImages.get(id)));
+      check("the rejected no-live interrupt did not arm a supersede marker", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test K-B: a restart during QA-fix handoff resumes implementation before QA -------------------
+  console.log("\nTest K-B - restart recovery preserves the pending QA-fix handoff");
+  {
+    const h = makeHarness();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let rebooted: any;
+    try {
+      const id = seedTask(h);
+      const ref = h.db.addAttachment({ name: IMG.name, mediaType: IMG.mediaType, data: IMG.dataBase64 });
+      h.db.updateThread(id, { state: "qa" });
+      h.db.updateThreadStageOutputs(id, {
+        qaRoundsUsed: 1,
+        qaFixHandoff: {
+          at: Date.now(),
+          resumeNudge: "QA round 1 found issues - fix the remaining keyboard input behavior.",
+          messages: ["restart-preserved directive: keep the bearer-token context"],
+          attachmentIds: [ref.id],
+        },
+      });
+      const orphan = h.db.createRun({ threadId: id, role: "qa", model: "claude-opus-5", account: "acct-a" });
+      h.db.updateRun(orphan.id, { state: "running" });
+
+      let scheduled = 0;
+      const proto = ThreadManager.prototype as unknown as { scheduleAutoResume: (threadId: string, title: string) => void };
+      const originalSchedule = proto.scheduleAutoResume;
+      proto.scheduleAutoResume = function (_threadId: string, _title: string): void {
+        scheduled++;
+      };
+      try {
+        rebooted = new ThreadManager(h.db, new EventHub(), new FileMemoryService(join(h.dir, "memory-reboot")), new StubAccounts() as unknown as AccountManager);
+      } finally {
+        proto.scheduleAutoResume = originalSchedule;
+      }
+
+      const ri = rebooted as typeof h.internals;
+      const starts: Array<{ nudge: string; images: number }> = [];
+      let qaCalls = 0;
+      let qaBeforeFixResume = false;
+      let autoSelectCalls = 0;
+      ri.gateImplementorProvider = () => true;
+      ri.autoSelectModel = async (): Promise<void> => {
+        autoSelectCalls++;
+      };
+      ri.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string; images?: unknown[] }): Promise<{ run: FakeRun; accountId: string; account: { id: string } }> => {
+        starts.push({ nudge: opts?.resumeNudge ?? "", images: opts?.images?.length ?? 0 });
+        return { run: new FakeRun(), accountId: "acct-a", account: { id: "acct-a" } };
+      };
+      ri.awaitImplementorCompletion = async (): Promise<{ isError: boolean }> => ({ isError: false });
+      ri.stopLive = async (): Promise<void> => {};
+      ri.runSelfImprovement = async (): Promise<void> => {};
+      ri.drainQueuedImplementor = async (_t: Thread, _e: unknown, _k: string, res: unknown): Promise<unknown> => res;
+      ri.runQA = async (): Promise<{ pass: boolean; summary: string; changed: boolean }> => {
+        if (!starts.length) qaBeforeFixResume = true;
+        qaCalls++;
+        return { pass: true, summary: "verified after restart recovery", changed: false };
+      };
+
+      check("boot recovery scheduled exactly one auto-resume", scheduled === 1, `scheduled=${scheduled}`);
+      check("boot recovery did not convert the pending fix handoff into a QA-only retry", h.db.getThreadStageOutputs(id).qaInterruptedRetryRound == null, JSON.stringify(h.db.getThreadStageOutputs(id)));
+      await ri.runPipeline(id);
+      check("restart recovery started exactly one fix implementor", starts.length === 1, JSON.stringify(starts));
+      check("the recovered fix resume received the persisted directive exactly once", (starts[0]?.nudge.match(/bearer-token context/g) ?? []).length === 1, starts[0]?.nudge);
+      check("the recovered fix resume received the persisted image", starts[0]?.images === 1, JSON.stringify(starts));
+      check("QA did not run before the fix implementor resumed", !qaBeforeFixResume, `qaBeforeFixResume=${qaBeforeFixResume}`);
+      check("QA ran once after the recovered implementation", qaCalls === 1, `qaCalls=${qaCalls}`);
+      check("auto model selection was skipped for the owed fix handoff", autoSelectCalls === 0, `autoSelectCalls=${autoSelectCalls}`);
+      check("the recovered task settled only after QA accepted it", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check("the durable fix handoff was cleared after delivery", !h.db.getThreadStageOutputs(id).qaFixHandoff, JSON.stringify(h.db.getThreadStageOutputs(id).qaFixHandoff));
+      await settle();
+    } finally {
+      if (rebooted?.capSupervisor) clearInterval(rebooted.capSupervisor);
+      h.dispose();
+    }
+  }
+
+  // -- Test K-C: image-bearing resumes preserve attachments across backend resume branches ----------
+  console.log("\nTest K-C - image-bearing resumes preserve attachments across backend resume branches");
+  {
+    const h = makeHarness();
+    const oldProjectsDir = process.env.CLAUDE_PROJECTS_DIR;
+    try {
+      const projectsDir = join(h.dir, "claude-projects");
+      const projectDir = join(projectsDir, "workspace");
+      mkdirSync(projectDir, { recursive: true });
+      process.env.CLAUDE_PROJECTS_DIR = projectsDir;
+      const imageBlock = { type: "image" as const, source: { type: "base64" as const, media_type: "image/png" as const, data: IMG.dataBase64 } };
+      const packaged = h.internals.implementorStartContent("no-thread", "resume text", "fresh text", true, [imageBlock]);
+      check("the resume content helper attaches image blocks", sendImageCount(packaged) === 1 && sendText(packaged).includes("resume text"), JSON.stringify(packaged));
+
+      const starts: Array<{ label: string; resume?: string; images: number; fallbackImages: number }> = [];
+      h.internals.startImplementor = (t: Thread, _kickoff: string, opts?: { resume?: string; images?: unknown[]; freshFallback?: unknown }): { run: FakeRun; runId: string; accountId: string } => {
+        starts.push({ label: t.title, resume: opts?.resume, images: opts?.images?.length ?? 0, fallbackImages: sendImageCount(opts?.freshFallback) });
+        return { run: new FakeRun(), runId: `${t.id}:impl`, accountId: "acct-a" };
+      };
+      h.internals.composeResumeKickoff = async (): Promise<string> => "compressed cold seed";
+      const realStartResumed = (ThreadManager.prototype as unknown as {
+        startResumedImplementor: typeof h.internals.startResumedImplementor;
+      }).startResumedImplementor.bind(h.mgr);
+
+      const warmId = seedTask(h);
+      h.db.updateThread(warmId, { title: "warm-claude" });
+      const warmSession = "warm-claude-session";
+      writeFileSync(join(projectDir, `${warmSession}.jsonl`), "");
+      h.db.updateRun(h.db.createRun({ threadId: warmId, role: "implementor", model: "claude-opus-5", account: "acct-a" }).id, { sessionId: warmSession });
+      await realStartResumed(h.db.getThread(warmId)!, "BASE", warmSession, { resumeNudge: "NUDGE", directorNote: "NUDGE", qaFollows: true, images: [imageBlock] });
+
+      const codexId = seedTask(h);
+      h.db.updateThread(codexId, { title: "codex-resume" });
+      const codexSession = "codex-session";
+      h.db.updateRun(h.db.createRun({ threadId: codexId, role: "implementor", model: "gpt-5.5", account: "codex:gpt-5.5" }).id, { sessionId: codexSession });
+      h.internals.implementorProvider.set(codexId, "codex");
+      await realStartResumed(h.db.getThread(codexId)!, "BASE", codexSession, { resumeNudge: "NUDGE", directorNote: "NUDGE", qaFollows: true, images: [imageBlock] });
+
+      const coldId = seedTask(h);
+      h.db.updateThread(coldId, { title: "cold-claude" });
+      const coldSession = "cold-claude-session";
+      const coldPath = join(projectDir, `${coldSession}.jsonl`);
+      writeFileSync(coldPath, "");
+      const old = new Date(Date.now() - 120 * 60_000);
+      utimesSync(coldPath, old, old);
+      h.db.updateRun(h.db.createRun({ threadId: coldId, role: "implementor", model: "claude-opus-5", account: "acct-a" }).id, { sessionId: coldSession });
+      await realStartResumed(h.db.getThread(coldId)!, "BASE", coldSession, { resumeNudge: "NUDGE", directorNote: "NUDGE", qaFollows: true, images: [imageBlock] });
+
+      check("warm Claude resume passes the image to startImplementor", starts.some((s) => s.label === "warm-claude" && s.resume === warmSession && s.images === 1), JSON.stringify(starts));
+      check("Codex CLI resume passes the image to the live turn", starts.some((s) => s.label === "codex-resume" && s.resume === codexSession && s.images === 1), JSON.stringify(starts));
+      check("Codex CLI fallback also carries the image", starts.some((s) => s.label === "codex-resume" && s.fallbackImages === 1), JSON.stringify(starts));
+      check("cold Claude resume passes the image to the fresh seed", starts.some((s) => s.label === "cold-claude" && !s.resume && s.images === 1), JSON.stringify(starts));
+      await settle();
+    } finally {
+      if (oldProjectsDir == null) delete process.env.CLAUDE_PROJECTS_DIR;
+      else process.env.CLAUDE_PROJECTS_DIR = oldProjectsDir;
       h.dispose();
     }
   }
@@ -545,6 +708,7 @@ async function main(): Promise<void> {
         threadId: id,
         message: "this should fail visibly",
         mode: "interrupt",
+        images: [IMG],
       });
       const action = sent.find((e) => e.type === "thread.action");
       check("the socket sent a failed thread.action acknowledgment", action?.ok === false, JSON.stringify(sent));
@@ -552,6 +716,7 @@ async function main(): Promise<void> {
       check("the failed acknowledgment names the stop failure", String(action?.error ?? "").includes("simulated stop failure"), JSON.stringify(action));
       check("the QA run was not marked stopped", qa.stops === 1 && !qa.stopped && !qa.aborted, `stops=${qa.stops} stopped=${qa.stopped} aborted=${qa.aborted}`);
       check("the transient supersede marker was cleared", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
+      check("the failed interrupt did not leave image blocks queued for a later resume", !h.internals.threadImages.has(id), JSON.stringify(h.internals.threadImages.get(id)));
       check("older queued implementor work was preserved", JSON.stringify(h.internals.queuedForImplementor.get(id)) === JSON.stringify(["preserve earlier queued work"]), JSON.stringify(h.internals.queuedForImplementor.get(id)));
       await settle();
     } finally {

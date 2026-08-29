@@ -623,7 +623,11 @@ export interface StageOutputs {
   qaInterruptedRetryRound?: number;
   // An operator interrupted QA on purpose and wants this SAME task returned to implementation. This
   // marker makes the choice durable across a restart and lets a stale QA verdict be ignored safely.
-  qaSuperseded?: { at: number; messages: string[] } | null;
+  qaSuperseded?: { at: number; messages: string[]; attachmentIds?: string[] } | null;
+  // QA produced a failing verdict and the normal implementor fix resume is being materialized. State
+  // remains `qa` until the implementor handle is live, so this durable marker keeps that owed fix resume
+  // recoverable across a restart and lets injections during the handoff join the same resume.
+  qaFixHandoff?: { at: number; resumeNudge: string; messages?: string[]; attachmentIds?: string[] } | null;
   // server restart / cap-resume CONTINUES the maxQaRounds budget instead of resetting it to 1 (which let a
   // bouncing server re-run a fresh full QA pass on every resume and drain the backend). Reset by retry (blob nulled).
   qaCutoffResumes?: number; // continuations spent waking a QA run that stopped at its per-session turn ceiling

@@ -395,6 +395,14 @@ async function main(): Promise<void> {
         .send(Buffer.from(a.data, "base64"));
     });
 
+    if (process.env.ORCH_LAB_FIXTURES === "1") {
+      app.post<{ Params: { id: string } }>("/api/lab/live-qa/:id", async (req, reply) => {
+        if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+        const result = manager.installLabQaRun(req.params.id);
+        return result.ok ? result : reply.code(409).send(result);
+      });
+    }
+
     // Serve a deliverable file (a finding of kind 'deliverable') for inline preview or download.
     // Security-critical: the path is agent-provided, so the resolved real path is confined to the
     // owning task's workspace — symlinks are resolved (realpathSync) and any escape via '..' / an

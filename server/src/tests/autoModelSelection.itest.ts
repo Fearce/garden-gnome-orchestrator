@@ -234,6 +234,8 @@ async function main(): Promise<void> {
       // the shipped list sat four GLM releases behind the live endpoint under exactly that stub.
       const zai = ["glm-9.9-unreleased", "glm-5.3", "glm-4.7"];
       h.internals.codexImplementorReady = (): boolean => true;
+      h.internals.codexPoolSnapshot = (): null => null;
+      h.internals.codexProviderCandidate = (): { provider: "codex"; hasHeadroom: boolean } => ({ provider: "codex", hasHeadroom: true });
       h.internals.codexRosterModels = (): string[] => codex;
       h.internals.codexSupportedEfforts = (model: string): Effort[] => model === "gpt-5.6-sol"
         ? ["low", "medium", "high", "xhigh", "max", "ultra"]
