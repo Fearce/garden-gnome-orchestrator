@@ -112,6 +112,9 @@ export interface Thread {
   // countdown is just (deadlineAt - now) and survives reload/restart. Null also covers a queued window.
   durationMs?: number | null;
   deadlineAt?: number | null;
+  // Operator hard stop for this active task. Unlike the timed work-window deadline above, the server
+  // aborts a busy role at this instant and parks the resumable task instead of waiting for a boundary.
+  activeDeadlineAt?: number | null;
   // Shotgun: the requested collaborator count, and — on a COLLABORATOR — its lead plus its owned share.
   // A thread with a parentId is hidden from the main board and rendered inside its lead's detail panel.
   agentCount?: number | null;
@@ -888,6 +891,7 @@ export type ClientCommand =
   | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt" | "queue"; images?: ImageAttachment[] }
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
+  | { type: "thread.deadline"; threadId: string; deadlineAt: number | null }
   | { type: "thread.cancel"; threadId: string }
   | { type: "thread.retry"; threadId: string }
   | { type: "thread.rename"; threadId: string; title: string }

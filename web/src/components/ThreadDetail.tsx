@@ -306,6 +306,132 @@ function TaskMode({ thread }: { thread: Thread }) {
   );
 }
 
+const DEADLINE_PRESETS = [
+  { label: "30m", minutes: 30 },
+  { label: "1h", minutes: 60 },
+  { label: "3h", minutes: 180 },
+  { label: "6h", minutes: 360 },
+  { label: "12h", minutes: 720 },
+  { label: "24h", minutes: 1440 },
+] as const;
+
+/** Value for datetime-local in the browser's own timezone (toISOString itself is UTC). */
+function localDateTimeValue(at: number): string {
+  const d = new Date(at);
+  return new Date(at - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function isCompactViewport(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(max-width: 899.98px)").matches;
+}
+
+/** Per-task hard-stop editor. This is intentionally separate from TaskMode's work window: a work window
+ *  waits for a round boundary and runs closing QA, while this control is an emergency/operator budget that
+ *  stops even a busy role at the instant. Editing the clock never auto-resumes a deadline-parked task. */
+function ActiveDeadline({ thread }: { thread: Thread }) {
+  const setDeadline = useStore((s) => s.setDeadline);
+  const [editing, setEditing] = useState(false);
+  const [custom, setCustom] = useState(() => localDateTimeValue(thread.activeDeadlineAt ?? Date.now() + 3 * 3_600_000));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const at = thread.activeDeadlineAt ?? null;
+  const canSet = thread.state !== "done" && thread.state !== "cancelled" && thread.state !== "closed";
+  if (!canSet && at == null) return null;
+
+  const apply = async (deadlineAt: number | null) => {
+    setError("");
+    if (deadlineAt != null && (!Number.isSafeInteger(deadlineAt) || deadlineAt <= Date.now())) {
+      setError("Choose a time in the future.");
+      return;
+    }
+    setBusy(true);
+    const ok = await setDeadline(thread.id, deadlineAt);
+    setBusy(false);
+    if (ok) setEditing(false);
+  };
+  const parked = (thread.error ?? "").startsWith("⏰ Hard deadline reached");
+
+  return (
+    <section className={"deadline-panel" + (at != null ? " armed" : "")} aria-label="Active task hard deadline">
+      <div className="deadline-summary">
+        <div className="deadline-copy">
+          <span className="deadline-key mono">hard deadline</span>
+          {at != null ? (
+            <span className="deadline-value">
+              <Countdown
+                deadlineAt={at}
+                endedLabel="deadline reached"
+                titleLabel="Hard deadline"
+                className={at <= Date.now() ? "deadline-over" : "deadline-left"}
+              />
+              <span className="deadline-exact">{new Date(at).toLocaleString()}</span>
+            </span>
+          ) : (
+            <span className="deadline-none">No hard stop — this task may keep running or auto-resuming.</span>
+          )}
+        </div>
+        <div className="deadline-actions">
+          {canSet ? (
+            <button
+              type="button"
+              className="btn ghost sm deadline-edit"
+              onClick={() => {
+                setCustom(localDateTimeValue(at ?? Date.now() + 3 * 3_600_000));
+                setError("");
+                setEditing((open) => !open);
+              }}
+              disabled={busy}
+            >
+              {at == null ? "Set deadline" : "Edit"}
+            </button>
+          ) : null}
+          {at != null ? (
+            <button type="button" className="btn ghost sm deadline-clear" onClick={() => void apply(null)} disabled={busy}>
+              Clear
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {parked ? <div className="deadline-guidance">Automatic resume is blocked. Extend or clear this clock, then click Resume to continue the saved session.</div> : null}
+      {editing && canSet ? (
+        <div className="deadline-editor">
+          <div className="deadline-presets" aria-label="Deadline duration presets">
+            {DEADLINE_PRESETS.map((preset) => (
+              <button
+                key={preset.minutes}
+                type="button"
+                className="deadline-preset"
+                data-deadline-minutes={preset.minutes}
+                onClick={() => void apply(Date.now() + preset.minutes * 60_000)}
+                disabled={busy}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <div className="deadline-custom">
+            <label htmlFor={`deadline-at-${thread.id}`}>Or exact time</label>
+            <input
+              id={`deadline-at-${thread.id}`}
+              aria-label="Exact hard deadline"
+              type="datetime-local"
+              value={custom}
+              min={localDateTimeValue(Date.now() + 60_000)}
+              max={localDateTimeValue(Date.now() + 30 * 24 * 3_600_000)}
+              onChange={(e) => setCustom(e.target.value)}
+              disabled={busy}
+            />
+            <button type="button" className="btn primary sm" onClick={() => void apply(new Date(custom).getTime())} disabled={busy || !custom}>
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
+          {error ? <div className="deadline-error" role="alert">{error}</div> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function ThreadDetail() {
   const id = useStore((s) => s.selectedThreadId);
   const threads = useStore((s) => s.threads);
@@ -341,6 +467,10 @@ export function ThreadDetail() {
   const [showChanges, setShowChanges] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
+  // A phone opens as a transcript, not as two rows of composing chrome. One tap reveals the full
+  // injection surface; a successful send folds it away again. CSS keeps the full bar visible if a
+  // narrow session is later resized onto desktop, so this state never strands the controls.
+  const [composerExpanded, setComposerExpanded] = useState(() => !isCompactViewport());
   const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastSentRef = useRef(""); // last injected message, recalled with ↑ when the field is empty
@@ -386,7 +516,8 @@ export function ThreadDetail() {
   // preference, so it should survive both task switches and reloads.
   const [headCollapsed, setHeadCollapsedState] = useState(() => {
     try {
-      return localStorage.getItem("orch-head-collapsed") === "1";
+      const saved = localStorage.getItem("orch-head-collapsed");
+      return saved == null ? isCompactViewport() : saved === "1";
     } catch {
       return false;
     }
@@ -541,6 +672,7 @@ export function ThreadDetail() {
     if (!sent) return;
     setMsg("");
     att.clear();
+    if (isCompactViewport()) setComposerExpanded(false);
   };
 
   const onFeedScroll = () => {
@@ -712,6 +844,8 @@ export function ThreadDetail() {
                 </button>
               )}
             </div>
+            <ActiveDeadline thread={thread} />
+            <TaskMode thread={thread} />
           </>
         )}
       </div>
@@ -789,8 +923,6 @@ export function ThreadDetail() {
         </div>
       )}
 
-      <TaskMode thread={thread} />
-
       <Deliverables items={deliverables} />
 
       <div className="feed" ref={scrollRef} onScroll={onFeedScroll}>
@@ -852,11 +984,35 @@ export function ThreadDetail() {
         )}
       </div>
 
+      {!composerExpanded ? (
+        <button
+          type="button"
+          className="mobile-inject-toggle"
+          onClick={() => setComposerExpanded(true)}
+          disabled={frozen}
+        >
+          {frozen ? "Input frozen while this task waits for capacity" : "✎ Send direction to this task…"}
+        </button>
+      ) : null}
       <div
-        className={"inject-bar" + (att.dragging ? " dragging" : "") + (frozen ? " frozen" : "")}
+        className={
+          "inject-bar" +
+          (att.dragging ? " dragging" : "") +
+          (frozen ? " frozen" : "") +
+          (!composerExpanded ? " mobile-collapsed" : "")
+        }
         title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
         {...(frozen ? {} : att.dropHandlers)}
       >
+        <button
+          type="button"
+          className="mobile-compose-close"
+          onClick={() => setComposerExpanded(false)}
+          aria-label="Hide message composer"
+          title="Hide message composer"
+        >
+          ⌄
+        </button>
         {frozen ? <span className="inject-frost" aria-hidden="true" /> : null}
         <textarea
           value={msg}

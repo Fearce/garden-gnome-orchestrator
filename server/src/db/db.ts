@@ -93,6 +93,7 @@ function rowToThread(r: Row): Thread {
     // so they belong on the DTO — unlike the heavy stage_outputs blob that holds the round counters.
     durationMs: (r.duration_ms as number | null) ?? null,
     deadlineAt: (r.deadline_at as number | null) ?? null,
+    activeDeadlineAt: (r.active_deadline_at as number | null) ?? null,
     // Shotgun: requested collaborator count, and — on a collaborator — its lead plus its owned share.
     agentCount: (r.agent_count as number | null) ?? null,
     parentId: (r.parent_id as string | null) ?? null,
@@ -386,6 +387,7 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN baseline_head TEXT",
       "ALTER TABLE threads ADD COLUMN duration_ms INTEGER",
       "ALTER TABLE threads ADD COLUMN deadline_at INTEGER",
+      "ALTER TABLE threads ADD COLUMN active_deadline_at INTEGER",
       "ALTER TABLE threads ADD COLUMN agent_count INTEGER",
       "ALTER TABLE threads ADD COLUMN parent_id TEXT",
       "ALTER TABLE threads ADD COLUMN assignment TEXT",
@@ -695,6 +697,17 @@ export class Db {
    *  change cannot silently move a deadline that agents and the UI are both counting down to. */
   setTimedWindow(id: string, durationMs: number | null, deadlineAt: number | null): void {
     this.raw.prepare("UPDATE threads SET duration_ms = ?, deadline_at = ? WHERE id = ?").run(durationMs, deadlineAt, id);
+  }
+
+  /** Set or clear the operator's hard stop for this task. Kept out of updateThread so routine state
+   *  transitions can never erase or move a safety boundary. updated_at changes because this is an
+   *  owner-visible task edit and the authoritative row is broadcast immediately by ThreadManager. */
+  setActiveDeadline(id: string, deadlineAt: number | null): Thread | null {
+    const at = now();
+    const result = this.raw
+      .prepare("UPDATE threads SET active_deadline_at = ?, updated_at = ? WHERE id = ?")
+      .run(deadlineAt, at, id);
+    return result.changes ? this.getThread(id) : null;
   }
 
   getThread(id: string): Thread | null {

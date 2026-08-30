@@ -556,6 +556,13 @@ const CAP_RESUME_NOTIFY_COOLDOWN_MS = 30 * 60_000;
 // Fire the token-reset auto-resume a touch AFTER the window's reset epoch — the reset time is an
 // estimate and can be slightly fuzzy, so a small grace avoids waking straight into an instant re-cap.
 const TOKEN_RESUME_BUFFER_MS = 60_000;
+/** Operator-appointed active-task hard stops. This marker is deliberately distinct from CAP_PARK_PREFIX:
+ * every autonomous recovery path may revive a cap park, while a deadline park requires a fresh operator
+ * decision. Exported only so focused regression tests can assert the durable contract without copying it. */
+export const ACTIVE_DEADLINE_PARK_PREFIX = "⏰ Hard deadline reached";
+export const ACTIVE_DEADLINE_MAX_MS = 30 * 24 * 3_600_000;
+const ACTIVE_DEADLINE_RUN_REASON = "Stopped by the active-task hard deadline; the saved session and partial work were preserved.";
+const DEADLINE_TERMINAL_STATES: ReadonlySet<Thread["state"]> = new Set(["done", "cancelled", "closed"]);
 // Shared prefix for every "a server restart killed this thread" error, so startResumedImplementor can
 // recognise a restart-triggered resume from the thread's persisted error alone.
 const RESTART_ERROR_PREFIX = "interrupted by a server restart";
@@ -788,6 +795,11 @@ export class ThreadManager implements OrchestratorApi {
   // (token_resume_wakeup_at) so a restart re-arms (or fires, if the reset already passed while we were down).
   private tokenResumeArmedFor: number | undefined;
   private tokenResumeTimer: NodeJS.Timeout | undefined;
+  // One absolute timer per task with an operator hard stop. The timestamp itself lives on the thread
+  // row; this map is only the live alarm and is rebuilt on every boot. expiring deduplicates the timer,
+  // a boundary check, and an operator action all noticing the same instant together.
+  private readonly activeDeadlineTimers = new Map<string, NodeJS.Timeout>();
+  private readonly expiringDeadlines = new Set<string>();
   // Epoch ms until which Codex is treated as usage-capped, so implementors route to the Claude backend
   // instead of dispatching straight into an instant 429. Set when a live Codex run caps (real reset epoch
   // preferred, else a cooldown); auto-clears when the window passes. Persisted in kv so a restart's
@@ -843,6 +855,10 @@ export class ThreadManager implements OrchestratorApi {
       (level, message) => this.hub.log(level, message),
     );
     this.supervisor = new DirectorSupervisor(this);
+    // Park already-expired rows BEFORE restart reconciliation scans in-flight states. That ordering is
+    // what prevents a task whose deadline elapsed while the service was down from receiving the normal
+    // four-second boot auto-resume. Future alarms are re-armed from the same durable timestamps.
+    this.restoreActiveDeadlines();
     this.markInterrupted();
     this.applyAccountEnabled();
     this.applyAccountWeeklySafety();
@@ -1123,7 +1139,12 @@ export class ThreadManager implements OrchestratorApi {
   private capParkedThreads(): Thread[] {
     return this.db
       .listThreads()
-      .filter((t) => (t.state === "review" || t.state === "failed") && (t.error ?? "").startsWith(CAP_PARK_PREFIX));
+      .filter(
+        (t) =>
+          (t.state === "review" || t.state === "failed") &&
+          (t.error ?? "").startsWith(CAP_PARK_PREFIX) &&
+          !this.cancelled(t.id),
+      );
   }
 
   private capParkStage(thread: Thread): CapParkStage {
@@ -1331,7 +1352,11 @@ export class ThreadManager implements OrchestratorApi {
     }
     const stuck = this.db
       .listThreads()
-      .filter((t) => t.state === "paused" || (t.state === "review" && (t.error ?? "").startsWith(CAP_PARK_PREFIX)))
+      .filter(
+        (t) =>
+          (t.state === "paused" || (t.state === "review" && (t.error ?? "").startsWith(CAP_PARK_PREFIX))) &&
+          !this.cancelled(t.id),
+      )
       .sort((a, b) => a.updatedAt - b.updatedAt); // oldest-stuck first — same fairness as the cap supervisor
     const slots = this.settings().maxConcurrent - this.activePipelines.size;
     if (stuck.length === 0 || slots <= 0) {
@@ -1395,6 +1420,187 @@ export class ThreadManager implements OrchestratorApi {
       this.tokenResumeArmedFor = at; // hold the latch so a concurrent usage ping doesn't double-arm
       setTimeout(() => this.fireTokenResume(), AUTO_RESUME_DELAY_MS).unref?.();
     }
+  }
+
+  // ---- operator active-task hard deadlines ------------------------------------------------------
+
+  private deadlineParked(thread: Thread | null | undefined): boolean {
+    return !!thread && (thread.error ?? "").startsWith(ACTIVE_DEADLINE_PARK_PREFIX);
+  }
+
+  private deadlineDue(thread: Thread | null | undefined, at = Date.now()): boolean {
+    return !!thread && thread.activeDeadlineAt != null && thread.activeDeadlineAt <= at && !DEADLINE_TERMINAL_STATES.has(thread.state);
+  }
+
+  private disarmActiveDeadline(threadId: string): void {
+    const timer = this.activeDeadlineTimers.get(threadId);
+    if (timer) clearTimeout(timer);
+    this.activeDeadlineTimers.delete(threadId);
+  }
+
+  /** Arm from the persisted absolute timestamp. Long horizons are re-armed in bounded chunks because
+   *  Node clamps setTimeout beyond a signed 32-bit delay. The callback re-reads the row and expected
+   *  timestamp, so an edit/clear racing an old callback can never enforce the superseded deadline. */
+  private armActiveDeadline(thread: Thread): void {
+    this.disarmActiveDeadline(thread.id);
+    const deadlineAt = thread.activeDeadlineAt;
+    if (deadlineAt == null || DEADLINE_TERMINAL_STATES.has(thread.state)) return;
+    const delay = Math.min(Math.max(0, deadlineAt - Date.now()), 0x7fffffff);
+    const timer = setTimeout(() => {
+      if (this.activeDeadlineTimers.get(thread.id) !== timer) return;
+      this.activeDeadlineTimers.delete(thread.id);
+      const current = this.db.getThread(thread.id);
+      if (!current || current.activeDeadlineAt !== deadlineAt || DEADLINE_TERMINAL_STATES.has(current.state)) return;
+      if (current.activeDeadlineAt > Date.now()) this.armActiveDeadline(current);
+      else void this.expireActiveDeadline(thread.id, deadlineAt);
+    }, delay);
+    timer.unref?.();
+    this.activeDeadlineTimers.set(thread.id, timer);
+  }
+
+  /** Rebuild alarms on boot, enforcing anything that elapsed while the process was down. Called before
+   *  markInterrupted so an expired in-flight row is a durable review park before boot auto-resume scans. */
+  private restoreActiveDeadlines(): void {
+    for (const thread of this.db.listThreads()) {
+      if (thread.activeDeadlineAt == null || DEADLINE_TERMINAL_STATES.has(thread.state)) continue;
+      if (this.deadlineDue(thread)) void this.expireActiveDeadline(thread.id, thread.activeDeadlineAt);
+      else this.armActiveDeadline(thread);
+    }
+  }
+
+  /** Persist the park FIRST, then stop every live role. Pipeline boundary guards observe the marker and
+   *  cannot mistake a stop-generated success/empty result for completion. Runs, messages, stage outputs,
+   *  commits and session ids are retained; only live execution/bookkeeping is torn down. */
+  private async expireActiveDeadline(threadId: string, expectedDeadline?: number): Promise<void> {
+    if (this.expiringDeadlines.has(threadId)) return;
+    const thread = this.db.getThread(threadId);
+    if (!thread || thread.activeDeadlineAt == null || DEADLINE_TERMINAL_STATES.has(thread.state)) {
+      this.disarmActiveDeadline(threadId);
+      return;
+    }
+    if (expectedDeadline != null && thread.activeDeadlineAt !== expectedDeadline) {
+      this.armActiveDeadline(thread);
+      return;
+    }
+    if (thread.activeDeadlineAt > Date.now()) {
+      this.armActiveDeadline(thread);
+      return;
+    }
+
+    this.expiringDeadlines.add(threadId);
+    this.disarmActiveDeadline(threadId);
+    const deadlineAt = thread.activeDeadlineAt;
+    const reached = new Date(deadlineAt).toLocaleString();
+    const reason =
+      `${ACTIVE_DEADLINE_PARK_PREFIX} at ${reached}. All live agents were stopped and automatic dispatch/resume is blocked. ` +
+      "The run trail, saved session, handoff, partial files and commits are preserved. Extend or clear the deadline, then click Resume to continue deliberately.";
+    const alreadyParked = this.deadlineParked(thread);
+    const activeRunIds = this.db.listActiveRuns().filter((run) => run.threadId === threadId).map((run) => run.id);
+    const prior = thread.error && !alreadyParked ? `\n\nThe task was previously reporting: ${thread.error}` : "";
+
+    // Remove every autonomous-recovery identity before yielding to runner teardown. A cap/token/boot
+    // callback already queued in the event loop then sees a normal deadline park, never its old marker.
+    this.dropFromQueue(threadId);
+    this.capParked.delete(threadId);
+    this.capResumeNotifiedAt.delete(threadId);
+    this.pendingResumeMsgs.delete(threadId);
+    this.directorNotes.delete(threadId);
+    this.queuedForImplementor.delete(threadId);
+
+    const acceptedBonusRound = this.db.getThreadStageOutputs(threadId).selfImproving === true;
+    if (!alreadyParked) {
+      const message = this.db.addMessage({
+        threadId,
+        role: "director",
+        kind: "system",
+        content: `${reason}${prior}`,
+      });
+      this.hub.publish({ type: "thread.message", threadId, message });
+      this.postFinding({
+        threadId,
+        fromRole: "director",
+        summary: acceptedBonusRound ? "Hard deadline stopped the optional post-task round" : "Hard deadline reached — task stopped and parked",
+        detail: `${reason}${prior}`,
+        severity: "info",
+      });
+      if (acceptedBonusRound) {
+        this.db.updateThreadStageOutputs(threadId, { selfImproving: false });
+        this.setState(threadId, "done");
+      } else {
+        this.setState(threadId, "review", reason);
+      }
+      this.hub.publish({
+        type: "notice",
+        level: "warn",
+        title: "Task hard deadline reached",
+        message: `“${thread.title}” was stopped and ${acceptedBonusRound ? "left done" : "parked with its saved session intact"}.`,
+      });
+    }
+
+    // Unblock owner gates whose in-memory promises otherwise outlive the now-parked task.
+    const approval = this.pendingApprovals.get(threadId);
+    if (approval) {
+      this.pendingApprovals.delete(threadId);
+      approval({ approved: false });
+    }
+    for (const q of this.db.listOpenQuestions()) {
+      if (q.threadId === threadId) this.resolveQuestion(q.id, "(task hard deadline reached; the task was parked)");
+    }
+
+    try {
+      await this.forceStopThreadRuns(threadId);
+      const stoppedAt = Date.now();
+      for (const runId of activeRunIds) {
+        const run = this.db.getRun(runId);
+        if (!run) continue;
+        this.db.updateRun(runId, {
+          state: "interrupted",
+          error: ACTIVE_DEADLINE_RUN_REASON,
+          endedAt: run.endedAt ?? stoppedAt,
+        });
+        this.emitRun(runId);
+      }
+    } finally {
+      this.reviewing.delete(threadId);
+      this.selfImproving.delete(threadId);
+      this.expiringDeadlines.delete(threadId);
+      this.hub.log("warn", `Hard deadline stopped task ${threadId.slice(0, 8)} at ${new Date(deadlineAt).toISOString()}.`);
+    }
+  }
+
+  /** Public task control used by the authenticated WS API. A deadline is an absolute hard stop and may
+   *  be edited repeatedly. Clearing/extension never resumes an expired task by itself: the subsequent
+   *  Resume click is the second deliberate action that prevents a stale supervisor callback taking over. */
+  async setActiveDeadline(threadId: string, deadlineAt: number | null): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    const now = Date.now();
+    if (deadlineAt != null) {
+      if (!Number.isSafeInteger(deadlineAt) || deadlineAt <= now) {
+        return { ok: false, state: thread.state, error: "Choose a hard deadline in the future." };
+      }
+      if (deadlineAt - now > ACTIVE_DEADLINE_MAX_MS) {
+        return { ok: false, state: thread.state, error: "A task hard deadline can be at most 30 days away." };
+      }
+      if (DEADLINE_TERMINAL_STATES.has(thread.state)) {
+        return { ok: false, state: thread.state, error: `A ${thread.state} task is not active. Restore or retry it before setting a deadline.` };
+      }
+    }
+
+    const updated = this.db.setActiveDeadline(threadId, deadlineAt);
+    if (!updated) return { ok: false, error: "No such task." };
+    if (deadlineAt == null) this.disarmActiveDeadline(threadId);
+    else this.armActiveDeadline(updated);
+    this.hub.publish({ type: "thread.upsert", thread: updated });
+
+    const wasParked = this.deadlineParked(thread);
+    const content = deadlineAt == null
+      ? `⏰ Hard deadline cleared by the operator.${wasParked ? " The task remains parked; click Resume when you want the saved session to continue." : ""}`
+      : `⏰ Hard deadline ${thread.activeDeadlineAt == null ? "set" : "changed"} to ${new Date(deadlineAt).toLocaleString()} (${formatDuration(deadlineAt - now)} from now).${wasParked ? " The task remains parked until you click Resume." : ""}`;
+    const message = this.db.addMessage({ threadId, role: "director", kind: "system", content });
+    this.hub.publish({ type: "thread.message", threadId, message });
+    this.hub.log("info", `${content} [${threadId.slice(0, 8)}]`);
+    return { ok: true, state: updated.state, message: content };
   }
 
   /** Any task left mid-flight by a server restart is dead in memory — its in-memory AgentRun is gone
@@ -4145,6 +4351,14 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private setState(threadId: string, state: Thread["state"], error?: string | null): void {
+    const current = this.db.getThread(threadId);
+    // A provider can finish unwinding after its deadline stop and try to publish the stage it was
+    // heading toward. Keep the durable deadline park authoritative against every such stale write.
+    // Cancel/close remain available to the operator; a deliberate Resume first removes the marker.
+    if (this.deadlineParked(current) && state !== "cancelled" && state !== "closed") {
+      this.hub.log("warn", `Ignored stale ${state} transition for deadline-parked task ${threadId.slice(0, 8)}.`);
+      return;
+    }
     const t = this.db.updateThread(threadId, { state, error: error ?? null });
     if (!t) return;
     this.hub.publish({ type: "thread.upsert", thread: t });
@@ -4162,7 +4376,10 @@ export class ThreadManager implements OrchestratorApi {
     // bookkeeping that must outlive the pipeline LOOP (so a parked task can still resume) but has no
     // reason to outlive the process. Deliberately EXCLUDES 'failed' (a transient state the pipeline
     // re-enters on cap/token/boot resume) and the parked states (review/paused stay resumable).
-    if (state === "done" || state === "cancelled") this.dropTerminalBookkeeping(threadId);
+    if (state === "done" || state === "cancelled") {
+      this.disarmActiveDeadline(threadId);
+      this.dropTerminalBookkeeping(threadId);
+    }
     // Score how an auto-selected model handled this task, so the next selection knows. Reads the FRESH
     // thread row (it carries the error text a cap-park is recognised by) and no-ops for every other task.
     this.gradeAutoSelectedModel(t);
@@ -4323,7 +4540,15 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private cancelled(threadId: string): boolean {
-    return this.db.getThread(threadId)?.state === "cancelled";
+    const thread = this.db.getThread(threadId);
+    if (thread?.state === "cancelled" || this.deadlineParked(thread)) return true;
+    if (this.deadlineDue(thread)) {
+      // The durable state flip happens synchronously before expireActiveDeadline's first await. Calling
+      // it from a boundary check therefore closes the tiny gap if an OS-delayed timer has not fired yet.
+      void this.expireActiveDeadline(threadId, thread!.activeDeadlineAt!);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -4340,7 +4565,7 @@ export class ThreadManager implements OrchestratorApi {
    */
   private async runPipeline(threadId: string, directorNote?: string): Promise<void> {
     let thread = this.db.getThread(threadId);
-    if (!thread) return;
+    if (!thread || this.cancelled(threadId)) return;
     const slotToken = Symbol("pipeline");
     this.activePipelines.add(threadId);
     this.activePipelineToken.set(threadId, slotToken);
@@ -4808,6 +5033,7 @@ export class ThreadManager implements OrchestratorApi {
     initialResume?: string,
     opts?: { preferredProvider?: ImplementorProvider; forcedProvider?: ImplementorProvider },
   ): Promise<ResultEvent | undefined> {
+    if (this.cancelled(thread.id)) return undefined;
     if (
       (role === "planner" || role === "reader") &&
       !initialResume &&
@@ -5620,6 +5846,9 @@ export class ThreadManager implements OrchestratorApi {
     kickoff: string,
     opts?: { resume?: string; effort?: Effort; account?: Acct; freshFallback?: UserContent; images?: ImageBlock[] },
   ): { run: AgentRunLike; runId: string; accountId: string } {
+    // Synchronous last gate before any provider process is constructed. It complements the timer:
+    // an OS-delayed alarm still cannot let a new paid turn cross an already-elapsed hard deadline.
+    if (this.cancelled(thread.id)) throw new Error("Task execution is stopped by its hard deadline.");
     this.setState(thread.id, "implementing");
     // Claude uses the planner's per-task effort (with the xhigh gate applied). Codex has its own
     // operator-selected reasoning effort because the CLI takes a persistent model_reasoning_effort.
@@ -8078,7 +8307,7 @@ export class ThreadManager implements OrchestratorApi {
     if (qaBypassRequested && thread && DONEABLE.has(thread.state)) {
       return this.markDone(threadId);
     }
-    return this.resumeThread(threadId, message);
+    return this.resumeThread(threadId, message, true);
   }
 
   /** Regenerate a task's board title from a freshly-injected directive (short → verbatim, longer →
@@ -8206,9 +8435,29 @@ export class ThreadManager implements OrchestratorApi {
     return { ok: true, state: "paused" };
   }
 
-  async resumeThread(threadId: string, message?: string): Promise<ThreadActionResult> {
-    const thread = this.db.getThread(threadId);
+  async resumeThread(threadId: string, message?: string, operatorInitiated = false): Promise<ThreadActionResult> {
+    let thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    if (this.deadlineDue(thread)) {
+      await this.expireActiveDeadline(threadId, thread.activeDeadlineAt!);
+      return {
+        ok: false,
+        state: "review",
+        error: "This task's hard deadline has passed. Extend or clear it first, then click Resume to continue from the saved session.",
+      };
+    }
+    if (this.deadlineParked(thread)) {
+      if (!operatorInitiated) {
+        return { ok: false, state: "review", error: "Automatic resume is blocked because this task reached its hard deadline." };
+      }
+      // Editing/clearing the clock is deliberately not itself a resume. Once the operator ALSO clicks
+      // Resume, remove only the park marker; the finding/feed/run trail remain durable evidence.
+      const released = this.db.updateThread(threadId, { error: null });
+      if (released) {
+        thread = released;
+        this.hub.publish({ type: "thread.upsert", thread: released });
+      }
+    }
     // A restart's deferred auto-resume can fire after an operator has cancelled the task.  Cancellation
     // is terminal until an explicit Retry, so never let that stale timer resurrect gameplay or other
     // autonomous work behind the operator's back.
@@ -8456,6 +8705,9 @@ export class ThreadManager implements OrchestratorApi {
     if (thread.state !== "cancelled") {
       return { ok: false, error: `Only a cancelled task can be retried (this one is ${thread.state}).` };
     }
+    if (thread.activeDeadlineAt != null && thread.activeDeadlineAt <= Date.now()) {
+      return { ok: false, state: "cancelled", error: "This task's hard deadline has passed. Clear or extend it before retrying." };
+    }
     if (!existsSync(thread.workspace)) {
       this.setState(threadId, "failed", `Can't retry — workspace "${thread.workspace}" no longer exists on disk.`);
       return { ok: false, error: "Workspace does not exist." };
@@ -8497,6 +8749,8 @@ export class ThreadManager implements OrchestratorApi {
     // disabled → no early setState('planning')" branch) would otherwise abort the retry as a silent no-op,
     // leaving the task stuck in 'cancelled' with an ok:true response and no agent ever running.
     this.setState(threadId, "queued");
+    const retried = this.db.getThread(threadId);
+    if (retried?.activeDeadlineAt != null) this.armActiveDeadline(retried);
     this.hub.log("info", `Retrying task ${threadId.slice(0, 8)} from the top.`);
     this.enqueueOrRun(threadId);
     // enqueueOrRun either started the pipeline synchronously (slot free → now on activePipelines) or
@@ -8523,13 +8777,10 @@ export class ThreadManager implements OrchestratorApi {
     this.stopping.add(threadId);
     const set = this.activeRuns.get(threadId);
     if (set) {
-      for (const r of set) {
-        try {
-          await r.stop();
-        } catch {
-          /* already down */
-        }
-      }
+      // Issue every stop before awaiting any one of them. The normal one-role-per-slot invariant means
+      // this is usually one handle; if a historical race left duplicates, a hard stop must not let the
+      // second continue spending while the first provider takes time to tear down.
+      await Promise.allSettled([...set].map((r) => r.stop()));
       set.clear();
     }
     await this.stopLive(threadId);
@@ -8541,6 +8792,7 @@ export class ThreadManager implements OrchestratorApi {
     this.liveRole.delete(threadId);
     this.directorNotes.delete(threadId);
     this.stopping.delete(threadId);
+    this.disarmActiveDeadline(threadId);
     this.dropTerminalBookkeeping(threadId); // closed is terminal — closeThread settles via db, not setState
     const updated = this.db.closeThread(threadId);
     if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
@@ -8558,6 +8810,9 @@ export class ThreadManager implements OrchestratorApi {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
     if (thread.state === "done") return { ok: true, state: "done" };
+    if (this.deadlineParked(thread)) {
+      return { ok: false, state: "review", error: "This task was stopped mid-work by its hard deadline. Clear or extend it and Resume before marking the work done." };
+    }
     if (!DONEABLE.has(thread.state)) {
       return { ok: false, error: `A ${thread.state} task can't be marked done — only a parked (review/paused) task can.` };
     }
@@ -8581,6 +8836,9 @@ export class ThreadManager implements OrchestratorApi {
     if (this.reviewing.has(threadId)) return { ok: true, state: thread.state };
     if (thread.state !== "review") {
       return { ok: false, error: `Only a task parked in review can be auto-reviewed — this one is ${thread.state}.` };
+    }
+    if (this.deadlineParked(thread)) {
+      return { ok: false, error: "This task was stopped mid-work by its hard deadline. Extend or clear it and Resume the saved session; unfinished work cannot be auto-accepted." };
     }
     if ((thread.error ?? "").startsWith(CAP_PARK_PREFIX)) {
       return { ok: false, error: "This task is waiting on a usage limit and resumes itself — its work isn't finished yet, so there's nothing to review." };
@@ -8926,13 +9184,9 @@ export class ThreadManager implements OrchestratorApi {
     this.stopping.add(threadId);
     const set = this.activeRuns.get(threadId);
     if (set) {
-      for (const r of set) {
-        try {
-          await r.stop();
-        } catch {
-          /* already down */
-        }
-      }
+      // Stop every handle concurrently. There should be one; if a prior race left duplicates, none
+      // gets extra paid time merely because another provider is slow to tear down.
+      await Promise.allSettled([...set].map((r) => r.stop()));
       set.clear();
     }
     await this.stopLive(threadId);
@@ -8977,7 +9231,11 @@ export class ThreadManager implements OrchestratorApi {
     if (!thread) return { ok: false, error: "No such task." };
     if (thread.state !== "closed") return { ok: false, error: "That task isn't closed." };
     const updated = this.db.restoreThread(threadId);
-    if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
+    if (updated) {
+      this.hub.publish({ type: "thread.upsert", thread: updated });
+      if (this.deadlineDue(updated)) void this.expireActiveDeadline(threadId, updated.activeDeadlineAt!);
+      else if (updated.activeDeadlineAt != null) this.armActiveDeadline(updated);
+    }
     this.hub.log("info", `Restored task ${threadId.slice(0, 8)} → ${updated?.state ?? "review"}.`);
     return { ok: true, state: updated?.state ?? "review" };
   }
@@ -9050,6 +9308,7 @@ export class ThreadManager implements OrchestratorApi {
     for (const q of this.db.listOpenQuestions()) {
       if (q.threadId === threadId) this.resolveQuestion(q.id, "(task dismissed)");
     }
+    this.disarmActiveDeadline(threadId);
     this.db.deleteThread(threadId);
     this.hub.publish({ type: "thread.removed", threadId });
   }
@@ -9678,6 +9937,10 @@ export class ThreadManager implements OrchestratorApi {
     agent: AgentRunLike,
     stateOverride?: AgentRunState,
   ): void {
+    // A hard-deadline teardown pre-finalizes the row with the operator-visible reason. A structured
+    // role can finish unwinding afterward and otherwise overwrite it with a success-shaped/null result.
+    const existing = this.db.getRun(runId);
+    if (existing?.endedAt != null && existing.error === ACTIVE_DEADLINE_RUN_REASON) return;
     const state: AgentRunState = stateOverride ?? (res ? (res.isError ? "error" : "done") : "interrupted");
     this.db.updateRun(runId, {
       // A structured role that ends without a result was interrupted (cancellation, restart, or a

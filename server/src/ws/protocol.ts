@@ -191,6 +191,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("thread.interrupt"), threadId: z.string() }),
   z.object({ type: z.literal("thread.resume"), threadId: z.string(), message: z.string().optional() }),
+  // Absolute epoch milliseconds, or null to clear. ThreadManager applies the live-state and practical
+  // horizon checks using its own clock; finite/safe-integer validation belongs at this trust boundary.
+  z.object({ type: z.literal("thread.deadline"), threadId: z.string(), deadlineAt: z.number().int().safe().finite().nullable() }),
   z.object({ type: z.literal("thread.cancel"), threadId: z.string() }),
   // Restart a cancelled task from the very beginning — wipes the prior attempt and re-runs the whole
   // pipeline from the brief the director first dispatched (see ThreadManager.retryThread).

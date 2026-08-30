@@ -110,13 +110,25 @@ function useDeadlineNow(deadlineAt: number): number {
 /** A timed task's live countdown to its deadline: "6h 12m left", or "window ended" once it passes.
  *  The deadline is absolute, so this stays correct across a reload and a server restart with no
  *  client-side bookkeeping. */
-export function Countdown({ deadlineAt, className, prefix }: { deadlineAt: number; className?: string; prefix?: string }) {
+export function Countdown({
+  deadlineAt,
+  className,
+  prefix,
+  endedLabel = "window ended",
+  titleLabel = "Work window ends",
+}: {
+  deadlineAt: number;
+  className?: string;
+  prefix?: string;
+  endedLabel?: string;
+  titleLabel?: string;
+}) {
   const now = useDeadlineNow(deadlineAt);
   const left = deadlineAt - now;
   return (
-    <span className={className} title={`Work window ends ${new Date(deadlineAt).toLocaleString()}`}>
+    <span className={className} title={`${titleLabel} ${new Date(deadlineAt).toLocaleString()}`}>
       {prefix ?? ""}
-      {left <= 0 ? "window ended" : `${formatDuration(left)} left`}
+      {left <= 0 ? endedLabel : `${formatDuration(left)} left`}
     </span>
   );
 }

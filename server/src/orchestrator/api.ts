@@ -131,7 +131,10 @@ export interface OrchestratorApi {
     images?: ImageAttachment[],
   ): Promise<ThreadActionResult>;
   interruptThread(threadId: string): Promise<ThreadActionResult>;
-  resumeThread(threadId: string, message?: string): Promise<ThreadActionResult>;
+  /** operatorInitiated is true only for an authenticated owner action; autonomous recovery leaves it false. */
+  resumeThread(threadId: string, message?: string, operatorInitiated?: boolean): Promise<ThreadActionResult>;
+  /** Appoint, edit, or clear an absolute hard stop on a non-terminal task. */
+  setActiveDeadline(threadId: string, deadlineAt: number | null): Promise<ThreadActionResult>;
   cancelThread(threadId: string): Promise<ThreadActionResult>;
   retryThread(threadId: string): Promise<ThreadActionResult>;
   /** Delegate the owner's final review of a task parked in `review` to the auto-reviewer. */

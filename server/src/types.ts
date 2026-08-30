@@ -146,6 +146,10 @@ export interface Thread {
   // ---- Timed task: a single task with a wall-clock work window (orchestrator/timedTasks.ts) ----
   durationMs?: number | null; // the window the owner asked for; null = an ordinary task with no window
   deadlineAt?: number | null; // absolute epoch ms once work starts; null while a timed task is queued (or for an ordinary task)
+  // ---- Operator hard stop: independent of the timed-task work-window mode ----
+  // Unlike deadlineAt, this is enforced immediately against a busy live run. The task is parked with
+  // its resumable session/evidence intact when the instant arrives; null means no operator hard stop.
+  activeDeadlineAt?: number | null;
   // ---- Shotgun task: N collaborators on one objective (orchestrator/shotgun.ts) ----
   agentCount?: number | null; // collaborators the owner asked for; null/1 = an ordinary single-agent task
   parentId?: string | null; // set on a COLLABORATOR: the lead task it belongs to (hidden from the board, shown inside the lead)

@@ -22,17 +22,28 @@ function copy(text: string): void {
  */
 export function Deliverables({ items }: { items: Finding[] }) {
   const [viewing, setViewing] = useState<Finding | null>(null);
+  // File cards are useful but secondary to the transcript. Phones start with one disclosure row;
+  // desktop retains the established open strip, and either can be changed deliberately.
+  const [expanded, setExpanded] = useState(() => typeof window === "undefined" || !window.matchMedia("(max-width: 899.98px)").matches);
   if (!items.length) return null;
   return (
-    <div className="deliverables">
-      <span className="deliverables-label">
+    <div className={"deliverables" + (expanded ? " expanded" : " collapsed")}>
+      <button
+        type="button"
+        className="deliverables-label"
+        onClick={() => setExpanded((open) => !open)}
+        aria-expanded={expanded}
+      >
         deliverables <span className="n">{items.length}</span>
-      </span>
-      <div className="deliverable-strip">
-        {items.map((d) => (
-          <DeliverableChip key={d.id} d={d} onView={() => setViewing(d)} />
-        ))}
-      </div>
+        <span className="deliverables-chevron" aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
+      </button>
+      {expanded ? (
+        <div className="deliverable-strip">
+          {items.map((d) => (
+            <DeliverableChip key={d.id} d={d} onView={() => setViewing(d)} />
+          ))}
+        </div>
+      ) : null}
       {viewing && (
         <Suspense fallback={null}>
           <DeliverableModal d={viewing} onClose={() => setViewing(null)} />

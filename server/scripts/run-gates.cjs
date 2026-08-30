@@ -74,6 +74,7 @@ const GATES = [
   "test:relay-access",
   "test:zai-usage",
   "test:codex-pools",
+  "test:active-deadlines",
   "test:timed-tasks",
   "test:shotgun",
   "test:task-modes",

@@ -1680,6 +1680,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .inject-bar textarea { width: 100%; resize: none; min-height: 50px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 11px; font-family: var(--font-sans); font-size: 13px; }
 .inject-bar textarea:focus { outline: none; border-color: var(--accent); }
 .inject-bar .row { display: flex; gap: 7px; }
+.mobile-inject-toggle, .mobile-compose-close { display: none; }
 
 .approval {
   margin: 0 16px 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
@@ -1717,9 +1718,12 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 }
 .deliverables-label {
   font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--text-faint); flex: 0 0 auto;
+  color: var(--text-faint); flex: 0 0 auto; appearance: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent;
 }
+.deliverables-label:hover { color: var(--text-dim); }
 .deliverables-label .n { font-size: 9px; opacity: 0.7; font-weight: 600; }
+.deliverables-chevron { font-size: 12px; line-height: 1; }
 .deliverable-strip { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 
 .dl-chip { position: relative; display: inline-flex; }
@@ -2044,6 +2048,24 @@ body.dl-resizing { user-select: none; }
     .detail { height: 100dvh; }
   }
   .inject-bar { padding-bottom: calc(11px + env(safe-area-inset-bottom)); }
+  /* Reading mode is the phone default: one compact disclosure replaces the 120px composer until the
+     operator needs it. The close control floats over the textarea, so opening it adds no extra row. */
+  .mobile-inject-toggle {
+    display: flex; flex: 0 0 auto; align-items: center; justify-content: flex-start;
+    min-height: var(--tap); margin: 0; padding: 0 16px calc(env(safe-area-inset-bottom) / 2);
+    border: 0; border-top: 1px solid var(--line); background: var(--bg-1);
+    color: var(--text-dim); font: 13px var(--font-sans); text-align: left;
+  }
+  .mobile-inject-toggle:disabled { color: var(--text-faint); }
+  .inject-bar.mobile-collapsed { display: none; }
+  .inject-bar { position: relative; }
+  .mobile-compose-close {
+    display: inline-flex; position: absolute; z-index: 3; top: 11px; right: 12px;
+    width: var(--tap); height: var(--tap); align-items: center; justify-content: center;
+    border: 0; border-radius: var(--r-sm); background: color-mix(in oklch, var(--bg-2) 88%, transparent);
+    color: var(--text-dim); font-size: 20px;
+  }
+  .inject-bar textarea { padding-right: calc(var(--tap) + 10px); }
   /* Approve · Reject can still overflow the narrowest phones — let that row wrap. */
   .approval .row { flex-wrap: wrap; }
   /* Keep the whole inject action row on ONE line: Attach · Queue · Inject · Interrupt & inject
@@ -2091,6 +2113,13 @@ body.dl-resizing { user-select: none; }
   .feed-filter { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .feed-filter .fchip { flex: 0 0 auto; min-height: 34px; padding: 7px 11px; font-size: 11px; }
   .feed-filter .tools-toggle { margin-left: 4px; }
+
+  /* Deliverables are secondary task chrome. Keep their count visible, but make the file strip opt-in
+     on phones so a four-file task cannot consume half of the transcript viewport. */
+  .deliverables { padding: 0 16px; min-height: var(--tap); gap: 8px; }
+  .deliverables-label { min-height: var(--tap); flex: 1 1 auto; }
+  .deliverables.expanded { padding-bottom: 8px; }
+  .deliverables.expanded .deliverable-strip { flex-basis: 100%; }
 
   /* bottom tab bar — native feel, clears the iOS home indicator */
   .mobile-nav {
@@ -2661,6 +2690,18 @@ button.note-from:hover { color: var(--text-dim); }
 }
 .timed-badge.over { --timed: var(--danger); }
 
+/* A per-task hard stop is deliberately warmer and more urgent than the violet work-window clock:
+   unlike a timed task, this alarm terminates a busy provider turn at the displayed instant. */
+.deadline-badge {
+  --deadline: oklch(0.78 0.16 48);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.04em; font-weight: 700;
+  padding: 2px 7px; border-radius: 100px; white-space: nowrap;
+  color: var(--deadline);
+  background: color-mix(in oklch, var(--deadline) 13%, transparent);
+  border: 1px solid color-mix(in oklch, var(--deadline) 45%, transparent);
+}
+.deadline-badge.over { --deadline: var(--danger); }
+
 /* Shotgun: N agents in parallel. */
 .shotgun-badge {
   --shot: oklch(0.82 0.15 85);
@@ -2716,12 +2757,73 @@ button.note-from:hover { color: var(--text-dim); }
 
 /* ── The detail panel's task-mode strip ──────────────────────────────────────────────────────────
    Renders only for a timed or shotgun task, so an ordinary task's panel is unchanged. */
+/* Active-task hard deadline. Always present on a non-terminal task so the safety control is
+   discoverable; the editor stays inline so setting it never loses task context. */
+.deadline-panel {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 9px 10px; margin: 0;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: color-mix(in oklch, var(--bg-2) 62%, transparent);
+}
+.deadline-panel.armed {
+  border-color: color-mix(in oklch, oklch(0.78 0.16 48) 42%, var(--line));
+  background: color-mix(in oklch, oklch(0.78 0.16 48) 5%, var(--bg-2));
+}
+.deadline-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.deadline-copy { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.deadline-key {
+  flex: 0 0 auto; font-size: 10px; color: var(--text-faint);
+  letter-spacing: 0.06em; text-transform: uppercase;
+}
+.deadline-value { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.deadline-left { color: oklch(0.78 0.16 48); font-family: var(--font-mono); font-size: 11.5px; font-weight: 700; }
+.deadline-over { color: var(--danger); font-family: var(--font-mono); font-size: 11.5px; font-weight: 700; }
+.deadline-exact, .deadline-none { color: var(--text-faint); font-size: 11px; line-height: 1.35; }
+.deadline-actions { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+.deadline-guidance {
+  padding: 7px 9px; border-radius: 6px;
+  color: var(--danger); background: color-mix(in oklch, var(--danger) 9%, transparent);
+  font-size: 11.5px; line-height: 1.4;
+}
+.deadline-editor {
+  display: flex; flex-direction: column; gap: 8px; padding-top: 8px;
+  border-top: 1px solid color-mix(in oklch, oklch(0.78 0.16 48) 26%, var(--line));
+}
+.deadline-presets { display: grid; grid-template-columns: repeat(6, minmax(42px, 1fr)); gap: 5px; }
+.deadline-preset {
+  min-height: 32px; padding: 5px 7px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text-dim); background: var(--bg); font: 600 11px var(--font-mono);
+}
+.deadline-preset:hover { color: var(--text); border-color: oklch(0.78 0.16 48); }
+.deadline-preset:disabled { opacity: 0.45; cursor: not-allowed; }
+.deadline-custom { display: grid; grid-template-columns: auto minmax(180px, 1fr) auto; align-items: center; gap: 8px; }
+.deadline-custom label { color: var(--text-faint); font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; }
+.deadline-custom input {
+  min-width: 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text); background: var(--bg); color-scheme: dark; font: 12px var(--font-mono);
+}
+.deadline-custom input:focus { outline: none; border-color: oklch(0.78 0.16 48); }
+.deadline-error { color: var(--danger); font-size: 11.5px; }
+
+@media (max-width: 899.98px) {
+  .deadline-summary, .deadline-copy { align-items: stretch; flex-direction: column; gap: 7px; }
+  .deadline-actions { width: 100%; }
+  .deadline-actions .btn { flex: 1 1 0; }
+  .deadline-presets { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .deadline-preset { min-height: var(--tap); font-size: 12px; }
+  .deadline-custom { grid-template-columns: minmax(0, 1fr); }
+  .deadline-custom input { box-sizing: border-box; width: 100%; min-height: var(--tap); font-size: 16px; }
+  .deadline-custom .btn { width: 100%; }
+}
+
 .taskmode-panel {
   display: flex; flex-direction: column; gap: 6px;
   padding: 8px 10px; margin: 0 0 8px;
   border: 1px solid var(--border); border-radius: 8px;
   background: color-mix(in oklch, var(--surface-2, var(--bg)) 60%, transparent);
 }
+.detail-head .taskmode-panel { margin: 0; }
 .taskmode-row { display: flex; align-items: baseline; gap: 10px; }
 .taskmode-key {
   flex: 0 0 62px; font-size: 10px; color: var(--text-faint);

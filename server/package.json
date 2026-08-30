@@ -76,6 +76,8 @@
     "test:zai-usage": "tsx src/tests/zaiUsage.test.ts",
     "test:codex-pools": "tsx src/tests/codexPools.test.ts",
     "task-mode-lab": "node scripts/task-mode-lab.cjs",
+    "deadline-lab": "node scripts/deadline-lab.cjs",
+    "test:active-deadlines": "tsx src/tests/activeDeadlines.itest.ts",
     "test:timed-tasks": "tsx src/tests/timedTasks.test.ts",
     "test:shotgun": "tsx src/tests/shotgun.test.ts",
     "test:task-modes": "tsx src/tests/taskModes.itest.ts",

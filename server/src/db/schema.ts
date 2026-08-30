@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS threads (
   -- resumes the SAME clock instead of restarting the window. NULL on an ordinary task.
   duration_ms   INTEGER,
   deadline_at   INTEGER,
+  -- Operator-appointed HARD stop for an existing task. Separate from the timed-task work window above:
+  -- this deadline stops a busy agent at the instant, parks the task, and blocks automatic resurrection.
+  active_deadline_at INTEGER,
   -- SHOTGUN task: how many agents the owner asked to work this objective at once. NULL/1 = ordinary.
   -- Kept even after the split is decided so the card can show what was requested vs. what ran.
   agent_count   INTEGER,

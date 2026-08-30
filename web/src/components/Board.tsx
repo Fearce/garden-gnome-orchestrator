@@ -709,6 +709,11 @@ const Card = memo(function Card({
               ⏱ {formatDuration(thread.durationMs)} queued
             </span>
           ) : null}
+          {thread.activeDeadlineAt != null ? (
+            <span className={"deadline-badge" + (thread.activeDeadlineAt <= Date.now() ? " over" : "")}>
+              ⏰ <Countdown deadlineAt={thread.activeDeadlineAt} endedLabel="deadline reached" titleLabel="Hard deadline" />
+            </span>
+          ) : null}
           {collabCount ? (
             <span className="shotgun-badge" title={`${collabCount + 1} agents working this task in parallel`}>
               ⚡ {collabCount + 1}
