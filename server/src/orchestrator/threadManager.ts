@@ -309,6 +309,13 @@ interface RoleCapacityOption {
   hasHeadroom: boolean;
 }
 
+interface RoleCapacitySnapshot {
+  options: RoleCapacityOption[];
+  ready: RoleCapacityOption[];
+  /** Earliest future reset that makes one option viable. Undefined while one is viable now. */
+  nextAt?: number;
+}
+
 interface ClaudeCapacityOption extends RoleCapacityOption {
   accountId: string;
 }
@@ -1161,7 +1168,7 @@ export class ThreadManager implements OrchestratorApi {
       // bridge-only, so waking on Grok-only headroom would create a deterministic cap/repark loop.
       const role = this.capParkStage(t);
       const demand = this.capacityDemand(t, role);
-      const ready = this.roleCapacityOptions(role, demand).filter((option) => this.roleCapacityReady(option, demand));
+      const { ready } = this.roleCapacitySnapshot(role, demand);
       if (!ready.length) continue;
       // A prior supervisor tick may already have changed this row to failed and started its pipeline.
       // Keep the marker durable for a crash between that update and resumeThread, but never double-spawn
@@ -2119,23 +2126,27 @@ export class ThreadManager implements OrchestratorApi {
    * reset that would actually make one of them viable. */
   directorCapacityWaitMessage(now = Date.now()): string {
     const demand = demandForRole("director");
-    const options = this.roleCapacityOptions("director", demand, now);
+    const { options, ready, nextAt: next } = this.roleCapacitySnapshot("director", demand, now);
     const startupCooling = options.some((option) => option.windows.some((window) =>
       window.label === STARTUP_HEALTH_COOLDOWN_LABEL &&
       window.usedPct === 100 &&
       (window.resetAt == null || window.resetAt > now),
     ));
-    const next = this.nextRoleCapacityAt("director", demand, now);
-    const reset = next != null
-      ? ` The next viable pool is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
-      : " No reliable reset time is available yet; live meters are still polled.";
+    const reset = ready.length
+      ? ` ${ready.map((option) => option.label).join(", ")} has viable capacity now.`
+      : next != null
+        ? ` The next viable pool is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
+        : " No reliable reset time is available yet; live meters are still polled.";
     const status = options.length
       ? ` Capacity checked: ${options.map((option) => describeRoutingCapacity(option, demand, now)).join("; ")}.`
       : " No enabled, authenticated provider is available.";
-    const reason = startupCooling
-      ? "A compatible director provider is temporarily unavailable during a startup health cooldown, so I couldn't complete this turn."
-      : "Every enabled director target is usage-capped, lacks safe runway, or is unavailable, so I couldn't complete this turn.";
-    return `${reason}${reset}${status} Resend after capacity frees; routing will reselect automatically.`;
+    const reason = ready.length
+      ? "The prior director attempt stopped, but a compatible target is ready for a fresh turn."
+      : startupCooling
+        ? "A compatible director provider is temporarily unavailable during a startup health cooldown, so I couldn't complete this turn."
+        : "Every enabled director target is usage-capped, lacks safe runway, or is unavailable, so I couldn't complete this turn.";
+    const retry = ready.length ? "Resend now" : "Resend after capacity frees";
+    return `${reason}${reset}${status} ${retry}; routing will reselect automatically.`;
   }
 
   /** Construct the concrete runner for a director target. Claude/z.ai retain the native MCP tools in
@@ -3616,12 +3627,27 @@ export class ThreadManager implements OrchestratorApi {
     return !demand.substantial || status !== "at-risk";
   }
 
-  /** Earliest reset that makes any compatible pool safe for this role's workload. */
-  private nextRoleCapacityAt(role: Role, demand: CapacityDemand, now = Date.now()): number | undefined {
-    const future = this.roleCapacityOptions(role, demand, now)
+  /** One internally consistent capacity view for routing, supervisor wakeups, and owner-facing text.
+   * Reading provider cache files twice can straddle a usage refresh: the first read can say "blocked"
+   * while the second exposes a viable pool whose `now` result is then discarded as not-a-future-reset.
+   * Derive readiness and the advertised reset from the same inventory so those claims cannot diverge. */
+  private roleCapacitySnapshot(role: Role, demand: CapacityDemand, now = Date.now()): RoleCapacitySnapshot {
+    const options = this.roleCapacityOptions(role, demand, now);
+    const ready = options.filter((option) => this.roleCapacityReady(option, demand, now));
+    if (ready.length) return { options, ready };
+    const future = options
       .map((option) => nextViableAt(option.windows, demand, now))
       .filter((at): at is number => at != null && at > now);
-    return future.length ? Math.min(...future) : undefined;
+    return {
+      options,
+      ready,
+      nextAt: future.length ? Math.min(...future) : undefined,
+    };
+  }
+
+  /** Earliest reset that makes any compatible pool safe for this role's workload. */
+  private nextRoleCapacityAt(role: Role, demand: CapacityDemand, now = Date.now()): number | undefined {
+    return this.roleCapacitySnapshot(role, demand, now).nextAt;
   }
 
   /** The best implementor backend OTHER than `exclude` that can take over RIGHT NOW, or undefined when
@@ -4145,15 +4171,19 @@ export class ThreadManager implements OrchestratorApi {
   /** Auto-review is owner-triggered and deliberately does not join the pipeline cap supervisor. Refuse
    * a known-doomed reviewer dispatch, but leave a precise finding so the owner knows when to click again. */
   private noteManualCapacityWait(thread: Thread, role: "reviewer", demand: CapacityDemand, now = Date.now()): string {
-    const options = this.roleCapacityOptions(role, demand, now);
-    const next = this.nextRoleCapacityAt(role, demand, now);
-    const when = next != null
-      ? `The next viable reviewer pool is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
-      : "No reliable reviewer reset time is available yet; live meters are still polled.";
+    const { options, ready, nextAt: next } = this.roleCapacitySnapshot(role, demand, now);
+    const when = ready.length
+      ? `${ready.map((option) => option.label).join(", ")} has viable reviewer capacity now; retry Auto-review.`
+      : next != null
+        ? `The next viable reviewer pool is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
+        : "No reliable reviewer reset time is available yet; live meters are still polled.";
     const checked = options.length
       ? options.map((option) => describeRoutingCapacity(option, demand, now)).join("; ")
       : "No enabled, authenticated reviewer provider is available.";
-    const detail = `Auto-review did not start because no compatible pool has safe runway for ${demandSummary(demand)}. ${when} Capacity checked: ${checked} The task remains in review; run Auto-review again after capacity becomes viable.`;
+    const why = ready.length
+      ? "Auto-review's prior provider became unavailable before the turn started."
+      : `Auto-review did not start because no compatible pool has safe runway for ${demandSummary(demand)}.`;
+    const detail = `${why} ${when} Capacity checked: ${checked} The task remains in review.`;
     this.postFinding({
       threadId: thread.id,
       fromRole: "reviewer",
@@ -4172,8 +4202,7 @@ export class ThreadManager implements OrchestratorApi {
     const now = Date.now();
     const thread = this.db.getThread(threadId);
     const demand = thread ? this.capacityDemand(thread, need) : demandForRole(need);
-    const options = this.roleCapacityOptions(need, demand, now);
-    const ready = options.filter((option) => this.roleCapacityReady(option, demand, now));
+    const { options, ready, nextAt: next } = this.roleCapacitySnapshot(need, demand, now);
     const startupCooling = options.filter((option) => option.windows.some((window) =>
       window.label === STARTUP_HEALTH_COOLDOWN_LABEL &&
       window.usedPct === 100 &&
@@ -4184,7 +4213,6 @@ export class ThreadManager implements OrchestratorApi {
       demand.substantial &&
       hardReady.length > 0 &&
       hardReady.every((option) => assessCapacity(option.windows, demand, now).status === "at-risk");
-    const next = ready.length === 0 && thread ? this.nextRoleCapacityAt(need, demand, now) : undefined;
     const when = ready.length
       ? ` ${ready.map((option) => option.label).join(", ")} has viable capacity now; recovery will start as soon as a pipeline slot is available.`
       : next != null
@@ -7391,6 +7419,17 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
+  /** QA can return to implementation from inside a QA-only restart retry, after the outer implementor
+   * gate was intentionally skipped. Reuse a still-safe provider when the pipeline retained it; otherwise
+   * run the normal capacity gate at this handoff before starting any process. This prevents a restart-
+   * cleared provider map from defaulting to a known-capped Claude turn while Codex is already viable. */
+  private routeQaSupersedeImplementor(thread: Thread, effort: Effort | undefined): boolean {
+    const demand = this.capacityDemand(thread, "implementor", effort);
+    const current = this.implementorProvider.get(thread.id);
+    if (current && this.providerSafeForRole(current, "implementor", demand)) return true;
+    return this.gateImplementorProvider(thread, { capParkOnExhaustion: true, effort }) != null;
+  }
+
   private async resumeImplementorAfterQaSupersede(
     thread: Thread,
     effort: Effort | undefined,
@@ -7409,6 +7448,11 @@ export class ThreadManager implements OrchestratorApi {
       detail,
       severity: "note",
     });
+    if (!this.routeQaSupersedeImplementor(thread, effort)) {
+      // The shared gate either wrote a durable capacity park or a concrete settings/auth failure. Keep
+      // qaSuperseded intact so an automatic capacity resume delivers the owner's instruction exactly once.
+      return { handled: true };
+    }
     this.resuming.add(thread.id);
     this.setState(thread.id, "implementing");
     let start: LiveImplementor | null = null;

@@ -341,10 +341,99 @@ try {
   check("the pre-init fallback keeps the full kickoff context", starts[0]?.message.includes("FULL KICKOFF") === true, starts[0]?.message);
   check("the pre-init fallback completes instead of cap-parking", earlyResult?.isError === false && !internals.capParked.has(earlyCap.id));
 
-  // Exact fe529d83 incident ordering: a QA-only retry was superseded back to implementation, bypassing
-  // the normal initial provider gate. startImplementor therefore defaulted to Claude without a provider
-  // map entry; when Claude capped, the old reverse-failover guard saw undefined instead of "claude" and
-  // left viable Codex capacity parked until the next two-minute supervisor sweep.
+  // Exact fe529d83 first-chance ordering: restart recovery was retrying QA directly, so the outer
+  // implementor provider gate had deliberately not run. An owner correction superseded that QA pass and
+  // returned to implementation with no in-memory provider map. Re-evaluate the real xhigh reserve at this
+  // boundary: Codex has 33% left and resets in 28m, so it can bridge the turn and Claude must not launch.
+  const directQaHandoff = db.createThread({
+    title: "fe529d83 restart-interrupted QA handoff routes before launch",
+    workspace,
+    rawPrompt: "continue after QA correction",
+    brief: "continue after QA correction",
+  });
+  db.updateThread(directQaHandoff.id, { state: "qa" });
+  db.updateThreadStageOutputs(directQaHandoff.id, {
+    qaRoundsUsed: 1,
+    qaInterruptedRetryRound: 1,
+    qaSuperseded: { at: Date.now(), messages: ["normal messages and Discord must expose real conversation context"] },
+  });
+  const realHandoffSettings = internals.settings;
+  const realHandoffOpenaiKey = internals.openaiApiKey;
+  const realHandoffClaudeCandidate = internals.claudeProviderCandidate;
+  const realHandoffCodexCandidate = internals.codexProviderCandidate;
+  const realHandoffCodexCapActive = internals.codexCapActive;
+  const realHandoffRouteForPick = internals.routeForPick;
+  const realStartResumedImplementor = internals.startResumedImplementor;
+  const realAwaitImplementorCompletion = internals.awaitImplementorCompletion;
+  const realDrainQueuedImplementor = internals.drainQueuedImplementor;
+  const handoffNow = Date.now();
+  internals.settings = () => ({
+    ...realHandoffSettings.call(internals),
+    codexEnabled: true,
+    grokEnabled: false,
+    zaiEnabled: false,
+    spreadUsage: false,
+  });
+  internals.openaiApiKey = () => "sk-test";
+  internals.codexCapActive = () => false;
+  internals.claudeProviderCandidate = () => ({
+    provider: "claude",
+    hasHeadroom: false,
+    fiveHour: 100,
+    fiveHourReset: handoffNow + 28 * 60_000,
+    sevenDay: 89,
+    sevenDayReset: handoffNow + 4 * 24 * 60 * 60_000,
+    weeklySafetyPct: 100,
+    capacityLabel: "Claude personal",
+    capacityWindows: [{ label: "live usage cap", usedPct: 100, resetAt: handoffNow + 28 * 60_000 }],
+  });
+  internals.codexProviderCandidate = () => ({
+    provider: "codex",
+    hasHeadroom: true,
+    fiveHour: 67,
+    fiveHourReset: handoffNow + 28 * 60_000,
+    sevenDay: 33,
+    sevenDayReset: handoffNow + 6 * 24 * 60 * 60_000,
+    weeklySafetyPct: 100,
+    capacityLabel: "Codex general pool",
+  });
+  internals.routeForPick = (_threadId: string, provider: string) => provider;
+  let handoffStartedProvider: string | undefined;
+  internals.startResumedImplementor = async () => {
+    handoffStartedProvider = internals.implementorProvider.get(directQaHandoff.id);
+    return { run: { send: () => {}, stop: async () => {} }, accountId: "openai-codex" };
+  };
+  internals.awaitImplementorCompletion = async () => ({ type: "result", subtype: "success", isError: false, result: "fixed" });
+  internals.drainQueuedImplementor = async (_t: unknown, _e: unknown, _k: unknown, result: unknown) => result;
+  internals.implementorProvider.delete(directQaHandoff.id);
+  const directHandoffResult = await internals.resumeImplementorAfterQaSupersede(
+    directQaHandoff,
+    "xhigh",
+    "FULL KICKOFF",
+    1,
+  );
+  check("the QA-supersede handoff routes before launching an implementor", directHandoffResult.handled === true);
+  check("33% Codex capacity with a near reset is selected immediately", handoffStartedProvider === "codex", String(handoffStartedProvider));
+  check(
+    "the first-chance handoff records the capacity-aware Codex choice",
+    db.listFindings(directQaHandoff.id).some((finding) => finding.summary.includes("Usage-aware routing chose Codex")),
+    JSON.stringify(db.listFindings(directQaHandoff.id).map((finding) => finding.summary)),
+  );
+  check("the first-chance handoff never creates a capacity park", !internals.capParked.has(directQaHandoff.id));
+  check("the owner correction is consumed only after Codex starts", !db.getThreadStageOutputs(directQaHandoff.id).qaSuperseded);
+  internals.settings = realHandoffSettings;
+  internals.openaiApiKey = realHandoffOpenaiKey;
+  internals.claudeProviderCandidate = realHandoffClaudeCandidate;
+  internals.codexProviderCandidate = realHandoffCodexCandidate;
+  internals.codexCapActive = realHandoffCodexCapActive;
+  internals.routeForPick = realHandoffRouteForPick;
+  internals.startResumedImplementor = realStartResumedImplementor;
+  internals.awaitImplementorCompletion = realAwaitImplementorCompletion;
+  internals.drainQueuedImplementor = realDrainQueuedImplementor;
+  internals.implementorProvider.delete(directQaHandoff.id);
+
+  // Defense in depth for the same incident: if a Claude process nevertheless starts and caps, derive
+  // its provider from the concrete run rather than an optional map entry and hand off without parking.
   const directQaRace = db.createThread({
     title: "fe529d83 direct-QA return immediately uses viable Codex",
     workspace,
@@ -403,36 +492,34 @@ try {
   // The old message ignored a ready pool, discarded its current viability timestamp, then advertised a
   // different provider's 28-minute reset as though every compatible pool were capped.
   const realRoleCapacityOptions = internals.roleCapacityOptions;
-  const realNextRoleCapacityAt = internals.nextRoleCapacityAt;
   const messageNow = Date.now();
-  let futureResetConsulted = false;
-  internals.roleCapacityOptions = () => [
-    {
-      provider: "claude",
-      label: "Claude A",
-      hasHeadroom: false,
-      windows: [{ label: "5h", usedPct: 100, resetAt: messageNow + 28 * 60_000 }],
-    },
-    {
-      provider: "codex",
-      label: "Codex general pool",
-      hasHeadroom: true,
-      windows: [
-        { label: "5h", usedPct: 67, resetAt: messageNow + 2 * 60 * 60_000 },
-        { label: "weekly", usedPct: 20, resetAt: messageNow + 5 * 24 * 60 * 60_000, burnWeight: 0.35 },
-      ],
-    },
-  ];
-  internals.nextRoleCapacityAt = () => {
-    futureResetConsulted = true;
-    return messageNow + 28 * 60_000;
+  let capacitySnapshotReads = 0;
+  internals.roleCapacityOptions = () => {
+    capacitySnapshotReads++;
+    return [
+      {
+        provider: "claude",
+        label: "Claude A",
+        hasHeadroom: false,
+        windows: [{ label: "5h", usedPct: 100, resetAt: messageNow + 28 * 60_000 }],
+      },
+      {
+        provider: "codex",
+        label: "Codex general pool",
+        hasHeadroom: true,
+        windows: [
+          { label: "5h", usedPct: 67, resetAt: messageNow + 28 * 60_000 },
+          { label: "weekly", usedPct: 20, resetAt: messageNow + 5 * 24 * 60 * 60_000, burnWeight: 0.35 },
+        ],
+      },
+    ];
   };
   const readyMessage = internals.capParkMessage(directQaRace.id, "implementor");
   check("a park message reports the viable Codex pool as ready now", readyMessage.includes("Codex general pool has viable capacity now"), readyMessage);
   check("a ready pool suppresses the misleading all-capacity-capped claim", !readyMessage.includes("all compatible capacity is currently capped"), readyMessage);
-  check("a ready pool suppresses an irrelevant future reset estimate", !futureResetConsulted && !readyMessage.includes("Next viable capacity is expected"), readyMessage);
+  check("a ready pool suppresses an irrelevant future reset estimate", !readyMessage.includes("Next viable capacity is expected"), readyMessage);
+  check("park wording and reset timing use one immutable capacity snapshot", capacitySnapshotReads === 1, String(capacitySnapshotReads));
   internals.roleCapacityOptions = realRoleCapacityOptions;
-  internals.nextRoleCapacityAt = realNextRoleCapacityAt;
 
   // A capacity park created during final unwind used to wait for CAP_RETRY_MS even after its slot became
   // free. Queue fairness remains first, then the same supervisor scan runs synchronously.
