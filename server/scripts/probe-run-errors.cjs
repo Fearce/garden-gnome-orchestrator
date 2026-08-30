@@ -89,6 +89,12 @@ const STRUCTURED_RE = /structured-output retries|error_max_structured_output_ret
 // orchestrator stamps this text itself (SILENT_RUN_ERROR in threadManager.ts) precisely so the row shows up
 // here rather than as a misleading `done` — keep the two in sync.
 const SILENT_RE = /produced no output — the run returned without ever reaching the model/i;
+// The orchestrator's own stamp for a run stopped by the operator's active-task hard deadline
+// (ACTIVE_DEADLINE_RUN_REASON in threadManager.ts) — same contract as SILENT_RE: the text exists so the
+// row lands here as the deliberate stop it was, not as a REAL failure needing a human. `state` is
+// 'interrupted' on these rows, so without this pattern the state fallback would also misfile them as
+// restart casualties. Keep the two in sync.
+const DEADLINE_RE = /stopped by the active-task hard deadline/i;
 const OPAQUE_RE = /^run failed\.?$/i;
 
 // Ordered so the verdict reads worst-first; `human` decides whether a class needs anyone's attention.
@@ -98,6 +104,7 @@ const CLASSES = [
   { key: "structured", label: "structured-output retries exhausted — the agent never matched the schema", human: true },
   { key: "cutoff", label: "turn-ceiling cutoff — involuntary, warm-resumed on the implementor and QA paths", human: false },
   { key: "silent", label: "resumed session returned empty — retried on a fresh session", human: false },
+  { key: "deadline", label: "stopped by the operator's active-task hard deadline — deliberate park, session preserved", human: false },
   { key: "cap", label: "usage cap — account/backend failover expected", human: false },
   { key: "transient", label: "transient provider/transport error — retried automatically", human: false },
   { key: "restart", label: "killed by a server restart — auto-resumed on boot", human: false },
@@ -116,6 +123,7 @@ function classifyRun(run) {
   if (TRANSIENT_RE.test(err)) return "transient";
   if (CUTOFF_RE.test(err)) return "cutoff";
   if (SILENT_RE.test(err)) return "silent";
+  if (DEADLINE_RE.test(err)) return "deadline";
   if (STRUCTURED_RE.test(err)) return "structured";
   // Any other reason the row actually recorded outranks the state stamp — an interrupted run that says WHY
   // it died died of that, not of the bounce.

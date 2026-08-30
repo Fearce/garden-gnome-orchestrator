@@ -14,7 +14,7 @@ const is = (expected, over, why) => assert.equal(classifyRun(run(over)), expecte
 // Every key the classifier can return must exist in CLASSES, or the verdict silently drops the bucket.
 {
   const keys = new Set(CLASSES.map((c) => c.key));
-  for (const k of ["real", "unclassifiable", "structured", "silent", "cutoff", "cap", "transient", "restart"]) {
+  for (const k of ["real", "unclassifiable", "structured", "silent", "deadline", "cutoff", "cap", "transient", "restart"]) {
     assert.ok(keys.has(k), `CLASSES is missing "${k}"`);
   }
 }
@@ -32,6 +32,18 @@ is(
 );
 is("real", { state: "interrupted", error: "Claude Code process exited with code 1073807364" }, "external tree-kill");
 is("cap", { state: "interrupted", error: "You've hit your session limit · resets 5:30pm" }, "a preserved cap text still wins");
+
+// The operator's active-task hard deadline (ACTIVE_DEADLINE_RUN_REASON in threadManager.ts). The row is
+// stamped 'interrupted' by expireActiveDeadline itself, so without the text pattern the state fallback
+// would misfile it as a restart casualty — and the reason-bearing fallback before it as a REAL failure.
+// Both directions matter: a deliberate stop must not alarm the sweep, and a run that merely MENTIONS a
+// deadline while actually crashing must stay visible.
+is(
+  "deadline",
+  { state: "interrupted", error: "Stopped by the active-task hard deadline; the saved session and partial work were preserved." },
+  "the orchestrator's own deadline stamp is a deliberate park, not a restart casualty or a REAL failure",
+);
+is("real", { state: "error", error: "spawn claude ENOENT while the task had a hard deadline set" }, "a crash that merely mentions a deadline stays a REAL failure");
 
 // Usage caps. The bare, qualifier-less form is a Fable model-pool notice; production catches it via the
 // rate_limit_event rather than this text, and 53 such rows were initially misread as REAL failures.

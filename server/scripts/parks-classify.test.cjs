@@ -29,6 +29,25 @@ assert.equal(
   "a cap park carrying the generic review tail is still a cap park — the supervisor owns it, not Kevin",
 );
 
+// --- the operator hard-deadline park: a deliberate stop, parked via setState not settleReview -------
+// expireActiveDeadline APPENDS whatever the task was previously reporting, so the ordering check below
+// is the load-bearing one: a deadline stop interrupting a QA park must not inherit the QA park's class.
+assert.equal(
+  cls("⏰ Hard deadline reached at 30/08/2026, 23.35.00. All live agents were stopped and automatic dispatch/resume is blocked. The run trail, saved session, handoff, partial files and commits are preserved. Extend or clear the deadline, then click Resume to continue deliberately."),
+  "deadline",
+  "the operator's hard stop is its own by-design class",
+);
+assert.equal(
+  cls("⏰ Hard deadline reached at 30/08/2026, 23.35.00. All live agents were stopped and automatic dispatch/resume is blocked.\n\nThe task was previously reporting: QA found unresolved issues it could not safely fix - needs your review."),
+  "deadline",
+  "the deadline marker outranks the prior park's verdict tail appended beneath it",
+);
+assert.equal(
+  recoveryLineFor("deadline", "⏰ Hard deadline reached at 30/08/2026, 23.35.00.", null),
+  null,
+  "a deliberate stop gets no stale-recovery flag — nothing was supposed to resume it",
+);
+
 // --- stalled: the pipeline stopped mid-verification --------------------------------------------------
 for (const err of [
   "QA could not complete — needs your review.",
@@ -221,6 +240,7 @@ assert.equal(ABANDON_CLASSES.at(-1).key, "otherFailure", "the catch-all must sta
 const tm = fs.readFileSync(path.resolve(__dirname, "..", "src", "orchestrator", "threadManager.ts"), "utf8");
 const LITERALS = [
   "⏳ Auto-resume pending",
+  "⏰ Hard deadline reached",
   "QA could not complete",
   "Reader could not complete",
   "disposition was lost to a restart",

@@ -81,6 +81,17 @@ const PARK_CLASSES = [
     action: "the cap supervisor resumes it within ~2m of any backend freeing up (probe:accounts shows the ladder)",
   },
   {
+    // The operator's own hard stop (threadManager's ACTIVE_DEADLINE_PARK_PREFIX), parked via setState
+    // rather than settleReview. Must outrank stalled/verdict because expireActiveDeadline APPENDS the
+    // task's previous error to the park text ("The task was previously reporting: … needs your review") —
+    // first-match-wins would otherwise file a deliberate stop as the stale park it interrupted.
+    key: "deadline",
+    human: true,
+    title: "stopped by the operator's hard deadline — by design",
+    match: (err) => err.includes("⏰ Hard deadline reached"),
+    action: "deliberate stop: extend/clear the clock, then click Resume — nothing automatic will touch it",
+  },
+  {
     key: "stalled",
     human: true,
     title: "the pipeline could not finish verifying — needs a nudge",
