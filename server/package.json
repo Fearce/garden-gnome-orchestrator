@@ -60,6 +60,7 @@
     "test:cap-flag": "tsx src/tests/capFlag.test.ts",
     "test:crashlog-scan": "node scripts/crashlog-scan.test.cjs",
     "test:task-timeline": "node scripts/task-timeline.test.cjs",
+    "test:task-deadline-reading": "node scripts/task-deadline-reading.test.cjs",
     "test:process-build": "node scripts/process-vs-dist.test.cjs",
     "test:background-startup": "node scripts/background-startup.test.cjs",
     "test:usage-ping": "tsx src/tests/usagePing.test.ts",

@@ -142,6 +142,10 @@ Its control-flow timeline joins run starts/ends (including account + `cap_flagge
 findings, owner/supervisor system messages, and matching `crash.log` boot/reconcile records on one clock.
 Every event shows system-local time beside explicit UTC; do not hand-convert SQLite epochs when the owner
 quotes a local time. Add `--prompt` to print the exact saved routing prompt when provider intent is disputed.
+The thread header also prints `activeTaskDeadline`: its persisted local + UTC instant, countdown, and whether
+the server sees it armed, expired/parked, extended-but-still-parked, cleared-but-still-parked, or overdue
+without a durable park. Read that before reaching for raw SQLite; changing or clearing an expired deadline
+never means the task resumed — only a deliberate Resume removes the park.
 Read its QA-loop check as written: the budget is the durable `qaRoundsUsed` vs `maxQaRounds`, NOT the QA
 run count — a turn-ceiling continuation, an empty-run retry and a cap failover each spend a *launch* while
 recovering one *round*, so launches legitimately exceed the cap. And when `qaAppliesFixes` is on (it is, in

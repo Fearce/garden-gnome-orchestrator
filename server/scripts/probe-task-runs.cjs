@@ -8,6 +8,7 @@
 //   npm run probe:task-runs --prefix server -- 66695c82
 //
 // What it shows:
+//   • the active-task hard deadline in local + UTC time, with its countdown and current enforcement state.
 //   • the thread's state/error, then every agent_run in order (role · model · account · state · cost ·
 //     turns · duration · error) — the run trail CLAUDE.md's "Debugging a failed task" section names.
 //   • one control-flow timeline joining runs, findings (including capacity reservations), owner/supervisor
@@ -30,6 +31,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 const { qaLoopReading, roundsCap } = require("./qa-loop-check.cjs");
+const { activeDeadlineReading } = require("./task-deadline-reading.cjs");
 const { collectTaskTimeline, renderTaskTimeline, utcStamp } = require("./task-timeline.cjs");
 
 const argv = process.argv.slice(2);
@@ -104,6 +106,7 @@ console.log({
   effortOverride: thread.effort_override,
   brief: short(thread.brief, 300),
   error: short(thread.error, 120),
+  activeTaskDeadline: activeDeadlineReading(thread, { timeZone }),
 });
 
 if (showPrompt) {
