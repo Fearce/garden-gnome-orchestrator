@@ -105,6 +105,7 @@ async function desktopPass(browser, errors) {
   await page.click('[data-deadline-minutes="180"]');
   const setAt = await waitForDeadline((value) => value >= before + 179 * 60_000 && value <= Date.now() + 181 * 60_000);
   check("3h preset round-trips through the server", setAt >= before + 179 * 60_000, String(setAt));
+  await page.waitForSelector(`[data-thread-id="${TASK_ID}"] .deadline-badge`, { timeout: 10_000 });
   check("the card gains a live hard-deadline badge", !!(await page.$(`[data-thread-id="${TASK_ID}"] .deadline-badge`)));
 
   await page.click(".head-toggle");
@@ -124,6 +125,7 @@ async function desktopPass(browser, errors) {
   check("editing replaces the persisted deadline", edited > setAt && edited >= editBefore + 359 * 60_000, `${setAt} -> ${edited}`);
   await page.click(".deadline-clear");
   check("clear round-trips to NULL", (await waitForDeadline((value) => value == null)) == null, String(readDeadline()));
+  await page.waitForSelector(`[data-thread-id="${TASK_ID}"] .deadline-badge`, { state: "detached", timeout: 10_000 });
   check("clear removes the card badge", (await page.$$(`[data-thread-id="${TASK_ID}"] .deadline-badge`)).length === 0);
   await context.close();
 }
@@ -138,6 +140,7 @@ async function mobilePass(browser, errors) {
   const media = await page.evaluate(() => ({ compact: matchMedia("(max-width: 899.98px)").matches, coarse: matchMedia("(pointer: coarse)").matches }));
   check("the pass really uses compact touch rules", media.compact && media.coarse, JSON.stringify(media));
   check("phone detail opens in collapsed-header reading mode", (await page.$$(".deadline-panel")).length === 0);
+  await page.waitForSelector(".deliverables", { timeout: 10_000 });
   check("deliverables start as one collapsed disclosure", !!(await page.$(".deliverables.collapsed")) && (await page.$$(".deliverable-strip")).length === 0);
   check("message composer starts folded", !!(await page.$(".mobile-inject-toggle")) && !(await page.isVisible(".inject-bar")));
 
