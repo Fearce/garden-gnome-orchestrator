@@ -697,7 +697,9 @@ export class CodexAgentRun implements AgentRunLike {
     switch (item.type) {
       case "agent_message":
         if (phase === "completed" && item.text) {
-          const bridge = extractCliBridgeMessages(item.text);
+          // A Codex item is one completed AgentMessage, not Grok's delimiter-less concatenation of
+          // model turns. Disable the glued-turn guess so punctuation/Unicode/Markdown remain exact data.
+          const bridge = extractCliBridgeMessages(item.text, { detectGluedTurns: false });
           for (const post of bridge.posts) {
             try {
               this.cfg.onOfficeChat?.(post.scope, post.body);

@@ -1,4 +1,4 @@
-import { CHAT_MAX_CHARS, OFFICE_ROOM, PRESENCE_MAX_AGENTS, RELAY_PROTOCOL, relayRepoRoom } from "./protocol.js";
+import { CHAT_MAX_CHARS, CHAT_MAX_CHUNKS, OFFICE_ROOM, PRESENCE_MAX_AGENTS, RELAY_PROTOCOL, relayRepoRoom } from "./protocol.js";
 import type { ClientFrame, RelayAgent, RelayChat, RelayPresentAgent, ServerFrame } from "./protocol.js";
 
 /** One live connection, as the routing core sees it. The transport (a real WebSocket, or a fake in the
@@ -44,6 +44,17 @@ interface PeerState {
   since: number;
 }
 
+type ChatFrame = Extract<ClientFrame, { t: "chat" }>;
+type CleanChat = Pick<ChatFrame, "room" | "body" | "senderName" | "role"> & {
+  rooms: string[];
+  repoLabel: string | null;
+};
+
+interface PendingChat {
+  clean: Omit<CleanChat, "body">;
+  chunks: Array<string | undefined>;
+}
+
 /** A repo room key is agent-supplied, so it is validated rather than trusted: the identity normalizer
  *  only ever produces lowercase host/owner/repo (or `name:<leaf>`), and anything else is a client bug or
  *  an attempt to fan a message into a room nobody would look at. */
@@ -62,6 +73,10 @@ const REPO_KEY_RE = /^(?:name:[a-z0-9][a-z0-9._+-]*|[a-z0-9][a-z0-9._+\-/@]*\/[a
 /** A checkout with more remotes than this is pathological, and every alias costs a room membership and a
  *  history fan-out — so the list is bounded here rather than trusted. */
 const MAX_REPO_ALIASES = 8;
+/** Per connection, an abusive client may not reserve unbounded partial-message buffers. */
+const MAX_PENDING_CHAT = 32;
+/** Completed ids make a duplicate/replayed final chunk idempotent; insertion order bounds the memory. */
+const COMPLETED_CHAT_IDS = 2048;
 
 const clip = (s: unknown, n: number): string => (typeof s === "string" ? s.replace(/\s+$/, "").slice(0, n) : "");
 
@@ -104,6 +119,8 @@ const cleanKeys = (raw: unknown, exclude: string): string[] => {
  */
 export class RelayCore {
   private readonly peers = new Map<string, PeerState>();
+  private readonly pendingChat = new Map<string, PendingChat>();
+  private readonly completedChat = new Set<string>();
   private readonly history: RoomHistory;
   private readonly now: () => number;
   private readonly newId: () => string;
@@ -119,7 +136,10 @@ export class RelayCore {
    *  its own close) replaces the older one rather than doubling that instance in the roster. */
   attach(peer: RelayPeer): void {
     for (const [connId, st] of this.peers) {
-      if (st.peer.instanceId === peer.instanceId && connId !== peer.connId) this.peers.delete(connId);
+      if (st.peer.instanceId === peer.instanceId && connId !== peer.connId) {
+        this.peers.delete(connId);
+        this.clearPendingChat(st.peer.instanceId);
+      }
     }
     this.peers.set(peer.connId, { peer, agents: [], rooms: new Set([OFFICE_ROOM]), since: this.now() });
     peer.send({
@@ -134,7 +154,11 @@ export class RelayCore {
   }
 
   detach(connId: string): void {
-    if (this.peers.delete(connId)) this.broadcastPresence();
+    const st = this.peers.get(connId);
+    if (this.peers.delete(connId)) {
+      if (st) this.clearPendingChat(st.peer.instanceId);
+      this.broadcastPresence();
+    }
   }
 
   /** Route one inbound frame. Returns an error string when the frame was rejected (the caller logs it and
@@ -193,25 +217,26 @@ export class RelayCore {
     if (changed) this.broadcastPresence();
   }
 
-  private applyChat(st: PeerState, frame: Extract<ClientFrame, { t: "chat" }>): string | null {
+  private applyChat(st: PeerState, frame: ChatFrame): string | null {
     const room = clip(frame.room, 220);
     if (room !== OFFICE_ROOM && !REPO_ROOM_RE.test(room)) return `bad room "${room}"`;
-    const body = clip(frame.body, CHAT_MAX_CHARS).trim();
-    if (!body) return "empty message";
+    const accepted = this.acceptChatBody(st, frame, room);
+    if (typeof accepted === "string") return accepted;
+    if (!accepted) return null; // a valid chunked message that is not complete yet
     const msg: RelayChat = {
       id: this.newId(),
-      room,
-      repoLabel: clip(frame.repoLabel, 120) || null,
-      body,
-      senderName: clip(frame.senderName, 40) || "agent",
-      role: clip(frame.role, 24) || "implementor",
+      room: accepted.room,
+      repoLabel: accepted.repoLabel,
+      body: accepted.body,
+      senderName: accepted.senderName,
+      role: accepted.role,
       instanceId: st.peer.instanceId,
       instanceName: st.peer.instanceName,
       at: this.now(),
     };
     // The rooms this one line belongs to: the sender's own, plus any it declared as the same repository.
     // The general office never fans out — it is one room by definition.
-    const group = room === OFFICE_ROOM ? [room] : [room, ...cleanRooms(frame.rooms, room)];
+    const group = accepted.room === OFFICE_ROOM ? [accepted.room] : [accepted.room, ...accepted.rooms];
     // Filed under every room in the group, so a peer that only knows the OTHER name still gets the
     // backlog when it enters. The copies share one id, which is what the receiver's durable dedup keys on.
     for (const r of group) this.history.push(r, { ...msg, room: r });
@@ -223,6 +248,80 @@ export class RelayCore {
       if (seenAs) other.peer.send({ t: "chat", msg: { ...msg, room: seenAs } });
     }
     return null;
+  }
+
+  /** Validate one client frame and, for a long message, reassemble every bounded chunk before exposing
+   * anything to history or another peer. The old relay clipped at 2,000 characters here; that made the
+   * remote office silently disagree with the sender's durable local row. Oversized legacy frames now
+   * fail loudly, while current clients send optional id/index/count metadata and produce one exact row. */
+  private acceptChatBody(st: PeerState, frame: ChatFrame, room: string): CleanChat | string | null {
+    if (typeof frame.body !== "string") return "message body must be text";
+    const meta = [frame.messageId, frame.chunkIndex, frame.chunkCount];
+    const hasChunkMeta = meta.some((v) => v !== undefined);
+    const clean = {
+      room,
+      rooms: room === OFFICE_ROOM ? [] : cleanRooms(frame.rooms, room),
+      senderName: clip(frame.senderName, 40) || "agent",
+      role: clip(frame.role, 24) || "implementor",
+      repoLabel: clip(frame.repoLabel, 120) || null,
+    };
+
+    if (!hasChunkMeta) {
+      if (frame.body.length > CHAT_MAX_CHARS) {
+        return `message exceeds ${CHAT_MAX_CHARS} characters; send it as bounded chunks`;
+      }
+      const body = frame.body.trim();
+      return body ? { ...clean, body } : "empty message";
+    }
+
+    if (meta.some((v) => v === undefined)) return "messageId, chunkIndex and chunkCount must be sent together";
+    const messageId = frame.messageId!;
+    const chunkIndex = frame.chunkIndex!;
+    const chunkCount = frame.chunkCount!;
+    if (!/^[A-Za-z0-9._:-]{1,100}$/.test(messageId)) return "bad chunk messageId";
+    if (!Number.isInteger(chunkCount) || chunkCount < 2 || chunkCount > CHAT_MAX_CHUNKS) return "bad chunkCount";
+    if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= chunkCount) return "bad chunkIndex";
+    if (!frame.body || frame.body.length > CHAT_MAX_CHARS) return `chat chunks must contain 1-${CHAT_MAX_CHARS} characters`;
+
+    const key = `${st.peer.instanceId}:${messageId}`;
+    if (this.completedChat.has(key)) return null;
+    let pending = this.pendingChat.get(key);
+    if (!pending) {
+      const prefix = `${st.peer.instanceId}:`;
+      const held = [...this.pendingChat.keys()].filter((k) => k.startsWith(prefix)).length;
+      if (held >= MAX_PENDING_CHAT) return `too many incomplete chat messages (max ${MAX_PENDING_CHAT})`;
+      pending = { clean, chunks: new Array<string | undefined>(chunkCount) };
+      this.pendingChat.set(key, pending);
+    } else {
+      if (pending.chunks.length !== chunkCount || JSON.stringify(pending.clean) !== JSON.stringify(clean)) {
+        return "chunk metadata changed within one message";
+      }
+    }
+
+    const prior = pending.chunks[chunkIndex];
+    if (prior !== undefined && prior !== frame.body) return "chunk payload changed on retry";
+    pending.chunks[chunkIndex] = frame.body;
+    // `new Array(n)` is sparse: Array#some/every skip holes, so checking `part === undefined` with
+    // either would falsely call an out-of-order 2/3 message complete. Count populated indices instead.
+    if (pending.chunks.filter((part) => part !== undefined).length !== pending.chunks.length) return null;
+
+    this.pendingChat.delete(key);
+    this.rememberCompletedChat(key);
+    const body = pending.chunks.join("");
+    if (!body.trim()) return "empty message";
+    return { ...pending.clean, body };
+  }
+
+  private rememberCompletedChat(key: string): void {
+    this.completedChat.add(key);
+    if (this.completedChat.size <= COMPLETED_CHAT_IDS) return;
+    const oldest = this.completedChat.values().next().value as string | undefined;
+    if (oldest) this.completedChat.delete(oldest);
+  }
+
+  private clearPendingChat(instanceId: string): void {
+    const prefix = `${instanceId}:`;
+    for (const key of this.pendingChat.keys()) if (key.startsWith(prefix)) this.pendingChat.delete(key);
   }
 
   /** Every agent every connected instance is reporting, stamped with its instance. The status pages want

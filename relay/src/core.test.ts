@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { MemoryHistory, RelayCore } from "./core.js";
 import type { RelayPeer } from "./core.js";
-import { OFFICE_ROOM, ROOM_HISTORY, relayRepoRoom } from "./protocol.js";
+import { CHAT_MAX_CHARS, OFFICE_ROOM, ROOM_HISTORY, relayRepoRoom } from "./protocol.js";
 import type { RelayAgent, ServerFrame } from "./protocol.js";
 
 /** A connected instance that records everything the core sends it. */
@@ -256,7 +256,9 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
   assert.equal(core.onFrame(kevin.connId, { t: "chat", room: relayRepoRoom("github.com/a/b"), body: "hi", senderName: "Rune", role: "implementor" }), null);
 }
 
-// Bodies are clipped and whitespace-only ones refused, so one client can't spam another's session.
+// Oversized legacy bodies are refused instead of silently clipped. Current clients split them into
+// bounded frames; the relay withholds every fragment, accepts out-of-order delivery idempotently, then
+// routes ONE exact logical message (Unicode, Markdown and newlines included).
 {
   const core = newCore();
   const kevin = fakePeer("i-kevin");
@@ -265,10 +267,33 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
   core.attach(mikkel);
   mikkel.drain();
   assert.ok(core.onFrame(kevin.connId, { t: "chat", room: OFFICE_ROOM, body: "   \n  ", senderName: "Rune", role: "implementor" }));
-  core.onFrame(kevin.connId, { t: "chat", room: OFFICE_ROOM, body: "z".repeat(9000), senderName: "Rune", role: "implementor" });
+  assert.match(
+    core.onFrame(kevin.connId, { t: "chat", room: OFFICE_ROOM, body: "z".repeat(CHAT_MAX_CHARS + 1), senderName: "Rune", role: "implementor" }) ?? "",
+    /bounded chunks/,
+  );
+  assert.equal(chats(mikkel.drain()).length, 0, "a rejected frame must not publish a clipped prefix");
+
+  const body = `First — Ångström 東京 \`src/search.py\`\n${"x".repeat(4_300)}\n- final ✅`;
+  const parts = [body.slice(0, 1_900), body.slice(1_900, 3_800), body.slice(3_800)];
+  const frame = (chunkIndex: number) => ({
+    t: "chat" as const,
+    room: OFFICE_ROOM,
+    body: parts[chunkIndex]!,
+    senderName: "Rune",
+    role: "implementor",
+    messageId: "long-sol-message",
+    chunkIndex,
+    chunkCount: parts.length,
+  });
+  assert.equal(core.onFrame(kevin.connId, frame(1)), null);
+  assert.equal(core.onFrame(kevin.connId, frame(0)), null);
+  assert.equal(chats(mikkel.drain()).length, 0, "incomplete chunks never become orphan chat rows");
+  assert.equal(core.onFrame(kevin.connId, frame(2)), null);
   const got = chats(mikkel.drain());
   assert.equal(got.length, 1);
-  assert.equal(got[0]!.t === "chat" && got[0]!.msg.body.length, 2000);
+  assert.equal(got[0]!.t === "chat" && got[0]!.msg.body, body);
+  assert.equal(core.onFrame(kevin.connId, frame(2)), null, "a repeated final chunk is idempotent");
+  assert.equal(chats(mikkel.drain()).length, 0, "a repeated final chunk cannot duplicate the message");
 }
 
 // An agent entry with no repo identity is dropped rather than creating an unroutable room.

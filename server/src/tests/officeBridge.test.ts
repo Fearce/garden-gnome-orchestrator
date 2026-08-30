@@ -10,7 +10,6 @@ import {
   extractDeliverables,
   extractOfficeChat,
   extractOperatorNotes,
-  MAX_OFFICE_BODY,
 } from "../agents/officeBridge.js";
 
 // Canonical standalone line (Codex agent_message shape).
@@ -61,6 +60,18 @@ import {
   assert.ok(!visible.includes("`"));
 }
 
+// The wrapper itself cannot make Markdown-like content lossy: only the final backtick on the bridge
+// line is outer syntax, while paired inline-code delimiters remain in the exact stored body.
+{
+  const body = "reviewing `src/search.py` and `tests/test_search.py` — exact ✅";
+  const { visible, posts } = extractOfficeChat(`Before.\n\`OFFICE[team]: ${body}\`\nAfter.`, {
+    detectGluedTurns: false,
+  });
+  assert.deepEqual(posts, [{ scope: "project", body }]);
+  assert.match(visible, /Before\./);
+  assert.match(visible, /After\./);
+}
+
 // Multiple markers in one blob.
 {
   const { posts } = extractOfficeChat(
@@ -78,11 +89,52 @@ import {
   assert.deepEqual(posts, [{ scope: "project", body: "hello world" }]);
 }
 
-// Body capped at MAX_OFFICE_BODY.
+// REAL GPT Sol/Hilda failure from the supplied screenshot (2026-08-30): the provider emitted this entire
+// 369-character AgentMessage, but the bridge silently kept 277 characters and stranded the remainder
+// in the task transcript. Office storage has no such 280-character bound, so extraction must be exact.
 {
-  const long = "x".repeat(600);
-  const { posts } = extractOfficeChat(`OFFICE[team]: ${long}`);
-  assert.ok(posts[0]!.body.length <= MAX_OFFICE_BODY);
+  const body =
+    "Do both, but serialize them: give deliberate auto-play/replay sessions priority, triage and fix reproducible " +
+    "Bobfish Live reports between games, and let the new idle manager suspend training whenever Hearthstone or real " +
+    "input is active and resume it after 10 idle minutes. This preserves fresh live evidence without sacrificing the " +
+    "many hours when the PC is genuinely unused.";
+  const { visible, posts } = extractOfficeChat(`OFFICE[team]: ${body}`, { detectGluedTurns: false });
+  assert.deepEqual(posts, [{ scope: "project", body }]);
+  assert.equal(visible, "");
+  assert.ok(body.length > 280, "fixture must cross the deleted production cap");
+}
+
+// REAL GPT Sol failure from the same screenshot: inline Markdown backticks are message data. Only a
+// marker that OPENED with a wrapper may treat a backtick as its closing delimiter.
+{
+  const body =
+    "I’m resuming the search idle-sale improvement in `src/bobfish/search.py`, `src/bobfish/train.py`, " +
+    "`tools/head_to_head.py`, `tests/test_search.py`, and its evidence/report only. I will avoid Bobfish Live queue " +
+    "files and re-check before commit.";
+  const { posts } = extractOfficeChat(`Status before the claim.\n\nOFFICE[team]: ${body}`, { detectGluedTurns: false });
+  assert.deepEqual(posts, [{ scope: "project", body }]);
+}
+
+// Arbitrarily long content is retained, including Unicode and punctuation. Transport trust boundaries
+// chunk later; the semantic parser must never manufacture a truncation boundary.
+{
+  const body = `Ångström → 東京 — ${"x".repeat(4_500)} ✅ end.`;
+  const { posts } = extractOfficeChat(`OFFICE[office]: ${body}`, { detectGluedTurns: false });
+  assert.deepEqual(posts, [{ scope: "general", body }]);
+}
+
+// Multiline Office posts use indented continuation lines. The bridge removes only its two-space wire
+// indent, preserving newlines, Markdown-like punctuation, Unicode and an unindented following paragraph.
+{
+  const body = "First line — exact.\nSecond has `code`, [link](https://example.test/a?b=1), and 東京.\n- final bullet ✅";
+  const raw =
+    "Before.\nOFFICE[team]: First line — exact.\n" +
+    "  Second has `code`, [link](https://example.test/a?b=1), and 東京.\n" +
+    "  - final bullet ✅\nAfter.";
+  const { visible, posts } = extractOfficeChat(raw, { detectGluedTurns: false });
+  assert.deepEqual(posts, [{ scope: "project", body }]);
+  assert.match(visible, /Before\./);
+  assert.match(visible, /After\./);
 }
 
 // Clean pass-through when no markers.
@@ -185,6 +237,31 @@ import {
   assert.match(fin.posts[0]!.body, /claiming officeBridge/);
 }
 
+// A multiline body may be divided at arbitrary provider chunk boundaries — including between the two
+// indentation spaces. No prefix posts early, and the one final row is byte-exact and ordered.
+{
+  let buffered = "OFFICE[team]: First streamed line — Ångström.\n ";
+  let step = extractOfficeChat(buffered, { openEnded: false, detectGluedTurns: false });
+  assert.deepEqual(step.posts, []);
+  buffered = step.visible + " Second chunk has `src/search.py` and 東京";
+  step = extractOfficeChat(buffered, { openEnded: false, detectGluedTurns: false });
+  assert.deepEqual(step.posts, []);
+  buffered = step.visible + ".\n  - final ✅";
+  step = extractOfficeChat(buffered, { openEnded: false, detectGluedTurns: false });
+  assert.deepEqual(step.posts, []);
+  const done = extractOfficeChat(step.visible + "\nVisible narration.", {
+    openEnded: false,
+    detectGluedTurns: false,
+  });
+  assert.deepEqual(done.posts, [
+    {
+      scope: "project",
+      body: "First streamed line — Ångström.\nSecond chunk has `src/search.py` and 東京.\n- final ✅",
+    },
+  ]);
+  assert.match(done.visible, /Visible narration\./);
+}
+
 // Junk bodies (literal \n escape, punctuation-only) never post, even when terminated.
 {
   const junk = extractOfficeChat("Before.\nOFFICE[team]: \\n\nAfter.", { openEnded: true });
@@ -197,7 +274,11 @@ import {
 // endsWithOpenOfficeMarker drives whether Grok appends a segment-separator newline.
 {
   assert.equal(endsWithOpenOfficeMarker("OFFICE[team]: claimi"), true);
-  assert.equal(endsWithOpenOfficeMarker("OFFICE[team]: claiming foo.ts\n"), false);
+  assert.equal(
+    endsWithOpenOfficeMarker("OFFICE[team]: claiming foo.ts\n"),
+    true,
+    "a live stream ending exactly at newline waits to see whether an indented continuation follows",
+  );
   assert.equal(endsWithOpenOfficeMarker("Just narration, no marker."), false);
   assert.equal(endsWithOpenOfficeMarker("Done.\nOFFICE[team]: claiming a\nMore text."), false);
 }

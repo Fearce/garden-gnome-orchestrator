@@ -28,6 +28,12 @@ const JOIN_CODE = "lab-join-code-not-a-real-secret";
 const NAV_TIMEOUT = 45_000; // this box runs near 100% CPU; a cold goto has measured 28s
 const LAB_REPO = "C:/lab/card-marker"; // a workspace the seeded cross-machine room belongs to
 const LAB_REPO_LEAF = "card-marker";
+const LONG_SOL_BODY =
+  "Do both, but serialize them: give deliberate auto-play/replay sessions priority, triage and fix reproducible " +
+  "Bobfish Live reports between games, and let the idle manager suspend training whenever Hearthstone or real input " +
+  "is active and resume it after 10 idle minutes. This preserves fresh evidence without sacrificing unused hours.\n\n" +
+  "Files: `src/bobfish/search.py`, `tests/test_search.py` — Ångström / 東京 / ✅\n" +
+  `Payload beyond the old bridge and relay bounds: ${"lossless-".repeat(560)}\nEND-OF-SOL-MESSAGE`;
 
 /** Boot the relay straight from `relay/src` with the server's own tsx — no build step, and the relay
  *  has exactly one dependency, so there is nothing else to install. */
@@ -37,7 +43,14 @@ async function bootRelay(dataDir) {
     shell: process.platform === "win32",
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
-    env: { ...process.env, PORT: String(RELAY_PORT), DATA_DIR: dataDir, JOIN_CODE, ADMIN_TOKEN: "lab-admin", OFFICE_NAME: "Lab Office" },
+    env: {
+      ...process.env,
+      PORT: String(RELAY_PORT),
+      DATA_DIR: dataDir,
+      JOIN_CODE,
+      ADMIN_TOKEN: "lab-admin-token-not-production",
+      OFFICE_NAME: "Lab Office",
+    },
   });
   const log = fs.createWriteStream(path.join(dataDir, "relay.log"));
   child.stdout.pipe(log);
@@ -93,6 +106,11 @@ function seedRemoteConversation(dataDir, workspace) {
     body: "I'm holding exporter.ts and its tests — leave those to me.",
     senderName: "Sif @ Mikkel's laptop", remoteInstance: "Mikkel's laptop", createdAt: at + 1000,
   });
+  add.run({
+    id: "lab-long-sol", room, workspace, role: "implementor", kind: "chat",
+    body: LONG_SOL_BODY,
+    senderName: "Sol @ Mikkel's laptop", remoteInstance: "Mikkel's laptop", createdAt: at + 2000,
+  });
   db.close();
   return room;
 }
@@ -116,6 +134,14 @@ async function waitForKv(dataDir, key, want, timeoutMs = 20_000) {
 
 async function openOfficeSettings(browser) {
   const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
+  // The rendered copy affordance is the strongest assertion that the component received the COMPLETE
+  // raw body (not merely that a visible prefix happened to include our first sentinel).
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text) => { window.__officeCopied = text; } },
+    });
+  });
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   await page.goto(`${BASE}/`, { timeout: NAV_TIMEOUT });
   // Wait for the socket's `hello`, not for the shell: the whole office panel renders neutral "off"
@@ -207,7 +233,48 @@ async function main() {
       await page.waitForSelector(".office-msg", { timeout: 20_000 });
       check("…and opening it shows the remote agent's line", (await page.locator(".office-msgs").innerText()).includes("holding exporter.ts"));
       check("…attributed to the agent AND its machine", (await page.locator(".office-msg-role").first().innerText()).includes("Mikkel's laptop"));
-      check("…marked as having crossed the internet", (await page.locator(".office-msg.remote .office-msg-remote").count()) === 1);
+      check("…marked as having crossed the internet", (await page.locator(".office-msg.remote .office-msg-remote").count()) === 2);
+
+      const longMessage = page.locator('[data-message-id="lab-long-sol"]');
+      await longMessage.waitFor({ state: "visible", timeout: 20_000 });
+      check("the complete long Sol message renders through its final sentinel", (await longMessage.innerText()).includes("END-OF-SOL-MESSAGE"));
+      check("…with multiline Unicode and Markdown content", (await longMessage.innerText()).includes("Ångström / 東京 / ✅") && (await longMessage.locator("code").first().innerText()) === "src/bobfish/search.py");
+      await longMessage.locator(".office-msg-copy").click();
+      const copied = await page.evaluate(() => window.__officeCopied);
+      check("the copy affordance returns the exact untruncated body", copied === LONG_SOL_BODY, `copied=${String(copied).length}, want=${LONG_SOL_BODY.length}`);
+      const desktopBody = await longMessage.locator(".office-msg-body").evaluate((el) => {
+        const s = getComputedStyle(el);
+        return { overflow: s.overflow, maxHeight: s.maxHeight, clientWidth: el.clientWidth, scrollWidth: el.scrollWidth };
+      });
+      check("desktop uses wrapping with no body clamp/hidden overflow", desktopBody.maxHeight === "none" && desktopBody.overflow === "visible" && desktopBody.scrollWidth <= desktopBody.clientWidth + 1, JSON.stringify(desktopBody));
+
+      // The same already-open dialog at the narrowest supported phone width: the room itself scrolls,
+      // while each body remains fully laid out and horizontally contained.
+      await page.setViewportSize({ width: 320, height: 700 });
+      const mobile = await page.locator(".office-panel").evaluate((panel) => {
+        const box = panel.getBoundingClientRect();
+        const body = panel.querySelector('[data-message-id="lab-long-sol"] .office-msg-body');
+        const copy = panel.querySelector('[data-message-id="lab-long-sol"] .office-msg-copy');
+        return {
+          panel: { left: box.left, right: box.right, top: box.top, bottom: box.bottom },
+          body: body ? { clientWidth: body.clientWidth, scrollWidth: body.scrollWidth, overflow: getComputedStyle(body).overflow } : null,
+          copy: copy ? { width: copy.getBoundingClientRect().width, height: copy.getBoundingClientRect().height } : null,
+        };
+      });
+      check("320px: the Office dialog stays inside the viewport", mobile.panel.left >= 0 && mobile.panel.right <= 320 && mobile.panel.top >= 0 && mobile.panel.bottom <= 700, JSON.stringify(mobile.panel));
+      check("320px: the complete body wraps instead of clipping sideways", !!mobile.body && mobile.body.scrollWidth <= mobile.body.clientWidth + 1 && mobile.body.overflow === "visible", JSON.stringify(mobile.body));
+      check("320px: Copy remains a touch-sized accessible control", !!mobile.copy && mobile.copy.width >= 44 && mobile.copy.height >= 36, JSON.stringify(mobile.copy));
+
+      // A reload creates a fresh WebSocket and then merges chat.history. The durable id must still map
+      // to exactly one bubble, never a hello/history duplicate.
+      await page.setViewportSize({ width: 1500, height: 950 });
+      await page.reload({ timeout: NAV_TIMEOUT });
+      await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+      await page.click(".office-strip .office-director");
+      await page.waitForSelector(".office-panel", { timeout: 20_000 });
+      await page.click(`.office-tab:has-text("${LAB_REPO_LEAF}")`);
+      await page.waitForSelector('[data-message-id="lab-long-sol"]', { timeout: 20_000 });
+      check("reload/reconnect keeps exactly one copy of the long message", (await page.locator('[data-message-id="lab-long-sol"]').count()) === 1);
 
       const roomShot = path.join(dataDir, "cross-machine-room.png");
       await page.screenshot({ path: roomShot });

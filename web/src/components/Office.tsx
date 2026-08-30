@@ -313,7 +313,9 @@ function OfficePanel() {
   // shrink flash when the real newest page replaces a larger snapshot slice). Kept ASC.
   const messages = useMemo(() => {
     const loaded = roomHistory[officeRoom];
-    const sorted = [...(loaded ?? chat.filter((m) => m.room === officeRoom))].sort((a, b) => a.createdAt - b.createdAt);
+    const sorted = [...(loaded ?? chat.filter((m) => m.room === officeRoom))].sort(
+      (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
+    );
     return loaded ? sorted : sorted.slice(-CHAT_PAGE_SIZE);
   }, [roomHistory, chat, officeRoom]);
 
@@ -377,7 +379,7 @@ function OfficePanel() {
   return (
     <>
       <div className="office-scrim" onClick={close} />
-      <div className="office-panel" role="dialog" aria-label="Office chat">
+      <div className="office-panel" role="dialog" aria-modal="true" aria-label="Office chat">
         <div className="office-panel-head">
           <div className="office-tabs">
             <button className={"office-tab" + (officeRoom === GENERAL_ROOM ? " on" : "")} onClick={() => open(GENERAL_ROOM)}>
@@ -457,12 +459,24 @@ function OfficePanel() {
 }
 
 function OfficeMsg({ m, title, name }: { m: ChatMessage; title?: string; name?: string }) {
+  const [copied, setCopied] = useState(false);
   if (m.kind === "system") {
     return <div className="office-sys">{m.body}</div>;
   }
   const role = m.role as Role;
+  const copy = () => {
+    void copyOfficeMessage(m.body).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    });
+  };
   return (
-    <div className={"office-msg" + (m.remoteInstance ? " remote" : "")} style={{ "--role": roleColor(role) } as CSSProperties}>
+    <div
+      className={"office-msg" + (m.remoteInstance ? " remote" : "")}
+      data-message-id={m.id}
+      style={{ "--role": roleColor(role) } as CSSProperties}
+    >
       <Gnome role={role} size={22} />
       <div className="office-msg-main">
         <div className="office-msg-head">
@@ -475,9 +489,43 @@ function OfficeMsg({ m, title, name }: { m: ChatMessage; title?: string; name?: 
           {m.remoteInstance ? <span className="office-msg-remote" title={`From ${m.remoteInstance} — another machine`}>🌐</span> : null}
           {title ? <span className="office-msg-task">on “{trim(title, 32)}”</span> : null}
           <span className="office-msg-ts">{clock(m.createdAt)}</span>
+          <button
+            type="button"
+            className="office-msg-copy"
+            onClick={copy}
+            aria-label={copied ? "Message copied" : `Copy full message from ${name ?? role}`}
+            aria-live="polite"
+            title="Copy the complete message"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
         </div>
         <Markdown className="office-msg-body" text={m.body} />
       </div>
     </div>
   );
+}
+
+/** Clipboard API needs a secure context away from localhost. The console also supports LAN HTTP, so
+ * retain a contained legacy fallback instead of showing a false "Copied" state when that API is absent. */
+async function copyOfficeMessage(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+    const field = document.createElement("textarea");
+    field.value = text;
+    field.setAttribute("readonly", "");
+    field.style.cssText = "position:fixed;inset:0;opacity:0;pointer-events:none";
+    document.body.appendChild(field);
+    field.select();
+    try {
+      return document.execCommand("copy");
+    } finally {
+      field.remove();
+    }
+  } catch {
+    return false;
+  }
 }

@@ -1,7 +1,8 @@
 import { WebSocket } from "ws";
+import { randomUUID } from "node:crypto";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
-import { OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } from "./onlineProtocol.js";
+import { CHAT_MAX_CHARS, CHAT_MAX_CHUNKS, OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } from "./onlineProtocol.js";
 import type { ClientFrame, JoinResponse, RelayAgent, RelayChat, RelayPresentAgent, ServerFrame } from "./onlineProtocol.js";
 import { identitiesMatch, identityKeys, repoIdentity, repoLeaf, type RepoIdentity } from "./repoIdentity.js";
 
@@ -63,6 +64,25 @@ const PRESENCE_MS = 15_000;
 const RECONNECT_MIN_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;
 
+/** Split by Unicode code point while enforcing the relay's UTF-16 length bound. Rejoining the returned
+ * chunks is byte-for-byte the input; in particular no surrogate pair, whitespace, newline or Markdown
+ * delimiter is dropped. The relay withholds all chunks until it can route one reassembled message. */
+export function splitOfficeChatBody(body: string, maxChars = CHAT_MAX_CHARS): string[] {
+  if (!Number.isInteger(maxChars) || maxChars < 2) throw new Error("chat chunk size must be an integer >= 2");
+  if (!body) return [];
+  const chunks: string[] = [];
+  let current = "";
+  for (const char of body) {
+    if (current && current.length + char.length > maxChars) {
+      chunks.push(current);
+      current = "";
+    }
+    current += char;
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
 /**
  * This instance's half of the Online Office: one authenticated WebSocket to the relay, over which it
  * advertises the agents it has working and receives everyone else's.
@@ -88,6 +108,8 @@ export class OnlineOffice {
   private disposed = false;
   /** Resolved repo identity per workspace, so the (async, git-backed) lookup never blocks a chat post. */
   private readonly identities = new Map<string, RepoIdentity>();
+  /** Identity resolution is async; serialize posts so two quick messages cannot overtake one another. */
+  private chatQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: OnlineOfficeDeps) {}
 
@@ -225,16 +247,38 @@ export class OnlineOffice {
    *  the office must never be able to fail a chat_post. */
   postChat(input: { workspace: string | null; body: string; senderName: string; role: string }): void {
     if (this.state !== "online") return;
-    void this.resolveIdentity(input.workspace).then((id) => {
-      if (!input.workspace || !id) {
-        this.send({ t: "chat", room: OFFICE_ROOM, body: input.body, senderName: input.senderName, role: input.role, repoLabel: null });
-        return;
-      }
-      // Every room this checkout's repo answers to, so one post reaches a fork's room as well as the
-      // upstream's. The relay still delivers a single message per peer — this is addressing, not fan-out.
-      const rooms = identityKeys(id).map(relayRepoRoom);
-      const room = relayRepoRoom(id.key);
-      this.send({ t: "chat", room, rooms, body: input.body, senderName: input.senderName, role: input.role, repoLabel: id.label });
+    const copy = { ...input };
+    this.chatQueue = this.chatQueue
+      .then(() => this.postChatNow(copy))
+      .catch((e: unknown) => {
+        const message = e instanceof Error ? e.message : String(e);
+        this.deps.hub.log("warn", `Online office: could not relay a locally-persisted chat message — ${message}`);
+      });
+  }
+
+  private async postChatNow(input: { workspace: string | null; body: string; senderName: string; role: string }): Promise<void> {
+    const body = input.body.trim();
+    if (!body) return;
+    const chunks = splitOfficeChatBody(body);
+    if (chunks.length > CHAT_MAX_CHUNKS) {
+      throw new Error(`message needs ${chunks.length} chunks; relay safety limit is ${CHAT_MAX_CHUNKS}`);
+    }
+    const id = chunks.length > 1 ? randomUUID() : undefined;
+    const repo = await this.resolveIdentity(input.workspace);
+    const room = input.workspace && repo ? relayRepoRoom(repo.key) : OFFICE_ROOM;
+    const rooms = input.workspace && repo ? identityKeys(repo).map(relayRepoRoom) : undefined;
+    const repoLabel = input.workspace && repo ? repo.label : null;
+    chunks.forEach((chunk, chunkIndex) => {
+      this.send({
+        t: "chat",
+        room,
+        ...(rooms ? { rooms } : {}),
+        body: chunk,
+        senderName: input.senderName,
+        role: input.role,
+        repoLabel,
+        ...(id ? { messageId: id, chunkIndex, chunkCount: chunks.length } : {}),
+      });
     });
   }
 

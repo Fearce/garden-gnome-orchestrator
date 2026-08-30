@@ -976,7 +976,10 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "chat.message":
       useStore.setState((s) => {
-        const chat = [...s.chat, ev.message];
+        // A reconnect races the relay/history replay on real networks. IDs are the durable identity;
+        // never let the same frame create two bubbles while the follow-up chat.history is in flight.
+        const isNew = !s.chat.some((m) => m.id === ev.message.id);
+        const chat = isNew ? [...s.chat, ev.message] : s.chat;
         const capped = chat.length > CHAT_CAP ? chat.slice(chat.length - CHAT_CAP) : chat;
         // Append to a room's loaded history too, so a live message shows without a re-fetch. Trim the
         // oldest to bound a chatty room — but NOT the room the panel is currently showing: the user may
@@ -985,12 +988,12 @@ function applyEvent(ev: ServerEvent): void {
         // clipped. A background room isn't being scrolled, so capping it is safe (re-open refetches).
         const room = ev.message.room;
         const hist = s.roomHistory[room];
-        const grown = hist ? [...hist, ev.message] : undefined;
+        const grown = hist ? (hist.some((m) => m.id === ev.message.id) ? hist : [...hist, ev.message]) : undefined;
         const trimmable = room !== s.officeRoom && grown && grown.length > ROOM_CAP;
         const roomHistory = grown
           ? { ...s.roomHistory, [room]: trimmable ? grown.slice(grown.length - ROOM_CAP) : grown }
           : s.roomHistory;
-        return { chat: capped, chatRooms: upsertRoom(s.chatRooms, ev.message), roomHistory };
+        return { chat: capped, chatRooms: isNew ? upsertRoom(s.chatRooms, ev.message) : s.chatRooms, roomHistory };
       });
       break;
     case "chat.name":
@@ -1001,9 +1004,9 @@ function applyEvent(ev: ServerEvent): void {
       // chat.history request and its reply, and a blind replace would drop it until the next message.
       // This same merge serves both the initial newest page and each older scroll-up page.
       useStore.setState((s) => {
-        const ids = new Set(ev.messages.map((m) => m.id));
-        const extra = (s.roomHistory[ev.room] ?? []).filter((m) => !ids.has(m.id));
-        const merged = [...ev.messages, ...extra].sort((a, b) => a.createdAt - b.createdAt);
+        const byId = new Map((s.roomHistory[ev.room] ?? []).map((m) => [m.id, m]));
+        for (const message of ev.messages) byId.set(message.id, message);
+        const merged = [...byId.values()].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
         return {
           roomHistory: { ...s.roomHistory, [ev.room]: merged },
           roomHasMore: { ...s.roomHasMore, [ev.room]: ev.hasMore },

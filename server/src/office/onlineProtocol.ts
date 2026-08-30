@@ -42,9 +42,8 @@ export interface RelayPresentAgent extends RelayAgent {
   instanceName: string;
 }
 
-/** One chat line on the relay. Bodies are clipped at the relay, so a client never has to trust another
- *  client's length; `repoLabel` rides along so a receiver can name the repo even when it has no checkout
- *  of it under that name. */
+/** One complete chat line from the relay. Clients submit bounded chunks, but the relay reassembles them
+ *  before routing/persisting history, so receivers never render orphan fragments. */
 export interface RelayChat {
   id: string;
   room: string;
@@ -58,6 +57,8 @@ export interface RelayChat {
 }
 
 export const CHAT_MAX_CHARS = 2000;
+/** Bounded client-to-relay chunks per logical message (128k UTF-16 code units at the current chunk cap). */
+export const CHAT_MAX_CHUNKS = 64;
 export const PRESENCE_MAX_AGENTS = 64;
 /** Recent lines the relay keeps per room, replayed to an instance when it enters that room. */
 export const ROOM_HISTORY = 60;
@@ -68,7 +69,19 @@ export type ClientFrame =
    *  room the line belongs to (the sender's whole identity group), so one post reaches a fork's room as
    *  well as the upstream's. The relay still delivers ONE message with ONE id, stamped per receiver with
    *  the room THEY know it by, so a client that never heard of aliases files it correctly. */
-  | { t: "chat"; room: string; rooms?: string[]; body: string; senderName: string; role: string; repoLabel?: string | null }
+  | {
+      t: "chat";
+      room: string;
+      rooms?: string[];
+      body: string;
+      senderName: string;
+      role: string;
+      repoLabel?: string | null;
+      /** Present together only when one logical body exceeds CHAT_MAX_CHARS. Optional keeps v1 peers compatible. */
+      messageId?: string;
+      chunkIndex?: number;
+      chunkCount?: number;
+    }
   | { t: "ping" };
 
 export type ServerFrame =

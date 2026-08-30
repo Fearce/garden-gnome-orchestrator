@@ -40,7 +40,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
-const { OnlineOffice, normalizeRelayUrl } = await import("../office/onlineOffice.js");
+const { OnlineOffice, normalizeRelayUrl, splitOfficeChatBody } = await import("../office/onlineOffice.js");
 const { forgetRepoIdentity, normalizeRemote, remoteLabel, repoIdentity, repoLeaf } = await import("../office/repoIdentity.js");
 const { OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } = await import("../office/onlineProtocol.js");
 const { GENERAL_ROOM, isCollaborationRoom, repoRoom } = await import("../types.js");
@@ -422,6 +422,21 @@ async function main(): Promise<void> {
       check("…in the repo's room", relay.chats()[0]?.room === room, relay.chats()[0]?.room);
       office.postChat({ workspace: null, body: "morning", senderName: "Rune", role: "implementor" });
       check("…and an office-wide post goes to the office room", await until(() => relay.chats().some((c) => c.room === OFFICE_ROOM)));
+
+      // A GPT Sol-sized multiline post crosses the relay bound as ordered, lossless chunks. The real
+      // relay gate verifies those frames are reassembled before any peer/history row sees them.
+      const longBody = `First — Ångström 東京 \`src/search.py\`\n${"x".repeat(4_300)}\n- final ✅`;
+      const split = splitOfficeChatBody(longBody);
+      check("the chunker is lossless", split.join("") === longBody);
+      check("…and every frame respects the relay trust bound", split.length > 1 && split.every((part) => part.length <= 2_000));
+      office.postChat({ workspace, body: longBody, senderName: "Rune", role: "implementor" });
+      check("every long-message chunk reaches the relay", await until(() => relay.chats().filter((c) => c.messageId).length === split.length));
+      const chunkFrames = relay.chats().filter((c) => c.messageId);
+      check("…under one stable message id", new Set(chunkFrames.map((c) => c.messageId)).size === 1);
+      check(
+        "…in deterministic order with the exact reconstructed body",
+        chunkFrames.every((c, i) => c.chunkIndex === i && c.chunkCount === split.length) && chunkFrames.map((c) => c.body).join("") === longBody,
+      );
 
       // Leaving forgets the token — re-joining must need the code again.
       office.leave();

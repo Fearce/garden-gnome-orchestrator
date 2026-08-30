@@ -351,7 +351,7 @@ button { font-family: inherit; cursor: pointer; }
 .office-sys { align-self: center; font-size: 11px; color: var(--text-faint); font-style: italic; text-align: center; max-width: 90%; }
 .office-msg { display: flex; gap: 9px; align-items: flex-start; }
 .office-msg-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; border-left: 2px solid var(--role, var(--line)); padding-left: 9px; }
-.office-msg-head { display: flex; align-items: baseline; gap: 7px; }
+.office-msg-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .office-msg-role { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; font-weight: 600; }
 .office-msg-kind { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); }
 .office-msg-task { font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -359,7 +359,31 @@ button { font-family: inherit; cursor: pointer; }
 .office-msg-remote { font-size: 9.5px; line-height: 1; flex: 0 0 auto; cursor: help; }
 .office-msg.remote { border-left: 2px solid color-mix(in oklch, var(--accent) 45%, transparent); padding-left: 6px; margin-left: -8px; }
 .office-msg-ts { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); flex: 0 0 auto; }
-.office-msg-body { font-size: 13px; line-height: 1.45; color: var(--text); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+.office-msg-copy {
+  flex: 0 0 auto; min-width: 34px; min-height: 24px; padding: 2px 5px; border: 1px solid transparent;
+  border-radius: var(--r-sm); background: transparent; color: var(--text-faint); cursor: pointer;
+  font-family: var(--font-mono); font-size: 8.5px;
+}
+.office-msg-copy:hover, .office-msg-copy:focus-visible { color: var(--text); border-color: var(--line); background: var(--bg-2); }
+.office-msg-copy:focus-visible { outline: 2px solid color-mix(in oklch, var(--accent) 55%, transparent); outline-offset: 1px; }
+.office-msg-body {
+  min-width: 0; max-width: 100%; font-size: 13px; line-height: 1.45; color: var(--text);
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+}
+.office-msg-body .md-code { white-space: break-spaces; overflow-wrap: anywhere; }
+
+@media (max-width: 480px) {
+  .office-panel { top: 8px; width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+  .office-panel-head { padding-inline: 8px; }
+  .office-panel-sub { padding-inline: 10px; }
+  .office-msgs { padding: 10px 8px; gap: 14px; }
+  .office-msg { gap: 6px; min-width: 0; }
+  .office-msg-main { padding-left: 6px; }
+  .office-msg-head { flex-wrap: wrap; gap: 4px 6px; }
+  .office-msg-task { flex: 1 1 120px; }
+  .office-msg-copy { min-width: 44px; min-height: 36px; }
+  .office-msg-body { font-size: 13.5px; line-height: 1.5; }
+}
 
 /* Director (human) composer — post into the open room; reaches the live agents there. */
 .office-composer { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--bg-1); }

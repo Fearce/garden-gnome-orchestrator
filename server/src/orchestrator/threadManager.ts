@@ -9410,7 +9410,7 @@ export class ThreadManager implements OrchestratorApi {
     const workspace = joiners[0]?.workspace ?? "";
     const intro = `🤝 [Office — ${many ? "teammates" : "a teammate"} just joined this repo] ${who} ${many ? "are" : "is"} now working in ${workspace}, so you're no longer alone.`;
     const how = cli
-      ? "Coordinate through the CLI office bridge from now on: write a standalone `OFFICE[team]: <short message>` line to claim the files/areas you'll touch, answer any teammate `OFFICE`/office message the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks."
+      ? "Coordinate through the CLI office bridge from now on: write a standalone `OFFICE[team]: <short message>` line to claim the files/areas you'll touch, answer any teammate `OFFICE`/office message the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks. If a post needs multiple lines, indent each continuation by two spaces so it remains one lossless message."
       : "Office coordination is now ON: call `office_look` to see who's here and their names, `chat_read(scope:\"team\")` what they've posted, and `chat_post(scope:\"team\")` to claim the files/areas you're about to change before you edit — then re-check `git diff` before committing so you only commit your own hunks. Their team messages arrive straight in your session; answer with `chat_post(scope:\"team\")` and adjust.";
     live.run.send(`${intro} ${how}`, { priority: "next" });
   }
@@ -9461,7 +9461,7 @@ export class ThreadManager implements OrchestratorApi {
       .join("\n");
     const edits = role === "implementor";
     const how = !withTools
-      ? "Coordinate through the CLI office bridge: include a standalone `OFFICE[team]: <short message>` line in your assistant response to claim the files/areas you'll touch, answer teammate messages the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks."
+      ? "Coordinate through the CLI office bridge: include a standalone `OFFICE[team]: <short message>` line in your assistant response to claim the files/areas you'll touch, answer teammate messages the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks. If a post needs multiple lines, indent each continuation by two spaces so it remains one lossless message."
       : edits
         ? "Use the office chat to coordinate: call `office_look`, then `chat_post(scope:\"team\")` to claim the files/areas you'll touch and `chat_read` what they've claimed before editing. Commit only your own hunks."
         : "Coordinate via the office chat: `office_look` to see who's here (address people by name), `chat_read(scope:\"team\")` what they've said, and `chat_post(scope:\"team\")` what you're examining or find that affects them.";

@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
 import type { Role } from "../types.js";
+import type { ServerEvent } from "../ws/protocol.js";
 
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
@@ -97,6 +98,7 @@ function makeHarness() {
   return {
     mgr,
     db,
+    hub,
     internals,
     seedLive,
     sent: (threadId: string) => sentByThread.get(threadId) ?? [],
@@ -261,6 +263,44 @@ async function main(): Promise<void> {
       check("re-ensureGroup → no further pushes to A", h.sent(a.id).length === 2, `count=${h.sent(a.id).length}`);
       check("re-ensureGroup → no further pushes to B", h.sent(b.id).length === 1, `count=${h.sent(b.id).length}`);
     } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test G: full bodies survive persistence, page/API mapping and WebSocket JSON -------------------
+  console.log("\nTest G — long/multiline chat survives the full local round trip exactly");
+  {
+    const h = makeHarness();
+    const events: ServerEvent[] = [];
+    const unsubscribe = h.hub.subscribe((event) => events.push(event));
+    try {
+      const thread = h.thread("Sol bridge round-trip", REPO_A);
+      const projectBody =
+        "Do both, but serialize them: give deliberate auto-play/replay sessions priority, triage and fix reproducible " +
+        "Bobfish Live reports between games, and let the new idle manager suspend training whenever Hearthstone or real " +
+        "input is active and resume it after 10 idle minutes. This preserves fresh live evidence without sacrificing the " +
+        "many hours when the PC is genuinely unused.\n\n" +
+        "Files: `src/bobfish/search.py`, `tests/test_search.py` — Ångström / 東京 / ✅\n" +
+        `Payload past every old bound: ${"x".repeat(4_500)}\nEND-OF-SOL-MESSAGE`;
+      const posted = h.mgr.chatPost({ threadId: thread.id, role: "implementor", scope: "project", body: projectBody });
+      const generalBody = "General room — exact Unicode and newline:\nsecond line ✅";
+      const general = h.mgr.chatPost({ threadId: thread.id, role: "implementor", scope: "general", body: generalBody });
+
+      const raw = h.db.raw.prepare("SELECT body FROM chat_messages WHERE id = ?").get(posted.id) as { body: string };
+      check("SQLite stores the complete project body", raw.body === projectBody, `stored=${raw.body.length}, want=${projectBody.length}`);
+      const page = h.db.listRoomMessagePage(posted.room, 50);
+      check("history pagination maps it back without truncation", page.messages.find((m) => m.id === posted.id)?.body === projectBody);
+      check("the general room uses the same lossless path", h.db.listRoomMessages(general.room).find((m) => m.id === general.id)?.body === generalBody);
+
+      const projectEvent = events.find((event) => event.type === "chat.message" && event.message.id === posted.id);
+      const wire = projectEvent ? (JSON.parse(JSON.stringify(projectEvent)) as ServerEvent) : null;
+      check(
+        "the published WebSocket/API payload is byte-exact",
+        wire?.type === "chat.message" && wire.message.body === projectBody && wire.message.body.endsWith("END-OF-SOL-MESSAGE"),
+      );
+      check("one post publishes exactly one chat event", events.filter((event) => event.type === "chat.message" && event.message.id === posted.id).length === 1);
+    } finally {
+      unsubscribe();
       h.dispose();
     }
   }
