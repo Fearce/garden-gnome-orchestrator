@@ -32,7 +32,7 @@ import type { Thread } from "../types.js";
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
-const { ThreadManager } = await import("../orchestrator/threadManager.js");
+const { ThreadManager, ownerRequestsFinishWithoutQa } = await import("../orchestrator/threadManager.js");
 const { handleCommand } = await import("../ws/hub.js");
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
@@ -123,6 +123,7 @@ const verdictResult = (structuredOutput: { pass: boolean; summary: string; chang
   structuredOutput,
 });
 const IMG = { name: "qa-note.png", mediaType: "image/png" as const, dataBase64: "iVBORw0KGgo=" };
+const NO_QA_DIRECTIVE = "we dont need QA here just end the task thx";
 
 interface Harness {
   mgr: InstanceType<typeof ThreadManager>;
@@ -198,9 +199,9 @@ function seedTask(h: Harness): string {
   return t.id;
 }
 
-const runLoop = (h: Harness, id: string, maxQaRounds = 4): Promise<void> =>
+const runLoop = (h: Harness, id: string, maxQaRounds = 4, qaEnabled = true): Promise<void> =>
   h.internals.runImplementorQaLoop(h.db.getThread(id)!, "KICKOFF: mock", undefined, undefined, undefined, {
-    qaEnabled: true,
+    qaEnabled,
     maxQaRounds,
     qaAppliesFixes: false,
     autoPush: true,
@@ -237,6 +238,14 @@ function stubQaRunRole(
 
 async function main(): Promise<void> {
   console.log("\n=== QA inject/interrupt routing integration test ===\n");
+
+  console.log("Owner finish-without-QA intent grammar");
+  check("the exact owner directive is recognized", ownerRequestsFinishWithoutQa(NO_QA_DIRECTIVE));
+  check("Unicode punctuation and contractions are recognized", ownerRequestsFinishWithoutQa("we don\u2019t need QA here \u2014 just end the task, thx"));
+  check("an explicit negative does not bypass QA", !ownerRequestsFinishWithoutQa("don't skip QA; finish after QA passes"));
+  check("a nested negative does not bypass QA", !ownerRequestsFinishWithoutQa("we don't need to skip QA; finish the task after review"));
+  check("never-skip phrasing does not bypass QA", !ownerRequestsFinishWithoutQa("never skip QA; finish the task after it passes"));
+  check("ordinary QA sequencing does not bypass QA", !ownerRequestsFinishWithoutQa("fix this before QA"));
 
   // -- Test A (the bug): interrupt-mode inject during QA returns the task to implementation ------------
   console.log("Test A — 'Interrupt & inject' while QA reviews: QA stops and implementation resumes");
@@ -719,6 +728,114 @@ async function main(): Promise<void> {
       check("the failed interrupt did not leave image blocks queued for a later resume", !h.internals.threadImages.has(id), JSON.stringify(h.internals.threadImages.get(id)));
       check("older queued implementor work was preserved", JSON.stringify(h.internals.queuedForImplementor.get(id)) === JSON.stringify(["preserve earlier queued work"]), JSON.stringify(h.internals.queuedForImplementor.get(id)));
       await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Owner override: the exact reported sequence must never launch QA after implementation ---------
+  console.log("\nOwner override A - a live implementor honors end-without-QA durably");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "implementing" });
+      let action: { ok: boolean; state?: string; message?: string } | undefined;
+      h.internals.awaitImplementorCompletion = async (
+        _thread: Thread,
+        _effort: unknown,
+        _kickoff: string,
+        run: FakeRun,
+      ): Promise<{ isError: boolean }> => {
+        h.internals.live.set(id, { run, runId: "live-implementor", accountId: "acct-a" });
+        try {
+          action = await h.mgr.injectThread(id, NO_QA_DIRECTIVE, "append");
+        } finally {
+          h.internals.live.delete(id);
+        }
+        return { isError: false };
+      };
+      const agents = stubQaRunRole(h, async () => {});
+      await runLoop(h, id);
+      await settle();
+      const stage = h.db.getThreadStageOutputs(id);
+      check("the live injection acknowledged the durable QA bypass", action?.ok === true && String(action.message).includes("QA bypass recorded"), JSON.stringify(action));
+      check("the owner override is persisted on the task", typeof stage.ownerQaBypassedAt === "number", JSON.stringify(stage));
+      check("the clean implementation settled done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check("no QA process was launched after the implementor", agents.length === 0, `qaRuns=${agents.length}`);
+      check("the control directive did not replace the task title", h.db.getThread(id)?.title === "mock qa-inject task", h.db.getThread(id)?.title);
+      check(
+        "the completion finding records why QA was skipped",
+        h.db.listFindings(id).some((f) => f.summary.includes("Owner requested completion without QA")),
+        JSON.stringify(h.db.listFindings(id).map((f) => f.summary)),
+      );
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Owner override during QA: stop/ignore the reviewer, resume once, and do not re-enter QA --------
+  console.log("\nOwner override B - an in-flight QA run cannot re-launch after the owner ends it");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      let action: { ok: boolean; state?: string; message?: string } | undefined;
+      let injected = false;
+      const agents = stubQaRunRole(h, async () => {
+        if (injected) return;
+        injected = true;
+        action = await h.mgr.injectThread(id, NO_QA_DIRECTIVE, "append");
+      });
+      await runLoop(h, id);
+      await settle();
+      check("append-mode owner override stopped the visible QA run", agents[0]?.stops === 1 && agents[0]?.stopped === true, JSON.stringify(agents[0]));
+      check("the action said implementation would finish without another QA", action?.ok === true && String(action.message).includes("without another QA run"), JSON.stringify(action));
+      check("only the interrupted QA process existed", agents.length === 1, `qaRuns=${agents.length}`);
+      check("the resumed implementor settled the task done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check("the supersede handoff was consumed", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id)));
+      check("the bypass remains durable after settlement", typeof h.db.getThreadStageOutputs(id).ownerQaBypassedAt === "number", JSON.stringify(h.db.getThreadStageOutputs(id)));
+      check("the no-QA control directive did not auto-retitle the card", h.db.getThread(id)?.title === "mock qa-inject task", h.db.getThread(id)?.title);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Restart boundary: completed implementation + interrupted QA settles without replaying either --
+  console.log("\nOwner override C - persisted bypass survives a restart boundary");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThreadStageOutputs(id, {
+        ownerQaBypassedAt: Date.now(),
+        qaRoundsUsed: 1,
+        qaInterruptedRetryRound: 1,
+      });
+      const agents = stubQaRunRole(h, async () => {});
+      await runLoop(h, id, 4, false);
+      check("restart recovery accepted the already-finished implementation", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check("restart recovery did not relaunch implementation", h.resumes.length === 0, JSON.stringify(h.resumes));
+      check("restart recovery did not relaunch QA", agents.length === 0, `qaRuns=${agents.length}`);
+      check("the interrupted-QA marker was cleared", h.db.getThreadStageOutputs(id).qaInterruptedRetryRound == null, JSON.stringify(h.db.getThreadStageOutputs(id)));
+      check("the owner bypass timestamp survived settlement", typeof h.db.getThreadStageOutputs(id).ownerQaBypassedAt === "number", JSON.stringify(h.db.getThreadStageOutputs(id)));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Parked task: explicit owner acceptance should not spawn an implementor just to mark it done -----
+  console.log("\nOwner override D - a parked task is accepted directly");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "review" });
+      const action = await h.mgr.injectThread(id, NO_QA_DIRECTIVE, "append");
+      await settle();
+      check("the parked task was marked done directly", action.ok && action.state === "done" && h.db.getThread(id)?.state === "done", JSON.stringify(action));
+      check("direct acceptance did not start an implementor", h.resumes.length === 0, JSON.stringify(h.resumes));
+      check("direct acceptance retained the original task title", h.db.getThread(id)?.title === "mock qa-inject task", h.db.getThread(id)?.title);
     } finally {
       h.dispose();
     }

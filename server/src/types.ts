@@ -614,6 +614,10 @@ export interface StageOutputs {
   // reclassifies mid-task (the brief may since have grown an escalation block, which must not flip an
   // already-running episode's route).
   routeDecision?: RouteDecision | null;
+  // An explicit owner injection asked to finish this task without QA. Unlike the route decision (an
+  // automatic, sticky classification), this human override wins at every later implementor-to-QA
+  // boundary, including after a server restart. A Retry wipes stage_outputs and resets it.
+  ownerQaBypassedAt?: number;
   qaRoundsUsed?: number; // QA rounds already spent in the current implementor→QA episode — persisted so a
   // `qaCapRetryRound` is set when this already-charged QA attempt was provider-capped. It makes
   // auto-resume rerun QA directly (never the finished implementor), including at the normal round cap.

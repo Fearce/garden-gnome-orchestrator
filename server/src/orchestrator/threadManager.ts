@@ -396,6 +396,33 @@ const MAX_REVIEW_RECOVERIES = 2;
 // resume. Forward-looking phrasing ("doing that now", "starting that next") must NOT match.
 const IMPLEMENTOR_DONE_RE =
   /\b(all done|task (?:is )?(?:now )?complete|everything is (?:complete|done)|nothing (?:more|else) (?:to do|left)|ready for (?:qa|review)|handing (?:off |this )?(?:to )?qa|the work is (?:complete|done|finished))\b/;
+/** A task-feed injection can explicitly override the task's sticky automatic QA route. Require BOTH a
+ * clear rejection of QA and a command to finish/end the task; ordinary discussion such as "don't skip
+ * QA" or "fix this before QA" must never accept work accidentally. This is intentionally narrow because
+ * a false positive marks owner-visible work done. */
+export function ownerRequestsFinishWithoutQa(message: string): boolean {
+  const text = message.normalize("NFKC").toLowerCase().replace(/[\u2018\u2019]/g, "'");
+  if (
+    /\b(?:do not|don't|dont|never)\s+(?:(?:ever|need|want)\s+(?:to\s+)?)?(?:skip|bypass|disable|stop|cancel)\s+(?:the\s+)?qa\b/.test(
+      text,
+    )
+  )
+    return false;
+  if (/\bnot\s+without\s+(?:the\s+)?qa\b/.test(text)) return false;
+  if (/\b(?:do not|don't|dont)\s+(?:end|finish|complete|close|mark)\b/.test(text)) return false;
+  const rejectsQa =
+    /\b(?:skip|bypass|disable|stop|cancel)\s+(?:the\s+)?qa\b/.test(text) ||
+    /\b(?:no|without)\s+(?:more\s+)?qa\b/.test(text) ||
+    /\b(?:we\s+)?(?:do not|don't|dont)\s+need\s+(?:(?:a|any|the)\s+)?qa\b/.test(text) ||
+    /\bqa\s+(?:is\s+not|isn't|isnt)\s+(?:needed|required|necessary)\b/.test(text) ||
+    /\b(?:do not|don't|dont)\s+(?:run|start)\s+(?:the\s+)?qa\b/.test(text);
+  const finishesTask =
+    /\b(?:end|finish|complete|close)\s+(?:(?:this|the)\s+)?task\b/.test(text) ||
+    /\bmark\s+(?:(?:this|the)\s+)?(?:task\s+)?(?:as\s+)?done\b/.test(text) ||
+    /\b(?:end|finish|close)\s+(?:this|it)\b/.test(text) ||
+    /\b(?:end|finish|complete|close)\s+(?:this\s+)?without\s+qa\b/.test(text);
+  return rejectsQa && finishesTask;
+}
 // Forward-looking "I'll come back and confirm later" phrasing in the implementor's FINAL words — it ended
 // its turn (a VOLUNTARY success, not a cutoff/cap) waiting to be woken when some process it kicked off
 // finishes. Nothing wakes a voluntary turn-end, so the task would park for hours; we treat this like a
@@ -4420,7 +4447,11 @@ export class ThreadManager implements OrchestratorApi {
       // 3. Approval gate — after the full context (plan + any research) exists, so the human sees
       //    everything before approving. Skipped on resume if already approved. Reuse the saved kickoff
       //    when planning already happened so a re-derivation can't strip a real plan down to "no plan".
-      const qaEnabled = settings.qaEnabled && (route?.useQa ?? true) && !collaborator;
+      const qaEnabled =
+        settings.qaEnabled &&
+        (route?.useQa ?? true) &&
+        !collaborator &&
+        !this.qaBypassedByOwner(threadId);
       const plannerRuns = settings.plannerEnabled && (route?.usePlanner ?? true) && !collaborator;
       let kickoff = saved.kickoff ?? composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled, plannerRuns, route });
       // Ownership is what keeps parallel agents out of each other's files, so it is rebuilt here (from
@@ -6908,6 +6939,43 @@ export class ThreadManager implements OrchestratorApi {
     return parts.join("\n");
   }
 
+  /** Settle a completed implementation when the owner explicitly replaced the sticky automatic QA
+   * route with a finish-without-QA directive. This is checked at every async handoff, because the
+   * pipeline's PipeOpts were captured before a later injection could change that decision. */
+  private settleOwnerQaBypass(thread: Thread, res: ResultEvent | undefined): boolean {
+    if (!this.qaBypassedByOwner(thread.id)) return false;
+    if (this.cancelled(thread.id)) return true;
+
+    // No reviewer or recovery marker may resurrect this episode after the terminal decision. Keep the
+    // ownerQaBypassedAt timestamp itself as durable evidence of why the task skipped its sticky route.
+    this.clearQaSupersede(thread.id);
+    this.clearQaFixHandoff(thread.id);
+    this.db.updateThreadStageOutputs(thread.id, {
+      qaCapRetryRound: undefined,
+      qaInterruptedRetryRound: undefined,
+      reviewFixing: false,
+      selfImproving: false,
+    });
+    this.capParked.delete(thread.id);
+
+    if (res && !res.isError) {
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "implementor",
+        summary: "Owner requested completion without QA; the finished implementation was accepted as done.",
+        severity: "info",
+      });
+      // "End the task" is terminal. Do not start the optional post-completion self-improvement turn.
+      this.setState(thread.id, "done");
+    } else {
+      this.settleReview(
+        thread.id,
+        this.implementorParkReason(res, "could not finish cleanly. QA was disabled by the owner, so this needs your review."),
+      );
+    }
+    return true;
+  }
+
   private async runImplementorQaLoop(
     thread: Thread,
     kickoff: string,
@@ -6928,8 +6996,13 @@ export class ThreadManager implements OrchestratorApi {
     // budget (and, being round > 1, warm-resumes the prior QA session rather than re-reading everything).
     // Fresh dispatch = 0; a retry nulls stage_outputs, so it resets too.
     const savedQa = this.db.getThreadStageOutputs(thread.id);
-    const startingQaSupersede = pipe.qaEnabled ? this.qaSupersedeMessages(thread.id) : null;
-    const pendingQaFixHandoff = pipe.qaEnabled ? this.qaFixHandoffPayload(thread.id) : null;
+    const ownerQaBypass = this.qaBypassedByOwner(thread.id);
+    // A restart can re-enter with the effective QA route disabled while an owner-triggered QA->implementor
+    // handoff is still durable. Keep consuming that handoff so any real work in the same instruction is
+    // performed before the task settles; the override only removes the reviewer, never the requested work.
+    const preserveOwnerHandoff = pipe.qaEnabled || ownerQaBypass;
+    const startingQaSupersede = preserveOwnerHandoff ? this.qaSupersedeMessages(thread.id) : null;
+    const pendingQaFixHandoff = preserveOwnerHandoff ? this.qaFixHandoffPayload(thread.id) : null;
     let priorRounds = pipe.qaEnabled ? savedQa.qaRoundsUsed ?? 0 : 0;
     if (startingQaSupersede) {
       const supersedeNote = qaSupersedeResumeNudge(startingQaSupersede);
@@ -6945,7 +7018,7 @@ export class ThreadManager implements OrchestratorApi {
     const qaInterruptedRetryRound = pipe.qaEnabled && !startingQaSupersede && !pendingQaFixHandoff ? savedQa.qaInterruptedRetryRound : undefined;
     const qaRetryRound = qaCapRetryRound ?? qaInterruptedRetryRound;
     const qaOnlyRetry = qaRetryRound != null;
-    if (pipe.qaEnabled && !qaOnlyRetry && !pendingQaFixHandoff && priorRounds >= pipe.maxQaRounds) {
+    if (pipe.qaEnabled && !ownerQaBypass && !qaOnlyRetry && !pendingQaFixHandoff && priorRounds >= pipe.maxQaRounds) {
       // A prior episode already spent the full QA budget and an interrupt re-entered before it could park.
       // Don't re-run the implementor + a fresh QA pass on the (already usage-heavy) backend — park it.
       this.postFinding({
@@ -6962,6 +7035,17 @@ export class ThreadManager implements OrchestratorApi {
     let res: ResultEvent | undefined = qaOnlyRetry
       ? { type: "result", subtype: "success", isError: false }
       : undefined;
+    if (
+      ownerQaBypass &&
+      !startingQaSupersede &&
+      !pendingQaFixHandoff &&
+      (savedQa.qaCapRetryRound != null || savedQa.qaInterruptedRetryRound != null)
+    ) {
+      // The durable marker proves implementation had already completed and only QA was interrupted.
+      // On restart there is no implementation work to replay, so accept that completed result directly.
+      this.settleOwnerQaBypass(thread, { type: "result", subtype: "success", isError: false });
+      return;
+    }
     if (!qaOnlyRetry) {
       if (pendingQaFixHandoff) {
         this.qaFixHandoff.add(thread.id);
@@ -6978,7 +7062,7 @@ export class ThreadManager implements OrchestratorApi {
             effort,
             resumeNudge,
             directorNote: resumeNudge,
-            qaFollows: true,
+            qaFollows: pipe.qaEnabled && !this.qaBypassedByOwner(thread.id),
             images: this.qaFixHandoffImages(pendingQaFixHandoff),
           },
         );
@@ -6986,12 +7070,14 @@ export class ThreadManager implements OrchestratorApi {
         this.flushQaFixHandoffDelta(thread.id, start.run, delivered);
         this.clearQaFixHandoff(thread.id);
         this.flushDirectorNotes(thread.id, start.run);
-        res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, resumeNudge, true);
-        res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
+        const qaFollows = pipe.qaEnabled && !this.qaBypassedByOwner(thread.id);
+        res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, resumeNudge, qaFollows);
+        res = await this.drainQueuedImplementor(thread, effort, kickoff, res, qaFollows);
       } else {
+      const qaFollows = pipe.qaEnabled && !this.qaBypassedByOwner(thread.id);
       const initialResumeNudge = startingQaSupersede && directorNote
         ? directorNote
-        : pipe.qaEnabled
+        : qaFollows
           ? "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. A QA agent will review your work when you're done."
           : "Your session was resumed after an interruption (a crash or server restart). Continue exactly where you left off and finish the task completely. QA review is disabled for this task - verify your own work, then commit per the doctrine.";
       const start = await this.startResumedImplementor(thread, kickoff, resumeSession, {
@@ -7000,7 +7086,7 @@ export class ThreadManager implements OrchestratorApi {
         // A steering note from the Resume/inject that re-entered the pipeline — delivered to the
         // implementor (woven into the seed/kickoff or sent with the nudge) so it isn't silently lost.
         directorNote,
-        qaFollows: pipe.qaEnabled,
+        qaFollows,
         images: startingQaSupersede ? this.qaSupersedeImages(thread.id) : undefined,
       });
       if (!start) return; // cancelled while compressing the prior session for the resume
@@ -7018,23 +7104,27 @@ export class ThreadManager implements OrchestratorApi {
         start.accountId,
         false,
         "Continue exactly where you left off and finish the task completely.",
-        pipe.qaEnabled,
+        qaFollows,
       );
       // Before the hand-off: if the director queued follow-ups while the implementor worked, it does that
       // work too now (re-launched with them) instead of proceeding — the Queue button's whole point.
-      res = await this.drainQueuedImplementor(thread, effort, kickoff, res, pipe.qaEnabled);
+      res = await this.drainQueuedImplementor(thread, effort, kickoff, res, qaFollows);
       // A TIMED task keeps working its window from here; a SHOTGUN lead then waits for its collaborators
       // and reconciles the combined tree. Both are no-ops for an ordinary task, and both sit BEFORE the
       // QA hand-off on purpose — QA reviews the finished, integrated result exactly once.
-      res = await this.runTimedWindow(thread, effort, kickoff, res, pipe.qaEnabled);
+      res = await this.runTimedWindow(thread, effort, kickoff, res, qaFollows);
       if (this.cancelled(thread.id)) return;
-      res = await this.integrateShotgun(thread, effort, kickoff, res, pipe.qaEnabled);
+      res = await this.integrateShotgun(thread, effort, kickoff, res, qaFollows);
       if (this.cancelled(thread.id)) return;
       }
     }
 
     // QA disabled — the implementor's output is final. A clean finish goes straight to 'done'
     // (the only non-QA path to 'done' besides a manual markDone); an incomplete one parks for review.
+    // PipeOpts are captured at pipeline start; an injection may have replaced that sticky decision while
+    // the implementor was running. All implementation, queue, timed, and shotgun work is complete here.
+    if (this.settleOwnerQaBypass(thread, res)) return;
+
     if (!pipe.qaEnabled) {
       if (this.cancelled(thread.id)) return;
       if (res && !res.isError) {
@@ -7059,6 +7149,7 @@ export class ThreadManager implements OrchestratorApi {
     const qaRoundCeiling = qaOnlyRetry ? Math.max(pipe.maxQaRounds, qaRetryRound!) : pipe.maxQaRounds;
     for (let round = qaOnlyRetry ? qaRetryRound! : priorRounds + 1; round <= qaRoundCeiling; round++) {
       if (this.cancelled(thread.id)) return;
+      if (this.settleOwnerQaBypass(thread, res)) return;
       if (!res || res.isError) {
         this.settleReview(thread.id, this.implementorParkReason(res, "needs your review."));
         return;
@@ -7093,6 +7184,7 @@ export class ThreadManager implements OrchestratorApi {
       if (this.cancelled(thread.id)) return;
       const superseded = await this.resumeImplementorAfterQaSupersede(thread, effort, kickoff, round);
       if (superseded.handled) {
+        if (this.settleOwnerQaBypass(thread, superseded.result)) return;
         if (!superseded.result || superseded.result.isError) {
           if (!this.cancelled(thread.id) && this.db.getThread(thread.id)?.state === "implementing") {
             this.settleReview(thread.id, this.implementorParkReason(superseded.result, "needs your review after the QA interrupt."));
@@ -7103,6 +7195,13 @@ export class ThreadManager implements OrchestratorApi {
         round--; // retry the same QA round; the interrupted review produced no usable verdict.
         continue;
       }
+
+      // A queue-mode finish directive intentionally waits for the current QA turn. Do its queued work
+      // now, but do not promise another reviewer to that implementor: the durable owner override wins.
+      if (this.qaBypassedByOwner(thread.id) && this.queuedForImplementor.get(thread.id)?.length && res && !res.isError) {
+        res = await this.drainQueuedImplementor(thread, effort, kickoff, res, false);
+      }
+      if (this.settleOwnerQaBypass(thread, res)) return;
 
       if (qa) {
         // A real QA verdict completed the retry. Clear before any later state transition so a restart
@@ -7178,6 +7277,7 @@ export class ThreadManager implements OrchestratorApi {
         if (this.queuedForImplementor.get(thread.id)?.length && res && !res.isError && !this.cancelled(thread.id)) {
           res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
           if (this.cancelled(thread.id)) return;
+          if (this.settleOwnerQaBypass(thread, res)) return;
           if (round < pipe.maxQaRounds) {
             qaFixForcedProvider = undefined;
             qaFixForceFresh = false;
@@ -7199,6 +7299,7 @@ export class ThreadManager implements OrchestratorApi {
         if (this.queuedForImplementor.get(thread.id)?.length && res && !res.isError && !this.cancelled(thread.id)) {
           res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
           if (this.cancelled(thread.id)) return;
+          if (this.settleOwnerQaBypass(thread, res)) return;
           if (round < pipe.maxQaRounds) continue; // re-QA the newly-done work
         }
         this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed: ${qa.summary}`, severity: "info" });
@@ -7256,6 +7357,7 @@ export class ThreadManager implements OrchestratorApi {
       res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, resumeNudge);
       // Honor anything queued during this fix round too, before we loop back to QA.
       res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
+      if (this.settleOwnerQaBypass(thread, res)) return;
     }
   }
 
@@ -7461,7 +7563,13 @@ export class ThreadManager implements OrchestratorApi {
         thread,
         kickoff,
         this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
-        { effort, resumeNudge: resumeMsg, directorNote: resumeMsg, qaFollows: true, images: this.qaSupersedeImages(thread.id) },
+        {
+          effort,
+          resumeNudge: resumeMsg,
+          directorNote: resumeMsg,
+          qaFollows: !this.qaBypassedByOwner(thread.id),
+          images: this.qaSupersedeImages(thread.id),
+        },
       );
     } catch (e) {
       this.hub.log("warn", `QA interrupt on ${thread.id.slice(0, 8)} could not start the implementor: ${String(e)}`);
@@ -7482,8 +7590,9 @@ export class ThreadManager implements OrchestratorApi {
       this.pendingResumeMsgs.delete(thread.id);
       for (const m of buffered) start.run.send(acknowledgedInjection(m), { priority: "next" });
     }
-    const result = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, resumeMsg, true);
-    return { handled: true, result: await this.drainQueuedImplementor(thread, effort, kickoff, result, true) };
+    const qaFollows = !this.qaBypassedByOwner(thread.id);
+    const result = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, resumeMsg, qaFollows);
+    return { handled: true, result: await this.drainQueuedImplementor(thread, effort, kickoff, result, qaFollows) };
   }
 
   /** Opt-in post-completion round (the "Self-improve after tasks" setting): once the task is accepted —
@@ -7601,6 +7710,23 @@ export class ThreadManager implements OrchestratorApi {
     run.send(contentWithImages(structuredAcknowledgedInjection(message), images?.length ? images.map(toImageBlock) : []));
   }
 
+  /** Persist an explicit owner override before routing the injection anywhere. The automatic route is
+   * deliberately sticky, but a later human decision outranks it and must survive both a warm handoff and
+   * a server restart. Return true only for the conservative two-part directive grammar above. */
+  private armOwnerQaBypass(threadId: string, message: string): boolean {
+    if (!ownerRequestsFinishWithoutQa(message)) return false;
+    const stage = this.db.getThreadStageOutputs(threadId);
+    if (stage.ownerQaBypassedAt == null) {
+      this.db.updateThreadStageOutputs(threadId, { ownerQaBypassedAt: Date.now() });
+      this.hub.log("info", `Owner disabled QA for ${threadId.slice(0, 8)} and asked to finish the task.`);
+    }
+    return true;
+  }
+
+  private qaBypassedByOwner(threadId: string): boolean {
+    return this.db.getThreadStageOutputs(threadId).ownerQaBypassedAt != null;
+  }
+
   async injectThread(
     threadId: string,
     message: string,
@@ -7608,11 +7734,14 @@ export class ThreadManager implements OrchestratorApi {
     images?: ImageAttachment[],
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
+    const qaBypassRequested = thread ? this.armOwnerQaBypass(threadId, message) : false;
     // Auto-retitle the lane to reflect the LATEST directive — the user runs several tasks at once and
     // loses track when a lane's scope drifts from its original title. Fire-and-forget (void): the
     // model call must never block, slow, or throw into the inject path. Covers every inject branch
     // below (live, QA-forward, pre-implementor buffer, resume, cold-resume) from this one spot.
-    if (thread) void this.retitleFromInjection(threadId, message);
+    // A control-only "finish without QA" instruction is not a new task objective. Retitling the card to
+    // that sentence hides the actual work title and makes this control flow unnecessarily confusing.
+    if (thread && !qaBypassRequested) void this.retitleFromInjection(threadId, message);
     // Persist injected images as attachments so the feed can render them as thumbnails (the blocks
     // sent to the model are transient). Lazy + memoized: only the branch that actually echoes a feed
     // message calls it, so the cold-resume path (which adds no feed row) never orphans attachment
@@ -7678,11 +7807,33 @@ export class ThreadManager implements OrchestratorApi {
         return {
           ok: true,
           state: "qa",
-          message: "QA is already returning this task to implementation; instruction queued for that implementor resume.",
+          message: qaBypassRequested
+            ? "QA bypass recorded; the active implementor resume will finish this task without another QA run."
+            : "QA is already returning this task to implementation; instruction queued for that implementor resume.",
         };
       }
-      if (mode === "interrupt") {
+      if (mode === "interrupt" || qaBypassRequested) {
         if (!qa) {
+          if (qaBypassRequested) {
+            const refs = injectRefs();
+            // The handle can disappear briefly during provider failover. Persist the supersede instruction
+            // anyway so the loop ignores that review result and resumes implementation exactly once.
+            this.rememberQaSupersede(threadId, message, refs);
+            const m = this.db.addMessage({
+              threadId,
+              role: "director",
+              kind: "system",
+              content: `Owner disabled QA. The in-flight review result will be ignored and the task will finish without another QA run: ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+              attachments: refs,
+            });
+            this.hub.publish({ type: "thread.message", threadId, message: m });
+            this.touchThread(threadId);
+            return {
+              ok: true,
+              state: "qa",
+              message: "QA bypass recorded; the in-flight review result will be ignored and no new QA run will start.",
+            };
+          }
           return {
             ok: false,
             state: "qa",
@@ -7694,6 +7845,22 @@ export class ThreadManager implements OrchestratorApi {
         this.rememberQaSupersede(threadId, message, refs);
         const stopped = await this.stopQaForImplementor(threadId, qa);
         if (stopped.status === "failed") {
+          if (qaBypassRequested) {
+            const m = this.db.addMessage({
+              threadId,
+              role: "director",
+              kind: "system",
+              content: `Owner disabled QA. The current reviewer could not be stopped immediately, but its verdict will be ignored: ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}\n${stopped.error}`,
+              attachments: refs,
+            });
+            this.hub.publish({ type: "thread.message", threadId, message: m });
+            this.touchThread(threadId);
+            return {
+              ok: true,
+              state: "qa",
+              message: "QA bypass recorded; the current reviewer could not stop immediately, but its verdict will be ignored.",
+            };
+          }
           this.clearQaSupersedeMarker(threadId);
           const m = this.db.addMessage({
             threadId,
@@ -7720,7 +7887,9 @@ export class ThreadManager implements OrchestratorApi {
         return {
           ok: true,
           state: "implementing",
-          message: "QA stop requested; implementor resume queued.",
+          message: qaBypassRequested
+            ? "QA stop requested; the implementor will finish this task without another QA run."
+            : "QA stop requested; implementor resume queued.",
         };
       }
       this.hub.log("info", "[INJECT] QA in progress - steering QA and queuing for the implementor, not re-spawning one");
@@ -7824,7 +7993,13 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.publish({ type: "thread.message", threadId, message: m });
       this.touchThread(threadId);
       this.hub.log("info", `Injected (${mode}) into ${threadId.slice(0, 8)}`);
-      return { ok: true, state: "implementing" };
+      return {
+        ok: true,
+        state: "implementing",
+        ...(qaBypassRequested
+          ? { message: "QA bypass recorded; this task will settle when the implementor finishes." }
+          : {}),
+      };
     }
     // No live implementor — but the task may still be in its PRE-IMPLEMENTOR phase: the planner is
     // running, or we're parked at the approval gate. Steering here must NEVER start an implementor
@@ -7897,6 +8072,12 @@ export class ThreadManager implements OrchestratorApi {
     });
     this.hub.publish({ type: "thread.message", threadId, message: m });
     this.touchThread(threadId);
+    if (qaBypassRequested && thread?.state === "done") {
+      return { ok: true, state: "done", message: "This task is already done; QA remains bypassed for this episode." };
+    }
+    if (qaBypassRequested && thread && DONEABLE.has(thread.state)) {
+      return this.markDone(threadId);
+    }
     return this.resumeThread(threadId, message);
   }
 
