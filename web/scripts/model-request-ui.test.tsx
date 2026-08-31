@@ -46,4 +46,8 @@ const compact = render({ request, actualModel: "gpt-5.3-codex-spark", compact: t
 assert.match(compact, /model-pin-badge pinned/);
 assert.match(compact, /Pin · GPT-5\.3 Codex Spark/);
 
+const compactMismatch = render({ request, actualModel: "gpt-5.6-sol", compact: true });
+assert.match(compactMismatch, /model-pin-badge mismatch/);
+assert.match(compactMismatch, /Mismatch · GPT-5\.3 Codex Spark ≠ GPT-5\.6 Sol/);
+
 console.log("Model-request UI gate passed — requested, matching, mismatch, waiting, unresolved, and mobile card states are explicit.");

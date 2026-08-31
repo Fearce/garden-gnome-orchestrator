@@ -24,6 +24,11 @@ export function ModelRequestStatus({
   const actual = actualModel ? modelLabel(actualModel) : null;
   const matches = requestedModelMatches(request, actualModel);
   const state = matches === false ? " mismatch" : request.model ? " pinned" : " unresolved";
+  const compactLabel = matches === false && actual
+    ? `Mismatch · ${requested} ≠ ${actual}`
+    : request.model
+      ? `Pin · ${requested}`
+      : `Blocked · ${requested}`;
   const title = request.model
     ? `Strict owner model request: ${request.requested} → ${request.model}.${actual ? ` Actual runtime: ${actualModel}.` : " Waiting to start."}${matches === false ? " Runtime mismatch — this task must not continue on that model." : " No fallback model is allowed."}`
     : `Strict owner model request: ${request.requested}. It could not be resolved, so the task is blocked rather than downgraded.`;
@@ -31,7 +36,7 @@ export function ModelRequestStatus({
   if (compact) {
     return (
       <span className={`model-pin-badge${state}`} title={title} data-requested-model={request.model ?? request.requested} data-actual-model={actualModel ?? ""}>
-        Pin · {requested}
+        {compactLabel}
       </span>
     );
   }

@@ -762,6 +762,7 @@ export function ThreadDetail() {
             </button>
           </div>
         </div>
+        <ModelRequestStatus request={thread.modelRequest} actualModel={impl?.model} compact={headCollapsed} />
         {!headCollapsed && (
           <>
             <div className="meta">
@@ -775,7 +776,6 @@ export function ThreadDetail() {
               {totalCost > 0 ? ` · ~$${totalCost.toFixed(2)} equiv (subscription)` : ""}
               {thread.error ? ` · ERROR: ${thread.error}` : ""}
             </div>
-            <ModelRequestStatus request={thread.modelRequest} actualModel={impl?.model} />
             {path.length > 0 && (
               <div className="meta" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }} title="The actual agent path this task took">
                 {path.map((role, i) => {
