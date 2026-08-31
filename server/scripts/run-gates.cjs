@@ -103,6 +103,7 @@ const GATES = [
   "test:director-provider",
   "test:model-request",
   "test:model-request-ui",
+  "test:model-pin-probe",
   "test:livebench",
   "test:self-improve-restart",
   "test:restart-revival",

@@ -138,6 +138,10 @@ there's NO `backend` column — the backend is encoded in `model`, e.g. `grok-4.
 read, not an inference from absent findings and expiring kv latches; `probe:task-runs` prints it).
 For one task's full trail + per-model cost/turn totals + a QA-loop budget check, run
 `npm run probe:task-runs --prefix server -- <thread-id|title-substring>` (read-only, safe while prod is up).
+For an explicit-model task, run `npm run probe:model-pin --prefix server -- <thread> --expect-model
+<canonical-id>`; it quickly exits non-zero unless the persisted strict request matches the latest
+implementor run's real model and provider. `probe:task-runs` also accepts `--verify-model-pin` when the
+same verdict should appear inside the full timeline.
 Its control-flow timeline joins run starts/ends (including account + `cap_flagged`), routing/capacity
 findings, owner/supervisor system messages, and matching `crash.log` boot/reconcile records on one clock.
 For **"did my Supervisor-chat message arrive, and did its action run?"**, use

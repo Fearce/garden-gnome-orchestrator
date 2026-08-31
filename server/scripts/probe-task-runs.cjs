@@ -5,6 +5,7 @@
 //   node scripts/probe-task-runs.cjs 66695c82
 //   node scripts/probe-task-runs.cjs "grok usage"
 //   node scripts/probe-task-runs.cjs 66695c82 --prompt
+//   node scripts/probe-task-runs.cjs 66695c82 --verify-model-pin --expect-model gpt-5.3-codex-spark
 //   npm run probe:task-runs --prefix server -- 66695c82
 //
 // What it shows:
@@ -15,6 +16,8 @@
 //     messages, and server boot/reconcile records. It prints system-local time AND explicit UTC so an
 //     owner's "around 15:17" and SQLite's epoch no longer look two hours apart.
 //   • per-(role,model) totals, and a state breakdown (done / error / interrupted / running).
+//   • with --verify-model-pin, a fail-closed persisted-request vs. latest implementor agent_run check;
+//     --expect-model additionally asserts the canonical configured model id at both ends.
 //   • an auto-review trace: every reviewer hand-back / acceptance finding, and the next run it caused.
 //     This answers the otherwise expensive question "did the reviewer send a fixable issue back to an
 //     implementor, or did it simply re-park the task?" without hand-reading SQLite timestamps.
@@ -33,14 +36,16 @@ const Database = require("better-sqlite3");
 const { qaLoopReading, roundsCap } = require("./qa-loop-check.cjs");
 const { activeDeadlineReading } = require("./task-deadline-reading.cjs");
 const { collectTaskTimeline, renderTaskTimeline, utcStamp } = require("./task-timeline.cjs");
+const { modelPinReading, parsePersistedModelRequest, parseProbeArgs } = require("./model-pin-reading.cjs");
 
-const argv = process.argv.slice(2);
-const showPrompt = argv.includes("--prompt");
-const arg = argv.filter((value) => value !== "--prompt").join(" ").trim();
-if (!arg) {
-  console.error("usage: node scripts/probe-task-runs.cjs <thread-id | title-substring> [--prompt]");
+let options;
+try {
+  options = parseProbeArgs(process.argv.slice(2));
+} catch (error) {
+  console.error(`usage: node scripts/probe-task-runs.cjs <thread-id | title-substring> [--prompt] [--verify-model-pin] [--expect-model <canonical-id>]\n${error.message}`);
   process.exit(2);
 }
+const { query: arg, showPrompt, verifyModelPin, expectedModel } = options;
 
 const dbPath = process.env.ORCH_DB
   ? path.resolve(process.env.ORCH_DB)
@@ -72,14 +77,6 @@ function parseStageOutputs(raw) {
     return {};
   }
 }
-function parseModelRequest(raw) {
-  try {
-    const value = JSON.parse(raw || "null");
-    return value && typeof value === "object" ? value : null;
-  } catch {
-    return { invalid: short(raw, 120) };
-  }
-}
 function dur(a, b) {
   if (!a || !b) return null;
   const s = Math.round((b - a) / 1000);
@@ -100,6 +97,7 @@ if (!thread) {
   console.error(`No thread matches "${arg}" (by id or title).`);
   process.exit(1);
 }
+const modelRequest = parsePersistedModelRequest(thread.model_request);
 
 section(`db: ${dbPath}`);
 section("thread");
@@ -112,7 +110,7 @@ console.log({
   updated: iso(thread.updated_at),
   assignment: short(thread.assignment, 120),
   effortOverride: thread.effort_override,
-  modelRequest: parseModelRequest(thread.model_request),
+  modelRequest,
   brief: short(thread.brief, 300),
   error: short(thread.error, 120),
   activeTaskDeadline: activeDeadlineReading(thread, { timeZone }),
@@ -154,6 +152,30 @@ for (const r of runs) {
     ...(r.cap_flagged != null ? { cap: r.cap_flagged === 1 } : {}),
     ...(silent(r) ? { output: "⚠ NONE — never reached the model" } : {}),
   });
+}
+
+let modelPinVerificationFailed = false;
+if (verifyModelPin) {
+  const reading = modelPinReading({ modelRequest, runs, expectedModel });
+  modelPinVerificationFailed = !reading.ok;
+  section("strict model pin verification");
+  console.log({
+    verdict: reading.ok ? "PASS" : "FAIL",
+    expectedModel: reading.expectedModel,
+    requestedModel: reading.requestedModel,
+    requestedProvider: reading.requestedProvider,
+    strict: reading.strict,
+    actualModel: reading.actualModel,
+    actualProvider: reading.actualProvider,
+    account: reading.account,
+    runState: reading.runState,
+    runStarted: iso(reading.runStartedAt),
+  });
+  if (reading.ok) {
+    console.log("  ✓ persisted strict request matches the latest implementor agent_run");
+  } else {
+    for (const error of reading.errors) console.log(`  ✗ ${error}`);
+  }
 }
 
 const findings = db
@@ -309,3 +331,4 @@ section("QA-loop check");
 }
 
 db.close();
+if (modelPinVerificationFailed) process.exitCode = 1;

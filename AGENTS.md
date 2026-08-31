@@ -99,6 +99,10 @@ For one task, run `npm run probe:task-runs --prefix server -- <thread-id|title-s
 hand-joining tables. Its control-flow timeline correlates run/account/cap verdicts, routing-capacity
 findings, owner/supervisor messages, and matching server boot/reconcile records in local time plus UTC.
 Add `--prompt` when the exact saved provider intent matters.
+For an explicit-model task, run `npm run probe:model-pin --prefix server -- <thread> --expect-model
+<canonical-id>`; it quickly exits non-zero unless the persisted strict request matches the latest
+implementor run's real model and provider. `probe:task-runs` also accepts `--verify-model-pin` when the
+same verdict should appear inside the full timeline.
 For "did my Supervisor-chat message arrive, and did its task action run?", use
 `npm run probe:supervisor-chat --prefix server -- <turn-id|task-id|task-title|message-text>`; omit the
 query for recent turns or add `--json`. It separates no receipt, pending, success, failure, and needs-input.
