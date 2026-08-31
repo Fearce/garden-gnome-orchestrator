@@ -2,6 +2,7 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.js";
 import { EFFORTS, type Effort } from "../types.js";
 import type { AgentRunConfig } from "./runner.js";
+import { conciseCommunicationEnabled, withCommunicationSystemPolicy, type CommunicationPolicyOptions } from "./communicationPolicy.js";
 import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, GIT_SERVER, MEMORY_SERVER, OFFICE_SERVER, OFFICE_TOOLS, READER_TOOLS, T } from "./toolNames.js";
 import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_FIX_PROMPT, QA_PROMPT, READER_PROMPT, RESEARCHER_PROMPT, REVIEWER_PROMPT } from "./prompts.js";
 
@@ -158,11 +159,15 @@ export function clampEffort(effort: Effort, cap: Effort): Effort {
 export function directorConfig(
   servers: { director: McpServerConfig; memory: McpServerConfig },
   directorName: string,
+  opts?: CommunicationPolicyOptions,
 ): AgentRunConfig {
   return {
     model: config.models.director,
     cwd: config.defaultWorkspace,
-    systemPrompt: `${DIRECTOR_PROMPT}\n\nYour name is ${directorName} — that's how ${config.ownerName} and the team refer to you; introduce yourself by it.`,
+    systemPrompt: withCommunicationSystemPolicy(
+      `${DIRECTOR_PROMPT}\n\nYour name is ${directorName} — that's how ${config.ownerName} and the team refer to you; introduce yourself by it.`,
+      conciseCommunicationEnabled(opts),
+    ),
     permissionMode: "bypassPermissions",
     // The director ONLY directs: it has no filesystem/shell tools, so it cannot investigate
     // the codebase itself — any "figure out / debug / explain" is forced into a dispatch.
@@ -175,11 +180,15 @@ export function directorConfig(
   };
 }
 
-export function plannerConfig(cwd: string, servers: { bus: McpServerConfig; office: McpServerConfig }): AgentRunConfig {
+export function plannerConfig(
+  cwd: string,
+  servers: { bus: McpServerConfig; office: McpServerConfig },
+  opts?: CommunicationPolicyOptions,
+): AgentRunConfig {
   return {
     model: config.models.planner,
     cwd,
-    systemPrompt: PLANNER_PROMPT,
+    systemPrompt: withCommunicationSystemPolicy(PLANNER_PROMPT, conciseCommunicationEnabled(opts)),
     permissionMode: "plan",
     allowedTools: ["Read", "Grep", "Glob", ...BUS_TOOLS, ...OFFICE_TOOLS],
     disallowedTools: ["AskUserQuestion"],
@@ -191,11 +200,15 @@ export function plannerConfig(cwd: string, servers: { bus: McpServerConfig; offi
   };
 }
 
-export function researcherConfig(cwd: string, servers: { bus: McpServerConfig; memory: McpServerConfig; office: McpServerConfig }): AgentRunConfig {
+export function researcherConfig(
+  cwd: string,
+  servers: { bus: McpServerConfig; memory: McpServerConfig; office: McpServerConfig },
+  opts?: CommunicationPolicyOptions,
+): AgentRunConfig {
   return {
     model: config.models.researcher,
     cwd,
-    systemPrompt: RESEARCHER_PROMPT,
+    systemPrompt: withCommunicationSystemPolicy(RESEARCHER_PROMPT, conciseCommunicationEnabled(opts)),
     permissionMode: "plan",
     // External-info-only: the researcher gathers web/docs/changelogs + the owner's memory, never the
     // codebase. Read/Grep/Glob are disallowed (the planner owns code reading) so it can't duplicate
@@ -213,12 +226,15 @@ export function researcherConfig(cwd: string, servers: { bus: McpServerConfig; m
 export function implementorConfig(
   cwd: string,
   servers: { bus: McpServerConfig; office: McpServerConfig },
-  opts?: { resume?: string; effort?: Effort },
+  opts?: { resume?: string; effort?: Effort; conciseCommunication?: boolean },
 ): AgentRunConfig {
   const cfg: AgentRunConfig = {
     model: config.models.implementor,
     cwd,
-    systemPrompt: { type: "preset", preset: "claude_code", append: IMPLEMENTOR_APPEND },
+    systemPrompt: withCommunicationSystemPolicy(
+      { type: "preset", preset: "claude_code", append: IMPLEMENTOR_APPEND },
+      conciseCommunicationEnabled(opts),
+    ),
     // Fully autonomous: bypassPermissions auto-approves every tool (Read/Write/
     // Edit/Bash/…) so dispatched implementors run unsupervised — but the broken
     // built-in question tool is disallowed so it uses the bus ask_user instead.
@@ -237,12 +253,19 @@ export function implementorConfig(
   return cfg;
 }
 
-export function qaConfig(cwd: string, servers: { bus: McpServerConfig; office: McpServerConfig }, opts?: { applyFixes?: boolean }): AgentRunConfig {
+export function qaConfig(
+  cwd: string,
+  servers: { bus: McpServerConfig; office: McpServerConfig },
+  opts?: { applyFixes?: boolean; conciseCommunication?: boolean },
+): AgentRunConfig {
   const applyFixes = opts?.applyFixes === true;
   return {
     model: config.models.qa,
     cwd,
-    systemPrompt: applyFixes ? QA_FIX_PROMPT : QA_PROMPT,
+    systemPrompt: withCommunicationSystemPolicy(
+      applyFixes ? QA_FIX_PROMPT : QA_PROMPT,
+      conciseCommunicationEnabled(opts),
+    ),
     // The standard QA path is deliberately read-only. The opt-in QA-fixes path is an editing role
     // which commits only the fixes it made, so a completed task never leaves QA edits orphaned.
     permissionMode: "bypassPermissions",
@@ -270,11 +293,15 @@ export function qaConfig(cwd: string, servers: { bus: McpServerConfig; office: M
  * point of delegating the review. The built-in AskUserQuestion stays blocked so those questions land in
  * the console's own question flow.
  */
-export function reviewerConfig(cwd: string, servers: { bus: McpServerConfig; office: McpServerConfig }): AgentRunConfig {
+export function reviewerConfig(
+  cwd: string,
+  servers: { bus: McpServerConfig; office: McpServerConfig },
+  opts?: CommunicationPolicyOptions,
+): AgentRunConfig {
   return {
     model: config.models.reviewer,
     cwd,
-    systemPrompt: REVIEWER_PROMPT,
+    systemPrompt: withCommunicationSystemPolicy(REVIEWER_PROMPT, conciseCommunicationEnabled(opts)),
     permissionMode: "bypassPermissions",
     disallowedTools: ["Write", "Edit", "NotebookEdit", "MultiEdit", "AskUserQuestion"],
     mcpServers: { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },
@@ -298,11 +325,12 @@ export function reviewerConfig(cwd: string, servers: { bus: McpServerConfig; off
 export function readerConfig(
   cwd: string,
   servers: { bus: McpServerConfig; office: McpServerConfig; git: McpServerConfig },
+  opts?: CommunicationPolicyOptions,
 ): AgentRunConfig {
   return {
     model: config.models.reader,
     cwd,
-    systemPrompt: READER_PROMPT,
+    systemPrompt: withCommunicationSystemPolicy(READER_PROMPT, conciseCommunicationEnabled(opts)),
     // bypassPermissions auto-approves the read tools so the reader runs unsupervised; the write/shell/
     // network tools below are then hard-blocked by disallowedTools (a real block under bypass, proven by
     // the QA role) — so the read-only guarantee holds even if the model is told, or tricked, to write.

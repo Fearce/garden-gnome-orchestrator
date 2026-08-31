@@ -414,6 +414,7 @@ const OFFLINE_OFFICE: OnlineOfficeDTO = {
 };
 
 const DEFAULT_SETTINGS: OrchestratorSettings = {
+  conciseAgentCommunication: true,
   plannerEnabled: true,
   researcherEnabled: true,
   qaEnabled: true,

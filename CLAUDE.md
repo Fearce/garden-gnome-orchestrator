@@ -462,6 +462,19 @@ same thing to click), and a task holds ≤5 (oldest evicted, never refused). The
 and becomes an `href`, so http(s) is enforced at BOTH ends — service refuses, render degrades to text.
 Gates `test:notes` + `test:office-bridge`; `npm run notes-lab --prefix server`.
 
+## Concise agent communication (Settings → Agent communication, on by default)
+`settings.conciseAgentCommunication` is a server-authoritative, `kv`-persisted wording policy. On,
+every role leads with the answer, uses short concrete plain language, and removes filler, repeated
+process narration, and avoidable jargon. It covers Director chat, planner/researcher/reader findings,
+implementor handoffs, QA/reviewer/Supervisor prose, office bridges, and task-status explanations.
+
+This is **not** output truncation and never changes task scope, implementation depth, tests, diagnostics,
+permissions, tools, bridge grammar, or structured schemas. Blockers, errors, safety caveats, exact
+commands/IDs, and decision evidence stay intact. `agents/communicationPolicy.ts` supplies one trusted
+policy block to role system prompts and every fresh/resumed/steered turn; Director and Supervisor use
+the same live seam, so the next generated turn sees a toggle immediately without a restart. Gate:
+`test:concise-communication`.
+
 ## Director Supervisor (Settings → Director Supervisor, off by default)
 **Off means off:** no timer, agent turn, or DB scan is armed; the one live event subscription returns on
 one boolean check so a toggle can take effect without reconnecting browsers. **On** adds a single-flight,

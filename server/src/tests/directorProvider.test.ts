@@ -216,7 +216,10 @@ try {
   await new Promise<void>((resolve) => setImmediate(resolve));
   check(
     "a finished CLI run cannot settle the next owner message",
-    typeof nextRun.startedWith === "string" && nextRun.startedWith.endsWith("Do not drop this rollover message.") && rolloverInternals.pending === "Do not drop this rollover message.",
+    typeof nextRun.startedWith === "string" &&
+      nextRun.startedWith.includes('<ggo_communication_policy state="on">') &&
+      nextRun.startedWith.includes("Do not drop this rollover message.") &&
+      rolloverInternals.pending === "Do not drop this rollover message.",
     JSON.stringify({ startedWith: nextRun.startedWith, pending: rolloverInternals.pending }),
   );
   rolloverDirector.cancelTurn();

@@ -15,6 +15,7 @@ import { normalizeDuration } from "./timedTasks.js";
 import { clampAgentCount } from "./shotgun.js";
 import { existsSync } from "node:fs";
 import { DIRECTOR_CLI_PROTOCOL, DIRECTOR_CLI_SCHEMA, executeDirectorCliAction, type DirectorCliAction } from "./directorCliBridge.js";
+import { withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
 
 const MAX_DIRECTOR_FAILOVERS = 6;
 const MAX_CLI_ACTIONS = 20;
@@ -119,7 +120,7 @@ export class Director {
       void old.stop();
       void this.start(content);
     } else if (live) {
-      this.run!.send(content);
+      this.run!.send(withCommunicationTurnPolicy(content, this.api.settings().conciseAgentCommunication));
     } else {
       // Neutralize a finished run's not-yet-delivered onEnd callback before starting the next turn.
       // The callback's `this.run !== run` ownership guard will now leave the new pending prompt alone.
@@ -254,7 +255,12 @@ export class Director {
       this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
     }, this.scheduler, this.notes, () => this.taskModeDefaults());
     const memory = createMemoryServer(this.api.memory);
-    const cfg = directorConfig({ director, memory }, this.api.directorName());
+    const conciseCommunication = this.api.settings().conciseAgentCommunication;
+    const cfg = directorConfig(
+      { director, memory },
+      this.api.directorName(),
+      { conciseCommunication },
+    );
     const sessionKey = this.sessionKey(chosen);
     const resume = this.activeSessionKey === sessionKey ? this.sessions.get(sessionKey) : undefined;
     const isCli = chosen.provider === "codex" || chosen.provider === "grok";
@@ -266,7 +272,8 @@ export class Director {
     this.run = run;
     this.publishStatus();
     this.wire(run, chosen);
-    const content = resume ? firstContent : this.bootstrapContent(firstContent, cfg.systemPrompt, isCli);
+    const instructed = withCommunicationTurnPolicy(firstContent, conciseCommunication);
+    const content = resume ? instructed : this.bootstrapContent(instructed, cfg.systemPrompt, isCli);
     run.start(content);
   }
 

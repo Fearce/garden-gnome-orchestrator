@@ -440,6 +440,8 @@ export interface ZaiUsageDTO {
 /** Operator-tunable pipeline settings — server-authoritative (persisted in the DB kv table, broadcast
  *  to every client). Mirrors the server's OrchestratorSettings. */
 export interface OrchestratorSettings {
+  /** On by default: agents use short, direct, plain-language prose without losing required evidence. */
+  conciseAgentCommunication: boolean;
   plannerEnabled: boolean;
   researcherEnabled: boolean;
   qaEnabled: boolean;

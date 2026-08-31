@@ -55,6 +55,7 @@
     "test:voice-announce": "tsx src/tests/voiceAnnounce.test.ts",
     "test:discord-notify": "tsx src/tests/discordNotify.itest.ts",
     "test:director-supervisor": "tsx src/tests/directorSupervisor.test.ts",
+    "test:concise-communication": "tsx src/tests/conciseCommunication.test.ts",
     "test:run-error": "tsx src/tests/runError.test.ts",
     "test:run-classify": "node scripts/run-classify.test.cjs",
     "test:cap-flag": "tsx src/tests/capFlag.test.ts",

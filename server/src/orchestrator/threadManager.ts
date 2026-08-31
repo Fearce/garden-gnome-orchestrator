@@ -15,6 +15,7 @@ import {
   type UserContent,
 } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
+import { withCommunicationSystemPolicy, withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
 import { codexPools, codexUsageCapped, liveCodexUsage, readCodexUsage } from "../agents/codexUsage.js";
 import {
   detectTimedComplete,
@@ -2059,6 +2060,7 @@ export class ThreadManager implements OrchestratorApi {
     const key = this.openaiApiKey();
     const grokAuth = readGrokAuth();
     return {
+      conciseAgentCommunication: this.settingBool("setting_concise_agent_communication", true),
       plannerEnabled: this.settingBool("setting_planner_enabled", true),
       researcherEnabled: this.settingBool("setting_researcher_enabled", true),
       qaEnabled: this.settingBool("setting_qa_enabled", true),
@@ -2123,6 +2125,24 @@ export class ThreadManager implements OrchestratorApi {
       grokModels: this.pickableGrokModels(),
       directorSupervisorEnabled: this.settingBool("setting_director_supervisor_enabled", false),
     };
+  }
+
+  /** Read at the moment a role/turn starts. A persisted toggle therefore applies to new work and warm
+   *  resumes immediately; no prompt files or server process need rebuilding. */
+  private communicationPolicyOptions(): { conciseCommunication: boolean } {
+    return { conciseCommunication: this.settingBool("setting_concise_agent_communication", true) };
+  }
+
+  /** Prefix trusted wording policy without touching the owner/task payload or any structured schema. */
+  private communicationContent(content: UserContent): UserContent {
+    return withCommunicationTurnPolicy(
+      content,
+      this.settingBool("setting_concise_agent_communication", true),
+    );
+  }
+
+  private sendCommunication(run: AgentRunLike, content: UserContent, opts?: SendOpts): void {
+    run.send(this.communicationContent(content), opts);
   }
 
   // ---- per-(subscription × role) model selection ----
@@ -2464,11 +2484,15 @@ export class ThreadManager implements OrchestratorApi {
   async supervisorJudge(prompt: string, schema: JsonSchemaLike): Promise<SupervisorJudgement | null> {
     const target = this.preferredDirectorTarget();
     if (!target) return null;
+    const conciseCommunication = this.settingBool("setting_concise_agent_communication", true);
     mkdirSync(join(config.dataDir, "director-sandbox"), { recursive: true });
     const cfg: AgentRunConfig = {
       model: target.model,
       cwd: join(config.dataDir, "director-sandbox"),
-      systemPrompt: "Return only the requested structured answer. Do not use tools or inspect files.",
+      systemPrompt: withCommunicationSystemPolicy(
+        "Return only the requested structured answer. Do not use tools or inspect files.",
+        conciseCommunication,
+      ),
       permissionMode: "plan",
       allowedTools: [],
       disallowedTools: ["Read", "Grep", "Glob", "Write", "Edit", "NotebookEdit", "Bash", "AskUserQuestion"],
@@ -2481,7 +2505,10 @@ export class ThreadManager implements OrchestratorApi {
     const off = agent.onEvent((e) => {
       if (e.type === "rate_limit" && target.provider === "claude") this.accounts.updateFromRateLimit(target.accountId, e.info);
     });
-    agent.start(`${prompt}\n\nReturn exactly one JSON object matching the supplied schema.`);
+    agent.start(withCommunicationTurnPolicy(
+      `${prompt}\n\nReturn exactly one JSON object matching the supplied schema.`,
+      conciseCommunication,
+    ));
     const result = await agent.result().catch(() => undefined);
     off();
     await agent.stop().catch(() => {});
@@ -3043,6 +3070,9 @@ export class ThreadManager implements OrchestratorApi {
   /** Persist a partial settings change, broadcast the full new set, and pump the queue (a raised
    *  maxConcurrent may have freed slots). Returns the resulting settings. */
   setSettings(patch: SettingsPatch): OrchestratorSettings {
+    if (patch.conciseAgentCommunication !== undefined) {
+      this.db.kvSet("setting_concise_agent_communication", patch.conciseAgentCommunication ? "1" : "0");
+    }
     if (patch.plannerEnabled !== undefined) this.db.kvSet("setting_planner_enabled", patch.plannerEnabled ? "1" : "0");
     if (patch.researcherEnabled !== undefined) this.db.kvSet("setting_researcher_enabled", patch.researcherEnabled ? "1" : "0");
     if (patch.qaEnabled !== undefined) this.db.kvSet("setting_qa_enabled", patch.qaEnabled ? "1" : "0");
@@ -4977,7 +5007,7 @@ export class ThreadManager implements OrchestratorApi {
     this.officeCheckIn(thread.id, role);
     this.ensureGroup(thread.id);
     if (role === "planner") this.liveRole.set(thread.id, agent);
-    agent.start(kickoff);
+    agent.start(this.communicationContent(kickoff));
     let result = await agent.result();
     // A note arriving during this run changes the remaining work. Do not spend another free completion
     // revising the plan: leave the durable note buffered and let runRole's reliable path absorb it once.
@@ -5167,7 +5197,7 @@ export class ThreadManager implements OrchestratorApi {
           cwd: thread.workspace,
           apiKey: this.openaiApiKey() ?? "",
           resume,
-          freshFallback: resume ? fullKickoff : undefined,
+          freshFallback: resume ? this.communicationContent(fullKickoff) : undefined,
           outputSchema: cfg.outputFormat?.schema,
           // A reader may inspect files/git through Codex's shell, but its lane contract is immutable:
           // enforce the same read-only sandbox used by the director instead of the implementor bypass.
@@ -5191,7 +5221,7 @@ export class ThreadManager implements OrchestratorApi {
           effort: this.grokEffort(model),
           cwd: thread.workspace,
           resume,
-          freshFallback: resume ? fullKickoff : undefined,
+          freshFallback: resume ? this.communicationContent(fullKickoff) : undefined,
           outputSchema: cfg.outputFormat?.schema,
           onOfficeChat: (scope, body) => {
             this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
@@ -5227,7 +5257,7 @@ export class ThreadManager implements OrchestratorApi {
       if (role === "planner") this.liveRole.set(thread.id, agent);
       if (role === "qa") this.liveQa.set(thread.id, agent);
       if (role === "reviewer") this.liveReviewer.set(thread.id, agent);
-      agent.start(startMessage);
+      agent.start(this.communicationContent(startMessage));
       let res = await agent.result();
       // A provider can emit its cap signal before a success-shaped terminal result (for example an
       // assistant session-limit notice followed by `success`). The cap wins over that nominal result:
@@ -5406,7 +5436,8 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.log("info", `Re-planning ${thread.id.slice(0, 8)} with ${notes.length} injected note(s) before the implementor starts.`);
       // This role is schema-bound, so its `summary` field carries the ACK instead of emitting free-form
       // text before its plan. Re-emitting that plan is the acknowledgement and the downstream hand-off.
-      agent.send(
+      this.sendCommunication(
+        agent,
         structuredAcknowledgedInjection(`${notes.join("\n\n")}\n\nRevise your plan to account for this, then re-emit your structured plan.`),
         { priority: "now" },
       );
@@ -5422,7 +5453,7 @@ export class ThreadManager implements OrchestratorApi {
     const res = await this.runRole(thread, "planner", this.kickoffContent(thread.id, this.withOfficeNote(thread, "planner", thread.brief)), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "planner", getRunId: () => runId });
       const office = createOfficeServer(this, { threadId: thread.id, role: "planner", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
-      const cfg = plannerConfig(thread.workspace, { bus, office });
+      const cfg = plannerConfig(thread.workspace, { bus, office }, this.communicationPolicyOptions());
       cfg.oauthToken = token;
       if (resume) cfg.resume = resume;
       return cfg;
@@ -5435,7 +5466,7 @@ export class ThreadManager implements OrchestratorApi {
       const bus = createBusServer(this, { threadId: thread.id, role: "researcher", getRunId: () => runId });
       const memory = createMemoryServer(this.memory);
       const office = createOfficeServer(this, { threadId: thread.id, role: "researcher", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
-      const cfg = researcherConfig(thread.workspace, { bus, memory, office });
+      const cfg = researcherConfig(thread.workspace, { bus, memory, office }, this.communicationPolicyOptions());
       cfg.oauthToken = token;
       if (resume) cfg.resume = resume;
       return cfg;
@@ -5519,7 +5550,7 @@ export class ThreadManager implements OrchestratorApi {
         const bus = createBusServer(this, { threadId: thread.id, role: "reader", getRunId: () => runId });
         const office = createOfficeServer(this, { threadId: thread.id, role: "reader", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
         const git = createGitReadServer(thread.workspace);
-        const cfg = readerConfig(thread.workspace, { bus, office, git });
+        const cfg = readerConfig(thread.workspace, { bus, office, git }, this.communicationPolicyOptions());
         cfg.oauthToken = token;
         if (resume) cfg.resume = resume;
         return cfg;
@@ -5648,7 +5679,10 @@ export class ThreadManager implements OrchestratorApi {
       ({ token, resume: r, runId }) => {
         const bus = createBusServer(this, { threadId: thread.id, role: "qa", getRunId: () => runId });
         const office = createOfficeServer(this, { threadId: thread.id, role: "qa", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
-        const cfg = qaConfig(thread.workspace, { bus, office }, { applyFixes: opts.applyFixes });
+        const cfg = qaConfig(thread.workspace, { bus, office }, {
+          applyFixes: opts.applyFixes,
+          ...this.communicationPolicyOptions(),
+        });
         cfg.oauthToken = token;
         if (r) cfg.resume = r;
         return cfg;
@@ -5911,7 +5945,7 @@ export class ThreadManager implements OrchestratorApi {
         cwd: thread.workspace,
         apiKey: this.openaiApiKey() ?? "",
         resume: opts?.resume,
-        freshFallback: opts?.freshFallback,
+        freshFallback: opts?.freshFallback ? this.communicationContent(opts.freshFallback) : undefined,
         onOfficeChat: (scope, body) => {
           this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
         },
@@ -5943,7 +5977,7 @@ export class ThreadManager implements OrchestratorApi {
         effort,
         cwd: thread.workspace,
         resume: opts?.resume,
-        freshFallback: opts?.freshFallback,
+        freshFallback: opts?.freshFallback ? this.communicationContent(opts.freshFallback) : undefined,
         onOfficeChat: (scope, body) => {
           this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
         },
@@ -5971,7 +6005,11 @@ export class ThreadManager implements OrchestratorApi {
       this.emitRun(run.id);
       const bus = createBusServer(this, { threadId: thread.id, role: "implementor", getRunId: () => run.id });
       const office = createOfficeServer(this, { threadId: thread.id, role: "implementor", workspace: thread.workspace, title: thread.title, getRunId: () => run.id });
-      const cfg = implementorConfig(thread.workspace, { bus, office }, { resume: opts?.resume, effort });
+      const cfg = implementorConfig(thread.workspace, { bus, office }, {
+        resume: opts?.resume,
+        effort,
+        ...this.communicationPolicyOptions(),
+      });
       cfg.model = model;
       cfg.baseUrl = config.zai.baseUrl;
       cfg.authToken = this.zaiApiKey();
@@ -5992,7 +6030,11 @@ export class ThreadManager implements OrchestratorApi {
       this.emitRun(run.id);
       const bus = createBusServer(this, { threadId: thread.id, role: "implementor", getRunId: () => run.id });
       const office = createOfficeServer(this, { threadId: thread.id, role: "implementor", workspace: thread.workspace, title: thread.title, getRunId: () => run.id });
-      const cfg = implementorConfig(thread.workspace, { bus, office }, { resume: opts?.resume, effort });
+      const cfg = implementorConfig(thread.workspace, { bus, office }, {
+        resume: opts?.resume,
+        effort,
+        ...this.communicationPolicyOptions(),
+      });
       cfg.model = model;
       cfg.oauthToken = acct.token;
       // On a fresh start, fold in a heads-up naming any teammates already live in this repo so the
@@ -6019,7 +6061,9 @@ export class ThreadManager implements OrchestratorApi {
     });
     // Base dispatch images stay on fresh kickoffs; explicit resume images are owner-provided handoff
     // context such as QA-interrupt attachments and must travel with the resumed turn.
-    agent.start(this.implementorStartContent(thread.id, kickoff, startKickoff, !!opts?.resume, opts?.images));
+    agent.start(this.communicationContent(
+      this.implementorStartContent(thread.id, kickoff, startKickoff, !!opts?.resume, opts?.images),
+    ));
     return { run: agent, runId, accountId };
   }
 
@@ -6964,7 +7008,7 @@ export class ThreadManager implements OrchestratorApi {
     const res = await this.runRole(thread, "planner", this.kickoffContent(thread.id, kickoff), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "planner", getRunId: () => runId });
       const office = createOfficeServer(this, { threadId: thread.id, role: "planner", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
-      const cfg = plannerConfig(thread.workspace, { bus, office });
+      const cfg = plannerConfig(thread.workspace, { bus, office }, this.communicationPolicyOptions());
       cfg.oauthToken = token;
       if (resume) cfg.resume = resume;
       cfg.outputFormat = { type: "json_schema", schema: SHOTGUN_SCHEMA };
@@ -7748,7 +7792,11 @@ export class ThreadManager implements OrchestratorApi {
     const text = messages.length
       ? `[Additional instruction(s) received while QA was returning this task to implementation]\n${messages.map((m, i) => `${i + 1}. ${m}`).join("\n")}`
       : "[Additional image attachment(s) received while QA was returning this task to implementation.]";
-    run.send(contentWithImages(acknowledgedInjection(text), this.attachmentImageBlocks(attachmentIds)), { priority: "now" });
+    this.sendCommunication(
+      run,
+      contentWithImages(acknowledgedInjection(text), this.attachmentImageBlocks(attachmentIds)),
+      { priority: "now" },
+    );
   }
 
   private clearQaFixHandoff(threadId: string): void {
@@ -7834,7 +7882,7 @@ export class ThreadManager implements OrchestratorApi {
     const buffered = this.pendingResumeMsgs.get(thread.id);
     if (buffered?.length) {
       this.pendingResumeMsgs.delete(thread.id);
-      for (const m of buffered) start.run.send(acknowledgedInjection(m), { priority: "next" });
+      for (const m of buffered) this.sendCommunication(start.run, acknowledgedInjection(m), { priority: "next" });
     }
     const qaFollows = !this.qaBypassedByOwner(thread.id);
     const result = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, resumeMsg, qaFollows);
@@ -7953,7 +8001,10 @@ export class ThreadManager implements OrchestratorApi {
    *  The planner is deliberately NOT on this path: interrupting it is safe precisely because it HAS a
    *  continuation — drainDirectorNotes re-plans off the aborted turn. Interrupt only a role that has one. */
   private steerStructuredRole(run: AgentRunLike, message: string, images?: ImageAttachment[]): void {
-    run.send(contentWithImages(structuredAcknowledgedInjection(message), images?.length ? images.map(toImageBlock) : []));
+    this.sendCommunication(
+      run,
+      contentWithImages(structuredAcknowledgedInjection(message), images?.length ? images.map(toImageBlock) : []),
+    );
   }
 
   /** Persist an explicit owner override before routing the injection anywhere. The automatic route is
@@ -8176,7 +8227,11 @@ export class ThreadManager implements OrchestratorApi {
       } else if (impl) {
         // Mid fix round: the implementor IS the agent to steer, and it takes the ordinary (non-structured)
         // injection — it has no output schema to corrupt.
-        impl.run.send(contentWithImages(acknowledgedInjection(message), blocks), mode === "interrupt" ? { priority: "now" } : undefined);
+        this.sendCommunication(
+          impl.run,
+          contentWithImages(acknowledgedInjection(message), blocks),
+          mode === "interrupt" ? { priority: "now" } : undefined,
+        );
       } else {
         // The sub-second window before the reviewer registers its handle (or just after it returned).
         // Buffer like the QA gate does; runAutoReview drops the buffer when the task settles, so a note
@@ -8204,7 +8259,13 @@ export class ThreadManager implements OrchestratorApi {
       const blocks = images?.length ? images.map(toImageBlock) : [];
       // Buffered notes are drained by flushDirectorNotes when the round's implementor goes live, so the
       // pre-launch window (stopLive → compressed seed) loses nothing either.
-      if (impl) impl.run.send(contentWithImages(acknowledgedInjection(message), blocks), mode === "interrupt" ? { priority: "now" } : undefined);
+      if (impl) {
+        this.sendCommunication(
+          impl.run,
+          contentWithImages(acknowledgedInjection(message), blocks),
+          mode === "interrupt" ? { priority: "now" } : undefined,
+        );
+      }
       else this.bufferDirectorNote(threadId, message);
       const m = this.db.addMessage({
         threadId,
@@ -8224,7 +8285,8 @@ export class ThreadManager implements OrchestratorApi {
         this.setState(threadId, "implementing");
       }
       const blocks = images?.length ? images.map(toImageBlock) : [];
-      live.run.send(
+      this.sendCommunication(
+        live.run,
         contentWithImages(acknowledgedInjection(message), blocks),
         injectionSendOptions(live.run, mode),
       );
@@ -8387,7 +8449,7 @@ export class ThreadManager implements OrchestratorApi {
     if (!notes?.length) return;
     this.directorNotes.delete(threadId);
     this.hub.log("info", `Delivering ${notes.length} buffered director note(s) to the now-live implementor on ${threadId.slice(0, 8)}.`);
-    run.send(acknowledgedInjection(notes.join("\n\n")), { priority: "now" });
+    this.sendCommunication(run, acknowledgedInjection(notes.join("\n\n")), { priority: "now" });
   }
 
   async interruptThread(threadId: string): Promise<ThreadActionResult> {
@@ -8520,7 +8582,7 @@ export class ThreadManager implements OrchestratorApi {
         const reviewer = this.liveReviewer.get(threadId);
         const impl = this.live.get(threadId);
         if (reviewer) this.steerStructuredRole(reviewer, message);
-        else if (impl) impl.run.send(acknowledgedInjection(message), { priority: "now" });
+        else if (impl) this.sendCommunication(impl.run, acknowledgedInjection(message), { priority: "now" });
         else this.bufferDirectorNote(threadId, message);
       }
       return { ok: true, state: thread.state };
@@ -8532,14 +8594,18 @@ export class ThreadManager implements OrchestratorApi {
     if (this.selfImproving.has(threadId)) {
       if (message?.trim()) {
         const impl = this.live.get(threadId);
-        if (impl) impl.run.send(acknowledgedInjection(message), { priority: "now" });
+        if (impl) this.sendCommunication(impl.run, acknowledgedInjection(message), { priority: "now" });
         else this.bufferDirectorNote(threadId, message);
       }
       return { ok: true, state: thread.state };
     }
     const live = this.live.get(threadId);
     if (live) {
-      live.run.send(message?.trim() ? acknowledgedInjection(message) : "Continue.", { priority: "now" });
+      this.sendCommunication(
+        live.run,
+        message?.trim() ? acknowledgedInjection(message) : "Continue.",
+        { priority: "now" },
+      );
       this.setState(threadId, "implementing");
       return { ok: true, state: "implementing" };
     }
@@ -8649,7 +8715,7 @@ export class ThreadManager implements OrchestratorApi {
     const buffered = this.pendingResumeMsgs.get(thread.id);
     if (buffered?.length) {
       this.pendingResumeMsgs.delete(thread.id);
-      for (const m of buffered) start.run.send(acknowledgedInjection(m), { priority: "next" });
+      for (const m of buffered) this.sendCommunication(start.run, acknowledgedInjection(m), { priority: "next" });
     }
     await this.awaitImplementorCompletion(thread, this.implementorEffort(thread.id), baseKickoff, start.run, start.accountId, false, resumeNudge, false)
       .then(() => {
@@ -9129,7 +9195,7 @@ export class ThreadManager implements OrchestratorApi {
       ({ token, resume, runId }) => {
         const bus = createBusServer(this, { threadId: thread.id, role: "reviewer", getRunId: () => runId });
         const office = createOfficeServer(this, { threadId: thread.id, role: "reviewer", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
-        const cfg = reviewerConfig(thread.workspace, { bus, office });
+        const cfg = reviewerConfig(thread.workspace, { bus, office }, this.communicationPolicyOptions());
         cfg.oauthToken = token;
         if (resume) cfg.resume = resume;
         return cfg;
@@ -9348,7 +9414,11 @@ export class ThreadManager implements OrchestratorApi {
       void this.injectThread(finding.threadId, `${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`, "interrupt");
       this.db.markFindingRouted(finding.id);
     } else if (finding.severity === "warning") {
-      live.run.send(`[Heads-up finding] ${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`, { priority: "next" });
+      this.sendCommunication(
+        live.run,
+        `[Heads-up finding] ${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`,
+        { priority: "next" },
+      );
       this.db.markFindingRouted(finding.id);
     }
   }
@@ -9471,7 +9541,7 @@ export class ThreadManager implements OrchestratorApi {
     for (const [tid, live] of this.live) {
       const t = this.db.getThread(tid);
       if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
-      live.run.send(build(this.isCliOfficeBridge(live.accountId)), { priority: "next" });
+      this.sendCommunication(live.run, build(this.isCliOfficeBridge(live.accountId)), { priority: "next" });
     }
   }
 
@@ -9640,7 +9710,11 @@ export class ThreadManager implements OrchestratorApi {
       const t = this.db.getThread(tid);
       if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
       // CLI backends (Codex/Grok) have no chat_post — tell them to reply via the OFFICE text bridge.
-      live.run.send(this.isCliOfficeBridge(live.accountId) ? this.cliTeamChatPush(m, who) : text, { priority: "next" });
+      this.sendCommunication(
+        live.run,
+        this.isCliOfficeBridge(live.accountId) ? this.cliTeamChatPush(m, who) : text,
+        { priority: "next" },
+      );
       pinged++;
     }
     return pinged;
@@ -9706,7 +9780,11 @@ export class ThreadManager implements OrchestratorApi {
         const t = this.db.getThread(tid);
         if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
       }
-      live.run.send(this.isCliOfficeBridge(live.accountId) ? this.cliDirectorChatPush(text, general) : push, { priority: "now" });
+      this.sendCommunication(
+        live.run,
+        this.isCliOfficeBridge(live.accountId) ? this.cliDirectorChatPush(text, general) : push,
+        { priority: "now" },
+      );
       pinged++;
     }
     this.hub.log("info", `Director posted to ${general ? "the office" : `team ${workspace}`} — pinged ${pinged} live agent(s).`);
@@ -9871,7 +9949,7 @@ export class ThreadManager implements OrchestratorApi {
     const how = cli
       ? "Coordinate through the CLI office bridge from now on: write a standalone `OFFICE[team]: <short message>` line to claim the files/areas you'll touch, answer any teammate `OFFICE`/office message the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks. If a post needs multiple lines, indent each continuation by two spaces so it remains one lossless message."
       : "Office coordination is now ON: call `office_look` to see who's here and their names, `chat_read(scope:\"team\")` what they've posted, and `chat_post(scope:\"team\")` to claim the files/areas you're about to change before you edit — then re-check `git diff` before committing so you only commit your own hunks. Their team messages arrive straight in your session; answer with `chat_post(scope:\"team\")` and adjust.";
-    live.run.send(`${intro} ${how}`, { priority: "next" });
+    this.sendCommunication(live.run, `${intro} ${how}`, { priority: "next" });
   }
 
   /** Post a task's check-in to the general office — but only once it's actually collaborating (2+ agents

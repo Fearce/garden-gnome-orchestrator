@@ -37,6 +37,18 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
+        <Group label="Agent communication">
+          <ToggleRow
+            label="Keep agent messages concise"
+            hint="On (default): every agent leads with the answer, uses short concrete sentences and plain language, and removes filler, repeated points, process narration, and avoidable jargon. Applies to Director chat, findings, handoffs, QA/review/supervisor messages, office chat, and task-status explanations."
+            on={settings.conciseAgentCommunication}
+            onChange={(v) => setSettings({ conciseAgentCommunication: v })}
+          />
+          <p className="settings-note tight">
+            Wording only. Agents still implement, investigate, test, and preserve blockers, errors, exact commands/IDs, safety caveats, and evidence in full.
+          </p>
+        </Group>
+
         <Group label="Pipeline">
           <ToggleRow
             label="Auto-push"

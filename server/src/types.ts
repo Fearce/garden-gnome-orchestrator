@@ -697,6 +697,9 @@ export interface StageOutputs {
  * next task without a restart — the agent toggles in particular are meant to be flipped per task.
  */
 export interface OrchestratorSettings {
+  /** Wording-only policy for every owner-facing/operational agent channel. It never changes work depth,
+   *  permissions, tools, or structured outputs. On by default; read live for each new/resumed turn. */
+  conciseAgentCommunication: boolean;
   plannerEnabled: boolean; // off → skip the planner; the implementor runs straight from the brief
   researcherEnabled: boolean; // off → never run the researcher even if the planner routes to it
   qaEnabled: boolean; // off → skip the QA loop; the implementor's output is final

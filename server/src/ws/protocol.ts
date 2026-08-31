@@ -216,6 +216,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     type: z.literal("settings.set"),
     settings: z
       .object({
+        conciseAgentCommunication: z.boolean(),
         plannerEnabled: z.boolean(),
         researcherEnabled: z.boolean(),
         qaEnabled: z.boolean(),
