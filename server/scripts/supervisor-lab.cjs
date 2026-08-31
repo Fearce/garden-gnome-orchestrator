@@ -435,8 +435,9 @@ async function driveDesktop(page, shotDir) {
 }
 
 /** Submit through the real authenticated UI and websocket. One deterministic new-work turn proves the
- * success path without spending provider capacity; one targeted turn uses bogus lab credentials so the
- * pending -> failure lifecycle is visible and no production task can be touched. Reload then proves the
+ * routing boundary without spending provider capacity; one deterministic targeted status turn proves
+ * the common safe-control path; one targeted assessment uses bogus lab credentials so the pending ->
+ * failure lifecycle is visible and no production task can be touched. Reload then proves the
  * conversation is SQLite history, not component-local echo text. */
 async function driveChatRoundTrip(page) {
   console.log("\n════ CHAT ROUND TRIP — authenticated submit, target routing, pending/failure, reload");
@@ -486,15 +487,38 @@ async function driveChatRoundTrip(page) {
       response: last?.querySelector(".supervisor-agent-bubble")?.textContent.trim(),
     };
   });
-  check("chat: a targeted request visibly passes through pending into an honest provider failure", /failed/i.test(targeted.status ?? "") && /no task action/i.test(targeted.response ?? ""), JSON.stringify(targeted));
+  check("chat: a targeted status request visibly passes through pending into deterministic completion", /completed/i.test(targeted.status ?? "") && /status checked/i.test(targeted.response ?? ""), JSON.stringify(targeted));
   check("chat: target routing remains auditable by title and short id", /Fix incorrect menu/.test(targeted.target ?? "") && /#supervis/.test(targeted.target ?? ""), JSON.stringify(targeted.target));
+
+  await page.evaluate(() => {
+    window.__supervisorSawPending = false;
+    const observer = new MutationObserver(() => {
+      if (document.querySelector(".supervisor-turn.turn-pending")) window.__supervisorSawPending = true;
+    });
+    observer.observe(document.querySelector(".supervisor-conversation"), { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    window.__supervisorPendingObserver = observer;
+  });
+  await page.fill(".supervisor-compose-row textarea", "Assess whether this task needs intervention.");
+  await page.click(".supervisor-send");
+  await page.waitForFunction(() => window.__supervisorSawPending === true, null, { timeout: 10_000 });
+  await page.waitForFunction(() => !document.querySelector(".supervisor-turn:last-of-type")?.classList.contains("turn-pending"), null, { timeout: 120_000 });
+  const failedAssessment = await page.evaluate(() => {
+    window.__supervisorPendingObserver?.disconnect();
+    const last = document.querySelector(".supervisor-turn:last-of-type");
+    return {
+      status: last?.querySelector(".supervisor-turn-status")?.textContent.trim(),
+      target: last?.querySelector(".supervisor-turn-targets")?.textContent.trim(),
+      response: last?.querySelector(".supervisor-agent-bubble")?.textContent.trim(),
+    };
+  });
+  check("chat: a targeted assessment visibly passes through pending into an honest provider failure", /failed/i.test(failedAssessment.status ?? "") && /no task action/i.test(failedAssessment.response ?? ""), JSON.stringify(failedAssessment));
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
   await page.click(".board-tab.bt-supervisor");
-  await page.waitForFunction((n) => document.querySelectorAll(".supervisor-turn").length >= n + 2, before);
+  await page.waitForFunction((n) => document.querySelectorAll(".supervisor-turn").length >= n + 3, before);
   const restored = (await page.textContent(".supervisor-turn:last-of-type")) ?? "";
-  check("chat: the failed targeted turn survives a full browser reload", /Check this task's current status/.test(restored) && /Failed/i.test(restored), JSON.stringify(restored));
+  check("chat: the failed targeted turn survives a full browser reload", /Assess whether this task needs intervention/.test(restored) && /Failed/i.test(restored), JSON.stringify(restored));
 }
 
 /** Patch the browser's already-live WebSocket prototype once, then delay exactly the next frame of a
