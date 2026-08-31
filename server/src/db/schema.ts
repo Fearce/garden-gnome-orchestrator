@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS threads (
   raw_prompt    TEXT NOT NULL DEFAULT '',
   error         TEXT,
   effort_override TEXT,
+  -- Strict owner-requested implementor model as JSON ({requested, provider, model, strict}). Kept on the
+  -- task row because retries/resumes must retain it and the mobile UI renders requested vs actual.
+  model_request TEXT,
   stage_outputs TEXT,
   closed_at         INTEGER,
   closed_prev_state TEXT,

@@ -138,6 +138,10 @@ export interface Thread {
   brief: string; // enriched brief that kicked off the pipeline
   rawPrompt: string; // the user's original ask
   error?: string | null;
+  /** Strict per-task implementor model request copied from the owner's Director prompt. `model` is the
+   * canonical provider id resolved from the live system; null means the request is persisted but cannot
+   * currently be resolved, which blocks clearly instead of falling back. */
+  modelRequest?: ModelRequest | null;
   effortOverride?: Effort | null; // operator-pinned implementor effort, snapshotted at a skip-director dispatch — beats the planner's pick
   closedAt?: number | null; // when soft-closed (state === "closed"); drives the 30-day auto-purge clock
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' means it finished correctly (drives the closed-card checkmark)
@@ -790,6 +794,16 @@ export interface OrchestratorSettings {
 
 /** The implementor backend chosen at dispatch by the subscription toggles. */
 export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
+
+/** An explicit owner model/capacity request. This is task-local and strict: automatic model/provider
+ * routing remains unchanged for tasks without it, while a requested task never substitutes another
+ * model on dispatch, failover, retry, or cap recovery. Mirrored in web/src/types.ts. */
+export interface ModelRequest {
+  requested: string;
+  provider: ImplementorProvider | null;
+  model: string | null;
+  strict: true;
+}
 
 /** The backend/model the long-lived director is actually using right now. Unlike the configured model
  *  matrix this is runtime truth: cap failover and auto-selection can move the director between providers. */

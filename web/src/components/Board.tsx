@@ -23,6 +23,7 @@ import { ChangesChip } from "./GitChanges.js";
 import { ScheduledTasks } from "./ScheduledTasks.js";
 import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
+import { ModelRequestStatus } from "./ModelRequestStatus.js";
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -700,6 +701,7 @@ const Card = memo(function Card({
               Read
             </span>
           ) : null}
+          <ModelRequestStatus request={thread.modelRequest} actualModel={impl?.model} compact />
           {thread.deadlineAt ? (
             <span className={"timed-badge" + (thread.deadlineAt <= Date.now() ? " over" : "")}>
               <Countdown deadlineAt={thread.deadlineAt} />

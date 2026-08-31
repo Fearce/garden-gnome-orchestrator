@@ -177,9 +177,12 @@ not ONE allowance**: `account/rateLimits/read` also returns `rateLimitsByLimitId
 model that ships its own (GPT-5.3-Codex-Spark, live limitId `codex_bengalfox` — an opaque codename, so
 `agents/codexPools.ts` maps model→pool by normalizing `limitName`, never the id). Those pools have their
 own 5h/weekly windows, their own resets and their own cap latches (`codex_pool_cap_until`), and a cap in
-one must NEVER be read as a cap in the other. They serve only reader/planner/researcher — a capability
-rule, not thrift: the CLI ships Spark instructed never to verify its own work or run tests, and 128K
-context against the flagships' 272K, which makes it wrong for the implementor and unsafe for QA. The
+one must NEVER be read as a cap in the other. Automatic routing offers them only to
+reader/planner/researcher — a capability default, not thrift: the CLI ships Spark instructed never to
+verify its own work or run tests, and 128K context against the flagships' 272K, which makes it a poor
+ordinary implementor choice and unsafe for QA. An explicit owner model request is the deliberate
+exception: it is persisted as a strict task-local pin, checked against that exact model pool, displayed
+beside the actual runtime, and may never fall back to another model. The
 probe prints them under the ladder; gate `test:codex-pools`.
 "idle" is a stagger hold-off (GG parked its OWN 5h restart and stops pinging), NOT a globally
 unused sub — a 2nd orchestrator/service sharing the sub burns it while GG is held-blind (`accountManager.ts`).

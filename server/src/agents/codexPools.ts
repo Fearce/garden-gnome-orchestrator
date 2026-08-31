@@ -42,8 +42,10 @@ export interface CodexPool {
 }
 
 /**
- * The roles a DEDICATED pool may serve. Deliberately excludes implementor, qa and reviewer, and the
- * reason is capability, not thrift.
+ * The roles automatic capacity routing may place on a DEDICATED pool. Deliberately excludes
+ * implementor, qa and reviewer, and the reason is capability, not thrift. A strict task-local model
+ * request is an explicit owner override and is validated against that exact pool outside this
+ * automatic policy; it never makes Spark an ordinary implementor candidate.
  *
  * The dedicated pool on this plan is Spark, and the Codex CLI ships Spark with an instruction template
  * that tells it "Do NOT modify or run tests or verify your work unless the user asks explicitly",

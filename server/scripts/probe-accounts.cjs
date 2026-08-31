@@ -206,9 +206,11 @@ function readBackendUsage(file) {
 }
 
 // A ChatGPT plan is not one allowance: `rateLimitsByLimitId` also carries a dedicated pool per model that
-// ships its own (Spark). Those pools serve only the BOUNDED roles (DEDICATED_POOL_ROLES in
-// agents/codexPools.ts), so they never lengthen the implementor ladder above — but they do decide whether
-// a reader/planner/researcher can reach Codex at all, which the general meters cannot show.
+// ships its own (Spark). Automatic routing offers those pools only to the BOUNDED roles
+// (DEDICATED_POOL_ROLES in agents/codexPools.ts), so they never lengthen the ordinary implementor ladder
+// above. A strict owner model pin is a deliberate exception and is checked against that exact pool.
+// The automatic pool policy still decides whether a reader/planner/researcher can reach Codex at all,
+// which the general meters cannot show.
 const POOL_HARD_LIMIT_PCT = 95;
 
 /** The dedicated Codex pools and whether each can take a bounded role right now. Pure, like
@@ -321,16 +323,16 @@ function printRoleReach(backends, claudeRungs, depth) {
 }
 
 /** The dedicated-pool readout. Printed only when the plan actually HAS one, so a deployment without
- *  Spark reads exactly as before. The heading says 'bounded roles only' outright because a reader who
- *  mistook this for implementor headroom would over-count the ladder above — the precise error the
- *  ladder readout exists to prevent. */
+ *  Spark reads exactly as before. The heading names automatic bounded-role routing because a reader who
+ *  mistook this for ordinary implementor headroom would over-count the ladder above. Strict task-local
+ *  model pins are validated separately and never expand that ladder. */
 function printDedicatedPools(backends, kv, usage) {
   for (const b of backends) {
     if (!b.poolCapKey) continue;
     const meters = b.usageFile ? usage(b.usageFile) : null;
     const rungs = dedicatedPoolRungs(meters, readPoolLatches(kv, b.poolCapKey), now);
     if (!rungs.length) continue;
-    console.log(`\n  ${b.name} dedicated pools (bounded roles only — reader/planner/researcher, never implementor or QA):`);
+    console.log(`\n  ${b.name} dedicated pools (automatic routing: reader/planner/researcher; strict owner pins checked separately):`);
     for (const r of rungs) {
       const note =
         r.reason === "capped"

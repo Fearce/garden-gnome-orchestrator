@@ -30,6 +30,7 @@ export const DIRECTOR_CLI_SCHEMA: JsonSchemaLike = {
     title: { type: "string" },
     workspace: { type: "string" },
     brief: { type: "string" },
+    model: { type: "string" },
     duration: { type: "string" },
     agents: { type: "number" },
     threadId: { type: "string" },
@@ -63,6 +64,7 @@ export interface DirectorCliAction {
   title?: string;
   workspace?: string;
   brief?: string;
+  model?: string;
   duration?: string;
   agents?: number;
   threadId?: string;
@@ -98,7 +100,7 @@ Commands and fields:
 - reply: message
 - ask_user: header, question, options?, multiSelect?
 - find_workspace: query
-- dispatch: title, workspace, brief, duration?, agents?
+- dispatch: title, workspace, brief, model?, duration?, agents? — set model ONLY by copying an explicit owner model/capacity request (for example "GPT Spark"); omit it otherwise. The server resolves and strictly pins the canonical model.
 - dispatch_read: title, workspace, brief
 - list_threads
 - thread_status: threadId
@@ -170,6 +172,7 @@ export async function executeDirectorCliAction(
           title,
           workspace,
           brief,
+          requestedModel: action.model?.trim() || undefined,
           images,
           ...(action.kind === "dispatch_read" ? { lane: "read" as const } : { durationMs, agentCount }),
         });
@@ -188,8 +191,10 @@ export async function executeDirectorCliAction(
         if (!t) return outcome("thread_status", `ERROR: no task ${threadId}.`);
         const runs = api.db.listRuns(t.id);
         const findings = api.db.listFindings(t.id);
+        const actualModel = runs.filter((run) => run.role === "implementor").at(-1)?.model;
         return outcome("thread_status", [
           `Task ${t.id} [${t.state}] "${t.title}" @ ${t.workspace}`,
+          t.modelRequest ? `Requested model: ${t.modelRequest.model ?? t.modelRequest.requested} (strict); actual implementor: ${actualModel ?? "not started"}` : "",
           t.error ? `Error: ${t.error}` : "",
           "Agents:", ...runs.map((r) => `- ${r.role} (${r.model}): ${r.state}${r.error ? ` — ${r.error}` : ""}`),
           "Findings:", ...(findings.length ? findings.map((f) => `- [${f.severity}] (${f.fromRole}) ${f.summary}`) : ["(none)"]),

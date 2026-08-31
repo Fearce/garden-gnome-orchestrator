@@ -145,7 +145,9 @@ visible pool is forecast to expire mid-task. The park
 message names every pool and only advertises the first reset that makes all of one pool's gating windows
 viable (never an early 5h reset still blocked by weekly/monthly). The supervisor rechecks that same reserve
 before resuming. Eligible bounded roles proactively use independently metered Codex model pools without
-waking an unused Claude account. Unknown meters remain dispatchable so API-key/cold-start setups do not
+waking an unused Claude account. An explicit owner model request is a strict task-local exception to the
+automatic role policy: it uses only that exact model/pool, is shown beside the actual runtime, and never
+falls back silently. Unknown meters remain dispatchable so API-key/cold-start setups do not
 freeze. The free planner/reader pool remains a first attempt with its own full-run request/token/credit
 reservation; a miss falls through and never creates a pipeline cap park. Gates: `test:capacity-routing`
 and `test:codex-usage`, plus the existing provider/model-pool recovery gates.

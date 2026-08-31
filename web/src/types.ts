@@ -105,6 +105,9 @@ export interface Thread {
   brief: string;
   rawPrompt: string;
   error?: string | null;
+  /** Strict owner-requested implementor model. `model` is the canonical runtime id; null means the
+   * request could not be resolved and the task is blocked rather than silently downgraded. */
+  modelRequest?: ModelRequest | null;
   closedAt?: number | null;
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' marks a successful close
   lane?: ThreadLane | null; // 'read' = the read-only reader lane — drives the card's READ badge
@@ -537,6 +540,13 @@ export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
 
 /** The implementor backends (mirrors the server's ImplementorProvider). */
 export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
+
+export interface ModelRequest {
+  requested: string;
+  provider: ImplementorProvider | null;
+  model: string | null;
+  strict: true;
+}
 
 /** Auto model selection's scoreboard row: how one model has actually performed on auto-picked tasks.
  *  100 = the task was accepted with no human involvement; each QA fix-round past the first costs 12.

@@ -8,9 +8,10 @@
  *
  *   1. The model↔pool link is made from `limitName`, NEVER the limitId — the live id is an internal
  *      codename with no relation to the model slug.
- *   2. A dedicated pool serves only the bounded roles. This is a CAPABILITY rule: the Codex CLI ships
- *      Spark with an instruction template telling it never to verify its own work or run tests, which
- *      makes it wrong for the implementor and unsafe for QA/the reviewer.
+ *   2. Automatic routing offers a dedicated pool only to bounded roles. This is a CAPABILITY default:
+ *      an explicit owner model pin is enforced separately and does not change this candidate policy.
+ *      The Codex CLI ships Spark with an instruction template telling it never to verify its own work
+ *      or run tests, which makes it wrong as the ordinary implementor and unsafe for QA/the reviewer.
  *
  * Free: pure functions, no DB, no network, no agent.
  * Run:  npm run test:codex-pools   (from server/)
@@ -94,14 +95,14 @@ const unlabelled: CodexPool[] = [{ limitId: "codex_other", limitName: null, mode
 check("an unlabelled non-general pool is not a dedicated rung (nothing can be routed to it)", dedicatedPools(unlabelled).length === 0);
 
 // -- 2. the capability policy: which roles may spend a dedicated pool -------------------------------
-console.log("\n2 — bounded roles only (a model told never to verify must not implement or review)");
+console.log("\n2 — automatic routing uses bounded roles only (strict owner pins are handled separately)");
 for (const role of ["reader", "planner", "researcher"] as Role[]) {
   check(`${role} MAY use a dedicated pool (bounded, one-shot, structured)`, roleMayUseDedicatedPool(role));
   check(`${role} is routed onto Spark when its pool is idle`, pick(role) === SPARK_MODEL, String(pick(role)));
 }
 for (const role of ["implementor", "qa", "reviewer", "director"] as Role[]) {
-  check(`${role} may NOT use a dedicated pool`, !roleMayUseDedicatedPool(role));
-  check(`${role} is never routed onto Spark, however idle it is`, pick(role) === undefined, String(pick(role)));
+  check(`${role} is not an automatic dedicated-pool candidate`, !roleMayUseDedicatedPool(role));
+  check(`${role} is never automatically routed onto Spark, however idle it is`, pick(role) === undefined, String(pick(role)));
 }
 check("the policy set is exactly the three bounded roles", [...DEDICATED_POOL_ROLES].sort().join(",") === "planner,reader,researcher", [...DEDICATED_POOL_ROLES].join(","));
 

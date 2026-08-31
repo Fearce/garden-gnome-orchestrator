@@ -9,6 +9,7 @@ import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
 import { columnDragMax, useColumnResize } from "./useColumnResize.js";
 import { Markdown } from "./Markdown.js";
+import { ModelRequestStatus } from "./ModelRequestStatus.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -774,6 +775,7 @@ export function ThreadDetail() {
               {totalCost > 0 ? ` · ~$${totalCost.toFixed(2)} equiv (subscription)` : ""}
               {thread.error ? ` · ERROR: ${thread.error}` : ""}
             </div>
+            <ModelRequestStatus request={thread.modelRequest} actualModel={impl?.model} />
             {path.length > 0 && (
               <div className="meta" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }} title="The actual agent path this task took">
                 {path.map((role, i) => {

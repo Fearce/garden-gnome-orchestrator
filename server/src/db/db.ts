@@ -27,6 +27,7 @@ import type {
   Message,
   ModelGrade,
   ModelOutcome,
+  ModelRequest,
   ModelStat,
   ModelEffortStat,
   OperatorNote,
@@ -83,6 +84,7 @@ function rowToThread(r: Row): Thread {
     rawPrompt: r.raw_prompt as string,
     error: (r.error as string | null) ?? null,
     effortOverride: (r.effort_override as Effort | null) ?? null,
+    modelRequest: parseModelRequest(r.model_request),
     closedAt: (r.closed_at as number | null) ?? null,
     // The state a closed task came from: kept for restore, and surfaced so the UI can mark tasks that
     // finished correctly (closed_prev_state === 'done') with a checkmark. Null on never-closed rows.
@@ -105,6 +107,23 @@ function rowToThread(r: Row): Thread {
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
   };
+}
+
+function parseModelRequest(raw: unknown): ModelRequest | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<ModelRequest>;
+    if (
+      !value ||
+      typeof value.requested !== "string" ||
+      (value.provider !== null && value.provider !== "claude" && value.provider !== "codex" && value.provider !== "grok" && value.provider !== "zai") ||
+      (value.model !== null && typeof value.model !== "string") ||
+      value.strict !== true
+    ) return null;
+    return { requested: value.requested, provider: value.provider ?? null, model: value.model ?? null, strict: true };
+  } catch {
+    return null;
+  }
 }
 
 /** A collaborator's persisted share. Tolerant by design: a row written by an older build, or a blob
@@ -440,6 +459,7 @@ export class Db {
       "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
       "ALTER TABLE threads ADD COLUMN effort_override TEXT",
+      "ALTER TABLE threads ADD COLUMN model_request TEXT",
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
       "ALTER TABLE threads ADD COLUMN closed_prev_state TEXT",
       "ALTER TABLE threads ADD COLUMN baseline_head TEXT",
@@ -646,6 +666,7 @@ export class Db {
     rawPrompt: string;
     brief?: string;
     effortOverride?: Effort | null;
+    modelRequest?: ModelRequest | null;
     lane?: ThreadLane | null;
     durationMs?: number | null;
     deadlineAt?: number | null;
@@ -662,6 +683,7 @@ export class Db {
       rawPrompt: input.rawPrompt,
       error: null,
       effortOverride: input.effortOverride ?? null,
+      modelRequest: input.modelRequest ?? null,
       lane: input.lane ?? null,
       durationMs: input.durationMs ?? null,
       deadlineAt: input.deadlineAt ?? null,
@@ -673,14 +695,18 @@ export class Db {
     };
     this.raw
       .prepare(
-        `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, effort_override, lane,
+        `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, effort_override, model_request, lane,
                              duration_ms, deadline_at, agent_count, parent_id, assignment, created_at, updated_at)
-         VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @effortOverride, @lane,
+         VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @effortOverride, @modelRequest, @lane,
                 @durationMs, @deadlineAt, @agentCount, @parentId, @assignment, @createdAt, @updatedAt)`,
       )
       // better-sqlite3 binds only primitives, so the assignment rides as JSON text (the mapper parses
       // it back); everything else on the DTO is already a scalar.
-      .run({ ...t, assignment: t.assignment ? JSON.stringify(t.assignment) : null });
+      .run({
+        ...t,
+        modelRequest: t.modelRequest ? JSON.stringify(t.modelRequest) : null,
+        assignment: t.assignment ? JSON.stringify(t.assignment) : null,
+      });
     return t;
   }
 
@@ -724,6 +750,7 @@ export class Db {
           rawPrompt: "",
           brief: child.brief,
           effortOverride: child.effortOverride ?? null,
+          modelRequest: lead.modelRequest ?? null,
           durationMs: child.durationMs ?? null,
           deadlineAt: child.deadlineAt ?? null,
           parentId: lead.id,
@@ -782,6 +809,16 @@ export class Db {
    *  change can't clobber the baseline once it's set. */
   setBaselineHead(id: string, sha: string | null): void {
     this.raw.prepare("UPDATE threads SET baseline_head = ? WHERE id = ?").run(sha, id);
+  }
+
+  /** Persist a task-local strict model request independently of routine state updates, then return the
+   * fresh row for immediate WS broadcast. */
+  setModelRequest(id: string, request: ModelRequest | null): Thread | null {
+    const at = now();
+    const result = this.raw
+      .prepare("UPDATE threads SET model_request = ?, updated_at = ? WHERE id = ?")
+      .run(request ? JSON.stringify(request) : null, at, id);
+    return result.changes ? this.getThread(id) : null;
   }
 
   /** Promote an escalated read-lane task into the normal pipeline, in place: clear `lane` (so the READ

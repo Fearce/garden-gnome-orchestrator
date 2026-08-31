@@ -78,7 +78,7 @@ export function createDirectorServer(
 
   const dispatch = tool(
     "dispatch",
-    `Dispatch a task: it self-assembles the smallest capable pipeline for the work — a narrow, contained change may run the Opus 4.8 implementor alone, while anything broader, riskier, or more ambiguous first runs a planner (reads the repo, decides whether external research is needed, routes to a researcher or straight to the implementor) and then QA reviews the result; you don't choose the agents, and the pick is explained in the task's own history. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). Any image(s) ${config.ownerName} attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.`,
+    `Dispatch a task: it self-assembles the smallest capable pipeline for the work — a narrow, contained change may run the Opus 4.8 implementor alone, while anything broader, riskier, or more ambiguous first runs a planner (reads the repo, decides whether external research is needed, routes to a researcher or straight to the implementor) and then QA reviews the result; you don't choose the agents, and the pick is explained in the task's own history. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). If ${config.ownerName} explicitly requested a model or its capacity, copy that exact label into \`model\`; the server resolves and strictly pins it, so never choose or infer a model yourself. Any image(s) ${config.ownerName} attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.`,
     {
       title: z
         .string()
@@ -94,6 +94,12 @@ export function createDirectorServer(
         .string()
         .describe(
           `The ENRICHED brief for the implementor: the goal, the context you gathered (memories, constraints, conventions), what done looks like, and anything ${config.ownerName} clarified. Write it as the full spec you'd give up front — Opus 4.8 does best with the whole task stated at once.`,
+        ),
+      model: z
+        .string()
+        .optional()
+        .describe(
+          `ONLY when ${config.ownerName} explicitly named the model/capacity to use: copy their exact short label (for example "GPT Spark" or "gpt-5.6-terra"). Omit otherwise — do not make a model choice on their behalf. The server resolves the canonical configured id and enforces it strictly.`,
         ),
       duration: z
         .string()
@@ -134,6 +140,7 @@ export function createDirectorServer(
         title: args.title,
         workspace: args.workspace,
         brief: args.brief,
+        requestedModel: args.model,
         images: getImages(),
         durationMs,
         agentCount,
@@ -202,8 +209,10 @@ export function createDirectorServer(
       if (!t) return { content: [{ type: "text", text: `No task ${args.threadId}.` }], isError: true };
       const runs = api.db.listRuns(t.id);
       const findings = api.db.listFindings(t.id);
+      const actualModel = runs.filter((run) => run.role === "implementor").at(-1)?.model;
       const lines = [
         `Task ${t.id} [${t.state}] "${t.title}" @ ${t.workspace}`,
+        t.modelRequest ? `Requested model: ${t.modelRequest.model ?? t.modelRequest.requested} (strict); actual implementor: ${actualModel ?? "not started"}` : "",
         t.error ? `Error: ${t.error}` : "",
         "Agents:",
         ...runs.map((r) => `  - ${r.role} (${r.model}): ${r.state}${r.error ? ` — ${r.error}` : ""}`),

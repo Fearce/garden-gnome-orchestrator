@@ -101,6 +101,8 @@ const GATES = [
   "test:model-catalog-health",
   "test:auto-model",
   "test:director-provider",
+  "test:model-request",
+  "test:model-request-ui",
   "test:livebench",
   "test:self-improve-restart",
   "test:restart-revival",

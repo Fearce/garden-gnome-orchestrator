@@ -72,6 +72,14 @@ function parseStageOutputs(raw) {
     return {};
   }
 }
+function parseModelRequest(raw) {
+  try {
+    const value = JSON.parse(raw || "null");
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return { invalid: short(raw, 120) };
+  }
+}
 function dur(a, b) {
   if (!a || !b) return null;
   const s = Math.round((b - a) / 1000);
@@ -104,6 +112,7 @@ console.log({
   updated: iso(thread.updated_at),
   assignment: short(thread.assignment, 120),
   effortOverride: thread.effort_override,
+  modelRequest: parseModelRequest(thread.model_request),
   brief: short(thread.brief, 300),
   error: short(thread.error, 120),
   activeTaskDeadline: activeDeadlineReading(thread, { timeZone }),

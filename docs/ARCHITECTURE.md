@@ -556,10 +556,15 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   resets and its own cap latch (`codex_pool_cap_until`, separate from `codex_cap_until`) — so a 429 in
   one is never read as a cap in the other, in either direction. The model→pool link is derived by
   normalizing the pool's human `limitName`, never its `limitId`, which is an internal codename
-  (`codex_bengalfox`) with no relation to the model slug. A dedicated pool serves **only** the bounded
-  roles — reader, planner, researcher — and that is a capability rule rather than a thrift one: the CLI
+  (`codex_bengalfox`) with no relation to the model slug. Automatic routing offers a dedicated pool
+  **only** to the bounded roles — reader, planner, researcher — and that is a capability default rather
+  than a thrift one: the CLI
   ships Spark instructed never to verify its own work or run tests, with a 128K context against the
-  flagships' 272K, which makes it wrong for the implementor and unsafe for QA or the reviewer. Routing
+  flagships' 272K, which makes it a poor ordinary implementor choice and unsafe for QA or the reviewer.
+  An explicit owner model request is the deliberate exception: Director bridges persist it as a strict
+  task-local pin, the implementor gate validates only that model's own provider/pool, retries and cap
+  recovery retain it, and the UI displays requested versus actual runtime. An unavailable pin waits or
+  fails visibly; it never substitutes a flagship model. Routing
   fails closed: no visible meter, no dispatchable model, or a live latch ⇒ ordinary routing. Gate:
   `test:codex-pools`; the nightly ladder readout prints each pool under the backend rungs.
 - **Separately metered model pools are real routing candidates.** Eligible bounded roles proactively compare
@@ -567,7 +572,8 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   runway; a pool does not need the Claude/general pool to cap first. An explicit eligible-role model pin
   still consumes its exact pool and remains independent of a general-pool latch. Choosing a non-Claude
   role also defers Claude account selection, so the unused subscription is not woken merely to construct
-  the run. Capability exclusions for implementor/QA/reviewer remain unchanged.
+  the run. Automatic capability exclusions for implementor/QA/reviewer remain unchanged; only an exact
+  owner pin can override the implementor default, never QA or reviewer routing.
 
 ## 11. Image attachments (paste / drop / pick → vision)
 

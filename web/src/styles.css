@@ -1501,6 +1501,35 @@ button { font-family: inherit; cursor: pointer; }
   border: 1px solid color-mix(in oklch, var(--read) 45%, transparent);
 }
 
+/* A strict per-task model pin is deliberately visible on both the card and the mobile detail header.
+   Amber = enforced/matching, red = impossible runtime mismatch, muted red = unresolved and blocked. */
+.model-pin-badge {
+  --pin: var(--warn);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.04em; font-weight: 700;
+  padding: 2px 7px; border-radius: 100px; white-space: nowrap;
+  color: var(--pin); background: color-mix(in oklch, var(--pin) 13%, transparent);
+  border: 1px solid color-mix(in oklch, var(--pin) 45%, transparent);
+  max-width: 170px; overflow: hidden; text-overflow: ellipsis;
+}
+.model-pin-badge.mismatch, .model-pin-badge.unresolved { --pin: var(--danger); }
+
+.model-request-status {
+  --pin: var(--warn);
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 7px;
+  width: fit-content; max-width: 100%; padding: 5px 8px; border-radius: var(--r-sm);
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim);
+  background: color-mix(in oklch, var(--pin) 8%, transparent);
+  border: 1px solid color-mix(in oklch, var(--pin) 30%, transparent);
+}
+.model-request-status.mismatch, .model-request-status.unresolved { --pin: var(--danger); }
+.model-request-key { color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; font-size: 9px; }
+.model-request-value { color: var(--pin); font-weight: 700; }
+.model-request-sep { color: var(--text-faint); }
+.model-request-actual { color: var(--text); }
+.model-request-strict, .model-request-alert {
+  color: var(--pin); text-transform: uppercase; letter-spacing: 0.06em; font-size: 9px; font-weight: 700;
+}
+
 .pip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
 /* A small role-status dot stands in for the role: it inherits the pip's colour (faint for a
    done/idle role, the role hue when active), and the active one breathes gently with a soft ring —

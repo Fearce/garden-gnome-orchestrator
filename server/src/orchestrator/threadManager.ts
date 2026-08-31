@@ -71,6 +71,7 @@ import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
 import { buildSelectionPrompt, defaultCandidateEffort, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
 import { providerIntent } from "./providerIntent.js";
+import { detectModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
 import { LiveBenchScores } from "./liveBenchScores.js";
 import {
   assessCapacity,
@@ -116,6 +117,7 @@ import type {
   ImplementorProvider,
   ModelOverrides,
   ModelPick,
+  ModelRequest,
   OrchestratorSettings,
   PlanOutput,
   QaOutput,
@@ -1163,7 +1165,7 @@ export class ThreadManager implements OrchestratorApi {
     for (const thread of this.capParkedThreads()) {
       const role = this.capParkStage(thread);
       const demand = this.capacityDemand(thread, role);
-      const next = this.nextRoleCapacityAt(role, demand, now);
+      const next = this.capacitySnapshotForThread(thread, role, demand, now).nextAt;
       if (next != null) future.push(next);
     }
     return future.length ? Math.min(...future) : undefined;
@@ -1217,7 +1219,7 @@ export class ThreadManager implements OrchestratorApi {
       // bridge-only, so waking on Grok-only headroom would create a deterministic cap/repark loop.
       const role = this.capParkStage(t);
       const demand = this.capacityDemand(t, role);
-      const { ready } = this.roleCapacitySnapshot(role, demand);
+      const { ready } = this.capacitySnapshotForThread(t, role, demand);
       if (!ready.length) continue;
       // A prior supervisor tick may already have changed this row to failed and started its pipeline.
       // Keep the marker durable for a crash between that update and resumeThread, but never double-spawn
@@ -2012,12 +2014,18 @@ export class ThreadManager implements OrchestratorApi {
     // Keep a requested window dormant while this task waits in the concurrency queue. Its absolute
     // deadline is stamped only when runPipeline actually claims a slot — queued time is not work time.
     const durationMs = input.durationMs && input.durationMs > 0 ? input.durationMs : null;
+    const modelRequest = input.lane === "read"
+      ? null
+      : input.requestedModel?.trim()
+        ? resolveModelRequest(input.requestedModel, this.modelRequestCandidates())
+        : detectModelRequest(input.brief, this.modelRequestCandidates());
     const thread = this.db.createThread({
       title: input.title,
       workspace: input.workspace,
       rawPrompt: "",
       brief: input.brief,
       effortOverride: input.effort ?? null,
+      modelRequest,
       lane: input.lane ?? null,
       durationMs,
       deadlineAt: null,
@@ -2032,6 +2040,7 @@ export class ThreadManager implements OrchestratorApi {
     this.db.setBaselineHead(thread.id, await getHeadSha(input.workspace).catch(() => null));
     if (input.images?.length) this.dispatchImages.set(thread.id, input.images.map(toImageBlock));
     this.hub.publish({ type: "thread.upsert", thread });
+    if (modelRequest) this.announceModelRequest(thread, modelRequest);
     // Screenshots attached to the dispatching message reach the implementor model via dispatchImages
     // (transient blocks), but the feed only renders images it can find as attachment rows. Persist
     // them and echo a feed row — exactly what injectThread does — so a screenshot the owner sent with
@@ -2208,6 +2217,81 @@ export class ThreadManager implements OrchestratorApi {
   private pickableCodexModels(): string[] {
     const selected = [this.codexModel(), ...Object.values(this.modelOverrides()[CODEX_SUB_ID] ?? {})].filter((x): x is string => !!x);
     return uniq([...this.codexRosterModels(), ...selected]);
+  }
+
+  /** Models this running installation can name without guessing. Live provider catalogs are preferred;
+   * configured selections remain valid cold-start candidates, and dedicated Codex pool labels supply
+   * the canonical Spark mapping (the pool id itself is intentionally opaque). */
+  private modelRequestCandidates(): ModelRequestCandidate[] {
+    const out: ModelRequestCandidate[] = [];
+    const add = (provider: ImplementorProvider, model: string | null | undefined, labels: Array<string | null | undefined> = []): void => {
+      if (!model?.trim()) return;
+      out.push({ provider, model: model.trim(), labels: labels.filter((label): label is string => !!label?.trim()) });
+    };
+
+    const claudeLive = this.modelCatalog.claudeModels();
+    for (const model of claudeLive) add("claude", model);
+    for (const account of config.accounts) add("claude", this.modelFor(account.id, "implementor"));
+    add("claude", this.modelFor(DEFAULT_SUB_ID, "implementor"));
+
+    const codexLive = chatgptLoginAvailable()
+      ? this.modelCatalog.codexCliModels().map((entry) => entry.id)
+      : this.modelCatalog.codexModels();
+    for (const model of codexLive) add("codex", model);
+    add("codex", this.codexModel());
+    for (const pool of dedicatedPools(this.codexPoolSnapshot() ?? [])) {
+      add("codex", pool.modelSlug, [pool.limitName]);
+    }
+
+    for (const model of this.modelCatalog.grokModels()) add("grok", model);
+    add("grok", this.grokModel());
+    for (const model of this.modelCatalog.zaiModels()) add("zai", model);
+    add("zai", this.zaiModel());
+    return out;
+  }
+
+  /** Legacy tasks may predate the Director bridge's model field. Detect their direct persisted brief
+   * command lazily before any selection/spawn, persist it, and supersede a stale automatic pick. */
+  private ensureThreadModelRequest(thread: Thread): Thread {
+    const candidates = this.modelRequestCandidates();
+    let request = thread.modelRequest ?? null;
+    if (request && !request.model) {
+      const resolved = resolveModelRequest(request.requested, candidates);
+      if (resolved.model) request = resolved;
+    } else if (!request && thread.lane !== "read") {
+      request = detectModelRequest([thread.rawPrompt, thread.brief].filter(Boolean).join("\n"), candidates);
+    }
+    if (!request) return thread;
+    if (
+      thread.modelRequest &&
+      thread.modelRequest.requested === request.requested &&
+      thread.modelRequest.provider === request.provider &&
+      thread.modelRequest.model === request.model
+    ) return thread;
+
+    const updated = this.db.setModelRequest(thread.id, request);
+    if (!updated) return thread;
+    // A legacy task may already hold the exact wrong auto-pick that exposed this bug. The strict owner
+    // request owns the task now; retaining that pick would reintroduce it on resume.
+    this.db.updateThreadStageOutputs(thread.id, { modelPick: undefined });
+    this.hub.publish({ type: "thread.upsert", thread: updated });
+    this.announceModelRequest(updated, request);
+    return updated;
+  }
+
+  private announceModelRequest(thread: Thread, request: ModelRequest): void {
+    const exact = request.model && request.provider
+      ? `${request.model} on ${providerLabel(request.provider)}`
+      : "not currently resolvable from the installed provider catalogs";
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "director",
+      summary: request.model
+        ? `Strict model request pinned — ${request.model}`
+        : `Strict model request recorded but unresolved — ${request.requested}`,
+      detail: `Requested: ${request.requested}. Resolved: ${exact}. This task will wait or fail visibly if that exact model is unavailable; automatic routing and failover may not substitute another model.`,
+      severity: request.model ? "info" : "warning",
+    });
   }
 
   /** Every model the Codex runner's active auth can actually use. ChatGPT auth uses the CLI's own live
@@ -2635,6 +2719,9 @@ export class ThreadManager implements OrchestratorApi {
    * routing and the planner's effort in charge; a dispatch is never blocked by this.
    */
   private async autoSelectModel(thread: Thread, plan?: PlanOutput): Promise<ModelPick | undefined> {
+    // A task-local owner pin is not a candidate for automatic judgement. It remains exact across every
+    // resume/cap cycle and must never be overwritten by a cheaper/stronger model recommendation.
+    if (this.db.getThread(thread.id)?.modelRequest) return undefined;
     if (!this.settings().autoModelSelection) return undefined;
     const saved = this.db.getThreadStageOutputs(thread.id).modelPick;
     if (saved) return saved; // already picked for this episode (a resume) — never re-decide mid-task
@@ -2718,6 +2805,8 @@ export class ThreadManager implements OrchestratorApi {
    *  another backend leaves the pick behind and uses that backend's own configured model — a Claude model
    *  id means nothing to the Codex CLI. */
   private pickedModel(threadId: string, provider: ImplementorProvider): string | undefined {
+    const requested = this.db.getThread(threadId)?.modelRequest;
+    if (requested?.model && requested.provider === provider) return requested.model;
     const pick = this.db.getThreadStageOutputs(threadId).modelPick;
     return pick && pick.provider === provider ? pick.model : undefined;
   }
@@ -3698,6 +3787,126 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
+  /** Capacity and compatibility for one strict task-local model. Unlike the ordinary role inventory,
+   * this deliberately contains only the requested model's own provider/pool. */
+  private requestedModelCapacity(
+    thread: Thread,
+    demand: CapacityDemand,
+    now = Date.now(),
+  ): { options: RoleCapacityOption[]; error?: string } {
+    const request = thread.modelRequest;
+    if (!request) return { options: [] };
+    if (!request.provider || !request.model) {
+      return {
+        options: [],
+        error: `Requested model "${request.requested}" could not be resolved from this installation's live/configured model catalogs. Refresh the provider login/catalog or name an exact available model; no substitute was started.`,
+      };
+    }
+    const model = request.model;
+    const exact = (values: readonly string[]): boolean => values.some((value) => normalizeModelId(value) === normalizeModelId(model));
+
+    if (request.provider === "claude") {
+      const live = this.modelCatalog.claudeModels();
+      if (live.length && !exact(live)) {
+        return { options: [], error: `Requested Claude model ${model} is not available to the authenticated subscriptions. Choose an available Claude model or restore access; no substitute was started.` };
+      }
+      return { options: this.claudeCapacityOptions(demand, now).map((option) => ({ ...option, label: `${option.label} · ${model}` })) };
+    }
+
+    if (request.provider === "codex") {
+      if (!this.settings().codexEnabled) {
+        return { options: [], error: `Requested model ${model} requires Codex, but Codex is disabled. Enable Codex under Settings → Subscriptions; no other model was substituted.` };
+      }
+      const key = this.openaiApiKey();
+      if (!codexAuthAvailable(!!key && /^sk-/.test(key))) {
+        return { options: [], error: `Requested model ${model} requires Codex authentication. Sign in with \`codex login --device-auth\` or configure an OpenAI API key; no other model was substituted.` };
+      }
+      const live = chatgptLoginAvailable()
+        ? this.modelCatalog.codexCliModels().map((entry) => entry.id)
+        : this.modelCatalog.codexModels();
+      if (live.length && !exact(live)) {
+        return { options: [], error: `Requested Codex model ${model} is not exposed by the authenticated Codex catalog. Refresh/login or choose an available model; no substitute was started.` };
+      }
+      const pools = this.codexPoolSnapshot();
+      const pool = pools ? poolForModel(pools, model) : undefined;
+      // A named Spark allowance is a dedicated pool. If its live mapping disappears, treating it as a
+      // general-pool model would be the same silent capacity substitution under a different meter.
+      if (/spark/i.test(request.requested + " " + model) && !pool?.modelSlug) {
+        return { options: [], error: `Requested Spark model ${model} has no visible dedicated Spark pool/model mapping right now. Wait for the Codex usage/catalog refresh or restore that entitlement; the general Codex pool was not substituted.` };
+      }
+      const candidate = this.codexProviderCandidate("implementor", demand, model);
+      return {
+        options: [{
+          provider: "codex",
+          label: `Codex ${model}${candidate.capacityLabel ? ` (${candidate.capacityLabel})` : ""}`,
+          windows: candidateCapacityWindows(candidate),
+          hasHeadroom: candidate.hasHeadroom,
+        }],
+      };
+    }
+
+    if (request.provider === "grok") {
+      if (!this.settings().grokEnabled) return { options: [], error: `Requested model ${model} requires Grok, but Grok is disabled. Enable it under Settings → Subscriptions; no substitute was started.` };
+      if (!grokAuthAvailable()) return { options: [], error: `Requested model ${model} requires Grok authentication. Run \`grok login\` or configure XAI_API_KEY; no substitute was started.` };
+      const live = this.modelCatalog.grokModels();
+      if (live.length && !exact(live)) return { options: [], error: `Requested Grok model ${model} is not available to this login; no substitute was started.` };
+      const candidate = this.grokProviderCandidate(demand);
+      return { options: [{ provider: "grok", label: `Grok ${model}`, windows: candidateCapacityWindows(candidate), hasHeadroom: candidate.hasHeadroom }] };
+    }
+
+    if (!this.settings().zaiEnabled) return { options: [], error: `Requested model ${model} requires z.ai, but z.ai is disabled. Enable it under Settings → Subscriptions; no substitute was started.` };
+    if (!this.zaiApiKey()) return { options: [], error: `Requested model ${model} requires a z.ai API key; no substitute was started.` };
+    const live = this.modelCatalog.zaiModels();
+    if (live.length && !exact(live)) return { options: [], error: `Requested z.ai model ${model} is not available to this key; no substitute was started.` };
+    const candidate = this.zaiProviderCandidate(demand);
+    return { options: [{ provider: "zai", label: `z.ai ${model}`, windows: candidateCapacityWindows(candidate), hasHeadroom: candidate.hasHeadroom }] };
+  }
+
+  private requestedModelCapacitySnapshot(thread: Thread, demand: CapacityDemand, now = Date.now()): RoleCapacitySnapshot & { error?: string } {
+    const { options, error } = this.requestedModelCapacity(thread, demand, now);
+    const ready = options.filter((option) => this.roleCapacityReady(option, demand, now));
+    if (ready.length) return { options, ready, error };
+    const future = options
+      .map((option) => nextViableAt(option.windows, demand, now))
+      .filter((at): at is number => at != null && at > now);
+    return { options, ready, nextAt: future.length ? Math.min(...future) : undefined, error };
+  }
+
+  private capacitySnapshotForThread(thread: Thread, role: CapParkStage, demand: CapacityDemand, now = Date.now()): RoleCapacitySnapshot & { error?: string } {
+    return role === "implementor" && thread.modelRequest
+      ? this.requestedModelCapacitySnapshot(thread, demand, now)
+      : this.roleCapacitySnapshot(role, demand, now);
+  }
+
+  /** Strict model routing runs before normal provider/model selection. A compatibility/auth failure is
+   * actionable and stays failed; a visible quota/runway shortage joins the durable cap supervisor, but
+   * that supervisor watches only this exact model's pool. */
+  private gateRequestedModel(thread: Thread, demand: CapacityDemand): ImplementorProvider | null {
+    const request = thread.modelRequest;
+    if (!request) return null;
+    const snapshot = this.requestedModelCapacitySnapshot(thread, demand);
+    if (snapshot.error) {
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "director",
+        summary: `Strict model request cannot start — ${request.requested}`,
+        detail: snapshot.error,
+        severity: "warning",
+      });
+      this.setState(thread.id, "failed", snapshot.error);
+      return null;
+    }
+    if (!snapshot.ready.length) {
+      this.parkForExhaustedProviders(thread.id, "implementor");
+      // settleReview consumes the cap marker synchronously and renders capParkMessage, which names the
+      // exact requested model/pool. This is only the defensive fallback if that marker disappears.
+      this.settleReview(thread.id, "needs your review.");
+      return null;
+    }
+    this.implementorProvider.set(thread.id, request.provider!);
+    return request.provider!;
+  }
+
   private providerSafeForRole(provider: ImplementorProvider, role: Role, demand: CapacityDemand): boolean {
     return this.roleCapacityOptions(role, demand).some(
       (option) => option.provider === provider && this.roleCapacityReady(option, demand),
@@ -4073,7 +4282,9 @@ export class ThreadManager implements OrchestratorApi {
     thread: Thread,
     opts?: { capParkOnExhaustion?: boolean; effort?: Effort },
   ): ImplementorProvider | null {
+    thread = this.ensureThreadModelRequest(this.db.getThread(thread.id) ?? thread);
     const demand = this.capacityDemand(thread, "implementor", opts?.effort);
+    if (thread.modelRequest) return this.gateRequestedModel(thread, demand);
     const { provider, error, allCandidatesCapped, allKnownInsufficient, candidates = [] } = this.resolveImplementorProvider(demand);
     if (!provider) {
       this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
@@ -4476,7 +4687,10 @@ export class ThreadManager implements OrchestratorApi {
     const now = Date.now();
     const thread = this.db.getThread(threadId);
     const demand = thread ? this.capacityDemand(thread, need) : demandForRole(need);
-    const { options, ready, nextAt: next } = this.roleCapacitySnapshot(need, demand, now);
+    const snapshot: RoleCapacitySnapshot & { error?: string } = thread
+      ? this.capacitySnapshotForThread(thread, need, demand, now)
+      : this.roleCapacitySnapshot(need, demand, now);
+    const { options, ready, nextAt: next, error } = snapshot;
     const startupCooling = options.filter((option) => option.windows.some((window) =>
       window.label === STARTUP_HEALTH_COOLDOWN_LABEL &&
       window.usedPct === 100 &&
@@ -4493,7 +4707,9 @@ export class ThreadManager implements OrchestratorApi {
         ? ` Next viable capacity is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
         : " No reliable reset time is available yet; live meters are still polled.";
     const stage = need === "qa" ? `QA ${CAP_PARK_QA_MARK}` : `${need} (${need} stage)`;
-    const reason = ready.length
+    const reason = error
+      ? `${stage} cannot use its strict requested model: ${error}`
+      : ready.length
       ? `${stage} is waiting to recover after its prior provider capped`
       : startupCooling.length
         ? `${stage} is waiting for the ${startupCooling.map((option) => option.label).join(", ")} startup health cooldown`
@@ -4503,7 +4719,10 @@ export class ThreadManager implements OrchestratorApi {
     const status = options.length
       ? ` Capacity checked: ${options.map((option) => describeRoutingCapacity(option, demand, now)).join("; ")}.`
       : " No enabled, authenticated provider can serve this stage.";
-    return `${CAP_PARK_PREFIX} — ${reason}.${when} It will resume automatically when a compatible pool becomes viable (no manual Resume needed).${status}`;
+    const recovery = thread?.modelRequest
+      ? ` It will resume automatically only when the exact requested model ${thread.modelRequest.model ?? thread.modelRequest.requested} becomes viable; no fallback model is allowed.`
+      : " It will resume automatically when a compatible pool becomes viable (no manual Resume needed).";
+    return `${CAP_PARK_PREFIX} — ${reason}.${when}${recovery}${status}`;
   }
 
   /** An event the OWNER personally cares about: a task finished, needs their input, or failed. Goes to
@@ -4636,6 +4855,7 @@ export class ThreadManager implements OrchestratorApi {
   private async runPipeline(threadId: string, directorNote?: string): Promise<void> {
     let thread = this.db.getThread(threadId);
     if (!thread || this.cancelled(threadId)) return;
+    thread = this.ensureThreadModelRequest(thread);
     const slotToken = Symbol("pipeline");
     this.activePipelines.add(threadId);
     this.activePipelineToken.set(threadId, slotToken);
@@ -6044,8 +6264,15 @@ export class ThreadManager implements OrchestratorApi {
       // The per-task effort is capped at this Claude account's configured maximum (default: uncapped).
       // The auto-selected model when this task has one, else the subscription's configured model (per-sub
       // override → default → built-in). Either way the Fable-pool fallback applies on this account.
+      const requested = this.db.getThread(thread.id)?.modelRequest;
       const picked = this.pickedModel(thread.id, "claude");
-      const model = picked ? this.poolResolved(acct.id, picked) : this.modelFor(acct.id, "implementor");
+      // Account-local gated-model fallback is valid for configured/automatic picks, but it would violate
+      // a task-local strict request. A requested model either runs exactly or its gate parks the task.
+      const model = requested?.provider === "claude" && requested.model
+        ? requested.model
+        : picked
+          ? this.poolResolved(acct.id, picked)
+          : this.modelFor(acct.id, "implementor");
       // Apply both the account ceiling and the chosen model's exact effort support.
       const effort = resolveClaudeEffort(model, clampEffort(plannerEffort, this.accountMaxEffort(acct.id)));
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: acct.label, effort });
@@ -6133,6 +6360,15 @@ export class ThreadManager implements OrchestratorApi {
     const resolvedProvider = this.implementorProvider.get(thread.id) ?? "claude";
     if (resumeSession && this.priorImplementorProvider(thread.id) !== resolvedProvider) {
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)}: implementor backend changed to ${resolvedProvider} since the prior session — its session id is incompatible, starting fresh.`);
+      resumeSession = undefined;
+    }
+    const requestedModel = this.db.getThread(thread.id)?.modelRequest?.model;
+    const priorModel = this.db
+      .listRuns(thread.id)
+      .filter((candidate) => candidate.role === "implementor")
+      .sort((a, b) => b.startedAt - a.startedAt)[0]?.model;
+    if (resumeSession && requestedModel && priorModel && normalizeModelId(priorModel) !== normalizeModelId(requestedModel)) {
+      this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)}: prior session used ${priorModel}, but the task is strictly pinned to ${requestedModel} — starting a fresh requested-model session.`);
       resumeSession = undefined;
     }
     if (!resumeSession) {
@@ -6303,6 +6539,7 @@ export class ThreadManager implements OrchestratorApi {
         .filter((r) => r.role === "implementor")
         .sort((a, b) => b.startedAt - a.startedAt)[0]?.model;
       if (
+        !this.db.getThread(thread.id)?.modelRequest &&
         sameAcct &&
         fbSession &&
         runModel &&
@@ -6434,6 +6671,18 @@ export class ThreadManager implements OrchestratorApi {
       const providerStartupWedged = this.isProviderStartupWedge(failedRun);
       if (providerStartupWedged) this.quarantineStartupWedge(from, failedRun.transientApiErrorMessage);
       unavailableProviders.add(from);
+      const strictRequest = this.db.getThread(thread.id)?.modelRequest;
+      if (strictRequest) {
+        await failedRun.stop();
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "implementor",
+          summary: `Strict model ${strictRequest.model ?? strictRequest.requested} was not substituted after repeated API failures`,
+          detail: `${failedRun.transientApiErrorMessage ?? "The requested provider returned repeated temporary server errors."} Retry this task when that exact model is healthy; automatic failover is disabled by the owner's strict model request.`,
+          severity: "warning",
+        });
+        return res;
+      }
       const next = this.nextReadyImplementor(from, unavailableProviders, "implementor", demand);
       await failedRun.stop();
       if (next) {
@@ -6496,6 +6745,19 @@ export class ThreadManager implements OrchestratorApi {
       else if (from === "grok") this.noteGrokCap(current.rateLimitInfo);
       else if (from === "zai") this.noteZaiCap(current.rateLimitInfo);
       unavailableProviders.add(from);
+      const strictRequest = this.db.getThread(thread.id)?.modelRequest;
+      if (strictRequest) {
+        await current.stop();
+        this.capParked.set(thread.id, "implementor");
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "implementor",
+          summary: `Requested model ${strictRequest.model ?? strictRequest.requested} hit its capacity — waiting without substitution`,
+          detail: "The task remains pinned to the owner's exact model request. The capacity supervisor will retry only that model's own pool.",
+          severity: "warning",
+        });
+        return res;
+      }
       const next = this.nextReadyImplementor(from, unavailableProviders, "implementor", demand);
       // Fully end the capped CLI run BEFORE anything else — postFinding routes a warning to this.live's
       // run, so stopping first guarantees it can never resume a fresh doomed turn on the just-capped session
@@ -6538,7 +6800,8 @@ export class ThreadManager implements OrchestratorApi {
       res === undefined &&
       !this.cancelled(thread.id) &&
       this.capParked.get(thread.id) === "implementor" &&
-      this.providerForRun(current) === "claude"
+      this.providerForRun(current) === "claude" &&
+      !this.db.getThread(thread.id)?.modelRequest
     ) {
       const next = this.nextReadyImplementor("claude", new Set(), "implementor", demand); // best ready non-Claude backend
       if (next) {
@@ -7844,6 +8107,9 @@ export class ThreadManager implements OrchestratorApi {
    * cleared provider map from defaulting to a known-capped Claude turn while Codex is already viable. */
   private routeQaSupersedeImplementor(thread: Thread, effort: Effort | undefined): boolean {
     const demand = this.capacityDemand(thread, "implementor", effort);
+    if (this.db.getThread(thread.id)?.modelRequest) {
+      return this.gateImplementorProvider(thread, { capParkOnExhaustion: true, effort }) != null;
+    }
     const current = this.implementorProvider.get(thread.id);
     if (current && this.providerSafeForRole(current, "implementor", demand)) return true;
     return this.gateImplementorProvider(thread, { capParkOnExhaustion: true, effort }) != null;
