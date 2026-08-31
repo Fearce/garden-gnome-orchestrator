@@ -25,7 +25,7 @@ const DB_PATH = path.join(SERVER_DIR, "data", "orchestrator.sqlite");
 const SLACK_MS = 90_000;
 
 function dirtyFiles() {
-  const out = execFileSync("git", ["status", "--porcelain"], { cwd: REPO, encoding: "utf8" });
+  const out = execFileSync("git", ["status", "--porcelain"], { cwd: REPO, encoding: "utf8", windowsHide: true });
   return out
     .split("\n")
     .map((l) => l.trimEnd())

@@ -30,7 +30,7 @@ function loadChromium() {
     }
   }
   try {
-    const root = require("child_process").execSync("npm root -g").toString().trim();
+    const root = require("child_process").execSync("npm root -g", { windowsHide: true }).toString().trim();
     return require(path.join(root, "playwright")).chromium;
   } catch {
     throw new Error(

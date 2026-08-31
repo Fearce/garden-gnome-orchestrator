@@ -61,6 +61,7 @@ function probe(...args: string[]): { out: string; code: number } {
     const out = execFileSync(process.execPath, [PROBE, ...args], {
       env: { ...process.env, DATA_DIR: dir },
       encoding: "utf8",
+      windowsHide: true,
     });
     return { out, code: 0 };
   } catch (e) {

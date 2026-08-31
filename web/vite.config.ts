@@ -10,7 +10,7 @@ const pkgVersion = JSON.parse(
 ).version as string;
 const gitSha = (() => {
   try {
-    return execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+    return execSync("git rev-parse --short HEAD", { encoding: "utf8", windowsHide: true }).trim();
   } catch {
     return "nogit";
   }

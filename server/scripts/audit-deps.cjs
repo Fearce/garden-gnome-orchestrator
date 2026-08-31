@@ -99,6 +99,7 @@ function registryLatest(parent, name) {
     shell: process.platform === "win32",
     timeout: REGISTRY_TIMEOUT_MS,
     maxBuffer: 32 * 1024 * 1024,
+    windowsHide: true,
   });
   try {
     const parsed = JSON.parse(res.stdout);
@@ -178,6 +179,7 @@ function productionTree() {
     encoding: "utf8",
     shell: process.platform === "win32",
     maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
   });
   try {
     return JSON.parse(res.stdout);
@@ -191,6 +193,7 @@ function auditReport() {
     cwd: SERVER_DIR,
     encoding: "utf8",
     shell: process.platform === "win32",
+    windowsHide: true,
   });
   if (result.error) throw result.error;
 

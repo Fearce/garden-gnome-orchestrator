@@ -16,7 +16,7 @@ const path = require("node:path");
 const REPO = path.resolve(__dirname, "..", "..");
 const OUT = path.resolve(__dirname, "..", "dist", ".build-info.json");
 
-const git = (args) => execFileSync("git", args, { encoding: "utf8", cwd: REPO }).trim();
+const git = (args) => execFileSync("git", args, { encoding: "utf8", cwd: REPO, windowsHide: true }).trim();
 
 function main() {
   let info = { at: Date.now() };

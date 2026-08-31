@@ -55,7 +55,7 @@ const fail = (m) => {
 
 function git(argv) {
   try {
-    return execFileSync("git", argv, { cwd: ROOT, encoding: "utf8", maxBuffer: 1 << 28 });
+    return execFileSync("git", argv, { cwd: ROOT, encoding: "utf8", maxBuffer: 1 << 28, windowsHide: true });
   } catch (e) {
     // git grep / git log exit 1 when there are simply no matches — that's not an
     // error for us; return whatever it printed to stdout.

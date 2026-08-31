@@ -106,6 +106,7 @@ try {
       ORCH_TIME_ZONE: "Europe/Copenhagen",
     },
     encoding: "utf8",
+    windowsHide: true,
   });
   assert.equal(probe.status, 0, `probe failed:\n${probe.stderr || probe.stdout}`);
   assert.match(probe.stdout, /activeTaskDeadline:/, "the standard task probe names the persisted control");

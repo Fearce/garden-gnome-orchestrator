@@ -200,6 +200,7 @@ function productionTree() {
     encoding: "utf8",
     shell: process.platform === "win32",
     maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
   });
   if (res.error) throw res.error;
   // `npm ls` exits non-zero on peer/extraneous complaints while still emitting a valid

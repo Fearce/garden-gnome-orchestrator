@@ -30,7 +30,7 @@ const check = (name, cond, detail) => {
 // ---- a throwaway repo whose history we control -----------------------------------------------------
 
 const repo = fs.mkdtempSync(path.join(os.tmpdir(), "compiled-diff-"));
-const git = (...args) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: "pipe" }).trim();
+const git = (...args) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: "pipe", windowsHide: true }).trim();
 
 function write(rel, text) {
   const p = path.join(repo, rel);

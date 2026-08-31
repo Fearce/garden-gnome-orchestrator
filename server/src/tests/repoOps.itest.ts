@@ -54,7 +54,7 @@ function check(label: string, cond: boolean, detail?: string): void {
 
 // ---- git helpers -----------------------------------------------------------------------------------
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }).trim();
+  return execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, windowsHide: true }).trim();
 }
 
 // Written straight into .git/config rather than through five `git config` spawns. This gate builds a

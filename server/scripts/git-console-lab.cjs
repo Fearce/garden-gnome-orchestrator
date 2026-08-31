@@ -34,7 +34,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
  *  waiting to be pulled, a modified tracked file and an untracked one. That shape exercises every
  *  control in the console — including the diverged-branch refusal, which needs local AND upstream work. */
 function buildFixture(base) {
-  const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }).trim();
+const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, windowsHide: true }).trim();
   const configure = (dir) => {
     for (const [k, v] of [["user.name", "Git Lab"], ["user.email", "git-lab@example.com"], ["commit.gpgsign", "false"], ["core.autocrlf", "false"], ["push.default", "simple"]]) git(dir, "config", k, v);
   };
@@ -96,7 +96,7 @@ async function settle(page) {
 }
 
 async function drive(page, work, keep) {
-  const git = (...args) => execFileSync("git", args, { cwd: work, encoding: "utf8" }).trim();
+  const git = (...args) => execFileSync("git", args, { cwd: work, encoding: "utf8", windowsHide: true }).trim();
 
   const errors = [];
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
@@ -235,7 +235,7 @@ async function drive(page, work, keep) {
   // The fixture's origin is a local bare repo, which has no web page — so the button is correctly
   // absent until the remote points at a host.
   check("no Open button for a remote with no web page", (await page.$('a.gc-btn:has-text("Open")')) === null);
-  execFileSync("git", ["remote", "set-url", "origin", "git@github.com:Fearce/sample.git"], { cwd: work });
+  execFileSync("git", ["remote", "set-url", "origin", "git@github.com:Fearce/sample.git"], { cwd: work, windowsHide: true });
   await page.click('.gc-sync .gc-btn:has-text("Fetch")'); // any action re-reads the repo
   await settle(page);
   const href = await page.getAttribute('a.gc-btn:has-text("Open")', "href");

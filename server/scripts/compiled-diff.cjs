@@ -42,6 +42,7 @@ function diffBetween(a, b, pathspec, cwd = REPO) {
       encoding: "utf8",
       cwd,
       stdio: "pipe",
+      windowsHide: true,
     }).trim();
     return out ? out.split(/\r?\n/) : [];
   } catch {

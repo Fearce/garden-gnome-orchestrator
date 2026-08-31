@@ -103,7 +103,7 @@ const RECOVERY_FEATURES = [
  *  (strict ISO 8601) so `new Date()` parses the offset reliably across locales. Never throws. */
 function resolveShipDate(commit) {
   if (!commit) return null;
-  const r = spawnSync("git", ["show", "-s", "--format=%cI", commit], { cwd: REPO_DIR, encoding: "utf8" });
+  const r = spawnSync("git", ["show", "-s", "--format=%cI", commit], { cwd: REPO_DIR, encoding: "utf8", windowsHide: true });
   if (r.status !== 0 || !r.stdout || !r.stdout.trim()) return null;
   const d = new Date(r.stdout.trim());
   return Number.isNaN(d.getTime()) ? null : d;

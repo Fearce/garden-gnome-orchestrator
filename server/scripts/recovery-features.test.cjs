@@ -32,7 +32,7 @@ for (const f of RECOVERY_FEATURES) {
   assert.ok(typeof f.applies === "function", `${f.id} needs an applies predicate`);
 
   // Catches a SHA that resolves but points at the WRONG commit (a rebase handed back a different fix):
-  const subj = spawnSync("git", ["show", "-s", "--format=%s", f.commit], { cwd: REPO_DIR, encoding: "utf8" }).stdout.trim();
+  const subj = spawnSync("git", ["show", "-s", "--format=%s", f.commit], { cwd: REPO_DIR, encoding: "utf8", windowsHide: true }).stdout.trim();
   assert.match(
     subj,
     /\b(?:qa|review\w*|failover|resum\w*|recover\w*)\b/i,
