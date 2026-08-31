@@ -12,6 +12,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "chip-lab": "node scripts/chip-lab.cjs",
+    "concise-lab": "node scripts/concise-communication-lab.cjs",
     "discord-lab": "node scripts/discord-lab.cjs",
     "git-lab": "node scripts/git-console-lab.cjs",
     "inject-lab": "node scripts/inject-lab.cjs",

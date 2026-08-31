@@ -473,7 +473,8 @@ permissions, tools, bridge grammar, or structured schemas. Blockers, errors, saf
 commands/IDs, and decision evidence stay intact. `agents/communicationPolicy.ts` supplies one trusted
 policy block to role system prompts and every fresh/resumed/steered turn; Director and Supervisor use
 the same live seam, so the next generated turn sees a toggle immediately without a restart. Gate:
-`test:concise-communication`.
+`test:concise-communication`. `npm run concise-lab --prefix server` drives the authenticated toggle,
+restart persistence, and phone layout against a throwaway instance (never production).
 
 ## Director Supervisor (Settings → Director Supervisor, off by default)
 **Off means off:** no timer, agent turn, or DB scan is armed; the one live event subscription returns on
