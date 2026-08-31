@@ -24,6 +24,7 @@ const CHAT_SNAPSHOT_TURNS = 100;
 const CAP_PARK_MARKER = /auto-resume pending/i;
 const MUTATING_ACTIONS = new Set<SupervisorChatAction>(["steer", "pause", "resume", "start_auto_review"]);
 const TERMINAL_STATES = new Set<ThreadState>(["done", "cancelled", "closed"]);
+const BOARD_ACTIVE_STATES = new Set<ThreadState>(["planning", "researching", "implementing", "qa", "reviewing"]);
 
 type SteeringMode = "append" | "interrupt" | "queue";
 
@@ -32,12 +33,21 @@ interface ProposedAction {
   action: SupervisorChatAction;
   message: string;
   mode: SteeringMode;
+  /** Board steering may use an existing live lane, but must never cold-resume one. */
+  boardWide?: boolean;
+}
+
+interface ProposedBoardAction {
+  action: "status" | "steer";
+  message: string;
+  mode: "append" | "queue";
 }
 
 export interface SupervisorChatDecision {
   reply: string;
   needsOwner: boolean;
   actions: ProposedAction[];
+  boardActions: ProposedBoardAction[];
 }
 
 export const SUPERVISOR_CHAT_SCHEMA: JsonSchemaLike = {
@@ -52,15 +62,32 @@ export const SUPERVISOR_CHAT_SCHEMA: JsonSchemaLike = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["threadId", "action", "message", "mode"],
+        // `taskId` is a tolerated provider alias. The action parser requires exactly one usable id and
+        // still checks it against the server-owned scope. Keeping both optional in JSON Schema prevents
+        // a harmless naming variance from discarding an otherwise safe plan before that check can run.
+        required: ["action", "message", "mode"],
         properties: {
           threadId: { type: "string" },
+          taskId: { type: "string" },
           action: {
             type: "string",
             enum: ["status", "comment", "steer", "pause", "resume", "start_auto_review", "escalate"],
           },
           message: { type: "string" },
           mode: { type: "string", enum: ["append", "interrupt", "queue"] },
+        },
+      },
+    },
+    boardActions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["action", "message", "mode"],
+        properties: {
+          action: { type: "string", enum: ["status", "steer"] },
+          message: { type: "string" },
+          mode: { type: "string", enum: ["append", "queue"] },
         },
       },
     },
@@ -74,7 +101,13 @@ export interface SupervisorChatHost {
   readonly db: Db;
   readonly hub: EventHub;
   postFinding(input: PostFindingInput): Finding;
-  injectSupervisorInstruction(threadId: string, message: string, mode: SteeringMode): Promise<ThreadActionResult>;
+  canInjectSupervisorInstruction(threadId: string): boolean;
+  injectSupervisorInstruction(
+    threadId: string,
+    message: string,
+    mode: SteeringMode,
+    options?: { liveOnly?: boolean },
+  ): Promise<ThreadActionResult>;
   interruptThread(threadId: string): Promise<ThreadActionResult>;
   resumeThread(threadId: string, message?: string, operatorInitiated?: boolean): Promise<ThreadActionResult>;
   autoReview(threadId: string): Promise<ThreadActionResult>;
@@ -112,6 +145,7 @@ function deterministicDecision(turn: SupervisorChatTurn, thread: Thread | undefi
     reply,
     needsOwner: false,
     actions: [{ threadId: thread.id, action: kind, message, mode }],
+    boardActions: [],
   });
 
   const asksForStatus =
@@ -147,11 +181,44 @@ function deterministicDecision(turn: SupervisorChatTurn, thread: Thread | undefi
   return null;
 }
 
-function parseDecision(output: unknown, allowedIds: ReadonlySet<string>): SupervisorChatDecision | null {
+/** A common board command has fixed safe semantics and does not need a large catalog/model round trip.
+ * The server supplies the quality-preserving instruction and resolves the live scope immediately before
+ * execution. Destructive or quality-bypass wording deliberately falls through to the guarded model path. */
+function deterministicBoardDecision(turn: SupervisorChatTurn): SupervisorChatDecision | null {
+  if (turn.targets.length) return null;
+  const text = turn.content;
+  const namesGroup = /\b(?:tasks?|agents?|them|they|all|everything)\b/i.test(text);
+  const namesCurrentWork = /\b(?:running|active|in[ -]progress|we have|currently)\b/i.test(text);
+  const asksToFinish = /\b(?:finish(?:\s+up)?|wrap\s+up|complete\s+(?:their|the|current))\b/i.test(text);
+  const unsafe = /\b(?:cancel|delete|discard|force[- ]?stop|mark\s+(?:them\s+)?done|skip\s+(?:qa|tests?|review)|without\s+(?:qa|tests?|review))\b/i.test(text);
+  if (!namesGroup || !namesCurrentWork || !asksToFinish || unsafe) return null;
+
+  return {
+    reply: "I will send a bounded append-only direction to each reachable active task. It keeps required verification and quality gates intact.",
+    needsOwner: false,
+    actions: [],
+    boardActions: [{
+      action: "steer",
+      mode: "append",
+      message: [
+        "Finish the current approved scope promptly and do not expand it.",
+        "Keep every required test, verification, QA/review, deployment, commit/push, and acceptance gate.",
+        "Do not mark done or hand off incomplete work.",
+        "If a real blocker remains, report the exact blocker, completed work, and remaining handoff instead of continuing to churn.",
+      ].join(" "),
+    }],
+  };
+}
+
+function parseDecision(output: unknown, allowedIds: ReadonlySet<string>, allowBoard: boolean): SupervisorChatDecision | null {
   if (!output || typeof output !== "object" || Array.isArray(output)) return null;
   const raw = output as Record<string, unknown>;
   if (typeof raw.reply !== "string" || typeof raw.needsOwner !== "boolean" || !Array.isArray(raw.actions)) return null;
   if (raw.actions.length > MAX_TARGETS) return null;
+  const rawBoardActions = raw.boardActions === undefined ? [] : raw.boardActions;
+  if (!Array.isArray(rawBoardActions) || rawBoardActions.length > 1 || (!allowBoard && rawBoardActions.length)) return null;
+  // A board template and hand-enumerated actions in one plan create two competing scope authorities.
+  if (rawBoardActions.length && raw.actions.length) return null;
 
   const validActions = new Set<SupervisorChatAction>(["status", "comment", "steer", "pause", "resume", "start_auto_review", "escalate"]);
   const validModes = new Set<SteeringMode>(["append", "interrupt", "queue"]);
@@ -162,9 +229,13 @@ function parseDecision(output: unknown, allowedIds: ReadonlySet<string>): Superv
   for (const item of raw.actions) {
     if (!item || typeof item !== "object" || Array.isArray(item)) return null;
     const value = item as Record<string, unknown>;
+    const canonicalId = typeof value.threadId === "string" ? value.threadId : undefined;
+    const aliasId = typeof value.taskId === "string" ? value.taskId : undefined;
+    if (canonicalId && aliasId && canonicalId !== aliasId) return null;
+    const threadId = canonicalId ?? aliasId;
     if (
-      typeof value.threadId !== "string" ||
-      !allowedIds.has(value.threadId) ||
+      !threadId ||
+      !allowedIds.has(threadId) ||
       typeof value.action !== "string" ||
       !validActions.has(value.action as SupervisorChatAction)
     ) {
@@ -177,26 +248,37 @@ function parseDecision(output: unknown, allowedIds: ReadonlySet<string>): Superv
     const message = typeof value.message === "string" ? value.message : "";
     const mode = validModes.has(value.mode as SteeringMode) ? (value.mode as SteeringMode) : "append";
     if (action === "steer" && (!message.trim() || !validModes.has(value.mode as SteeringMode))) return null;
-    const exact = `${value.threadId}:${action}`;
+    const exact = `${threadId}:${action}`;
     if (seenExact.has(exact)) continue;
     seenExact.add(exact);
     if (MUTATING_ACTIONS.has(action)) {
       // One state-changing operation per task per owner turn. A model proposing pause+resume or
       // steer+review in one batch is internally contradictory, so fail closed before either lands.
-      if (mutationByTask.has(value.threadId)) return null;
-      mutationByTask.add(value.threadId);
+      if (mutationByTask.has(threadId)) return null;
+      mutationByTask.add(threadId);
     }
     actions.push({
-      threadId: value.threadId,
+      threadId,
       action,
       message: clip(message, MAX_ACTION_MESSAGE_CHARS),
       mode,
     });
   }
 
+  const boardActions: ProposedBoardAction[] = [];
+  for (const item of rawBoardActions) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const value = item as Record<string, unknown>;
+    if (value.action !== "status" && value.action !== "steer") return null;
+    const message = typeof value.message === "string" ? clip(value.message, MAX_ACTION_MESSAGE_CHARS) : "";
+    const mode = value.mode === "append" || value.mode === "queue" ? value.mode : null;
+    if (!mode || (value.action === "steer" && !message)) return null;
+    boardActions.push({ action: value.action, message, mode });
+  }
+
   const reply = clip(raw.reply, MAX_REPLY_CHARS);
-  if (!reply && actions.length === 0) return null;
-  return { reply, needsOwner: raw.needsOwner, actions };
+  if (!reply && actions.length === 0 && boardActions.length === 0) return null;
+  return { reply, needsOwner: raw.needsOwner, actions, boardActions };
 }
 
 function ageText(at: number, now = Date.now()): string {
@@ -256,7 +338,7 @@ function buildPrompt(db: Db, turn: SupervisorChatTurn, candidates: Thread[]): st
     "",
     explicit
       ? "The owner explicitly selected the task(s) below. They are the complete action scope: never propose an action for any other task."
-      : "No task was selected. You may answer a board-wide status question or act on a task only when the request and catalog identify it unambiguously. Otherwise ask the owner to select the task.",
+      : "No task was selected. This is a board-wide request. You may answer a board status question, use one boardActions entry for a clear common instruction to active work, or act on one catalog task only when the request identifies it unambiguously. Otherwise ask the owner to select the task.",
     "Task creation, dispatch, or unrelated new work belongs in Director. If asked for that, explain this and return no actions. Never silently create or duplicate a task.",
     "If the request is ambiguous, needs a product/owner decision, or names a task you cannot identify, set needsOwner=true, ask one concrete question in reply, and take no action affected by that ambiguity.",
     "Do not claim an operation succeeded in reply. The server validates fresh state and executes actions only after your answer; phrase the reply as your assessment/intent, then the UI appends authoritative results.",
@@ -270,7 +352,8 @@ function buildPrompt(db: Db, turn: SupervisorChatTurn, candidates: Thread[]): st
     "- start_auto_review: delegate a normal review park to the existing reviewer. The reviewer, not you, decides whether it may become done.",
     "- escalate: add a visible warning that needs the owner's attention. It does not pretend to resolve the blocker.",
     "There is intentionally no cancel, retry, delete, close, dispatch, or mark-done action.",
-    "Use at most one state-changing action per task. Put the exact instruction/finding text in message. mode is required for every action but ignored unless action=steer.",
+    "Use at most one state-changing action per task. Put the exact instruction/finding text in message. mode is required for every action but ignored unless action=steer. Use threadId from the catalog for per-task actions (taskId is accepted only as a compatibility alias).",
+    "For a clear board-wide common request, return actions=[] and exactly one boardActions entry. The server expands it to at most 8 reachable top-level tasks currently in planning, researching, implementing, QA, or reviewing. Board actions never include parked/done/cancelled/closed work. Board steering supports append or queue only; it preserves current sessions and never cold-resumes or interrupts them. Board pause/resume/review/escalate and destructive or acceptance-bypass requests are out of scope.",
     "",
     "Recent supervisor conversation:",
     conversationContext(db.listSupervisorChatTurns(CHAT_HISTORY_TURNS + 1), turn.id),
@@ -291,7 +374,7 @@ function looksLikeNewTaskRequest(content: string): boolean {
 function candidateThreads(db: Db, turn: SupervisorChatTurn): Thread[] {
   if (turn.targets.length) return turn.targets.map((target) => db.getThread(target.threadId)).filter((thread): thread is Thread => !!thread);
 
-  const all = db.listThreads().filter((thread) => !thread.parentId && thread.state !== "closed");
+  const all = db.listThreads().filter((thread) => !thread.parentId && thread.state !== "closed" && thread.state !== "cancelled");
   const recentTargetIds = db
     .listSupervisorChatTurns(CHAT_HISTORY_TURNS + 1)
     .filter((item) => item.id !== turn.id)
@@ -334,6 +417,16 @@ export class SupervisorChat {
     const text = clip(content, MAX_CONTENT_CHARS);
     if (!text) throw new Error("Supervisor message cannot be empty.");
     const ids = [...new Set(requestedTargetIds)].slice(0, MAX_TARGETS);
+    if (turnId) {
+      const existing = this.host.db.getSupervisorChatTurn(turnId);
+      if (existing) {
+        const sameTargets = existing.targets.map((target) => target.threadId).join("\n") === ids.join("\n");
+        if (existing.content !== text || !sameTargets) throw new Error("Supervisor receipt id already belongs to a different request.");
+        // WebSocket delivery is at-least-once. Returning the durable receipt without enqueueing process()
+        // makes an exact resend idempotent whether the first attempt is pending or already terminal.
+        return existing;
+      }
+    }
     const targets = ids.map((id) => targetSnapshot(this.host.db.getThread(id), id));
     const turn = this.host.db.createSupervisorChatTurn({ id: turnId, content: text, targets });
     this.onChange();
@@ -376,7 +469,7 @@ export class SupervisorChat {
     const candidates = candidateThreads(this.host.db, turn);
     const allowedIds = new Set(candidates.map((thread) => thread.id));
     const stateSeen = new Map(candidates.map((thread) => [thread.id, thread.state]));
-    let decision = deterministicDecision(turn, candidates[0]);
+    let decision = deterministicDecision(turn, candidates[0]) ?? deterministicBoardDecision(turn);
     if (!decision) {
       const judged = await this.judge(buildPrompt(this.host.db, turn, candidates), SUPERVISOR_CHAT_SCHEMA).catch(() => null);
       if (!judged) {
@@ -393,11 +486,49 @@ export class SupervisorChat {
       }) ?? turn;
       this.onChange();
 
-      decision = parseDecision(judged.output, allowedIds);
+      decision = parseDecision(judged.output, allowedIds, turn.targets.length === 0);
       if (!decision) {
         this.finish(turn, "failed", "The supervisor returned an invalid or out-of-scope action plan. Nothing was changed; select the intended task and resend the instruction.");
         return;
       }
+    }
+
+    if (decision.boardActions.length) {
+      const board = decision.boardActions[0]!;
+      const active = candidates.filter((thread) => BOARD_ACTIVE_STATES.has(thread.state));
+      const reachable = board.action === "steer"
+        ? active.filter((thread) => this.host.canInjectSupervisorInstruction(thread.id))
+        : active;
+      const scoped = reachable.slice(0, MAX_TARGETS);
+      decision.actions = scoped.map((thread) => ({
+        threadId: thread.id,
+        action: board.action,
+        message: board.message,
+        mode: board.mode,
+        boardWide: true,
+      }));
+      const unavailable = active.length - reachable.length;
+      const overLimit = Math.max(0, reachable.length - scoped.length);
+      const scope = scoped.length
+        ? `Scope resolved to ${scoped.length} reachable active task${scoped.length === 1 ? "" : "s"}.`
+        : "No reachable active task is running, so nothing will be changed.";
+      const exclusions = [
+        unavailable ? `${unavailable} active task${unavailable === 1 ? " has" : "s have"} no live session and will not be cold-resumed.` : "",
+        overLimit ? `${overLimit} additional active task${overLimit === 1 ? " is" : "s are"} outside the board limit and will not be changed.` : "",
+      ].filter(Boolean).join(" ");
+      decision.reply = clip(`${decision.reply} ${scope}${exclusions ? ` ${exclusions}` : ""}`, MAX_REPLY_CHARS);
+    } else if (turn.targets.length === 0) {
+      // An unselected per-task steering plan is allowed only for a currently active, reachable session.
+      // This accepts the recovered production plan's harmless taskId alias without opening cold resume.
+      const safe = decision.actions.every((action) =>
+        action.action !== "steer" ||
+        (BOARD_ACTIVE_STATES.has(stateSeen.get(action.threadId)!) && this.host.canInjectSupervisorInstruction(action.threadId))
+      );
+      if (!safe) {
+        this.finish(turn, "failed", "The supervisor returned an invalid or out-of-scope action plan. Nothing was changed; select the intended task and resend the instruction.");
+        return;
+      }
+      decision.actions = decision.actions.map((action) => ({ ...action, boardWide: action.action === "steer" }));
     }
 
     const results: SupervisorChatActionResult[] = [];
@@ -476,7 +607,7 @@ export class SupervisorChat {
         if (TERMINAL_STATES.has(current.state)) return base(false, `A ${current.state} task cannot receive steering. Restore or retry it deliberately from the task panel if needed.`);
         if (CAP_PARK_MARKER.test(current.error ?? "")) return base(false, "This task is capacity-parked and already owns an automatic resume; steering was not allowed to race that recovery.");
         if (!action.message) return base(false, "The supervisor did not provide an instruction to inject.");
-        const result = await this.host.injectSupervisorInstruction(current.id, action.message, action.mode);
+        const result = await this.host.injectSupervisorInstruction(current.id, action.message, action.mode, { liveOnly: action.boardWide === true });
         return base(result.ok, resultText(result, `Sent the instruction through the task's ${action.mode} injection path.`), result.state ?? this.host.db.getThread(current.id)?.state ?? current.state);
       }
       case "pause": {

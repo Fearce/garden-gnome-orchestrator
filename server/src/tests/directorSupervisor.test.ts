@@ -99,7 +99,7 @@ interface Fixture {
   hub: EventHub;
   findings: PostFindingInput[];
   injections: { threadId: string; message: string }[];
-  chatInjections: { threadId: string; message: string; mode: "append" | "interrupt" | "queue" }[];
+  chatInjections: { threadId: string; message: string; mode: "append" | "interrupt" | "queue"; liveOnly: boolean }[];
   interruptions: string[];
   notices: { kind: string; title: string; detail?: string }[];
   recoveries: string[];
@@ -122,7 +122,7 @@ function fixture(): Fixture {
   const hub = new EventHub();
   const findings: PostFindingInput[] = [];
   const injections: { threadId: string; message: string }[] = [];
-  const chatInjections: { threadId: string; message: string; mode: "append" | "interrupt" | "queue" }[] = [];
+  const chatInjections: { threadId: string; message: string; mode: "append" | "interrupt" | "queue"; liveOnly: boolean }[] = [];
   const interruptions: string[] = [];
   const notices: { kind: string; title: string; detail?: string }[] = [];
   const recoveries: string[] = [];
@@ -160,8 +160,12 @@ function fixture(): Fixture {
       injections.push({ threadId, message });
       return { ok: true, state: db.getThread(threadId)?.state };
     },
-    async injectSupervisorInstruction(threadId, message, mode): Promise<ThreadActionResult> {
-      chatInjections.push({ threadId, message, mode });
+    canInjectSupervisorInstruction(threadId): boolean {
+      const state = db.getThread(threadId)?.state;
+      return !!state && ["planning", "researching", "implementing", "qa", "reviewing"].includes(state);
+    },
+    async injectSupervisorInstruction(threadId, message, mode, options): Promise<ThreadActionResult> {
+      chatInjections.push({ threadId, message, mode, liveOnly: options?.liveOnly === true });
       return { ok: true, state: db.getThread(threadId)?.state, message: `instruction ${mode}` };
     },
     async interruptThread(threadId): Promise<ThreadActionResult> {
@@ -578,7 +582,98 @@ async function main(): Promise<void> {
       const paused = makeTask(f.db, "Repair invoice export", "paused");
       const unrelated = makeTask(f.db, "Unselected private task", "review");
       const failedTask = makeTask(f.db, "Concise agent communication setting", "failed");
+      const vota = makeTask(f.db, "Prepare Vota production for release", "qa");
+      const finished = makeTask(f.db, "Already finished task", "done");
+      const cancelled = makeTask(f.db, "Cancelled task", "cancelled");
+      const closed = makeTask(f.db, "Closed task", "closed");
       const supervisor = f.create();
+
+      const exactBoardMessage = "The tasks we have running have been churning for way too long, can u tell them to finish up";
+      const beforeBoardJudges = f.getJudgeCalls();
+      const boardReceiptId = crypto.randomUUID();
+      const firstBoardReceipt = supervisor.sendChatMessage(exactBoardMessage, [], boardReceiptId);
+      const retryBoardReceipt = supervisor.sendChatMessage(exactBoardMessage, [], boardReceiptId);
+      const boardFinished = await waitForChatTurn(f.db, firstBoardReceipt.id);
+      const boardDeliveries = f.chatInjections.filter((item) => boardFinished.actionResults.some((result) => result.threadId === item.threadId));
+      const boardIds = new Set(boardFinished.actionResults.map((result) => result.threadId));
+      check(
+        "the exact zero-target production message deterministically steers each reachable active task",
+        firstBoardReceipt.id === boardReceiptId &&
+          retryBoardReceipt.id === boardReceiptId &&
+          boardFinished.status === "succeeded" &&
+          boardFinished.usedAgent === false &&
+          boardFinished.targets.length === 0 &&
+          boardIds.size === 2 &&
+          boardIds.has(active.id) &&
+          boardIds.has(vota.id) &&
+          boardFinished.actionResults.every((result) => result.action === "steer" && result.ok) &&
+          f.getJudgeCalls() === beforeBoardJudges,
+      );
+      check(
+        "board scope excludes parked, done, cancelled, and closed tasks",
+        ![unrelated, failedTask, finished, cancelled, closed].some((task) => boardIds.has(task.id)),
+      );
+      check(
+        "board steering preserves live sessions and the Vota quality gate",
+        boardDeliveries.length === 2 &&
+          boardDeliveries.every((item) => item.mode === "append" && item.liveOnly) &&
+          boardDeliveries.some((item) => item.threadId === vota.id && /required test.*QA\/review.*acceptance gate/i.test(item.message)) &&
+          boardDeliveries.every((item) => /Do not mark done or hand off incomplete work/i.test(item.message)),
+      );
+      check(
+        "an exact receipt retry is idempotent and does not duplicate task injections",
+        f.chatInjections.filter((item) => boardIds.has(item.threadId)).length === 2,
+      );
+
+      f.setJudgement({
+        reply: "I can apply one common queue-only reminder to current active work.",
+        needsOwner: false,
+        actions: [],
+        boardActions: [{ action: "steer", message: "Keep the current scope and report the exact blocker at handoff.", mode: "queue" }],
+      });
+      const plannedBoard = supervisor.sendChatMessage("Give every active task the same bounded handoff reminder.", []);
+      const plannedBoardResult = await waitForChatTurn(f.db, plannedBoard.id);
+      check(
+        "a valid board-wide model plan is expanded and audited by the server",
+        plannedBoardResult.status === "succeeded" &&
+          plannedBoardResult.targets.length === 0 &&
+          plannedBoardResult.actionResults.length === 2 &&
+          plannedBoardResult.actionResults.every((result) => boardIds.has(result.threadId) && result.ok) &&
+          /Scope resolved to 2 reachable active tasks/i.test(plannedBoardResult.response ?? "") &&
+          f.chatInjections.filter((item) => item.message.includes("bounded handoff")).every((item) => item.mode === "queue" && item.liveOnly),
+      );
+
+      f.setJudgement({
+        reply: "I identified the two active tasks.",
+        needsOwner: false,
+        actions: [
+          { taskId: active.id, action: "steer", message: "Finish the current scope with verification intact.", mode: "append" },
+          { taskId: vota.id, action: "steer", message: "Finish the current scope with verification intact.", mode: "append" },
+        ],
+      });
+      const recoveredShape = supervisor.sendChatMessage("Send that verification reminder to the two active tasks in the catalog.", []);
+      const recoveredShapeResult = await waitForChatTurn(f.db, recoveredShape.id);
+      check(
+        "the recovered provider taskId alias is normalized before strict scope validation",
+        recoveredShapeResult.status === "succeeded" && recoveredShapeResult.actionResults.length === 2,
+      );
+
+      const beforeInvalidBoard = f.chatInjections.length;
+      f.setJudgement({
+        reply: "I will pause every task.",
+        needsOwner: false,
+        actions: [],
+        boardActions: [{ action: "pause", message: "Pause everything.", mode: "interrupt" }],
+      });
+      const invalidBoard = supervisor.sendChatMessage("Pause every active task and stop its session.", []);
+      const invalidBoardResult = await waitForChatTurn(f.db, invalidBoard.id);
+      check(
+        "a genuinely out-of-scope board action is rejected before any task changes",
+        invalidBoardResult.status === "failed" &&
+          invalidBoardResult.actionResults.length === 0 &&
+          /out-of-scope/i.test(invalidBoardResult.response ?? "") &&
+          f.chatInjections.length === beforeInvalidBoard,
+      );
 
       const beforeDeterministicResume = f.getJudgeCalls();
       const resume = supervisor.sendChatMessage(

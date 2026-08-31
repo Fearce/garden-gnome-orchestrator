@@ -361,6 +361,58 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test D: board-wide steering is live-only -------------------------------------------------------
+  console.log("\nTest D - board-wide steering never cold-resumes a stale implementing lane");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "implementing" });
+      const result = await h.mgr.injectSupervisorInstruction(
+        id,
+        "Finish the current scope with every verification gate intact.",
+        "append",
+        { liveOnly: true },
+      );
+      check("a stale active-looking lane is not considered a live board recipient", !h.mgr.canInjectSupervisorInstruction(id));
+      check("the board injection is declined without a cold resume", !result.ok && /not cold-resumed/i.test(result.error ?? ""), JSON.stringify(result));
+      check("no run or feed message was created for the declined board injection", h.db.listRuns(id).length === 0 && h.db.listMessages(id).length === 0);
+      check("the stale lane's state is unchanged", h.db.getThread(id)?.state === "implementing", h.db.getThread(id)?.state);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest E - board-wide steering stays inside the existing live session");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const impl = stubImplementorStart(h);
+      const loop = runLoop(h, id);
+      await waitLive(h, id);
+
+      const result = await h.mgr.injectSupervisorInstruction(
+        id,
+        "Finish the current scope with every verification gate intact.",
+        "append",
+        { liveOnly: true },
+      );
+      await settle();
+      check("the live lane is eligible and accepts the board instruction", h.mgr.canInjectSupervisorInstruction(id) && result.ok, JSON.stringify(result));
+      check("the instruction used the existing run rather than spawning another", h.db.listRuns(id).length === 1 && impl.sends.length === 1, JSON.stringify(h.db.listRuns(id).map((run) => run.id)));
+      check("the task remains implementing after its steered turn abort", h.db.getThread(id)?.state === "implementing" && h.qaRounds.length === 0, h.db.getThread(id)?.state);
+
+      impl.finishTurn();
+      await loop;
+      await settle();
+      check("normal QA still runs after the continued live session finishes", h.qaRounds.length === 1 && h.db.getThread(id)?.state === "done");
+    } finally {
+      await settle();
+      h.dispose();
+    }
+  }
+
   console.log(`\n${failed === 0 ? "✅ PASS" : "❌ FAIL"} — ${passed} passed, ${failed} failed`);
   if (failed) {
     for (const f of failures) console.log(`  • ${f}`);

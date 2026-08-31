@@ -4556,11 +4556,34 @@ export class ThreadManager implements OrchestratorApi {
   /** An authenticated Supervisor-chat instruction uses the ordinary task injection machinery but is
    * not a new objective, so it must not auto-retitle the lane. The conversational supervisor has no
    * direct runner access; this is its only steering seam. */
+  canInjectSupervisorInstruction(threadId: string): boolean {
+    const thread = this.db.getThread(threadId);
+    if (!thread || !["planning", "researching", "implementing", "qa", "reviewing"].includes(thread.state)) return false;
+    return (
+      this.live.has(threadId) ||
+      this.liveRole.has(threadId) ||
+      this.liveQa.has(threadId) ||
+      this.liveReviewer.has(threadId) ||
+      this.resuming.has(threadId) ||
+      this.reviewing.has(threadId) ||
+      this.selfImproving.has(threadId) ||
+      (thread.state === "qa" && (this.qaFixHandoff.has(threadId) || !!this.qaFixHandoffPayload(threadId)))
+    );
+  }
+
   async injectSupervisorInstruction(
     threadId: string,
     message: string,
     mode: "append" | "interrupt" | "queue",
+    options: { liveOnly?: boolean } = {},
   ): Promise<ThreadActionResult> {
+    if (options.liveOnly && !this.canInjectSupervisorInstruction(threadId)) {
+      return {
+        ok: false,
+        state: this.db.getThread(threadId)?.state,
+        error: "No live task session remains to receive this board-wide instruction; it was not cold-resumed.",
+      };
+    }
     return this.injectThread(threadId, `Supervisor instruction from the owner: ${message}`, mode, undefined, { retitle: false });
   }
 

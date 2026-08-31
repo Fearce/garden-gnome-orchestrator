@@ -924,8 +924,9 @@ export type SupervisorChatStatus = "pending" | "succeeded" | "failed" | "needs_i
  * action in this vocabulary. */
 export type SupervisorChatAction = "status" | "comment" | "steer" | "pause" | "resume" | "start_auto_review" | "escalate";
 
-/** Snapshot of a target at send time. No FK is used by the chat table: the conversation remains
- * readable after an old task is purged, so both the title and short-lived state are stored here. */
+/** Snapshot of an explicitly selected target at send time. An empty list is retained for a board-wide
+ * request; its server-resolved recipients and outcomes are recorded in actionResults. No FK is used by
+ * the chat table, so the conversation remains readable after an old task is purged. */
 export interface SupervisorChatTarget {
   threadId: string;
   title: string;

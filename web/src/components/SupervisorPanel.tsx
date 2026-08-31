@@ -160,7 +160,7 @@ function SupervisorChat({ supervisor, now }: { supervisor: SupervisorSnapshot; n
         ) : (
           <div className="supervisor-chat-empty">
             <span>Supervise without leaving this tab.</span>
-            <p>Select one or more tasks for precise routing, or leave targets empty for a board-wide status question. New work still belongs in Director.</p>
+            <p>Select tasks for precise routing, or leave targets empty for a bounded board-wide request to active work. New work still belongs in Director.</p>
           </div>
         )}
       </div>
@@ -174,7 +174,7 @@ function SupervisorChat({ supervisor, now }: { supervisor: SupervisorSnapshot; n
             disabled={pending}
           />
           <span className="supervisor-target-scope faint">
-            {selected.length ? `${selected.length} task${selected.length === 1 ? "" : "s"} targeted` : "No target · board-wide question"}
+            {selected.length ? `${selected.length} task${selected.length === 1 ? "" : "s"} targeted` : "No target · board-wide request"}
           </span>
         </div>
         {selected.length ? (
@@ -200,7 +200,7 @@ function SupervisorChat({ supervisor, now }: { supervisor: SupervisorSnapshot; n
             }}
             maxLength={4_000}
             rows={3}
-            placeholder={selected.length ? "Tell the supervisor what to do with the selected task…" : "Ask what needs attention, or select tasks to steer them…"}
+            placeholder={selected.length ? "Tell the supervisor what to do with the selected task…" : "Ask what needs attention, or guide active tasks safely…"}
             aria-label="Message the task supervisor"
             disabled={pending}
           />

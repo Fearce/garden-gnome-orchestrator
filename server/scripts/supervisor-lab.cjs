@@ -98,7 +98,7 @@ function seed(dataDir) {
   const tasks = [
     ["supervisor-lab-task-1", "Continue implementation from previous developer"],
     ["supervisor-lab-task-2", "Fix incorrect menu for restaurant in Klaksvig"],
-    ["supervisor-lab-task-3", "Improve BGs engine accuracy to 8k+ MMR"],
+    ["supervisor-lab-task-3", "Prepare Vota production release with full QA gate"],
   ];
   const insertThread = db.prepare(
     "INSERT INTO threads (id, title, state, workspace, brief, raw_prompt, created_at, updated_at) VALUES (?, ?, 'review', ?, ?, ?, ?, ?)",
@@ -134,8 +134,8 @@ function seed(dataDir) {
     );
   }
 
-  // Real conversation shapes for both layout bands: a successful task action, an owner decision, and
-  // a failure. The ids/titles are snapshots exactly as production stores them, so the browser verifies
+  // Real conversation shapes for both layout bands: targeted and board-wide successes, an owner
+  // decision, and a failure. The ids/titles are snapshots exactly as production stores them, so the browser verifies
   // that history remains useful even without opening each task feed.
   const chat = db.prepare(
     `INSERT INTO supervisor_chat_turns
@@ -151,6 +151,22 @@ function seed(dataDir) {
     "The task is in a normal review park, so I delegated it through the existing reviewer path.",
     JSON.stringify([{ threadId: tasks[0][0], threadTitle: tasks[0][1], action: "start_auto_review", ok: true, message: "Started the existing auto-reviewer.", state: "reviewing" }]),
     1, 0.012, 842, "claude-sonnet-5", "claude", now - 22 * 60_000, now - 21 * 60_000,
+  );
+  chat.run(
+    "supervisor-lab-chat-board-success",
+    "The tasks we have running have been churning for way too long, can u tell them to finish up",
+    "[]",
+    "succeeded",
+    "I sent an append-only finish-current-scope direction with every quality gate intact. Scope resolved to 3 reachable active tasks.",
+    JSON.stringify(tasks.map(([threadId, threadTitle]) => ({
+      threadId,
+      threadTitle,
+      action: "steer",
+      ok: true,
+      message: "Sent through the existing live session; required verification and QA/review remain in scope.",
+      state: "implementing",
+    }))),
+    0, null, null, null, null, now - 18 * 60_000, now - 17 * 60_000,
   );
   chat.run(
     "supervisor-lab-chat-question",
@@ -347,9 +363,20 @@ async function drivePass(page, { name, width, height }, shotDir) {
       textarea: measure(".supervisor-compose-row textarea"),
       turns: document.querySelectorAll(".supervisor-turn").length,
       outcomes: [...document.querySelectorAll(".supervisor-turn-status")].map((el) => el.textContent.trim()),
+      board: (() => {
+        const turn = [...document.querySelectorAll(".supervisor-turn")].find((el) => el.textContent.includes("churning for way too long"));
+        const results = turn?.querySelector(".supervisor-action-results");
+        return turn ? {
+          scope: turn.querySelector(".supervisor-turn-targets")?.textContent.trim(),
+          status: turn.querySelector(".supervisor-turn-status")?.textContent.trim(),
+          actions: turn.querySelectorAll(".supervisor-action-results button").length,
+          fits: !results || results.scrollWidth <= results.clientWidth + 1,
+        } : null;
+      })(),
     };
   });
-  check(`${width}: persisted task-chat history renders success, decision, and failure states`, chatControls.turns >= 3 && /completed/i.test(chatControls.outcomes.join(" ")) && /needs your answer/i.test(chatControls.outcomes.join(" ")) && /failed/i.test(chatControls.outcomes.join(" ")), JSON.stringify(chatControls));
+  check(`${width}: persisted task-chat history renders success, decision, and failure states`, chatControls.turns >= 4 && /completed/i.test(chatControls.outcomes.join(" ")) && /needs your answer/i.test(chatControls.outcomes.join(" ")) && /failed/i.test(chatControls.outcomes.join(" ")), JSON.stringify(chatControls));
+  check(`${width}: board-wide success names its scope and renders every result without horizontal spill`, /board-wide/i.test(chatControls.board?.scope ?? "") && /completed/i.test(chatControls.board?.status ?? "") && chatControls.board?.actions === 3 && chatControls.board?.fits, JSON.stringify(chatControls.board));
   check(`${width}: target picker and Send are on-screen tap controls`, chatControls.target?.inView && chatControls.target.ownsTap && chatControls.target.h >= TAP_MIN && chatControls.send?.inView && chatControls.send.ownsTap && chatControls.send.h >= TAP_MIN, JSON.stringify(chatControls));
   check(`${width}: the task instruction textarea remains on-screen and usable`, chatControls.textarea?.inView && chatControls.textarea.ownsTap && chatControls.textarea.h >= TAP_MIN, JSON.stringify(chatControls.textarea));
 

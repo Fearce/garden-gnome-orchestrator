@@ -415,7 +415,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("note.create"), body: z.string().min(1).max(2000), url: z.string().max(600).optional() }),
   z.object({ type: z.literal("note.delete"), id: z.string() }),
   z.object({ type: z.literal("note.clear") }),
-  // Existing-task supervision only. Empty targets means a board-wide question; explicit ids are
+  // Existing-task supervision only. Empty targets means a bounded board-wide request; explicit ids are
   // re-resolved by the server and become the complete action scope for that turn.
   z.object({
     type: z.literal("supervisor.message"),
