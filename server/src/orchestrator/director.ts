@@ -103,7 +103,13 @@ export class Director {
     this.cliCorrections = 0;
     this.cliCommittedResult = undefined;
 
-    const live = this.run && !this.run.finished;
+    // A batch CLI marks itself finished immediately before emitting its end callback. A new owner
+    // message can land in that tiny window: it must take ownership away from the finished run BEFORE
+    // start() awaits target selection, otherwise the stale end callback still sees itself as current
+    // and settleTurn() clears the brand-new pending prompt. The durable user bubble then has no reply
+    // or dispatch — the director appears to have ignored it.
+    const previousRun = this.run;
+    const live = previousRun && !previousRun.finished;
     const auto = this.api.settings().autoModelSelection;
     const mustReselect = !this.target || !this.api.directorTargetReady(this.target) || auto !== this.targetWasAuto;
     if (live && mustReselect) {
@@ -115,6 +121,9 @@ export class Director {
     } else if (live) {
       this.run!.send(content);
     } else {
+      // Neutralize a finished run's not-yet-delivered onEnd callback before starting the next turn.
+      // The callback's `this.run !== run` ownership guard will now leave the new pending prompt alone.
+      if (this.run === previousRun) this.run = undefined;
       void this.start(content);
     }
     this.setBusy(true);

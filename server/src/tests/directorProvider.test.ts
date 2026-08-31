@@ -186,6 +186,42 @@ try {
   await new Promise<void>((resolve) => setImmediate(resolve));
   check("CLI result→end race still posts the director reply", db.listDirectorMessages(5).some((m) => m.content === "Lifecycle reply survived."));
 
+  // A new owner message can arrive after the batch CLI flips `finished`, but before its end callback
+  // reaches Director. Target selection is async, so the stale callback used to settle (and erase) the
+  // new pending turn while start() was awaiting its target. Reproduce that exact ordering.
+  let staleEndHandler: (() => void) | undefined;
+  const staleFinishedRun = {
+    finished: true, rateLimited: false, capped: false,
+    onEvent() { return () => {}; },
+    onEnd(cb: () => void) { staleEndHandler = cb; },
+  };
+  const nextRun = {
+    finished: false, rateLimited: false, capped: false,
+    startedWith: undefined as unknown,
+    onEvent() { return () => {}; }, onEnd() {},
+    start(content: unknown) { this.startedWith = content; return this; },
+    stop: async () => {},
+  };
+  const rolloverDirector = new Director(mgr, db, hub, {} as Scheduler, {} as OperatorNotes);
+  const rolloverInternals = rolloverDirector as any;
+  rolloverInternals.run = staleFinishedRun;
+  rolloverInternals.wire(staleFinishedRun, configured[0]);
+  let releaseSelection: (() => void) | undefined;
+  const selectionBlocked = new Promise<void>((resolve) => { releaseSelection = resolve; });
+  rolloverInternals.chooseTarget = async () => { await selectionBlocked; return configured[0]; };
+  internals.createDirectorAgent = () => nextRun;
+  rolloverDirector.handleUserMessage("Do not drop this rollover message.");
+  staleEndHandler?.();
+  releaseSelection?.();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  check(
+    "a finished CLI run cannot settle the next owner message",
+    typeof nextRun.startedWith === "string" && nextRun.startedWith.endsWith("Do not drop this rollover message.") && rolloverInternals.pending === "Do not drop this rollover message.",
+    JSON.stringify({ startedWith: nextRun.startedWith, pending: rolloverInternals.pending }),
+  );
+  rolloverDirector.cancelTurn();
+  internals.createDirectorAgent = originalCreateDirectorAgent;
+
   // Once a state-changing command succeeded, a broken confirmation turn must report the successful
   // server result instead of claiming the entire turn failed and inviting a duplicate dispatch.
   const failedFollowupRun = {
