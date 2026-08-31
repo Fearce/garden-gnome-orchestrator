@@ -593,6 +593,14 @@ async function main(): Promise<void> {
       const id = seedParkedTask(h);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (h.mgr as any).zaiImplementorReady = (): boolean => zaiReady;
+      // Keep this provider-resume fixture independent from the host's real z.ai usage cache. The test
+      // controls availability with `zaiReady`; live quota must not silently override that scenario.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).zaiProviderCandidate = (): Record<string, unknown> => ({
+        provider: "zai",
+        hasHeadroom: zaiReady,
+        capacityWindows: [],
+      });
       const { resumes, providers } = stubReviewerRuns(h, [CUTOFF, okResult({ accept: true, summary: "verified after the cutoff" })], "zai:glm-4.6");
       await h.mgr.autoReview(id);
       await settle();

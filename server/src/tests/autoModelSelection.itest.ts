@@ -246,6 +246,13 @@ async function main(): Promise<void> {
       h.internals.grokEffort = (): Effort => "xhigh";
       h.db.kvSet("cache_grok_models", JSON.stringify(grok));
       h.internals.zaiImplementorReady = (): boolean => true;
+      // The roster contract is under test here, not this machine's live z.ai quota. Without an
+      // explicit capacity fixture, a nearly-spent host account filters every otherwise-live model.
+      h.internals.zaiProviderCandidate = (): Record<string, unknown> => ({
+        provider: "zai",
+        hasHeadroom: true,
+        capacityWindows: [],
+      });
       h.db.kvSet("cache_zai_models", JSON.stringify(zai));
       h.internals.zaiEffort = (): Effort => "high";
       const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
