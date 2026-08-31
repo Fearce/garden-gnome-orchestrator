@@ -16,6 +16,9 @@ const DB_PATH = path.join(TEMP, "orchestrator.sqlite");
 const NOW = Date.now();
 const TASK_ID = "1d444976-3217-44bb-9d8d-f9bba1159ce5";
 const OTHER_TASK_ID = "8c3df3cc-63b9-4314-a6d7-2cc24f53a1b0";
+const BOARD_TASK_ID = "9f07c915-5567-41e3-8859-ec663d1da9c7";
+const BOARD_MESSAGE = "The tasks we have running have been churning for way too long, can u tell them to finish up";
+const BOARD_INSTRUCTION = "Finish the current approved scope promptly and do not expand it. Keep every required test, verification, QA/review, deployment, commit/push, and acceptance gate.";
 
 let passed = 0;
 function check(label, condition, detail = "") {
@@ -79,6 +82,14 @@ try {
       error TEXT,
       updated_at INTEGER
     );
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
   db.prepare("INSERT INTO threads(id, title, state, error, updated_at) VALUES(?, ?, ?, ?, ?)").run(
     TASK_ID,
@@ -94,6 +105,13 @@ try {
     "Needs owner review.",
     NOW,
   );
+  db.prepare("INSERT INTO threads(id, title, state, error, updated_at) VALUES(?, ?, ?, ?, ?)").run(
+    BOARD_TASK_ID,
+    "Audit Halifax menu crawl quality",
+    "implementing",
+    null,
+    NOW,
+  );
 
   const insert = db.prepare(`
     INSERT INTO supervisor_chat_turns
@@ -103,6 +121,59 @@ try {
       (@id, @content, @targets, @status, @response, @actions, @usedAgent, @costUsd,
        @tokens, @model, @provider, @createdAt, @updatedAt)
   `);
+
+  addTurn(insert, {
+    id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    content: BOARD_MESSAGE,
+    status: "succeeded",
+    response: "I will send a bounded append-only direction to each reachable active task. Scope resolved to 1 reachable active task.",
+    actions: JSON.stringify([
+      {
+        threadId: BOARD_TASK_ID,
+        threadTitle: "Audit Halifax menu crawl quality",
+        action: "steer",
+        ok: true,
+        message: "Sent the instruction through the task's append injection path.",
+        state: "implementing",
+      },
+    ]),
+    createdAt: NOW - 12_000,
+    updatedAt: NOW - 11_800,
+  });
+  const insertMessage = db.prepare("INSERT INTO messages(id, thread_id, role, kind, content, created_at) VALUES(?, ?, ?, ?, ?, ?)");
+  insertMessage.run(
+    "11111111-1111-4111-8111-111111111111",
+    BOARD_TASK_ID,
+    "director",
+    "system",
+    `↪ injected: Supervisor instruction from the owner: ${BOARD_INSTRUCTION}`,
+    NOW - 11_900,
+  );
+  insertMessage.run(
+    "22222222-2222-4222-8222-222222222222",
+    BOARD_TASK_ID,
+    "implementor",
+    "text",
+    "ACK: I’ll finish only the approved scope and retain every quality gate.",
+    NOW - 10_500,
+  );
+  addTurn(insert, {
+    id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    content: "Finish the active task but simulate a missing feed echo.",
+    status: "succeeded",
+    actions: JSON.stringify([
+      {
+        threadId: BOARD_TASK_ID,
+        threadTitle: "Audit Halifax menu crawl quality",
+        action: "steer",
+        ok: true,
+        message: "Sent the instruction through the task's append injection path.",
+        state: "implementing",
+      },
+    ]),
+    createdAt: NOW - 10_000,
+    updatedAt: NOW - 9_000,
+  });
 
   addTurn(insert, {
     id: "9e385dfd-2cfb-4455-895a-862672750a04",
@@ -201,7 +272,23 @@ try {
     check("percent signs are literal rather than SQL wildcards", run(DB_PATH, "%").status === 1);
   }
 
-  console.log("\nC. pending, failure, needs-input, and corrupt audit data cannot look successful");
+  console.log("\nC. successful board-wide steering proves the task-feed delivery and prompt acknowledgment");
+  {
+    const payload = json(DB_PATH, BOARD_MESSAGE);
+    check("the exact zero-target board-wide message finds one durable turn", payload.matched === 1 && payload.turns[0].targets.length === 0);
+    const evidence = payload.turns[0].deliveryEvidence[0];
+    check("the successful steer joins its persisted injection", evidence.injections.length === 1 && evidence.injections[0].content.includes(BOARD_INSTRUCTION));
+    check("the prompt ACK is correlated without becoming execution authority", evidence.injections[0].acknowledgments.length === 1 && evidence.injections[0].acknowledgments[0].content.startsWith("ACK:"));
+
+    const human = run(DB_PATH, BOARD_MESSAGE);
+    check("human output prints the exact persisted instruction", /persisted injection:.*Finish the current approved scope promptly/s.test(human.stdout), human.stdout);
+    check("human output prints the agent acknowledgment", /agent acknowledgment:.*retain every quality gate/s.test(human.stdout), human.stdout);
+
+    const missing = json(DB_PATH, "ffffffff").turns[0];
+    check("a successful steer without a feed echo is warned, not silently trusted", missing.warnings.some((warning) => warning.includes("no persisted Supervisor injection")));
+  }
+
+  console.log("\nD. pending, failure, needs-input, and corrupt audit data cannot look successful");
   {
     const pending = run(DB_PATH, "aaaaaaaa");
     check("pending says the message was persisted but not completed", /\[PENDING\]/.test(pending.stdout) && /no terminal Supervisor receipt yet/.test(pending.stdout), pending.stdout);
@@ -218,7 +305,7 @@ try {
     check("non-array action JSON is surfaced", corrupt.actionResults === null && corrupt.warnings.some((warning) => warning.includes("not an array")));
   }
 
-  console.log("\nD. recent mode, not-found, schema drift, and usage have unambiguous exits");
+  console.log("\nE. recent mode, not-found, schema drift, and usage have unambiguous exits");
   {
     const recent = json(DB_PATH, "--limit", "2");
     check("no-query mode returns the requested recent slice", recent.query === null && recent.matched === 2);
@@ -238,7 +325,7 @@ try {
     check("invalid argv is a usage error", badLimit.status === 2 && /--limit must be an integer/.test(badLimit.stderr), badLimit.stderr);
   }
 
-  console.log("\nE. the diagnostic is physically read-only");
+  console.log("\nF. the diagnostic is physically read-only");
   {
     const before = fs.readFileSync(DB_PATH);
     run(DB_PATH);

@@ -144,6 +144,8 @@ For **"did my Supervisor-chat message arrive, and did its action run?"**, use
 `npm run probe:supervisor-chat --prefix server -- <turn-id|task-id|task-title|message-text>` (omit the
 query for recent turns; add `--json` for automation). It separates no durable receipt, pending, success,
 failure, and needs-input, then shows the send-time target beside its current task state and action audit.
+For successful steering it also prints the persisted task-feed injection and any agent `ACK:` within two
+minutes, so exact delivery and prompt receipt do not require an ad-hoc SQLite join.
 Every event shows system-local time beside explicit UTC; do not hand-convert SQLite epochs when the owner
 quotes a local time. Add `--prompt` to print the exact saved routing prompt when provider intent is disputed.
 The thread header also prints `activeTaskDeadline`: its persisted local + UTC instant, countdown, and whether

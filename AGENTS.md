@@ -102,6 +102,8 @@ Add `--prompt` when the exact saved provider intent matters.
 For "did my Supervisor-chat message arrive, and did its task action run?", use
 `npm run probe:supervisor-chat --prefix server -- <turn-id|task-id|task-title|message-text>`; omit the
 query for recent turns or add `--json`. It separates no receipt, pending, success, failure, and needs-input.
+For a successful steering action it also shows the persisted task-feed injection and any prompt agent ACK,
+so delivery can be verified without hand-querying `messages`.
 Read the run trail to tell causes apart:
 - run `state='interrupted'` → a **server restart** killed it (`markInterrupted`), not the agent. A
   thread whose `error` starts with "interrupted by a server restart" died to a bounce; actively-running

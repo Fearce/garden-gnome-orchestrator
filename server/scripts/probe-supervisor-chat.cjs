@@ -7,9 +7,10 @@
 //   npm run probe:supervisor-chat --prefix server -- <query> --limit 40 --json
 //
 // A matching row proves the server persisted a receipt before Supervisor work began. Its status and
-// action_results then distinguish pending, answered, needs-input, and failed execution. No matching row
-// means this database has no durable receipt for the supplied id/text/task; an absent table means the
-// Supervisor-chat backend has not booted against this database at all.
+// action_results then distinguish pending, answered, needs-input, and failed execution. For successful
+// steering, the probe also correlates the task-feed injection and a prompt ACK when they were persisted.
+// No matching row means this database has no durable receipt for the supplied id/text/task; an absent
+// table means the Supervisor-chat backend has not booted against this database at all.
 
 const path = require("node:path");
 const Database = require("better-sqlite3");
@@ -19,6 +20,8 @@ const SERVER_DIR = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(SERVER_DIR, "data", "orchestrator.sqlite");
 const DEFAULT_LIMIT = 12;
 const MAX_LIMIT = 200;
+const ACK_WINDOW_MS = 2 * 60_000;
+const SUPERVISOR_INSTRUCTION_MARKER = "Supervisor instruction from the owner:";
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "needs_input"]);
 const EXPECTED_COLUMNS = [
   "id",
@@ -185,6 +188,56 @@ function createThreadLookup(db) {
   };
 }
 
+function createDeliveryLookup(db) {
+  const unavailable = { available: false, get: () => [] };
+  if (!tableExists(db, "messages")) return unavailable;
+  const columns = tableColumns(db, "messages");
+  if (["thread_id", "role", "kind", "content", "created_at"].some((column) => !columns.has(column))) return unavailable;
+
+  const readInjections = db.prepare(
+    `SELECT role, kind, content, created_at
+       FROM messages
+      WHERE thread_id = @threadId
+        AND created_at BETWEEN @startedAt AND @settledAt
+        AND role = 'director'
+        AND kind = 'system'
+        AND instr(content, @marker) > 0
+      ORDER BY created_at, rowid`,
+  );
+  const readAcknowledgments = db.prepare(
+    `SELECT role, kind, content, created_at
+       FROM messages
+      WHERE thread_id = @threadId
+        AND created_at BETWEEN @injectedAt AND @ackDeadline
+        AND kind = 'text'
+        AND lower(ltrim(content)) LIKE 'ack:%'
+      ORDER BY created_at, rowid`,
+  );
+
+  return {
+    available: true,
+    get(threadId, startedAt, settledAt) {
+      if (!threadId || startedAt == null || settledAt == null) return [];
+      return readInjections
+        .all({ threadId, startedAt, settledAt, marker: SUPERVISOR_INSTRUCTION_MARKER })
+        .map((message) => ({
+          role: String(message.role),
+          kind: String(message.kind),
+          content: String(message.content),
+          createdAt: numeric(message.created_at),
+          acknowledgments: readAcknowledgments
+            .all({ threadId, injectedAt: message.created_at, ackDeadline: Number(message.created_at) + ACK_WINDOW_MS })
+            .map((ack) => ({
+              role: String(ack.role),
+              kind: String(ack.kind),
+              content: String(ack.content),
+              createdAt: numeric(ack.created_at),
+            })),
+        }));
+    },
+  };
+}
+
 function actionSummary(actions) {
   if (!Array.isArray(actions)) return { total: null, succeeded: null, failed: null };
   return {
@@ -194,7 +247,7 @@ function actionSummary(actions) {
   };
 }
 
-function readTurn(row, threadLookup, now = Date.now()) {
+function readTurn(row, threadLookup, now = Date.now(), deliveryLookup = { available: false, get: () => [] }) {
   const warnings = [];
   const targets = parseStoredArray(row.targets, "targets", warnings);
   const actions = parseStoredArray(row.action_results, "action_results", warnings);
@@ -230,6 +283,15 @@ function readTurn(row, threadLookup, now = Date.now()) {
   if (status === "succeeded" && actionsCount.failed) warnings.push("turn says succeeded but at least one recorded action is not successful");
   if (status === "failed" && actionsCount.total === 0 && !compact(row.response)) warnings.push("failed turn has neither a response nor an action result");
 
+  const deliveryEvidence = (actions ?? []).map((action, actionIndex) => {
+    if (!action || action.action !== "steer" || action.ok !== true) return null;
+    const injections = deliveryLookup.get(action.threadId, createdAt, updatedAt);
+    if (deliveryLookup.available && injections.length === 0) {
+      warnings.push(`successful steer action ${actionIndex + 1} has no persisted Supervisor injection in its execution window`);
+    }
+    return { actionIndex, threadId: action.threadId, injections };
+  }).filter(Boolean);
+
   return {
     id: String(row.id),
     content: String(row.content ?? ""),
@@ -238,6 +300,7 @@ function readTurn(row, threadLookup, now = Date.now()) {
     response: row.response == null ? null : String(row.response),
     actionResults: actions,
     actionSummary: actionsCount,
+    deliveryEvidence,
     usedAgent: !!row.used_agent,
     costUsd: numeric(row.cost_usd),
     totalTokens: numeric(row.total_tokens),
@@ -283,6 +346,10 @@ function taskCurrent(turn, threadId) {
   return turn.currentTasks.find((task) => task.threadId === threadId);
 }
 
+function actionDelivery(turn, actionIndex) {
+  return turn.deliveryEvidence.find((evidence) => evidence.actionIndex === actionIndex);
+}
+
 function renderTurn(turn, timeZone) {
   console.log(`\n[${statusLabel(turn.status)}] ${turn.id}`);
   console.log(`saved: ${localStamp(turn.createdAt, timeZone) ?? "unknown"}`);
@@ -319,13 +386,20 @@ function renderTurn(turn, timeZone) {
     console.log("actions: none recorded");
   } else {
     console.log("actions:");
-    for (const action of turn.actionResults) {
+    for (const [actionIndex, action] of turn.actionResults.entries()) {
       const ok = action?.ok === true;
       const id = typeof action?.threadId === "string" ? action.threadId : "(missing id)";
       const title = compact(action?.threadTitle, 140) || taskCurrent(turn, id)?.title || "(unknown task)";
       const state = action?.state == null ? "no recorded state" : `recorded ${action.state}`;
       console.log(`  [${ok ? "OK" : "FAILED"}] ${action?.action ?? "unknown action"} | ${title} [${id}] | ${state}`);
       if (action?.message) console.log(`    ${compact(action.message, 900)}`);
+      const evidence = actionDelivery(turn, actionIndex);
+      for (const injection of evidence?.injections ?? []) {
+        console.log(`    persisted injection: ${localStamp(injection.createdAt, timeZone) ?? "unknown"} · ${compact(injection.content, 1_200)}`);
+        for (const acknowledgment of injection.acknowledgments) {
+          console.log(`    agent acknowledgment: ${localStamp(acknowledgment.createdAt, timeZone) ?? "unknown"} · ${compact(acknowledgment.content, 1_200)}`);
+        }
+      }
     }
     console.log(
       `execution: ${turn.actionSummary.succeeded}/${turn.actionSummary.total} action(s) succeeded, ${turn.actionSummary.failed} failed`,
@@ -423,7 +497,8 @@ function main(argv = process.argv.slice(2)) {
 
     const now = Date.now();
     const lookup = createThreadLookup(db);
-    const turns = rows.map((row) => readTurn(row, lookup, now));
+    const deliveryLookup = createDeliveryLookup(db);
+    const turns = rows.map((row) => readTurn(row, lookup, now, deliveryLookup));
     if (options.json) {
       console.log(
         JSON.stringify(
@@ -449,6 +524,6 @@ function main(argv = process.argv.slice(2)) {
   }
 }
 
-module.exports = { actionSummary, duration, parseArgs, readTurn };
+module.exports = { actionSummary, createDeliveryLookup, duration, parseArgs, readTurn };
 
 if (require.main === module) process.exitCode = main();
