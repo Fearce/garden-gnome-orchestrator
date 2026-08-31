@@ -518,6 +518,13 @@ export class SupervisorChat {
       ].filter(Boolean).join(" ");
       decision.reply = clip(`${decision.reply} ${scope}${exclusions ? ` ${exclusions}` : ""}`, MAX_REPLY_CHARS);
     } else if (turn.targets.length === 0) {
+      // Without an explicit target selection, a batched model plan may only be the compatibility form of
+      // a live-only board steering request. Board-wide pause/resume/review/escalation must not bypass the
+      // boardActions expansion path by hand-enumerating per-task mutations.
+      if (decision.actions.length > 1 && decision.actions.some((action) => action.action !== "steer")) {
+        this.finish(turn, "failed", "The supervisor returned an invalid or out-of-scope action plan. Nothing was changed; select the intended task and resend the instruction.");
+        return;
+      }
       // An unselected per-task steering plan is allowed only for a currently active, reachable session.
       // This accepts the recovered production plan's harmless taskId alias without opening cold resume.
       const safe = decision.actions.every((action) =>

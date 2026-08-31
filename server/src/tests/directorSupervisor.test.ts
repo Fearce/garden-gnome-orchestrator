@@ -675,6 +675,26 @@ async function main(): Promise<void> {
           f.chatInjections.length === beforeInvalidBoard,
       );
 
+      const secondActive = makeTask(f.db, "Second active task", "implementing");
+      const beforeEnumeratedPause = f.interruptions.length;
+      f.setJudgement({
+        reply: "I will pause every active task.",
+        needsOwner: false,
+        actions: [
+          { threadId: active.id, action: "pause", message: "Pause this task.", mode: "interrupt" },
+          { threadId: secondActive.id, action: "pause", message: "Pause this task.", mode: "interrupt" },
+        ],
+      });
+      const enumeratedBoard = supervisor.sendChatMessage("Pause every active task and stop its session.", []);
+      const enumeratedBoardResult = await waitForChatTurn(f.db, enumeratedBoard.id);
+      check(
+        "a zero-target model plan cannot batch per-task mutations around boardActions safety",
+        enumeratedBoardResult.status === "failed" &&
+          enumeratedBoardResult.actionResults.length === 0 &&
+          /out-of-scope/i.test(enumeratedBoardResult.response ?? "") &&
+          f.interruptions.length === beforeEnumeratedPause,
+      );
+
       const beforeDeterministicResume = f.getJudgeCalls();
       const resume = supervisor.sendChatMessage(
         `this task failed for no reason pls ensure its finished task ${failedTask.id} — "${failedTask.title}"`,
