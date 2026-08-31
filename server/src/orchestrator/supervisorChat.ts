@@ -101,6 +101,52 @@ function targetSnapshot(thread: Thread | null, id: string): SupervisorChatTarget
     : { threadId: id, title: `Unknown task #${shortId(id)}`, state: null };
 }
 
+/** Clear, single-target controls should not wait on (or be distorted by) a model turn. The model still
+ * owns nuanced steering, board-wide requests, and ambiguity; this path only recognizes explicit control
+ * language whose meaning is fixed by the selected task's fresh state. The resulting action still flows
+ * through execute(), so state checks, audit checkpoints, and the existing task primitives are identical. */
+function deterministicDecision(turn: SupervisorChatTurn, thread: Thread | undefined): SupervisorChatDecision | null {
+  if (turn.targets.length !== 1 || !thread) return null;
+  const text = turn.content;
+  const action = (kind: SupervisorChatAction, reply: string, message = "", mode: SteeringMode = "append"): SupervisorChatDecision => ({
+    reply,
+    needsOwner: false,
+    actions: [{ threadId: thread.id, action: kind, message, mode }],
+  });
+
+  const asksForStatus =
+    /\b(?:status|progress)\b/i.test(text) ||
+    /\b(?:update me|give me an update|how(?:'s| is))\b.{0,40}\b(?:task|work|it)\b/i.test(text);
+  const asksToPause = /\b(?:pause|hold)\b/i.test(text) || /\bstop\b.{0,30}\b(?:task|work|agent|it)\b/i.test(text);
+  const asksToContinue =
+    /\b(?:resume|continue|restart)\b/i.test(text) ||
+    /\bensure\b.{0,80}\b(?:finish(?:ed)?|complete(?:d)?|done)\b/i.test(text) ||
+    /\b(?:finish|complete)\b.{0,30}\b(?:task|work|it|this)\b/i.test(text);
+  const asksForReview = /\b(?:auto[- ]review|start (?:the )?review|have (?:the )?reviewer)\b/i.test(text);
+  const asksToEscalate = /\b(?:escalate|flag)\b/i.test(text) || /\bblocker\b.{0,30}\b(?:owner|attention|decision)\b/i.test(text);
+  const intentCount = [asksForStatus, asksToPause, asksToContinue, asksForReview, asksToEscalate].filter(Boolean).length;
+  if (intentCount !== 1) return null;
+
+  if (asksForStatus) return action("status", "I checked the selected task's current state and latest recorded run.");
+  if (asksToPause) {
+    return action("pause", "The request is an explicit pause, so I'm applying it through the task's existing interrupt control.");
+  }
+  if (asksToContinue && ["paused", "review", "failed"].includes(thread.state)) {
+    return action(
+      "resume",
+      `The selected task is ${thread.state}, so I'm resuming its existing work with your instruction attached.`,
+      text,
+    );
+  }
+  if (asksForReview && thread.state === "review") {
+    return action("start_auto_review", "The selected task is in review, so I'm delegating it through the existing auto-review path.");
+  }
+  if (asksToEscalate) {
+    return action("escalate", "I'm recording this as an owner-visible escalation on the selected task.", text);
+  }
+  return null;
+}
+
 function parseDecision(output: unknown, allowedIds: ReadonlySet<string>): SupervisorChatDecision | null {
   if (!output || typeof output !== "object" || Array.isArray(output)) return null;
   const raw = output as Record<string, unknown>;
@@ -120,14 +166,17 @@ function parseDecision(output: unknown, allowedIds: ReadonlySet<string>): Superv
       typeof value.threadId !== "string" ||
       !allowedIds.has(value.threadId) ||
       typeof value.action !== "string" ||
-      !validActions.has(value.action as SupervisorChatAction) ||
-      typeof value.message !== "string" ||
-      typeof value.mode !== "string" ||
-      !validModes.has(value.mode as SteeringMode)
+      !validActions.has(value.action as SupervisorChatAction)
     ) {
       return null;
     }
     const action = value.action as SupervisorChatAction;
+    // Some providers omit fields that are schema-required but irrelevant to a non-steering action.
+    // Accept that harmless variance without weakening scope or mutation safety; steering still requires
+    // both an actual instruction and a valid delivery mode.
+    const message = typeof value.message === "string" ? value.message : "";
+    const mode = validModes.has(value.mode as SteeringMode) ? (value.mode as SteeringMode) : "append";
+    if (action === "steer" && (!message.trim() || !validModes.has(value.mode as SteeringMode))) return null;
     const exact = `${value.threadId}:${action}`;
     if (seenExact.has(exact)) continue;
     seenExact.add(exact);
@@ -140,8 +189,8 @@ function parseDecision(output: unknown, allowedIds: ReadonlySet<string>): Superv
     actions.push({
       threadId: value.threadId,
       action,
-      message: clip(value.message, MAX_ACTION_MESSAGE_CHARS),
-      mode: value.mode as SteeringMode,
+      message: clip(message, MAX_ACTION_MESSAGE_CHARS),
+      mode,
     });
   }
 
@@ -327,25 +376,28 @@ export class SupervisorChat {
     const candidates = candidateThreads(this.host.db, turn);
     const allowedIds = new Set(candidates.map((thread) => thread.id));
     const stateSeen = new Map(candidates.map((thread) => [thread.id, thread.state]));
-    const judged = await this.judge(buildPrompt(this.host.db, turn, candidates), SUPERVISOR_CHAT_SCHEMA).catch(() => null);
-    if (!judged) {
-      this.finish(turn, "failed", "The message is saved, but the supervisor could not get model capacity for this turn. No task action was taken; resend it when a provider is available.");
-      return;
-    }
-
-    turn = this.host.db.updateSupervisorChatTurn(turn.id, {
-      usedAgent: true,
-      costUsd: judged.costUsd,
-      totalTokens: judged.tokenUsage?.totalTokens ?? null,
-      model: judged.model,
-      provider: judged.provider,
-    }) ?? turn;
-    this.onChange();
-
-    const decision = parseDecision(judged.output, allowedIds);
+    let decision = deterministicDecision(turn, candidates[0]);
     if (!decision) {
-      this.finish(turn, "failed", "The supervisor returned an invalid or out-of-scope action plan. Nothing was changed; select the intended task and resend the instruction.");
-      return;
+      const judged = await this.judge(buildPrompt(this.host.db, turn, candidates), SUPERVISOR_CHAT_SCHEMA).catch(() => null);
+      if (!judged) {
+        this.finish(turn, "failed", "The message is saved, but the supervisor could not get model capacity for this turn. No task action was taken; resend it when a provider is available.");
+        return;
+      }
+
+      turn = this.host.db.updateSupervisorChatTurn(turn.id, {
+        usedAgent: true,
+        costUsd: judged.costUsd,
+        totalTokens: judged.tokenUsage?.totalTokens ?? null,
+        model: judged.model,
+        provider: judged.provider,
+      }) ?? turn;
+      this.onChange();
+
+      decision = parseDecision(judged.output, allowedIds);
+      if (!decision) {
+        this.finish(turn, "failed", "The supervisor returned an invalid or out-of-scope action plan. Nothing was changed; select the intended task and resend the instruction.");
+        return;
+      }
     }
 
     const results: SupervisorChatActionResult[] = [];

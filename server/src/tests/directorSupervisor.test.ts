@@ -577,7 +577,25 @@ async function main(): Promise<void> {
       const active = makeTask(f.db, "Implement phone navigation", "implementing");
       const paused = makeTask(f.db, "Repair invoice export", "paused");
       const unrelated = makeTask(f.db, "Unselected private task", "review");
+      const failedTask = makeTask(f.db, "Concise agent communication setting", "failed");
       const supervisor = f.create();
+
+      const beforeDeterministicResume = f.getJudgeCalls();
+      const resume = supervisor.sendChatMessage(
+        `this task failed for no reason pls ensure its finished task ${failedTask.id} — "${failedTask.title}"`,
+        [failedTask.id],
+      );
+      const resumed = await waitForChatTurn(f.db, resume.id);
+      check(
+        "a clear failed-task finish request deterministically resumes the selected existing task",
+        resumed.status === "succeeded" &&
+          resumed.usedAgent === false &&
+          resumed.actionResults[0]?.action === "resume" &&
+          resumed.actionResults[0]?.state === "implementing" &&
+          f.recoveries.includes(failedTask.id) &&
+          f.resumeDetails.some((item) => item.threadId === failedTask.id && item.operatorInitiated === true && item.message?.includes("ensure its finished")) &&
+          f.getJudgeCalls() === beforeDeterministicResume,
+      );
 
       f.setJudgement({
         reply: "I can pause the live task and continue the saved paused task.",
@@ -642,6 +660,14 @@ async function main(): Promise<void> {
         rejected.status === "failed" && f.chatInjections.length === injectionCount && /out-of-scope/i.test(rejected.response ?? ""),
       );
 
+      f.setJudgement({ reply: "I checked the recorded state.", needsOwner: false, actions: [{ threadId: active.id, action: "status" }] });
+      const compactStatus = supervisor.sendChatMessage("Assess the selected navigation handoff.", [active.id]);
+      const compactStatusResult = await waitForChatTurn(f.db, compactStatus.id);
+      check(
+        "irrelevant omitted model fields do not invalidate an otherwise scoped non-steering action",
+        compactStatusResult.status === "succeeded" && compactStatusResult.actionResults[0]?.action === "status",
+      );
+
       f.setJudgement({ reply: "Which acceptance criterion should the reviewer use?", needsOwner: true, actions: [] });
       const ambiguous = supervisor.sendChatMessage("Review it the way I meant earlier.", [unrelated.id]);
       const needsInput = await waitForChatTurn(f.db, ambiguous.id);
@@ -669,7 +695,7 @@ async function main(): Promise<void> {
       );
 
       f.setJudgement(null);
-      const capped = supervisor.sendChatMessage("Check the navigation task's status.", [active.id]);
+      const capped = supervisor.sendChatMessage("Assess whether the navigation handoff has drifted.", [active.id]);
       const failed = await waitForChatTurn(f.db, capped.id);
       check("provider failure leaves an auditable failed turn and takes no task action", failed.status === "failed" && /No task action/i.test(failed.response ?? "") && failed.actionResults.length === 0);
 
