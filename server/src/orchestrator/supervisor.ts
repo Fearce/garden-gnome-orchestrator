@@ -27,11 +27,13 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { PostFindingInput, ThreadActionResult } from "./api.js";
 import type { JsonSchemaLike } from "../agents/structuredText.js";
+import { SupervisorChat, type SupervisorChatHost } from "./supervisorChat.js";
 import type {
   AgentRun,
   Finding,
   ImplementorProvider,
   SupervisorAction,
+  SupervisorChatTurn,
   SupervisorEvent,
   SupervisorSnapshot,
   SupervisorTrigger,
@@ -54,19 +56,12 @@ export interface SupervisorJudgement {
 /** The narrow slice of ThreadManager the supervisor actually needs — kept separate from the full
  *  `OrchestratorApi` so this file never has to import ThreadManager (no cycle) and every capability the
  *  supervisor has is visible in one place. ThreadManager satisfies this structurally. */
-export interface SupervisorHost {
-  readonly db: Db;
-  readonly hub: EventHub;
+export interface SupervisorHost extends SupervisorChatHost {
   supervisorJudge(prompt: string, schema: JsonSchemaLike): Promise<SupervisorJudgement | null>;
-  postFinding(input: PostFindingInput): Finding;
   /** Send a supervisor correction through ThreadManager's normal injection gates. The host decides
    *  whether a live/materializing agent can actually receive it; the supervisor must not turn a
    *  correction into a cold resume. */
   injectSupervisorCorrection(threadId: string, message: string): Promise<ThreadActionResult>;
-  resumeThread(threadId: string, message?: string): Promise<ThreadActionResult>;
-  /** Delegate a normal human-review park to the existing reviewer. The reviewer, not the supervisor,
-   *  remains the only autonomous path that may accept work as done. */
-  autoReview(threadId: string): Promise<ThreadActionResult>;
   supervisorDiscordReady(): boolean;
   /** Forward one high-signal event to the owner's phone — reuses the same Discord config/permission/
    *  serialization every other owner notice goes through; a no-op when the integration is off. */
@@ -376,6 +371,15 @@ export class DirectorSupervisor {
   private manualSweepPromise: Promise<void> | undefined;
   private lastCheckAt: number | undefined;
   private lastDiscordAt = 0;
+  private readonly chat: SupervisorChat;
+  private readonly judgementQueue: {
+    prompt: string;
+    schema: JsonSchemaLike;
+    priority: boolean;
+    allowed: () => boolean;
+    resolve: (value: SupervisorJudgement | null) => void;
+  }[] = [];
+  private judgementRunning = false;
 
   constructor(
     private readonly host: SupervisorHost,
@@ -383,6 +387,14 @@ export class DirectorSupervisor {
   ) {
     this.cfg = { ...DEFAULT_SUPERVISOR_CONFIG, ...cfgOverrides };
     this.sweepIntervalMs = this.cfg.idleSweepStartMs;
+    // Explicit owner chat is available even when the unattended watchdog is off. Both paths still
+    // share one priority-aware judgement queue, so there is never more than one supervisor model turn
+    // in flight; a waiting owner message goes before the next background check.
+    this.chat = new SupervisorChat(
+      host,
+      (prompt, schema) => this.requestJudgement(prompt, schema, true, () => true),
+      () => this.broadcast(),
+    );
     this.host.hub.subscribe((e) => {
       if (!this.enabled) return;
       if (e.type === "thread.upsert") this.onThreadUpsert(e.thread);
@@ -420,6 +432,12 @@ export class DirectorSupervisor {
    * cooldown/budget guards but retains the single-flight queue, action gates and notification dedupe. */
   async runManualNow(): Promise<void> {
     return this.runNowInternal(true);
+  }
+
+  /** Persist and enqueue one explicit owner conversation turn. This does not depend on `enabled`:
+   * disabled means no unattended watching, not that the authenticated owner loses task controls. */
+  sendChatMessage(content: string, targetIds: string[], turnId?: string): SupervisorChatTurn {
+    return this.chat.submit(content, targetIds, turnId);
   }
 
   private async runNowInternal(manualOverride: boolean): Promise<void> {
@@ -490,8 +508,47 @@ export class DirectorSupervisor {
         maxCostUsdPerDay: this.cfg.maxCostUsdPerDay,
         maxTokensPerDay: this.cfg.maxTokensPerDay,
       },
+      chat: this.chat.snapshot(),
       events,
     };
+  }
+
+  /** Serialize the no-tools model calls shared by watchdog passes and explicit chat. Owner chat is
+   * priority work, while an unattended call that waited behind it rechecks `enabled` before spending. */
+  private requestJudgement(
+    prompt: string,
+    schema: JsonSchemaLike,
+    priority: boolean,
+    allowed: () => boolean,
+  ): Promise<SupervisorJudgement | null> {
+    const pending = new Promise<SupervisorJudgement | null>((resolve) => {
+      this.judgementQueue.push({ prompt, schema, priority, allowed, resolve });
+    });
+    void this.drainJudgements();
+    return pending;
+  }
+
+  private async drainJudgements(): Promise<void> {
+    if (this.judgementRunning) return;
+    this.judgementRunning = true;
+    try {
+      while (this.judgementQueue.length) {
+        const priorityIndex = this.judgementQueue.findIndex((item) => item.priority);
+        const [item] = this.judgementQueue.splice(priorityIndex >= 0 ? priorityIndex : 0, 1);
+        if (!item) continue;
+        if (!item.allowed()) {
+          item.resolve(null);
+          continue;
+        }
+        const judged = await this.host.supervisorJudge(item.prompt, item.schema).catch(() => null);
+        item.resolve(judged);
+      }
+    } finally {
+      this.judgementRunning = false;
+      // A request can land after the loop's empty observation but before this finally releases the
+      // latch. Start a fresh drain for that edge instead of leaving it pending indefinitely.
+      if (this.judgementQueue.length) void this.drainJudgements();
+    }
   }
 
   private broadcast(): void {
@@ -680,7 +737,7 @@ export class DirectorSupervisor {
     }
 
     const digest = buildDigest(this.host.db, thread, assessment);
-    const judged = await this.host.supervisorJudge(buildPrompt(digest), VERDICT_SCHEMA).catch(() => null);
+    const judged = await this.requestJudgement(buildPrompt(digest), VERDICT_SCHEMA, false, () => this.enabled);
     if (!judged) {
       this.record(thread, trigger, "error", null, `no capacity for a check-in right now — deterministic signal stands: ${assessment.reason}`, false);
       return;

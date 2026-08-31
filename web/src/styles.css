@@ -530,6 +530,22 @@ button { font-family: inherit; cursor: pointer; }
 .msg.director .bubble { background: transparent; border-left: 2px solid var(--role-director); padding-left: 11px; border-radius: 0; }
 .bubble { padding: 9px 12px; border-radius: var(--r-md); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; color: var(--text); }
 .msg.draft .bubble { color: var(--text-dim); }
+.delivery-receipt {
+  display: inline-flex; align-items: center; gap: 5px; width: fit-content; color: var(--text-faint);
+  font: 600 9.5px/1.3 var(--font-mono); letter-spacing: .03em; white-space: nowrap;
+}
+.msg > .delivery-receipt { align-self: flex-end; margin: 1px 3px 0 0; }
+.delivery-receipt.failed { color: var(--danger); }
+.delivery-spinner {
+  display: inline-block; flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%;
+  border: 1.5px solid color-mix(in oklch, currentColor 28%, transparent); border-top-color: currentColor;
+  animation: update-spin .72s linear infinite;
+}
+.office-msg .delivery-receipt { margin-left: auto; }
+.office-msg.delivery-failed .office-msg-main,
+.fi.system.delivery-failed { border-color: color-mix(in oklch, var(--danger) 45%, var(--line)); }
+.fi.system > .delivery-receipt { margin-top: 6px; }
+@media (prefers-reduced-motion: reduce) { .delivery-spinner { animation-duration: 1.8s; } }
 /* max-width caps the chip to the rail; the args span truncates so a long tool payload
    (e.g. a comma-joined allowedTools list) can't blow out the panel width. Full text on hover. */
 .tool-chip {
@@ -2394,6 +2410,145 @@ button.note-from:hover { color: var(--text-dim); }
   border: 1px solid color-mix(in oklch, var(--warn) 35%, var(--line)); border-radius: var(--r-sm); padding: 8px 10px; margin-bottom: 10px;
 }
 
+/* Explicit existing-task supervision. Conversation and watchdog audit are visually related but not
+   conflated: chat is an operator control (available with background watching off), while the rows below
+   remain the unattended watchdog's audit. */
+.supervisor-chat {
+  min-width: 0; margin: 2px 0 20px; overflow: visible;
+  background: color-mix(in oklch, var(--bg-1) 90%, var(--accent) 2%);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: 0 10px 30px color-mix(in oklch, #000 12%, transparent);
+}
+.supervisor-chat-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+  padding: 14px 15px 12px; border-bottom: 1px solid var(--line);
+}
+.supervisor-chat-head h3,
+.supervisor-audit-head h3 { margin: 0; font: 600 14px/1.25 var(--font-sans); color: var(--text); }
+.supervisor-chat-head p { margin: 4px 0 0; font-size: 12px; line-height: 1.45; color: var(--text-dim); }
+.supervisor-existing-only {
+  flex: 0 0 auto; padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--text-faint); background: var(--bg-2); font: 600 9.5px/1.4 var(--font-mono);
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.supervisor-conversation {
+  display: flex; flex-direction: column; gap: 14px; min-height: 150px; max-height: min(48vh, 510px);
+  overflow-y: auto; overscroll-behavior: contain; padding: 16px; scrollbar-gutter: stable;
+}
+.supervisor-conversation.empty-chat { justify-content: center; }
+.supervisor-chat-empty { margin: auto; max-width: 500px; padding: 20px; text-align: center; color: var(--text-dim); }
+.supervisor-chat-empty > span { font-family: var(--font-serif); font-size: 19px; font-style: italic; color: var(--text); }
+.supervisor-chat-empty p { margin: 7px 0 0; font-size: 12.5px; line-height: 1.55; }
+.supervisor-turn { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.supervisor-bubble {
+  min-width: 0; max-width: min(88%, 720px); padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 13px; color: var(--text); background: var(--bg-2);
+}
+.supervisor-owner-bubble {
+  align-self: flex-end; max-width: min(80%, 650px); border-bottom-right-radius: 4px;
+  background: color-mix(in oklch, var(--accent) 10%, var(--bg-2));
+  border-color: color-mix(in oklch, var(--accent) 25%, var(--line));
+}
+.supervisor-agent-bubble { align-self: flex-start; border-bottom-left-radius: 4px; }
+.supervisor-bubble-label { color: var(--text-faint); font: 650 10px/1.2 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+.supervisor-bubble-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.supervisor-bubble-text { margin-top: 5px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.5; }
+.supervisor-bubble-time { display: block; margin-top: 6px; color: var(--text-faint); font: 10px/1.2 var(--font-mono); text-align: right; }
+.supervisor-turn-targets { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; font-size: 10.5px; }
+.supervisor-turn-targets button {
+  appearance: none; max-width: 100%; padding: 2px 6px; border: 1px solid color-mix(in oklch, var(--accent) 25%, var(--line));
+  border-radius: 999px; background: color-mix(in oklch, var(--accent) 8%, transparent); color: var(--text-dim);
+  cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.supervisor-turn-targets button:hover { color: var(--accent); border-color: var(--accent); }
+.supervisor-turn-targets button:disabled { cursor: default; opacity: .65; }
+.supervisor-turn-targets code,
+.supervisor-target-chip code,
+.supervisor-target-copy code { font: inherit; color: var(--text-faint); }
+.supervisor-turn-status {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border: 1px solid var(--line);
+  border-radius: 999px; color: var(--text-faint); background: var(--bg-1); font: 600 9.5px/1.4 var(--font-mono);
+  letter-spacing: .04em; text-transform: uppercase; white-space: nowrap;
+}
+.supervisor-turn-status.status-succeeded { color: var(--ok); border-color: color-mix(in oklch, var(--ok) 38%, var(--line)); }
+.supervisor-turn-status.status-failed { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 38%, var(--line)); }
+.supervisor-turn-status.status-needs_input { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 42%, var(--line)); }
+.supervisor-turn-status.status-pending { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 40%, var(--line)); }
+.supervisor-thinking-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: supervisor-pulse 1.2s ease-in-out infinite; }
+@keyframes supervisor-pulse { 0%, 100% { opacity: .28; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }
+.supervisor-turn-model { margin-top: 8px; font-size: 10px; }
+.supervisor-action-results { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; }
+.supervisor-action-results button {
+  appearance: none; display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: start; gap: 7px;
+  width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--text-dim); background: var(--bg-1); text-align: left; cursor: pointer;
+}
+.supervisor-action-results button.ok { border-color: color-mix(in oklch, var(--ok) 30%, var(--line)); }
+.supervisor-action-results button.failed { border-color: color-mix(in oklch, var(--danger) 35%, var(--line)); }
+.supervisor-action-results button:disabled { cursor: default; }
+.supervisor-action-mark {
+  display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
+  color: var(--ok); background: color-mix(in oklch, var(--ok) 12%, var(--bg-2)); font-size: 11px; font-weight: 800;
+}
+.supervisor-action-results button.failed .supervisor-action-mark { color: var(--danger); background: color-mix(in oklch, var(--danger) 12%, var(--bg-2)); }
+.supervisor-action-results strong { display: block; overflow-wrap: anywhere; font-size: 11.5px; color: var(--text); }
+.supervisor-action-results small { display: block; margin-top: 2px; overflow-wrap: anywhere; font-size: 11px; line-height: 1.4; color: var(--text-dim); }
+.supervisor-compose { position: relative; padding: 11px 13px 12px; border-top: 1px solid var(--line); background: var(--bg-1); border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.supervisor-target-row { display: flex; align-items: center; gap: 9px; min-width: 0; margin-bottom: 8px; }
+.supervisor-target-scope { min-width: 0; font-size: 11px; overflow-wrap: anywhere; }
+.supervisor-target-picker { position: relative; flex: 0 0 auto; }
+.supervisor-target-trigger { display: inline-flex; align-items: center; gap: 6px; }
+.supervisor-target-menu {
+  position: absolute; z-index: 30; left: 0; bottom: calc(100% + 7px); width: min(460px, calc(100vw - 64px));
+  overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--bg-1);
+  box-shadow: 0 14px 42px color-mix(in oklch, #000 34%, transparent);
+}
+.supervisor-target-search { display: flex; align-items: center; gap: 7px; padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--text-faint); }
+.supervisor-target-search input {
+  width: 100%; min-width: 0; border: none; outline: none; background: transparent; color: var(--text);
+  font: 12px/1.4 var(--font-sans);
+}
+.supervisor-target-options { max-height: min(340px, 42vh); overflow-y: auto; padding: 5px; }
+.supervisor-target-option {
+  appearance: none; display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 7px;
+  width: 100%; min-width: 0; padding: 8px; border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--text-dim); background: transparent; text-align: left; cursor: pointer;
+}
+.supervisor-target-option:hover { background: var(--bg-2); }
+.supervisor-target-option.selected { border-color: color-mix(in oklch, var(--accent) 32%, var(--line)); background: color-mix(in oklch, var(--accent) 8%, var(--bg-2)); }
+.supervisor-target-option:disabled { cursor: not-allowed; opacity: .45; }
+.supervisor-target-check { display: grid; place-items: center; width: 19px; height: 19px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--accent); font-size: 11px; }
+.supervisor-target-option.selected .supervisor-target-check { border-color: var(--accent); }
+.supervisor-target-copy { min-width: 0; }
+.supervisor-target-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; }
+.supervisor-target-copy > span { display: block; margin-top: 2px; font: 10px/1.3 var(--font-mono); color: var(--text-faint); text-transform: uppercase; }
+.supervisor-target-none { padding: 18px 12px; color: var(--text-faint); font-size: 12px; text-align: center; }
+.supervisor-target-menu-foot { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-top: 1px solid var(--line); color: var(--text-faint); font: 10px/1.4 var(--font-mono); }
+.supervisor-target-menu-foot button { appearance: none; border: none; background: transparent; color: var(--accent); cursor: pointer; font: 600 11px/1.4 var(--font-sans); }
+.supervisor-target-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: -1px 0 8px; }
+.supervisor-target-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: min(100%, 390px); padding: 4px 5px 4px 8px;
+  border: 1px solid color-mix(in oklch, var(--accent) 27%, var(--line)); border-radius: 999px;
+  color: var(--text-dim); background: color-mix(in oklch, var(--accent) 7%, var(--bg-2)); font-size: 10.5px;
+}
+.supervisor-target-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.supervisor-target-chip button { appearance: none; display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: none; border-radius: 50%; background: transparent; color: var(--text-faint); cursor: pointer; font-size: 16px; line-height: 1; }
+.supervisor-target-chip button:hover { color: var(--text); background: var(--bg-2); }
+.supervisor-compose-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: 8px; min-width: 0; }
+.supervisor-compose-row textarea {
+  width: 100%; min-width: 0; min-height: 68px; resize: vertical; padding: 9px 11px;
+  border: 1px solid var(--line); border-radius: var(--r-md); outline: none; background: var(--bg); color: var(--text);
+  font: 13px/1.45 var(--font-sans);
+}
+.supervisor-compose-row textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent) 12%, transparent); }
+.supervisor-compose-row textarea:disabled { color: var(--text-faint); cursor: wait; }
+.supervisor-send { align-self: end; min-width: 76px; min-height: 38px; }
+.supervisor-compose-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 10.5px; line-height: 1.35; }
+.supervisor-local-error { color: var(--danger); }
+.supervisor-audit-head { display: flex; align-items: end; justify-content: space-between; gap: 10px; margin: 0 0 9px; }
+.supervisor-audit-head .faint { display: block; margin-top: 3px; font-size: 11px; }
+.supervisor-audit-empty { padding: 16px; border: 1px dashed var(--line); border-radius: var(--r-md); text-align: center; font-size: 12px; }
+
 .supervisor-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .supervisor-row {
   display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 12px;
@@ -2896,6 +3051,29 @@ button.note-from:hover { color: var(--text-dim); }
   .supervisor-sweep.running { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, var(--line)); }
   .supervisor-sweep.complete { color: var(--ok); border-color: color-mix(in oklch, var(--ok) 45%, var(--line)); }
   .supervisor-sweep.stopped { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 45%, var(--line)); }
+  .supervisor-chat { margin-bottom: 16px; border-radius: var(--r-md); box-shadow: none; }
+  .supervisor-chat-head { padding: 11px; gap: 8px; }
+  .supervisor-chat-head p { font-size: 11.5px; }
+  .supervisor-existing-only { padding: 3px 6px; font-size: 8.5px; }
+  .supervisor-conversation { min-height: 136px; max-height: 48vh; padding: 11px; gap: 12px; scrollbar-gutter: auto; }
+  .supervisor-chat-empty { padding: 12px 6px; }
+  .supervisor-bubble { max-width: 96%; padding: 9px 10px; }
+  .supervisor-owner-bubble { max-width: 91%; }
+  .supervisor-bubble-text { font-size: 13px; }
+  .supervisor-compose { padding: 10px; }
+  .supervisor-target-row { flex-wrap: wrap; gap: 6px 8px; }
+  .supervisor-target-trigger { min-height: var(--tap-sm); }
+  .supervisor-target-menu { width: min(460px, calc(100vw - 44px)); }
+  .supervisor-target-option { min-height: var(--tap); padding: 7px; }
+  .supervisor-target-menu-foot { min-height: var(--tap-sm); }
+  .supervisor-target-menu-foot button { min-height: var(--tap-sm); padding: 0 8px; }
+  .supervisor-target-chip { max-width: 100%; }
+  .supervisor-compose-row { grid-template-columns: minmax(0, 1fr) 70px; gap: 6px; }
+  .supervisor-compose-row textarea { min-height: 76px; resize: none; }
+  .supervisor-send { min-width: 0; min-height: var(--tap); }
+  .supervisor-compose-foot { flex-wrap: wrap; gap: 2px 8px; }
+  .supervisor-action-results button { min-height: var(--tap-sm); }
+  .supervisor-audit-head { margin-top: 2px; }
   .supervisor-row { grid-template-columns: 28px minmax(0, 1fr); gap: 8px; padding: 10px; min-width: 0; }
   .supervisor-summary { align-items: flex-start; min-width: 0; }
   .supervisor-task { max-width: 100%; min-width: 0; text-align: left; overflow-wrap: anywhere; }

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useStore } from "../store.js";
+import { useStore, type OutboundMessage } from "../store.js";
 import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
 import { agentName, isCollaborationRoom, MODEL_ROLES, repoRoom } from "../types.js";
 import { canAutoReview, clock, formatDuration, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
@@ -439,6 +439,7 @@ export function ThreadDetail() {
   const feeds = useStore((s) => s.threadFeeds);
   const drafts = useStore((s) => s.threadDrafts);
   const thinkingDrafts = useStore((s) => s.thinkingDrafts);
+  const outbound = useStore((s) => s.outboundMessages);
   const inject = useStore((s) => s.inject);
   const interrupt = useStore((s) => s.interrupt);
   const resume = useStore((s) => s.resume);
@@ -476,7 +477,27 @@ export function ThreadDetail() {
   const lastSentRef = useRef(""); // last injected message, recalled with ↑ when the field is empty
 
   const thread = id ? threads[id] : undefined;
-  const feed = id ? feeds[id] ?? [] : [];
+  const persistedFeed = id ? feeds[id] ?? [] : [];
+  const feed = useMemo(() => {
+    if (!id) return persistedFeed;
+    const sending: FeedItem[] = outbound
+      .filter((message): message is Extract<OutboundMessage, { surface: "task" }> => message.surface === "task" && message.threadId === id)
+      .map((message) => ({
+        kind: "system",
+        id: message.id,
+        at: message.createdAt,
+        role: "director",
+        text:
+          message.mode === "queue"
+            ? `⧗ Queuing for the implementor: ${message.content}`
+            : message.mode === "interrupt"
+              ? `↪ Interrupting with: ${message.content}`
+              : `↪ Injecting: ${message.content}`,
+        delivery: message.status,
+        deliveryError: message.error,
+      }));
+    return [...persistedFeed, ...sending].sort((a, b) => a.at - b.at);
+  }, [id, persistedFeed, outbound]);
   const draft = id ? drafts[id] : undefined;
   // Only a burst with real content renders — a whitespace-only reasoning burst never fires the durable
   // agent.reasoning that clears the draft, so gate on trimmed text to avoid a stray 💭 bubble.
@@ -1183,9 +1204,15 @@ const FeedRow = memo(function FeedRow({
       );
     case "system":
       return (
-        <div className="fi system">
+        <div className={"fi system" + (item.delivery ? ` delivery-${item.delivery}` : "")}>
           <div className="body">{item.text}</div>
           <MessageThumbs refs={item.attachments} />
+          {item.delivery ? (
+            <span className={"delivery-receipt " + item.delivery} role="status" title={item.deliveryError}>
+              {item.delivery === "sending" ? <span className="delivery-spinner" aria-hidden="true" /> : <span aria-hidden="true">!</span>}
+              {item.delivery === "sending" ? "Sending…" : "Not delivered"}
+            </span>
+          ) : null}
         </div>
       );
     default:

@@ -48,6 +48,24 @@ interface ThreadDraft {
   text: string;
 }
 
+export type OutboundDeliveryStatus = "sending" | "failed";
+
+interface OutboundBase {
+  id: string;
+  content: string;
+  createdAt: number;
+  status: OutboundDeliveryStatus;
+  error?: string;
+}
+
+/** Client-held owner messages. They render immediately, then disappear only when the matching
+ * persisted server row (same id) comes back. Task injects use the persisted feed echo/action receipt. */
+export type OutboundMessage =
+  | (OutboundBase & { surface: "director" })
+  | (OutboundBase & { surface: "office"; room: string })
+  | (OutboundBase & { surface: "supervisor"; targetIds: string[] })
+  | (OutboundBase & { surface: "task"; threadId: string; mode: "append" | "interrupt" | "queue" });
+
 /** Cache key for a Git-console diff. A file's working-tree diff and the same file inside a commit are
  *  different content, so the commit id (when there is one) is part of the key. */
 export function repoDiffKey(file: string, commit: string | null | undefined): string {
@@ -85,6 +103,9 @@ interface State {
   directorDraft: string;
   directorBusy: boolean;
   directorStatus: DirectorStatus | null;
+  // Owner messages awaiting a durable server echo. Kept outside server-owned histories so a hello
+  // snapshot can reconcile them by id without ever persisting client-only delivery state.
+  outboundMessages: OutboundMessage[];
   // Console-wide search — the whole director conversation across every task, plus the tasks whose
   // title, brief or conversation matches (the snapshot carries only the recent director slice and no
   // task conversations, so both come from a server query; the server match is ASCII case-insensitive).
@@ -196,8 +217,8 @@ interface State {
   // Search the whole director conversation and every task (title, brief, conversation), or clear it.
   searchDirector: (query: string) => void;
   clearDirectorSearch: () => void;
-  sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
-  sendDirect: (text: string, workspace?: string, images?: ImageAttachment[]) => void;
+  sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => boolean;
+  sendDirect: (text: string, workspace?: string, images?: ImageAttachment[]) => boolean;
   // Stop the director when it's busy but spinning (looping without replying or dispatching).
   cancelDirector: () => void;
   answer: (questionId: string, answer: string) => void;
@@ -247,7 +268,7 @@ interface State {
   loadMoreRoom: (room: string) => void;
   closeOffice: () => void;
   // Post into a room as the director (the human) — reaches the live agents there so they self-coordinate.
-  postChat: (room: string, body: string) => void;
+  postChat: (room: string, body: string) => boolean;
   // Dismiss the current notice banner.
   clearNotice: () => void;
   // Scheduled tasks: switch the center pane, and CRUD the recurring dispatches (server is authoritative —
@@ -261,6 +282,7 @@ interface State {
   addNote: (body: string, url?: string) => void;
   deleteNote: (id: string) => void;
   clearNotes: () => void;
+  sendSupervisorMessage: (content: string, targetIds: string[]) => boolean;
   runSupervisorNow: () => void;
   // The Online Office's three operator actions. Same optimism-free contract as everything else
   // server-authoritative: send, and let the `office.online` broadcast reconcile.
@@ -375,6 +397,7 @@ const IDLE_SUPERVISOR: SupervisorSnapshot = {
   watching: 0,
   lastCheckAt: null,
   budget: { date: "", checkinsToday: 0, costUsdToday: 0, tokensToday: 0, maxCheckinsPerDay: 0, maxCostUsdPerDay: 0, maxTokensPerDay: 0 },
+  chat: [],
   events: [],
 };
 
@@ -472,9 +495,69 @@ let socket: WebSocket | null = null;
 const pendingThreadActions: Array<{
   threadId: string;
   action: string;
+  clientId?: string;
   timer: ReturnType<typeof setTimeout>;
   resolve: (ok: boolean) => void;
 }> = [];
+
+const OUTBOUND_CONFIRM_MS = 15_000;
+const outboundTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function newOutboundId(): string {
+  // randomUUID is secure-context-only in several mobile browsers, while the console deliberately
+  // supports authenticated LAN HTTP. getRandomValues is available there; retain a last-resort fill so
+  // a legacy WebView still produces a syntactically valid correlation id instead of dropping Send.
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function clearOutboundTimer(id: string): void {
+  const timer = outboundTimers.get(id);
+  if (timer) clearTimeout(timer);
+  outboundTimers.delete(id);
+}
+
+function addOutbound(message: OutboundMessage): void {
+  useStore.setState((s) => ({ outboundMessages: [...s.outboundMessages, message] }));
+  outboundTimers.set(
+    message.id,
+    setTimeout(() => {
+      failOutbound(message.id, "No server confirmation arrived. Check the connection, then resend if needed.");
+    }, OUTBOUND_CONFIRM_MS),
+  );
+}
+
+function failOutbound(id: string, error: string): void {
+  clearOutboundTimer(id);
+  useStore.setState((s) => ({
+    outboundMessages: s.outboundMessages.map((message) =>
+      message.id === id ? { ...message, status: "failed", error } : message,
+    ),
+  }));
+}
+
+function acknowledgeOutbound(ids: Iterable<string>): Set<string> {
+  const received = new Set(ids);
+  for (const id of received) clearOutboundTimer(id);
+  return received;
+}
+
+function sendOutbound(message: OutboundMessage, command: ClientCommand): boolean {
+  addOutbound(message);
+  const sent = sendCommand(command);
+  if (!sent) failOutbound(message.id, "Not delivered — the console is reconnecting.");
+  return sent;
+}
+
+function failSendingOutbound(): void {
+  const pending = useStore.getState().outboundMessages.filter((message) => message.status === "sending");
+  for (const message of pending) failOutbound(message.id, "Connection lost before the server confirmed receipt.");
+}
 
 // Keep the proxied WS tunnel alive and self-heal missed events. A reverse proxy
 // (Nginx proxy_read_timeout 60s) silently half-closes an idle WS during the
@@ -513,6 +596,7 @@ function sendThreadActionCommand(cmd: ClientCommand, action: string, threadId: s
     const pending = {
       threadId,
       action,
+      clientId: "clientId" in cmd ? cmd.clientId : undefined,
       resolve,
       timer: setTimeout(() => {
         const i = pendingThreadActions.indexOf(pending);
@@ -532,8 +616,13 @@ function sendThreadActionCommand(cmd: ClientCommand, action: string, threadId: s
   });
 }
 
-function resolvePendingThreadAction(threadId: string, action: string, ok: boolean): void {
-  const index = pendingThreadActions.findIndex((pending) => pending.threadId === threadId && pending.action === action);
+function resolvePendingThreadAction(threadId: string, action: string, ok: boolean, clientId?: string): void {
+  const index = pendingThreadActions.findIndex(
+    (pending) =>
+      pending.threadId === threadId &&
+      pending.action === action &&
+      (clientId === undefined || pending.clientId === clientId),
+  );
   if (index < 0) return;
   const [pending] = pendingThreadActions.splice(index, 1);
   if (!pending) return;
@@ -571,6 +660,7 @@ export const useStore = create<State>((set) => ({
   directorDraft: "",
   directorBusy: false,
   directorStatus: null,
+  outboundMessages: [],
   directorSearch: null,
   threadFeeds: {},
   threadDrafts: {},
@@ -641,14 +731,40 @@ export const useStore = create<State>((set) => ({
     sendCommand({ type: "director.search", query: q });
   },
   clearDirectorSearch: () => set({ directorSearch: null }),
-  sendPrompt: (text, workspace, images) =>
-    sendCommand({ type: "prompt.new", text, workspace: workspace || undefined, images: images?.length ? images : undefined }),
-  sendDirect: (text, workspace, images) =>
-    sendCommand({ type: "prompt.direct", text, workspace: workspace || undefined, images: images?.length ? images : undefined }),
+  sendPrompt: (text, workspace, images) => {
+    const content = text.trim();
+    if (!content) return false;
+    const clientId = newOutboundId();
+    return sendOutbound(
+      { id: clientId, surface: "director", content, createdAt: Date.now(), status: "sending" },
+      { type: "prompt.new", text: content, workspace: workspace || undefined, images: images?.length ? images : undefined, clientId },
+    );
+  },
+  sendDirect: (text, workspace, images) => {
+    const content = text.trim();
+    if (!content) return false;
+    const clientId = newOutboundId();
+    return sendOutbound(
+      { id: clientId, surface: "director", content, createdAt: Date.now(), status: "sending" },
+      { type: "prompt.direct", text: content, workspace: workspace || undefined, images: images?.length ? images : undefined, clientId },
+    );
+  },
   cancelDirector: () => sendCommand({ type: "director.cancel" }),
   answer: (questionId, answer) => sendCommand({ type: "question.answer", questionId, answer }),
-  inject: (threadId, message, mode, images) =>
-    sendThreadActionCommand({ type: "thread.inject", threadId, message, mode, images: images?.length ? images : undefined }, "inject", threadId),
+  inject: (threadId, message, mode, images) => {
+    const content = message.trim();
+    if (!content) return Promise.resolve(false);
+    const clientId = newOutboundId();
+    addOutbound({ id: clientId, surface: "task", threadId, mode, content, createdAt: Date.now(), status: "sending" });
+    return sendThreadActionCommand(
+      { type: "thread.inject", threadId, message: content, mode, images: images?.length ? images : undefined, clientId },
+      "inject",
+      threadId,
+    ).then((ok) => {
+      if (!ok) failOutbound(clientId, "The task did not confirm this instruction. Review its state, then retry if needed.");
+      return ok;
+    });
+  },
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   setDeadline: (threadId, deadlineAt) =>
@@ -766,7 +882,12 @@ export const useStore = create<State>((set) => ({
   closeOffice: () => set({ officeRoom: null }),
   postChat: (room, body) => {
     const text = body.trim();
-    if (text) sendCommand({ type: "chat.post", room, body: text });
+    if (!text) return false;
+    const clientId = newOutboundId();
+    return sendOutbound(
+      { id: clientId, surface: "office", room, content: text, createdAt: Date.now(), status: "sending" },
+      { type: "chat.post", room, body: text, clientId },
+    );
   },
   clearNotice: () => set({ notice: null }),
   setBoardView: (v) => set({ boardView: v }),
@@ -781,6 +902,15 @@ export const useStore = create<State>((set) => ({
   },
   deleteNote: (id) => sendCommand({ type: "note.delete", id }),
   clearNotes: () => sendCommand({ type: "note.clear" }),
+  sendSupervisorMessage: (content, targetIds) => {
+    const text = content.trim();
+    if (!text) return false;
+    const clientId = newOutboundId();
+    return sendOutbound(
+      { id: clientId, surface: "supervisor", content: text, targetIds: [...targetIds], createdAt: Date.now(), status: "sending" },
+      { type: "supervisor.message", content: text, targetIds, clientId },
+    );
+  },
   runSupervisorNow: () => sendCommand({ type: "supervisor.runNow" }),
   joinOnlineOffice: ({ url, code, instanceName }) => {
     set({ officeJoining: true, officeJoinError: null });
@@ -874,13 +1004,26 @@ function capFeed(items: FeedItem[]): FeedItem[] {
   return kept.length > FEED_HARD_CAP ? kept.slice(kept.length - FEED_HARD_CAP) : kept;
 }
 
-function pushFeed(threadId: string, item: FeedItem): void {
+function pushFeed(threadId: string, item: FeedItem, receivedOutboundId?: string): void {
   useStore.setState((s) => {
     const existing = s.threadFeeds[threadId] ?? [];
     const id = feedMessageId(item);
-    if (id && existing.some((f) => feedMessageId(f) === id)) return {}; // history already merged this row
-    return { threadFeeds: { ...s.threadFeeds, [threadId]: capFeed([...existing, item]) } };
+    const outboundMessages = receivedOutboundId
+      ? s.outboundMessages.filter((message) => message.id !== receivedOutboundId)
+      : s.outboundMessages;
+    if (id && existing.some((f) => feedMessageId(f) === id)) return receivedOutboundId ? { outboundMessages } : {}; // history already merged this row
+    return { threadFeeds: { ...s.threadFeeds, [threadId]: capFeed([...existing, item]) }, outboundMessages };
   });
+}
+
+function taskDeliveryMatchesMessage(delivery: OutboundMessage, message: Message): boolean {
+  return (
+    delivery.surface === "task" &&
+    delivery.threadId === message.threadId &&
+    message.role === "director" &&
+    message.kind === "system" &&
+    message.content.includes(delivery.content)
+  );
 }
 
 const CHAT_CAP = 1500;
@@ -928,10 +1071,37 @@ function applyEvent(ev: ServerEvent): void {
         attachments: m.attachments,
         at: m.createdAt,
       }));
+      const received = acknowledgeOutbound([
+        ...ev.director.map((message) => message.id),
+        ...(ev.chat ?? []).map((message) => message.id),
+        ...(ev.supervisor?.chat ?? []).map((turn) => turn.id),
+      ]);
       // Only adopt settings when the frame actually carries them. A server mid-deploy (version skew)
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
-      useStore.setState({ threads, runs, findings: ev.findings, questions: ev.questions, director, directorStatus: ev.directorStatus ?? null, accounts: ev.accounts, codexUsage: ev.codexUsage ?? null, grokUsage: ev.grokUsage ?? null, zaiUsage: ev.zaiUsage ?? null, approvalMode: ev.approvalMode, ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}), ...(ev.chat ? { chat: ev.chat } : {}), ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}), ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}), ...(ev.schedules ? { schedules: ev.schedules } : {}), ...(ev.modelStats ? { modelStats: ev.modelStats } : {}), ...(ev.notes ? { notes: ev.notes } : {}), ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}), ...(ev.supervisor ? { supervisor: ev.supervisor } : {}) });
+      useStore.setState((s) => ({
+        threads,
+        runs,
+        findings: ev.findings,
+        questions: ev.questions,
+        director,
+        directorStatus: ev.directorStatus ?? null,
+        accounts: ev.accounts,
+        codexUsage: ev.codexUsage ?? null,
+        grokUsage: ev.grokUsage ?? null,
+        zaiUsage: ev.zaiUsage ?? null,
+        approvalMode: ev.approvalMode,
+        outboundMessages: s.outboundMessages.filter((message) => !received.has(message.id)),
+        ...(ev.settings ? { settings: mergeSettings(ev.settings) } : {}),
+        ...(ev.chat ? { chat: ev.chat } : {}),
+        ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}),
+        ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}),
+        ...(ev.schedules ? { schedules: ev.schedules } : {}),
+        ...(ev.modelStats ? { modelStats: ev.modelStats } : {}),
+        ...(ev.notes ? { notes: ev.notes } : {}),
+        ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}),
+        ...(ev.supervisor ? { supervisor: ev.supervisor } : {}),
+      }));
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
@@ -972,12 +1142,19 @@ function applyEvent(ev: ServerEvent): void {
       useStore.setState({ schedules: ev.schedules });
       break;
     case "supervisor":
-      useStore.setState({ supervisor: ev.supervisor });
+      {
+        const received = acknowledgeOutbound(ev.supervisor.chat.map((turn) => turn.id));
+        useStore.setState((s) => ({
+          supervisor: ev.supervisor,
+          outboundMessages: s.outboundMessages.filter((message) => !received.has(message.id)),
+        }));
+      }
       break;
     case "model.stats":
       useStore.setState({ modelStats: ev.stats });
       break;
     case "chat.message":
+      clearOutboundTimer(ev.message.id);
       useStore.setState((s) => {
         // A reconnect races the relay/history replay on real networks. IDs are the durable identity;
         // never let the same frame create two bubbles while the follow-up chat.history is in flight.
@@ -996,16 +1173,22 @@ function applyEvent(ev: ServerEvent): void {
         const roomHistory = grown
           ? { ...s.roomHistory, [room]: trimmable ? grown.slice(grown.length - ROOM_CAP) : grown }
           : s.roomHistory;
-        return { chat: capped, chatRooms: isNew ? upsertRoom(s.chatRooms, ev.message) : s.chatRooms, roomHistory };
+        return {
+          chat: capped,
+          chatRooms: isNew ? upsertRoom(s.chatRooms, ev.message) : s.chatRooms,
+          roomHistory,
+          outboundMessages: s.outboundMessages.filter((message) => message.id !== ev.message.id),
+        };
       });
       break;
     case "chat.name":
       useStore.setState((s) => ({ nameOverrides: { ...s.nameOverrides, [agentKey(ev.threadId, ev.role)]: ev.name } }));
       break;
-    case "chat.history":
+    case "chat.history": {
       // Merge by id rather than replace: a live chat.message for this room can land between the
       // chat.history request and its reply, and a blind replace would drop it until the next message.
       // This same merge serves both the initial newest page and each older scroll-up page.
+      const received = acknowledgeOutbound(ev.messages.map((message) => message.id));
       useStore.setState((s) => {
         const byId = new Map((s.roomHistory[ev.room] ?? []).map((m) => [m.id, m]));
         for (const message of ev.messages) byId.set(message.id, message);
@@ -1014,9 +1197,11 @@ function applyEvent(ev: ServerEvent): void {
           roomHistory: { ...s.roomHistory, [ev.room]: merged },
           roomHasMore: { ...s.roomHasMore, [ev.room]: ev.hasMore },
           roomLoading: { ...s.roomLoading, [ev.room]: false },
+          outboundMessages: s.outboundMessages.filter((message) => !received.has(message.id)),
         };
       });
       break;
+    }
     case "plan.ready":
       useStore.setState((s) => ({ pendingPlans: { ...s.pendingPlans, [ev.threadId]: ev.brief } }));
       notify("Plan ready for approval", "Review and approve to start building.");
@@ -1149,11 +1334,22 @@ function applyEvent(ev: ServerEvent): void {
       // the feed reappears immediately — the fresh pipeline's live events then stream in beneath it.
       if (useStore.getState().selectedThreadId === ev.threadId) sendCommand({ type: "thread.history", threadId: ev.threadId });
       break;
-    case "thread.history":
+    case "thread.history": {
       // Merge the authoritative DB history with whatever streamed live, keyed by stable id —
       // NOT all-or-nothing. The old guard dropped the full history whenever live events had
       // already populated the feed (the ~20-message / reconnect bug). The DB row wins on a
       // collision; live-only artifacts (in-flight tool_results, system notes) are preserved.
+      const receivedTaskIds = acknowledgeOutbound(
+        useStore
+          .getState()
+          .outboundMessages.filter(
+            (delivery) =>
+              delivery.surface === "task" &&
+              delivery.threadId === ev.threadId &&
+              ev.messages.some((message) => taskDeliveryMatchesMessage(delivery, message)),
+          )
+          .map((delivery) => delivery.id),
+      );
       useStore.setState((s) => {
         const dbItems: FeedItem[] = [];
         for (const m of ev.messages) {
@@ -1189,18 +1385,32 @@ function applyEvent(ev: ServerEvent): void {
         });
 
         const merged = capFeed([...dbItems, ...liveOnly].sort((a, b) => a.at - b.at));
-        return { threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged } };
+        return {
+          threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged },
+          outboundMessages: s.outboundMessages.filter((message) => !receivedTaskIds.has(message.id)),
+        };
       });
       break;
+    }
     case "thread.message": {
       // A server-originated thread message (e.g. a director inject) — show it in the feed live.
       // messageToFeed + the id-keyed dedup in pushFeed keep it from doubling on a later history merge.
       const fi = messageToFeed(ev.message);
-      if (fi) pushFeed(ev.threadId, fi);
+      const delivery = useStore.getState().outboundMessages.find((candidate) => taskDeliveryMatchesMessage(candidate, ev.message));
+      if (delivery) clearOutboundTimer(delivery.id);
+      if (fi) pushFeed(ev.threadId, fi, delivery?.id);
       break;
     }
     case "thread.action":
-      resolvePendingThreadAction(ev.threadId, ev.action, ev.ok);
+      resolvePendingThreadAction(ev.threadId, ev.action, ev.ok, ev.clientId);
+      if (ev.clientId) {
+        if (ev.ok) {
+          const received = acknowledgeOutbound([ev.clientId]);
+          useStore.setState((s) => ({ outboundMessages: s.outboundMessages.filter((message) => !received.has(message.id)) }));
+        } else {
+          failOutbound(ev.clientId, ev.error ?? ev.message ?? "The task rejected this instruction.");
+        }
+      }
       if (!ev.ok) {
         const message = ev.error ?? ev.message ?? "The task state changed before the server could apply that control.";
         useStore.setState({ notice: { level: "warn", title: "Task control failed", message } });
@@ -1266,19 +1476,25 @@ function applyEvent(ev: ServerEvent): void {
       useStore.setState((s) => ({ directorDraft: s.directorDraft + ev.text }));
       break;
     case "director.message":
-      useStore.setState((s) => ({
-        director: [
-          ...s.director,
-          {
-            id: ev.message.id,
-            kind: ev.message.role,
-            text: ev.message.content,
-            attachments: ev.message.attachments,
-            at: ev.message.createdAt,
-          },
-        ],
-        directorDraft: ev.message.role === "director" ? "" : s.directorDraft,
-      }));
+      clearOutboundTimer(ev.message.id);
+      useStore.setState((s) => {
+        const item: DirectorItem = {
+          id: ev.message.id,
+          kind: ev.message.role,
+          text: ev.message.content,
+          attachments: ev.message.attachments,
+          at: ev.message.createdAt,
+        };
+        const existing = s.director.findIndex((entry) => entry.id === item.id);
+        const director = existing < 0
+          ? [...s.director, item]
+          : s.director.map((entry, index) => (index === existing ? item : entry));
+        return {
+          director,
+          outboundMessages: s.outboundMessages.filter((message) => message.id !== ev.message.id),
+          directorDraft: ev.message.role === "director" ? "" : s.directorDraft,
+        };
+      });
       break;
     case "director.tool":
       useStore.setState((s) => ({
@@ -1404,6 +1620,7 @@ export function connect(): void {
   ws.onclose = (e) => {
     clearTimers();
     failPendingThreadActions();
+    failSendingOutbound();
     useStore.setState({ connected: false });
     if (e.code === 4401) {
       useStore.setState({ authRequired: true, authed: false });

@@ -33,6 +33,8 @@ interface Group {
 // How long a freshly-posted message floats as a bubble above its gnome.
 const BUBBLE_MS = 9000;
 
+type DisplayChatMessage = ChatMessage & { delivery?: "sending" | "failed"; deliveryError?: string };
+
 // A pacing gnome doesn't march non-stop — after some laps it stops and takes a breather. We decide this
 // in JS (not a fixed CSS cycle) so each gnome idles independently rather than all resting in lockstep.
 const IDLE_CHANCE = 0.22; // odds of resting at any given lap boundary — low, so they mostly keep strolling
@@ -305,6 +307,7 @@ function OfficePanel() {
   const threads = useStore((s) => s.threads);
   const nameOverrides = useStore((s) => s.nameOverrides);
   const directorName = useStore((s) => s.settings.directorName);
+  const outbound = useStore((s) => s.outboundMessages);
   const postChat = useStore((s) => s.postChat);
   const [draft, setDraft] = useState("");
 
@@ -316,8 +319,23 @@ function OfficePanel() {
     const sorted = [...(loaded ?? chat.filter((m) => m.room === officeRoom))].sort(
       (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
     );
-    return loaded ? sorted : sorted.slice(-CHAT_PAGE_SIZE);
-  }, [roomHistory, chat, officeRoom]);
+    const persisted = loaded ? sorted : sorted.slice(-CHAT_PAGE_SIZE);
+    const sending: DisplayChatMessage[] = outbound
+      .filter((message) => message.surface === "office" && message.room === officeRoom)
+      .map((message) => ({
+        id: message.id,
+        room: officeRoom,
+        scope: officeRoom === GENERAL_ROOM ? "general" : "project",
+        role: "director",
+        kind: "chat",
+        body: message.content,
+        senderName: directorName,
+        createdAt: message.createdAt,
+        delivery: message.status,
+        deliveryError: message.error,
+      }));
+    return [...persisted, ...sending].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }, [roomHistory, chat, officeRoom, outbound, directorName]);
 
   const hasMore = roomHasMore[officeRoom] ?? false;
   const loading = roomLoading[officeRoom] ?? false;
@@ -372,7 +390,7 @@ function OfficePanel() {
   const send = () => {
     const text = draft.trim();
     if (!text) return;
-    postChat(officeRoom, text);
+    if (!postChat(officeRoom, text)) return;
     setDraft("");
   };
 
@@ -458,7 +476,7 @@ function OfficePanel() {
   );
 }
 
-function OfficeMsg({ m, title, name }: { m: ChatMessage; title?: string; name?: string }) {
+function OfficeMsg({ m, title, name }: { m: DisplayChatMessage; title?: string; name?: string }) {
   const [copied, setCopied] = useState(false);
   if (m.kind === "system") {
     return <div className="office-sys">{m.body}</div>;
@@ -473,7 +491,7 @@ function OfficeMsg({ m, title, name }: { m: ChatMessage; title?: string; name?: 
   };
   return (
     <div
-      className={"office-msg" + (m.remoteInstance ? " remote" : "")}
+      className={"office-msg" + (m.remoteInstance ? " remote" : "") + (m.delivery ? ` delivery-${m.delivery}` : "")}
       data-message-id={m.id}
       style={{ "--role": roleColor(role) } as CSSProperties}
     >
@@ -488,6 +506,12 @@ function OfficeMsg({ m, title, name }: { m: ChatMessage; title?: string; name?: 
               line crossed the internet, so a room's cross-machine half is visible without reading names. */}
           {m.remoteInstance ? <span className="office-msg-remote" title={`From ${m.remoteInstance} — another machine`}>🌐</span> : null}
           {title ? <span className="office-msg-task">on “{trim(title, 32)}”</span> : null}
+          {m.delivery ? (
+            <span className={"delivery-receipt " + m.delivery} role="status" title={m.deliveryError}>
+              {m.delivery === "sending" ? <span className="delivery-spinner" aria-hidden="true" /> : <span aria-hidden="true">!</span>}
+              {m.delivery === "sending" ? "Sending…" : "Not delivered"}
+            </span>
+          ) : null}
           <span className="office-msg-ts">{clock(m.createdAt)}</span>
           <button
             type="button"

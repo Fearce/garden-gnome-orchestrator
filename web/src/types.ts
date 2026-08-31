@@ -856,7 +856,7 @@ export type ServerEvent =
   // thread row) before the fresh pipeline streams in.
   | { type: "thread.reset"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
-  | { type: "thread.action"; threadId: string; action: string; ok: boolean; state?: ThreadState; error?: string; message?: string; result: ThreadActionResult }
+  | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: ThreadState; error?: string; message?: string; result: ThreadActionResult }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
@@ -885,10 +885,10 @@ export type ServerEvent =
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
 export type ClientCommand =
-  | { type: "prompt.new"; text: string; workspace?: string; images?: ImageAttachment[] }
-  | { type: "prompt.direct"; text: string; workspace?: string; images?: ImageAttachment[] }
+  | { type: "prompt.new"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
+  | { type: "prompt.direct"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
   | { type: "question.answer"; questionId: string; answer: string }
-  | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt" | "queue"; images?: ImageAttachment[] }
+  | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt" | "queue"; images?: ImageAttachment[]; clientId?: string }
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.deadline"; threadId: string; deadlineAt: number | null }
@@ -920,7 +920,7 @@ export type ClientCommand =
   | { type: "director.cancel" }
   | { type: "director.search"; query: string }
   | { type: "chat.history"; room: string; before?: ChatCursor }
-  | { type: "chat.post"; room: string; body: string }
+  | { type: "chat.post"; room: string; body: string; clientId?: string }
   | { type: "schedule.create"; title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null }
   | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null } }
   | { type: "schedule.delete"; id: string }
@@ -931,6 +931,7 @@ export type ClientCommand =
   | { type: "note.create"; body: string; url?: string }
   | { type: "note.delete"; id: string }
   | { type: "note.clear" }
+  | { type: "supervisor.message"; content: string; targetIds: string[]; clientId?: string }
   | { type: "supervisor.runNow" }
   | { type: "snapshot.request" };
 
@@ -958,6 +959,40 @@ export interface SupervisorEvent {
   createdAt: number;
 }
 
+export type SupervisorChatStatus = "pending" | "succeeded" | "failed" | "needs_input";
+export type SupervisorChatAction = "status" | "comment" | "steer" | "pause" | "resume" | "start_auto_review" | "escalate";
+
+export interface SupervisorChatTarget {
+  threadId: string;
+  title: string;
+  state: ThreadState | null;
+}
+
+export interface SupervisorChatActionResult {
+  threadId: string;
+  threadTitle: string;
+  action: SupervisorChatAction;
+  ok: boolean;
+  message: string;
+  state?: ThreadState | null;
+}
+
+export interface SupervisorChatTurn {
+  id: string;
+  content: string;
+  targets: SupervisorChatTarget[];
+  status: SupervisorChatStatus;
+  response?: string | null;
+  actionResults: SupervisorChatActionResult[];
+  usedAgent: boolean;
+  costUsd?: number | null;
+  totalTokens?: number | null;
+  model?: string | null;
+  provider?: ImplementorProvider | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface SupervisorSnapshot {
   enabled: boolean;
   running: boolean;
@@ -982,6 +1017,7 @@ export interface SupervisorSnapshot {
     maxCostUsdPerDay: number;
     maxTokensPerDay: number;
   };
+  chat: SupervisorChatTurn[];
   events: SupervisorEvent[];
 }
 
@@ -997,7 +1033,7 @@ export type FeedItem =
   | { kind: "tool"; at: number; role: Role; runId: string; id?: string; name: string; input: unknown }
   | { kind: "tool_result"; at: number; runId: string; id: string; messageId?: string; isError: boolean; preview: string }
   | { kind: "finding"; at: number; finding: Finding }
-  | { kind: "system"; at: number; id?: string; text: string; role?: Role; attachments?: AttachmentRef[] };
+  | { kind: "system"; at: number; id?: string; text: string; role?: Role; attachments?: AttachmentRef[]; delivery?: "sending" | "failed"; deliveryError?: string };
 
 export interface DirectorItem {
   id: string;

@@ -4523,6 +4523,17 @@ export class ThreadManager implements OrchestratorApi {
     return this.injectThread(threadId, message, "interrupt");
   }
 
+  /** An authenticated Supervisor-chat instruction uses the ordinary task injection machinery but is
+   * not a new objective, so it must not auto-retitle the lane. The conversational supervisor has no
+   * direct runner access; this is its only steering seam. */
+  async injectSupervisorInstruction(
+    threadId: string,
+    message: string,
+    mode: "append" | "interrupt" | "queue",
+  ): Promise<ThreadActionResult> {
+    return this.injectThread(threadId, `Supervisor instruction from the owner: ${message}`, mode, undefined, { retitle: false });
+  }
+
   /** Supervisor notices are Discord-only. They never spill into the generic webhook while the separately
    *  configured Phone notifications toggle is disabled. */
   notifySupervisor(kind: "done" | "input" | "failed", title: string, detail?: string, repo?: string): void {
@@ -4537,6 +4548,12 @@ export class ThreadManager implements OrchestratorApi {
   /** An explicit "run now" from the console — one immediate pass over every current candidate task. */
   async supervisorRunNow(): Promise<void> {
     await this.supervisor.runManualNow();
+  }
+
+  /** Explicit task-supervision chat. Persistence and asynchronous execution live in DirectorSupervisor;
+   * the WS handler returns immediately after the pending turn has been broadcast. */
+  supervisorSendMessage(content: string, targetIds: string[], turnId?: string): void {
+    this.supervisor.sendChatMessage(content, targetIds, turnId);
   }
 
   private cancelled(threadId: string): boolean {
@@ -7961,6 +7978,7 @@ export class ThreadManager implements OrchestratorApi {
     message: string,
     mode: "append" | "interrupt" | "queue",
     images?: ImageAttachment[],
+    options: { retitle?: boolean } = {},
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     const qaBypassRequested = thread ? this.armOwnerQaBypass(threadId, message) : false;
@@ -7970,7 +7988,7 @@ export class ThreadManager implements OrchestratorApi {
     // below (live, QA-forward, pre-implementor buffer, resume, cold-resume) from this one spot.
     // A control-only "finish without QA" instruction is not a new task objective. Retitling the card to
     // that sentence hides the actual work title and makes this control flow unnecessarily confusing.
-    if (thread && !qaBypassRequested) void this.retitleFromInjection(threadId, message);
+    if (thread && !qaBypassRequested && options.retitle !== false) void this.retitleFromInjection(threadId, message);
     // Persist injected images as attachments so the feed can render them as thumbnails (the blocks
     // sent to the model are transient). Lazy + memoized: only the branch that actually echoes a feed
     // message calls it, so the cold-resume path (which adds no feed row) never orphans attachment
@@ -9648,13 +9666,14 @@ export class ThreadManager implements OrchestratorApi {
    *  live implementors who should act on it — a project-room post reaches the agents in that repo, an
    *  office post reaches every active agent. So instead of injecting one specific task, the owner drops
    *  the change into the room and the agents coordinate who picks it up. */
-  directorChatPost(room: string, body: string): ChatMessage {
+  directorChatPost(room: string, body: string, messageId?: string): ChatMessage {
     const text = body.trim();
     if (!text) throw new Error("empty director message");
     const general = room === GENERAL_ROOM;
     const workspace = general ? null : this.workspaceForRoom(room);
     const who = this.directorName();
     const m = this.db.addChatMessage({
+      id: messageId,
       room: general ? GENERAL_ROOM : room,
       scope: general ? "general" : "project",
       workspace,

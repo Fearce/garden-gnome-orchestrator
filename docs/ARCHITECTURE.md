@@ -288,6 +288,22 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   verdict/action, compact token/cost record, and Discord-send decision is persisted in `supervisor_events`
   and broadcast to the Supervisor board tab. Discord is consulted only when its own Phone notifications
   configuration is complete; per-task plus durable global cooldowns eliminate restart or flapping duplicates.
+
+  The same tab also has an explicit **existing-task chat** (`SupervisorChat`). An owner turn is written to
+  `supervisor_chat_turns` before judgement, with the selected task ids/titles/states captured as an audit
+  snapshot. The selection is the complete action scope: the model may ask for status, comment, steer through
+  `injectThread`, pause through `interruptThread`, resume through `resumeThread`, delegate the existing
+  auto-reviewer, or escalate, but it cannot create work or reach an unselected task. Clear new-work requests
+  are redirected to Director without dispatching anything; ambiguity becomes a durable `needs_input` reply.
+  Chat judgements share the supervisor's single no-tools queue, ahead of background checks, while manual **Run
+  now** retains its full-sweep behavior. A restart fails orphaned pending turns closed rather than replaying a
+  potentially completed control action.
+
+  Every owner-facing composer uses the same delivery contract. The browser renders an optimistic message with
+  a UUID and **Sending…** receipt immediately; Director, Office, and Supervisor persist that UUID as the row id,
+  and the returning server event replaces the placeholder. Task injection reconciles against its persisted
+  feed echo and correlated `thread.action` receipt. Socket loss or a missing confirmation becomes a visible
+  delivery failure, never a cleared composer followed by unexplained silence.
 - **A hand-back buys a fix round, not a trip to your desk** (`runReviewFixRound`). Because the reviewer
   is read-only, what blocks a task is routinely work an implementor finishes in a minute — the case this
   was built for handed back a whole task because a report file sat outside the workspace, costing a

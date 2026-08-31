@@ -79,11 +79,11 @@ export class Director {
       : null;
   }
 
-  handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice"): void {
+  handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice", messageId?: string): void {
     const refs = (images ?? []).map((img) =>
       this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
     );
-    const msg = this.db.addDirectorMessage({ role: "user", kind: "text", content: text, attachments: refs });
+    const msg = this.db.addDirectorMessage({ id: messageId, role: "user", kind: "text", content: text, attachments: refs });
     this.hub.publish({ type: "director.message", message: msg });
     // A new user turn opens a fresh segment; a dispatch during it links back to this prompt (+ the
     // director's replies, appended as they stream) so the task is reachable from a search hit.
@@ -137,7 +137,7 @@ export class Director {
    * one. The user message + a confirmation are echoed into the director chat so the transcript shows
    * what was sent; the long-lived director session is left completely untouched.
    */
-  async dispatchDirect(text: string, workspace?: string, images?: ImageAttachment[]): Promise<void> {
+  async dispatchDirect(text: string, workspace?: string, images?: ImageAttachment[], messageId?: string): Promise<void> {
     // Skip-director is an EXPLICIT owner choice, so honor it unconditionally: even a scheduling-shaped
     // message goes straight to the pipeline. (We used to reroute anything that looked like a schedule
     // request to the director — which owns the scheduling tools — but silently overriding the toggle
@@ -147,7 +147,7 @@ export class Director {
     const refs = (images ?? []).map((img) =>
       this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
     );
-    const userMsg = this.db.addDirectorMessage({ role: "user", kind: "text", content: text, attachments: refs });
+    const userMsg = this.db.addDirectorMessage({ id: messageId, role: "user", kind: "text", content: text, attachments: refs });
     this.hub.publish({ type: "director.message", message: userMsg });
 
     const ws = workspace?.trim();

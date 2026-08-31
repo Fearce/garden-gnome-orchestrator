@@ -86,8 +86,8 @@ export type ServerEvent =
   | { type: "schedules"; schedules: ScheduledTask[] }
   // The owner's note list, rebroadcast whole on every post/delete (hard-capped, so it stays small).
   | { type: "notes"; notes: OperatorNote[] }
-  // The Director Supervisor's whole live state (enabled, in-flight-pass flag, budget, recent audit
-  // trail), rebroadcast on every enable/disable and every pass — small and capped like notes/schedules.
+  // The Director Supervisor's whole live state (watchdog, explicit chat, and recent audit),
+  // rebroadcast on every change — small and capped like notes/schedules.
   | { type: "supervisor"; supervisor: SupervisorSnapshot }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
@@ -132,7 +132,7 @@ export type ServerEvent =
   // so the client prunes that stale slice (keeping the thread row) before the fresh pipeline streams in.
   | { type: "thread.reset"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
-  | { type: "thread.action"; threadId: string; action: string; ok: boolean; state?: Thread["state"]; error?: string; message?: string; result: ThreadActionResult }
+  | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: Thread["state"]; error?: string; message?: string; result: ThreadActionResult }
   | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
@@ -176,11 +176,11 @@ const imagesField = z.array(imageAttachmentSchema).max(8).optional();
 export const clientCommandSchema = z.discriminatedUnion("type", [
   // source:"voice" marks a spoken prompt (voice-gateway): the director gets a TTS-aware note
   // appended so it answers conversationally and confirms aloud before dispatching.
-  z.object({ type: z.literal("prompt.new"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, source: z.literal("voice").optional() }),
+  z.object({ type: z.literal("prompt.new"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, source: z.literal("voice").optional(), clientId: z.string().uuid().optional() }),
   // Skip-director mode: bypass the provider-neutral director and dispatch straight into the pipeline
   // (its first active stage — planner if enabled, else the implementor). workspace is required since
   // there's no director to resolve one.
-  z.object({ type: z.literal("prompt.direct"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField }),
+  z.object({ type: z.literal("prompt.direct"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, clientId: z.string().uuid().optional() }),
   z.object({ type: z.literal("question.answer"), questionId: z.string(), answer: z.string() }),
   z.object({
     type: z.literal("thread.inject"),
@@ -188,6 +188,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     message: z.string().min(1),
     mode: z.enum(["append", "interrupt", "queue"]).default("append"),
     images: imagesField,
+    clientId: z.string().uuid().optional(),
   }),
   z.object({ type: z.literal("thread.interrupt"), threadId: z.string() }),
   z.object({ type: z.literal("thread.resume"), threadId: z.string(), message: z.string().optional() }),
@@ -367,7 +368,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   }),
   // Post into a room AS THE DIRECTOR (the human): lands in the chat and is pushed to the live agents
   // in that room so they self-coordinate who acts on it. room "general" = the whole office.
-  z.object({ type: z.literal("chat.post"), room: z.string().min(1).max(300), body: z.string().min(1).max(2000) }),
+  z.object({ type: z.literal("chat.post"), room: z.string().min(1).max(300), body: z.string().min(1).max(2000), clientId: z.string().uuid().optional() }),
   // ---- Scheduled tasks (recurring dispatches) — create/edit/delete/run without the director ----
   z.object({
     type: z.literal("schedule.create"),
@@ -413,6 +414,17 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("note.create"), body: z.string().min(1).max(2000), url: z.string().max(600).optional() }),
   z.object({ type: z.literal("note.delete"), id: z.string() }),
   z.object({ type: z.literal("note.clear") }),
+  // Existing-task supervision only. Empty targets means a board-wide question; explicit ids are
+  // re-resolved by the server and become the complete action scope for that turn.
+  z.object({
+    type: z.literal("supervisor.message"),
+    content: z.string().trim().min(1).max(4_000),
+    clientId: z.string().uuid().optional(),
+    targetIds: z
+      .array(z.string().min(1).max(100))
+      .max(8)
+      .refine((ids) => new Set(ids).size === ids.length, { message: "duplicate supervisor targets" }),
+  }),
   // Director Supervisor: an explicit full pass over every current candidate task. It intentionally
   // bypasses unattended cooldown/daily-budget guards; action, single-flight and notification safety
   // gates remain in DirectorSupervisor.

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
@@ -51,6 +51,7 @@ function useIsCompact(): boolean {
 
 export function Director() {
   const items = useStore((s) => s.director);
+  const outbound = useStore((s) => s.outboundMessages);
   const draft = useStore((s) => s.directorDraft);
   const busy = useStore((s) => s.directorBusy);
   const sendPrompt = useStore((s) => s.sendPrompt);
@@ -84,6 +85,20 @@ export function Director() {
   const selectedThreadId = useStore((s) => s.selectedThreadId);
   const select = useStore((s) => s.select);
   const att = useAttachments();
+  const transcriptItems = useMemo<Array<{ item: DirectorItem; delivery?: "sending" | "failed"; deliveryError?: string }>>(
+    () =>
+      [
+        ...items.map((item) => ({ item })),
+        ...outbound
+          .filter((message) => message.surface === "director")
+          .map((message) => ({
+            item: { id: message.id, kind: "user" as const, text: message.content, at: message.createdAt },
+            delivery: message.status,
+            deliveryError: message.error,
+          })),
+      ].sort((a, b) => a.item.at - b.item.at),
+    [items, outbound],
+  );
 
   // Jump from a search hit to the task its conversation turn dispatched: open the task, then clear the
   // search so the rail returns to the transcript (the task's detail panel is now open on the right).
@@ -135,7 +150,7 @@ export function Director() {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [items.length, draft]);
+  }, [transcriptItems.length, draft]);
 
   // The rail is `display:none` on mobile while the board pane is up, so the autoscroll effect above
   // fires against a zero-height container and lands nowhere — switch to the director pane and the long
@@ -171,9 +186,9 @@ export function Director() {
     if (!t || directNeedsWs) return;
     lastSentRef.current = t;
     const w = ws.trim();
+    const sent = skip ? sendDirect(t, w || undefined, att.images) : sendPrompt(t, w || undefined, att.images);
+    if (!sent) return;
     if (w) pushRepo(w);
-    if (skip) sendDirect(t, w || undefined, att.images);
-    else sendPrompt(t, w || undefined, att.images);
     setText("");
     att.clear();
   };
@@ -269,14 +284,14 @@ export function Director() {
         <DirectorSearchResults search={directorSearch} directorName={directorName} onGoToTask={goToTask} />
       ) : (
         <div className="transcript" ref={scrollRef}>
-          {items.length === 0 && (
+          {transcriptItems.length === 0 && (
             <div className="faint" style={{ fontSize: 13 }}>
               Tell the Director what you want. It pulls your memories, asks anything it needs to avoid steering wrong, then
               dispatches the smallest capable route for the task.
             </div>
           )}
-          {items.map((it) => (
-            <DirectorBubble key={it.id} item={it} />
+          {transcriptItems.map(({ item, delivery, deliveryError }) => (
+            <DirectorBubble key={item.id} item={item} delivery={delivery} deliveryError={deliveryError} />
           ))}
           {draft && (
             <div className="msg director draft">
@@ -847,7 +862,15 @@ function AgentToggles() {
 // Memoized so a keystroke in the composer (or a streaming `draft` delta), both of which re-render the
 // Director, doesn't re-render the whole transcript. `item` references are stable in the store, so a
 // bubble only re-renders when its own message changes. Mirrors `FeedRow` in ThreadDetail.tsx.
-const DirectorBubble = memo(function DirectorBubble({ item }: { item: DirectorItem }) {
+const DirectorBubble = memo(function DirectorBubble({
+  item,
+  delivery,
+  deliveryError,
+}: {
+  item: DirectorItem;
+  delivery?: "sending" | "failed";
+  deliveryError?: string;
+}) {
   const directorName = useStore((s) => s.settings.directorName);
   if (item.kind === "tool") {
     return (
@@ -864,9 +887,19 @@ const DirectorBubble = memo(function DirectorBubble({ item }: { item: DirectorIt
         {item.kind === "user" ? item.text : <Markdown text={item.text} />}
         <MessageThumbs refs={item.attachments} />
       </div>
+      {delivery ? <DeliveryReceipt status={delivery} error={deliveryError} /> : null}
     </div>
   );
 });
+
+function DeliveryReceipt({ status, error }: { status: "sending" | "failed"; error?: string }) {
+  return (
+    <span className={"delivery-receipt " + status} role="status" title={error}>
+      {status === "sending" ? <span className="delivery-spinner" aria-hidden="true" /> : <span aria-hidden="true">!</span>}
+      {status === "sending" ? "Sending…" : "Not delivered"}
+    </span>
+  );
+}
 
 /** Search results, shown in place of the transcript while a query is active. Two sections: the tasks
  *  that match — first, because "which task was I doing X in?" is the question that brings anyone here —

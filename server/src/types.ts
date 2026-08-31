@@ -911,6 +911,53 @@ export interface SupervisorEvent {
   createdAt: number;
 }
 
+/** Lifecycle of one explicit owner -> supervisor conversation turn. `pending` is written before the
+ * model call, so the UI and the durable record agree even when the provider is slow. A restart turns
+ * an orphaned pending row into `failed` rather than risking a duplicate task action. */
+export type SupervisorChatStatus = "pending" | "succeeded" | "failed" | "needs_input";
+
+/** Existing-task operations the conversational supervisor may request. This is intentionally not a
+ * dispatch surface: task creation stays in Director, and there is no cancel/retry/delete/mark-done
+ * action in this vocabulary. */
+export type SupervisorChatAction = "status" | "comment" | "steer" | "pause" | "resume" | "start_auto_review" | "escalate";
+
+/** Snapshot of a target at send time. No FK is used by the chat table: the conversation remains
+ * readable after an old task is purged, so both the title and short-lived state are stored here. */
+export interface SupervisorChatTarget {
+  threadId: string;
+  title: string;
+  state: ThreadState | null;
+}
+
+/** What the server actually did after validating the model's proposed action against fresh task
+ * state. These rows, rather than the model's prose, are the authority for success/failure in the UI. */
+export interface SupervisorChatActionResult {
+  threadId: string;
+  threadTitle: string;
+  action: SupervisorChatAction;
+  ok: boolean;
+  message: string;
+  state?: ThreadState | null;
+}
+
+/** One durable conversation turn: the owner's message plus the supervisor reply and execution audit.
+ * Stored as one row so pending -> terminal is atomic and cannot leave an unmatched assistant bubble. */
+export interface SupervisorChatTurn {
+  id: string;
+  content: string;
+  targets: SupervisorChatTarget[];
+  status: SupervisorChatStatus;
+  response?: string | null;
+  actionResults: SupervisorChatActionResult[];
+  usedAgent: boolean;
+  costUsd?: number | null;
+  totalTokens?: number | null;
+  model?: string | null;
+  provider?: ImplementorProvider | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** The supervisor's live, whole-state snapshot broadcast to the console — small and bounded, like notes/
  *  schedules. `events` is the most recent slice (newest first), not the full audit trail. Mirrored in
  *  web/src/types.ts. */
@@ -940,5 +987,7 @@ export interface SupervisorSnapshot {
     maxCostUsdPerDay: number;
     maxTokensPerDay: number;
   };
+  /** Recent explicit owner conversation, oldest first. The full audit remains in SQLite. */
+  chat: SupervisorChatTurn[];
   events: SupervisorEvent[];
 }

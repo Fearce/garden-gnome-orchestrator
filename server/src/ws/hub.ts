@@ -51,8 +51,8 @@ function send(socket: WebSocket, event: ServerEvent): void {
   socket.send(JSON.stringify(event));
 }
 
-function sendThreadAction(socket: WebSocket, threadId: string, action: string, result: ThreadActionResult): void {
-  send(socket, { type: "thread.action", threadId, action, ok: result.ok, state: result.state, error: result.error, message: result.message, result });
+function sendThreadAction(socket: WebSocket, threadId: string, action: string, result: ThreadActionResult, clientId?: string): void {
+  send(socket, { type: "thread.action", threadId, action, clientId, ok: result.ok, state: result.state, error: result.error, message: result.message, result });
 }
 
 // Bound the connect/snapshot frame so it can't grow without limit as months of history pile up.
@@ -128,16 +128,16 @@ export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
 export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientCommand): Promise<void> {
   switch (cmd.type) {
     case "prompt.new":
-      ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images, cmd.source);
+      ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images, cmd.source, cmd.clientId);
       break;
     case "prompt.direct":
-      await ctx.director.dispatchDirect(cmd.text, cmd.workspace, cmd.images);
+      await ctx.director.dispatchDirect(cmd.text, cmd.workspace, cmd.images, cmd.clientId);
       break;
     case "question.answer":
       ctx.manager.resolveQuestion(cmd.questionId, cmd.answer);
       break;
     case "thread.inject":
-      sendThreadAction(socket, cmd.threadId, "inject", await ctx.manager.injectThread(cmd.threadId, cmd.message, cmd.mode, cmd.images));
+      sendThreadAction(socket, cmd.threadId, "inject", await ctx.manager.injectThread(cmd.threadId, cmd.message, cmd.mode, cmd.images), cmd.clientId);
       break;
     case "thread.interrupt":
       sendThreadAction(socket, cmd.threadId, "interrupt", await ctx.manager.interruptThread(cmd.threadId));
@@ -294,7 +294,7 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
       break;
     }
     case "chat.post":
-      ctx.manager.directorChatPost(cmd.room, cmd.body);
+      ctx.manager.directorChatPost(cmd.room, cmd.body, cmd.clientId);
       break;
     case "schedule.create":
       ctx.scheduler.create({ title: cmd.title, workspace: cmd.workspace, prompt: cmd.prompt, cron: cmd.cron, enabled: cmd.enabled, effort: cmd.effort ?? null });
@@ -334,6 +334,9 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
       break;
     case "note.clear":
       ctx.notes.clear();
+      break;
+    case "supervisor.message":
+      ctx.manager.supervisorSendMessage(cmd.content, cmd.targetIds, cmd.clientId);
       break;
     case "supervisor.runNow":
       await ctx.manager.supervisorRunNow();

@@ -133,6 +133,43 @@ function seed(dataDir) {
       0, null, null, null, now - (6 - i) * 60_000,
     );
   }
+
+  // Real conversation shapes for both layout bands: a successful task action, an owner decision, and
+  // a failure. The ids/titles are snapshots exactly as production stores them, so the browser verifies
+  // that history remains useful even without opening each task feed.
+  const chat = db.prepare(
+    `INSERT INTO supervisor_chat_turns
+      (id, content, targets, status, response, action_results, used_agent, cost_usd, total_tokens, model, provider, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const firstTarget = [{ threadId: tasks[0][0], title: tasks[0][1], state: "review" }];
+  chat.run(
+    "supervisor-lab-chat-success",
+    "Have the reviewer verify this handoff and keep the mobile acceptance checks in scope.",
+    JSON.stringify(firstTarget),
+    "succeeded",
+    "The task is in a normal review park, so I delegated it through the existing reviewer path.",
+    JSON.stringify([{ threadId: tasks[0][0], threadTitle: tasks[0][1], action: "start_auto_review", ok: true, message: "Started the existing auto-reviewer.", state: "reviewing" }]),
+    1, 0.012, 842, "claude-sonnet-5", "claude", now - 22 * 60_000, now - 21 * 60_000,
+  );
+  chat.run(
+    "supervisor-lab-chat-question",
+    "Escalate whichever menu task I meant earlier.",
+    "[]",
+    "needs_input",
+    "There are two plausible menu tasks. Which task should I escalate? Select it above so I do not flag the wrong one.",
+    "[]",
+    1, 0.004, 390, "claude-sonnet-5", "claude", now - 14 * 60_000, now - 13 * 60_000,
+  );
+  chat.run(
+    "supervisor-lab-chat-failure",
+    "Pause the task that no longer exists.",
+    JSON.stringify([{ threadId: "deleted-task-1234", title: "Removed historical task", state: null }]),
+    "failed",
+    "I couldn't find the selected task. No task action was taken.",
+    "[]",
+    0, null, null, null, null, now - 6 * 60_000, now - 6 * 60_000,
+  );
   db.close();
 }
 
@@ -288,6 +325,51 @@ async function drivePass(page, { name, width, height }, shotDir) {
     JSON.stringify(runNow),
   );
 
+  // The conversation has its own scroll container. Bring the composer into the phone viewport before
+  // hit-testing it; measuring controls several chat turns below the fold says nothing about usability.
+  await page.locator(".supervisor-compose-row").evaluate((el) => el.scrollIntoView({ block: "center" }));
+
+  const chatControls = await page.evaluate(() => {
+    const measure = (selector) => {
+      const el = document.querySelector(selector);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return {
+        w: Math.round(r.width), h: Math.round(r.height),
+        inView: r.left >= 0 && r.right <= innerWidth + 1,
+        ownsTap: !!hit && (hit === el || el.contains(hit)),
+      };
+    };
+    return {
+      target: measure(".supervisor-target-trigger"),
+      send: measure(".supervisor-send"),
+      textarea: measure(".supervisor-compose-row textarea"),
+      turns: document.querySelectorAll(".supervisor-turn").length,
+      outcomes: [...document.querySelectorAll(".supervisor-turn-status")].map((el) => el.textContent.trim()),
+    };
+  });
+  check(`${width}: persisted task-chat history renders success, decision, and failure states`, chatControls.turns >= 3 && /completed/i.test(chatControls.outcomes.join(" ")) && /needs your answer/i.test(chatControls.outcomes.join(" ")) && /failed/i.test(chatControls.outcomes.join(" ")), JSON.stringify(chatControls));
+  check(`${width}: target picker and Send are on-screen tap controls`, chatControls.target?.inView && chatControls.target.ownsTap && chatControls.target.h >= TAP_MIN && chatControls.send?.inView && chatControls.send.ownsTap && chatControls.send.h >= TAP_MIN, JSON.stringify(chatControls));
+  check(`${width}: the task instruction textarea remains on-screen and usable`, chatControls.textarea?.inView && chatControls.textarea.ownsTap && chatControls.textarea.h >= TAP_MIN, JSON.stringify(chatControls.textarea));
+
+  await page.click(".supervisor-target-trigger");
+  await page.waitForSelector(".supervisor-target-menu");
+  const picker = await page.evaluate(() => {
+    const menu = document.querySelector(".supervisor-target-menu").getBoundingClientRect();
+    const option = document.querySelector(".supervisor-target-option").getBoundingClientRect();
+    return {
+      menu: { left: Math.round(menu.left), right: Math.round(menu.right), top: Math.round(menu.top), bottom: Math.round(menu.bottom) },
+      optionHeight: Math.round(option.height),
+      withinScreen: menu.left >= -1 && menu.right <= innerWidth + 1 && menu.top >= -1 && menu.bottom <= innerHeight + 1,
+    };
+  });
+  check(`${width}: the multi-task picker opens wholly on-screen with finger-sized options`, picker.withinScreen && picker.optionHeight >= TAP_MIN, JSON.stringify(picker));
+  await page.click(".supervisor-target-option");
+  await page.click(".supervisor-target-menu-foot button");
+  const chip = (await page.textContent(".supervisor-target-chip")) ?? "";
+  check(`${width}: choosing a target shows its title and short task id`, /Continue implementation/.test(chip) && /#supervis/.test(chip), JSON.stringify(chip));
+
   // The banner must not read as a reason the operator's own sweep won't run — that is the wording the
   // screenshot caught, beside a Run now button that really did downgrade to deterministic-only.
   const note = await page.textContent(".supervisor-budget-note");
@@ -306,6 +388,180 @@ async function drivePass(page, { name, width, height }, shotDir) {
   }
 
   check(`${width}: no console errors during the pass`, errors.length === 0, errors.slice(0, 3).join(" | "));
+}
+
+async function driveDesktop(page, shotDir) {
+  console.log("\n════ DESKTOP — task chat, picker, and audit share the Supervisor pane");
+  const errors = [];
+  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
+  await page.goto(`${BASE}/`, { timeout: 45_000 });
+  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.click(".board-tab.bt-supervisor");
+  await page.waitForSelector(".supervisor-chat");
+
+  const layout = await page.evaluate(() => {
+    const pane = document.querySelector(".supervisor-view").getBoundingClientRect();
+    const chat = document.querySelector(".supervisor-chat").getBoundingClientRect();
+    const compose = document.querySelector(".supervisor-compose-row").getBoundingClientRect();
+    return {
+      pane: { left: Math.round(pane.left), right: Math.round(pane.right), width: Math.round(pane.width) },
+      chat: { left: Math.round(chat.left), right: Math.round(chat.right), width: Math.round(chat.width) },
+      composeWidth: Math.round(compose.width),
+      actionResults: document.querySelectorAll(".supervisor-action-results button").length,
+      turns: document.querySelectorAll(".supervisor-turn").length,
+      overflow: document.querySelector(".board").scrollWidth > document.querySelector(".board").clientWidth + 1,
+    };
+  });
+  check("desktop: chat uses the board width without horizontal overflow", !layout.overflow && layout.chat.width === layout.pane.width && layout.composeWidth > 400, JSON.stringify(layout));
+  check("desktop: persisted conversation and action audit render together", layout.turns >= 3 && layout.actionResults >= 1, JSON.stringify(layout));
+
+  await page.click(".supervisor-target-trigger");
+  await page.waitForSelector(".supervisor-target-menu");
+  const menu = await page.evaluate(() => {
+    const r = document.querySelector(".supervisor-target-menu").getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, inView: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight };
+  });
+  check("desktop: task picker is anchored and wholly visible", menu.inView, JSON.stringify(menu));
+  await page.click(".supervisor-target-menu-foot button");
+
+  if (shotDir) {
+    const file = path.join(shotDir, "desktop-1440.png");
+    await page.screenshot({ path: file, fullPage: false });
+    console.log(`    shot: ${file}`);
+  }
+  check("desktop: no console errors during the pass", errors.length === 0, errors.slice(0, 3).join(" | "));
+}
+
+/** Submit through the real authenticated UI and websocket. One deterministic new-work turn proves the
+ * success path without spending provider capacity; one targeted turn uses bogus lab credentials so the
+ * pending -> failure lifecycle is visible and no production task can be touched. Reload then proves the
+ * conversation is SQLite history, not component-local echo text. */
+async function driveChatRoundTrip(page) {
+  console.log("\n════ CHAT ROUND TRIP — authenticated submit, target routing, pending/failure, reload");
+  await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
+  await page.goto(`${BASE}/`, { timeout: 45_000 });
+  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.click(".board-tab.bt-supervisor");
+  await page.waitForSelector(".supervisor-chat");
+
+  const before = await page.$$eval(".supervisor-turn", (els) => els.length);
+  await delayNextChatCommand(page, "supervisor.message");
+  await page.fill(".supervisor-compose-row textarea", "Create a new task to redesign the seeded billing screen.");
+  await page.click(".supervisor-send");
+  await page.waitForSelector(".supervisor-turn.delivery-sending");
+  const sending = (await page.textContent(".supervisor-turn.delivery-sending")) ?? "";
+  check(
+    "chat: the owner's Supervisor message appears immediately with a sending receipt",
+    /Create a new task/.test(sending) && /Sending/i.test(sending) && /Waiting for the server/i.test(sending),
+    JSON.stringify(sending),
+  );
+  await page.waitForFunction((n) => document.querySelectorAll(".supervisor-turn").length === n + 1, before);
+  await page.waitForFunction(() => /completed/i.test(document.querySelector(".supervisor-turn:last-of-type .supervisor-turn-status")?.textContent ?? ""));
+  const newWork = (await page.textContent(".supervisor-turn:last-of-type .supervisor-agent-bubble")) ?? "";
+  check("chat: a clear new-task request succeeds by routing back to Director, without duplicating work", /Director/i.test(newWork) && /did not create/i.test(newWork), JSON.stringify(newWork));
+
+  await page.click(".supervisor-target-trigger");
+  await page.click('.supervisor-target-option:has-text("Fix incorrect menu")');
+  await page.click(".supervisor-target-menu-foot button");
+  await page.evaluate(() => {
+    window.__supervisorSawPending = false;
+    const observer = new MutationObserver(() => {
+      if (document.querySelector(".supervisor-turn.turn-pending")) window.__supervisorSawPending = true;
+    });
+    observer.observe(document.querySelector(".supervisor-conversation"), { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    window.__supervisorPendingObserver = observer;
+  });
+  await page.fill(".supervisor-compose-row textarea", "Check this task's current status. Do not change it.");
+  await page.click(".supervisor-send");
+  await page.waitForFunction(() => window.__supervisorSawPending === true, null, { timeout: 10_000 });
+  await page.waitForFunction(() => !document.querySelector(".supervisor-turn:last-of-type")?.classList.contains("turn-pending"), null, { timeout: 120_000 });
+  const targeted = await page.evaluate(() => {
+    window.__supervisorPendingObserver?.disconnect();
+    const last = document.querySelector(".supervisor-turn:last-of-type");
+    return {
+      status: last?.querySelector(".supervisor-turn-status")?.textContent.trim(),
+      target: last?.querySelector(".supervisor-turn-targets")?.textContent.trim(),
+      response: last?.querySelector(".supervisor-agent-bubble")?.textContent.trim(),
+    };
+  });
+  check("chat: a targeted request visibly passes through pending into an honest provider failure", /failed/i.test(targeted.status ?? "") && /no task action/i.test(targeted.response ?? ""), JSON.stringify(targeted));
+  check("chat: target routing remains auditable by title and short id", /Fix incorrect menu/.test(targeted.target ?? "") && /#supervis/.test(targeted.target ?? ""), JSON.stringify(targeted.target));
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.click(".board-tab.bt-supervisor");
+  await page.waitForFunction((n) => document.querySelectorAll(".supervisor-turn").length >= n + 2, before);
+  const restored = (await page.textContent(".supervisor-turn:last-of-type")) ?? "";
+  check("chat: the failed targeted turn survives a full browser reload", /Check this task's current status/.test(restored) && /Failed/i.test(restored), JSON.stringify(restored));
+}
+
+/** Patch the browser's already-live WebSocket prototype once, then delay exactly the next frame of a
+ * requested chat command. The store still sees an open socket and must render its optimistic receipt;
+ * releasing the real frame later proves that the persisted echo removes that exact placeholder. */
+async function delayNextChatCommand(page, type, delayMs = 900) {
+  await page.evaluate(({ type, delayMs }) => {
+    if (!window.__ggoReceiptSend) {
+      window.__ggoReceiptSend = WebSocket.prototype.send;
+      WebSocket.prototype.send = function patchedSend(data) {
+        let command;
+        try { command = JSON.parse(String(data)); } catch { command = null; }
+        const delayed = window.__ggoReceiptDelay;
+        if (delayed && command?.type === delayed.type) {
+          window.__ggoReceiptDelay = null;
+          const socket = this;
+          setTimeout(() => window.__ggoReceiptSend.call(socket, data), delayed.delayMs);
+          return;
+        }
+        return window.__ggoReceiptSend.call(this, data);
+      };
+    }
+    window.__ggoReceiptDelay = { type, delayMs };
+  }, { type, delayMs });
+}
+
+/** Kevin's "literally all chats" acceptance pass. Each composer is exercised against the real
+ * authenticated websocket while its outgoing frame is held briefly in the browser. */
+async function driveAllChatReceipts(page) {
+  console.log("\n════ CHAT RECEIPTS — immediate owner bubbles in every conversation surface");
+  await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
+  await page.goto(`${BASE}/`, { timeout: 45_000 });
+  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+
+  await delayNextChatCommand(page, "prompt.new");
+  await page.fill(".composer textarea", "Receipt check for Director chat.");
+  await page.click(".composer .btn.primary");
+  await page.waitForSelector(".transcript .msg.user .delivery-receipt.sending");
+  const directorSending = (await page.textContent(".transcript .msg.user:last-of-type")) ?? "";
+  check("Director: message is visible with Sending before server receipt", /Receipt check/.test(directorSending) && /Sending/i.test(directorSending), JSON.stringify(directorSending));
+  await page.waitForFunction(() => ![...document.querySelectorAll(".transcript .msg.user")].at(-1)?.querySelector(".delivery-receipt"));
+  check("Director: persisted echo reconciles the optimistic bubble without a duplicate", (await page.$$eval(".transcript .msg.user", (els) => els.filter((el) => /Receipt check for Director chat/.test(el.textContent ?? "")).length)) === 1);
+  const stop = page.locator(".director-stop");
+  if (await stop.isVisible().catch(() => false)) await stop.click();
+
+  await page.click(".office-director");
+  await page.waitForSelector(".office-panel");
+  await delayNextChatCommand(page, "chat.post");
+  await page.fill(".office-composer textarea", "Receipt check for Office chat.");
+  await page.click(".office-composer .btn.primary");
+  await page.waitForSelector(".office-msg.delivery-sending .delivery-receipt.sending");
+  const officeSending = (await page.textContent(".office-msg.delivery-sending")) ?? "";
+  check("Office: message is visible with Sending before server receipt", /Receipt check/.test(officeSending) && /Sending/i.test(officeSending), JSON.stringify(officeSending));
+  await page.waitForSelector(".office-msg.delivery-sending", { state: "detached" });
+  check("Office: persisted echo reconciles the optimistic bubble without a duplicate", (await page.$$eval(".office-msg", (els) => els.filter((el) => /Receipt check for Office chat/.test(el.textContent ?? "")).length)) === 1);
+  await page.click(".office-panel .close-x");
+
+  await page.locator('.card:has-text("Continue implementation")').first().click();
+  await page.waitForSelector(".detail .inject-bar textarea");
+  await delayNextChatCommand(page, "thread.inject");
+  await page.fill(".inject-bar textarea", "Receipt check for task instruction chat.");
+  await page.click('.inject-bar button:has-text("Queue")');
+  await page.waitForSelector(".fi.system.delivery-sending .delivery-receipt.sending");
+  const taskSending = (await page.textContent(".fi.system.delivery-sending")) ?? "";
+  check("Task instruction: message is visible with Sending before server receipt", /Receipt check/.test(taskSending) && /Sending/i.test(taskSending), JSON.stringify(taskSending));
+  await page.waitForSelector(".fi.system.delivery-sending", { state: "detached" });
+  check("Task instruction: persisted feed echo reconciles without a duplicate", (await page.$$eval(".fi.system", (els) => els.filter((el) => /Receipt check for task instruction chat/.test(el.textContent ?? "")).length)) === 1);
 }
 
 /** The manual sweep, driven once through the real console at the narrowest width: click Run now with
@@ -423,6 +679,28 @@ async function rmWithRetry(dir) {
       } finally {
         await ctx.close();
       }
+    }
+    const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+    try {
+      await driveDesktop(await desktop.newPage(), shotDir);
+    } finally {
+      await desktop.close();
+    }
+    const roundTrip = await browser.newContext({ viewport: { width: 1280, height: 860 }, deviceScaleFactor: 1 });
+    try {
+      await driveChatRoundTrip(await roundTrip.newPage());
+    } catch (e) {
+      check("the authenticated Supervisor chat round trip completed", false, String(e).split("\n")[0]);
+    } finally {
+      await roundTrip.close();
+    }
+    const receipts = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+    try {
+      await driveAllChatReceipts(await receipts.newPage());
+    } catch (e) {
+      check("the all-chat optimistic receipt pass completed", false, String(e).split("\n")[0]);
+    } finally {
+      await receipts.close();
     }
     // The sweep mutates supervisor state, so it runs LAST — after every layout pass has measured the
     // seeded budget-reached board.

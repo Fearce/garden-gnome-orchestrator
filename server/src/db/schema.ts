@@ -274,6 +274,26 @@ CREATE TABLE IF NOT EXISTS supervisor_events (
   created_at       INTEGER NOT NULL
 );
 
+-- Explicit owner conversation with the Supervisor. One row is one request/reply turn so the pending
+-- lifecycle and its eventual execution results update atomically. Targets/results are compact JSON
+-- snapshots. There is deliberately NO FK to threads: this is the owner's durable supervision audit and
+-- must remain intelligible after a task is purged (the same lifetime rule as director_messages).
+CREATE TABLE IF NOT EXISTS supervisor_chat_turns (
+  id             TEXT PRIMARY KEY,
+  content        TEXT NOT NULL,
+  targets        TEXT NOT NULL DEFAULT '[]',
+  status         TEXT NOT NULL,
+  response       TEXT,
+  action_results TEXT NOT NULL DEFAULT '[]',
+  used_agent     INTEGER NOT NULL DEFAULT 0,
+  cost_usd       REAL,
+  total_tokens   INTEGER,
+  model          TEXT,
+  provider       TEXT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_thread     ON agent_runs(thread_id);
 CREATE INDEX IF NOT EXISTS idx_grades_model    ON model_grades(graded_model);
 CREATE INDEX IF NOT EXISTS idx_findings_thread ON findings(thread_id);
@@ -283,4 +303,5 @@ CREATE INDEX IF NOT EXISTS idx_chat_room       ON chat_messages(room, created_at
 CREATE INDEX IF NOT EXISTS idx_notes_thread    ON operator_notes(thread_id);
 CREATE INDEX IF NOT EXISTS idx_supervisor_events_thread  ON supervisor_events(thread_id);
 CREATE INDEX IF NOT EXISTS idx_supervisor_events_created ON supervisor_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_supervisor_chat_created   ON supervisor_chat_turns(created_at);
 `;

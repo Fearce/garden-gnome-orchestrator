@@ -38,6 +38,10 @@ import type {
   ShotgunAssignment,
   StageOutputs,
   SupervisorAction,
+  SupervisorChatActionResult,
+  SupervisorChatStatus,
+  SupervisorChatTarget,
+  SupervisorChatTurn,
   SupervisorEvent,
   SupervisorEventKind,
   SupervisorTrigger,
@@ -250,6 +254,60 @@ function rowToSupervisorEvent(r: Row): SupervisorEvent {
     model: (r.model as string | null) ?? null,
     notifiedDiscord: !!r.notified_discord,
     createdAt: r.created_at as number,
+  };
+}
+
+function parseSupervisorTargets(raw: unknown): SupervisorChatTarget[] {
+  if (typeof raw !== "string" || !raw) return [];
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!Array.isArray(value)) return [];
+    return value.filter((target): target is SupervisorChatTarget => {
+      if (!target || typeof target !== "object") return false;
+      const item = target as Record<string, unknown>;
+      return typeof item.threadId === "string" && typeof item.title === "string";
+    });
+  } catch {
+    return [];
+  }
+}
+
+function parseSupervisorActionResults(raw: unknown): SupervisorChatActionResult[] {
+  if (typeof raw !== "string" || !raw) return [];
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!Array.isArray(value)) return [];
+    return value.filter((result): result is SupervisorChatActionResult => {
+      if (!result || typeof result !== "object") return false;
+      const item = result as Record<string, unknown>;
+      return (
+        typeof item.threadId === "string" &&
+        typeof item.threadTitle === "string" &&
+        typeof item.action === "string" &&
+        typeof item.ok === "boolean" &&
+        typeof item.message === "string"
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+function rowToSupervisorChatTurn(r: Row): SupervisorChatTurn {
+  return {
+    id: r.id as string,
+    content: r.content as string,
+    targets: parseSupervisorTargets(r.targets),
+    status: r.status as SupervisorChatStatus,
+    response: (r.response as string | null) ?? null,
+    actionResults: parseSupervisorActionResults(r.action_results),
+    usedAgent: !!r.used_agent,
+    costUsd: r.cost_usd == null ? null : Number(r.cost_usd),
+    totalTokens: r.total_tokens == null ? null : Number(r.total_tokens),
+    model: (r.model as string | null) ?? null,
+    provider: (r.provider as ImplementorProvider | null) ?? null,
+    createdAt: r.created_at as number,
+    updatedAt: r.updated_at as number,
   };
 }
 
@@ -1119,13 +1177,14 @@ export class Db {
 
   // ---- director conversation ----
   addDirectorMessage(input: {
+    id?: string;
     role: "user" | "director";
     kind: Message["kind"];
     content: string;
     attachments?: AttachmentRef[];
   }): DirectorMessage {
     const m: DirectorMessage = {
-      id: newId(),
+      id: input.id ?? newId(),
       role: input.role,
       kind: input.kind,
       content: input.content,
@@ -1363,6 +1422,7 @@ export class Db {
 
   // ---- office chat ----
   addChatMessage(input: {
+    id?: string;
     room: string;
     scope: ChatScope;
     workspace?: string | null;
@@ -1375,7 +1435,7 @@ export class Db {
     remoteInstance?: string | null;
   }): ChatMessage {
     const m: ChatMessage = {
-      id: newId(),
+      id: input.id ?? newId(),
       room: input.room,
       scope: input.scope,
       workspace: input.workspace ?? null,
@@ -1854,6 +1914,99 @@ export class Db {
   }
 
   // ---- Director Supervisor: its own audit trail (orchestrator/supervisor.ts) ----
+
+  /** Persist the owner message before any provider work starts. Target titles/states are snapshots, so
+   * the conversation still reads correctly after a rename or eventual task purge. */
+  createSupervisorChatTurn(input: { id?: string; content: string; targets: SupervisorChatTarget[] }): SupervisorChatTurn {
+    const at = now();
+    const turn: SupervisorChatTurn = {
+      id: input.id ?? newId(),
+      content: input.content,
+      targets: input.targets,
+      status: "pending",
+      response: null,
+      actionResults: [],
+      usedAgent: false,
+      costUsd: null,
+      totalTokens: null,
+      model: null,
+      provider: null,
+      createdAt: at,
+      updatedAt: at,
+    };
+    this.raw
+      .prepare(
+        `INSERT INTO supervisor_chat_turns(id, content, targets, status, response, action_results, used_agent, cost_usd, total_tokens, model, provider, created_at, updated_at)
+         VALUES(@id, @content, @targetsJson, @status, NULL, '[]', 0, NULL, NULL, NULL, NULL, @createdAt, @updatedAt)`,
+      )
+      .run({ ...turn, targetsJson: JSON.stringify(turn.targets) });
+    return turn;
+  }
+
+  /** Update a pending turn as work progresses or settles. A fixed statement keeps every mutable field
+   * explicit at this trust boundary; callers cannot smuggle a column name into dynamic SQL. */
+  updateSupervisorChatTurn(
+    id: string,
+    patch: Partial<Pick<SupervisorChatTurn, "status" | "response" | "actionResults" | "usedAgent" | "costUsd" | "totalTokens" | "model" | "provider">>,
+  ): SupervisorChatTurn | null {
+    const current = this.getSupervisorChatTurn(id);
+    if (!current) return null;
+    const next: SupervisorChatTurn = { ...current, ...patch, updatedAt: now() };
+    this.raw
+      .prepare(
+        `UPDATE supervisor_chat_turns
+            SET status=@status, response=@response, action_results=@actionResultsJson,
+                used_agent=@usedAgent, cost_usd=@costUsd, total_tokens=@totalTokens,
+                model=@model, provider=@provider, updated_at=@updatedAt
+          WHERE id=@id`,
+      )
+      .run({
+        id,
+        status: next.status,
+        response: next.response ?? null,
+        actionResultsJson: JSON.stringify(next.actionResults),
+        usedAgent: next.usedAgent ? 1 : 0,
+        costUsd: next.costUsd ?? null,
+        totalTokens: next.totalTokens ?? null,
+        model: next.model ?? null,
+        provider: next.provider ?? null,
+        updatedAt: next.updatedAt,
+      });
+    return next;
+  }
+
+  getSupervisorChatTurn(id: string): SupervisorChatTurn | null {
+    const row = this.raw.prepare("SELECT * FROM supervisor_chat_turns WHERE id = ?").get(id) as Row | undefined;
+    return row ? rowToSupervisorChatTurn(row) : null;
+  }
+
+  /** Recent UI slice, oldest first so it can render directly as a conversation. */
+  listSupervisorChatTurns(limit = 100): SupervisorChatTurn[] {
+    const rows = this.raw
+      .prepare("SELECT * FROM supervisor_chat_turns ORDER BY created_at DESC, id DESC LIMIT ?")
+      .all(limit) as Row[];
+    return rows.map(rowToSupervisorChatTurn).reverse();
+  }
+
+  /** A process may die after an action but before its final reply is written. Replaying that request on
+   * boot could duplicate an injection/resume, so orphaned pending turns fail closed and retain whatever
+   * per-action results had already been checkpointed. */
+  failPendingSupervisorChatTurns(): number {
+    const at = now();
+    const result = this.raw
+      .prepare(
+        `UPDATE supervisor_chat_turns
+            SET status='failed',
+                response=CASE
+                  WHEN action_results = '[]' THEN 'The server restarted before the supervisor could finish. No action is recorded; resend this message if it is still needed.'
+                  ELSE 'The server restarted after at least one action was recorded but before the supervisor could finish. Review the action results below before resending.'
+                END,
+                updated_at=?
+          WHERE status='pending'`,
+      )
+      .run(at);
+    return result.changes;
+  }
 
   recordSupervisorEvent(input: {
     threadId?: string | null;
