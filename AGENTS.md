@@ -99,6 +99,9 @@ For one task, run `npm run probe:task-runs --prefix server -- <thread-id|title-s
 hand-joining tables. Its control-flow timeline correlates run/account/cap verdicts, routing-capacity
 findings, owner/supervisor messages, and matching server boot/reconcile records in local time plus UTC.
 Add `--prompt` when the exact saved provider intent matters.
+For "did my Supervisor-chat message arrive, and did its task action run?", use
+`npm run probe:supervisor-chat --prefix server -- <turn-id|task-id|task-title|message-text>`; omit the
+query for recent turns or add `--json`. It separates no receipt, pending, success, failure, and needs-input.
 Read the run trail to tell causes apart:
 - run `state='interrupted'` → a **server restart** killed it (`markInterrupted`), not the agent. A
   thread whose `error` starts with "interrupted by a server restart" died to a bounce; actively-running

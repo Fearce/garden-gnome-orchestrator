@@ -140,6 +140,10 @@ For one task's full trail + per-model cost/turn totals + a QA-loop budget check,
 `npm run probe:task-runs --prefix server -- <thread-id|title-substring>` (read-only, safe while prod is up).
 Its control-flow timeline joins run starts/ends (including account + `cap_flagged`), routing/capacity
 findings, owner/supervisor system messages, and matching `crash.log` boot/reconcile records on one clock.
+For **"did my Supervisor-chat message arrive, and did its action run?"**, use
+`npm run probe:supervisor-chat --prefix server -- <turn-id|task-id|task-title|message-text>` (omit the
+query for recent turns; add `--json` for automation). It separates no durable receipt, pending, success,
+failure, and needs-input, then shows the send-time target beside its current task state and action audit.
 Every event shows system-local time beside explicit UTC; do not hand-convert SQLite epochs when the owner
 quotes a local time. Add `--prompt` to print the exact saved routing prompt when provider intent is disputed.
 The thread header also prints `activeTaskDeadline`: its persisted local + UTC instant, countdown, and whether
