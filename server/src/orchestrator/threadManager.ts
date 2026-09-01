@@ -3654,7 +3654,11 @@ export class ThreadManager implements OrchestratorApi {
       // the same plan has usable headroom — model/account limits can clear between the failure and
       // the next supervisor tick. Rollout snapshots are deliberately NOT enough here: they can be
       // old, whereas liveCodexUsage is a fresh plan-wide RPC reading.
-      const liveHeadroom = liveCodexUsage() && this.codexProviderCandidate().hasHeadroom;
+      // Inspect the fresh meters without consulting this same latch again. The ordinary candidate
+      // path calls codexCapActive() for the general pool, so using it here without the bypass forms
+      // codexCapActive -> codexProviderCandidate -> codexCapActive and crashes the server on boot
+      // whenever a persisted cap and a fresh app-server ping coexist.
+      const liveHeadroom = liveCodexUsage() && this.codexProviderCandidate(undefined, undefined, undefined, true).hasHeadroom;
       const recoveredAfterCap = this.codexCapUntilProviderStated && this.codexRecoveredAfterLastRecordedCap();
       if (liveHeadroom && (!this.codexCapUntilProviderStated || recoveredAfterCap)) {
         this.hub.log(
@@ -3924,7 +3928,12 @@ export class ThreadManager implements OrchestratorApi {
     return this.zaiProviderCandidate().hasHeadroom;
   }
 
-  private codexProviderCandidate(role?: Role, demand?: CapacityDemand, modelOverride?: string): ProviderCandidate {
+  private codexProviderCandidate(
+    role?: Role,
+    demand?: CapacityDemand,
+    modelOverride?: string,
+    ignoreGeneralCapLatch = false,
+  ): ProviderCandidate {
     const now = Date.now();
     const u = readCodexUsage();
     const startupCooldownUntil = this.providerStartupCooldownUntil("codex", now);
@@ -3940,7 +3949,7 @@ export class ThreadManager implements OrchestratorApi {
       pct != null && pct >= PROVIDER_HARD_LIMIT && (reset == null || reset > now);
     const poolCapped = dedicated
       ? poolLatched(this.poolCapUntil, dedicated.limitId, now)
-      : this.codexCapActive();
+      : ignoreGeneralCapLatch ? false : this.codexCapActive();
     const fiveHour = pool ? pool.fiveHour : (u?.fiveHour ?? null);
     const fiveHourReset = pool ? pool.fiveHourReset : (u?.fiveHourReset ?? null);
     const sevenDay = pool ? pool.sevenDay : (u?.sevenDay ?? null);

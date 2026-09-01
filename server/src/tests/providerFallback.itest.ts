@@ -16,12 +16,17 @@ import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
 import type { QaOutput } from "../types.js";
 
+// Keep live Codex-usage fixtures and their persisted cache out of the real server data directory.
+const testDataRoot = mkdtempSync(join(tmpdir(), "provider-fallback-data-"));
+process.env.DATA_DIR = testDataRoot;
+
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { CodexAgentRun } = await import("../agents/codexRunner.js");
 const { GrokAgentRun } = await import("../agents/grokRunner.js");
+const { noteCodexPing } = await import("../agents/codexUsage.js");
 const { parseUsageLimitResetAt, usageLimitResetWasExplicitlyElapsed } = await import("../agents/runner.js");
 
 function check(label: string, condition: boolean, detail?: string): void {
@@ -1160,7 +1165,34 @@ try {
   check("an expired Codex reset does not become a fresh fallback cooldown on boot", expiredInternals.codexCapUntil === undefined, String(expiredInternals.codexCapUntil));
   expiredDb.raw.close();
   rmSync(expiredRoot, { recursive: true, force: true });
+
+  // Regression: this exact persisted-latch + fresh-ping state used to recurse between
+  // codexCapActive and codexProviderCandidate until Node exhausted the stack during boot.
+  const livePingRoot = mkdtempSync(join(tmpdir(), "provider-fallback-live-ping-"));
+  const livePingWorkspace = join(livePingRoot, "workspace");
+  mkdirSync(livePingWorkspace, { recursive: true });
+  const livePingDb = new Db(join(livePingRoot, "orchestrator.sqlite"));
+  const livePingInternals = bootFixtureManager(livePingDb, livePingRoot);
+  const livePingNow = Date.now();
+  noteCodexPing({
+    fiveHour: 10,
+    sevenDay: 20,
+    fiveHourReset: livePingNow + 4 * 60 * 60_000,
+    sevenDayReset: livePingNow + 6 * 24 * 60 * 60_000,
+    planType: "test",
+    updatedAt: livePingNow,
+  });
+  livePingInternals.codexCapUntil = livePingNow + 60 * 60_000;
+  livePingInternals.codexCapUntilProviderStated = false;
+  check(
+    "a fresh Codex ping clears a fallback latch without recursive candidate evaluation",
+    livePingInternals.codexCapActive() === false && livePingInternals.codexCapUntil === undefined,
+    String(livePingInternals.codexCapUntil),
+  );
+  livePingDb.raw.close();
+  rmSync(livePingRoot, { recursive: true, force: true });
 } finally {
   db.raw.close();
   rmSync(root, { recursive: true, force: true });
+  rmSync(testDataRoot, { recursive: true, force: true });
 }
