@@ -1037,6 +1037,13 @@ async function main(): Promise<void> {
       db.updateRun(doneRun.id, { state: "done", endedAt: Date.now() });
       db.updateThread(done.id, { state: "done", error: null });
 
+      const fresh = db.createThread({ title: "legacy reviewer before new work", workspace, rawPrompt: "fresh", brief: "new work still needs a review" });
+      const staleReviewer = db.createRun({ threadId: fresh.id, role: "reviewer", model: "legacy-reviewer" });
+      db.updateRun(staleReviewer.id, { state: "done", endedAt: Date.now() });
+      const freshWork = db.createRun({ threadId: fresh.id, role: "implementor", model: "legacy-implementor" });
+      db.updateRun(freshWork.id, { state: "done", endedAt: Date.now() });
+      db.updateThread(fresh.id, { state: "review", error: "new implementation is ready for review" });
+
       // Recreate exactly the pre-migration shape, then reopen through the real constructor migration.
       db.raw.prepare("DELETE FROM auto_review_episodes").run();
       db.raw.prepare("DELETE FROM kv WHERE key='auto_review_episode_backfill_v1'").run();
@@ -1048,6 +1055,30 @@ async function main(): Promise<void> {
       check("a legacy hand-back becomes a terminal parked suppression record", parkedEpisode?.status === "parked" && parkedEpisode.source === "reconciled" && parkedEpisode.claimToken === null, JSON.stringify(parkedEpisode));
       check("a legacy in-flight reviewer receives a boot-reconcilable ownership token", activeEpisode?.status === "running" && activeEpisode.source === "reconciled" && !!activeEpisode.claimToken, JSON.stringify(activeEpisode));
       check("migration never manufactures acceptance for an already-done historical row", db.getThread(done.id)?.state === "done" && db.getAutoReviewEpisode(done.id) === null, JSON.stringify(db.getAutoReviewEpisode(done.id)));
+      check("migration does not suppress a review parked after newer work than the historical reviewer saw", db.getAutoReviewEpisode(fresh.id) === null, JSON.stringify(db.getAutoReviewEpisode(fresh.id)));
+
+      const staleAt = Date.now();
+      db.raw
+        .prepare(
+          `INSERT INTO auto_review_episodes
+             (thread_id, revision, status, source, claim_token, attempt_count, reason, verdict_json,
+              verdict_run_id, started_at, settled_at, updated_at)
+           VALUES (@threadId, @revision, 'parked', 'reconciled', NULL, 1, @reason, NULL,
+                   @verdictRunId, @startedAt, @settledAt, @updatedAt)`,
+        )
+        .run({
+          threadId: fresh.id,
+          revision: `run:${freshWork.id}`,
+          reason: "Buggy first deployment imported a stale reviewer as if it had seen the newer work.",
+          verdictRunId: staleReviewer.id,
+          startedAt: staleReviewer.startedAt,
+          settledAt: staleAt,
+          updatedAt: staleAt,
+        });
+      db.raw.prepare("DELETE FROM kv WHERE key='auto_review_episode_backfill_v2'").run();
+      db.raw.close();
+      db = new Db(dbPath);
+      check("migration v2 removes stale first-deployment suppression rows for newly worked review tasks", db.getAutoReviewEpisode(fresh.id) === null, JSON.stringify(db.getAutoReviewEpisode(fresh.id)));
 
       rebooted = new ThreadManager(db, new EventHub(), new FileMemoryService(join(dir, "memory")), new StubAccounts() as unknown as AccountManager);
       const reconciled = db.getThread(active.id);

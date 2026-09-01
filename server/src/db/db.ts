@@ -548,6 +548,7 @@ export class Db {
     this.backfillRemoteChatInstances();
     this.dedupeAttachmentBlobs();
     this.backfillAutoReviewEpisodes();
+    this.repairAutoReviewBackfillFreshWork();
   }
 
   /** One-time repair for tasks created before durable reviewer ownership existed. A historical reviewer
@@ -566,6 +567,12 @@ export class Db {
                     ORDER BY rr.started_at DESC, rr.rowid DESC LIMIT 1) reviewer_run_id,
                   (SELECT rr.started_at FROM agent_runs rr WHERE rr.thread_id=t.id AND rr.role='reviewer'
                     ORDER BY rr.started_at DESC, rr.rowid DESC LIMIT 1) reviewer_started_at,
+                  (SELECT rr.rowid FROM agent_runs rr WHERE rr.thread_id=t.id AND rr.role='reviewer'
+                    ORDER BY rr.started_at DESC, rr.rowid DESC LIMIT 1) reviewer_rowid,
+                  (SELECT wr.started_at FROM agent_runs wr WHERE wr.thread_id=t.id AND wr.role<>'reviewer'
+                    ORDER BY wr.started_at DESC, wr.rowid DESC LIMIT 1) work_started_at,
+                  (SELECT wr.rowid FROM agent_runs wr WHERE wr.thread_id=t.id AND wr.role<>'reviewer'
+                    ORDER BY wr.started_at DESC, wr.rowid DESC LIMIT 1) work_rowid,
                   EXISTS (SELECT 1 FROM agent_runs rr
                            WHERE rr.thread_id=t.id AND rr.role='reviewer'
                              AND rr.state IN ('starting','running','idle') AND rr.ended_at IS NULL) active_reviewer
@@ -586,6 +593,13 @@ export class Db {
         const fixing = parseStageOutputs(row.stage_outputs).reviewFixing === true;
         const active = state === "reviewing" || fixing || (state === "awaiting_user" && Number(row.active_reviewer) === 1);
         if (state !== "review" && !active) continue;
+        const workStartedAt = row.work_started_at == null ? null : Number(row.work_started_at);
+        const reviewerStartedAt = Number(row.reviewer_started_at ?? 0);
+        const reviewerCoversCurrentRevision =
+          workStartedAt == null ||
+          reviewerStartedAt > workStartedAt ||
+          (reviewerStartedAt === workStartedAt && Number(row.reviewer_rowid ?? 0) > Number(row.work_rowid ?? 0));
+        if (state === "review" && !active && !reviewerCoversCurrentRevision) continue;
         const settledAt = Number(row.updated_at);
         insert.run({
           threadId,
@@ -603,6 +617,43 @@ export class Db {
         });
       }
       this.kvSet("auto_review_episode_backfill_v1", String(now()));
+    })();
+  }
+
+  /** Repair the first deployment's conservative legacy import if it already ran before the run-order
+   * guard above existed. Those stale rows are safe to delete only when the row came from reconciliation,
+   * the task is still parked in review, and the recorded reviewer run predates the work run whose revision
+   * would otherwise be suppressed. Real owner/supervisor outcomes are left untouched. */
+  private repairAutoReviewBackfillFreshWork(): void {
+    if (this.kvGet("auto_review_episode_backfill_v2")) return;
+    this.raw.transaction(() => {
+      this.raw
+        .prepare(
+          `DELETE FROM auto_review_episodes
+            WHERE source='reconciled'
+              AND status='parked'
+              AND claim_token IS NULL
+              AND verdict_run_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM threads t
+                 WHERE t.id=auto_review_episodes.thread_id
+                   AND t.state='review'
+              )
+              AND EXISTS (
+                SELECT 1
+                  FROM agent_runs work
+                  JOIN agent_runs reviewer ON reviewer.id=auto_review_episodes.verdict_run_id
+                 WHERE work.thread_id=auto_review_episodes.thread_id
+                   AND work.role<>'reviewer'
+                   AND ('run:' || work.id)=auto_review_episodes.revision
+                   AND (
+                     reviewer.started_at < work.started_at
+                     OR (reviewer.started_at=work.started_at AND reviewer.rowid < work.rowid)
+                   )
+              )`,
+        )
+        .run();
+      this.kvSet("auto_review_episode_backfill_v2", String(now()));
     })();
   }
 
