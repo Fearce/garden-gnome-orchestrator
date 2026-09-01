@@ -239,7 +239,13 @@ interface State {
   // Stop the director when it's busy but spinning (looping without replying or dispatching).
   cancelDirector: () => void;
   answer: (questionId: string, answer: string) => void;
-  inject: (threadId: string, message: string, mode: "append" | "interrupt" | "queue", images?: ImageAttachment[]) => Promise<boolean>;
+  inject: (
+    threadId: string,
+    message: string,
+    mode: "append" | "interrupt" | "queue",
+    images?: ImageAttachment[],
+    recipient?: "implementor" | "qa" | "reviewer",
+  ) => Promise<boolean>;
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   setDeadline: (threadId: string, deadlineAt: number | null) => Promise<boolean>;
@@ -811,13 +817,13 @@ export const useStore = create<State>((set) => ({
   },
   cancelDirector: () => sendCommand({ type: "director.cancel" }),
   answer: (questionId, answer) => sendCommand({ type: "question.answer", questionId, answer }),
-  inject: (threadId, message, mode, images) => {
+  inject: (threadId, message, mode, images, recipient) => {
     const content = message.trim();
     if (!content) return Promise.resolve(false);
     const clientId = newOutboundId();
     addOutbound({ id: clientId, surface: "task", threadId, mode, content, createdAt: Date.now(), status: "sending" });
     return sendThreadActionCommand(
-      { type: "thread.inject", threadId, message: content, mode, images: images?.length ? images : undefined, clientId },
+      { type: "thread.inject", threadId, message: content, mode, recipient, images: images?.length ? images : undefined, clientId },
       "inject",
       threadId,
     ).then((ok) => {

@@ -96,7 +96,7 @@ assert.match(ready, /Tighten the mobile Co-work layout/, "owner message renders 
 assert.match(ready, /Changed the responsive shell/, "Co-worker reply renders durably");
 assert.match(ready, /<strong>Typecheck passed\.<\/strong>/, "agent markdown is rendered as conversation content");
 assert.match(ready, /<details class="cowork-detail tool"/, "tool activity is present but collapsed");
-assert.match(ready, /What should we work on next\?/, "completed turn hands the composer back to Kevin");
+assert.match(ready, /What should we work on next\?/, "completed turn hands the composer back to the owner");
 assert.match(ready, /context linked/, "resumable context is disclosed");
 assert.doesNotMatch(ready, />Stop</, "an idle session does not show interruption controls");
 

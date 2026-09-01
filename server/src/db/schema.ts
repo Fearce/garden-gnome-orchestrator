@@ -316,6 +316,30 @@ CREATE TABLE IF NOT EXISTS auto_review_episodes (
   updated_at     INTEGER NOT NULL
 );
 
+-- Owner instructions that arrive while QA or Auto-review owns the task. Unlike the rendered feed,
+-- this row tracks exact reviewer/implementor runs and acknowledgement across verdict races/restarts.
+CREATE TABLE IF NOT EXISTS review_injections (
+  id                       TEXT PRIMARY KEY,
+  thread_id                TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  lane                     TEXT NOT NULL,
+  episode_token            TEXT,
+  mode                     TEXT NOT NULL,
+  instruction              TEXT NOT NULL,
+  attachment_ids           TEXT NOT NULL DEFAULT '[]',
+  status                   TEXT NOT NULL,
+  reviewer_run_id          TEXT,
+  reviewer_delivered_at    INTEGER,
+  reviewer_acknowledgement TEXT,
+  reviewer_acknowledged_at INTEGER,
+  implementor_run_id       TEXT,
+  implementor_queued_at    INTEGER,
+  implementor_delivered_at INTEGER,
+  implementor_completed_at INTEGER,
+  resolution               TEXT,
+  created_at               INTEGER NOT NULL,
+  updated_at               INTEGER NOT NULL
+);
+
 -- Human-led Co-work conversations are intentionally not threads. Keeping them in their own tables
 -- makes it structurally impossible for a completed conversational turn to enter planner/QA/review/done
 -- lifecycle code. The resolved provider/model/effort and agent_session_id stay on the session so each
@@ -385,6 +409,8 @@ CREATE INDEX IF NOT EXISTS idx_supervisor_events_thread  ON supervisor_events(th
 CREATE INDEX IF NOT EXISTS idx_supervisor_events_created ON supervisor_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_supervisor_chat_created   ON supervisor_chat_turns(created_at);
 CREATE INDEX IF NOT EXISTS idx_auto_review_status        ON auto_review_episodes(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_review_injections_thread   ON review_injections(thread_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_review_injections_open     ON review_injections(thread_id, lane, episode_token, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_cowork_sessions_updated    ON cowork_sessions(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cowork_turns_session       ON cowork_turns(session_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_cowork_messages_session    ON cowork_messages(session_id, created_at, id);

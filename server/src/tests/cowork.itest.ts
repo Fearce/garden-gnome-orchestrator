@@ -302,7 +302,7 @@ async function main(): Promise<void> {
     check("restart marks the orphaned turn interrupted without autonomous replay", reconciled.state === "error" && reconciled.activeTurnId === null && restartRuntime.runs.length === 0);
     check("restart preserves the provider session and seals partial output", reconciled.agentSessionId === "resumable-after-restart" && db.listCoworkMessages(orphan.id).some((message) => message.content === "Substantive partial result" && !message.partial));
     check("restart adds an understandable durable diagnostic", db.listCoworkMessages(orphan.id).some((message) => message.role === "system" && message.content.includes("server restarted")));
-    check("Kevin can deliberately continue after restart", restarted.send(orphan.id, "Continue from what survived").ok && restartRuntime.prepared[0]?.agentSessionId === "resumable-after-restart");
+    check("the owner can deliberately continue after restart", restarted.send(orphan.id, "Continue from what survived").ok && restartRuntime.prepared[0]?.agentSessionId === "resumable-after-restart");
     restartRuntime.runs[0]!.complete("Continued successfully");
     await waitFor(() => db.getCoworkSession(orphan.id)?.state === "idle", "post-restart follow-up completes normally");
 

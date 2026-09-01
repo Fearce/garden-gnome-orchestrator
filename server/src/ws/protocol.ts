@@ -215,6 +215,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     threadId: z.string(),
     message: z.string().min(1),
     mode: z.enum(["append", "interrupt", "queue"]).default("append"),
+    recipient: z.enum(["implementor", "qa", "reviewer"]).optional(),
     images: imagesField,
     clientId: z.string().uuid().optional(),
   }),

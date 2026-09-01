@@ -172,7 +172,13 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
       ctx.manager.resolveQuestion(cmd.questionId, cmd.answer);
       break;
     case "thread.inject":
-      sendThreadAction(socket, cmd.threadId, "inject", await ctx.manager.injectThread(cmd.threadId, cmd.message, cmd.mode, cmd.images), cmd.clientId);
+      sendThreadAction(
+        socket,
+        cmd.threadId,
+        "inject",
+        await ctx.manager.injectThread(cmd.threadId, cmd.message, cmd.mode, cmd.images, { recipient: cmd.recipient }),
+        cmd.clientId,
+      );
       break;
     case "thread.interrupt":
       sendThreadAction(socket, cmd.threadId, "interrupt", await ctx.manager.interruptThread(cmd.threadId));

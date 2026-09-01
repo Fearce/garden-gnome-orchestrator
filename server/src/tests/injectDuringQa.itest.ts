@@ -152,10 +152,10 @@ function makeHarness(): Harness {
   const drained: string[][] = [];
   const resumes: string[] = [];
   const resumeImages: number[] = [];
-  internals.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string; images?: unknown[] }): Promise<{ run: FakeRun; accountId: string; account: { id: string } }> => {
+  internals.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string; images?: unknown[] }): Promise<{ run: FakeRun; runId: string; accountId: string; account: { id: string } }> => {
     if (opts?.resumeNudge) resumes.push(opts.resumeNudge);
     resumeImages.push(opts?.images?.length ?? 0);
-    return { run: new FakeRun(), accountId: "acct-a", account: { id: "acct-a" } };
+    return { run: new FakeRun(), runId: "stub-implementor-run", accountId: "acct-a", account: { id: "acct-a" } };
   };
   internals.awaitImplementorCompletion = async (): Promise<{ isError: boolean }> => ({ isError: false });
   internals.stopLive = async (): Promise<void> => {};
@@ -168,6 +168,11 @@ function makeHarness(): Harness {
     if (q?.length) {
       drained.push([...q]);
       internals.queuedForImplementor.delete(t.id);
+      const rows = internals.reviewInjections.pendingImplementor(t.id, "qa", null);
+      if (rows.length) {
+        internals.reviewInjections.markImplementorDelivered(rows.map((row: { id: string }) => row.id), "stub-queue-run");
+        internals.reviewInjections.resolve(rows.map((row: { id: string }) => row.id), "Test implementor completed the queued QA instruction.");
+      }
     }
     return res;
   };
@@ -223,12 +228,28 @@ function stubQaRunRole(
     agents.push(agent);
     h.internals.liveQa.set(t.id, agent);
     const run = h.db.createRun({ threadId: t.id, role: role as "qa", model: "claude-opus-5", account: "acct-a" });
+    h.internals.liveQaRunId.set(t.id, run.id);
     await whileLive(agent);
     h.internals.liveQa.delete(t.id);
+    h.internals.liveQaRunId.delete(t.id);
     const stopped = agent.stopped || agent.aborted;
     const verdict = opts.verdicts?.[agents.length - 1] ?? { pass: true, summary: "verified", changed: false };
-    const res = stopped && !opts.staleVerdictAfterStop ? ABORTED : verdictResult(verdict);
     const superseded = h.internals.qaSuperseded(t.id) === true;
+    const first = stopped && !opts.staleVerdictAfterStop ? ABORTED : verdictResult(verdict);
+    let res: unknown = first;
+    if (!superseded) {
+      const pending = h.internals.reviewInjections.pendingReviewer(t.id, "qa", null) as Array<{ id: string }>;
+      const labels = pending.map((row) => `RI-${row.id.slice(0, 8)}`).join(" + ");
+      const acknowledged = pending.length
+        ? verdictResult({ ...verdict, summary: `ACK ${labels}: ${verdict.summary}` })
+        : first;
+      Object.assign(agent, {
+        finished: false,
+        result: async () => first,
+        nextResult: async () => acknowledged,
+      });
+      res = await h.internals.awaitStructuredReviewResult(t, "qa", agent, run.id);
+    }
     agent.sessionId = "qa-session";
     h.internals.finishRun(run.id, res, agent, superseded ? "interrupted" : undefined);
     return superseded ? undefined : res;
@@ -319,7 +340,7 @@ async function main(): Promise<void> {
       let spawned = 0;
       h.internals.startResumedImplementor = async (): Promise<unknown> => {
         spawned++;
-        return { run: new FakeRun(), accountId: "acct-a" };
+        return { run: new FakeRun(), runId: "test-c-run", accountId: "acct-a" };
       };
       const r = await h.mgr.injectThread(id, "use the addon options panel", "interrupt");
       check("the inject was accepted in the existing qa handoff", r.ok && r.state === "qa", JSON.stringify(r));
@@ -395,8 +416,41 @@ async function main(): Promise<void> {
     }
   }
 
-  // -- Test F: the auto-reviewer is the same kind of role, and settles the task itself -----------------
-  console.log("\nTest F — an inject during the auto-review steers the reviewer rather than aborting it");
+  // -- Test F: append is a fenced reviewer turn, while interrupt has explicit supersede semantics ------
+  console.log("\nTest F — an append during Auto-review reaches the exact run and fences its stale verdict");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "reviewing" });
+      const reviewer = new FakeRun();
+      h.internals.liveReviewer.set(id, reviewer);
+      const run = h.db.createRun({ threadId: id, role: "reviewer", model: "claude-opus-5", account: "acct-a" });
+      h.internals.liveReviewerRunId.set(id, run.id);
+      h.internals.reviewing.add(id);
+      const r = await h.mgr.injectThread(id, "the deliverable link is broken", "append", [IMG]);
+      check("the inject was accepted in the reviewing state", r.ok && r.state === "reviewing", JSON.stringify(r));
+      check("the reviewer was not aborted", !reviewer.aborted && reviewer.interrupts === 0);
+      check("the reviewer's steering carried no priority", reviewer.sends.length === 1 && reviewer.sends[0]!.opts?.priority === undefined, JSON.stringify(reviewer.sends[0]?.opts));
+      const row = h.internals.reviewInjections.listThread(id)[0] as { id: string; status: string; reviewerRunId: string; attachmentIds: string[] };
+      check("delivery names the exact persisted reviewer run", row.status === "delivered_reviewer" && row.reviewerRunId === run.id, JSON.stringify(row));
+      check("the image reached the reviewer and remains in durable history", reviewer.sends[0]?.images === 1 && row.attachmentIds.length === 1 && h.db.listMessages(id).some((m) => m.attachments?.length === 1), JSON.stringify(reviewer.sends[0]));
+
+      const label = `RI-${row.id.slice(0, 8)}`;
+      const stale = { type: "result", subtype: "success", isError: false, structuredOutput: { accept: true, summary: "fine" } };
+      const steered = { type: "result", subtype: "success", isError: false, structuredOutput: { accept: false, summary: `ACK ${label}: the broken deliverable needs an implementor fix`, issues: [{ severity: "major", description: "repair the deliverable link" }] } };
+      Object.assign(reviewer, { finished: false, result: async () => stale, nextResult: async () => steered });
+      const result = await h.internals.awaitStructuredReviewResult(h.db.getThread(id), "reviewer", reviewer, run.id);
+      const acknowledged = h.internals.reviewInjections.get(row.id) as { status: string; reviewerAcknowledgement: string };
+      check("the stale verdict was replaced by the acknowledged steered verdict", result === steered && acknowledged.status === "acknowledged_reviewer", JSON.stringify(result));
+      check("the visible feed records accepted, delivered, paused, and acknowledged states", ["[accepted]", "[delivered]", "[waiting]", "[acknowledged]"].every((marker) => h.db.listMessages(id).some((m) => m.content.includes(marker))), JSON.stringify(h.db.listMessages(id).map((m) => m.content)));
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest F2 — interrupt explicitly stops Auto-review and returns the instruction to implementation");
   {
     const h = makeHarness();
     try {
@@ -405,12 +459,79 @@ async function main(): Promise<void> {
       const reviewer = new FakeRun();
       h.internals.liveReviewer.set(id, reviewer);
       h.internals.reviewing.add(id);
-      const r = await h.mgr.injectThread(id, "the deliverable link is broken", "interrupt");
-      check("the inject was accepted in the reviewing state", r.ok && r.state === "reviewing", JSON.stringify(r));
-      check("the reviewer was not aborted", !reviewer.aborted && reviewer.interrupts === 0);
-      check("the reviewer's steering carried no priority", reviewer.sends.length === 1 && reviewer.sends[0]!.opts?.priority === undefined, JSON.stringify(reviewer.sends[0]?.opts));
+      const r = await h.mgr.injectThread(id, "resolve the branch conflicts and push it", "interrupt", [IMG]);
+      check("interrupt reports an implementation handoff", r.ok && r.state === "implementing", JSON.stringify(r));
+      check("the reviewer was stopped instead of being sent another review turn", reviewer.stops === 1 && reviewer.sends.length === 0, JSON.stringify(reviewer.sends));
       await settle();
+      const row = h.internals.reviewInjections.listThread(id)[0] as { status: string; implementorRunId: string | null };
+      check("the instruction and image reached the resumed implementor", h.resumes.some((m) => m.includes("branch conflicts")) && h.resumeImages.some((n) => n === 1), JSON.stringify(h.resumes));
+      check("the durable lifecycle records the implementor outcome", row.status === "handled" && row.implementorRunId === "stub-implementor-run", JSON.stringify(row));
     } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest F3 — a reviewer-recipient verdict race never lies about delivery");
+  {
+    const h = makeHarness();
+    try {
+      const terminalId = seedTask(h);
+      h.db.updateThread(terminalId, { state: "done" });
+      const tooLate = await h.mgr.injectThread(
+        terminalId,
+        "this arrived after acceptance",
+        "append",
+        [IMG],
+        { recipient: "reviewer" },
+      );
+      const terminalRow = h.internals.reviewInjections.listThread(terminalId)[0] as { status: string; reviewerRunId: string | null; attachmentIds: string[] };
+      check("a terminal race is rejected as too late, not forwarded", !tooLate.ok && terminalRow.status === "too_late" && terminalRow.reviewerRunId == null, JSON.stringify({ tooLate, terminalRow }));
+      check("the terminal record retains its image and names the failure", terminalRow.attachmentIds.length === 1 && h.db.listMessages(terminalId).some((m) => /too late/i.test(m.content) && /Nothing was delivered/.test(m.content)), JSON.stringify(h.db.listMessages(terminalId).map((m) => m.content)));
+
+      const parkedId = seedTask(h);
+      h.db.updateThread(parkedId, { state: "review", error: "review just settled" });
+      const queued = await h.mgr.injectThread(
+        parkedId,
+        "carry this into implementation instead",
+        "append",
+        undefined,
+        { recipient: "reviewer" },
+      );
+      const parkedRow = h.internals.reviewInjections.listThread(parkedId)[0] as { status: string; reviewerRunId: string | null; implementorRunId: string | null };
+      check("a just-finished reviewer queues the instruction without inventing a live run", queued.ok && queued.state === "review" && parkedRow.status === "queued_implementor" && parkedRow.reviewerRunId == null && parkedRow.implementorRunId == null, JSON.stringify({ queued, parkedRow }));
+    } finally {
+      await settle();
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest F4 — awaiting-user state keeps routing to the structured reviewer that owns it");
+  {
+    const h = makeHarness();
+    try {
+      const reviewId = seedTask(h);
+      h.db.updateThread(reviewId, { state: "awaiting_user" });
+      const reviewer = new FakeRun();
+      const reviewerRun = h.db.createRun({ threadId: reviewId, role: "reviewer", model: "claude-opus-5", account: "acct-a" });
+      h.internals.liveReviewer.set(reviewId, reviewer);
+      h.internals.liveReviewerRunId.set(reviewId, reviewerRun.id);
+      h.internals.reviewing.add(reviewId);
+      const supervisor = await h.mgr.injectSupervisorInstruction(reviewId, "use the owner answer and re-check", "append", { liveOnly: true });
+      const reviewerRow = h.internals.reviewInjections.listThread(reviewId)[0] as { reviewerRunId: string | null };
+      check("Supervisor chat stays eligible while Auto-review awaits an answer", supervisor.ok && supervisor.state === "awaiting_user", JSON.stringify(supervisor));
+      check("the awaiting reviewer receives the instruction on its exact run", reviewer.sends.length === 1 && reviewerRow.reviewerRunId === reviewerRun.id, JSON.stringify(reviewerRow));
+
+      const qaId = seedTask(h);
+      h.db.updateThread(qaId, { state: "awaiting_user" });
+      const qa = new FakeRun();
+      const qaRun = h.db.createRun({ threadId: qaId, role: "qa", model: "claude-opus-5", account: "acct-a" });
+      h.internals.liveQa.set(qaId, qa);
+      h.internals.liveQaRunId.set(qaId, qaRun.id);
+      const qaAction = await h.mgr.injectThread(qaId, "QA should include this owner answer", "append", undefined, { recipient: "qa" });
+      const qaRow = h.internals.reviewInjections.listThread(qaId)[0] as { reviewerRunId: string | null };
+      check("QA awaiting owner input also remains the recipient", qaAction.ok && qaAction.state === "awaiting_user" && qa.sends.length === 1 && qaRow.reviewerRunId === qaRun.id, JSON.stringify({ qaAction, qaRow }));
+    } finally {
+      await settle();
       h.dispose();
     }
   }
@@ -459,6 +580,7 @@ async function main(): Promise<void> {
         threadId: id,
         message: "switch QA back to implementation",
         mode: "interrupt",
+        recipient: "qa",
       });
       const action = sent.find((e) => e.type === "thread.action");
       check("the socket sent a thread.action acknowledgment", !!action, JSON.stringify(sent));
@@ -506,7 +628,7 @@ async function main(): Promise<void> {
       const id = seedTask(h);
       const starts: Array<{ nudge: string; run: FakeRun }> = [];
       let injectedDuringFixHandoff = false;
-      h.internals.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string; images?: unknown[] }): Promise<{ run: FakeRun; accountId: string; account: { id: string } }> => {
+      h.internals.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string; images?: unknown[] }): Promise<{ run: FakeRun; runId: string; accountId: string; account: { id: string } }> => {
         const run = new FakeRun();
         starts.push({ nudge: opts?.resumeNudge ?? "", run });
         if (starts.length === 2 && !injectedDuringFixHandoff) {
@@ -514,7 +636,7 @@ async function main(): Promise<void> {
           const r = await h.mgr.injectThread(id, "normal messages and Discord must provide real conversation context", "interrupt");
           check("the handoff interrupt was accepted into the existing fix resume", r.ok && r.state === "qa", JSON.stringify(r));
         }
-        return { run, accountId: "acct-a", account: { id: "acct-a" } };
+        return { run, runId: `test-j-run-${starts.length}`, accountId: "acct-a", account: { id: "acct-a" } };
       };
       const agents = stubQaRunRole(h, async () => {}, {
         verdicts: [
@@ -600,9 +722,9 @@ async function main(): Promise<void> {
       ri.autoSelectModel = async (): Promise<void> => {
         autoSelectCalls++;
       };
-      ri.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string; images?: unknown[] }): Promise<{ run: FakeRun; accountId: string; account: { id: string } }> => {
+      ri.startResumedImplementor = async (_t: Thread, _kickoff: string, _resume: unknown, opts?: { resumeNudge?: string; images?: unknown[] }): Promise<{ run: FakeRun; runId: string; accountId: string; account: { id: string } }> => {
         starts.push({ nudge: opts?.resumeNudge ?? "", images: opts?.images?.length ?? 0 });
-        return { run: new FakeRun(), accountId: "acct-a", account: { id: "acct-a" } };
+        return { run: new FakeRun(), runId: `restart-run-${starts.length}`, accountId: "acct-a", account: { id: "acct-a" } };
       };
       ri.awaitImplementorCompletion = async (): Promise<{ isError: boolean }> => ({ isError: false });
       ri.stopLive = async (): Promise<void> => {};

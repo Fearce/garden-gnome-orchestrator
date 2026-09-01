@@ -20,6 +20,10 @@ async function titles(page) {
   });
 }
 
+async function placeholder(page) {
+  return page.getAttribute(".inject-bar textarea", "placeholder");
+}
+
 async function openTask(page, title) {
   await page.click(`.card:has-text("${title}")`);
   await page.waitForSelector(".detail-head", { timeout: 15000 });
@@ -48,6 +52,15 @@ async function openTask(page, title) {
     ins.run("22222222-2222-4222-8222-222222222222", "WORKING TASK", "p", "b", process.cwd(), "implementing", now - 1000, now - 1000);
     ins.run("33333333-3333-4333-8333-333333333333", "AUTOREVIEWED TASK", "p", "b", process.cwd(), "reviewing", now - 2000, now - 2000);
     ins.run("44444444-4444-4444-8444-444444444444", "NO HANDLE QA TASK", "p", "b", process.cwd(), "qa", now - 3000, now - 3000);
+    ins.run("55555555-5555-4555-8555-555555555555", "AWAITING REVIEWER TASK", "p", "b", process.cwd(), "awaiting_user", now - 4000, now - 4000);
+    db.prepare("INSERT INTO agent_runs (id, thread_id, role, model, state, started_at) VALUES (?,?,?,?,?,?)").run(
+      "55555555-0000-4000-8000-000000000000",
+      "55555555-5555-4555-8555-555555555555",
+      "reviewer",
+      "fixture-reviewer",
+      "running",
+      now - 3500,
+    );
     db.close();
 
     const chromium = loadChromium();
@@ -62,25 +75,30 @@ async function openTask(page, title) {
 
     await openTask(page, "REVIEWED TASK");
     const qa = await titles(page);
-    check("QA-stage Inject tooltip names the reviewer", /Send to the reviewer now/.test(qa.inject ?? ""), qa.inject);
-    check("QA-stage Inject tooltip promises the implementor hand-off", /queue it for the implementor/.test(qa.inject ?? ""), qa.inject);
+    check("QA-stage composer names its actual recipient", /QA reviewer/i.test((await placeholder(page)) ?? ""), await placeholder(page));
+    check("QA-stage Inject tooltip names QA", /Send to QA now/.test(qa.inject ?? ""), qa.inject);
+    check("QA-stage Inject tooltip promises acknowledgement and implementation", /verdict waits for acknowledgement/.test(qa.inject ?? "") && /queued for implementation/.test(qa.inject ?? ""), qa.inject);
     check("QA-stage Interrupt tooltip stops promising to stop an implementor", !/Stop the implementor/.test(qa.interrupt ?? ""), qa.interrupt);
     check("QA-stage Interrupt tooltip says what it really does", /Stop QA now and return this task to the implementor/.test(qa.interrupt ?? ""), qa.interrupt);
 
     await openTask(page, "WORKING TASK");
     const impl = await titles(page);
+    check("implementing composer names its actual recipient", /implementor/i.test((await placeholder(page)) ?? ""), await placeholder(page));
     check("implementing Inject tooltip is unchanged", /Send to the implementor now/.test(impl.inject ?? ""), impl.inject);
     check("implementing Interrupt tooltip is unchanged", /Stop the implementor now/.test(impl.interrupt ?? ""), impl.interrupt);
 
-    // The auto-review lane differs from the QA one: the note reaches the reviewer only — nothing on
-    // that lane drains the implementor queue (runAutoReview drops buffered notes when it settles), so
-    // the tooltip must NOT promise a hand-off the server doesn't perform.
+    // Auto-review append fences the verdict until the reviewer acknowledges and acts or explicitly
+    // hands write-capable work to implementation. Interrupt deliberately supersedes that review.
     await openTask(page, "AUTOREVIEWED TASK");
     const ar = await titles(page);
+    check("auto-review composer names its actual recipient", /auto-reviewer/i.test((await placeholder(page)) ?? ""), await placeholder(page));
     check("auto-review Inject tooltip names the auto-reviewer", /Send to the auto-reviewer now/.test(ar.inject ?? ""), ar.inject);
-    check("auto-review Inject tooltip promises no implementor hand-off", !/queue it for the implementor/.test(ar.inject ?? ""), ar.inject);
+    check("auto-review Inject tooltip fences the verdict and names the hand-off", /verdict cannot settle/.test(ar.inject ?? "") && /hands the instruction to implementation/.test(ar.inject ?? ""), ar.inject);
     check("auto-review Interrupt tooltip stops promising to stop an implementor", !/Stop the implementor/.test(ar.interrupt ?? ""), ar.interrupt);
-    check("auto-review Interrupt tooltip says what it really does", /Nothing to stop while the auto-reviewer has the task/.test(ar.interrupt ?? ""), ar.interrupt);
+    check("auto-review Interrupt tooltip says what it really does", /Stop and supersede Auto-review/.test(ar.interrupt ?? "") && /return this task to implementation/.test(ar.interrupt ?? ""), ar.interrupt);
+
+    await openTask(page, "AWAITING REVIEWER TASK");
+    check("an auto-reviewer awaiting owner input remains the named recipient", /auto-reviewer/i.test((await placeholder(page)) ?? ""), await placeholder(page));
 
     await openTask(page, "NO HANDLE QA TASK");
     await page.fill(".inject-bar textarea", "this should stay typed when no QA handle exists");

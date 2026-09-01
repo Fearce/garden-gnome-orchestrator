@@ -631,12 +631,16 @@ export function ThreadDetail() {
   // The auto-review control is live only on a genuine review park: a frozen task resumes itself (there's
   // no finished work to judge yet) and a task already being reviewed shows its progress instead.
   const autoReviewable = canAutoReview(thread);
-  // QA and auto-review are both structured reviewers, but the operator intent differs: interrupting QA
-  // returns the task to implementation, while auto-review still only accepts steering as a plain send.
-  const qaStage = thread.state === "qa";
-  const reviewerOwnsSlot = qaStage || thread.state === "reviewing";
-
   const threadRuns = Object.values(runs).filter((r) => r.threadId === id);
+  // Freeze the intended recipient into the command. A reviewer can temporarily put the thread in
+  // `awaiting_user`; the still-active role run keeps the composer honest in that phase too. If a verdict
+  // changes the server-side phase while this click is in flight, the server reports the race explicitly.
+  const waitingQa = thread.state === "awaiting_user" && threadRuns.some((run) => run.role === "qa" && runActive(run.state));
+  const waitingAutoReviewer = thread.state === "awaiting_user" && threadRuns.some((run) => run.role === "reviewer" && runActive(run.state));
+  const qaStage = thread.state === "qa" || waitingQa;
+  const autoReviewStage = thread.state === "reviewing" || waitingAutoReviewer;
+  const injectionRecipient = qaStage ? "qa" : autoReviewStage ? "reviewer" : "implementor";
+  const recipientLabel = qaStage ? "QA reviewer" : autoReviewStage ? "auto-reviewer" : "implementor";
   const impl = threadRuns.filter((r) => r.role === "implementor").sort((a, b) => b.startedAt - a.startedAt)[0];
   const totalCost = threadRuns.reduce((a, r) => a + (r.costUsd ?? 0), 0);
   const path = pipelinePath(threadRuns);
@@ -690,7 +694,7 @@ export function ThreadDetail() {
     const t = msg.trim();
     if (!t) return;
     lastSentRef.current = t;
-    const sent = await inject(id, t, mode, att.images);
+    const sent = await inject(id, t, mode, att.images, injectionRecipient);
     if (!sent) return;
     setMsg("");
     att.clear();
@@ -1039,7 +1043,7 @@ export function ThreadDetail() {
         {frozen ? <span className="inject-frost" aria-hidden="true" /> : null}
         <textarea
           value={msg}
-          placeholder={frozen ? "Frozen — every account this task needs is rate-limited; it auto-resumes on its own." : "Feed new information to the implementor…  (paste/drop images · ⌘/Ctrl+Enter = inject)"}
+          placeholder={frozen ? "Frozen — every account this task needs is rate-limited; it auto-resumes on its own." : `Send current instruction to the ${recipientLabel}…  (paste/drop images · ⌘/Ctrl+Enter = inject)`}
           onChange={(e) => setMsg(e.target.value)}
           onPaste={att.onPaste}
           disabled={frozen}
@@ -1073,9 +1077,9 @@ export function ThreadDetail() {
               frozen
                 ? FROZEN_CONTROL_TOOLTIP
                 : qaStage
-                  ? "Send to the reviewer now, and queue it for the implementor to pick up at the next hand-off"
-                  : reviewerOwnsSlot
-                    ? "Send to the auto-reviewer now — it factors this into its verdict"
+                  ? "Send to QA now; its verdict waits for acknowledgement, and the instruction is queued for implementation if needed"
+                  : autoReviewStage
+                    ? "Send to the auto-reviewer now; its verdict cannot settle until it acknowledges and acts or hands the instruction to implementation"
                     : "Send to the implementor now — it uses this on its next step while it keeps working"
             }
           >
@@ -1090,8 +1094,8 @@ export function ThreadDetail() {
                 ? FROZEN_CONTROL_TOOLTIP
                 : qaStage
                   ? "Stop QA now and return this task to the implementor with this instruction"
-                  : reviewerOwnsSlot
-                    ? "Nothing to stop while the auto-reviewer has the task — this reaches the reviewer, same as Inject"
+                  : autoReviewStage
+                    ? "Stop and supersede Auto-review, discard its stale verdict, and return this task to implementation with this instruction"
                     : "Stop the implementor now and hand it this immediately"
             }
           >

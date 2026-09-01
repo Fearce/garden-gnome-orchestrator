@@ -101,6 +101,7 @@ interface Harness {
   kickoffs: string[]; // the kickoff text each run was given
   implementorStarts: () => number;
   fixMessages: string[]; // what each fix round's implementor was relaunched with
+  fixImages: number[]; // persisted reviewer-injection images handed to each fix implementor
   resumeSessions: (string | undefined)[]; // the implementor session each fix round was asked to resume
   capNextFix(): void; // make the next fix round end the way a usage cap does
   setOutcome(o: RunOutcome): void;
@@ -128,6 +129,7 @@ function makeHarness(): Harness {
   const roleCalls: string[] = [];
   const kickoffs: string[] = [];
   const fixMessages: string[] = [];
+  const fixImages: number[] = [];
   const resumeSessions: (string | undefined)[] = [];
   let implementorStarts = 0;
   let outcome: RunOutcome = okResult({ accept: true, summary: "looks good" });
@@ -138,10 +140,14 @@ function makeHarness(): Harness {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = mgr as any;
-  internals.runRole = async (_thread: unknown, role: string, kickoff: string | unknown[]): Promise<RunOutcome> => {
+  internals.runRole = async (thread: { id: string }, role: string, kickoff: string | unknown[]): Promise<RunOutcome> => {
     roleCalls.push(role);
     kickoffs.push(typeof kickoff === "string" ? kickoff : JSON.stringify(kickoff));
     if (gate) await gate;
+    if (role === "reviewer" && outcome?.structuredOutput?.summary) {
+      const pending = internals.reviewInjections.pendingReviewer(thread.id, "reviewer", internals.activeReviewEpisodeToken(thread.id, "reviewer"));
+      internals.reviewInjections.acknowledgeFromSummary(pending, outcome.structuredOutput.summary);
+    }
     return outcome;
   };
   // The implementor leaves. Outside a fix round a review must never reach these, so the count is the
@@ -151,9 +157,10 @@ function makeHarness(): Harness {
   // `stopLive` all read that handle), and the run's own `onEnd` clears it — racing, and usually
   // beating, the result the caller awaits. Without both, a test can "prove" an exclusivity the code
   // doesn't have.
-  internals.startResumedImplementor = async (thread: { id: string }, _kickoff: string, resume: string | undefined, opts: { resumeNudge: string }): Promise<unknown> => {
+  internals.startResumedImplementor = async (thread: { id: string }, _kickoff: string, resume: string | undefined, opts: { resumeNudge: string; images?: unknown[] }): Promise<unknown> => {
     implementorStarts++;
     fixMessages.push(opts?.resumeNudge ?? "");
+    fixImages.push(opts?.images?.length ?? 0);
     resumeSessions.push(resume);
     const live = { run: { send(): void {}, async stop(): Promise<void> {} }, runId: "stub-run", accountId: "acct-a" };
     internals.live.set(thread.id, live);
@@ -166,8 +173,10 @@ function makeHarness(): Harness {
     if (endedGate) await endedGate; // hold HERE: state is still 'implementing' but no agent is live
     return fixOutcome;
   };
-  internals.resumeImplementorOnly = async (): Promise<void> => {
+  internals.resumeImplementorOnly = async (thread: { id: string }, _message?: string, reviewInjectionIds: string[] = []): Promise<void> => {
     implementorStarts++;
+    if (reviewInjectionIds.length) internals.reviewInjections.resolve(reviewInjectionIds, "Test implementor completed the superseding instruction.");
+    internals.setState(thread.id, "review", "Superseding instruction completed — needs owner review.");
   };
 
   return {
@@ -178,6 +187,7 @@ function makeHarness(): Harness {
     roleCalls,
     kickoffs,
     fixMessages,
+    fixImages,
     resumeSessions,
     implementorStarts: () => implementorStarts,
     // How a usage cap actually reaches the fix round: `awaitImplementorResult` flags the thread in
@@ -302,6 +312,10 @@ function stubReviewerRuns(h: Harness, results: RunOutcome[], account?: string): 
     const res = results[Math.min(log.resumes.length - 1, results.length - 1)];
     const run = h.db.createRun({ threadId: thread.id, role: "reviewer", model: "claude-opus-5", account });
     h.db.updateRun(run.id, { sessionId: REVIEWER_SESSION, state: res?.isError ? "error" : "done", endedAt: Date.now() });
+    if (res?.structuredOutput?.summary) {
+      const pending = internals.reviewInjections.pendingReviewer(thread.id, "reviewer", internals.activeReviewEpisodeToken(thread.id, "reviewer"));
+      internals.reviewInjections.acknowledgeFromSummary(pending, res.structuredOutput.summary);
+    }
     return res;
   };
   return log;
@@ -349,10 +363,17 @@ async function main(): Promise<void> {
     try {
       h.mgr.setSettings({ maxReviewFixRounds: 0 });
       const id = seedParkedTask(h);
+      const injection = (h.mgr as any).acceptReviewInjection(
+        id,
+        "reviewer",
+        "append",
+        "Resolve the remote divergence before this can ship.",
+      ) as { id: string };
+      const label = `RI-${injection.id.slice(0, 8)}`;
       h.setOutcome(
         okResult({
           accept: false,
-          summary: "the typecheck fails on the new module",
+          summary: `ACK ${label}: the typecheck fails and the divergence still needs implementation`,
           issues: [{ severity: "blocker", description: "tsc reports 3 errors", location: "server/src/x.ts" }],
         }),
       );
@@ -365,6 +386,18 @@ async function main(): Promise<void> {
       check("the concrete issues are in the finding detail", (finding?.detail ?? "").includes("tsc reports 3 errors"), String(finding?.detail));
       check("no implementor was spawned", h.implementorStarts() === 0, String(h.implementorStarts()));
       check("the slot was released", h.activePipelines() === 0, String(h.activePipelines()));
+      const queuedInstruction = (h.mgr as any).reviewInjections.get(injection.id) as {
+        status: string;
+        implementorRunId: string | null;
+        reviewerAcknowledgement: string | null;
+      };
+      check(
+        "an acknowledged editing instruction stays queued when no fix round can implement it",
+        queuedInstruction.status === "queued_implementor" &&
+          queuedInstruction.implementorRunId == null &&
+          queuedInstruction.reviewerAcknowledgement?.includes(label) === true,
+        JSON.stringify(queuedInstruction),
+      );
       const parked = h.db.getAutoReviewEpisode(id);
       check("the rejection is a durable parked outcome", parked?.status === "parked" && parked.claimToken === null && parked.verdict?.accept === false, JSON.stringify(parked));
       const automatic = await h.mgr.autoReview(id, "supervisor");
@@ -496,10 +529,51 @@ async function main(): Promise<void> {
       check("the task is still reviewing", h.db.getThread(id)?.state === "reviewing", `state=${h.db.getThread(id)?.state}`);
       check("a second auto-review click is a no-op", h.roleCalls.length === 1, JSON.stringify(h.roleCalls));
 
+      const supervisor = await h.mgr.injectSupervisorInstruction(id, "also verify the owner-facing link", "append", { liveOnly: true });
+      check("Supervisor chat reaches the same active reviewer lane", supervisor.ok && supervisor.state === "reviewing", JSON.stringify(supervisor));
+      const rows = (h.mgr as any).reviewInjections.listOpen(id, "reviewer") as Array<{ id: string }>;
+      const labels = rows.map((row) => `RI-${row.id.slice(0, 8)}`).join(" + ");
+      h.setOutcome(okResult({ accept: true, summary: `ACK ${labels}: all three current owner instructions were checked and applied` }));
+
       release();
       await settle();
       check("the review still settles the task", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check("every reviewer-directed instruction reaches a handled terminal state", ((h.mgr as any).reviewInjections.listThread(id) as Array<{ status: string }>).every((row) => row.status === "handled"), JSON.stringify((h.mgr as any).reviewInjections.listThread(id)));
       check("no steering note leaked past the review", ((h.mgr as unknown as { directorNotes: Map<string, string[]> }).directorNotes.get(id) ?? []).length === 0);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest E2 — branch-divergence instruction is acknowledged, fixed with its image, and re-reviewed");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      const attachment = h.db.addAttachment({ name: "conflicts.png", mediaType: "image/png", data: "iVBORw0KGgo=" });
+      const row = (h.mgr as any).acceptReviewInjection(
+        id,
+        "reviewer",
+        "append",
+        "Do the pull/push dance, resolve the branch conflicts, and do not leave that work for me.",
+        [attachment],
+      ) as { id: string };
+      const label = `RI-${row.id.slice(0, 8)}`;
+      stubReviewerRuns(h, [
+        okResult({
+          accept: false,
+          summary: `ACK ${label}: branch integration needs write-capable implementation`,
+          issues: [{ severity: "blocker", description: "Pull/rebase the remote branch, resolve conflicts, verify, and push." }],
+        }),
+        okResult({ accept: true, summary: `ACK ${label}: the implementor resolved and pushed the divergence; the clean result is verified` }),
+      ]);
+      await h.mgr.autoReview(id);
+      await settle();
+      const final = (h.mgr as any).reviewInjections.get(row.id) as { status: string; implementorRunId: string | null; implementorCompletedAt: number | null; reviewerAcknowledgement: string | null; attachmentIds: string[] };
+      check("the read-only reviewer handed conflict resolution to implementation", h.implementorStarts() === 1 && h.fixMessages.some((message) => message.includes("pull/push dance") && message.includes(label)), JSON.stringify(h.fixMessages));
+      check("the screenshot attachment followed the instruction into the fix run", h.fixImages.some((count) => count === 1) && final.attachmentIds.length === 1, JSON.stringify(h.fixImages));
+      check("the replacement reviewer verdict settled only after implementation", h.roleCalls.length === 2 && h.db.getThread(id)?.state === "done", JSON.stringify({ calls: h.roleCalls, state: h.db.getThread(id)?.state }));
+      check("the durable audit names implementation, acknowledgement, and handled outcome", final.status === "handled" && final.implementorRunId === "stub-run" && final.implementorCompletedAt != null && final.reviewerAcknowledgement?.includes(label) === true, JSON.stringify(final));
     } finally {
       h.dispose();
     }
@@ -524,6 +598,54 @@ async function main(): Promise<void> {
         const any = rebooted as any;
         if (any.capSupervisor) clearInterval(any.capSupervisor);
         if (any.tokenResumeTimer) clearTimeout(any.tokenResumeTimer);
+      }
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest F2 — restart converts dead reviewer delivery into a durable, image-bearing implementor handoff");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      const claim = h.db.claimAutoReview(id, "owner");
+      if (!claim.ok) throw new Error(`fixture could not claim Auto-review: ${claim.reason}`);
+      const attachment = h.db.addAttachment({ name: "restart-note.png", mediaType: "image/png", data: "iVBORw0KGgo=" });
+      const row = (h.mgr as any).reviewInjections.create({
+        threadId: id,
+        lane: "reviewer",
+        episodeToken: claim.claimToken,
+        mode: "append",
+        instruction: "Resolve the divergence and conflicts after restart.",
+        attachmentIds: [attachment.id],
+      }) as { id: string };
+      (h.mgr as any).reviewInjections.markReviewerDelivered([row.id], "dead-reviewer-run");
+
+      const rebooted = new ThreadManager(h.db, new EventHub(), new FileMemoryService(join(h.dir, "memory")), new StubAccounts() as unknown as AccountManager);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ri = rebooted as any;
+      const starts: Array<{ message: string; images: number }> = [];
+      try {
+        const afterRestart = ri.reviewInjections.get(row.id) as { status: string; reviewerRunId: string | null; resolution: string | null };
+        check("restart parks the dead review and removes the stale delivery claim from the active route", h.db.getThread(id)?.state === "review" && afterRestart.status === "queued_implementor", JSON.stringify({ thread: h.db.getThread(id), row: afterRestart }));
+        check("the feed says delivery moved off the dead reviewer", h.db.listMessages(id).some((message) => message.content.includes("not claimed as delivered to the dead reviewer")), JSON.stringify(h.db.listMessages(id).map((message) => message.content)));
+
+        ri.gateImplementorProvider = () => true;
+        ri.startResumedImplementor = async (_thread: unknown, _kickoff: string, _resume: string | undefined, opts: { resumeNudge: string; images?: unknown[] }) => {
+          starts.push({ message: opts.resumeNudge, images: opts.images?.length ?? 0 });
+          return { run: { send(): void {}, async stop(): Promise<void> {} }, runId: "post-restart-impl", accountId: "acct-a" };
+        };
+        ri.awaitImplementorCompletion = async () => FIX_OK;
+        ri.stopLive = async () => {};
+        const resumed = await rebooted.resumeThread(id, undefined, true);
+        await settle();
+        const handled = ri.reviewInjections.get(row.id) as { status: string; implementorRunId: string | null };
+        check("manual Resume automatically consumes the durable instruction and attachment", resumed.ok && starts.some((start) => start.message.includes("divergence") && start.images === 1), JSON.stringify({ resumed, starts }));
+        check("the post-restart implementor run is visible and terminal", handled.status === "handled" && handled.implementorRunId === "post-restart-impl", JSON.stringify(handled));
+      } finally {
+        if (ri.capSupervisor) clearInterval(ri.capSupervisor);
+        if (ri.tokenResumeTimer) clearTimeout(ri.tokenResumeTimer);
       }
     } finally {
       h.dispose();
@@ -822,8 +944,10 @@ async function main(): Promise<void> {
       check("an inject in that window spawns none either", h.implementorStarts() === 1, String(h.implementorStarts()));
       release();
       await settle();
-      check("the episode still reaches its verdict", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
-      check("exactly one fix round ran", h.implementorStarts() === 1, String(h.implementorStarts()));
+      check("the stale reviewer verdict is discarded and the superseding instruction parks after implementation", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+      check("one original fix plus one explicit interrupt resume ran, never concurrently", h.implementorStarts() === 2, String(h.implementorStarts()));
+      const interruptRow = ((h.mgr as any).reviewInjections.listThread(id) as Array<{ mode: string; status: string }>).find((row) => row.mode === "interrupt");
+      check("the interrupt reaches a visible handled terminal state", interruptRow?.status === "handled", JSON.stringify(interruptRow));
     } finally {
       h.dispose();
     }

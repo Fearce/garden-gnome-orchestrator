@@ -976,7 +976,7 @@ export type ClientCommand =
   | { type: "cowork.delete"; sessionId: string }
   | { type: "cowork.history"; sessionId: string }
   | { type: "question.answer"; questionId: string; answer: string }
-  | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt" | "queue"; images?: ImageAttachment[]; clientId?: string }
+  | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt" | "queue"; recipient?: "implementor" | "qa" | "reviewer"; images?: ImageAttachment[]; clientId?: string }
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.deadline"; threadId: string; deadlineAt: number | null }
