@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Read-only audit of the Co-work lane: session state, the turn trail, and the durable invariants that
-// no task-side probe can see (Co-work owns no thread and writes no agent_runs row).
+// Read-only audit of the Co-work lane: session state, the turn trail, live-steering delivery, and the
+// durable invariants no task-side probe can see (Co-work owns no thread and writes no agent_runs row).
 // Exit 0 = no invariant violations, 1 = actionable inconsistency, 2 = usage/schema error.
 
 const path = require("node:path");
@@ -71,6 +71,14 @@ function target(entry) {
   return `${entry.provider ?? "?"}/${entry.model ?? "?"}${entry.effort ? ` @${entry.effort}` : ""}${entry.account ? ` [${entry.account}]` : ""}`;
 }
 
+function steeringMode(mode) {
+  return mode === "append" ? "inject" : mode === "interrupt" ? "interrupt+inject" : mode;
+}
+
+function steeringDelivery(delivery) {
+  return delivery === "pending" ? "unconfirmed" : delivery;
+}
+
 function publicEntry(reading) {
   const { session } = reading;
   return {
@@ -90,6 +98,7 @@ function publicEntry(reading) {
     turns: session.turns.length,
     costUsd: reading.costUsd,
     messages: session.messages,
+    steering: session.steering,
     updatedAt: session.updatedAt,
     trail: session.turns.map((turn) => ({
       id: turn.id,
@@ -144,6 +153,24 @@ if (json) {
       `  target: ${target(session)}; resume linkage: ${session.agentSessionId ? `${session.agentSessionId.slice(0, 12)}… (next turn continues it)` : "none (next turn starts fresh)"}`,
     );
     if (session.error) console.log(`  session error: ${short(session.error)}`);
+    if (session.steering.total) {
+      const modes = session.steering.byMode;
+      const deliveries = session.steering.byDelivery;
+      console.log(
+        `  steering: queue=${modes.queue}; inject=${modes.append}; interrupt+inject=${modes.interrupt}; ` +
+          `delivered=${deliveries.delivered}; failed=${deliveries.failed}; unconfirmed=${deliveries.pending}`,
+      );
+      for (const message of session.steering.messages.slice(-5)) {
+        console.log(
+          `    ↳ ${message.id.slice(0, 8)} ${steeringMode(message.mode)} ${steeringDelivery(message.delivery)} ` +
+            `${ago(message.createdAt)}: ${short(message.content, 140)}`,
+        );
+        if (message.error) console.log(`        delivery error: ${short(message.error)}`);
+      }
+      if (session.steering.messages.length > 5) {
+        console.log(`    ↳ (${session.steering.messages.length - 5} earlier steering message(s) not shown)`);
+      }
+    }
     for (const turn of session.turns.slice(-5)) {
       const span = turn.endedAt ? `${Math.max(0, Math.round((turn.endedAt - turn.startedAt) / 1000))}s` : "running";
       console.log(

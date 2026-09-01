@@ -2,9 +2,9 @@
 // Gate for the Co-work lane's durable-state classifier and its probe.
 //
 // Every scenario here is a shape the running server can actually produce: a restart mid-turn, a claim
-// nothing released, a pin that was substituted, one provider session reaching two conversations. The
-// classifier is what makes those readable without hand-written SQLite joins, so it is gated like any
-// other classifier in this repo.
+// nothing released, a pin that was substituted, one provider session reaching two conversations, or
+// a live direction with a failed/unconfirmed delivery. The classifier makes those readable without
+// hand-written SQLite joins, so it is gated like any other classifier in this repo.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -174,6 +174,22 @@ function addMessage(db, sessionId, id, overrides = {}) {
   return row;
 }
 
+function addSteering(db, sessionId, id, overrides = {}) {
+  const input = {
+    turnId: "t-1",
+    mode: "append",
+    delivery: "delivered",
+    error: null,
+    content: "adjust the active slice",
+    ...overrides,
+  };
+  return addMessage(db, sessionId, id, {
+    turn_id: input.turnId,
+    content: input.content,
+    meta: JSON.stringify({ steeringMode: input.mode, delivery: input.delivery, error: input.error }),
+  });
+}
+
 function readings(db) {
   return selectCoworkRows(db).map(coworkReading);
 }
@@ -301,6 +317,71 @@ check("a timeboxed collaborative slice is a clean hand-back, not a failure", () 
   const reading = only(db);
   assert.equal(reading.disposition, "idle", issueText(reading));
   assert.equal(reading.attention, false, issueText(reading));
+  db.close();
+});
+
+check("steering modes and delivery outcomes are counted without turning recoverable failures into invariant violations", () => {
+  const { db, file } = freshDb("steering-outcomes");
+  addSession(db, "s-steer", { agent_session_id: "agent-steer" });
+  addTurn(db, "s-steer", "t-1");
+  addSteering(db, "s-steer", "m-queue", { mode: "queue", content: "do this after the safe unit" });
+  addSteering(db, "s-steer", "m-inject", { mode: "append", delivery: "failed", error: "provider input closed" });
+  addSteering(db, "s-steer", "m-interrupt", { mode: "interrupt", delivery: "pending", content: "change direction now" });
+  const reading = only(db);
+  assert.equal(reading.attention, false, issueText(reading));
+  assert.equal(reading.disposition, "recoverable", issueText(reading));
+  assert.deepEqual(reading.session.steering.byMode, { queue: 1, append: 1, interrupt: 1, unknown: 0 });
+  assert.deepEqual(reading.session.steering.byDelivery, { delivered: 1, pending: 1, failed: 1, unknown: 0 });
+  assert.match(reading.notes.join(" | "), /failed provider delivery/);
+  assert.match(reading.notes.join(" | "), /unconfirmed delivery after their turn closed/);
+  db.close();
+
+  const run = runProbe(file);
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /steering: queue=1; inject=1; interrupt\+inject=1; delivered=1; failed=1; unconfirmed=1/);
+  assert.match(run.stdout, /m-inject inject failed/);
+  assert.match(run.stdout, /delivery error: provider input closed/);
+});
+
+check("a pending steering message on the live claimed turn is active, not falsely unconfirmed", () => {
+  const { db } = freshDb("steering-live-pending");
+  addSession(db, "s-live", { state: "running", active_turn_id: "t-1" });
+  addTurn(db, "s-live", "t-1", { state: "running", ended_at: null });
+  addSteering(db, "s-live", "m-pending", { delivery: "pending" });
+  const reading = only(db);
+  assert.equal(reading.disposition, "active", issueText(reading));
+  assert.doesNotMatch(reading.notes.join(" | "), /unconfirmed/);
+  db.close();
+});
+
+check("legacy accepted steering rows remain successful after the delivery-state rename", () => {
+  const { db } = freshDb("steering-legacy-accepted");
+  addSession(db, "s-legacy");
+  addTurn(db, "s-legacy", "t-1");
+  addSteering(db, "s-legacy", "m-accepted", { delivery: "accepted" });
+  const reading = only(db);
+  assert.equal(reading.disposition, "idle", issueText(reading));
+  assert.deepEqual(reading.session.steering.byDelivery, {
+    delivered: 1,
+    pending: 0,
+    failed: 0,
+    unknown: 0,
+  });
+  db.close();
+});
+
+check("unknown steering metadata and reasonless delivery failures are invariant violations", () => {
+  const { db } = freshDb("steering-invalid");
+  addSession(db, "s-invalid");
+  addTurn(db, "s-invalid", "t-1");
+  addSteering(db, "s-invalid", "m-unknown", { mode: "sideways", delivery: "vanished" });
+  addSteering(db, "s-invalid", "m-reasonless", { delivery: "failed", error: null });
+  addMessage(db, "s-invalid", "m-corrupt", { turn_id: "t-1", meta: "{broken" });
+  const issues = issueText(only(db));
+  assert.match(issues, /unknown mode 'sideways'/);
+  assert.match(issues, /unknown delivery state 'vanished'/);
+  assert.match(issues, /failed delivery with no owner-visible reason/);
+  assert.match(issues, /has invalid metadata: meta is not valid JSON/);
   db.close();
 });
 
@@ -454,6 +535,7 @@ check("--json carries the verdict, counts, issues and the turn trail", () => {
   addSession(db, "s-json", { agent_session_id: "agent-1" });
   addTurn(db, "s-json", "t-1", { cost_usd: 0.5 });
   addTurn(db, "s-json", "t-2", { state: "error", error: "boom", cost_usd: 0.25 });
+  addSteering(db, "s-json", "m-json", { mode: "interrupt", delivery: "delivered", content: "preserve the compact header" });
   db.close();
   const run = runProbe(file, "--json");
   assert.equal(run.status, 0, run.stderr);
@@ -464,6 +546,9 @@ check("--json carries the verdict, counts, issues and the turn trail", () => {
   assert.equal(payload.entries[0].turns, 2);
   assert.equal(payload.entries[0].costUsd, 0.75);
   assert.equal(payload.entries[0].trail[1].error, "boom");
+  assert.equal(payload.entries[0].steering.total, 1);
+  assert.equal(payload.entries[0].steering.byMode.interrupt, 1);
+  assert.equal(payload.entries[0].steering.messages[0].content, "preserve the compact header");
 });
 
 check("an unknown flag or a second positional is a usage error", () => {

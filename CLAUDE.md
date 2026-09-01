@@ -80,8 +80,9 @@ at construction, an explicit provider/model is a **strict pin** (the turn fails 
 substituting), and a live turn and a task agent are mutually exclusive in one workspace both ways
 (`attachCoworkWorkspaceGuard` + `taskConflict`). **Every task-side probe is blind to this lane**, so
 debug with `npm run probe:cowork --prefix server [-- <id-prefix|name>]` — state, the turn trail with
-cost/model/account, resume linkage, and the invariants (a claim nothing can release, an unsealed
-partial reply, a substituted pin, one provider session in two conversations); exit 1 names it.
+cost/model/account, resume linkage, each live direction's mode and delivery outcome, and the invariants
+(a claim nothing can release, an unsealed partial reply, a substituted pin, one provider session in
+two conversations, or invalid steering metadata); exit 1 names it.
 Gates `test:cowork`, `test:cowork-ui`, `test:cowork-health`. Traps: `.claude/rules/co-work-sessions.md`.
 
 ## Run / build
