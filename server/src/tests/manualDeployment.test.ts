@@ -68,9 +68,9 @@ try {
   assert.equal(qualified.inspection?.ahead, 1, "a configured commit-only repository may be ahead of origin");
   assert.equal(qualified.inspection?.behind, 0);
 
-  const parent = join(root, "vota");
-  const sibling = join(parent, "vota-ios");
-  const nested = join(parent, "vota-website");
+  const parent = join(root, "deploy-workspace");
+  const sibling = join(parent, "sibling-app");
+  const nested = join(parent, "nested-site");
   mkdirSync(parent);
   git(root, "clone", "--quiet", origin, sibling);
   git(root, "clone", "--quiet", origin, nested);

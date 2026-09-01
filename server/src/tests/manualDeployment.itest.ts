@@ -99,9 +99,9 @@ try {
   git(workspace, "push", "--quiet", "-u", "origin", "master");
   const completed = commit(workspace, "change.txt", "verified change\n", "fix: complete verified change");
   const claim = evidence(completed);
-  const parentWorkspace = join(root, "vota");
-  const siblingRepo = join(parentWorkspace, "vota-ios");
-  const nestedRepo = join(parentWorkspace, "vota-website");
+  const parentWorkspace = join(root, "deploy-workspace");
+  const siblingRepo = join(parentWorkspace, "sibling-app");
+  const nestedRepo = join(parentWorkspace, "nested-site");
   mkdirSync(parentWorkspace);
   git(root, "clone", "--quiet", origin, siblingRepo);
   git(root, "clone", "--quiet", origin, nestedRepo);
@@ -127,9 +127,9 @@ try {
     settleReview(threadId: string, reason: string): void;
   };
 
-  // A Vota-style parent workspace with multiple nested checkouts still accepts the repo whose HEAD
+  // A parent workspace holding several nested checkouts still accepts the repo whose HEAD
   // matches the structured deployment claim. This is the live layout that triggered the rule.
-  const nestedThread = db.createThread({ title: "nested Vota release", workspace: parentWorkspace, rawPrompt: "ship it", brief: "Ship the verified nested change." });
+  const nestedThread = db.createThread({ title: "nested release", workspace: parentWorkspace, rawPrompt: "ship it", brief: "Ship the verified nested change." });
   db.updateThread(nestedThread.id, { state: "implementing" });
   db.updateThreadStageOutputs(nestedThread.id, { routeDecision: routeWithQa });
   const nestedImpl = db.createRun({ threadId: nestedThread.id, role: "implementor", model: "test-model", account: "acct-a" });
