@@ -1564,8 +1564,8 @@ export class Db {
       if (episode && episode.status !== "accepted") {
         this.raw.prepare(
           `UPDATE auto_review_episodes
-              SET revision=@revision, status='accepted', claim_token=NULL, reason=@reason,
-                  settled_at=@at, updated_at=@at
+              SET revision=@revision, status='parked', claim_token=NULL, reason=@reason,
+                  verdict_json=NULL, verdict_run_id=NULL, settled_at=@at, updated_at=@at
             WHERE thread_id=@threadId`,
         ).run({
           threadId,

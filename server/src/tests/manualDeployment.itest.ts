@@ -171,6 +171,42 @@ try {
   const apiReview = await manager.autoReview(valid.id, "owner");
   assert.deepEqual({ ok: apiReview.ok, state: apiReview.state }, { ok: true, state: "done" });
 
+  // If a task already has a parked auto-review episode, the later manual-deployment terminal
+  // handoff consumes that episode without inventing an accepted reviewer verdict.
+  const previouslyRejected = db.createThread({ title: "reviewed before deploy handoff", workspace, rawPrompt: "ship it", brief: "Ship the verified change." });
+  db.updateThread(previouslyRejected.id, { state: "review", error: "old review handback" });
+  const oldReviewClaim = db.claimAutoReview(previouslyRejected.id, "supervisor");
+  assert.equal(oldReviewClaim.ok, true);
+  const oldReviewer = db.createRun({ threadId: previouslyRejected.id, role: "reviewer", model: "test-reviewer", account: "acct-a" });
+  db.updateRun(oldReviewer.id, { state: "done", endedAt: Date.now() });
+  const rejectedVerdict: ReviewerOutput = {
+    accept: false,
+    summary: "Rejected before the deploy-only handoff existed.",
+    issues: [{ severity: "major", description: "A previous blocker existed." }],
+  };
+  assert.equal(db.finishAutoReview({
+    threadId: previouslyRejected.id,
+    claimToken: oldReviewClaim.claimToken,
+    status: "parked",
+    reason: rejectedVerdict.summary,
+    verdict: rejectedVerdict,
+  }).ok, true);
+  assert.equal(db.getAutoReviewEpisode(previouslyRejected.id)?.verdict?.accept, false);
+  db.updateThread(previouslyRejected.id, { state: "implementing", error: null });
+  const laterImplementor = db.createRun({ threadId: previouslyRejected.id, role: "implementor", model: "test-model", account: "acct-a" });
+  assert.equal(manager.recordManualDeployment({ threadId: previouslyRejected.id, fromRole: "implementor", fromRunId: laterImplementor.id, claim }).ok, true);
+  db.updateRun(laterImplementor.id, { state: "done", endedAt: Date.now() });
+  const laterQa = db.createRun({ threadId: previouslyRejected.id, role: "qa", model: "test-reviewer", account: "acct-a" });
+  db.updateRun(laterQa.id, { state: "done", endedAt: Date.now() });
+  db.updateThread(previouslyRejected.id, { state: "qa", error: null });
+  const laterAccepted = internals.verifyManualDeploymentAtBoundary(db.getThread(previouslyRejected.id)!, "qa", undefined, laterQa.id);
+  assert.deepEqual({ attempted: laterAccepted.attempted, done: laterAccepted.done }, { attempted: true, done: true });
+  const terminalEpisode = db.getAutoReviewEpisode(previouslyRejected.id)!;
+  assert.equal(terminalEpisode.status, "parked");
+  assert.equal(terminalEpisode.claimToken, null);
+  assert.equal(terminalEpisode.verdict, null);
+  assert.match(terminalEpisode.reason ?? "", /manual deployment|Complete in GGO/i);
+
   // Reconciliation is idempotent: a second manager/boot retains done and emits no duplicate handoff.
   const findingsBeforeRestart = db.listFindings(valid.id).length;
   const messagesBeforeRestart = db.listMessages(valid.id).length;
