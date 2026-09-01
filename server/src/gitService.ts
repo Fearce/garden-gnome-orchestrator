@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
+import { config } from "./config.js";
+import { isConfiguredCommitOnlyOrigin } from "./git/commitOnly.js";
 
 // The shared git-service READ layer: real git reads (status, per-file diff, log, branch list, current
 // branch, ahead/behind vs upstream) over ARBITRARY task workspaces — the backing for the console's
@@ -174,7 +176,7 @@ export interface GitCommit {
   local: boolean;
 }
 
-/** How the repo's push state should read. "commit-only" is the Vota steady state (neutral, no push nag);
+/** How the repo's push state should read. "commit-only" is the configured no-push steady state (neutral, no push nag);
  *  "unpushed" is a normal repo with local commits to push; "pushed" is in sync; "no-remote" has no push
  *  target configured at all. */
 export type PushState = "pushed" | "unpushed" | "commit-only" | "no-remote";
@@ -193,8 +195,8 @@ export interface GitStatus {
   behind: number;
   /** Local commits not yet on the push remote (@{push}). */
   unpushed: number;
-  /** True when `origin` is a Vota repo, where commit-only is the normal steady state. */
-  isVota: boolean;
+  /** True when `origin` matches the configured rule where commit-only is the normal steady state. */
+  isCommitOnly: boolean;
   pushState: PushState;
   hasUncommitted: boolean;
   files: GitFile[];
@@ -220,7 +222,7 @@ export interface GitSummary {
   commitCount: number;
   branch: string | null;
   unpushed: number;
-  isVota: boolean;
+  isCommitOnly: boolean;
   pushState: PushState;
 }
 
@@ -233,7 +235,7 @@ export interface GitFileDiff {
   truncated: boolean;
 }
 
-const EMPTY_SUMMARY: GitSummary = { isRepo: false, fileCount: 0, added: 0, removed: 0, commitCount: 0, branch: null, unpushed: 0, isVota: false, pushState: "no-remote" };
+const EMPTY_SUMMARY: GitSummary = { isRepo: false, fileCount: 0, added: 0, removed: 0, commitCount: 0, branch: null, unpushed: 0, isCommitOnly: false, pushState: "no-remote" };
 
 // ---- helpers ----------------------------------------------------------------------------------------
 
@@ -309,13 +311,13 @@ function untrackedCount(repoRoot: string, rel: string): { added: number; binary:
   }
 }
 
-async function isVotaRepo(repoRoot: string): Promise<boolean> {
+async function isCommitOnlyRepo(repoRoot: string): Promise<boolean> {
   const url = okOut(await runGit(repoRoot, ["remote", "get-url", "origin"]));
-  return !!url && /vota/i.test(url);
+  return isConfiguredCommitOnlyOrigin(url, config.noPushRepoPattern);
 }
 
-function derivePushState(isVota: boolean, unpushed: number, hasPushRef: boolean): PushState {
-  if (isVota) return "commit-only";
+function derivePushState(isCommitOnly: boolean, unpushed: number, hasPushRef: boolean): PushState {
+  if (isCommitOnly) return "commit-only";
   if (!hasPushRef) return "no-remote";
   return unpushed > 0 ? "unpushed" : "pushed";
 }
@@ -328,7 +330,7 @@ function derivePushState(isVota: boolean, unpushed: number, hasPushRef: boolean)
 export async function getGitStatus(workspace: string): Promise<GitStatus> {
   const empty: GitStatus = {
     isRepo: false, repoRoot: null, branch: null, detached: false, branches: [], upstreamRef: null,
-    pushRef: null, behind: 0, unpushed: 0, isVota: false, pushState: "no-remote", hasUncommitted: false,
+    pushRef: null, behind: 0, unpushed: 0, isCommitOnly: false, pushState: "no-remote", hasUncommitted: false,
     files: [], commits: [], hasDiffAnchor: false, error: null,
   };
   const repoRoot = await resolveRepoRoot(workspace);
@@ -364,7 +366,7 @@ export async function getGitStatus(workspace: string): Promise<GitStatus> {
     unpushed = unpushedShas.size;
   }
 
-  const isVota = await isVotaRepo(repoRoot);
+  const isCommitOnly = await isCommitOnlyRepo(repoRoot);
   const hasHead = (await runGit(repoRoot, ["rev-parse", "--verify", "-q", "HEAD"])).code === 0;
 
   const files = await collectFiles(repoRoot, hasHead);
@@ -380,8 +382,8 @@ export async function getGitStatus(workspace: string): Promise<GitStatus> {
     pushRef,
     behind,
     unpushed,
-    isVota,
-    pushState: derivePushState(isVota, unpushed, pushRef !== null),
+    isCommitOnly,
+    pushState: derivePushState(isCommitOnly, unpushed, pushRef !== null),
     hasUncommitted: files.length > 0,
     files,
     commits,
@@ -481,7 +483,7 @@ export async function getGitSummary(workspace: string): Promise<GitSummary> {
     commitCount: 0, // repo-wide summary makes no per-task commit claim
     branch: status.branch,
     unpushed: status.unpushed,
-    isVota: status.isVota,
+    isCommitOnly: status.isCommitOnly,
     pushState: status.pushState,
   };
   summaryCache.set(repoRoot, { at: Date.now(), value });
@@ -567,7 +569,7 @@ export async function getTaskGitSummary(workspace: string, scope: TaskGitScope):
     commitCount,
     branch: status.branch,
     unpushed: status.unpushed,
-    isVota: status.isVota,
+    isCommitOnly: status.isCommitOnly,
     pushState: status.pushState,
   };
   taskSummaryCache.set(scope.threadId, { at: Date.now(), value });

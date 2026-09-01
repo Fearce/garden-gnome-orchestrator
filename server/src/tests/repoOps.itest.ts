@@ -13,7 +13,7 @@
  *   A. STATE      — branches with ahead/behind + upstream, remote branches, remotes, last-fetch time.
  *   B. FETCH      — an upstream commit becomes visible as behind>0; a remote-less repo is refused.
  *   C. PULL       — ff-only fast-forwards; a diverged branch is refused WITH the rebase hint; rebase works.
- *   D. PUSH       — publishing sets upstream; a second push is a plain push; a Vota origin is refused.
+ *   D. PUSH       — publishing sets upstream; a second push is plain; a configured commit-only origin is refused.
  *   E. CHECKOUT   — switch, create (incl. from a start point), track a remote branch, refuse nonsense.
  *   F. DELETE     — refuses the current branch, refuses an unmerged branch, force deletes it.
  *   G. COMMIT     — commits ONLY the selected files (a sibling's dirty file stays dirty), body included.
@@ -32,6 +32,7 @@ import { appendFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+process.env.NO_PUSH_REPO_PATTERN = "commit-only-origin";
 const { getRepoState, getCommitDetail, getCommitFileDiff, runRepoAction, remoteWebUrl, failureText, validRefName, validRepoPath } =
   await import("../git/repoOps.js");
 const { runGit } = await import("../gitService.js");
@@ -188,7 +189,7 @@ try {
   }
 
   // ---- D. push --------------------------------------------------------------------------------------
-  console.log("\nD. push — publish sets upstream; a Vota origin is refused");
+  console.log("\nD. push — publish sets upstream; a configured commit-only origin is refused");
   {
     const { work } = setupClone(root, "push");
     git(work, "checkout", "--quiet", "-b", "feature/publish");
@@ -212,14 +213,14 @@ try {
     check("a second push (no -u) succeeds", again.ok, again.message);
     check("push state is back in sync", (await getRepoState(work)).pushState === "pushed");
 
-    // A Vota origin is commit-only by policy — the console must never push it.
-    const { work: vota } = setupClone(root, "vota", "vota-graphql-api.git");
-    writeFileSync(join(vota, "v.txt"), "v\n");
-    git(vota, "add", "-A");
-    git(vota, "commit", "--quiet", "-m", "vota work");
-    const votaRes = await runRepoAction(vota, { action: "push", setUpstream: false });
-    check("a Vota repo refuses to push", !votaRes.ok && /commit-only/i.test(votaRes.message), votaRes.message);
-    check("the Vota commit is still local", (await getRepoState(vota)).ahead === 1);
+    // An origin matching the configured rule is commit-only — the console must never push it.
+    const { work: commitOnly } = setupClone(root, "commit-only", "commit-only-origin.git");
+    writeFileSync(join(commitOnly, "policy.txt"), "local\n");
+    git(commitOnly, "add", "-A");
+    git(commitOnly, "commit", "--quiet", "-m", "commit-only work");
+    const commitOnlyResult = await runRepoAction(commitOnly, { action: "push", setUpstream: false });
+    check("a configured commit-only repo refuses to push", !commitOnlyResult.ok && /commit-only/i.test(commitOnlyResult.message), commitOnlyResult.message);
+    check("the commit-only commit is still local", (await getRepoState(commitOnly)).ahead === 1);
   }
 
   // ---- E. checkout ----------------------------------------------------------------------------------

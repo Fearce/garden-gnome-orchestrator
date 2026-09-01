@@ -90,7 +90,7 @@ export interface RepoState {
   ahead: number;
   /** Commits the upstream has that we don't — the number a Pull would take. */
   behind: number;
-  isVota: boolean;
+  isCommitOnly: boolean;
   pushState: PushState;
   files: GitFile[];
   commits: GitCommit[];
@@ -251,7 +251,7 @@ async function defaultRemote(root: string): Promise<string | null> {
 // ---- state ------------------------------------------------------------------------------------------
 
 /** Full console state for a repository. Builds on the read layer's `getGitStatus` (file list, push
- *  state, Vota detection, behind/unpushed) and adds what a repo-level console needs on top. Never
+ *  state, commit-only policy detection, behind/unpushed) and adds what a repo-level console needs on top. Never
  *  throws — a path that isn't a repo comes back isRepo:false with a reason. */
 export async function getRepoState(path: string): Promise<RepoState> {
   const root = await resolveRepoRoot(path);
@@ -259,7 +259,7 @@ export async function getRepoState(path: string): Promise<RepoState> {
     return {
       path, name: basename(path.replace(/[\\/]+$/, "")) || path, isRepo: false,
       error: "Not a git repository.", branch: null, detached: false, branches: [], remoteBranches: [],
-      remotes: [], upstreamRef: null, pushRef: null, ahead: 0, behind: 0, isVota: false,
+      remotes: [], upstreamRef: null, pushRef: null, ahead: 0, behind: 0, isCommitOnly: false,
       pushState: "no-remote", files: [], commits: [], lastFetchAt: null, webUrl: null,
     };
   }
@@ -287,7 +287,7 @@ export async function getRepoState(path: string): Promise<RepoState> {
     pushRef: status.pushRef,
     ahead: status.unpushed,
     behind: status.behind,
-    isVota: status.isVota,
+    isCommitOnly: status.isCommitOnly,
     pushState: status.pushState,
     files: status.files,
     commits,
@@ -485,8 +485,8 @@ async function doPull(root: string, rebase: boolean): Promise<RepoActionResult> 
 
 async function doPush(root: string, setUpstream: boolean): Promise<RepoActionResult> {
   const status = await getGitStatus(root);
-  if (status.isVota) {
-    return fail("This is a Vota repo — commit-only by policy. Vota pushes are done manually, so the console won't push it.");
+  if (status.isCommitOnly) {
+    return fail("This repository is commit-only by policy. Pushes are disabled by the configured remote rule.");
   }
   const { branch, detached } = await currentBranch(root);
   if (detached || !branch) return fail("HEAD is detached — check out a branch before pushing.");

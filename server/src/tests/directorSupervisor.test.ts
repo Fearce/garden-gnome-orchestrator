@@ -655,7 +655,7 @@ async function main(): Promise<void> {
       const paused = makeTask(f.db, "Repair invoice export", "paused");
       const unrelated = makeTask(f.db, "Unselected private task", "review");
       const failedTask = makeTask(f.db, "Concise agent communication setting", "failed");
-      const vota = makeTask(f.db, "Prepare Vota production for release", "qa");
+      const releaseTask = makeTask(f.db, "Prepare production for release", "qa");
       const finished = makeTask(f.db, "Already finished task", "done");
       const cancelled = makeTask(f.db, "Cancelled task", "cancelled");
       const closed = makeTask(f.db, "Closed task", "closed");
@@ -678,7 +678,7 @@ async function main(): Promise<void> {
           boardFinished.targets.length === 0 &&
           boardIds.size === 2 &&
           boardIds.has(active.id) &&
-          boardIds.has(vota.id) &&
+          boardIds.has(releaseTask.id) &&
           boardFinished.actionResults.every((result) => result.action === "steer" && result.ok) &&
           f.getJudgeCalls() === beforeBoardJudges,
       );
@@ -687,10 +687,10 @@ async function main(): Promise<void> {
         ![unrelated, failedTask, finished, cancelled, closed].some((task) => boardIds.has(task.id)),
       );
       check(
-        "board steering preserves live sessions and the Vota quality gate",
+        "board steering preserves live sessions and the release quality gate",
         boardDeliveries.length === 2 &&
           boardDeliveries.every((item) => item.mode === "append" && item.liveOnly) &&
-          boardDeliveries.some((item) => item.threadId === vota.id && /required test.*QA\/review.*acceptance gate/i.test(item.message)) &&
+          boardDeliveries.some((item) => item.threadId === releaseTask.id && /required test.*QA\/review.*acceptance gate/i.test(item.message)) &&
           boardDeliveries.every((item) => /Do not mark done or hand off incomplete work/i.test(item.message)),
       );
       check(
@@ -721,7 +721,7 @@ async function main(): Promise<void> {
         needsOwner: false,
         actions: [
           { taskId: active.id, action: "steer", message: "Finish the current scope with verification intact.", mode: "append" },
-          { taskId: vota.id, action: "steer", message: "Finish the current scope with verification intact.", mode: "append" },
+          { taskId: releaseTask.id, action: "steer", message: "Finish the current scope with verification intact.", mode: "append" },
         ],
       });
       const recoveredShape = supervisor.sendChatMessage("Send that verification reminder to the two active tasks in the catalog.", []);

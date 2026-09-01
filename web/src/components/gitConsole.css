@@ -146,7 +146,7 @@ a.gc-btn { text-decoration: none; }
 .gc-menu-action { flex-wrap: wrap; }
 .gc-menu-action:disabled { opacity: 0.45; cursor: not-allowed; }
 .gc-menu-hint { flex: 1 0 100%; padding-left: 22px; font-size: 10.5px; color: var(--text-faint); line-height: 1.45; }
-.gc-vota {
+.gc-commit-only {
   display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 100px;
   font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
   background: color-mix(in oklch, var(--text-faint) 11%, transparent); border: 1px solid color-mix(in oklch, var(--text-faint) 26%, transparent);

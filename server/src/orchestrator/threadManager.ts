@@ -12032,14 +12032,14 @@ export class ThreadManager implements OrchestratorApi {
 
   async getGitStatus(threadId: string): Promise<GitStatus> {
     const t = this.db.getThread(threadId);
-    if (!t) return { isRepo: false, repoRoot: null, branch: null, detached: false, branches: [], upstreamRef: null, pushRef: null, behind: 0, unpushed: 0, isVota: false, pushState: "no-remote", hasUncommitted: false, files: [], commits: [], hasDiffAnchor: false, error: "No such task." };
+    if (!t) return { isRepo: false, repoRoot: null, branch: null, detached: false, branches: [], upstreamRef: null, pushRef: null, behind: 0, unpushed: 0, isCommitOnly: false, pushState: "no-remote", hasUncommitted: false, files: [], commits: [], hasDiffAnchor: false, error: "No such task." };
     const taskFiles = collectTaskWrittenFiles(this.db, t);
     return getTaskGitStatus(t.workspace, { threadId, baselineHead: t.baselineHead ?? null, taskFiles });
   }
 
   async getGitSummary(threadId: string): Promise<GitSummary> {
     const t = this.db.getThread(threadId);
-    if (!t) return { isRepo: false, fileCount: 0, added: 0, removed: 0, commitCount: 0, branch: null, unpushed: 0, isVota: false, pushState: "no-remote" };
+    if (!t) return { isRepo: false, fileCount: 0, added: 0, removed: 0, commitCount: 0, branch: null, unpushed: 0, isCommitOnly: false, pushState: "no-remote" };
     const taskFiles = collectTaskWrittenFiles(this.db, t);
     return getTaskGitSummary(t.workspace, { threadId, baselineHead: t.baselineHead ?? null, taskFiles });
   }

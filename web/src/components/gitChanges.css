@@ -30,7 +30,7 @@
 .cc-dot.unpushed { background: var(--warn); box-shadow: 0 0 0 2px color-mix(in oklch, var(--warn) 22%, transparent); }
 .cc-dot.working { background: var(--role-implementor); animation: cc-pulse 1.6s ease-in-out infinite; }
 @keyframes cc-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
-/* Vota commit-only: a neutral status tag, not a nag — quiet, no colour heat. */
+/* Commit-only policy: a neutral status tag, not a nag — quiet, no colour heat. */
 .cc-tag {
   font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.05em; text-transform: uppercase;
   color: var(--text-faint); padding: 2px 6px; border-radius: 100px;

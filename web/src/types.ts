@@ -709,7 +709,7 @@ export interface GitCommit {
   local: boolean; // committed but not yet on the push remote
 }
 
-/** "commit-only" is the Vota steady state (neutral, no push nag); "unpushed" = local commits to push;
+/** "commit-only" is the configured no-push steady state (neutral, no push nag); "unpushed" = local commits to push;
  *  "pushed" = in sync; "no-remote" = no push target configured. Mirrors the server's PushState. */
 export type PushState = "pushed" | "unpushed" | "commit-only" | "no-remote";
 
@@ -723,7 +723,7 @@ export interface GitStatus {
   pushRef: string | null;
   behind: number;
   unpushed: number;
-  isVota: boolean;
+  isCommitOnly: boolean;
   pushState: PushState;
   hasUncommitted: boolean;
   files: GitFile[];
@@ -743,7 +743,7 @@ export interface GitSummary {
   commitCount: number; // task-scoped: commits attributed to this task
   branch: string | null;
   unpushed: number;
-  isVota: boolean;
+  isCommitOnly: boolean;
   pushState: PushState;
 }
 
@@ -801,7 +801,7 @@ export interface RepoState {
   pushRef: string | null;
   ahead: number; // commits a Push would send
   behind: number; // commits a Pull would take
-  isVota: boolean;
+  isCommitOnly: boolean;
   pushState: PushState;
   files: GitFile[];
   commits: GitCommit[];

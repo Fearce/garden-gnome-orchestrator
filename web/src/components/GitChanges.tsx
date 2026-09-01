@@ -90,11 +90,11 @@ export function ChangesChip({ threadId }: { threadId: string }) {
 type ChipMarker = "unpushed" | "commit-only" | "working" | "clean";
 
 /** The single status marker the chip shows: a live pulse while the agent works with uncommitted edits, a
- *  neutral commit-only tag for a Vota repo, an amber not-pushed dot for a normal repo with local commits,
+ *  neutral commit-only tag for a policy-matched repo, an amber not-pushed dot for a normal repo with local commits,
  *  or nothing at all when clean and in sync. */
 function chipMarker(summary: GitSummary, running: boolean): ChipMarker {
   if (running && summary.fileCount > 0) return "working";
-  if (summary.isVota) return "commit-only";
+  if (summary.isCommitOnly) return "commit-only";
   if (summary.unpushed > 0) return "unpushed";
   return "clean";
 }
@@ -209,7 +209,7 @@ function GitPanel({ thread, onClose }: { thread: Thread; onClose: () => void }) 
 
 /** The branch + push header — a read-only status strip: the current branch's push state (in sync /
  *  unpushed / commit-only / no-remote) and a one-line explanation of it. No actions live here — the branch
- *  switcher was removed so the whole Changes drawer is a pure read-only diff surface. Vota repos are
+ *  switcher was removed so the whole Changes drawer is a pure read-only diff surface. Commit-only repos are
  *  commit-only: their "not pushed" is the intended steady state, shown neutrally with no push nag. */
 function BranchBar({ status }: { status: GitStatus }) {
   const sync = status.pushState;
@@ -230,7 +230,7 @@ function BranchBar({ status }: { status: GitStatus }) {
 type SyncState = "pushed" | "unpushed" | "commit-only" | "no-remote";
 
 /** The push-state pill — the at-a-glance answer to "did this reach the remote?". Neutral for the
- *  commit-only (Vota) case: a status, not a warning. A behind count rides alongside when upstream moved. */
+ *  commit-only case: a status, not a warning. A behind count rides alongside when upstream moved. */
 function PushStatus({ sync, unpushed, behind }: { sync: SyncState; unpushed: number; behind: number }) {
   const behindNote = behind > 0 ? <span className="branch-behind" title="Commits the upstream has that this branch doesn't">↓{behind} behind</span> : null;
   if (sync === "pushed")
@@ -253,7 +253,7 @@ function PushStatus({ sync, unpushed, behind }: { sync: SyncState; unpushed: num
     );
   if (sync === "commit-only")
     return (
-      <span className="push-pill commit-only" title="Vota repo — commit-only by policy, never pushed">
+      <span className="push-pill commit-only" title="Commit-only by configured repository policy">
         <ShieldIcon /> commit-only
       </span>
     );
@@ -271,7 +271,7 @@ function SyncNote({ status, sync }: { status: GitStatus; sync: SyncState }) {
   if (sync === "commit-only")
     return (
       <span className="sync-note">
-        This is a <b>Vota</b> repo — commit-only by policy. Changes are committed but <b>never pushed</b>; this is the intended
+        This repository is <b>commit-only</b> by policy. Changes are committed but <b>never pushed</b>; this is the intended
         steady state, not a pending action.
       </span>
     );

@@ -4,7 +4,7 @@
  * The Changes surface (the in-console GitHub-Desktop replacement) is backed entirely by gitService: it
  * resolves a task's repo (even when the workspace is the PARENT of a nested checkout), reads the changed
  * files with per-file ±counts, the commit log with each commit tagged pushed-or-local, the branch list +
- * current branch, ahead/behind vs upstream, and the push state (with the Vota commit-only case neutral) —
+ * current branch, ahead/behind vs upstream, and the configured commit-only state kept neutral —
  * plus per-file diffs. This module is READ-ONLY; the write side (fetch/pull/push/checkout/commit/discard,
  * the repo-level Git console) is `git/repoOps.ts`, covered by `repoOps.itest.ts`.
  *
@@ -15,7 +15,7 @@
  *   A. RESOLVE     — workspace = repo root, workspace = PARENT of a nested repo, and a non-repo dir.
  *   B. STATUS      — modified + untracked + staged + deleted files, with correct statuses and ±counts.
  *   C. PUSH STATE  — a local commit not on @{push} reads "unpushed"/local; after a push it's "pushed".
- *   D. VOTA        — an origin whose url contains "vota" reads commit-only (neutral), never a push nag.
+ *   D. COMMIT ONLY — an origin matching the configured substring reads commit-only, never a push nag.
  *   E. BEHIND      — upstream moved ahead → behind > 0 after a fetch.
  *   F. DIFF        — a tracked modification, a brand-new untracked file, and a binary file.
  *
@@ -28,6 +28,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+process.env.NO_PUSH_REPO_PATTERN = "commit-only-origin";
 const { resolveRepoRoot, getGitStatus, getGitSummary, getTaskGitSummary, getTaskGitStatus, getHeadSha, getFileDiff } = await import("../gitService.js");
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
@@ -205,26 +206,26 @@ try {
     check("pushState = pushed after push", after.pushState === "pushed", after.pushState);
   }
 
-  // ---- D. Vota: commit-only, neutral ----------------------------------------------------------------
-  console.log("\nD. Vota repo — origin url contains 'vota' → commit-only, never a push nag");
+  // ---- D. configured commit-only policy -------------------------------------------------------------
+  console.log("\nD. configured origin substring → commit-only, never a push nag");
   {
-    const votaBare = join(root, "fleet-vota.git");
-    git(root, "init", "--quiet", "--bare", votaBare);
-    const work = join(root, "vota-work");
-    git(root, "clone", "--quiet", votaBare, work);
+    const commitOnlyBare = join(root, "fleet-commit-only-origin.git");
+    git(root, "init", "--quiet", "--bare", commitOnlyBare);
+    const work = join(root, "commit-only-work");
+    git(root, "clone", "--quiet", commitOnlyBare, work);
     configureRepo(work);
     writeFileSync(join(work, "board.txt"), "fleet\n");
     git(work, "add", "-A");
-    git(work, "commit", "--quiet", "-m", "vota: board");
+    git(work, "commit", "--quiet", "-m", "commit-only: board");
     git(work, "branch", "-M", "master");
     // Deliberately do NOT push — commit-only is the steady state.
 
     const s = await getGitStatus(work);
-    check("isVota true", s.isVota);
+    check("isCommitOnly true", s.isCommitOnly);
     check("pushState = commit-only (neutral, despite unpushed commits)", s.pushState === "commit-only", s.pushState);
     const sum = await getGitSummary(work);
     check("summary pushState = commit-only", sum.pushState === "commit-only", sum.pushState);
-    check("summary isVota true", sum.isVota);
+    check("summary isCommitOnly true", sum.isCommitOnly);
   }
 
   // ---- E. behind: upstream moved ahead --------------------------------------------------------------

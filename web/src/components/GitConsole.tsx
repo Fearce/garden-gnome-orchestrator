@@ -133,8 +133,8 @@ function RepoBar({
   const current = repos.find((r) => samePath(r.path, path ?? "")) ?? null;
   const label = current?.name ?? (path ? leafOf(path) : "Pick a repository");
 
-  // The list is every repo on the machine, so it needs filtering — on name AND path, since "vota" is
-  // as likely to be typed as a folder name is.
+  // The list is every repo on the machine, so filter both names and full paths; either may be the
+  // operator's quickest way to identify a checkout.
   const q = filter.trim().toLowerCase();
   const matches = q ? repos.filter((r) => r.name.toLowerCase().includes(q) || r.path.toLowerCase().includes(q)) : repos;
   const inUse = matches.filter((r) => !r.discovered);
@@ -458,8 +458,8 @@ function SyncActions({ state }: { state: RepoState }) {
         </a>
       ) : null}
 
-      {state.isVota ? (
-        <span className="gc-vota" title="Vota repos are commit-only by policy — pushes are done manually">
+      {state.isCommitOnly ? (
+        <span className="gc-commit-only" title="Pushes are disabled by the configured repository policy">
           <ShieldIcon /> commit-only
         </span>
       ) : (
