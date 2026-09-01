@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 import { isConfiguredCommitOnlyOrigin } from "../git/commitOnly.js";
 import type {
   ManualDeployment,
@@ -155,35 +156,74 @@ function git(workspace: string, args: string[]): { ok: boolean; stdout: string; 
   };
 }
 
-/** Independent repository proof. A configured commit-only repo may have local commits AHEAD of the declared remote
- * ref are valid; any BEHIND/diverged commit is not. */
-export function inspectManualDeploymentRepository(
-  workspace: string,
+function commonPrefixLen(a: string, b: string): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
+}
+
+function repoCandidates(workspace: string): string[] {
+  const direct = git(workspace, ["rev-parse", "--show-toplevel"]);
+  if (direct.ok && direct.stdout) return [direct.stdout];
+
+  const candidates: { dir: string; name: string; gitIsDir: boolean }[] = [];
+  try {
+    for (const entry of readdirSync(workspace, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const gitPath = join(workspace, entry.name, ".git");
+      if (!existsSync(gitPath)) continue;
+      let gitIsDir = false;
+      try {
+        gitIsDir = statSync(gitPath).isDirectory();
+      } catch {
+        /* linked worktree .git files are still valid checkout candidates */
+      }
+      candidates.push({ dir: join(workspace, entry.name), name: entry.name, gitIsDir });
+    }
+  } catch {
+    return [];
+  }
+
+  const leaf = basename(workspace.replace(/[\\/]+$/, "")).toLowerCase();
+  candidates.sort((a, b) => {
+    const pa = commonPrefixLen(leaf, a.name.toLowerCase());
+    const pb = commonPrefixLen(leaf, b.name.toLowerCase());
+    if (pa !== pb) return pb - pa;
+    if (a.gitIsDir !== b.gitIsDir) return a.gitIsDir ? -1 : 1;
+    return a.name.length - b.name.length;
+  });
+
+  return candidates
+    .map((candidate) => {
+      const root = git(candidate.dir, ["rev-parse", "--show-toplevel"]);
+      return root.ok && root.stdout ? root.stdout : "";
+    })
+    .filter((root, index, roots): root is string => Boolean(root) && roots.indexOf(root) === index);
+}
+
+function inspectManualDeploymentCandidate(
+  repoRoot: string,
   claim: ManualDeploymentClaim,
   commitOnlyRemotePattern: string,
 ): ManualDeploymentRepoInspection {
   const reasons: string[] = [];
-  if (!existsSync(workspace)) return { ok: false, reasons: ["The workspace no longer exists."] };
-
-  const root = git(workspace, ["rev-parse", "--show-toplevel"]);
-  if (!root.ok || !root.stdout) return { ok: false, reasons: ["The workspace is not a Git repository."] };
-  const origin = git(workspace, ["remote", "get-url", "origin"]);
+  const origin = git(repoRoot, ["remote", "get-url", "origin"]);
   if (!origin.ok || !origin.stdout) reasons.push("The repository has no readable origin remote.");
   else if (!isConfiguredCommitOnlyOrigin(origin.stdout, commitOnlyRemotePattern)) {
     reasons.push("The origin does not match the configured commit-only repository rule.");
   }
 
-  const head = git(workspace, ["rev-parse", "HEAD"]);
+  const head = git(repoRoot, ["rev-parse", "HEAD"]);
   if (!head.ok || !FULL_SHA.test(head.stdout.toLowerCase())) reasons.push("HEAD does not resolve to a commit.");
   else if (head.stdout.toLowerCase() !== claim.commitSha) reasons.push(`HEAD moved after the deployment claim (${head.stdout.slice(0, 12)} != ${claim.commitSha.slice(0, 12)}).`);
 
-  const remote = git(workspace, ["rev-parse", "--verify", `${claim.remoteRef}^{commit}`]);
+  const remote = git(repoRoot, ["rev-parse", "--verify", `${claim.remoteRef}^{commit}`]);
   if (!remote.ok || !FULL_SHA.test(remote.stdout.toLowerCase())) reasons.push(`The declared integration ref ${claim.remoteRef} does not resolve.`);
 
   let ahead: number | undefined;
   let behind: number | undefined;
   if (head.ok && remote.ok) {
-    const counts = git(workspace, ["rev-list", "--left-right", "--count", `${claim.remoteRef}...HEAD`]);
+    const counts = git(repoRoot, ["rev-list", "--left-right", "--count", `${claim.remoteRef}...HEAD`]);
     const match = counts.stdout.match(/^(\d+)\s+(\d+)$/);
     if (!counts.ok || !match) reasons.push(`Could not compare HEAD with ${claim.remoteRef}.`);
     else {
@@ -193,18 +233,18 @@ export function inspectManualDeploymentRepository(
     }
   }
 
-  const status = git(workspace, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  const status = git(repoRoot, ["status", "--porcelain=v1", "--untracked-files=all"]);
   if (!status.ok) reasons.push("Git status could not be verified.");
   else if (status.stdout) reasons.push("The working tree has uncommitted or untracked changes.");
 
   for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"]) {
-    const path = git(workspace, ["rev-parse", "--path-format=absolute", "--git-path", name]);
+    const path = git(repoRoot, ["rev-parse", "--path-format=absolute", "--git-path", name]);
     if (path.ok && path.stdout && existsSync(path.stdout)) reasons.push(`A Git ${name.toLowerCase().replaceAll("_", " ")} operation is still in progress.`);
   }
 
   return {
     ok: reasons.length === 0,
-    repoRoot: root.stdout,
+    repoRoot,
     originUrl: origin.stdout || undefined,
     headSha: head.stdout.toLowerCase() || undefined,
     remoteSha: remote.stdout.toLowerCase() || undefined,
@@ -212,6 +252,25 @@ export function inspectManualDeploymentRepository(
     behind,
     reasons,
   };
+}
+
+/** Independent repository proof. A configured commit-only repo may have local commits AHEAD of the declared remote
+ * ref are valid; any BEHIND/diverged commit is not. */
+export function inspectManualDeploymentRepository(
+  workspace: string,
+  claim: ManualDeploymentClaim,
+  commitOnlyRemotePattern: string,
+): ManualDeploymentRepoInspection {
+  if (!existsSync(workspace)) return { ok: false, reasons: ["The workspace no longer exists."] };
+  const roots = repoCandidates(workspace);
+  if (!roots.length) return { ok: false, reasons: ["The workspace is not a Git repository and has no nested checkout candidate."] };
+
+  const inspections = roots.map((root) => inspectManualDeploymentCandidate(root, claim, commitOnlyRemotePattern));
+  const accepted = inspections.find((inspection) => inspection.ok);
+  if (accepted) return accepted;
+
+  const matchingHead = inspections.find((inspection) => inspection.headSha === claim.commitSha);
+  return matchingHead ?? inspections[0]!;
 }
 
 /** Combine the structured assertion with live repository and orchestration blockers. */

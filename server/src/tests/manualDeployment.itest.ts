@@ -8,7 +8,7 @@ process.env.FAST_ACCOUNT_PING_MS = "3600000";
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
@@ -99,6 +99,16 @@ try {
   git(workspace, "push", "--quiet", "-u", "origin", "master");
   const completed = commit(workspace, "change.txt", "verified change\n", "fix: complete verified change");
   const claim = evidence(completed);
+  const parentWorkspace = join(root, "vota");
+  const siblingRepo = join(parentWorkspace, "vota-ios");
+  const nestedRepo = join(parentWorkspace, "vota-website");
+  mkdirSync(parentWorkspace);
+  git(root, "clone", "--quiet", origin, siblingRepo);
+  git(root, "clone", "--quiet", origin, nestedRepo);
+  git(nestedRepo, "config", "user.email", "test@example.com");
+  git(nestedRepo, "config", "user.name", "GGO test");
+  const nestedCompleted = commit(nestedRepo, "website.txt", "verified website change\n", "fix: complete nested repo change");
+  const nestedClaim = evidence(nestedCompleted);
   config.noPushRepoPattern = "commit-only";
 
   const db = new Db(join(root, "orchestrator.sqlite"));
@@ -116,6 +126,21 @@ try {
     ): { attempted: boolean; done: boolean; reason?: string };
     settleReview(threadId: string, reason: string): void;
   };
+
+  // A Vota-style parent workspace with multiple nested checkouts still accepts the repo whose HEAD
+  // matches the structured deployment claim. This is the live layout that triggered the rule.
+  const nestedThread = db.createThread({ title: "nested Vota release", workspace: parentWorkspace, rawPrompt: "ship it", brief: "Ship the verified nested change." });
+  db.updateThread(nestedThread.id, { state: "implementing" });
+  db.updateThreadStageOutputs(nestedThread.id, { routeDecision: routeWithQa });
+  const nestedImpl = db.createRun({ threadId: nestedThread.id, role: "implementor", model: "test-model", account: "acct-a" });
+  assert.equal(manager.recordManualDeployment({ threadId: nestedThread.id, fromRole: "implementor", fromRunId: nestedImpl.id, claim: nestedClaim }).ok, true);
+  db.updateRun(nestedImpl.id, { state: "done", endedAt: Date.now() });
+  const nestedQa = db.createRun({ threadId: nestedThread.id, role: "qa", model: "test-reviewer", account: "acct-a" });
+  db.updateRun(nestedQa.id, { state: "done", endedAt: Date.now() });
+  db.updateThread(nestedThread.id, { state: "qa", error: null });
+  const nestedAccepted = internals.verifyManualDeploymentAtBoundary(db.getThread(nestedThread.id)!, "qa", undefined, nestedQa.id);
+  assert.deepEqual({ attempted: nestedAccepted.attempted, done: nestedAccepted.done }, { attempted: true, done: true });
+  assert.equal(db.getThread(nestedThread.id)?.manualDeployment?.commitSha, nestedCompleted);
 
   // A current implementor declaration followed by a clean QA boundary becomes done and carries the
   // owner-visible API projection, finding, and feed handoff.

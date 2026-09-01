@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ManualDeploymentClaim } from "../types.js";
@@ -67,6 +67,25 @@ try {
   assert.equal(qualified.ok, true, qualified.reasons.join(" "));
   assert.equal(qualified.inspection?.ahead, 1, "a configured commit-only repository may be ahead of origin");
   assert.equal(qualified.inspection?.behind, 0);
+
+  const parent = join(root, "vota");
+  const sibling = join(parent, "vota-ios");
+  const nested = join(parent, "vota-website");
+  mkdirSync(parent);
+  git(root, "clone", "--quiet", origin, sibling);
+  git(root, "clone", "--quiet", origin, nested);
+  git(nested, "config", "user.email", "test@example.com");
+  git(nested, "config", "user.name", "GGO test");
+  const nestedCompleted = commit(nested, "website.txt", "verified website change\n", "fix: verified website change");
+  const nestedEvidence = claim(nestedCompleted);
+  const nestedQualified = qualifyManualDeployment(parent, nestedEvidence, "commit-only");
+  assert.equal(nestedQualified.ok, true, nestedQualified.reasons.join(" "));
+  assert.equal(
+    nestedQualified.inspection?.repoRoot,
+    git(nested, "rev-parse", "--show-toplevel"),
+    "a parent workspace with multiple nested repos resolves the checkout matching the claimed commit",
+  );
+  assert.equal(nestedQualified.inspection?.ahead, 1);
 
   const declared = declareManualDeployment(evidence, "implementor", "run-1", 10);
   const verified = verifyManualDeployment(declared, "qa", "run-qa", 20);
