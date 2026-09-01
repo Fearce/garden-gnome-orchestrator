@@ -194,7 +194,9 @@ export class CoworkManager {
     this.hub.publish({ type: "cowork.message", message: claimed.message });
     this.publishSession(claimed.session);
     void this.execute(claimed.session, claimed.turn, text, history);
-    return { ok: true, session: claimed.session };
+    // prepare() failures can settle synchronously before the WebSocket action receipt is sent. Return
+    // the current row so that receipt cannot overwrite the UI with the stale running claim.
+    return { ok: true, session: this.db.getCoworkSession(sessionId) ?? claimed.session };
   }
 
   async stop(sessionId: string): Promise<CoworkActionResult> {

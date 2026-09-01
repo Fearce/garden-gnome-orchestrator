@@ -151,10 +151,12 @@ class FakeRuntime implements CoworkRuntime {
   readonly runs: FakeRun[] = [];
   readonly prepared: { sessionId: string; agentSessionId: string | null; prompt: string; history: CoworkMessage[] }[] = [];
   conflict: string | null = null;
+  prepareError: string | null = null;
   released = 0;
   capped = false;
 
   prepare(input: Parameters<CoworkRuntime["prepare"]>[0]) {
+    if (this.prepareError) return { error: this.prepareError };
     this.prepared.push({
       sessionId: input.session.id,
       agentSessionId: input.session.agentSessionId,
@@ -261,6 +263,16 @@ async function main(): Promise<void> {
     const taskBlocked = cowork.send(sessionId, "Respect the task lock");
     check("normal-task workspace ownership blocks a Co-worker before persistence", !taskBlocked.ok && db.listCoworkTurns(sessionId).length === 2);
     runtime.conflict = null;
+
+    runtime.prepareError = "Pinned model capacity is exhausted.";
+    const preflightFailed = cowork.send(sessionId, "Exercise pre-start failure recovery");
+    check(
+      "pre-start failure action returns the terminal error session",
+      preflightFailed.ok && preflightFailed.session?.state === "error" && preflightFailed.session.error?.includes("Pinned model capacity"),
+      JSON.stringify(preflightFailed),
+    );
+    check("pre-start failure is durable in the conversation", db.listCoworkMessages(sessionId).some((message) => message.role === "system" && message.content.includes("Pinned model capacity")));
+    runtime.prepareError = null;
 
     check("a turn can start after a conflict clears", cowork.send(sessionId, "Exercise failure recovery").ok);
     runtime.runs[3]!.fail("provider exploded");
