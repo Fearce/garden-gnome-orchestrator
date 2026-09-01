@@ -18,9 +18,10 @@
 //   • per-(role,model) totals, and a state breakdown (done / error / interrupted / running).
 //   • with --verify-model-pin, a fail-closed persisted-request vs. latest implementor agent_run check;
 //     --expect-model additionally asserts the canonical configured model id at both ends.
-//   • an auto-review trace: every reviewer hand-back / acceptance finding, and the next run it caused.
-//     This answers the otherwise expensive question "did the reviewer send a fixable issue back to an
-//     implementor, or did it simply re-park the task?" without hand-reading SQLite timestamps.
+//   • the durable auto-review ownership/outcome row for the current work revision, plus every reviewer
+//     hand-back / acceptance finding and the next run it caused. This answers both "may the Supervisor
+//     launch this unchanged task again?" and "did the reviewer send a fixable issue back to an implementor,
+//     or did it simply re-park the task?" without hand-reading SQLite timestamps.
 //   • a QA-loop check: the durable qaRoundsUsed counter against the maxQaRounds setting — the signature
 //     of the durable-QA-budget drain (see qaRoundBudget.itest.ts / handoff 2026-07-20). QA *launches*
 //     are reconciled separately, because rounds are only one of four things that spend one; the
@@ -34,6 +35,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 const { qaLoopReading, roundsCap } = require("./qa-loop-check.cjs");
+const { autoReviewReading, autoReviewTableExists, selectAutoReviewRows } = require("./auto-review-health.cjs");
 const { activeDeadlineReading } = require("./task-deadline-reading.cjs");
 const { collectTaskTimeline, renderTaskTimeline, utcStamp } = require("./task-timeline.cjs");
 const { modelPinReading, parsePersistedModelRequest, parseProbeArgs } = require("./model-pin-reading.cjs");
@@ -119,6 +121,40 @@ console.log({
 if (showPrompt) {
   section("saved routing prompt");
   console.log(thread.raw_prompt || thread.brief || "(no saved prompt)");
+}
+
+section("durable auto-review episode");
+if (!autoReviewTableExists(db)) {
+  console.log("  auto_review_episodes is absent; this DB predates durable reviewer ownership.");
+} else {
+  const row = selectAutoReviewRows(db, thread.id)[0];
+  const reading = row ? autoReviewReading(row) : null;
+  if (!row || !reading || !row.hasEpisode) {
+    console.log("  No durable auto-review episode is recorded for this task.");
+    if (reading?.issues.length) {
+      for (const issue of reading.issues) console.log(`  ISSUE: ${issue}`);
+    }
+  } else {
+    console.log({
+      disposition: reading.disposition,
+      status: row.status,
+      source: row.source,
+      attemptsOnRevision: row.attemptCount,
+      episodeRevision: row.episodeRevision,
+      currentRevision: row.currentRevision,
+      revisionCurrent: reading.revisionCurrent,
+      claim: row.status === "running" && row.claimToken ? "held (token hidden)" : null,
+      verdictAccept: reading.verdict?.accept ?? null,
+      verdictRunId: row.verdictRunId,
+      started: row.startedAt != null ? iso(row.startedAt) : null,
+      settled: row.settledAt != null ? iso(row.settledAt) : null,
+      reviewerRuns: row.reviewerRuns,
+      reviewerRunsAfterSettle: row.reviewerRunsAfterSettle,
+    });
+    if (row.reason) console.log(`  reason: ${short(row.reason, 300)}`);
+    for (const note of reading.notes) console.log(`  note: ${note}`);
+    for (const issue of reading.issues) console.log(`  ISSUE: ${issue}`);
+  }
 }
 
 const runs = db

@@ -37,7 +37,11 @@ panel's "Auto-review & mark done" button delegates that call to one **reviewer**
 read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing`, verifies the work,
 `ask_user`s Kevin about anything only he can decide, then settles the task `done` or hands it back to
 `review` with its reasons — an errored/verdict-less run always re-parks, never accepts. So `done`
-now has three sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
+now has three sources: QA, a manual Mark done, and an accepted auto-review. A durable
+`auto_review_episodes` row owns the current non-reviewer work revision: unattended Supervisor review may
+claim it once, while an explicit owner click may deliberately retry it. Run
+`npm run probe:auto-review --prefix server` for a board-wide convergence audit. Gates: `test:auto-review`
+and `test:auto-review-health`.
 
 ## Run / build
 - Dev (hot reload): `npm run dev` at repo root — tsx-watch server + Vite web.
@@ -98,7 +102,11 @@ State + run history live in `server/data/orchestrator.sqlite` (open read-only wi
 For one task, run `npm run probe:task-runs --prefix server -- <thread-id|title-substring>` instead of
 hand-joining tables. Its control-flow timeline correlates run/account/cap verdicts, routing-capacity
 findings, owner/supervisor messages, and matching server boot/reconcile records in local time plus UTC.
-Add `--prompt` when the exact saved provider intent matters.
+It also prints the durable auto-review episode, source, revision, attempts, terminal reason, and any
+ownership inconsistency. Add `--prompt` when the exact saved provider intent matters. For a board-wide
+auto-review check, run `npm run probe:auto-review --prefix server`; exit 0 means all recorded episodes
+converged or are legitimately active/eligible, exit 1 names an actionable ownership or terminal-state
+violation, and exit 2 means the DB predates the episode schema or could not be read.
 For an explicit-model task, run `npm run probe:model-pin --prefix server -- <thread> --expect-model
 <canonical-id>`; it quickly exits non-zero unless the persisted strict request matches the latest
 implementor run's real model and provider. `probe:task-runs` also accepts `--verify-model-pin` when the

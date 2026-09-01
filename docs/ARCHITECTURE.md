@@ -260,7 +260,8 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   (`CAP_PARK_PREFIX`) is still mid-flight and resumes itself, so the button is disabled there. While a
   review is live it owns the slot alone: the auto-review gates in `injectThread`/`resumeThread` (the QA
   gate's twins) forward steering to whichever agent is live rather than spawning one beside it. Those
-  gates key on the **episode** (`this.reviewing`), not on the state, because the fix round below runs
+  gates key on the **episode** (the in-memory `this.reviewing` fast path plus its durable DB claim), not
+  on the state, because the fix round below runs
   under `implementing` and the implementor's own `onEnd` clears `this.live` while the awaited result is
   still in flight — a state-only check falls through in exactly that window and cold-resumes a second
   implementor onto the workspace the reviewer is about to inspect (proven by reverting it). And
@@ -270,7 +271,19 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   so it can take a capped reviewer over). One episode can therefore span backends, so every warm resume of a
   review carries the backend that produced it (`resumableReviewSession`): a session id doesn't travel, and a
   "carry on" nudge means nothing to a session that never heard the question — when that backend can't take
-  the run, the recovery is a fresh full review instead. Gate: `test:auto-review`.
+  the run, the recovery is a fresh full review instead.
+
+  **Convergence is durable, not inferred from the board state.** `auto_review_episodes` stores one claimed
+  work revision per task (`run:<latest non-reviewer run id>`), the source, fenced claim token, attempt count,
+  terminal reason, and accepted/rejected verdict. Claiming atomically moves `review → reviewing`; a stale
+  callback cannot settle a newer claim. The unattended Supervisor may claim one unchanged revision once.
+  Its accepted verdict atomically makes the task `done`; every rejection, error, missing verdict, restart,
+  unresolved question, or exhausted recovery parks it in `review` with the reason and blocks another paid
+  Supervisor judgement until a new non-reviewer run creates a revision. An authenticated owner click is the
+  intentional override and may retry unchanged external workspace work. Boot reconciliation consumes live
+  claims without inferring acceptance. `npm run probe:auto-review --prefix server` audits every episode and
+  uncovered legacy reviewer hand-back read-only; `probe:task-runs` prints the same authority for one task.
+  Gates: `test:auto-review` and `test:auto-review-health`.
 - **Director Supervisor — opt-in, bounded operations.** Settings → **Director Supervisor** defaults off;
   while off it owns no timer and spends no agent turn. When enabled, `DirectorSupervisor` subscribes to
   lifecycle transitions and queues all evaluations through one single-flight drain; an adaptive backstop
