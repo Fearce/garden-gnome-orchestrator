@@ -65,6 +65,23 @@ and the inject/resume gates key on the episode (not the state) so nothing spawns
 the window where the fix run has ended but the state hasn't flipped back. So `done` has three
 sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
 
+## Co-work (the interactive lane — a conversation, not a task)
+The **Co-work** tab is ping-pong development: one owner prompt = one bounded **Co-worker** turn
+(`coworkerRunOptions`/`COWORKER_PROMPT`) that makes the change, verifies proportionately, replies, and
+returns the session to `idle` for the next prompt. It owns **no task** — no `threads`/`agent_runs` row,
+no findings, no bus/office MCP, no `runPipeline`, no planner/QA/reviewer/supervisor/auto-review — so
+nothing can mark it done and ordinary dispatch is untouched. `orchestrator/cowork.ts` owns the lifecycle
+over `cowork_sessions`/`cowork_turns`/`cowork_messages`, reaching provider/account/capacity routing
+through the narrow `CoworkRuntime` bridge so no pipeline state enters the conversation. One turn at a
+time is a durable CAS in `beginCoworkTurn` (not an in-memory lock), a restart reconciles orphaned turns
+at construction, an explicit provider/model is a **strict pin** (the turn fails rather than
+substituting), and a live turn and a task agent are mutually exclusive in one workspace both ways
+(`attachCoworkWorkspaceGuard` + `taskConflict`). **Every task-side probe is blind to this lane**, so
+debug with `npm run probe:cowork --prefix server [-- <id-prefix|name>]` — state, the turn trail with
+cost/model/account, resume linkage, and the invariants (a claim nothing can release, an unsealed
+partial reply, a substituted pin, one provider session in two conversations); exit 1 names it.
+Gates `test:cowork`, `test:cowork-ui`, `test:cowork-health`. Traps: `.claude/rules/co-work-sessions.md`.
+
 ## Run / build
 - Dev (hot reload): `npm run dev` at repo root — tsx-watch server + Vite web.
 - Prod: `npm run build` (web then server) → `npm start` runs `node dist/index.js` from

@@ -441,13 +441,31 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   live, the manager either (a) `inject`s it as a follow-up user message, or
   (b) `interrupt → resume(sessionId)` with augmented context — chosen by
   severity / a thread policy / the director.
+- **Co-work — the interactive lane, outside this state machine entirely.**
+  `orchestrator/cowork.ts` (`CoworkManager`) runs human-led ping-pong sessions: one owner prompt is
+  one bounded **Co-worker** turn that ends by returning the session to `idle`. It creates **no
+  `Thread`**, so none of the diagram above applies — no route selection, no planner/QA/reviewer/
+  supervisor/auto-review, no autonomous retry, no path to `done`. It reaches ThreadManager only
+  through the narrow `CoworkRuntime` interface (`prepare` / `taskConflict` / `observeRateLimit` /
+  `isCapped` / `noteCap` / `releasedWorkspace`), which is what keeps pipeline state out of the
+  conversation and lets the lifecycle be tested against a deterministic fake.
+  `prepareCoworkerRun` reuses the task-side model/account/capacity gates by building a **synthetic
+  `cowork:<id>` Thread that is never persisted**; an owner-chosen provider/model is a strict pin that
+  fails the turn rather than substituting, and the Claude *account id* (not its label) is persisted
+  because a session id belongs to the subscription that created it. One-turn-at-a-time is a durable
+  CAS in `beginCoworkTurn`; `interruptOrphanedCoworkTurns` reconciles a restart at construction and
+  seals partial rows. A live Co-worker turn and a task agent are mutually exclusive per workspace
+  (`attachCoworkWorkspaceGuard` ↔ `coworkTaskConflict`). Debug with `probe:cowork` — the task-side
+  probes cannot see this lane. Traps: `.claude/rules/co-work-sessions.md`.
 
 ## 6. Persistence (`server/src/db/`)
 
 `better-sqlite3` at `server/data/orchestrator.sqlite`. We store **orchestration
 metadata**; the Agent SDK already persists Claude session transcripts as JSONL
 on disk (resumable by `session_id`). Tables: `threads`, `agent_runs`,
-`messages`, `findings`, `questions`, `director_messages`, `attachments`, `kv`.
+`messages`, `findings`, `questions`, `director_messages`, `attachments`, `kv`,
+and the Co-work lane's own `cowork_sessions` / `cowork_turns` / `cowork_messages`
+(§5) — deliberately separate from `threads`, so a conversation is never a task.
 `threads.stage_outputs` (JSON, nullable) holds the per-stage outputs that make a
 task resumable (§5) — kept off the WS wire (it can be multi-KB) and read only by
 the resume path, not folded into the `Thread` DTO. Schema inlined in
@@ -468,6 +486,11 @@ a single discriminated union (`zod`-validated). Highlights:
 - C→S: `prompt.new`, `question.answer`, `thread.inject`, `thread.interrupt`,
   `thread.resume`, `thread.cancel`, `thread.close`, `thread.restore`, `thread.dismiss`,
   `thread.history`, `thread.approve` / `approval.set`, `thread.changes`, `snapshot.request`.
+- The Co-work lane has its own pair: S→C `cowork.session` / `cowork.removed` /
+  `cowork.message` / `cowork.history` / `cowork.delta` / `cowork.thinking` /
+  `cowork.action`, and C→S `cowork.create` / `cowork.send` / `cowork.stop` /
+  `cowork.rename` / `cowork.delete` / `cowork.history`. `cowork.action` echoes the
+  originating `clientId` so a receipt can never overwrite newer session state.
 
 ## 8. Memory (`server/src/memory/memory.ts`)
 
