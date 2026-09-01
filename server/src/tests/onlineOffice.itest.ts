@@ -394,7 +394,7 @@ async function main(): Promise<void> {
       // A relay that hands this instance its OWN agents back (an older relay, or one that regressed):
       // the receiving side must refuse them. Left in, a lone agent believes it has a teammate — itself —
       // and the office switches on for every solo task in the repo.
-      relay.push({ t: "presence", agents: [remoteAgent(), remoteAgent({ instanceId: "inst-local", instanceName: "Kevin's tower", key: "t1::implementor", name: "Rune" })] });
+      relay.push({ t: "presence", agents: [remoteAgent(), remoteAgent({ instanceId: "inst-local", instanceName: "Local tower", key: "t1::implementor", name: "Rune" })] });
       await sleep(120);
       check("an echo of our OWN agent is not taken as a remote peer", office.status().remoteAgents.every((a) => a.instanceId !== "inst-local"), JSON.stringify(office.status().remoteAgents.map((a) => a.instanceId)));
       check("…and is not announced as someone joining", joins.length === 1, `joins=${joins.length}`);
@@ -402,7 +402,7 @@ async function main(): Promise<void> {
 
       relay.push({
         t: "chat",
-        msg: { id: "self-1", room: relayRepoRoom("github.com/fearce/card-marker"), body: "I'll take parser.ts", senderName: "Rune", role: "implementor", instanceId: "inst-local", instanceName: "Kevin's tower", repoLabel: "Fearce/card-marker", at: Date.now() },
+        msg: { id: "self-1", room: relayRepoRoom("github.com/fearce/card-marker"), body: "I'll take parser.ts", senderName: "Rune", role: "implementor", instanceId: "inst-local", instanceName: "Local tower", repoLabel: "Fearce/card-marker", at: Date.now() },
       });
       await sleep(120);
       check("an echo of our OWN chat line is dropped, not re-imported as a teammate's", chats.length === 0, JSON.stringify(chats.map((c) => c.msg.id)));
@@ -695,7 +695,8 @@ async function main(): Promise<void> {
     const file = join(dir, "orchestrator.sqlite");
     try {
       const seed = new Db(file);
-      seed.kvSet("online_office_name", "Kevin"); // what THIS machine is called in the office
+      const localInstance = "Local workstation";
+      seed.kvSet("online_office_name", localInstance); // what THIS machine is called in the office
       const legacy = (id: string, room: string, senderName: string) =>
         seed.raw
           .prepare(
@@ -704,7 +705,7 @@ async function main(): Promise<void> {
           )
           .run({ id, room, ws: "C:/repos/card-marker", senderName });
       legacy("legacy-remote", repoRoom("C:/repos/card-marker"), "Sif @ Mikkel's laptop");
-      legacy("legacy-self", repoRoom("C:/workspace"), "Juni @ owner"); // written by the self-echo, before it was fixed
+      legacy("legacy-self", repoRoom("C:/workspace"), `Juni @ ${localInstance}`); // written by the self-echo, before it was fixed
       seed.raw.prepare("DELETE FROM kv WHERE key = 'remote_instance_backfill_v1'").run();
       seed.raw.close();
 
