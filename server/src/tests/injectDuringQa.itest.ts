@@ -32,6 +32,7 @@ import type { Thread } from "../types.js";
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
+const { CodexAgentRun } = await import("../agents/codexRunner.js");
 const { ThreadManager, ownerRequestsFinishWithoutQa } = await import("../orchestrator/threadManager.js");
 const { handleCommand } = await import("../ws/hub.js");
 
@@ -445,6 +446,39 @@ async function main(): Promise<void> {
       check("the stale verdict was replaced by the acknowledged steered verdict", result === steered && acknowledged.status === "acknowledged_reviewer", JSON.stringify(result));
       check("the visible feed records accepted, delivered, paused, and acknowledged states", ["[accepted]", "[delivered]", "[waiting]", "[acknowledged]"].every((marker) => h.db.listMessages(id).some((m) => m.content.includes(marker))), JSON.stringify(h.db.listMessages(id).map((m) => m.content)));
       await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest F1 — a Codex-backed auto-review append interrupts the current CLI batch");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "reviewing" });
+      const reviewer = new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: h.workspace, apiKey: "test-key" });
+      const cli = reviewer as unknown as {
+        turnActive: boolean;
+        sessionId: string;
+        requestInterrupt(): void;
+      };
+      cli.turnActive = true;
+      cli.sessionId = "live-codex-reviewer";
+      let interrupts = 0;
+      cli.requestInterrupt = () => {
+        interrupts++;
+      };
+      const run = h.db.createRun({ threadId: id, role: "reviewer", model: "gpt-5.6", account: "codex:gpt-5.6" });
+      h.internals.liveReviewer.set(id, reviewer);
+      h.internals.liveReviewerRunId.set(id, run.id);
+      h.internals.reviewing.add(id);
+
+      const r = await h.mgr.injectThread(id, "use the new reviewer instruction before deciding", "append", undefined, { retitle: false });
+      const row = h.internals.reviewInjections.listThread(id)[0] as { reviewerRunId: string | null; status: string };
+      check("the CLI-backed review inject was accepted", r.ok && r.state === "reviewing", JSON.stringify(r));
+      check("delivery still names the exact persisted reviewer run", row.status === "delivered_reviewer" && row.reviewerRunId === run.id, JSON.stringify(row));
+      check("Codex reviewer append used immediate batch steering", interrupts === 1, `interrupts=${interrupts}`);
     } finally {
       h.dispose();
     }

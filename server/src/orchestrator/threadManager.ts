@@ -8732,6 +8732,7 @@ export class ThreadManager implements OrchestratorApi {
     this.sendCommunication(
       run,
       contentWithImages(reviewInjectionPrompt([row]), this.reviewInjectionImages([row])),
+      injectionSendOptions(run, "append"),
     );
     if (!runId) {
       this.reviewInjectionFeed(
@@ -8862,7 +8863,7 @@ export class ThreadManager implements OrchestratorApi {
       this.sendCommunication(
         impl.run,
         contentWithImages(acknowledgedInjection(`${reviewInjectionLabel(row.id)}: ${instruction}`), images?.map(toImageBlock) ?? []),
-        mode === "interrupt" ? { priority: "now" } : undefined,
+        injectionSendOptions(impl.run, mode),
       );
       this.markReviewImplementorDelivered(queued, impl.runId);
       return {
@@ -8951,6 +8952,7 @@ export class ThreadManager implements OrchestratorApi {
         this.sendCommunication(
           agent,
           contentWithImages(reviewInjectionPrompt(undelivered), this.reviewInjectionImages(undelivered)),
+          injectionSendOptions(agent, "append"),
         );
         this.markReviewInjectionsDelivered(undelivered, lane === "qa" ? "qa" : "reviewer", runId);
       }
@@ -8982,6 +8984,7 @@ export class ThreadManager implements OrchestratorApi {
         this.sendCommunication(
           agent,
           contentWithImages(reviewInjectionPrompt(pending), this.reviewInjectionImages(pending)),
+          injectionSendOptions(agent, "append"),
         );
       }
       result = await agent.nextResult();
@@ -9296,7 +9299,7 @@ export class ThreadManager implements OrchestratorApi {
           [row],
           "Auto-review had already handed work to its fix implementor; the instruction joined that active fix.",
         );
-        this.sendCommunication(impl.run, contentWithImages(acknowledgedInjection(message), blocks));
+        this.sendCommunication(impl.run, contentWithImages(acknowledgedInjection(message), blocks), injectionSendOptions(impl.run, "append"));
         this.markReviewImplementorDelivered(queued, impl.runId);
         return {
           ok: true,
@@ -9324,7 +9327,7 @@ export class ThreadManager implements OrchestratorApi {
         this.sendCommunication(
           impl.run,
           contentWithImages(acknowledgedInjection(message), blocks),
-          mode === "interrupt" ? { priority: "now" } : undefined,
+          injectionSendOptions(impl.run, mode),
         );
       }
       else this.bufferDirectorNote(threadId, message);
