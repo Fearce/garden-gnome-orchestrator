@@ -65,7 +65,7 @@ const ACCOUNT_ENV = {
   ACCOUNT_1_ID: "acct1",
   ACCOUNT_1_LABEL: "personal",
   ACCOUNT_2_ID: "acct2",
-  ACCOUNT_2_LABEL: "vota",
+  ACCOUNT_2_LABEL: "secondary",
 };
 
 /** Park one task in `review` (so nothing spawns an agent) with two deliverables: one previewable and
@@ -105,7 +105,7 @@ function seed(dataDir) {
     "setting_recent_repos",
     JSON.stringify([
       SERVER_ROOT, "C:\\claude-orchestrator", "C:\\trading_orchestrator", "C:\\repos\\bobfish",
-      "C:\\repos", "C:\\vota\\vota-graphql-api", "C:\\repos\\Battlemons", "C:\\", "D:\\work\\sprogbroen",
+      "C:\\repos", "C:\\private-work\\graphql-api", "C:\\repos\\Battlemons", "C:\\", "D:\\work\\sprogbroen",
     ]),
   );
   db.close();

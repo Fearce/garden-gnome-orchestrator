@@ -14,7 +14,7 @@ const PORT = 4383;
 const check = createChecks();
 
 const TASK_ID = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
-const PR_URL = "https://github.com/acme/vota/pull/412";
+const PR_URL = "https://github.com/acme/project/pull/412";
 
 /** The rendered rows, top to bottom — body text, the href the console would actually navigate to, and
  *  whether it rendered as an anchor at all. */
@@ -65,7 +65,7 @@ async function openNotes(page) {
     const note = db.prepare(
       "INSERT INTO operator_notes (id, seq, body, url, thread_id, thread_title, workspace, from_role, from_name, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
     );
-    note.run("n1", 1, "branch fix-crawler pushed", "https://github.com/acme/vota/tree/fix-crawler", TASK_ID, "FIX THE CRAWLER", process.cwd(), "implementor", "Liv", now - 60_000);
+    note.run("n1", 1, "branch fix-crawler pushed", "https://github.com/acme/project/tree/fix-crawler", TASK_ID, "FIX THE CRAWLER", process.cwd(), "implementor", "Liv", now - 60_000);
     note.run("n2", 2, "PR #412 ready to merge", PR_URL, TASK_ID, "FIX THE CRAWLER", process.cwd(), "implementor", "Liv", now - 30_000);
     note.run("n3", 3, "hostile link", "javascript:alert(document.cookie)", null, null, null, null, null, now - 10_000);
     db.close();

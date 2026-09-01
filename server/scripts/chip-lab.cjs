@@ -64,7 +64,7 @@ const ACCOUNT_ENV = {
   ACCOUNT_1_ID: "acct1",
   ACCOUNT_1_LABEL: "personal",
   ACCOUNT_2_ID: "acct2",
-  ACCOUNT_2_LABEL: "vota",
+  ACCOUNT_2_LABEL: "secondary",
 };
 
 function seed(dataDir, scenario) {

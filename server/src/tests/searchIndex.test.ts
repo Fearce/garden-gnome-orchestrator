@@ -134,7 +134,7 @@ console.log("\nA. equivalence — the index answers what the scan answered");
 const eq = freshDb("equivalence");
 {
   const t1 = eq.createThread({ title: "Milkshake monster", workspace: "C:\\3d", rawPrompt: "p", brief: "b" }).id;
-  const t2 = eq.createThread({ title: "Nightly crawl", workspace: "C:\\vota", rawPrompt: "p", brief: "b" }).id;
+  const t2 = eq.createThread({ title: "Nightly crawl", workspace: "C:\\workspace", rawPrompt: "p", brief: "b" }).id;
   const kinds = ["text", "tool", "result"] as const;
   CORPUS.forEach((content, i) => {
     const kind = kinds[i % kinds.length] ?? "text";

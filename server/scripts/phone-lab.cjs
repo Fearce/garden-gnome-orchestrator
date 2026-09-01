@@ -93,7 +93,7 @@ const PANEL_ROOT = {
   supervisor: ".supervisor-view",
 };
 
-const ACCOUNT_ENV = { ACCOUNT_1_ID: "acct1", ACCOUNT_1_LABEL: "personal", ACCOUNT_2_ID: "acct2", ACCOUNT_2_LABEL: "vota" };
+const ACCOUNT_ENV = { ACCOUNT_1_ID: "acct1", ACCOUNT_1_LABEL: "personal", ACCOUNT_2_ID: "acct2", ACCOUNT_2_LABEL: "secondary" };
 
 /** `boot()` resolves on `/api/me`, which another lab's instance on the same port answers just as
  *  happily — so a green boot does not prove THIS instance is up, only that something is. Wait for

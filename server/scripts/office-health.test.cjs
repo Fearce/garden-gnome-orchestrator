@@ -28,7 +28,7 @@ const FIX_AT = Date.parse("2026-08-25T08:30:00Z");
 const before = FIX_AT - 90 * 60_000; // the ninety minutes that broke the first design
 const after = FIX_AT + 60 * 60_000;
 
-const row = (over = {}) => ({ id: "r", room: "repo:c:/vota", sender_name: null, remote_instance: null, created_at: after, ...over });
+const row = (over = {}) => ({ id: "r", room: "repo:c:/workspace", sender_name: null, remote_instance: null, created_at: after, ...over });
 
 // --- senderMachine: the only way to recover a machine from a pre-column row --------------------
 assert.equal(senderMachine("Sif @ Mikkel's laptop"), "Mikkel's laptop");

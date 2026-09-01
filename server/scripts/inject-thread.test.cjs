@@ -15,8 +15,8 @@ assert.equal(socketUrl("http://127.0.0.1:4317"), "ws://127.0.0.1:4317/ws");
 assert.equal(socketUrl("https://example.test/base/"), "wss://example.test/base/ws");
 assert.equal(passwordFromEnvOrDotenv({ AUTH_PASSWORD: " secret " }, "missing"), "secret");
 assert.equal(passwordFromEnvOrDotenv({}, "missing"), "");
-assert.deepEqual(targetSummary({ id: ID, title: "Vota task", state: "review", workspace: "C:\\vota", brief: "ignored" }), {
-  id: ID, title: "Vota task", state: "review", workspace: "C:\\vota",
+assert.deepEqual(targetSummary({ id: ID, title: "Release task", state: "review", workspace: "C:\\workspace", brief: "ignored" }), {
+  id: ID, title: "Release task", state: "review", workspace: "C:\\workspace",
 });
 assert.equal(cookieHeader({ getSetCookie: () => ["session=abc; Path=/; HttpOnly", "other=x; Path=/"] }), "session=abc; other=x");
 

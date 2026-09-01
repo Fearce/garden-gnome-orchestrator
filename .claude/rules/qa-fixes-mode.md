@@ -15,7 +15,7 @@ not merely a prompt or permission change.
 ## Required invariants
 
 1. An editing QA run must stage only its own hunks and make a focused Conventional Commit before it
-   returns. It pushes unless the task's captured `autoPush` policy is off or the repository's Vota
+   returns. It pushes unless the task's captured `autoPush` policy is off or the repository's configured
    commit-only rule applies. A task must never settle `done` with QA-created working-tree edits.
 2. A QA run that reports `changed: true` is never its own final acceptance decision. Route the next
    QA pass to a different ready provider where possible. If only the same provider is available, force

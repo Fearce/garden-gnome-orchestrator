@@ -48,7 +48,7 @@ machines in the same repository, so a task alone in its checkout still gets the 
   agent still shows as a walking gnome even though it posts nothing. Don't "fix" that.
 - **`directorChatPost` steers EVERY live implementor in the room at `priority: "now"` — an interrupt.**
   An aborted turn returns `subtype:"success"`, empty `result`; only `terminal_reason` (`aborted_tools`/
-  `aborted_streaming`) tells it from a finish, so the pipeline read four half-done vota tasks as
+  `aborted_streaming`) tells it from a finish, so the pipeline read four half-done project tasks as
   finished and sent them to QA (2026-08-24). `AgentRun` flags it `aborted`, `awaitTurnResult` awaits
   the continuation turn: never settle a stage on a turn you aborted (`test:chat-steering`).
 

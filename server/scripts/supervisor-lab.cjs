@@ -61,7 +61,7 @@ const ACCOUNT_ENV = {
   ACCOUNT_1_ID: "acct1",
   ACCOUNT_1_LABEL: "personal",
   ACCOUNT_2_ID: "acct2",
-  ACCOUNT_2_LABEL: "vota",
+  ACCOUNT_2_LABEL: "secondary",
 };
 
 /** The board tabs, by the label the switcher renders. Every one of them has to be reachable with a
@@ -98,7 +98,7 @@ function seed(dataDir) {
   const tasks = [
     ["supervisor-lab-task-1", "Continue implementation from previous developer"],
     ["supervisor-lab-task-2", "Fix incorrect menu for restaurant in Klaksvig"],
-    ["supervisor-lab-task-3", "Prepare Vota production release with full QA gate"],
+    ["supervisor-lab-task-3", "Prepare the production release with a full QA gate"],
   ];
   const insertThread = db.prepare(
     "INSERT INTO threads (id, title, state, workspace, brief, raw_prompt, created_at, updated_at) VALUES (?, ?, 'review', ?, ?, ?, ?, ?)",

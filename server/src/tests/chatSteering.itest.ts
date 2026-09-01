@@ -3,7 +3,7 @@
  *
  * Regression guard for: one message posted in a repo's office chatroom finished off every implementor in
  * that repo at once and shoved all of their tasks straight into QA half-done (2026-08-24, four tasks in
- * C:\vota inside five seconds of the post).
+ * C:\workspace inside five seconds of the post).
  *
  * `directorChatPost` fans the owner's line out to every live implementor in the room at `priority: "now"`,
  * and "now" IS an interrupt — the CLI aborts the turn in flight. The abort then comes back as a result

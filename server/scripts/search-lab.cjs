@@ -55,7 +55,7 @@ async function search(page, query) {
       "INSERT INTO threads (id, title, raw_prompt, brief, workspace, state, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
     );
     task.run(MONSTER.id, MONSTER.title, "p", "Can u make a 3d model of this i can print? 3mf file", "C:\\3d", "done", now - 900_000, now);
-    task.run(CRAWL.id, CRAWL.title, "p", "run a crawl and fix any failures", "C:\\vota", "review", now - 60_000, now);
+    task.run(CRAWL.id, CRAWL.title, "p", "run a crawl and fix any failures", "C:\\workspace", "review", now - 60_000, now);
 
     const msg = db.prepare("INSERT INTO messages (id, thread_id, role, kind, content, created_at) VALUES (?,?,?,?,?,?)");
     msg.run("m1", MONSTER.id, "implementor", "text", "I'll tackle this. The image is a cute purple furry creature drinking a milkshake — an organic character sculpt.", now - 890_000);

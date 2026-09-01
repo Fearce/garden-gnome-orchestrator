@@ -81,7 +81,7 @@ console.log("\nA. scope — a task is findable by what happened in it");
 // ---- B. the task that did the work sorts above the one that name-dropped it ------------------------
 console.log("\nB. ranking — depth beats recency, metadata beats both");
 {
-  const crawl = newTask("Nightly crawl of the menu sites", "run a crawl and fix failures", "C:\\vota");
+  const crawl = newTask("Nightly crawl of the menu sites", "run a crawl and fix failures", "C:\\workspace");
   say(crawl, "fetched https://example.com/menu/milkshakes-and-cold-drinks.html — 57 dishes", "result");
   // Backdated to the oldest task in the DB, so "it sorts first" can only be the title/brief rule
   // talking — with a recency sort it would land last, which is what makes the next check load-bearing.

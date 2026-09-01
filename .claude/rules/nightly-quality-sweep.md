@@ -198,7 +198,7 @@ accepting it. This is catalog coverage, not availability: read step 5 for caps/h
   (office claims win). Pathspec only your files. Nor **re-apply** a teammate's already-pushed fix — check
   `git log -5 --oneline` + office claims first.
 - **Never `npm install --omit=dev`** here — strips `tsc`/`tsx`; repair with `npm install --prefix server`.
-- **A real bug** gets its own conventional commit, pathspec-staged, pushed (not vota) — and you deploy server
+- **A real bug** gets its own conventional commit, pathspec-staged, pushed when repository policy permits — and you deploy server
   changes yourself via the atomic hub restart when your code isn't in the running `dist` (step 1 answers that).
 
 ## Related

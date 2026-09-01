@@ -29,13 +29,13 @@ function check(name: string, cond: boolean): void {
 }
 
 const personal = { id: "acct1", label: "personal", token: "tok-personal" };
-const vota = { id: "acct2", label: "vota", token: "tok-vota" };
+const secondary = { id: "acct2", label: "secondary", token: "tok-secondary" };
 const loggedIn = { id: "default", label: "logged-in", token: "" };
 
 console.log("account-usage: accountForToken");
-check("matches the account whose token the run uses", accountForToken([personal, vota], "tok-vota")?.id === "acct2");
-check("unknown token is not an account", accountForToken([personal, vota], "tok-other") === undefined);
-check("no token = inherited CLI login", accountForToken([personal, vota], undefined) === undefined);
+check("matches the account whose token the run uses", accountForToken([personal, secondary], "tok-secondary")?.id === "acct2");
+check("unknown token is not an account", accountForToken([personal, secondary], "tok-other") === undefined);
+check("no token = inherited CLI login", accountForToken([personal, secondary], undefined) === undefined);
 // The synthetic single-account entry carries an empty token; matching on it would label EVERY
 // tokenless run as that account and send the gate looking for usage nobody publishes.
 check("empty token never matches the synthetic entry", accountForToken([loggedIn], "") === undefined);
@@ -59,11 +59,11 @@ delete process.env.CLAUDE_ORCH_ACCOUNT_LABEL;
 check("a Claude run always declares its backend", buildEnv({}).CLAUDE_ORCH_PROVIDER === "claude");
 
 console.log("account-usage: snapshot");
-const manager = new AccountManager([personal, vota], new EventHub());
+const manager = new AccountManager([personal, secondary], new EventHub());
 const snapshot = manager.usageSnapshot();
 check("one entry per configured sub, keyed by the id buildEnv publishes",
   Object.keys(snapshot.accounts).sort().join(",") === "acct1,acct2");
-check("entries carry the label the warning names", snapshot.accounts.acct2?.label === "vota");
+check("entries carry the label the warning names", snapshot.accounts.acct2?.label === "secondary");
 // usageAt 0 is how the gate tells "configured but never read" from a real reading; a snapshot that
 // defaulted it to now() would make an unmeasured account look freshly measured at 0%.
 check("an unpinged sub reports no reading", snapshot.accounts.acct1?.usageAt === 0);

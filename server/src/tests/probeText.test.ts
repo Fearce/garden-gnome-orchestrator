@@ -85,7 +85,7 @@ for (let i = 0; i < 9; i++) {
 db.addFinding({ threadId: monster, fromRole: "implementor", severity: "note", summary: "milkshake-monster is 4-colour" });
 
 // A second task that name-drops it once — must not outrank the one that did the work.
-const crawl = db.createThread({ title: "Nightly crawl", workspace: "C:\\vota", rawPrompt: "crawl", brief: "run a crawl" }).id;
+const crawl = db.createThread({ title: "Nightly crawl", workspace: "C:\\workspace", rawPrompt: "crawl", brief: "run a crawl" }).id;
 db.addMessage({ threadId: crawl, role: "implementor", kind: "result", content: "fetched /menu/milkshakes-and-cold-drinks.html" });
 
 // A word the OWNER typed, so the director half has something to report.

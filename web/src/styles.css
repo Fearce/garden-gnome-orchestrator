@@ -75,7 +75,7 @@ button { font-family: inherit; cursor: pointer; }
   display: grid;
   /* minmax(0, 1fr) on the column: an implicit auto column sizes to max-content, and with
      overflow:hidden the right edge of the topbar (Grok chip + meters) clips off-screen at
-     ~1280px when personal+vota+Codex+Grok are all shown — same failure mode mobile already fixed.
+     ~1280px when personal+secondary+Codex+Grok are all shown — same failure mode mobile already fixed.
      Top row is auto (not fixed 52px) so a wrapped accounts strip on medium desktops can grow the bar. */
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr);
@@ -157,7 +157,7 @@ button { font-family: inherit; cursor: pointer; }
 .stat b { color: var(--text-dim); font-weight: 600; }
 
 /* ---- account burn strip ---- */
-/* min-width:0 + overflow-x:auto so four chips (personal+vota+Codex+Grok) stay reachable on desktop
+/* min-width:0 + overflow-x:auto so four chips (personal+secondary+Codex+Grok) stay reachable on desktop
    instead of clipping under .app's overflow:hidden. Chips themselves do not shrink (flex: 0 0 auto). */
 .accounts {
   display: flex; align-items: stretch; gap: 8px;

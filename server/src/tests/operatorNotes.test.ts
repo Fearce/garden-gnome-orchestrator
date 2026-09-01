@@ -39,23 +39,23 @@ hub.subscribe((e: ServerEvent) => {
 
 const notes = new OperatorNotes(db, hub);
 const fromTask = (body: string, url?: string | null, threadId = "task-1") =>
-  notes.add({ body, url, threadId, threadTitle: "Fix the crawler", workspace: "C:\\vota", fromRole: "implementor", fromName: "Liv" });
+  notes.add({ body, url, threadId, threadTitle: "Fix the crawler", workspace: "C:\\workspace", fromRole: "implementor", fromName: "Liv" });
 
 function main(): void {
   console.log("notes: post");
   const first = notes.add({
     body: "PR #412: menu photo ingest — ready to merge",
-    url: "https://github.com/acme/vota/pull/412",
+    url: "https://github.com/acme/project/pull/412",
     threadId: "task-1",
     threadTitle: "Fix the crawler",
-    workspace: "C:\\vota",
+    workspace: "C:\\workspace",
     fromRole: "implementor",
     fromName: "Liv",
   });
   check("post ok", first.ok && !!first.note);
   check("post broadcasts the whole list", broadcasts === 1 && lastBroadcast!.notes.length === 1);
   check("keeps the poster's identity", first.note!.fromName === "Liv" && first.note!.fromRole === "implementor");
-  check("snapshots the task title + repo", first.note!.threadTitle === "Fix the crawler" && first.note!.workspace === "C:\\vota");
+  check("snapshots the task title + repo", first.note!.threadTitle === "Fix the crawler" && first.note!.workspace === "C:\\workspace");
 
   console.log("notes: the 255-char cap");
   const long = notes.add({ body: "x".repeat(400), threadId: "task-2" });
@@ -71,16 +71,16 @@ function main(): void {
   broadcasts = 0;
 
   console.log("notes: same link posted twice refreshes one row");
-  const a = fromTask("branch pushed", "https://github.com/acme/vota/tree/fix-crawler");
-  const b = fromTask("branch pushed, tests green now", "https://github.com/acme/vota/tree/fix-crawler");
+  const a = fromTask("branch pushed", "https://github.com/acme/project/tree/fix-crawler");
+  const b = fromTask("branch pushed, tests green now", "https://github.com/acme/project/tree/fix-crawler");
   check("the second post reuses the first note", b.outcome === "refreshed" && b.note!.id === a.note!.id);
   check("and the list still holds one line", notes.list().length === 1);
   check("with the newer text", notes.list()[0]!.body === "branch pushed, tests green now");
-  const other = fromTask("different PR", "https://github.com/acme/vota/pull/9");
+  const other = fromTask("different PR", "https://github.com/acme/project/pull/9");
   check("a different link is a new note", other.outcome === "created" && notes.list().length === 2);
   // One PR is one thing the owner clicks, reviews and deletes. Three tasks that all touched it must not
   // cost three rows and three deletions — the row is about the LINK, so the newest poster takes it over.
-  const otherTask = notes.add({ body: "same link, other task", url: "https://github.com/acme/vota/pull/9", threadId: "task-9", fromName: "Pax", fromRole: "implementor" });
+  const otherTask = notes.add({ body: "same link, other task", url: "https://github.com/acme/project/pull/9", threadId: "task-9", fromName: "Pax", fromRole: "implementor" });
   check("the same link from ANOTHER task refreshes the one row", otherTask.outcome === "refreshed" && notes.list().length === 2);
   check("...and the row now names the newest poster", otherTask.note!.threadId === "task-9" && otherTask.note!.fromName === "Pax");
   check("...with the newest text", notes.list()[0]!.body === "same link, other task");
@@ -89,7 +89,7 @@ function main(): void {
   console.log("notes: rows left by the old per-task dedupe fold together on the next post");
   // Written straight to the Db so they bypass the service — the shape prod already had before the
   // dedupe went global. Touching that link again must leave ONE row, not heal only the newest pair.
-  const dupUrl = "https://github.com/acme/vota/pull/81";
+  const dupUrl = "https://github.com/acme/project/pull/81";
   for (const who of ["Vik", "Pax", "Sif"]) {
     db.createOperatorNote({ body: `${who} on PR 81`, url: dupUrl, threadId: `task-${who}`, threadTitle: null, workspace: null, fromRole: "implementor", fromName: who });
   }
@@ -115,14 +115,14 @@ function main(): void {
   check("file: is refused", !notes.add({ body: "click me", url: "file:///C:/Windows/System32" }).ok);
   check("a bare branch name is refused as a url", !notes.add({ body: "check it", url: "feature/foo" }).ok);
   check("nothing landed from any of those", notes.list().length === 0);
-  check("https is accepted", notes.add({ body: "ok", url: "https://github.com/acme/vota/pull/1" }).ok);
+  check("https is accepted", notes.add({ body: "ok", url: "https://github.com/acme/project/pull/1" }).ok);
   check("http is accepted", notes.add({ body: "ok", url: "http://192.168.0.122:4317/" }).ok);
   notes.clear();
 
   console.log("notes: a link written into the sentence still becomes the click target");
   // The only shape a CLI backend's text bridge can produce — and how a model writes one unprompted.
-  const inline = notes.add({ body: "PR is up: https://github.com/acme/vota/pull/77. Please merge.", threadId: "task-3" });
-  check("the url is lifted out of the body", inline.note!.url === "https://github.com/acme/vota/pull/77");
+  const inline = notes.add({ body: "PR is up: https://github.com/acme/project/pull/77. Please merge.", threadId: "task-3" });
+  check("the url is lifted out of the body", inline.note!.url === "https://github.com/acme/project/pull/77");
   check("an explicit url still wins over one in the text", notes.add({ body: "see https://a.example/1", url: "https://b.example/2" }).note!.url === "https://b.example/2");
   check("prose with no link stays a plain note", notes.add({ body: "remember to review the deploy" }).note!.url === null);
   notes.clear();
@@ -158,14 +158,14 @@ function main(): void {
   // Exact-string dedupe left four rows for one PR: a link copied from the browser after reading a
   // comment carries a #fragment, `gh` prints no trailing slash where a browser adds one, and http/https
   // are the same resource. The list's contract is one clickable thing = one row, so these must collapse.
-  const canonical = "https://github.com/acme/vota/pull/42";
+  const canonical = "https://github.com/acme/project/pull/42";
   const spellings = [
     canonical,
     canonical + "/",
     canonical.replace("https://", "http://"),
     canonical + "#issuecomment-1",
-    "https://GitHub.com/acme/vota/pull/42",
-    "https://www.github.com/acme/vota/pull/42",
+    "https://GitHub.com/acme/project/pull/42",
+    "https://www.github.com/acme/project/pull/42",
   ];
   spellings.forEach((u, i) => notes.add({ body: `PR 42 take ${i}`, url: u, threadId: `dedupe-${i}` }));
   check("every spelling of one PR folds into a single row", notes.list().length === 1);

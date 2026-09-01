@@ -704,22 +704,22 @@ async function main(): Promise<void> {
           )
           .run({ id, room, ws: "C:/repos/card-marker", senderName });
       legacy("legacy-remote", repoRoom("C:/repos/card-marker"), "Sif @ Mikkel's laptop");
-      legacy("legacy-self", repoRoom("C:/vota"), "Juni @ Kevin"); // written by the self-echo, before it was fixed
+      legacy("legacy-self", repoRoom("C:/workspace"), "Juni @ owner"); // written by the self-echo, before it was fixed
       seed.raw.prepare("DELETE FROM kv WHERE key = 'remote_instance_backfill_v1'").run();
       seed.raw.close();
 
       const migrated = new Db(file); // the constructor IS the migration
       const rooms = migrated.listProjectRooms();
       const card = rooms.find((r) => r.room === repoRoom("C:/repos/card-marker"));
-      const vota = rooms.find((r) => r.room === repoRoom("C:/vota"));
+      const soloRoom = rooms.find((r) => r.room === repoRoom("C:/workspace"));
       check("a line from another machine recovers its machine from the sender stamp", card?.remoteInstances[0] === "Mikkel's laptop", JSON.stringify(card));
       check("…so the room becomes a reachable collaboration", !!card && isCollaborationRoom(card));
       check(
         "…while a line the self-echo wrote is NOT counted as a remote machine",
-        vota?.remoteInstances.length === 0 && !isCollaborationRoom(vota!),
-        JSON.stringify(vota),
+        soloRoom?.remoteInstances.length === 0 && !isCollaborationRoom(soloRoom!),
+        JSON.stringify(soloRoom),
       );
-      check("…and its message text is untouched", migrated.listRoomMessages(repoRoom("C:/vota"), 10)[0]?.body === "taking exporter.ts");
+      check("…and its message text is untouched", migrated.listRoomMessages(repoRoom("C:/workspace"), 10)[0]?.body === "taking exporter.ts");
 
       // Re-opening must be a no-op, or the scan runs on every boot forever.
       const flag = migrated.kvGet("remote_instance_backfill_v1");

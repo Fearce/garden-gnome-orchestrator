@@ -25,7 +25,7 @@ work arrives as a branch on this repo, not as a fork PR.)
 5. Run the `code-reviewer` subagent on `git diff <old-master>..HEAD` for INTEGRATION
    correctness (dead code the PR wired against a since-changed path, double-settles,
    missed cleanup). Fix real gaps found in their own commits — don't flag-and-wait.
-6. Push `master` (origin is `garden-gnome`, NOT vota → push). Then **deploy yourself**
+6. Push `master` when the configured repository policy permits it. Then **deploy yourself**
    (server change ⇒ atomic hub restart — CLAUDE.md § "Deploying a change"); verify the
    new PID started after the dist mtime.
 

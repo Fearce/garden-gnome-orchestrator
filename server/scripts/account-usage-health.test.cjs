@@ -13,7 +13,7 @@ assert.equal(result.records.length, 1);
 assert.deepEqual(result.issues, []);
 
 result = inspectAccountUsage([
-  row("vota", { usageAt: now - STALE_MS - 1, fiveHour: null, sevenDay: 34 }),
+  row("secondary", { usageAt: now - STALE_MS - 1, fiveHour: null, sevenDay: 34 }),
   row("broken", "not json"),
   row("never", { usageAt: 0, fiveHour: null, sevenDay: null }),
 ], now);

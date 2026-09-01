@@ -90,7 +90,7 @@ Live state, from `npm run probe:accounts` at the time of writing:
 
 ```
 ■ personal   5h  23%  ·  7d  97%   ← about to lapse
-■ vota       5h 101%  ·  7d  26%   ← 5h capped
+■ secondary  5h 101%  ·  7d  26%   ← 5h capped
   ✗ Codex  NO ROOM — 7d at 100%, resets in 6d 2h
   ✓ Grok   available (7d 10% · credits 100%)
   ✗ z.ai   CAPPED — frees in 1d 9h

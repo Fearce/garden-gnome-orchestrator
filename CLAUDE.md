@@ -368,7 +368,7 @@ wins. Writes live in
 `git/repoOps.ts` (reusing `gitService.ts`'s hardened `runGit` + parsers — that module stays read-only),
 the repo list + safety gate in `orchestrator/repoConsole.ts`, the wire in the `repo.*` WS commands.
 Rules it keeps: **never `--force`, never `--no-verify`**; Pull is fast-forward-only with an explicit
-Pull (rebase) in its caret menu; a **Vota** origin refuses to push (commit-only policy); a checkout /
+Pull (rebase) in its caret menu; an origin matching the configured commit-only rule refuses to push; a checkout /
 pull / discard is **refused while an agent is live in that repo**, naming the tasks, with an explicit
 "Do it anyway" override. Branch names and paths arrive from the client, so they're validated in
 `repoOps` (no leading `-`, no `..`) and always passed after `--`. Gates: `test:repo-ops` (real repos,
