@@ -254,8 +254,8 @@ function inspectManualDeploymentCandidate(
   };
 }
 
-/** Independent repository proof. A configured commit-only repo may have local commits AHEAD of the declared remote
- * ref are valid; any BEHIND/diverged commit is not. */
+/** Independent repository proof. In a configured commit-only repo, local commits AHEAD of the declared
+ * remote ref are valid; any BEHIND/diverged commit is not. */
 export function inspectManualDeploymentRepository(
   workspace: string,
   claim: ManualDeploymentClaim,
