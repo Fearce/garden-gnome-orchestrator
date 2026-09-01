@@ -15,6 +15,8 @@ import type {
   AgentRun,
   AgentRunState,
   AttachmentRef,
+  AutoReviewEpisode,
+  AutoReviewSource,
   ChatCursor,
   ChatMessage,
   ChatRoomSummary,
@@ -33,6 +35,7 @@ import type {
   OperatorNote,
   Question,
   QuestionOption,
+  ReviewerOutput,
   Role,
   ScheduledTask,
   Severity,
@@ -276,6 +279,38 @@ function rowToSupervisorEvent(r: Row): SupervisorEvent {
   };
 }
 
+function parseReviewerVerdict(raw: unknown): ReviewerOutput | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<ReviewerOutput> | null;
+    if (!value || typeof value.accept !== "boolean" || typeof value.summary !== "string") return null;
+    return {
+      accept: value.accept,
+      summary: value.summary,
+      ...(Array.isArray(value.issues) ? { issues: value.issues } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function rowToAutoReviewEpisode(r: Row): AutoReviewEpisode {
+  return {
+    threadId: r.thread_id as string,
+    revision: r.revision as string,
+    status: r.status as AutoReviewEpisode["status"],
+    source: r.source as AutoReviewSource,
+    claimToken: (r.claim_token as string | null) ?? null,
+    attemptCount: Number(r.attempt_count),
+    reason: (r.reason as string | null) ?? null,
+    verdict: parseReviewerVerdict(r.verdict_json),
+    verdictRunId: (r.verdict_run_id as string | null) ?? null,
+    startedAt: Number(r.started_at),
+    settledAt: r.settled_at == null ? null : Number(r.settled_at),
+    updatedAt: Number(r.updated_at),
+  };
+}
+
 function parseSupervisorTargets(raw: unknown): SupervisorChatTarget[] {
   if (typeof raw !== "string" || !raw) return [];
   try {
@@ -432,6 +467,14 @@ interface RefRow {
   id: string;
 }
 
+export type AutoReviewClaimResult =
+  | { ok: true; thread: Thread; episode: AutoReviewEpisode; claimToken: string }
+  | { ok: false; thread: Thread | null; reason: string };
+
+export type AutoReviewFinishResult =
+  | { ok: true; thread: Thread; episode: AutoReviewEpisode }
+  | { ok: false; thread: Thread | null; reason: string };
+
 export class Db {
   readonly raw: Database.Database;
 
@@ -504,6 +547,63 @@ export class Db {
     this.backfillDirectorThreadLinks();
     this.backfillRemoteChatInstances();
     this.dedupeAttachmentBlobs();
+    this.backfillAutoReviewEpisodes();
+  }
+
+  /** One-time repair for tasks created before durable reviewer ownership existed. A historical reviewer
+   * run on an owner-visible `review` row is sufficient evidence to PARK unattended automation; it is
+   * never sufficient evidence to mark work done. A reviewer/fix still live at the deployment boundary is
+   * imported as running so boot reconciliation consumes its synthetic token and parks it safely. Accepted
+   * historical tasks are already `done` and remain untouched. */
+  private backfillAutoReviewEpisodes(): void {
+    if (this.kvGet("auto_review_episode_backfill_v1")) return;
+    this.raw.transaction(() => {
+      const rows = this.raw
+        .prepare(
+          `SELECT t.id, t.state, t.error, t.stage_outputs, t.updated_at,
+                  (SELECT COUNT(*) FROM agent_runs rr WHERE rr.thread_id=t.id AND rr.role='reviewer') attempts,
+                  (SELECT rr.id FROM agent_runs rr WHERE rr.thread_id=t.id AND rr.role='reviewer'
+                    ORDER BY rr.started_at DESC, rr.rowid DESC LIMIT 1) reviewer_run_id,
+                  (SELECT rr.started_at FROM agent_runs rr WHERE rr.thread_id=t.id AND rr.role='reviewer'
+                    ORDER BY rr.started_at DESC, rr.rowid DESC LIMIT 1) reviewer_started_at,
+                  EXISTS (SELECT 1 FROM agent_runs rr
+                           WHERE rr.thread_id=t.id AND rr.role='reviewer'
+                             AND rr.state IN ('starting','running','idle') AND rr.ended_at IS NULL) active_reviewer
+             FROM threads t
+            WHERE EXISTS (SELECT 1 FROM agent_runs rr WHERE rr.thread_id=t.id AND rr.role='reviewer')`,
+        )
+        .all() as Array<Row>;
+      const insert = this.raw.prepare(
+        `INSERT OR IGNORE INTO auto_review_episodes
+           (thread_id, revision, status, source, claim_token, attempt_count, reason, verdict_json,
+            verdict_run_id, started_at, settled_at, updated_at)
+         VALUES (@threadId, @revision, @status, 'reconciled', @claimToken, @attemptCount, @reason, NULL,
+                 @verdictRunId, @startedAt, @settledAt, @updatedAt)`,
+      );
+      for (const row of rows) {
+        const threadId = String(row.id);
+        const state = String(row.state);
+        const fixing = parseStageOutputs(row.stage_outputs).reviewFixing === true;
+        const active = state === "reviewing" || fixing || (state === "awaiting_user" && Number(row.active_reviewer) === 1);
+        if (state !== "review" && !active) continue;
+        const settledAt = Number(row.updated_at);
+        insert.run({
+          threadId,
+          revision: this.autoReviewRevision(threadId) ?? `thread:${threadId}`,
+          status: active ? "running" : "parked",
+          claimToken: active ? randomUUID() : null,
+          attemptCount: Math.max(1, Number(row.attempts ?? 1)),
+          reason: active
+            ? "Legacy auto-review was active when durable ownership was installed; boot reconciliation will park it safely."
+            : String(row.error ?? "A prior auto-review recorded no durable accepted verdict; this unchanged task remains parked for owner review."),
+          verdictRunId: (row.reviewer_run_id as string | null) ?? null,
+          startedAt: Number(row.reviewer_started_at ?? settledAt),
+          settledAt: active ? null : settledAt,
+          updatedAt: settledAt,
+        });
+      }
+      this.kvSet("auto_review_episode_backfill_v1", String(now()));
+    })();
   }
 
   /**
@@ -849,6 +949,237 @@ export class Db {
     })(id);
   }
 
+  /** Stable identity of the work a reviewer is judging. Reviewer and Supervisor activity is excluded:
+   * their own runs/findings must not make a rejected task look newly changed. A real pipeline/resume/fix
+   * run creates a new non-reviewer row and therefore a new reviewable revision. Owner-triggered review
+   * remains an explicit override for external workspace edits that have no orchestrator run. */
+  autoReviewRevision(threadId: string): string | null {
+    const row = this.raw
+      .prepare(
+        `SELECT t.id, t.created_at,
+                (SELECT r.id FROM agent_runs r
+                  WHERE r.thread_id=t.id AND r.role<>'reviewer'
+                  ORDER BY r.started_at DESC, r.rowid DESC LIMIT 1) run_id
+           FROM threads t WHERE t.id=?`,
+      )
+      .get(threadId) as Row | undefined;
+    if (!row) return null;
+    return row.run_id ? `run:${String(row.run_id)}` : `thread:${threadId}:${Number(row.created_at)}`;
+  }
+
+  getAutoReviewEpisode(threadId: string): AutoReviewEpisode | null {
+    const row = this.raw.prepare("SELECT * FROM auto_review_episodes WHERE thread_id=?").get(threadId) as Row | undefined;
+    return row ? rowToAutoReviewEpisode(row) : null;
+  }
+
+  listRunningAutoReviewEpisodes(): AutoReviewEpisode[] {
+    return (this.raw.prepare("SELECT * FROM auto_review_episodes WHERE status='running' ORDER BY started_at").all() as Row[]).map(
+      rowToAutoReviewEpisode,
+    );
+  }
+
+  /** Deterministic unattended-Supervisor gate. Null means this revision has never reached a terminal
+   * auto-review outcome and may be delegated. A non-null reason is durable across restarts and prevents
+   * both another reviewer launch and another paid Supervisor judgement over the same unchanged work. */
+  autoReviewAutomationBlock(threadId: string): string | null {
+    const revision = this.autoReviewRevision(threadId);
+    const episode = this.getAutoReviewEpisode(threadId);
+    if (!revision || !episode || episode.revision !== revision) return null;
+    if (episode.status === "running") return "Auto-review already owns this unchanged task.";
+    if (episode.status === "accepted") return "This revision already has a recorded accepted auto-review verdict.";
+    const why = episode.reason?.trim() || "the reviewer did not accept it";
+    return `Auto-review already parked this unchanged task: ${why}`;
+  }
+
+  /** Atomically claim `review -> reviewing` and persist the owner token before any runner work starts.
+   * The CAS is the cross-manager/process lock; `claim_token` fences late callbacks after restart. An
+   * unattended Supervisor gets one claim per work revision, while an explicit owner may retry. */
+  claimAutoReview(threadId: string, source: Exclude<AutoReviewSource, "reconciled">): AutoReviewClaimResult {
+    return this.raw.transaction((): AutoReviewClaimResult => {
+      const current = this.getThread(threadId);
+      if (!current) return { ok: false, thread: null, reason: "No such task." };
+      if (current.state !== "review") {
+        const active = this.getAutoReviewEpisode(threadId);
+        if (active?.status === "running" && ["reviewing", "implementing", "awaiting_user"].includes(current.state)) {
+          return { ok: false, thread: current, reason: `Auto-review is already running (${current.state}).` };
+        }
+        return { ok: false, thread: current, reason: `Only a task parked in review can be auto-reviewed — this one is ${current.state}.` };
+      }
+
+      const revision = this.autoReviewRevision(threadId);
+      if (!revision) return { ok: false, thread: current, reason: "No such task." };
+      const previous = this.getAutoReviewEpisode(threadId);
+      if (source === "supervisor" && previous?.revision === revision) {
+        return { ok: false, thread: current, reason: this.autoReviewAutomationBlock(threadId) ?? "This unchanged review was already attempted." };
+      }
+
+      const at = now();
+      const claimToken = randomUUID();
+      const changed = this.raw
+        .prepare("UPDATE threads SET state='reviewing', error=NULL, updated_at=@at WHERE id=@threadId AND state='review'")
+        .run({ threadId, at });
+      if (changed.changes !== 1) {
+        return { ok: false, thread: this.getThread(threadId), reason: "Another action claimed this task before auto-review could start." };
+      }
+      const attemptCount = previous?.revision === revision ? previous.attemptCount + 1 : 1;
+      this.raw
+        .prepare(
+          `INSERT INTO auto_review_episodes
+             (thread_id, revision, status, source, claim_token, attempt_count, reason, verdict_json,
+              verdict_run_id, started_at, settled_at, updated_at)
+           VALUES (@threadId, @revision, 'running', @source, @claimToken, @attemptCount, NULL, NULL,
+                   NULL, @at, NULL, @at)
+           ON CONFLICT(thread_id) DO UPDATE SET
+             revision=excluded.revision, status='running', source=excluded.source,
+             claim_token=excluded.claim_token, attempt_count=excluded.attempt_count,
+             reason=NULL, verdict_json=NULL, verdict_run_id=NULL,
+             started_at=excluded.started_at, settled_at=NULL, updated_at=excluded.updated_at`,
+        )
+        .run({ threadId, revision, source, claimToken, attemptCount, at });
+      return {
+        ok: true,
+        thread: this.getThread(threadId)!,
+        episode: this.getAutoReviewEpisode(threadId)!,
+        claimToken,
+      };
+    })();
+  }
+
+  /** Atomically persist the reviewer verdict and settle the task. Acceptance is guarded twice: the
+   * caller must supply `accept:true`, and the claimed task must still be in `reviewing`. Any stale token,
+   * restart reconciliation, cancellation, deadline, or concurrent state change wins and the late verdict
+   * is discarded instead of mutating the task. */
+  finishAutoReview(input: {
+    threadId: string;
+    claimToken: string;
+    status: "accepted" | "parked";
+    reason: string;
+    verdict?: ReviewerOutput | null;
+  }): AutoReviewFinishResult {
+    return this.raw.transaction((): AutoReviewFinishResult => {
+      const current = this.getThread(input.threadId);
+      if (!current) return { ok: false, thread: null, reason: "The task no longer exists." };
+      const episode = this.getAutoReviewEpisode(input.threadId);
+      if (!episode || episode.status !== "running" || episode.claimToken !== input.claimToken) {
+        return { ok: false, thread: current, reason: "This auto-review no longer owns the task; its late outcome was discarded." };
+      }
+      const accepting = input.status === "accepted";
+      if (accepting && input.verdict?.accept !== true) {
+        return { ok: false, thread: current, reason: "An accepted auto-review outcome requires a valid accept=true verdict." };
+      }
+      const maySettle = accepting
+        ? current.state === "reviewing"
+        : ["reviewing", "implementing", "awaiting_user", "failed"].includes(current.state);
+      if (!maySettle) {
+        const at = now();
+        const staleReason = `Auto-review outcome discarded because the task moved to ${current.state}: ${input.reason}`;
+        this.raw
+          .prepare(
+            `UPDATE auto_review_episodes
+                SET revision=@revision, status='parked', claim_token=NULL, reason=@reason,
+                    verdict_json=NULL, verdict_run_id=NULL, settled_at=@at, updated_at=@at
+              WHERE thread_id=@threadId AND status='running' AND claim_token=@claimToken`,
+          )
+          .run({
+            threadId: input.threadId,
+            claimToken: input.claimToken,
+            revision: this.autoReviewRevision(input.threadId) ?? episode.revision,
+            reason: staleReason,
+            at,
+          });
+        return { ok: false, thread: current, reason: staleReason };
+      }
+
+      const at = now();
+      const nextState: ThreadState = accepting ? "done" : "review";
+      const nextError = accepting ? null : input.reason;
+      this.raw
+        .prepare("UPDATE threads SET state=@state, error=@error, updated_at=@at WHERE id=@threadId")
+        .run({ threadId: input.threadId, state: nextState, error: nextError, at });
+      const latestReviewer = this.raw
+        .prepare(
+          "SELECT id FROM agent_runs WHERE thread_id=? AND role='reviewer' ORDER BY started_at DESC, rowid DESC LIMIT 1",
+        )
+        .get(input.threadId) as { id: string } | undefined;
+      this.raw
+        .prepare(
+          `UPDATE auto_review_episodes
+              SET revision=@revision, status=@status, claim_token=NULL, reason=@reason,
+                  verdict_json=@verdictJson, verdict_run_id=@verdictRunId,
+                  settled_at=@at, updated_at=@at
+            WHERE thread_id=@threadId AND status='running' AND claim_token=@claimToken`,
+        )
+        .run({
+          threadId: input.threadId,
+          claimToken: input.claimToken,
+          revision: this.autoReviewRevision(input.threadId) ?? episode.revision,
+          status: input.status,
+          reason: input.reason,
+          verdictJson: input.verdict ? JSON.stringify(input.verdict) : null,
+          verdictRunId: latestReviewer?.id ?? null,
+          at,
+        });
+      return { ok: true, thread: this.getThread(input.threadId)!, episode: this.getAutoReviewEpisode(input.threadId)! };
+    })();
+  }
+
+  /** Terminalize a live episode when another lifecycle owner wins (cancel, deadline, close). This never
+   * changes the task row; the caller owns that transition. Optional token fencing is used by restart
+   * reconciliation, while operator lifecycle actions intentionally abort whichever claim is current. */
+  abandonAutoReview(threadId: string, reason: string, claimToken?: string): AutoReviewEpisode | null {
+    const current = this.getAutoReviewEpisode(threadId);
+    if (!current || current.status !== "running" || (claimToken && current.claimToken !== claimToken)) return current;
+    const at = now();
+    this.raw
+      .prepare(
+        `UPDATE auto_review_episodes
+            SET revision=@revision, status='parked', claim_token=NULL, reason=@reason,
+                verdict_json=NULL, verdict_run_id=NULL, settled_at=@at, updated_at=@at
+          WHERE thread_id=@threadId AND status='running'${claimToken ? " AND claim_token=@claimToken" : ""}`,
+      )
+      .run({
+        threadId,
+        ...(claimToken ? { claimToken } : {}),
+        revision: this.autoReviewRevision(threadId) ?? current.revision,
+        reason,
+        at,
+      });
+    return this.getAutoReviewEpisode(threadId);
+  }
+
+  /** Boot-only reconciliation for a process that died while holding a claim. No terminal task is ever
+   * moved, and no acceptance is inferred from a completed run row. Every other stale claimed state is
+   * atomically parked in review with the concrete interruption reason and the token is consumed. */
+  reconcileInterruptedAutoReview(threadId: string, claimToken: string, reason: string): Thread | null {
+    return this.raw.transaction((): Thread | null => {
+      const current = this.getThread(threadId);
+      const episode = this.getAutoReviewEpisode(threadId);
+      if (!current || !episode || episode.status !== "running" || episode.claimToken !== claimToken) return current;
+      const at = now();
+      const terminal = ["done", "cancelled", "closed"].includes(current.state);
+      if (!terminal) {
+        this.raw
+          .prepare("UPDATE threads SET state='review', error=@reason, updated_at=@at WHERE id=@threadId")
+          .run({ threadId, reason, at });
+      }
+      this.raw
+        .prepare(
+          `UPDATE auto_review_episodes
+              SET revision=@revision, status='parked', claim_token=NULL, reason=@reason,
+                  verdict_json=NULL, verdict_run_id=NULL, settled_at=@at, updated_at=@at
+            WHERE thread_id=@threadId AND status='running' AND claim_token=@claimToken`,
+        )
+        .run({
+          threadId,
+          claimToken,
+          revision: this.autoReviewRevision(threadId) ?? episode.revision,
+          reason: terminal ? `Auto-review claim closed because the task is already ${current.state}.` : reason,
+          at,
+        });
+      return this.getThread(threadId);
+    })();
+  }
+
   updateThread(id: string, patch: Partial<Pick<Thread, "title" | "state" | "brief" | "workspace" | "error">>): Thread | null {
     const current = this.getThread(id);
     if (!current) return null;
@@ -933,6 +1264,9 @@ export class Db {
       this.raw.prepare("DELETE FROM findings WHERE thread_id = ?").run(tid);
       this.raw.prepare("DELETE FROM messages WHERE thread_id = ?").run(tid);
       this.raw.prepare("DELETE FROM questions WHERE thread_id = ?").run(tid);
+      // A retry is a brand-new task attempt. Its old review revision/outcome must not suppress the new
+      // attempt if it happens to have no agent run yet, and any stale claim token must be fenced out.
+      this.raw.prepare("DELETE FROM auto_review_episodes WHERE thread_id = ?").run(tid);
       this.raw
         .prepare("UPDATE threads SET stage_outputs = @stageOutputs, error = NULL WHERE id = @id")
         .run({ id: tid, stageOutputs: preservedReaderEscalation ? JSON.stringify({ readerEscalation: preservedReaderEscalation }) : null });

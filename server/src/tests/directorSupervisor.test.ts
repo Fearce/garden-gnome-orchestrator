@@ -11,7 +11,7 @@ import WebSocket from "ws";
 import { Db } from "../db/db.js";
 import { EventHub } from "../events.js";
 import { DirectorSupervisor, SUPERVISOR_JUDGE_MAX_TURNS, type SupervisorConfig, type SupervisorHost, type SupervisorJudgement } from "../orchestrator/supervisor.js";
-import type { Finding, Thread, ThreadState } from "../types.js";
+import type { AutoReviewSource, Finding, Thread, ThreadState } from "../types.js";
 import type { PostFindingInput, ThreadActionResult } from "../orchestrator/api.js";
 import type { JsonSchemaLike } from "../agents/structuredText.js";
 import { clientCommandSchema } from "../ws/protocol.js";
@@ -105,6 +105,7 @@ interface Fixture {
   recoveries: string[];
   resumeDetails: { threadId: string; message?: string; operatorInitiated?: boolean }[];
   autoReviews: string[];
+  autoReviewSources: (AutoReviewSource | undefined)[];
   prompts: string[];
   getJudgeCalls(): number;
   setVerdict(verdict: Verdict | null): void;
@@ -128,6 +129,7 @@ function fixture(): Fixture {
   const recoveries: string[] = [];
   const resumeDetails: { threadId: string; message?: string; operatorInitiated?: boolean }[] = [];
   const autoReviews: string[] = [];
+  const autoReviewSources: (AutoReviewSource | undefined)[] = [];
   const prompts: string[] = [];
   let calls = 0;
   let discord = false;
@@ -177,8 +179,9 @@ function fixture(): Fixture {
       resumeDetails.push({ threadId, message, operatorInitiated });
       return { ok: true, state: "implementing", message: "resumed by test host" };
     },
-    async autoReview(threadId: string): Promise<ThreadActionResult> {
+    async autoReview(threadId: string, source?: AutoReviewSource): Promise<ThreadActionResult> {
       autoReviews.push(threadId);
+      autoReviewSources.push(source);
       return { ok: true, state: "reviewing" };
     },
     supervisorDiscordReady: () => discord,
@@ -199,6 +202,7 @@ function fixture(): Fixture {
     recoveries,
     resumeDetails,
     autoReviews,
+    autoReviewSources,
     prompts,
     getJudgeCalls: () => calls,
     setVerdict: (verdict) => {
@@ -383,7 +387,7 @@ async function main(): Promise<void> {
       await waitFor(() => f.autoReviews.length === 1);
       check(
         "a newly normal review park receives one bounded judgement and starts the existing auto-reviewer",
-        f.getJudgeCalls() === 1 && f.autoReviews[0] === task.id && f.findings.some((finding) => finding.threadId === task.id && finding.summary.startsWith("Supervisor delegated review:")),
+        f.getJudgeCalls() === 1 && f.autoReviews[0] === task.id && f.autoReviewSources[0] === "supervisor" && f.findings.some((finding) => finding.threadId === task.id && finding.summary.startsWith("Supervisor delegated review:")),
       );
 
       await supervisor.runNow();
@@ -427,6 +431,46 @@ async function main(): Promise<void> {
       await waitFor(() => f.autoReviews.length === 1);
       check("a later review transition bypasses routine-check cooldown", f.getJudgeCalls() === 1 && f.autoReviews[0] === task.id);
       await settleHubPass();
+      supervisor.setEnabled(false);
+    } finally {
+      f.close();
+    }
+  }
+  {
+    const f = fixture();
+    try {
+      const task = makeTask(f.db, "unchanged rejected review", "review");
+      const claim = f.db.claimAutoReview(task.id, "supervisor");
+      if (!claim.ok) throw new Error(claim.reason);
+      const parked = f.db.finishAutoReview({
+        threadId: task.id,
+        claimToken: claim.claimToken,
+        status: "parked",
+        reason: "Auto-review didn't accept it: owner decision is required.",
+        verdict: { accept: false, summary: "owner decision is required" },
+      });
+      if (!parked.ok) throw new Error(parked.reason);
+      f.setVerdict({
+        action: "start_auto_review",
+        message: "Try the reviewer again.",
+        reasoning: "This would loop without the persisted episode guard.",
+        requiresOwner: false,
+      });
+      const supervisor = f.create();
+      supervisor.setEnabled(true);
+      await Promise.all([supervisor.runNow(), supervisor.runNow()]);
+      check("concurrent Supervisor ticks spend no judgement and launch no reviewer for an unchanged parked outcome", f.getJudgeCalls() === 0 && f.autoReviews.length === 0);
+      check("the suppressed automatic retry is visible in the durable Supervisor audit", f.db.listSupervisorEvents().some((event) => event.threadId === task.id && /suppressed until new task work/i.test(event.summary)));
+
+      const implementing = f.db.updateThread(task.id, { state: "implementing", error: null })!;
+      f.hub.publish({ type: "thread.upsert", thread: implementing });
+      await settleHubPass();
+      const run = f.db.createRun({ threadId: task.id, role: "implementor", model: "test-model" });
+      f.db.updateRun(run.id, { state: "done", endedAt: Date.now() });
+      const review = f.db.updateThread(task.id, { state: "review", error: "new implementation is ready for review" })!;
+      f.hub.publish({ type: "thread.upsert", thread: review });
+      await waitFor(() => f.autoReviews.length === 1);
+      check("a genuinely new work revision re-arms one legitimate automatic review", f.getJudgeCalls() === 1 && f.autoReviews.length === 1 && f.autoReviewSources[0] === "supervisor");
       supervisor.setEnabled(false);
     } finally {
       f.close();

@@ -297,6 +297,25 @@ CREATE TABLE IF NOT EXISTS supervisor_chat_turns (
   updated_at     INTEGER NOT NULL
 );
 
+-- One durable auto-review ownership/outcome row per task. revision identifies the latest non-reviewer
+-- work run; a Supervisor may claim a revision only once, while an explicit owner click may deliberately
+-- retry it. claim_token fences stale callbacks after restarts and concurrent server/tick races. The
+-- task's normal state/error remain the owner-facing source of truth; this table is the convergence lock.
+CREATE TABLE IF NOT EXISTS auto_review_episodes (
+  thread_id      TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+  revision       TEXT NOT NULL,
+  status         TEXT NOT NULL,
+  source         TEXT NOT NULL,
+  claim_token    TEXT,
+  attempt_count  INTEGER NOT NULL DEFAULT 1,
+  reason         TEXT,
+  verdict_json   TEXT,
+  verdict_run_id TEXT,
+  started_at     INTEGER NOT NULL,
+  settled_at     INTEGER,
+  updated_at     INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_thread     ON agent_runs(thread_id);
 CREATE INDEX IF NOT EXISTS idx_grades_model    ON model_grades(graded_model);
 CREATE INDEX IF NOT EXISTS idx_findings_thread ON findings(thread_id);
@@ -307,4 +326,5 @@ CREATE INDEX IF NOT EXISTS idx_notes_thread    ON operator_notes(thread_id);
 CREATE INDEX IF NOT EXISTS idx_supervisor_events_thread  ON supervisor_events(thread_id);
 CREATE INDEX IF NOT EXISTS idx_supervisor_events_created ON supervisor_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_supervisor_chat_created   ON supervisor_chat_turns(created_at);
+CREATE INDEX IF NOT EXISTS idx_auto_review_status        ON auto_review_episodes(status, updated_at);
 `;

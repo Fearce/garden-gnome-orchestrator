@@ -324,6 +324,8 @@ async function main(): Promise<void> {
       check("no implementor was spawned", h.implementorStarts() === 0, String(h.implementorStarts()));
       check("the task settled done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
       check("the park reason was cleared", !h.db.getThread(id)?.error, String(h.db.getThread(id)?.error));
+      const episode = h.db.getAutoReviewEpisode(id);
+      check("the accepted verdict and terminal claim are durable", episode?.status === "accepted" && episode.claimToken === null && episode.verdict?.accept === true, JSON.stringify(episode));
       const finding = h.db.listFindings(id).find((f) => f.fromRole === "reviewer");
       check("the acceptance is recorded as a finding", !!finding && finding.severity === "info", JSON.stringify(finding?.summary));
       check("the verdict summary is in the finding", (finding?.summary ?? "").includes("build + tests pass"), finding?.summary);
@@ -363,8 +365,37 @@ async function main(): Promise<void> {
       check("the concrete issues are in the finding detail", (finding?.detail ?? "").includes("tsc reports 3 errors"), String(finding?.detail));
       check("no implementor was spawned", h.implementorStarts() === 0, String(h.implementorStarts()));
       check("the slot was released", h.activePipelines() === 0, String(h.activePipelines()));
-      check("the button is armed again", (await h.mgr.autoReview(id)).state === "reviewing");
+      const parked = h.db.getAutoReviewEpisode(id);
+      check("the rejection is a durable parked outcome", parked?.status === "parked" && parked.claimToken === null && parked.verdict?.accept === false, JSON.stringify(parked));
+      const automatic = await h.mgr.autoReview(id, "supervisor");
+      check("the unattended Supervisor cannot retry unchanged rejected work", !automatic.ok && h.roleCalls.length === 1 && (automatic.error ?? "").includes("already parked"), JSON.stringify(automatic));
+      check("the owner button remains an intentional override", (await h.mgr.autoReview(id)).state === "reviewing");
       await settle(); // let that second review finish before the DB closes under it
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test B2: a decision only the owner can make is a terminal park for unattended automation --------
+  console.log("\nTest B2 — a needs-input rejection parks with the human decision and never auto-relaunches");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ maxReviewFixRounds: 0 });
+      const id = seedParkedTask(h);
+      h.setOutcome(okResult({
+        accept: false,
+        summary: "Kevin must choose whether the destructive migration is acceptable",
+        issues: [{ severity: "blocker", description: "Owner approval is required before deleting legacy rows" }],
+      }));
+      await h.mgr.autoReview(id, "supervisor");
+      await settle();
+      const task = h.db.getThread(id);
+      const episode = h.db.getAutoReviewEpisode(id);
+      check("needs-input remains visibly parked in review", task?.state === "review" && (task.error ?? "").includes("Kevin must choose"), JSON.stringify(task));
+      check("the unresolved human decision is persisted as a rejected verdict", episode?.status === "parked" && episode.verdict?.accept === false && (episode.reason ?? "").includes("Kevin must choose"), JSON.stringify(episode));
+      const retry = await h.mgr.autoReview(id, "supervisor");
+      check("the Supervisor cannot turn a human decision into a retry loop", !retry.ok && h.roleCalls.length === 1, JSON.stringify(retry));
     } finally {
       h.dispose();
     }
@@ -386,6 +417,8 @@ async function main(): Promise<void> {
       check(`${label} → still parked in review (never done)`, h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
       check(`${label} → the owner is told why`, (h.db.getThread(id)?.error ?? "").includes(expect), String(h.db.getThread(id)?.error));
       check(`${label} → no unhandled harness error leaked into the message`, !(h.db.getThread(id)?.error ?? "").includes("TypeError"), String(h.db.getThread(id)?.error));
+      const episode = h.db.getAutoReviewEpisode(id);
+      check(`${label} → the verdict-less/error outcome is durably parked`, episode?.status === "parked" && episode.claimToken === null, JSON.stringify(episode));
     } finally {
       h.dispose();
     }
@@ -572,6 +605,8 @@ async function main(): Promise<void> {
       check(`${label} → a verdict-less review re-parks, never accepts`, h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
       check(`${label} → the park names the empty run, not "Run failed (success)"`, !!h.db.getThread(id)?.error?.includes("produced no output"), String(h.db.getThread(id)?.error));
       check(`${label} → no implementor was spawned`, h.implementorStarts() === 0, String(h.implementorStarts()));
+      const automatic = await h.mgr.autoReview(id, "supervisor");
+      check(`${label} → exhausted recovery cannot start a fourth automatic reviewer`, !automatic.ok && h.roleCalls.length === 3, JSON.stringify(automatic));
     } finally {
       h.dispose();
     }
@@ -844,6 +879,189 @@ async function main(): Promise<void> {
       }
     } finally {
       h.dispose();
+    }
+  }
+
+  // -- Test T: durable restart reconciliation consumes the claim and fences the dead process -----------
+  console.log("\nTest T — restart reconciliation parks a claimed review and discards its stale late acceptance");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      h.setOutcome(okResult({ accept: true, summary: "stale process would accept this" }));
+      const release = h.holdNextRun();
+      await h.mgr.autoReview(id, "supervisor");
+      await settle();
+      const before = h.db.getAutoReviewEpisode(id);
+      check("the pre-restart reviewer owns a durable claim", before?.status === "running" && !!before.claimToken, JSON.stringify(before));
+
+      const rebooted = new ThreadManager(h.db, new EventHub(), new FileMemoryService(join(h.dir, "memory-reboot")), new StubAccounts() as unknown as AccountManager);
+      try {
+        const after = h.db.getThread(id);
+        const episode = h.db.getAutoReviewEpisode(id);
+        check("boot parks the orphaned claim with a clear reason", after?.state === "review" && (after.error ?? "").includes("will not relaunch automatically"), JSON.stringify(after));
+        check("boot consumes the claim token as a parked terminal outcome", episode?.status === "parked" && episode.claimToken === null, JSON.stringify(episode));
+
+        // Let an explicit owner start a new episode before the dead process finishes unwinding. Its late
+        // verdict and cleanup must both be fenced by the old token.
+        const newer = h.db.claimAutoReview(id, "owner");
+        if (!newer.ok) throw new Error(newer.reason);
+        h.db.updateThreadStageOutputs(id, { reviewFixing: true });
+        release();
+        await settle();
+        check("the dead process's late accept cannot overwrite a newer owner claim", h.db.getThread(id)?.state === "reviewing" && h.db.getAutoReviewEpisode(id)?.claimToken === newer.claimToken, JSON.stringify({ thread: h.db.getThread(id), episode: h.db.getAutoReviewEpisode(id) }));
+        check("the dead process's cleanup cannot erase the newer fix marker", h.db.getThreadStageOutputs(id).reviewFixing === true, JSON.stringify(h.db.getThreadStageOutputs(id)));
+        check("no stale accepted finding was posted", !h.db.listFindings(id).some((f) => f.summary.includes("accepted this as finished")));
+        h.db.reconcileInterruptedAutoReview(id, newer.claimToken, "Newer test claim parked without a verdict.");
+        h.db.updateThreadStageOutputs(id, { reviewFixing: false });
+        const automatic = await h.mgr.autoReview(id, "supervisor");
+        check("the rebooted unchanged task stays suppressed", !automatic.ok && h.roleCalls.length === 1, JSON.stringify(automatic));
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const any = rebooted as any;
+        if (any.capSupervisor) clearInterval(any.capSupervisor);
+        if (any.tokenResumeTimer) clearTimeout(any.tokenResumeTimer);
+      }
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test U: a restart while the reviewer waits on the owner closes the dead question ----------------
+  console.log("\nTest U — restart reconciliation turns a dead reviewer question into a visible review park");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      const claim = h.db.claimAutoReview(id, "owner");
+      if (!claim.ok) throw new Error(claim.reason);
+      const question = h.db.addQuestion({
+        threadId: id,
+        runId: null,
+        header: "Migration policy",
+        question: "May legacy rows be deleted?",
+        options: [],
+        multiSelect: false,
+      });
+      h.db.updateThread(id, { state: "awaiting_user" });
+      const rebooted = new ThreadManager(h.db, new EventHub(), new FileMemoryService(join(h.dir, "memory-question")), new StubAccounts() as unknown as AccountManager);
+      try {
+        const after = h.db.getThread(id);
+        check("the unanswered decision is named in the review reason", after?.state === "review" && (after.error ?? "").includes("May legacy rows be deleted?"), JSON.stringify(after));
+        check("the dead question is closed instead of waiting forever", h.db.getQuestion(question.id)?.answer?.includes("interrupted by a server restart") === true, JSON.stringify(h.db.getQuestion(question.id)));
+        check("the needs-input episode is terminally parked", h.db.getAutoReviewEpisode(id)?.status === "parked", JSON.stringify(h.db.getAutoReviewEpisode(id)));
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const any = rebooted as any;
+        if (any.capSupervisor) clearInterval(any.capSupervisor);
+        if (any.tokenResumeTimer) clearTimeout(any.tokenResumeTimer);
+      }
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test V: two independent managers/ticks can claim the task only once -----------------------------
+  console.log("\nTest V — concurrent auto-review ticks share one atomic claim");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      h.setOutcome(okResult({ accept: true, summary: "one reviewer is enough" }));
+      const release = h.holdNextRun();
+      const second = new ThreadManager(h.db, new EventHub(), new FileMemoryService(join(h.dir, "memory-second")), new StubAccounts() as unknown as AccountManager);
+      let secondRuns = 0;
+      let secondImplementorStarts = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (second as any).runRole = async (): Promise<RunOutcome> => {
+        secondRuns++;
+        return okResult({ accept: true, summary: "second manager must never launch" });
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (second as any).resumeImplementorOnly = async (): Promise<void> => {
+        secondImplementorStarts++;
+      };
+      try {
+        const [firstResult, secondResult] = await Promise.all([
+          h.mgr.autoReview(id, "supervisor"),
+          second.autoReview(id, "supervisor"),
+        ]);
+        await settle();
+        check("both concurrent callers receive an idempotent acknowledgement", firstResult.ok && secondResult.ok, JSON.stringify([firstResult, secondResult]));
+        check("only one reviewer process starts across both managers", h.roleCalls.length === 1 && secondRuns === 0, JSON.stringify({ first: h.roleCalls, secondRuns }));
+        check("the one durable episode has one attempt", h.db.getAutoReviewEpisode(id)?.attemptCount === 1, JSON.stringify(h.db.getAutoReviewEpisode(id)));
+
+        // A fix round uses the ordinary `implementing` label. A different manager has no local
+        // `reviewing` Set entry, so only the durable episode can stop Resume from spawning beside it.
+        h.db.updateThread(id, { state: "implementing" });
+        const guardedResume = await second.resumeThread(id);
+        await settle();
+        check("durable ownership also blocks a cross-manager Resume during a fix-round state", guardedResume.ok && secondImplementorStarts === 0, JSON.stringify({ guardedResume, secondImplementorStarts }));
+        h.db.updateThread(id, { state: "reviewing" });
+
+        release();
+        await settle();
+        check("the sole reviewer settles normally", h.db.getThread(id)?.state === "done", JSON.stringify(h.db.getThread(id)));
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const any = second as any;
+        if (any.capSupervisor) clearInterval(any.capSupervisor);
+        if (any.tokenResumeTimer) clearTimeout(any.tokenResumeTimer);
+      }
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test W: first deployment repairs both parked and in-flight legacy episodes conservatively ------
+  console.log("\nTest W — migration repairs legacy loops without inferring acceptance");
+  {
+    const dir = mkdtempSync(join(tmpdir(), "auto-review-migration-"));
+    const workspace = join(dir, "workspace");
+    const dbPath = join(dir, "orchestrator.sqlite");
+    mkdirSync(workspace, { recursive: true });
+    let db = new Db(dbPath);
+    let rebooted: InstanceType<typeof ThreadManager> | undefined;
+    try {
+      const parked = db.createThread({ title: "legacy parked review", workspace, rawPrompt: "park", brief: "park safely" });
+      const parkedRun = db.createRun({ threadId: parked.id, role: "reviewer", model: "legacy-reviewer" });
+      db.updateRun(parkedRun.id, { state: "done", endedAt: Date.now() });
+      db.updateThread(parked.id, { state: "review", error: "Auto-review didn't accept it: recorded blocker" });
+
+      const active = db.createThread({ title: "legacy active review", workspace, rawPrompt: "active", brief: "reconcile safely" });
+      db.createRun({ threadId: active.id, role: "reviewer", model: "legacy-reviewer" });
+      db.updateThread(active.id, { state: "reviewing", error: null });
+
+      const done = db.createThread({ title: "legacy completed review", workspace, rawPrompt: "done", brief: "leave done" });
+      const doneRun = db.createRun({ threadId: done.id, role: "reviewer", model: "legacy-reviewer" });
+      db.updateRun(doneRun.id, { state: "done", endedAt: Date.now() });
+      db.updateThread(done.id, { state: "done", error: null });
+
+      // Recreate exactly the pre-migration shape, then reopen through the real constructor migration.
+      db.raw.prepare("DELETE FROM auto_review_episodes").run();
+      db.raw.prepare("DELETE FROM kv WHERE key='auto_review_episode_backfill_v1'").run();
+      db.raw.close();
+      db = new Db(dbPath);
+
+      const parkedEpisode = db.getAutoReviewEpisode(parked.id);
+      const activeEpisode = db.getAutoReviewEpisode(active.id);
+      check("a legacy hand-back becomes a terminal parked suppression record", parkedEpisode?.status === "parked" && parkedEpisode.source === "reconciled" && parkedEpisode.claimToken === null, JSON.stringify(parkedEpisode));
+      check("a legacy in-flight reviewer receives a boot-reconcilable ownership token", activeEpisode?.status === "running" && activeEpisode.source === "reconciled" && !!activeEpisode.claimToken, JSON.stringify(activeEpisode));
+      check("migration never manufactures acceptance for an already-done historical row", db.getThread(done.id)?.state === "done" && db.getAutoReviewEpisode(done.id) === null, JSON.stringify(db.getAutoReviewEpisode(done.id)));
+
+      rebooted = new ThreadManager(db, new EventHub(), new FileMemoryService(join(dir, "memory")), new StubAccounts() as unknown as AccountManager);
+      const reconciled = db.getThread(active.id);
+      check("boot parks the migrated live reviewer instead of relaunching it", reconciled?.state === "review" && (reconciled.error ?? "").includes("will not relaunch automatically"), JSON.stringify(reconciled));
+      check("the migrated claim is consumed exactly once", db.getAutoReviewEpisode(active.id)?.status === "parked" && db.getAutoReviewEpisode(active.id)?.claimToken === null, JSON.stringify(db.getAutoReviewEpisode(active.id)));
+    } finally {
+      if (rebooted) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const any = rebooted as any;
+        if (any.capSupervisor) clearInterval(any.capSupervisor);
+        if (any.tokenResumeTimer) clearTimeout(any.tokenResumeTimer);
+      }
+      db.raw.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   }
 

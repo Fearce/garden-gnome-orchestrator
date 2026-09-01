@@ -522,6 +522,29 @@ export interface ReviewerOutput {
   issues?: QaIssue[]; // when not accepting: the concrete reasons, so the owner sees the list without re-reviewing
 }
 
+/** Who requested one auto-review episode. `owner` covers the authenticated button/API and explicit
+ * owner-directed Supervisor chat; only the unattended watchdog uses `supervisor`. `reconciled` marks
+ * legacy outcomes recovered from the durable task/run trail during migration. */
+export type AutoReviewSource = "owner" | "supervisor" | "reconciled";
+
+/** Durable ownership and terminal outcome for the latest reviewable revision of one task. The task row
+ * remains the owner-facing state/reason; this record is the idempotency authority that prevents the
+ * unattended Supervisor from treating its own reviewer hand-back as a fresh review handoff. */
+export interface AutoReviewEpisode {
+  threadId: string;
+  revision: string;
+  status: "running" | "accepted" | "parked";
+  source: AutoReviewSource;
+  claimToken: string | null;
+  attemptCount: number;
+  reason: string | null;
+  verdict: ReviewerOutput | null;
+  verdictRunId: string | null;
+  startedAt: number;
+  settledAt: number | null;
+  updatedAt: number;
+}
+
 // ---- Auto model selection: the pick, its grade, and the scoreboard the next pick reads ----
 
 /** The implementor model auto-selection picked for ONE task: which backend, which model, how hard it

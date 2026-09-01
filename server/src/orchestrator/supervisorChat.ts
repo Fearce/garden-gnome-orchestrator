@@ -2,6 +2,7 @@ import type { JsonSchemaLike } from "../agents/structuredText.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type {
+  AutoReviewSource,
   Finding,
   SupervisorChatAction,
   SupervisorChatActionResult,
@@ -110,7 +111,7 @@ export interface SupervisorChatHost {
   ): Promise<ThreadActionResult>;
   interruptThread(threadId: string): Promise<ThreadActionResult>;
   resumeThread(threadId: string, message?: string, operatorInitiated?: boolean): Promise<ThreadActionResult>;
-  autoReview(threadId: string): Promise<ThreadActionResult>;
+  autoReview(threadId: string, source?: AutoReviewSource): Promise<ThreadActionResult>;
 }
 
 type Judge = (prompt: string, schema: JsonSchemaLike) => Promise<SupervisorJudgement | null>;

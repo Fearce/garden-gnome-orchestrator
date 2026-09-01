@@ -1,7 +1,7 @@
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import type { ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, QuestionOption, Role, Severity, ShotgunAssignment, Thread, ThreadLane } from "../types.js";
+import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, QuestionOption, Role, Severity, ShotgunAssignment, Thread, ThreadLane } from "../types.js";
 
 export interface DispatchInput {
   title: string;
@@ -140,6 +140,8 @@ export interface OrchestratorApi {
   setActiveDeadline(threadId: string, deadlineAt: number | null): Promise<ThreadActionResult>;
   cancelThread(threadId: string): Promise<ThreadActionResult>;
   retryThread(threadId: string): Promise<ThreadActionResult>;
-  /** Delegate the owner's final review of a task parked in `review` to the auto-reviewer. */
-  autoReview(threadId: string): Promise<ThreadActionResult>;
+  /** Delegate the owner's final review of a task parked in `review` to the auto-reviewer. The unattended
+   * Supervisor is the only caller that passes its source; authenticated/explicit owner paths default to
+   * `owner` and may deliberately retry an unchanged parked outcome. */
+  autoReview(threadId: string, source?: AutoReviewSource): Promise<ThreadActionResult>;
 }

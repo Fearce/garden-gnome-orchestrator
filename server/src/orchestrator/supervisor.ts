@@ -663,6 +663,25 @@ export class DirectorSupervisor {
     const lastActivity = this.host.db.lastActivityAt(threadId);
     const hasLiveRun = liveIds.has(threadId);
     const observedActivityAt = Math.max(thread.updatedAt, lastActivity ?? 0);
+    const autoReviewBlock = thread.state === "review" && !hasLiveRun
+      ? this.host.db.autoReviewAutomationBlock(threadId)
+      : null;
+    if (autoReviewBlock) {
+      // This is the convergence guard: the reviewer's own terminal hand-back is not a new work
+      // revision. Stop before a paid judgement, and leave one durable explanation for lifecycle/manual
+      // signals; routine sweeps stay silent. The owner can still click Auto-review explicitly.
+      if (trigger === "state_change" || trigger === "manual") {
+        this.record(
+          thread,
+          trigger,
+          "skip",
+          "start_auto_review",
+          `${autoReviewBlock} Automatic re-review is suppressed until new task work is recorded; an explicit owner re-review remains available.`,
+          false,
+        );
+      }
+      return;
+    }
     let assessment = assess(thread, { hasLiveRun, lastActivityAt: lastActivity, now: Date.now(), cfg: this.cfg });
 
     // A new non-cap failure is rare and merits a concise diagnosis now, not six hours later. Restrict
@@ -840,7 +859,7 @@ export class DirectorSupervisor {
         if (thread.state !== "review" || CAP_PARK_MARKER.test(thread.error ?? "")) {
           return { ok: false, reason: "auto-review skipped - only a normal review park is eligible" };
         }
-        const review = await this.host.autoReview(thread.id);
+        const review = await this.host.autoReview(thread.id, "supervisor");
         if (!review.ok) return { ok: false, reason: `auto-review declined - ${review.error ?? "the reviewer could not be started"}` };
         this.host.postFinding({
           threadId: thread.id,
