@@ -430,7 +430,7 @@ function OnlineOfficeSection() {
             spellCheck={false}
             autoComplete="off"
             maxLength={40}
-            placeholder="Kevin's tower"
+            placeholder="Main workstation"
             onChange={(e) => setName(e.target.value)}
           />
         </label>
@@ -464,7 +464,7 @@ function OnlineOfficeSection() {
         label="This machine"
         hint="How the other machines see you in the office roster and on each message your agents send."
         value={office.instanceName}
-        placeholder="Kevin's tower"
+        placeholder="Main workstation"
         maxLength={40}
         onChange={(v) => set({ instanceName: v })}
       />

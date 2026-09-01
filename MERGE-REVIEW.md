@@ -37,7 +37,7 @@ was written and had to be ported by hand.
 ## 2. How the branches were built
 
 - Each branch is `git cherry-pick -x` of the fork's real commits onto upstream HEAD, so **authorship is
-  preserved verbatim** (`Mikkel Sahlholdt <59990230+prismicious@users.noreply.github.com>`) and each commit
+  preserved verbatim** (the original fork's author metadata) and each commit
   carries a `(cherry picked from …)` line back to the legacy SHA.
 - Conflicts were resolved by hand against the upstream codebase. Where upstream and the fork had both
   evolved the same code, **upstream's newer design wins** (PORT-INVENTORY §5's rule).
@@ -388,7 +388,7 @@ peer-gating in `threadManager`/`prompts.ts` (the fork's office edits are **not**
 |---|---|
 | Upstream auto-sync tooling (`a097cc4`, `docs/upstream-sync.md`) | Already reverted on the fork by `612e68b`; a re-baselined repo shouldn't auto-sync. |
 | `infra/caddy/**` | A Caddy local-domains reverse proxy (Windows service + watchdog) — machine-specific ops, not an orchestrator feature. Keep in a separate ops repo. |
-| `infra/bet-tracker/**` | An always-on Supabase tracker for the *prediction-market-bot* project — belongs to that project, not here. |
+| `infra/bet-tracker/**` | An always-on Supabase tracker for a downstream project — belongs to that project, not here. |
 | `design/explorations/2026-07-23*/**` | 19 static HTML/CSS reskin mockups. Design reference only; pull ideas from them if you reskin, don't ship the files. |
 | The fork's office-coordination edits | **Superseded** — upstream's `0dc9ae9` peer-gating is the newer design (PORT-INVENTORY §6). |
 | `mergeUpstream` / `@{push}` update source (`82dca86`, `0219d9d`) | *My addition to the drop list.* Fork-topology workaround for a rewritten history with no common ancestor. This repo is a clean clone with shared history and no writable origin, so it is dead code here. See §3.3. |

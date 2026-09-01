@@ -580,8 +580,8 @@ export class OnlineOffice {
  *
  * Not `a.repoKey === id.key`: a fork and its upstream are one codebase under two remote identities, and
  * only ONE side needs to have the other's remote configured for the pair to be recognised — so both
- * directions are checked. This is the office ON-switch for cross-machine work; before it, Kevin's and
- * Mikkel's agents edited this very repo in rooms that could not see each other.
+ * directions are checked. This is the office ON-switch for cross-machine work; before it, agents on
+ * separate machines could edit this very repo in rooms that could not see each other.
  */
 function sameRepo(id: RepoIdentity, agent: { repoKey: string; repoAliases?: string[] }): boolean {
   return identitiesMatch(id, [agent.repoKey, ...(agent.repoAliases ?? [])]);

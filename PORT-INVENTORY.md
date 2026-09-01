@@ -1,22 +1,22 @@
 # PORT-INVENTORY — re-baselining Claude Orchestrator on current upstream
 
 **Generated:** 2026-07-24
-**New repo:** `C:\Users\Mikkel\projects\claude-orchestrator` (clean clone of upstream)
+**New repo:** `C:\Users\<operator>\projects\claude-orchestrator` (clean clone of upstream)
 **Upstream:** `https://github.com/Fearce/garden-gnome-orchestrator` — remote `upstream`, HEAD `6848cc4` (2026-07-24 15:44)
-**Legacy fork:** `C:\Users\Mikkel\projects\claude-orchastrator\claude-orchestrator` — remote `legacy`, `legacy/master` HEAD `12a7644` (2026-07-24 18:11)
+**Legacy fork:** `C:\Users\<operator>\projects\claude-orchastrator\claude-orchestrator` — remote `legacy`, `legacy/master` HEAD `12a7644` (2026-07-24 18:11)
 **Merge-base (3-way comparison point):** `cdf37e9` — *"docs(rules): add the merge-an-incoming-fork-PR playbook"* (2026-07-24 13:23)
 
 > **2026-08-27: the remote layout in §1 is SUPERSEDED. The port analysis is not.**
-> The `legacy` and `upstream` remotes described below are gone. Every checkout on Mikkel's box now has
+> The `legacy` and `upstream` remotes described below are gone. Every checkout on the operator's machine now has
 > exactly one remote, `origin` → `git@github.com:Fearce/garden-gnome-orchestrator.git`, and that repo is
 > writable, so §1's *"we do not own it; never push there"* no longer applies: push straight to `origin`.
 > All six `port/*` branches this report was written to support were pushed to that repo under the same
-> names, then removed again the same afternoon on Mikkel's revised instruction ("it's kind of rude to add
+> names, then removed again the same afternoon on the operator's revised instruction ("it's kind of rude to add
 > so many branches to someone else's repo") — they are **not** on `origin` today. Each is preserved as a
 > local branch in this checkout and in the restore-verified git bundle archive; nothing was lost. Push one
 > back to `origin` yourself when you're ready to open its PR.
 > The legacy misspelled checkout still exists on disk, and its pre-scrub history is on the separate private
-> repo `prismicious/claude-orchestrator`, but it is no longer wired in here as a remote. Everything else
+> private pre-scrub repository, but it is no longer wired in here as a remote. Everything else
 > below (the divergence inventory, the conflict zone, the per-feature citations) is unaffected and still
 > the reference. Full evidence: `docs/remote-consolidation-2026-08-27.md` (§2, §4½).
 
@@ -37,7 +37,7 @@ is accounted for, grouped by feature area, with commit/file citations for cherry
 - **The conflict zone is 9 files** both sides changed — dominated by `threadManager.ts` and `styles.css`.
   Everything else the fork added is in **new files** (86 of them) that graft cleanly.
 - **Drop from the port:** the upstream auto-sync tooling (the fork already removed it), the
-  environment-specific `infra/` (Caddy proxy, prediction-market bet-tracker), the design-exploration
+  environment-specific `infra/` (Caddy proxy, downstream bet-tracker), the design-exploration
   mockups, and most fork-internal process docs.
 
 ---
@@ -46,13 +46,13 @@ is accounted for, grouped by feature area, with commit/file citations for cherry
 
 ```
 $ git -C claude-orchestrator remote -v
-legacy    C:/Users/Mikkel/projects/claude-orchastrator/claude-orchestrator (fetch/push)
+legacy    C:/Users/<operator>/projects/claude-orchastrator/claude-orchestrator (fetch/push)
 upstream  https://github.com/Fearce/garden-gnome-orchestrator (fetch/push)
 ```
 
 - Cloned at upstream default branch (`master`) HEAD `6848cc4`, 318 commits.
 - `origin` renamed to `upstream` (we do **not** own it; never push there). No writable origin exists yet —
-  Mikkel will decide the remote later.
+  the owner will decide the remote later.
 - `legacy` added → local fork, fetched. All fork branches are available for cherry-picking
   (`legacy/master`, plus `feat/*`, `fix/*`, `reader-lane`, `local-testing`, etc.).
 - The legacy repo was **only read/fetched** — no commits, no working-tree changes were made to it.
@@ -181,10 +181,10 @@ Most are additive and low-risk; the risky subset is the §5 overlap set.
   These are fork-history/process artifacts; port selectively.
 
 ### 4.8 Environment-specific infra — **DROP from the baseline**
-Not orchestrator features — deployment/plumbing tied to Mikkel's machine and a specific downstream project:
+Not orchestrator features — deployment/plumbing tied to one operator's machine and a specific downstream project:
 - `infra/caddy/*` — a Caddy local-domains reverse proxy (Windows service, watchdog, verify scripts).
   Commits `fe0e45e`, `0f350de`.
-- `infra/bet-tracker/*` — an always-on Supabase tracker for the *prediction-market-bot* project.
+- `infra/bet-tracker/*` — an always-on Supabase tracker for a downstream project.
   Commits `d0e50a8`, `1b7e08b`, `05f9dac`, `ae2fca9`.
 Keep these in the legacy repo / a separate ops repo; they don't belong in a re-baselined orchestrator.
 

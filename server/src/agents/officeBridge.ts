@@ -533,7 +533,7 @@ function takeOfficeBody(
 
     // A backtick closes only a marker that actually OPENED with a wrapper. In an ordinary marker it is
     // Markdown content — the old unconditional stop produced "... improvement in" from a Sol claim
-    // whose next byte was the opening backtick around `src/bobfish/search.py`.
+    // whose next byte was the opening backtick around `src/project/search.py`.
     if (wrapped && ch === "`" && isClosingOfficeWrapper(text, i, openEnded)) {
       trailingTick = true;
       bodyParts.push(text.slice(lineStart, i));

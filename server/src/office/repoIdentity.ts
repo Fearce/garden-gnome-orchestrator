@@ -5,10 +5,10 @@ import { resolveRepoRoot, runGit } from "../gitService.js";
  *  `label` is what a human reads in the console and the relay's admin page.
  *
  *  `aliases` are the OTHER identities of the same repository — every remote this checkout has besides the
- *  one `key` came from. A fork is the case that needs them: Kevin's `origin` is `Fearce/gg` and Mikkel's
- *  is `prismicious/gg`, so keying on `origin` alone puts two people editing one codebase in two rooms
+ *  one `key` came from. A fork is the case that needs them: one checkout's `origin` is `upstream/gg`
+ *  and another's is `contributor/gg`, so keying on `origin` alone puts two people editing one codebase in two rooms
  *  that can never see each other. Whichever side has the other's remote configured (a fork checkout's
- *  `upstream`, or an `mikkel` remote on the upstream side) supplies the link, and the two group. */
+ *  `upstream`, or a fork remote on the upstream side) supplies the link, and the two group. */
 export interface RepoIdentity {
   key: string;
   label: string;
@@ -30,7 +30,7 @@ export function identitiesMatch(a: RepoIdentity, keys: readonly string[]): boole
 
 /** The repository's bare name — `github.com/fearce/card-marker` → `card-marker`, `name:scratch` →
  *  `scratch`. Two keys sharing a leaf are SUSPECTED of being one repo (a fork), never assumed to be:
- *  `Fearce/utilities` and `prismicious/utilities` are a real pair of unrelated repos on this very relay,
+ *  two similarly named repos on different accounts can be unrelated,
  *  which is why a matching leaf reports a suggestion and an explicit remote is what actually links them. */
 export function repoLeaf(key: string): string {
   const bare = key.startsWith("name:") ? key.slice(5) : key;
@@ -41,8 +41,8 @@ export function repoLeaf(key: string): string {
  * The identity of the repository a task is working in — the thing two people's checkouts have in common.
  *
  * The LOCAL office keys its project rooms on `normalizeWorkspace(thread.workspace)`, a filesystem path.
- * That is exactly right on one machine and useless across the internet: Kevin's `C:\repos\card-marker`
- * and a friend's `~/dev/card-marker` are the same repository and would never group. So the online room
+ * That is exactly right on one machine and useless across the internet: two different local paths
+ * can be the same repository and would never group. So the online room
  * key is the repository's REMOTE identity — host + owner + name, stripped of scheme, credentials, `.git`
  * and case — which both checkouts agree on because they were cloned from it.
  *

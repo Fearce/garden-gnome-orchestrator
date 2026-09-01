@@ -659,7 +659,7 @@ export class Db {
 
   /**
    * One-time: recover which machine each pre-existing cross-machine line came from. Before
-   * `remote_instance` existed the machine was recorded only inside `sender_name` ("Sif @ Mikkel's box"),
+   * `remote_instance` existed the machine was recorded only inside `sender_name` ("Sif @ remote workstation"),
    * so every room whose conversation predates the column reads as having no remote participant — and
    * stays hidden behind a chatroom tab that never appears, which is the whole defect the column fixes.
    *

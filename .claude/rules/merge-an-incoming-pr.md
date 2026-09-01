@@ -4,9 +4,9 @@ The repo went public 2026-07-22, so "merge these PRs in" is a recurring ask. PRs
 from FORKS (e.g. `Merkelmore/garden-gnome-orchestrator`, PR #13), and a fork's history
 may have been rewritten during the OSS secret-scrub, so such a PR **shares no common
 ancestry** with `master`. That breaks the naive merge — do it the cherry-pick way.
-(Mikkel's own `prismicious` fork was the original example. It was retired on 2026-08-27:
-every one of his checkouts now pushes straight to `Fearce/garden-gnome-orchestrator`, so
-his work arrives as a branch on this repo, not as a fork PR.)
+(A retired personal fork was the original example. It was retired on 2026-08-27:
+every checkout now pushes straight to this repository, so
+work arrives as a branch on this repo, not as a fork PR.)
 
 ## The flow that works
 1. `gh pr list --state open --json number,title,headRefName,mergeable,isDraft` — triage.

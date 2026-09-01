@@ -84,8 +84,8 @@ a log line (a newline in a joining instance's name could forge container-log ent
 
 - **The join code is the whole boundary.** A member may name *any* repo room and receive its presence and
   chat; rooms separate strangers, not members. That is the right trade for a small invited office, but it
-  means "Mikkel is in the office" and "Mikkel could read any room he names" are the same statement. The
-  owner view today lists rooms for `votaorg/vota-ios` and `Fearce/bobfish` alongside the shared ones, so
+  means "a trusted member is in the office" and "that member could read any room they name" are the same statement. The
+  owner view today lists private project rooms alongside the shared ones, so
   the rooms carry coordination chatter about private work, not only about the repo everyone shares.
   Rotating the code locks out new joins without disturbing anyone already in; revoking a device is
   `DELETE /api/members/<id>`. If that separation ever needs to be real rather than social, the change is

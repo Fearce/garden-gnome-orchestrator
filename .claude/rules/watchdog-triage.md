@@ -36,7 +36,7 @@ heading it sits under, so the digest already tells you where each item lives. Re
 re-grepping by hand, and carry each item plus that location into your hand-off: a report can be complete, committed, and still say
 **CONDITIONAL GO** with an open decision only the owner can make. Surface that conditional
 and where it lives (e.g. MIGRATION-READINESS.md §0 Verdict, §1.3 push safety, §6 "the
-decision only Mikkel can make") — an overnight watchdog that says "healthy" and hides a
+decision only the owner can make") — an overnight watchdog that says "healthy" and hides a
 blocking human decision costs the owner the morning.
 
 ## If the verdict is STRANDED

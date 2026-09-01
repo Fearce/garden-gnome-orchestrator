@@ -1,11 +1,11 @@
-# Remote consolidation: retiring the `prismicious` fork (2026-08-27)
+# Remote consolidation: retiring the personal fork (2026-08-27)
 
 **Question asked:** *"Is this running on my fork or the real branch? It's very confusing, I think we
 should remove the fork from github."*
 
 **Short answer:** it was never running on the fork. The live orchestrator runs from a **third** checkout,
 `projects\garden-gnome-orchestrator`, and that checkout's `master` is a strict ancestor of the real repo.
-(Mikkel's own notes did record this, in `Claude\notes\claude-orchestrator-leverage.md`, dated at the
+(The operator's private notes did record this, dated at the
 2026-08-10 cutover. The task brief that prompted this work did not, which is itself part of the answer:
 the topology was documented in one place and stale in another.) The confusion was real, but it came from
 three checkouts and three GitHub repos with overlapping names, not from running fork code.
@@ -22,17 +22,17 @@ the `port/*` branches tracked nothing, so `git status -sb` printed no ahead/behi
 
 | Path | Role | `origin` before | `origin` now |
 |---|---|---|---|
-| `C:\Users\Mikkel\projects\garden-gnome-orchestrator` | **the live :4317 service** | prismicious fork | `Fearce/garden-gnome-orchestrator` |
-| `C:\Users\Mikkel\projects\claude-orchestrator` | the 2026-07-26 re-baseline (agents work here) | prismicious fork | `Fearce/garden-gnome-orchestrator` |
-| `C:\Users\Mikkel\projects\claude-orchastrator\claude-orchestrator` | the old misspelled superset | `prismicious/claude-orchestrator` (private) | unchanged |
+| `C:\Users\<operator>\projects\garden-gnome-orchestrator` | **the live :4317 service** | personal fork | real repo |
+| `C:\Users\<operator>\projects\claude-orchestrator` | the 2026-07-26 re-baseline (agents work here) | personal fork | real repo |
+| `C:\Users\<operator>\projects\claude-orchastrator\claude-orchestrator` | the old misspelled superset | private pre-scrub repo | unchanged |
 
 The live service was identified from the listener itself, not from a guess:
 
 ```
 PID 26324 on :4317
 "C:\Program Files\nodejs\node.exe"
-  --require C:\Users\Mikkel\projects\garden-gnome-orchestrator\server\node_modules\tsx\dist\preflight.cjs
-  --import  file:///C:/Users/Mikkel/projects/garden-gnome-orchestrator/server/node_modules/tsx/dist/loader.mjs
+  --require C:\Users\<operator>\projects\garden-gnome-orchestrator\server\node_modules\tsx\dist\preflight.cjs
+  --import  file:///C:/Users/<operator>/projects/garden-gnome-orchestrator/server/node_modules/tsx/dist/loader.mjs
   src/index.ts
 ```
 
@@ -47,8 +47,8 @@ branch. So: real-repo code, 25 commits old, never fork code.
 | Repo | What it is | Disposition |
 |---|---|---|
 | `Fearce/garden-gnome-orchestrator` | public, the real repo, the source of truth | **the only remote anything points at now** |
-| `prismicious/garden-gnome-orchestrator` | public **fork** of the above, 12 branches | **to be deleted by Mikkel** (see §4) |
-| `prismicious/claude-orchestrator` | private, **not a fork**, the old pre-scrub superset | **kept.** Not the fork Mikkel meant, and it is the only home of the legacy history |
+| `<personal-account>/garden-gnome-orchestrator` | public **fork** of the above, 12 branches | **to be deleted by the operator** (see §4) |
+| `<personal-account>/claude-orchestrator` | private, **not a fork**, the old pre-scrub superset | **kept.** Not the fork the operator meant, and it is the only home of the legacy history |
 
 `Fearce/claude-orchestrator` is not a separate repo: it 301-redirects to `garden-gnome-orchestrator`
 (the repo was renamed), which is why the misspelled checkout's `upstream` still resolved.
@@ -68,7 +68,7 @@ branch. So: real-repo code, 25 commits old, never fork code.
 Nine of the ten branches in the re-baseline checkout had **zero** commits missing from the fork. The
 legacy checkout's raw counts looked alarming (`master` alone showed 379 commits "not on the fork") purely
 because its history was rewritten in the OSS secret-scrub, so every sha differs by construction. Checked
-against the repo those branches actually belong to, `prismicious/claude-orchestrator`, eight of nine came
+against the repo those branches actually belong to, the private pre-scrub repository, eight of nine came
 back at zero and only `0a15462` was genuinely local.
 
 ### Commits that existed only on the fork: three, on two branches
@@ -92,11 +92,11 @@ live checkout its object survived only as a remote-tracking ref, i.e. only for a
 
 ### 2.1 Archive first
 
-`C:\Users\Mikkel\projects\claude-orchestrator\_fork-archive-2026-08-27\`
+`C:\Users\<operator>\projects\claude-orchestrator\_fork-archive-2026-08-27\`
 
 | File | Contents |
 |---|---|
-| `prismicious-fork-all-branches.bundle` (8.3 MB) | all 12 fork branches, complete history |
+| `personal-fork-all-branches.bundle` (8.3 MB) | all 12 fork branches, complete history |
 | `local-only-proto-nisse-workers.bundle` (36 MB) | `proto/nisse-workers` (528 commits) |
 | `legacy-only-local-testing.bundle` (258 KB) | legacy `local-testing` (40 commits), carrier of `0a15462` |
 
@@ -155,7 +155,7 @@ Every checkout now has **one** remote and truthful tracking.
 ```
 re-baseline    origin  git@github.com:Fearce/garden-gnome-orchestrator.git      (upstream, legacy: removed)
 live service   origin  git@github.com:Fearce/garden-gnome-orchestrator.git      (upstream: removed)
-legacy dir     origin  git@github.com:prismicious/claude-orchestrator.git       (kept: the pre-scrub history)
+legacy dir     origin  git@github.com:<personal-account>/claude-orchestrator.git       (kept: the pre-scrub history)
                upstream git@github.com:Fearce/garden-gnome-orchestrator.git     (URL refreshed off the old name)
 ```
 
@@ -163,7 +163,7 @@ legacy dir     origin  git@github.com:prismicious/claude-orchestrator.git       
 2026-07-26 port, which is finished. Re-add it in one command if an archaeology question comes up:
 
 ```
-git remote add legacy C:/Users/Mikkel/projects/claude-orchastrator/claude-orchestrator
+git remote add legacy C:/Users/<operator>/projects/claude-orchastrator/claude-orchestrator
 ```
 
 All eleven re-baseline branches and the live checkout's `master` were given tracking against `origin`, so
@@ -191,12 +191,12 @@ so it keeps working (it takes the remote as `-r`, default `origin`).
 
 ---
 
-## 4. The step that was left for Mikkel, and is now done
+## 4. The step that was left for the operator, and is now done
 
-> **CLOSED, 2026-08-27, same day.** Mikkel deleted the fork himself while this work was finishing.
-> `gh api repos/prismicious/garden-gnome-orchestrator` now returns 404 and `git ls-remote` on it returns
+> **CLOSED, 2026-08-27, same day.** The operator deleted the fork while this work was finishing.
+> `gh api repos/<personal-account>/garden-gnome-orchestrator` now returns 404 and `git ls-remote` on it returns
 > *"Repository not found"*, while the same token still reads `Fearce/garden-gnome-orchestrator` and
-> `prismicious/claude-orchestrator` normally, so this is a real deletion and not an auth failure. The only
+> the private pre-scrub repository normally, so this is a real deletion and not an auth failure. The only
 > remaining fork of the real repo is `Merkelmore/garden-gnome-orchestrator` (a third party's, untouched).
 >
 > **Post-deletion loss check, run against the archive bundle rather than any surviving remote:** for each
@@ -206,11 +206,11 @@ so it keeps working (it takes the remote as `-r`, default `origin`).
 >
 > Everything below is kept as the record of what the decision looked like before it was taken.
 
-The fork is still there. `gh` is authenticated as `prismicious`, which **can** admin its own fork, but the
+The fork is still there. `gh` is authenticated as the personal account, which **can** admin its own fork, but the
 token has no `delete_repo` scope. Verified by attempting it rather than inferring it:
 
 ```
-$ gh repo delete prismicious/garden-gnome-orchestrator --yes
+$ gh repo delete <personal-account>/garden-gnome-orchestrator --yes
 HTTP 403: Must have admin rights to Repository.
 This API operation needs the "delete_repo" scope.
 ```
@@ -218,10 +218,10 @@ This API operation needs the "delete_repo" scope.
 Either route works:
 
 ```
-gh auth refresh -h github.com -s delete_repo && gh repo delete prismicious/garden-gnome-orchestrator --yes
+gh auth refresh -h github.com -s delete_repo && gh repo delete <personal-account>/garden-gnome-orchestrator --yes
 ```
 
-or the click-path: <https://github.com/prismicious/garden-gnome-orchestrator/settings>, scroll to the
+or the GitHub repository settings page, then scroll to the
 Danger Zone, **Delete this repository**.
 
 ### What deleting it costs, in full
@@ -246,7 +246,7 @@ Danger Zone, **Delete this repository**.
 
 ## 4½. Revised end-state, same day: the migrated branches were removed from the real repo too
 
-> **CLOSED, 2026-08-27, later the same afternoon.** Mikkel revised the target once §2–§4 above had
+> **CLOSED, 2026-08-27, later the same afternoon.** The operator revised the target once §2–§4 above had
 > already landed: keep every migrated commit safe (locally + in the bundle archive), but don't leave
 > ten extra branches sitting on someone else's (Fearce's) repo just because that's where the rescue
 > happened to land them — *"it's kind of rude to add so many branches to someone else's repo."*
@@ -254,7 +254,7 @@ Danger Zone, **Delete this repository**.
 > All ten branches §2.2 pushed were deleted from `origin` (`git push origin --delete <branch>`, not the
 > `gh` admin API, which still 403s the same way) **after** re-confirming, per branch, that the exact
 > pushed sha is reachable from a local branch in this checkout **and** from
-> `_fork-archive-2026-08-27\prismicious-fork-all-branches.bundle` (`git bundle list-heads` /
+> `_fork-archive-2026-08-27\personal-fork-all-branches.bundle` (`git bundle list-heads` /
 > `git bundle verify`). No branch was deleted without both. `master` was never touched, and the ten
 > local branches + the bundle are untouched on disk — this was a remote-only operation.
 >
@@ -267,7 +267,7 @@ Danger Zone, **Delete this repository**.
 > Two closed PRs (`Fearce` #11, #12) had their head on one of these branches, so this looked like it
 > compounded the §4 risk. It does not: `refs/pull/11/head` and `refs/pull/12/head` survive both the fork
 > deletion and the branch cleanup, and both diffs still render in full — measured, see §4. Nothing this
-> task did, or that Mikkel did after it, cost a single commit or a single rendered diff.
+> task did, or that the operator did after it, cost a single commit or a single rendered diff.
 
 ---
 
@@ -276,8 +276,8 @@ Danger Zone, **Delete this repository**.
 - No checkout references the fork any more (§3).
 - `PORT-INVENTORY.md` §1 and `MIGRATION-READINESS.md` §1.3 carry dated superseding notes; their bodies are
   left intact as the audit trail of the cutover.
-- `.claude/rules/online-office.md` no longer claims this checkout carries a `mikkel` remote, and
+- `.claude/rules/online-office.md` no longer claims this checkout carries a personal-fork remote, and
   `.claude/rules/merge-an-incoming-pr.md` now uses `Merkelmore` as its live fork-PR example.
-- The remaining `prismicious/garden-gnome-orchestrator` strings in `relay/src/core.test.ts` and
+- The remaining personal-fork strings in `relay/src/core.test.ts` and
   `server/src/tests/onlineOffice.itest.ts` are **synthetic test fixtures**. Those tests build their own
   temp repos and never contact GitHub, so they keep passing and were deliberately left alone.

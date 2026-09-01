@@ -2,7 +2,7 @@
 
 **Report date:** 2026-07-25 (evening, unattended run)
 **Target cutover:** 2026-07-26 — all orchestrator work moves from the legacy misspelled
-`C:\Users\Mikkel\projects\claude-orchastrator` to **this** repo, `C:\Users\Mikkel\projects\claude-orchestrator`.
+`C:\Users\<operator>\projects\claude-orchastrator` to **this** repo, `C:\Users\<operator>\projects\claude-orchestrator`.
 **Verified against:** `master` @ `5493dc1` (pinned throughout this audit), `upstream/master` @ `6848cc4`,
 `legacy/master` @ `6148bb6`.
 
@@ -12,7 +12,7 @@
 > `legacy` and the build is exact and re-checkable. Re-run the one-liners in §7 before acting on §3.
 
 > **2026-08-27: §1.3's push-safety ACTION REQUIRED is CLOSED, and the remote names below are stale.**
-> `prismicious` has write access to `Fearce/garden-gnome-orchestrator` (verified: `gh-capability.sh` grades
+> the personal fork account has write access to this repository (verified: `gh-capability.sh` grades
 > WRITE, `admin=false push=true`), so the writable-origin question this report left open is answered. The
 > `legacy` and `upstream` remotes are gone; every checkout now has one remote, `origin` → the real repo.
 > The rest of the audit stands as the dated record of the 2026-07-26 cutover. Full evidence:
@@ -55,13 +55,13 @@ a design decision that lives in a commit the port list never saw — is the thin
 ### 1.1 Remotes — as described, with one exception
 
 ```
-legacy    C:/Users/Mikkel/projects/claude-orchastrator/claude-orchestrator   (fetch + push)
+legacy    C:/Users/<operator>/projects/claude-orchastrator/claude-orchestrator   (fetch + push)
 upstream  https://github.com/Fearce/garden-gnome-orchestrator                (fetch + push)
 ```
 
 - `legacy` is present and fetches fine (it moved during this audit — see §1.4).
 - `upstream` is present and points at the right URL.
-- **There is no writable `origin`.** Confirmed — that decision is still open and is Mikkel's to make (§6.1).
+- **There is no writable `origin`.** Confirmed — that decision is still open and is the operator's to make (§6.1).
 - ⚠️ **`upstream` is NOT fetch-only.** Its push URL is unset, which means it *inherits the fetch URL* —
   `git push` to `upstream` is a live, configured operation, not a blocked one. See §1.3.
 
@@ -365,7 +365,7 @@ that a number moved.
 ## 4. Build health — **green, end to end**
 
 Run in an **isolated detached worktree** at `master` @ `5493dc1`
-(`C:\Users\Mikkel\projects\_co-readiness`, its own `node_modules`), deliberately **not** in the main
+(`C:\Users\<operator>\projects\_co-readiness`, its own `node_modules`), deliberately **not** in the main
 checkout — that tree was dirty with another agent's cherry-pick, so building there would have measured
 their conflict markers, not the baseline. Worktree removed afterwards.
 
@@ -432,7 +432,7 @@ Notes:
 5. **Re-run the build path** after any merge: `npm run typecheck && npm run build`, then
    `npm run test:gates --prefix server`. Expect ≥18 gates (each ported feature registers its own).
 
-### The decision only Mikkel can make
+### The decision only the owner can make
 
 6. **Choose the writable origin.** There is deliberately no `origin` today. Until there is one, this repo has
    **no off-machine backup** — every port branch and every commit exists on exactly one disk. That is the
@@ -445,7 +445,7 @@ Notes:
 7. **Keep the legacy repo intact and read-only until the ports are finished.** The `8164ea2` gates have
    since been brought across (§3.4), but that is precisely the point: they were found *after*
    PORT-INVENTORY was written, by reading the legacy history. Anything else the port branches turn out to
-   have missed still exists *only* in `C:\Users\Mikkel\projects\claude-orchastrator`. Do not delete,
+   have missed still exists *only* in `C:\Users\<operator>\projects\claude-orchastrator`. Do not delete,
    archive or rewrite it until every port has landed here and been verified. Losing it loses them.
 8. **Verify the gate for real once §4.1/§4.2 merge** (§2.4). Already done *per branch* — toggle off →
    reload → nav button and pane gone, 10/10 assertions on each (§3.4) — so what remains is to re-run it
@@ -483,7 +483,7 @@ Notes:
 ## 7. Re-verify this report in one minute
 
 ```bash
-cd C:\Users\Mikkel\projects\claude-orchestrator
+cd C:\Users\<operator>\projects\claude-orchestrator
 git fetch upstream --prune && git fetch legacy --prune
 git log --oneline master..upstream/master                  # empty  => still at upstream HEAD
 git log --oneline upstream/master..master                  # only the PORT-INVENTORY docs commit(s)

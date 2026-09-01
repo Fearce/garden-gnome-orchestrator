@@ -502,7 +502,7 @@ function OfficeMsg({ m, title, name }: { m: DisplayChatMessage; title?: string; 
             {name ?? role}
           </span>
           <span className="office-msg-kind">{role}</span>
-          {/* The sender name already reads "Rune @ Mikkel's box"; this is the at-a-glance marker that the
+          {/* The sender name already reads "Rune @ remote workstation"; this is the at-a-glance marker that the
               line crossed the internet, so a room's cross-machine half is visible without reading names. */}
           {m.remoteInstance ? <span className="office-msg-remote" title={`From ${m.remoteInstance} — another machine`}>🌐</span> : null}
           {title ? <span className="office-msg-task">on “{trim(title, 32)}”</span> : null}

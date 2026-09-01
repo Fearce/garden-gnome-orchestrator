@@ -27,7 +27,7 @@ export interface RelayAgent {
   repoKey: string; // canonical repository identity
   repoLabel: string; // human-readable repo name, e.g. "Fearce/card-marker"
   /** The OTHER identities this checkout answers to — its remotes besides the one `repoKey` came from.
-   *  A fork is why this exists: `Fearce/gg` and `prismicious/gg` are one codebase and two keys, so
+   *  A fork is why this exists: `upstream/gg` and `contributor/gg` are one codebase and two keys, so
    *  keying on `repoKey` alone puts the two people editing it in rooms that never meet. An instance
    *  that knows the link declares it here and the relay joins it to the other side's room too — one
    *  side knowing is enough. OPTIONAL on purpose: a client that predates this simply sends none, which
