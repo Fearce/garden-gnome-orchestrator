@@ -105,6 +105,13 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import { acknowledgedInjection, injectionSendOptions, structuredAcknowledgedInjection } from "./injection.js";
+import {
+  ReviewInjectionStore,
+  reviewInjectionLabel,
+  reviewInjectionPrompt,
+  type ReviewInjection,
+  type ReviewInjectionLane,
+} from "./reviewInjections.js";
 import type {
   AgentEvent,
   AgentRunState,
@@ -771,6 +778,15 @@ export class ThreadManager implements OrchestratorApi {
   // Same idea for the on-demand auto-reviewer: it owns the slot alone while it decides the task's fate,
   // so an inject/resume must reach IT rather than wake an implementor beside it.
   private readonly liveReviewer = new Map<string, AgentRunLike>();
+  // The run ids behind the two structured-review handles. AgentRunLike intentionally carries no DB id,
+  // but reviewer-injection delivery must name the exact persisted recipient run rather than saying only
+  // "forwarded". These maps have the same lifetime as liveQa/liveReviewer.
+  private readonly liveQaRunId = new Map<string, string>();
+  private readonly liveReviewerRunId = new Map<string, string>();
+  // Auto-review itself runs in the background. Interrupt-mode owner steering chains its implementation
+  // resume behind this one owned task, which prevents a stopped review and a resumed writer from briefly
+  // sharing the workspace without making the WebSocket command wait for the whole review to unwind.
+  private readonly autoReviewTasks = new Map<string, Promise<void>>();
   // Concurrency control. activePipelines holds the threads whose pipeline (dispatch OR resume) is
   // currently executing; a fresh dispatch beyond maxConcurrent waits in dispatchQueue (FIFO) in the
   // 'queued' state and starts when a slot frees. Resumes of in-flight work aren't gated — they
@@ -851,6 +867,7 @@ export class ThreadManager implements OrchestratorApi {
   // The Director Supervisor watchdog (off by default) — see orchestrator/supervisor.ts. Standalone over a
   // narrow SupervisorHost view of this manager, so its logic never entangles with the pipeline internals.
   private readonly supervisor: DirectorSupervisor;
+  private readonly reviewInjections: ReviewInjectionStore;
 
   constructor(
     readonly db: Db,
@@ -859,6 +876,7 @@ export class ThreadManager implements OrchestratorApi {
     readonly accounts: AccountManager,
     readonly freeProviders?: FreeProviderService,
   ) {
+    this.reviewInjections = new ReviewInjectionStore(db);
     this.migrateProviderDefaults();
     this.modelCatalog = new ModelCatalog(
       db,
@@ -880,6 +898,7 @@ export class ThreadManager implements OrchestratorApi {
     // four-second boot auto-resume. Future alarms are re-armed from the same durable timestamps.
     this.restoreActiveDeadlines();
     this.markInterrupted();
+    this.reconcileReviewInjectionsAfterRestart();
     this.applyAccountEnabled();
     this.applyAccountWeeklySafety();
     this.accounts.setSpreadUsage(this.settingBool("setting_spread_usage", false));
@@ -1748,6 +1767,49 @@ export class ThreadManager implements OrchestratorApi {
     }
     const touched = Object.entries(tally).filter(([, n]) => n > 0);
     this.bootReconcile = touched.length ? touched.map(([k, n]) => `${k}=${n}`).join(" ") : null;
+  }
+
+  /** Reconcile the part markInterrupted cannot infer from task state alone: which owner instruction a
+   * dead structured-review run had actually acknowledged/delivered. QA gets the row back on its next
+   * charged reviewer retry. Auto-review intentionally does not auto-relaunch after a bounce, so its
+   * unfinished instructions move to an explicit implementor queue (or settle handled when that writer
+   * had already completed). Every transition adds a durable feed line; a restart never leaves a stale
+   * "delivered" claim pointing at a process that no longer exists. */
+  private reconcileReviewInjectionsAfterRestart(): void {
+    for (const thread of this.db.listThreads()) {
+      const open = this.reviewInjections.listOpen(thread.id);
+      if (!open.length) continue;
+      const qa = open.filter((row) => row.lane === "qa");
+      if (qa.length) {
+        const requeued = this.reviewInjections.requeueForReviewer(
+          qa.map((row) => row.id),
+          "The server restarted before the QA-directed instruction reached a terminal state; the next QA run must acknowledge it again.",
+          null,
+        );
+        for (const row of requeued) {
+          this.reviewInjectionFeed(thread.id, `↪ ${reviewInjectionLabel(row.id)} survived the server restart; prior QA delivery is no longer claimed, and the next QA run will receive it with its attachments.`);
+        }
+      }
+
+      const reviewer = open.filter((row) => row.lane === "reviewer");
+      const alreadyImplemented = reviewer.filter((row) => row.implementorCompletedAt != null || row.status === "implemented");
+      if (alreadyImplemented.length) {
+        const handled = this.reviewInjections.resolve(
+          alreadyImplemented.map((row) => row.id),
+          "Implementation completed before the restart; Auto-review did not record a final verdict, so the task remains parked for owner review.",
+        );
+        for (const row of handled) this.reviewInjectionFeed(thread.id, `✓ ${reviewInjectionLabel(row.id)} implementation had completed before restart; Auto-review did not settle, so owner review is required.`);
+      }
+      const unfinished = reviewer.filter((row) => !alreadyImplemented.some((done) => done.id === row.id));
+      const needsQueue = unfinished.filter((row) => row.status !== "queued_implementor");
+      if (needsQueue.length) {
+        const queued = this.reviewInjections.queueForImplementor(
+          needsQueue.map((row) => row.id),
+          "The server restarted before Auto-review could acknowledge/finish this instruction; it is retained for the next implementor resume.",
+        );
+        for (const row of queued) this.reviewInjectionFeed(thread.id, `⧗ ${reviewInjectionLabel(row.id)} survived the Auto-review restart and is queued for the next implementor resume; it is not claimed as delivered to the dead reviewer.`);
+      }
+    }
   }
 
   /** An auto-resume the PREVIOUS process promised but never delivered — it schedules the resume in memory,
@@ -5004,7 +5066,7 @@ export class ThreadManager implements OrchestratorApi {
    * direct runner access; this is its only steering seam. */
   canInjectSupervisorInstruction(threadId: string): boolean {
     const thread = this.db.getThread(threadId);
-    if (!thread || !["planning", "researching", "implementing", "qa", "reviewing"].includes(thread.state)) return false;
+    if (!thread || !["planning", "researching", "implementing", "qa", "reviewing", "awaiting_user"].includes(thread.state)) return false;
     return (
       this.live.has(threadId) ||
       this.liveRole.has(threadId) ||
@@ -5030,7 +5092,13 @@ export class ThreadManager implements OrchestratorApi {
         error: "No live task session remains to receive this board-wide instruction; it was not cold-resumed.",
       };
     }
-    return this.injectThread(threadId, `Supervisor instruction from the owner: ${message}`, mode, undefined, { retitle: false });
+    const state = this.db.getThread(threadId)?.state;
+    const recipient = state === "qa" || this.liveQa.has(threadId)
+      ? "qa"
+      : state === "reviewing" || this.autoReviewOwns(threadId)
+        ? "reviewer"
+        : "implementor";
+    return this.injectThread(threadId, `Supervisor instruction from the owner: ${message}`, mode, undefined, { retitle: false, recipient });
   }
 
   /** Supervisor notices are Discord-only. They never spill into the generic webhook while the separately
@@ -5725,10 +5793,32 @@ export class ThreadManager implements OrchestratorApi {
       // stops/supersedes that handle and resumes implementation without spawning beside the review.
       // (Researcher-phase notes flow forward into the implementor's kickoff instead.)
       if (role === "planner") this.liveRole.set(thread.id, agent);
-      if (role === "qa") this.liveQa.set(thread.id, agent);
-      if (role === "reviewer") this.liveReviewer.set(thread.id, agent);
+      if (role === "qa") {
+        this.liveQa.set(thread.id, agent);
+        this.liveQaRunId.set(thread.id, run.id);
+      }
+      if (role === "reviewer") {
+        this.liveReviewer.set(thread.id, agent);
+        this.liveReviewerRunId.set(thread.id, run.id);
+      }
+      const reviewLane = this.reviewLaneForRole(role);
+      const pendingReviewInjections = reviewLane
+        ? this.pendingReviewInjectionsForRun(thread.id, reviewLane)
+        : [];
+      if (pendingReviewInjections.length) {
+        startMessage = prependUserContentWithImages(
+          startMessage,
+          reviewInjectionPrompt(pendingReviewInjections),
+          this.reviewInjectionImages(pendingReviewInjections),
+        );
+      }
       agent.start(this.communicationContent(startMessage));
-      let res = await agent.result();
+      if (pendingReviewInjections.length) {
+        this.markReviewInjectionsDelivered(pendingReviewInjections, role as "qa" | "reviewer", run.id);
+      }
+      let res = reviewLane
+        ? await this.awaitStructuredReviewResult(thread, reviewLane, agent, run.id)
+        : await agent.result();
       // A provider can emit its cap signal before a success-shaped terminal result (for example an
       // assistant session-limit notice followed by `success`). The cap wins over that nominal result:
       // accepting it here would bypass the shared fallback ladder and turn a retryable quota event
@@ -5754,8 +5844,14 @@ export class ThreadManager implements OrchestratorApi {
       }
       if (role === "planner" && res && !res.isError && !capped) res = await this.drainDirectorNotes(thread, agent, res);
       if (role === "planner") this.liveRole.delete(thread.id);
-      if (role === "qa") this.liveQa.delete(thread.id);
-      if (role === "reviewer") this.liveReviewer.delete(thread.id);
+      if (role === "qa") {
+        this.liveQa.delete(thread.id);
+        this.liveQaRunId.delete(thread.id);
+      }
+      if (role === "reviewer") {
+        this.liveReviewer.delete(thread.id);
+        this.liveReviewerRunId.delete(thread.id);
+      }
       await agent.stop();
       this.untrack(thread.id, agent);
       const qaWasSuperseded = role === "qa" && this.qaSuperseded(thread.id);
@@ -8132,7 +8228,11 @@ export class ThreadManager implements OrchestratorApi {
       const qaNotes = this.directorNotes.get(thread.id);
       this.directorNotes.delete(thread.id);
       const noteBlock = qaNotes?.length ? `\n\n${acknowledgedInjection(qaNotes.join("\n\n"))}` : "";
-      const fixMsg = `${this.officeName(thread.id, "qa")} (your QA reviewer) found issues — fix ALL of these, then they'll re-check:\n${formatQaIssues(qa)}${noteBlock}`;
+      const durableQaRows = this.reviewInjections.pendingImplementor(thread.id, "qa", null);
+      const durableQaBlock = durableQaRows.length
+        ? `\n\nCurrent owner instruction(s) acknowledged by QA -- complete these in this same fix run:\n${durableQaRows.map((row) => `${reviewInjectionLabel(row.id)}: ${row.instruction}`).join("\n\n")}`
+        : "";
+      const fixMsg = `${this.officeName(thread.id, "qa")} (your QA reviewer) found issues — fix ALL of these, then they'll re-check:\n${formatQaIssues(qa)}${noteBlock}${durableQaBlock}`;
       // The implementor was fully stopped before QA, so RE-LAUNCH it through the same resume gate the
       // rest of the pipeline uses (warm full-session resume when the cache is fresh — fix-rounds are
       // minutes apart so it usually is — else a Haiku-compressed cold seed). This is what keeps the slot
@@ -8151,13 +8251,45 @@ export class ThreadManager implements OrchestratorApi {
         thread,
         kickoff,
         this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
-        { effort, resumeNudge, directorNote: resumeNudge, qaFollows: true, images: this.qaFixHandoffImages(handoff) },
+        {
+          effort,
+          resumeNudge,
+          directorNote: resumeNudge,
+          qaFollows: true,
+          images: uniqueImageBlocks([...this.qaFixHandoffImages(handoff), ...this.reviewInjectionImages(durableQaRows)]),
+        },
       );
       if (!start) return; // cancelled while compressing the prior session for the resume
       this.flushQaFixHandoffDelta(thread.id, start.run, deliveredHandoff);
+      // Include rows created during session materialization too: flushQaFixHandoffDelta just delivered
+      // their persisted text/images to this run, so this exact run id is now a truthful delivery claim.
+      const deliveredQaRows = this.reviewInjections.pendingImplementor(thread.id, "qa", null);
+      if (deliveredQaRows.length) {
+        this.markReviewImplementorDelivered(deliveredQaRows, start.runId);
+        const remaining = (this.queuedForImplementor.get(thread.id) ?? []).filter(
+          (message) => !deliveredQaRows.some((row) => row.instruction === message),
+        );
+        if (remaining.length) this.queuedForImplementor.set(thread.id, remaining);
+        else this.queuedForImplementor.delete(thread.id);
+      }
       this.clearQaFixHandoff(thread.id);
       this.flushDirectorNotes(thread.id, start.run);
       res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, resumeNudge);
+      if (deliveredQaRows.length) {
+        if (res && !res.isError) {
+          const handled = this.reviewInjections.resolve(
+            deliveredQaRows.map((row) => row.id),
+            "The QA fix implementor completed the current owner instruction.",
+          );
+          for (const row of handled) this.reviewInjectionFeed(thread.id, `[handled] ${reviewInjectionLabel(row.id)} completed in QA fix run ${start.runId.slice(0, 8)}.`);
+        } else {
+          const failed = this.reviewInjections.fail(
+            deliveredQaRows.map((row) => row.id),
+            "The QA fix implementor ended before completing the current owner instruction.",
+          );
+          for (const row of failed) this.reviewInjectionFeed(thread.id, `[failed] ${reviewInjectionLabel(row.id)} did not complete in the QA fix run.`);
+        }
+      }
       // Honor anything queued during this fix round too, before we loop back to QA.
       res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
       if (this.settleOwnerQaBypass(thread, res)) return;
@@ -8180,7 +8312,11 @@ export class ThreadManager implements OrchestratorApi {
     while (this.queuedForImplementor.get(thread.id)?.length && !this.cancelled(thread.id) && res && !res.isError) {
       const queued = this.queuedForImplementor.get(thread.id)!;
       this.queuedForImplementor.delete(thread.id);
-      const msg = acknowledgedInjection(`[Queued follow-up from ${config.ownerName} — do this too before you finish and hand off]\n${queued.join("\n\n")}`);
+      const durableRows = this.reviewInjections.pendingImplementor(thread.id);
+      const durableBlock = durableRows.length
+        ? `\n\nDurable owner instruction(s):\n${durableRows.map((row) => `${reviewInjectionLabel(row.id)}: ${row.instruction}`).join("\n\n")}`
+        : "";
+      const msg = acknowledgedInjection(`[Queued follow-up from ${config.ownerName} — do this too before you finish and hand off]\n${queued.join("\n\n")}${durableBlock}`);
       // End the just-finished run before relaunching so only one implementor ever holds the slot (the
       // same ordering QA fix-rounds use); the session id survives for the warm resume.
       await this.stopLive(thread.id);
@@ -8189,11 +8325,27 @@ export class ThreadManager implements OrchestratorApi {
         thread,
         kickoff,
         this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
-        { effort, resumeNudge: msg, directorNote: msg, qaFollows },
+        { effort, resumeNudge: msg, directorNote: msg, qaFollows, images: this.reviewInjectionImages(durableRows) },
       );
       if (!start) break; // cancelled while compressing the prior session
+      if (durableRows.length) this.markReviewImplementorDelivered(durableRows, start.runId);
       this.flushDirectorNotes(thread.id, start.run);
       res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, msg, qaFollows);
+      if (durableRows.length) {
+        if (res && !res.isError) {
+          const handled = this.reviewInjections.resolve(
+            durableRows.map((row) => row.id),
+            "The queued implementor completed the durable owner instruction.",
+          );
+          for (const row of handled) this.reviewInjectionFeed(thread.id, `✓ ${reviewInjectionLabel(row.id)} handled by queued implementor run ${start.runId.slice(0, 8)}.`);
+        } else {
+          const failed = this.reviewInjections.fail(
+            durableRows.map((row) => row.id),
+            "The queued implementor ended before completing the durable owner instruction.",
+          );
+          for (const row of failed) this.reviewInjectionFeed(thread.id, `✕ ${reviewInjectionLabel(row.id)} reached implementation, but that run did not complete it.`);
+        }
+      }
     }
     return res;
   }
@@ -8350,6 +8502,9 @@ export class ThreadManager implements OrchestratorApi {
   ): Promise<{ handled: true; result?: ResultEvent } | { handled: false }> {
     const messages = this.qaSupersedeMessages(thread.id);
     if (!messages) return { handled: false };
+    const reviewRows = this.reviewInjections
+      .listOpen(thread.id, "qa", null)
+      .filter((row) => row.mode === "interrupt");
     const resumeMsg = qaSupersedeResumeNudge(messages);
     const detail = messages.length ? messages.join("\n\n") : "No additional instruction was supplied; the owner stopped QA and returned the task to implementation.";
     this.capParked.delete(thread.id);
@@ -8388,11 +8543,19 @@ export class ThreadManager implements OrchestratorApi {
     }
     if (!start) {
       this.pendingResumeMsgs.delete(thread.id);
+      if (reviewRows.length && !this.capParked.has(thread.id)) {
+        const failed = this.reviewInjections.fail(
+          reviewRows.map((row) => row.id),
+          "QA stopped, but the implementor could not be resumed.",
+        );
+        for (const row of failed) this.reviewInjectionFeed(thread.id, `[failed] ${reviewInjectionLabel(row.id)}: QA stopped, but implementation could not start.`);
+      }
       if (!this.cancelled(thread.id) && this.db.getThread(thread.id)?.state === "implementing") {
         this.settleReview(thread.id, "QA was interrupted, but the implementor could not be resumed - needs your review.");
       }
       return { handled: true };
     }
+    if (reviewRows.length) this.markReviewImplementorDelivered(reviewRows, start.runId);
     this.clearQaSupersede(thread.id, round);
     this.flushDirectorNotes(thread.id, start.run);
     const buffered = this.pendingResumeMsgs.get(thread.id);
@@ -8402,6 +8565,21 @@ export class ThreadManager implements OrchestratorApi {
     }
     const qaFollows = !this.qaBypassedByOwner(thread.id);
     const result = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, resumeMsg, qaFollows);
+    if (reviewRows.length) {
+      if (result && !result.isError) {
+        const handled = this.reviewInjections.resolve(
+          reviewRows.map((row) => row.id),
+          "The implementor completed the owner instruction that superseded QA.",
+        );
+        for (const row of handled) this.reviewInjectionFeed(thread.id, `[handled] ${reviewInjectionLabel(row.id)} completed in implementor run ${start.runId.slice(0, 8)} after QA stopped.`);
+      } else {
+        const failed = this.reviewInjections.fail(
+          reviewRows.map((row) => row.id),
+          "The implementor ended before completing the instruction that superseded QA.",
+        );
+        for (const row of failed) this.reviewInjectionFeed(thread.id, `[failed] ${reviewInjectionLabel(row.id)} reached implementation after QA stopped, but did not complete.`);
+      }
+    }
     return { handled: true, result: await this.drainQueuedImplementor(thread, effort, kickoff, result, qaFollows) };
   }
 
@@ -8494,8 +8672,10 @@ export class ThreadManager implements OrchestratorApi {
     this.wireRun(agent, threadId, row.id, "qa", "lab");
     this.track(threadId, agent);
     this.liveQa.set(threadId, agent);
+    this.liveQaRunId.set(threadId, row.id);
     agent.onEnd(() => {
       if (this.liveQa.get(threadId) === agent) this.liveQa.delete(threadId);
+      if (this.liveQaRunId.get(threadId) === row.id) this.liveQaRunId.delete(threadId);
       this.untrack(threadId, agent);
       this.finalizeRun(row.id, agent);
     });
@@ -8503,24 +8683,310 @@ export class ThreadManager implements OrchestratorApi {
     return { ok: true, state: "qa", message: "Lab QA handle attached." };
   }
 
-  /** Deliver owner steering to a SCHEMA-BOUND one-shot role (QA, the auto-reviewer) — as a plain queued
-   *  message, never as an interrupt, whatever mode the owner picked.
-   *
-   *  `priority: "now"` is not a "reach the current turn sooner" hint: it IS an interrupt. The CLI aborts
-   *  the turn in flight the moment a "now" message is queued, and CodexAgentRun.send maps it straight to
-   *  requestInterrupt(). The abort then comes back as a SUCCESS-shaped result carrying no structured
-   *  output — so nothing downstream can tell it from a review that finished: runQA finds no verdict, it
-   *  is neither an empty run nor a turn-ceiling stop, and the loop parks the task in `review` with "QA
-   *  could not complete". That is how "Interrupt & inject" during QA killed a live task instead of
-   *  steering it. A plain send stays in the same session for the role's next turn.
-   *
-   *  The planner is deliberately NOT on this path: interrupting it is safe precisely because it HAS a
-   *  continuation — drainDirectorNotes re-plans off the aborted turn. Interrupt only a role that has one. */
-  private steerStructuredRole(run: AgentRunLike, message: string, images?: ImageAttachment[]): void {
+  private reviewLaneForRole(role: StructuredRole): ReviewInjectionLane | null {
+    return role === "qa" ? "qa" : role === "reviewer" ? "reviewer" : null;
+  }
+
+  private activeReviewEpisodeToken(threadId: string, lane: ReviewInjectionLane): string | null {
+    if (lane === "qa") return null;
+    const episode = this.db.getAutoReviewEpisode(threadId);
+    return episode?.status === "running" ? episode.claimToken : null;
+  }
+
+  private pendingReviewInjectionsForRun(threadId: string, lane: ReviewInjectionLane): ReviewInjection[] {
+    return this.reviewInjections.pendingReviewer(threadId, lane, this.activeReviewEpisodeToken(threadId, lane));
+  }
+
+  private reviewInjectionImages(rows: ReviewInjection[]): ImageBlock[] {
+    return this.attachmentImageBlocks(uniqueText(rows.flatMap((row) => row.attachmentIds)));
+  }
+
+  private reviewInjectionFeed(threadId: string, content: string, attachments?: AttachmentRef[]): void {
+    const message = this.db.addMessage({
+      threadId,
+      role: "director",
+      kind: "system",
+      content,
+      attachments: attachments?.length ? attachments : undefined,
+    });
+    this.hub.publish({ type: "thread.message", threadId, message });
+    this.touchThread(threadId);
+  }
+
+  private markReviewInjectionsDelivered(rows: ReviewInjection[], role: "qa" | "reviewer", runId: string): void {
+    const delivered = this.reviewInjections.markReviewerDelivered(rows.map((row) => row.id), runId);
+    for (const row of delivered) {
+      this.reviewInjectionFeed(
+        row.threadId,
+        `[delivered] ${reviewInjectionLabel(row.id)} reached active ${role} run ${runId.slice(0, 8)}; its verdict is held until the instruction is acknowledged and acted on.`,
+      );
+    }
+  }
+
+  private deliverReviewInjection(
+    row: ReviewInjection,
+    lane: ReviewInjectionLane,
+    run: AgentRunLike,
+    runId: string | undefined,
+  ): boolean {
     this.sendCommunication(
       run,
-      contentWithImages(structuredAcknowledgedInjection(message), images?.length ? images.map(toImageBlock) : []),
+      contentWithImages(reviewInjectionPrompt([row]), this.reviewInjectionImages([row])),
     );
+    if (!runId) {
+      this.reviewInjectionFeed(
+        row.threadId,
+        `[accepted] ${reviewInjectionLabel(row.id)} found a live ${lane === "qa" ? "QA" : "auto-review"} handle without a persisted run id. The acknowledgement fence remains active; no exact-run delivery is claimed yet.`,
+      );
+      return false;
+    }
+    this.markReviewInjectionsDelivered([row], lane === "qa" ? "qa" : "reviewer", runId);
+    return true;
+  }
+
+  private acceptReviewInjection(
+    threadId: string,
+    lane: ReviewInjectionLane,
+    mode: "append" | "interrupt",
+    instruction: string,
+    attachments?: AttachmentRef[],
+  ): ReviewInjection {
+    const row = this.reviewInjections.create({
+      threadId,
+      lane,
+      episodeToken: this.activeReviewEpisodeToken(threadId, lane),
+      mode,
+      instruction,
+      attachmentIds: attachmentIdsFromRefs(attachments),
+    });
+    this.reviewInjectionFeed(
+      threadId,
+      `[accepted] ${reviewInjectionLabel(row.id)} entered the active ${lane === "qa" ? "QA" : "auto-review"} lane (${mode}); recipient delivery is pending. ${instruction}${attachments?.length ? ` [+${attachments.length} image(s)]` : ""}`,
+      attachments,
+    );
+    return row;
+  }
+
+  private queueReviewInjectionsForImplementor(rows: ReviewInjection[], reason: string): ReviewInjection[] {
+    const queued = this.reviewInjections.queueForImplementor(rows.map((row) => row.id), reason);
+    for (const row of queued) {
+      this.reviewInjectionFeed(row.threadId, `[queued] ${reviewInjectionLabel(row.id)} is queued for the implementor: ${reason}`);
+    }
+    return queued;
+  }
+
+  private markReviewImplementorDelivered(rows: ReviewInjection[], runId: string): ReviewInjection[] {
+    const delivered = this.reviewInjections.markImplementorDelivered(rows.map((row) => row.id), runId);
+    for (const row of delivered) {
+      this.reviewInjectionFeed(
+        row.threadId,
+        `[delivered] ${reviewInjectionLabel(row.id)} reached implementor run ${runId.slice(0, 8)}; waiting for implementation to finish${row.lane === "reviewer" && row.mode === "append" ? " and the reviewer to re-check it" : ""}.`,
+      );
+    }
+    return delivered;
+  }
+
+  /** Finish an explicit Auto-review interrupt without blocking the socket command on the review task.
+   * The durable interrupt row is the hand-off token. Once the old lane has unwound, exactly one callback
+   * claims the normal `resuming` guard and starts implementation with every still-queued interrupt. */
+  private scheduleReviewerInterruptResume(threadId: string, task: Promise<void>): void {
+    void task
+      .catch((error) => this.hub.log("warn", `Superseded Auto-review ${threadId.slice(0, 8)} ended while unwinding: ${String(error)}`))
+      .then(() => {
+        const queued = this.reviewInjections
+          .pendingImplementor(threadId, "reviewer")
+          .filter((row) => row.mode === "interrupt");
+        if (!queued.length) return;
+        const thread = this.db.getThread(threadId);
+        if (!thread || ["done", "cancelled", "closed"].includes(thread.state)) {
+          const reason = `The task settled ${thread?.state ?? "after being removed"} before the superseding instruction could start implementation.`;
+          const failed = this.reviewInjections.fail(queued.map((row) => row.id), reason);
+          for (const row of failed) this.reviewInjectionFeed(threadId, `[failed] ${reviewInjectionLabel(row.id)}: ${reason}`);
+          return;
+        }
+        const live = this.live.get(threadId);
+        if (live) {
+          this.sendCommunication(
+            live.run,
+            contentWithImages(
+              acknowledgedInjection(queued.map((row) => `${reviewInjectionLabel(row.id)}: ${row.instruction}`).join("\n\n")),
+              this.reviewInjectionImages(queued),
+            ),
+            { priority: "now" },
+          );
+          this.markReviewImplementorDelivered(queued, live.runId);
+          return;
+        }
+        if (this.resuming.has(threadId) || this.activePipelines.has(threadId)) return;
+        this.resuming.add(threadId);
+        this.setState(threadId, "implementing");
+        void this.resumeImplementorOnly(thread, undefined, queued.map((row) => row.id));
+      });
+  }
+
+  private async routeReviewRecipientRace(
+    thread: Thread,
+    lane: ReviewInjectionLane,
+    mode: "append" | "interrupt",
+    instruction: string,
+    attachments: AttachmentRef[] | undefined,
+    images: ImageAttachment[] | undefined,
+  ): Promise<ThreadActionResult> {
+    if (["done", "cancelled", "closed"].includes(thread.state)) {
+      const reason = `${lane === "qa" ? "QA" : "Auto-review"} had already settled the task ${thread.state} before this instruction reached the server. Nothing was delivered or resumed.`;
+      const row = this.reviewInjections.create({
+        threadId: thread.id,
+        lane,
+        episodeToken: null,
+        mode,
+        instruction,
+        attachmentIds: attachmentIdsFromRefs(attachments),
+        status: "too_late",
+        resolution: reason,
+      });
+      this.reviewInjectionFeed(
+        thread.id,
+        `✕ ${reviewInjectionLabel(row.id)} was too late for the intended ${lane === "qa" ? "QA reviewer" : "auto-reviewer"}: ${reason} ${instruction}${attachments?.length ? ` [+${attachments.length} image(s)]` : ""}`,
+        attachments,
+      );
+      return { ok: false, state: thread.state, error: `${reviewInjectionLabel(row.id)}: ${reason}` };
+    }
+
+    const row = this.acceptReviewInjection(thread.id, lane, mode, instruction, attachments);
+    const queued = this.queueReviewInjectionsForImplementor(
+      [row],
+      `${lane === "qa" ? "QA" : "Auto-review"} finished before delivery; the instruction is retained for implementation instead of being sent to a dead reviewer.`,
+    );
+    const impl = this.live.get(thread.id);
+    if (impl) {
+      this.sendCommunication(
+        impl.run,
+        contentWithImages(acknowledgedInjection(`${reviewInjectionLabel(row.id)}: ${instruction}`), images?.map(toImageBlock) ?? []),
+        mode === "interrupt" ? { priority: "now" } : undefined,
+      );
+      this.markReviewImplementorDelivered(queued, impl.runId);
+      return {
+        ok: true,
+        state: "implementing",
+        message: `${reviewInjectionLabel(row.id)} arrived after the reviewer finished and was delivered to the active implementor instead.`,
+      };
+    }
+    const anotherLaneStillOwnsTask =
+      this.liveRole.has(thread.id) ||
+      this.liveQa.has(thread.id) ||
+      this.resuming.has(thread.id) ||
+      this.activePipelines.has(thread.id) ||
+      PRE_IMPLEMENTOR.has(thread.state) ||
+      ["qa", "reviewing", "awaiting_user"].includes(thread.state);
+    if (anotherLaneStillOwnsTask) {
+      const current = this.queuedForImplementor.get(thread.id) ?? [];
+      this.queuedForImplementor.set(thread.id, uniqueText([...current, instruction]));
+      return {
+        ok: true,
+        state: thread.state,
+        message: `${reviewInjectionLabel(row.id)} missed the intended reviewer and is queued for implementation after the current ${thread.state} lane releases the task; no second agent was started.`,
+      };
+    }
+    if (mode === "interrupt") {
+      this.resuming.add(thread.id);
+      this.setState(thread.id, "implementing");
+      void this.resumeImplementorOnly(thread, undefined, queued.map((item) => item.id));
+      return {
+        ok: true,
+        state: "implementing",
+        message: `${reviewInjectionLabel(row.id)} arrived after the reviewer finished; reviewer delivery is marked too late and an implementor resume is queued.`,
+      };
+    }
+    return {
+      ok: true,
+      state: thread.state,
+      message: `${reviewInjectionLabel(row.id)} arrived after the reviewer finished and is durably queued for the next implementor; no live delivery is claimed.`,
+    };
+  }
+
+  /**
+   * A schema-bound reviewer emits one result per user turn. A live injection is another queued user
+   * turn, so the first result can be the now-stale verdict the reviewer was already composing. Never
+   * tear the run down on that result: wait for the result that explicitly names every durable injection.
+   * Two schema-valid misses are enough to fail visibly and park; an ignored owner instruction can never
+   * be transformed into acceptance by retrying forever or by treating silence as acknowledgement.
+   */
+  private async awaitStructuredReviewResult(
+    thread: Thread,
+    lane: ReviewInjectionLane,
+    agent: AgentRunLike,
+    runId: string,
+  ): Promise<ResultEvent | undefined> {
+    let result = await agent.result();
+    let acknowledgementMisses = 0;
+    while (!this.cancelled(thread.id)) {
+      let pending = this.pendingReviewInjectionsForRun(thread.id, lane);
+      const summary = ((result?.structuredOutput as { summary?: unknown } | undefined)?.summary);
+      if (pending.length && typeof summary === "string" && summary.trim()) {
+        const acknowledged = this.reviewInjections.acknowledgeFromSummary(pending, summary.trim());
+        for (const row of acknowledged) {
+          this.reviewInjectionFeed(
+            thread.id,
+            `[acknowledged] ${reviewInjectionLabel(row.id)} was acknowledged by ${lane === "qa" ? "QA" : "the auto-reviewer"} in run ${runId.slice(0, 8)}: ${summary.trim()}`,
+          );
+        }
+        if (lane === "qa" && acknowledged.length) {
+          const queued = this.reviewInjections.queueForImplementor(
+            acknowledged.map((row) => row.id),
+            "QA acknowledged the owner instruction; it is queued for implementation before the task can settle.",
+          );
+          const current = this.queuedForImplementor.get(thread.id) ?? [];
+          this.queuedForImplementor.set(thread.id, uniqueText([...current, ...queued.map((row) => row.instruction)]));
+          for (const row of queued) {
+            this.reviewInjectionFeed(thread.id, `[queued] ${reviewInjectionLabel(row.id)} is queued for the implementor after QA acknowledgement; QA cannot settle the task with it unread.`);
+          }
+        }
+      }
+
+      pending = this.pendingReviewInjectionsForRun(thread.id, lane);
+      if (!pending.length) return result;
+
+      const undelivered = pending.filter((row) => row.reviewerRunId !== runId || row.reviewerDeliveredAt == null);
+      if (undelivered.length) {
+        this.sendCommunication(
+          agent,
+          contentWithImages(reviewInjectionPrompt(undelivered), this.reviewInjectionImages(undelivered)),
+        );
+        this.markReviewInjectionsDelivered(undelivered, lane === "qa" ? "qa" : "reviewer", runId);
+      }
+
+      if (result?.isError || agent.finished || acknowledgementMisses >= 2) {
+        const labels = pending.map((row) => reviewInjectionLabel(row.id)).join(", ");
+        const reason = `${lane === "qa" ? "QA" : "Auto-review"} ended without acknowledging current owner instruction(s) ${labels}; no verdict from that run was allowed to settle the task.`;
+        this.reviewInjections.fail(pending.map((row) => row.id), reason);
+        this.reviewInjectionFeed(thread.id, `[failed] ${reason}`);
+        return {
+          type: "result",
+          subtype: "error_during_execution",
+          isError: true,
+          result: reason,
+          errors: [reason],
+        };
+      }
+
+      acknowledgementMisses++;
+      const labels = pending.map((row) => reviewInjectionLabel(row.id)).join(", ");
+      this.reviewInjectionFeed(
+        thread.id,
+        `[waiting] The ${lane === "qa" ? "QA" : "auto-review"} verdict was paused because ${labels} had not been acknowledged yet; waiting for the steered reviewer turn.`,
+      );
+      // The live inject already queued its owner turn. Only send an explicit reminder after one further
+      // schema result still omitted the required ids; doing it immediately would duplicate every normal
+      // injection and pay for an unnecessary third turn.
+      if (acknowledgementMisses > 1) {
+        this.sendCommunication(
+          agent,
+          contentWithImages(reviewInjectionPrompt(pending), this.reviewInjectionImages(pending)),
+        );
+      }
+      result = await agent.nextResult();
+    }
+    return result;
   }
 
   /** Persist an explicit owner override before routing the injection anywhere. The automatic route is
@@ -8552,7 +9018,7 @@ export class ThreadManager implements OrchestratorApi {
     message: string,
     mode: "append" | "interrupt" | "queue",
     images?: ImageAttachment[],
-    options: { retitle?: boolean } = {},
+    options: { retitle?: boolean; recipient?: "implementor" | "qa" | "reviewer" } = {},
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     const qaBypassRequested = thread ? this.armOwnerQaBypass(threadId, message) : false;
@@ -8562,7 +9028,6 @@ export class ThreadManager implements OrchestratorApi {
     // below (live, QA-forward, pre-implementor buffer, resume, cold-resume) from this one spot.
     // A control-only "finish without QA" instruction is not a new task objective. Retitling the card to
     // that sentence hides the actual work title and makes this control flow unnecessarily confusing.
-    if (thread && !qaBypassRequested && options.retitle !== false) void this.retitleFromInjection(threadId, message);
     // Persist injected images as attachments so the feed can render them as thumbnails (the blocks
     // sent to the model are transient). Lazy + memoized: only the branch that actually echoes a feed
     // message calls it, so the cold-resume path (which adds no feed row) never orphans attachment
@@ -8578,6 +9043,16 @@ export class ThreadManager implements OrchestratorApi {
       }
       return savedRefs;
     };
+    // The browser stamps the recipient visible at click time. If a verdict raced the WebSocket command,
+    // do not silently reinterpret "tell the reviewer" as an unrelated cold implementor resume. Settle it
+    // explicitly as too-late/queued/delivered-to-implementation, with a durable RI audit row and feed line.
+    if (thread && mode !== "queue" && options.recipient === "reviewer" && !(thread.state === "reviewing" || this.autoReviewOwns(threadId))) {
+      return this.routeReviewRecipientRace(thread, "reviewer", mode, message, injectRefs(), images);
+    }
+    if (thread && mode !== "queue" && options.recipient === "qa" && thread.state !== "qa" && !this.liveQa.has(threadId)) {
+      return this.routeReviewRecipientRace(thread, "qa", mode, message, injectRefs(), images);
+    }
+    if (thread && !qaBypassRequested && options.retitle !== false) void this.retitleFromInjection(threadId, message);
     // Queue mode: DON'T touch the implementor's current turn — hold the message until it reaches its
     // hand-off boundary, where drainQueuedImplementor gives it to the implementor before QA. A live
     // implementor OR the QA stage (implementor stopped for review, about to re-run on a bounce or settle
@@ -8587,7 +9062,7 @@ export class ThreadManager implements OrchestratorApi {
     // way it's delivered when the implementor next works — never injected mid-turn, never lost.
     if (mode === "queue") {
       if (!thread) return { ok: false, error: "No such task." };
-      if (this.live.has(threadId) || thread.state === "qa") {
+      if (this.live.has(threadId) || thread.state === "qa" || this.liveQa.has(threadId)) {
         this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
       } else {
         const refs = injectRefs();
@@ -8610,33 +9085,35 @@ export class ThreadManager implements OrchestratorApi {
     // agent runs alone in the slot. Append steering still reaches QA as a plain send, but interrupt-mode
     // means "stop this review and return the task to implementation" so the cancelled/stale QA verdict
     // cannot settle the task after the owner has changed course.
-    if (thread?.state === "qa") {
+    if (thread?.state === "qa" || (thread?.state === "awaiting_user" && this.liveQa.has(threadId))) {
+      const qaState = thread.state;
       const qa = this.liveQa.get(threadId);
       const inFixHandoff = this.qaFixHandoff.has(threadId) || !!this.qaFixHandoffPayload(threadId);
       if (!qa && inFixHandoff) {
         const refs = injectRefs();
         this.appendQaFixHandoffInstruction(threadId, message, refs);
-        const m = this.db.addMessage({
-          threadId,
-          role: "director",
-          kind: "system",
-          content: `↪ ${mode === "interrupt" ? "interrupt requested" : "injected"} (QA already handed back; queued for the active implementor resume): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
-          attachments: refs,
-        });
-        this.hub.publish({ type: "thread.message", threadId, message: m });
-        this.touchThread(threadId);
+        const row = this.acceptReviewInjection(threadId, "qa", mode, message, refs);
+        this.queueReviewInjectionsForImplementor(
+          [row],
+          "QA had already handed back; the instruction joined the active implementor resume.",
+        );
         return {
           ok: true,
-          state: "qa",
+          state: qaState,
           message: qaBypassRequested
-            ? "QA bypass recorded; the active implementor resume will finish this task without another QA run."
-            : "QA is already returning this task to implementation; instruction queued for that implementor resume.",
+            ? `${reviewInjectionLabel(row.id)} queued in the active implementor resume; QA is bypassed afterward.`
+            : `${reviewInjectionLabel(row.id)} queued in the active QA-to-implementor handoff.`,
         };
       }
       if (mode === "interrupt" || qaBypassRequested) {
         if (!qa) {
           if (qaBypassRequested) {
             const refs = injectRefs();
+            const reviewRow = this.acceptReviewInjection(threadId, "qa", "interrupt", message, refs);
+            this.queueReviewInjectionsForImplementor(
+              [reviewRow],
+              "The owner bypassed QA during a runner transition; the in-flight verdict is superseded and this instruction returns to implementation.",
+            );
             // The handle can disappear briefly during provider failover. Persist the supersede instruction
             // anyway so the loop ignores that review result and resumes implementation exactly once.
             this.rememberQaSupersede(threadId, message, refs);
@@ -8651,18 +9128,23 @@ export class ThreadManager implements OrchestratorApi {
             this.touchThread(threadId);
             return {
               ok: true,
-              state: "qa",
-              message: "QA bypass recorded; the in-flight review result will be ignored and no new QA run will start.",
+              state: qaState,
+              message: `${reviewInjectionLabel(reviewRow.id)} recorded the QA bypass; the in-flight verdict will be ignored and implementation is queued.`,
             };
           }
           return {
             ok: false,
-            state: "qa",
+            state: qaState,
             error: "QA has no live stop handle right now. The task is likely between QA runner processes; retry the interrupt when QA is visible again or when the implementor starts.",
           };
         }
         this.hub.log("info", "[INJECT] QA in progress - superseding QA and returning to the implementor");
         const refs = injectRefs();
+        const reviewRow = this.acceptReviewInjection(threadId, "qa", "interrupt", message, refs);
+        this.queueReviewInjectionsForImplementor(
+          [reviewRow],
+          "The owner stopped QA and returned this instruction to implementation; the stale QA verdict is superseded.",
+        );
         this.rememberQaSupersede(threadId, message, refs);
         const stopped = await this.stopQaForImplementor(threadId, qa);
         if (stopped.status === "failed") {
@@ -8678,11 +9160,12 @@ export class ThreadManager implements OrchestratorApi {
             this.touchThread(threadId);
             return {
               ok: true,
-              state: "qa",
+              state: qaState,
               message: "QA bypass recorded; the current reviewer could not stop immediately, but its verdict will be ignored.",
             };
           }
           this.clearQaSupersedeMarker(threadId);
+          this.reviewInjections.fail([reviewRow.id], `Could not stop QA: ${stopped.error}`);
           const m = this.db.addMessage({
             threadId,
             role: "director",
@@ -8692,7 +9175,7 @@ export class ThreadManager implements OrchestratorApi {
           });
           this.hub.publish({ type: "thread.message", threadId, message: m });
           this.touchThread(threadId);
-          return { ok: false, state: "qa", error: `Could not stop QA: ${stopped.error}` };
+          return { ok: false, state: qaState, error: `Could not stop QA: ${stopped.error}` };
         }
         this.resuming.add(threadId);
         this.setState(threadId, "implementing");
@@ -8709,8 +9192,8 @@ export class ThreadManager implements OrchestratorApi {
           ok: true,
           state: "implementing",
           message: qaBypassRequested
-            ? "QA stop requested; the implementor will finish this task without another QA run."
-            : "QA stop requested; implementor resume queued.",
+            ? `${reviewInjectionLabel(reviewRow.id)} stopped QA; the implementor will finish this task without another QA run.`
+            : `${reviewInjectionLabel(reviewRow.id)} stopped QA; implementor resume queued.`,
         };
       }
       this.hub.log("info", "[INJECT] QA in progress - steering QA and queuing for the implementor, not re-spawning one");
@@ -8720,57 +9203,112 @@ export class ThreadManager implements OrchestratorApi {
       if (images?.length) {
         this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
       }
-      if (qa) this.steerStructuredRole(qa, message, images);
+      const reviewRow = this.acceptReviewInjection(threadId, "qa", "append", message, injectRefs());
+      let delivered = false;
+      if (qa) {
+        delivered = this.deliverReviewInjection(reviewRow, "qa", qa, this.liveQaRunId.get(threadId) ?? this.latestRunIdOf(threadId, "qa"));
+      }
       this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
-      const m = this.db.addMessage({
-        threadId,
-        role: "director",
-        kind: "system",
-        content: `↪ injected (QA is reviewing — ${qa ? "sent to QA and queued" : "queued"} for the implementor): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
-        attachments: injectRefs(),
-      });
-      this.hub.publish({ type: "thread.message", threadId, message: m });
-      this.touchThread(threadId);
-      return { ok: true, state: "qa" };
+      return {
+        ok: true,
+        state: qaState,
+        message: qa && delivered
+          ? `${reviewInjectionLabel(reviewRow.id)} delivered to QA; its verdict is held until acknowledgement, and implementation is queued if needed.`
+          : `${reviewInjectionLabel(reviewRow.id)} durably accepted while QA changes runs; reviewer delivery and implementation are queued.`,
+      };
     }
-    // Auto-review gate — the QA gate's twin, and load-bearing for the same reason: while the reviewer is
-    // deciding this task's fate it is the only agent in the slot, and falling through would cold-resume an
-    // implementor beside it. Steering goes to the reviewer (a `send`, never an interrupt — a one-shot
-    // structured role tears down into a verdict-less result if interrupted). A note that lands after the
-    // verdict simply doesn't change it; the invariant this gate guarantees is "never a second agent".
-    // Keyed on the EPISODE, not just the state (see resumeThread's twin): the lane also owns the thread
-    // through its fix round, which runs under 'implementing' with a window where the implementor's own
-    // onEnd has cleared `this.live` — falling through there would cold-resume a second implementor.
+    // Auto-review gate. Append is a durable reviewer instruction whose acknowledgement fences the verdict;
+    // if the reviewer hands work back, the same row (and its attachments) follows the fix implementor.
+    // Interrupt has deliberately different semantics: it supersedes this review and returns the task to
+    // implementation. Both paths key on durable episode ownership, including materialization/completion
+    // gaps where no live handle exists, so neither can spawn a second writer beside the lane.
     if (thread?.state === "reviewing" || this.autoReviewOwns(threadId)) {
+      const reviewState = thread?.state ?? "reviewing";
       const reviewer = this.liveReviewer.get(threadId);
       const impl = this.live.get(threadId);
       const blocks = images?.length ? images.map(toImageBlock) : [];
-      if (reviewer) {
-        this.steerStructuredRole(reviewer, message, images);
-      } else if (impl) {
-        // Mid fix round: the implementor IS the agent to steer, and it takes the ordinary (non-structured)
-        // injection — it has no output schema to corrupt.
-        this.sendCommunication(
-          impl.run,
-          contentWithImages(acknowledgedInjection(message), blocks),
-          mode === "interrupt" ? { priority: "now" } : undefined,
+      const row = this.acceptReviewInjection(threadId, "reviewer", mode, message, injectRefs());
+
+      if (mode === "interrupt") {
+        const queued = this.queueReviewInjectionsForImplementor(
+          [row],
+          "The owner explicitly superseded Auto-review; its verdict will be discarded and this instruction returns the task to implementation.",
         );
-      } else {
-        // The sub-second window before the reviewer registers its handle (or just after it returned).
-        // Buffer like the QA gate does; runAutoReview drops the buffer when the task settles, so a note
-        // that missed the review can't leak into an unrelated later run of this thread.
-        this.bufferDirectorNote(threadId, message);
+        if (impl) {
+          this.sendCommunication(impl.run, contentWithImages(acknowledgedInjection(message), blocks), { priority: "now" });
+          this.markReviewImplementorDelivered(queued, impl.runId);
+          const task = this.autoReviewTasks.get(threadId);
+          if (task) this.scheduleReviewerInterruptResume(threadId, task);
+          return {
+            ok: true,
+            state: "implementing",
+            message: `${reviewInjectionLabel(row.id)} superseded Auto-review and was delivered to the active implementor fix run.`,
+          };
+        }
+        if (reviewer) {
+          try {
+            await reviewer.stop();
+          } catch (e) {
+            const reason = `Could not stop the active auto-reviewer: ${String(e)}`;
+            this.reviewInjections.fail([row.id], reason);
+            this.reviewInjectionFeed(threadId, `✕ ${reviewInjectionLabel(row.id)} failed: ${reason}`);
+            return { ok: false, state: reviewState, error: reason };
+          }
+        }
+        const task = this.autoReviewTasks.get(threadId);
+        if (task) {
+          this.scheduleReviewerInterruptResume(threadId, task);
+          return {
+            ok: true,
+            state: this.db.getThread(threadId)?.state ?? reviewState,
+            message: `${reviewInjectionLabel(row.id)} stopped and superseded Auto-review; implementation will start as soon as the reviewer lane has unwound.`,
+          };
+        }
+        const fresh = this.db.getThread(threadId);
+        if (!fresh || fresh.state === "done" || fresh.state === "cancelled" || fresh.state === "closed") {
+          const reason = `Auto-review settled ${fresh?.state ?? "after the task disappeared"} before ${reviewInjectionLabel(row.id)} could return it to implementation.`;
+          this.reviewInjections.fail([row.id], reason);
+          this.reviewInjectionFeed(threadId, `✕ ${reason}`);
+          return { ok: false, state: fresh?.state, error: reason };
+        }
+        this.resuming.add(threadId);
+        this.setState(threadId, "implementing");
+        void this.resumeImplementorOnly(fresh, undefined, queued.map((item) => item.id));
+        return {
+          ok: true,
+          state: "implementing",
+          message: `${reviewInjectionLabel(row.id)} stopped and superseded Auto-review; implementor resume queued.`,
+        };
       }
-      const m = this.db.addMessage({
-        threadId,
-        role: "director",
-        kind: "system",
-        content: `↪ injected (forwarded to ${reviewer ? "the auto-reviewer" : impl ? "the auto-review's fix round" : "the auto-review lane"}): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
-        attachments: injectRefs(),
-      });
-      this.hub.publish({ type: "thread.message", threadId, message: m });
-      this.touchThread(threadId);
-      return { ok: true, state: thread?.state ?? "reviewing" };
+
+      if (reviewer) {
+        const delivered = this.deliverReviewInjection(row, "reviewer", reviewer, this.liveReviewerRunId.get(threadId) ?? this.latestRunIdOf(threadId, "reviewer"));
+        return {
+          ok: true,
+          state: reviewState,
+          message: delivered
+            ? `${reviewInjectionLabel(row.id)} delivered to the active auto-reviewer; its verdict is held until acknowledgement/action.`
+            : `${reviewInjectionLabel(row.id)} was accepted by the active auto-review lane, but exact-run delivery is still pending.`,
+        };
+      }
+      if (impl) {
+        const queued = this.queueReviewInjectionsForImplementor(
+          [row],
+          "Auto-review had already handed work to its fix implementor; the instruction joined that active fix.",
+        );
+        this.sendCommunication(impl.run, contentWithImages(acknowledgedInjection(message), blocks));
+        this.markReviewImplementorDelivered(queued, impl.runId);
+        return {
+          ok: true,
+          state: "implementing",
+          message: `${reviewInjectionLabel(row.id)} delivered to the active auto-review fix run and retained for reviewer re-check.`,
+        };
+      }
+      return {
+        ok: true,
+        state: reviewState,
+        message: `${reviewInjectionLabel(row.id)} durably accepted by the auto-review lane; no live run exists yet, so delivery is queued and not claimed as forwarded.`,
+      };
     }
     // Self-improvement gate — the auto-review gate's twin, for the same reason and with the same shape.
     // The bonus round runs on ALREADY-accepted work under 'implementing', and its implementor's own onEnd
@@ -9085,21 +9623,15 @@ export class ThreadManager implements OrchestratorApi {
     }
     // QA-stage gate — mirror injectThread's, routing included: during the QA stage the implementor is
     // fully stopped and the QA agent owns the slot, so a resume here must NEVER wake or spawn an
-    // implementor beside it. Steering reaches the running QA agent when there is one (a plain send — see
-    // steerStructuredRole) and is queued for the implementor either way, so a QA pass can't settle the
+    // implementor beside it. Steering reaches the running QA agent as a queued structured turn and is
+    // queued for the implementor too, so a QA pass can't settle the
     // task with the owner's direction unread. A boot auto-resume of a mid-QA task doesn't hit this —
     // markInterrupted flips the thread to "failed" first, so that routes through the branch below.
-    if (thread.state === "qa") {
+    if (thread.state === "qa" || (thread.state === "awaiting_user" && this.liveQa.has(threadId))) {
       if (message?.trim()) {
-        const qa = this.liveQa.get(threadId);
-        if (!qa && (this.qaFixHandoff.has(threadId) || !!this.qaFixHandoffPayload(threadId))) {
-          this.appendQaFixHandoffInstruction(threadId, message);
-        } else {
-          if (qa) this.steerStructuredRole(qa, message);
-          this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
-        }
+        return this.injectThread(threadId, message, "append", undefined, { retitle: false });
       }
-      return { ok: true, state: "qa" };
+      return { ok: true, state: thread.state };
     }
     // Auto-review gate — same guarantee as the QA one above: the lane owns the slot, so a resume here must
     // never wake or spawn an agent beside it. Keyed on the EPISODE, not just the state, because the lane
@@ -9109,11 +9641,7 @@ export class ThreadManager implements OrchestratorApi {
     // goes to whichever agent is actually live; a bare Resume is a no-op (the episode settles the task).
     if (thread.state === "reviewing" || this.autoReviewOwns(threadId)) {
       if (message?.trim()) {
-        const reviewer = this.liveReviewer.get(threadId);
-        const impl = this.live.get(threadId);
-        if (reviewer) this.steerStructuredRole(reviewer, message);
-        else if (impl) this.sendCommunication(impl.run, acknowledgedInjection(message), { priority: "now" });
-        else this.bufferDirectorNote(threadId, message);
+        return this.injectThread(threadId, message, "append", undefined, { retitle: false });
       }
       return { ok: true, state: thread.state };
     }
@@ -9159,7 +9687,11 @@ export class ThreadManager implements OrchestratorApi {
       if (promotedRead) {
         this.resuming.add(threadId);
         this.setState(threadId, "implementing");
-        void this.resumeImplementorOnly(thread, note);
+        void this.resumeImplementorOnly(
+          thread,
+          note,
+          this.reviewInjections.pendingImplementor(threadId, "reviewer").map((row) => row.id),
+        );
         return { ok: true, state: "implementing" };
       }
       // Thread the steering note INTO the pipeline so the implementor actually receives it — not just
@@ -9176,7 +9708,11 @@ export class ThreadManager implements OrchestratorApi {
     // not block on a Haiku call.
     this.resuming.add(threadId);
     this.setState(threadId, "implementing");
-    void this.resumeImplementorOnly(thread, message);
+    void this.resumeImplementorOnly(
+      thread,
+      message,
+      this.reviewInjections.pendingImplementor(threadId, "reviewer").map((row) => row.id),
+    );
     return { ok: true, state: "implementing" };
   }
 
@@ -9190,7 +9726,7 @@ export class ThreadManager implements OrchestratorApi {
    *  once the deploy finishes" is nudged to block in-turn instead of re-parking on the Resume button.
    *  The caller must have added threadId to `resuming`; this clears it once the implementor is live
    *  (or the start was abandoned). */
-  private async resumeImplementorOnly(thread: Thread, message?: string): Promise<void> {
+  private async resumeImplementorOnly(thread: Thread, message?: string, reviewInjectionIds: string[] = []): Promise<void> {
     // A manual resume occupies a concurrency slot for the run's lifetime (like a pipeline), so it
     // counts toward maxConcurrent and frees a queued task when it settles.
     this.activePipelines.add(thread.id);
@@ -9217,10 +9753,24 @@ export class ThreadManager implements OrchestratorApi {
     }
     const resume = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
     const baseKickoff = this.db.getThreadStageOutputs(thread.id).kickoff ?? thread.brief;
-    const resumeNudge = message ? acknowledgedInjection(message) : "Continue where you left off.";
+    const queuedReviewIds = this.reviewInjections.pendingImplementor(thread.id).map((row) => row.id);
+    const reviewRows = uniqueText([...reviewInjectionIds, ...queuedReviewIds])
+      .map((id) => this.reviewInjections.get(id))
+      .filter((row): row is ReviewInjection => !!row);
+    const reviewInstruction = reviewRows.length
+      ? `[Reviewer-lane instruction(s) returning this task to implementation]\n${reviewRows.map((row) => `${reviewInjectionLabel(row.id)}: ${row.instruction}`).join("\n\n")}`
+      : undefined;
+    const effectiveMessage = [message?.trim(), reviewInstruction].filter(Boolean).join("\n\n");
+    const resumeNudge = effectiveMessage ? acknowledgedInjection(effectiveMessage) : "Continue where you left off.";
     let start: LiveImplementor | null;
     try {
-      start = await this.startResumedImplementor(thread, baseKickoff, resume, { effort: this.implementorEffort(thread.id), resumeNudge, directorNote: message ? resumeNudge : undefined, qaFollows: false });
+      start = await this.startResumedImplementor(thread, baseKickoff, resume, {
+        effort: this.implementorEffort(thread.id),
+        resumeNudge,
+        directorNote: effectiveMessage ? resumeNudge : undefined,
+        qaFollows: false,
+        images: this.reviewInjectionImages(reviewRows),
+      });
     } catch (e) {
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} failed to start: ${String(e)}`);
       start = null;
@@ -9237,6 +9787,7 @@ export class ThreadManager implements OrchestratorApi {
       releaseSlot();
       return;
     }
+    if (reviewRows.length) this.markReviewImplementorDelivered(reviewRows, start.runId);
     // The kickoff has consumed any stashed images; drop them so a later resume doesn't re-send the
     // base64 (wasted vision tokens) — the live/resumed session already holds them.
     this.dispatchImages.delete(thread.id);
@@ -9247,13 +9798,32 @@ export class ThreadManager implements OrchestratorApi {
       this.pendingResumeMsgs.delete(thread.id);
       for (const m of buffered) this.sendCommunication(start.run, acknowledgedInjection(m), { priority: "next" });
     }
+    let implementationFinished = false;
     await this.awaitImplementorCompletion(thread, this.implementorEffort(thread.id), baseKickoff, start.run, start.accountId, false, resumeNudge, false)
-      .then(() => {
+      .then((result) => {
+        implementationFinished = !!result && !result.isError;
         // A re-cap during the manual resume tags it for the supervisor; a clean finish parks for review.
         if (this.db.getThread(thread.id)?.state === "implementing") this.settleReview(thread.id, "Resume finished — needs your review.");
       })
       .catch((e) => this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} ended in error: ${String(e)}`))
       .finally(() => {
+        if (reviewRows.length) {
+          if (implementationFinished) {
+            const handled = this.reviewInjections.resolve(
+              reviewRows.map((row) => row.id),
+              "The implementor completed the reviewer-lane instruction; the task is parked for owner review.",
+            );
+            for (const row of handled) {
+              this.reviewInjectionFeed(thread.id, `✓ ${reviewInjectionLabel(row.id)} handled by implementor run ${start!.runId.slice(0, 8)}; the task is parked for owner review.`);
+            }
+          } else {
+            const failed = this.reviewInjections.fail(
+              reviewRows.map((row) => row.id),
+              "The implementor run ended before completing this reviewer-lane instruction.",
+            );
+            for (const row of failed) this.reviewInjectionFeed(thread.id, `✕ ${reviewInjectionLabel(row.id)} was delivered to implementation but the run did not complete it.`);
+          }
+        }
         releaseSlot();
         void this.stopLive(thread.id);
       });
@@ -9283,14 +9853,25 @@ export class ThreadManager implements OrchestratorApi {
     this.pendingResumeMsgs.delete(threadId);
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
+    this.liveQaRunId.delete(threadId);
     this.clearQaFixHandoff(threadId);
     this.liveReviewer.delete(threadId);
+    this.liveReviewerRunId.delete(threadId);
     this.reviewing.delete(threadId);
     this.directorNotes.delete(threadId);
     this.queuedForImplementor.delete(threadId);
     this.implementorProvider.delete(threadId);
     this.codexResumeWedged.delete(threadId);
     this.capParked.delete(threadId); // a cancelled task must never be cap-auto-resumed
+
+    const cancelledInjections = this.reviewInjections.listOpen(threadId);
+    if (cancelledInjections.length) {
+      const reason = "The task was cancelled before this owner instruction completed.";
+      this.reviewInjections.fail(cancelledInjections.map((row) => row.id), reason);
+      for (const row of cancelledInjections) {
+        this.reviewInjectionFeed(threadId, `[failed] ${reviewInjectionLabel(row.id)}: ${reason}`);
+      }
+    }
 
     const pendingApproval = this.pendingApprovals.get(threadId);
     if (pendingApproval) {
@@ -9337,8 +9918,10 @@ export class ThreadManager implements OrchestratorApi {
     this.queuedForImplementor.delete(threadId);
     this.liveRole.delete(threadId);
     this.liveQa.delete(threadId);
+    this.liveQaRunId.delete(threadId);
     this.clearQaFixHandoff(threadId);
     this.liveReviewer.delete(threadId);
+    this.liveReviewerRunId.delete(threadId);
     this.reviewing.delete(threadId);
     this.capParked.delete(threadId);
     this.implementorProvider.delete(threadId);
@@ -9356,6 +9939,7 @@ export class ThreadManager implements OrchestratorApi {
     // Wipe the prior attempt in the DB, then tell clients to drop the now-deleted runs/findings/feed
     // for this thread BEFORE the fresh pipeline starts streaming new ones (else the stale slice
     // lingers in the UI until the next full snapshot).
+    this.reviewInjections.deleteThread(threadId);
     this.db.resetThreadForRetry(threadId);
     this.hub.publish({ type: "thread.reset", threadId });
 
@@ -9409,6 +9993,12 @@ export class ThreadManager implements OrchestratorApi {
     this.disarmActiveDeadline(threadId);
     this.dropTerminalBookkeeping(threadId); // closed is terminal — closeThread settles via db, not setState
     this.db.abandonAutoReview(threadId, "Auto-review stopped because the task was closed.");
+    const closedInjections = this.reviewInjections.listOpen(threadId);
+    if (closedInjections.length) {
+      const reason = "The task was closed before this owner instruction completed.";
+      this.reviewInjections.fail(closedInjections.map((row) => row.id), reason);
+      for (const row of closedInjections) this.reviewInjectionFeed(threadId, `[failed] ${reviewInjectionLabel(row.id)}: ${reason}`);
+    }
     const updated = this.db.closeThread(threadId);
     if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
     this.hub.log("info", `Closed task ${threadId.slice(0, 8)} (was ${thread.state}).`);
@@ -9432,6 +10022,12 @@ export class ThreadManager implements OrchestratorApi {
       return { ok: false, error: `A ${thread.state} task can't be marked done — only a parked (review/paused) task can.` };
     }
     await this.forceStopThreadRuns(threadId);
+    const overriddenInjections = this.reviewInjections.listOpen(threadId);
+    if (overriddenInjections.length) {
+      const reason = "The owner manually marked the task done before this instruction completed.";
+      this.reviewInjections.fail(overriddenInjections.map((row) => row.id), reason);
+      for (const row of overriddenInjections) this.reviewInjectionFeed(threadId, `[failed] ${reviewInjectionLabel(row.id)}: ${reason}`);
+    }
     this.setState(threadId, "done");
     this.hub.log("info", `Marked task ${threadId.slice(0, 8)} done (was ${thread.state}).`);
     return { ok: true, state: "done" };
@@ -9462,6 +10058,16 @@ export class ThreadManager implements OrchestratorApi {
     }
     if ((thread.error ?? "").startsWith(CAP_PARK_PREFIX)) {
       return { ok: false, error: "This task is waiting on a usage limit and resumes itself — its work isn't finished yet, so there's nothing to review." };
+    }
+    const supersedingInstructions = this.reviewInjections
+      .pendingImplementor(threadId, "reviewer")
+      .filter((row) => row.mode === "interrupt");
+    if (supersedingInstructions.length) {
+      return {
+        ok: false,
+        state: thread.state,
+        error: `${supersedingInstructions.map((row) => reviewInjectionLabel(row.id)).join(", ")} already superseded the prior Auto-review and is queued for implementation. Resume the task instead of starting another reviewer.`,
+      };
     }
     if (!existsSync(thread.workspace)) {
       return { ok: false, error: `Workspace "${thread.workspace}" does not exist — the reviewer can't inspect the work.` };
@@ -9507,8 +10113,16 @@ export class ThreadManager implements OrchestratorApi {
       this.recoverReleasedCapacity();
       return { ok: false, state: settled.thread?.state, error: reason };
     }
+    // An instruction that survived a restart/reviewer race stays open in the durable store. A deliberate
+    // fresh Auto-review click reassigns it to this claim so the new reviewer sees it in its first turn;
+    // it is never stranded under the dead process's claim token.
+    this.reviewInjections.reassignOpenToEpisode(threadId, "reviewer", claim.claimToken);
     this.hub.log("info", `Auto-reviewing task ${threadId.slice(0, 8)} "${thread.title.slice(0, 48)}".`);
-    void this.runAutoReview(thread, claim.claimToken);
+    const task = this.runAutoReview(thread, claim.claimToken);
+    this.autoReviewTasks.set(threadId, task);
+    void task.finally(() => {
+      if (this.autoReviewTasks.get(threadId) === task) this.autoReviewTasks.delete(threadId);
+    });
     return { ok: true, state: "reviewing" };
   }
 
@@ -9525,6 +10139,7 @@ export class ThreadManager implements OrchestratorApi {
     try {
       const total = this.settings().maxReviewFixRounds;
       let res = await this.reviewToVerdict(thread, this.freshReviewKickoff(thread));
+      if (this.parkSupersededAutoReview(thread.id, claimToken)) return;
       let fixRounds = 0;
       for (let round = 1; round <= total; round++) {
         if (this.cancelled(thread.id)) return;
@@ -9532,8 +10147,10 @@ export class ThreadManager implements OrchestratorApi {
         if (!handedBack) break;
         if (!(await this.runReviewFixRound(thread, handedBack, round, total, claimToken))) return; // the round settled it
         if (this.cancelled(thread.id)) return;
+        if (this.parkSupersededAutoReview(thread.id, claimToken)) return;
         fixRounds = round;
         res = await this.reviewRecheck(thread, handedBack);
+        if (this.parkSupersededAutoReview(thread.id, claimToken)) return;
       }
       if (this.cancelled(thread.id)) return;
       this.finalizeReview(thread, res, fixRounds, claimToken);
@@ -9547,9 +10164,10 @@ export class ThreadManager implements OrchestratorApi {
       this.clearReviewFixingIfOwned(thread.id, claimToken);
       this.reviewing.delete(thread.id);
       this.liveReviewer.delete(thread.id);
-      // Anything the owner injected into the sub-second window where the reviewer had no steerable handle
-      // was buffered by the inject gate; nothing downstream of a review drains it, so drop it here rather
-      // than let it leak into an unrelated later run of this thread (runPipeline's finally does the same).
+      this.liveReviewerRunId.delete(thread.id);
+      // Reviewer-directed instructions live in review_injections and have already reached a terminal or
+      // implementor-queued state. Clear only the legacy generic note buffer so unrelated office/director
+      // notes cannot leak into a later manual resume.
       this.directorNotes.delete(thread.id);
       this.activePipelines.delete(thread.id);
       this.recoverReleasedCapacity();
@@ -9577,6 +10195,83 @@ export class ThreadManager implements OrchestratorApi {
 
   private parkAutoReview(threadId: string, claimToken: string, reason: string, verdict?: ReviewerOutput | null): boolean {
     return this.persistAutoReviewOutcome(threadId, claimToken, "parked", reason, verdict);
+  }
+
+  private parkSupersededAutoReview(threadId: string, claimToken: string): boolean {
+    const interrupted = this.reviewInjections
+      .listThread(threadId)
+      .filter(
+        (row) =>
+          row.lane === "reviewer" &&
+          row.episodeToken === claimToken &&
+          row.mode === "interrupt" &&
+          row.status !== "failed" &&
+          row.status !== "too_late",
+      );
+    if (!interrupted.length) return false;
+    const labels = interrupted.map((row) => reviewInjectionLabel(row.id)).join(", ");
+    const implemented = interrupted.filter(
+      (row) => row.implementorCompletedAt != null || row.status === "implemented" || row.status === "handled",
+    );
+    const needsImplementation = interrupted.filter((row) => !implemented.some((done) => done.id === row.id));
+    const needsQueue = needsImplementation.filter((row) => row.status !== "queued_implementor");
+    if (needsQueue.length) {
+      this.queueReviewInjectionsForImplementor(
+        needsQueue,
+        "Auto-review was superseded before the active implementor completed this instruction; a clean implementor resume is required.",
+      );
+    }
+    const newlyImplemented = implemented.filter((row) => row.status !== "handled");
+    if (newlyImplemented.length) {
+      const handled = this.reviewInjections.resolve(
+        newlyImplemented.map((row) => row.id),
+        "The active auto-review fix implementor completed the interrupting owner instruction; Auto-review was superseded and will not re-check or accept it.",
+      );
+      for (const row of handled) this.reviewInjectionFeed(threadId, `✓ ${reviewInjectionLabel(row.id)} handled by the active fix implementor; Auto-review is superseded and the task returns to owner review.`);
+    }
+    const reason = `Auto-review was explicitly superseded by owner instruction ${labels}. Its pending/stale verdict was discarded; the instruction ${implemented.length === interrupted.length ? "was handled by the active implementor and the task needs owner review" : "is queued for implementation"}.`;
+    const parked = this.parkAutoReview(threadId, claimToken, reason);
+    if (parked) this.reviewInjectionFeed(threadId, `↪ ${reason}`);
+    return parked;
+  }
+
+  private resolveReviewEpisodeInjections(threadId: string, claimToken: string, resolution: string): void {
+    const open = this.reviewInjections
+      .listOpen(threadId, "reviewer", claimToken)
+      .filter((row) => row.mode === "append");
+    const handled = this.reviewInjections.resolve(open.map((row) => row.id), resolution);
+    for (const row of handled) this.reviewInjectionFeed(threadId, `✓ ${reviewInjectionLabel(row.id)} handled by the auto-review outcome: ${resolution}`);
+  }
+
+  /** A rejecting verdict is only terminal for instructions whose implementation already completed.
+   * With fix rounds disabled/exhausted, a read-only reviewer can acknowledge an editing instruction and
+   * hand the task back without anyone doing the work. Keep those rows queued so the owner's next Resume
+   * delivers the exact instruction and attachments instead of falsely recording it as handled. */
+  private handBackReviewEpisodeInjections(threadId: string, claimToken: string, summary: string): void {
+    const open = this.reviewInjections
+      .listOpen(threadId, "reviewer", claimToken)
+      .filter((row) => row.mode === "append");
+    const implemented = open.filter((row) => row.implementorCompletedAt != null || row.status === "implemented");
+    const stillNeedsImplementation = open.filter((row) => !implemented.some((done) => done.id === row.id));
+    if (stillNeedsImplementation.length) {
+      this.queueReviewInjectionsForImplementor(
+        stillNeedsImplementation,
+        `The reviewer acknowledged the instruction but handed the task back before implementation: ${summary}`,
+      );
+    }
+    const handled = this.reviewInjections.resolve(
+      implemented.map((row) => row.id),
+      `Implementation completed and the reviewer re-checked it before handing the task back: ${summary}`,
+    );
+    for (const row of handled) {
+      this.reviewInjectionFeed(threadId, `✓ ${reviewInjectionLabel(row.id)} was implemented and re-checked before Auto-review handed the task back.`);
+    }
+  }
+
+  private failReviewEpisodeInjections(threadId: string, claimToken: string, reason: string): void {
+    const open = this.reviewInjections.listOpen(threadId, "reviewer", claimToken);
+    const failed = this.reviewInjections.fail(open.map((row) => row.id), reason);
+    for (const row of failed) this.reviewInjectionFeed(threadId, `✕ ${reviewInjectionLabel(row.id)} could not complete in Auto-review: ${reason}`);
   }
 
   /** A dead process can finish unwinding after boot reconciliation and after the owner starts a newer
@@ -9650,7 +10345,17 @@ export class ThreadManager implements OrchestratorApi {
       }
       const effort = this.implementorEffort(thread.id);
       const kickoff = this.db.getThreadStageOutputs(thread.id).kickoff ?? thread.brief;
-      const fixMsg = reviewFixMessage(out, this.officeName(thread.id, "reviewer"));
+      const ownerRows = this.reviewInjections
+        .listOpen(thread.id, "reviewer", claimToken)
+        .filter((row) => row.mode === "append" && ["accepted", "acknowledged_reviewer", "implemented"].includes(row.status));
+      const queuedOwnerRows = this.queueReviewInjectionsForImplementor(
+        ownerRows,
+        "The auto-reviewer handed the task back; this owner instruction is part of the same implementor fix round.",
+      );
+      const ownerBlock = queuedOwnerRows.length
+        ? `\n\nOwner instruction(s) that arrived during review — apply these in this same fix:\n${queuedOwnerRows.map((row) => `${reviewInjectionLabel(row.id)}: ${row.instruction}`).join("\n\n")}`
+        : "";
+      const fixMsg = reviewFixMessage(out, this.officeName(thread.id, "reviewer")) + ownerBlock;
       // State stays 'reviewing' across the (possibly awaited) session compression — startImplementor flips
       // it only once the run is live — so an inject landing in that window routes to the reviewer gate's
       // buffer instead of spawning a second agent, and flushDirectorNotes delivers it a moment later.
@@ -9659,8 +10364,30 @@ export class ThreadManager implements OrchestratorApi {
         resumeNudge: fixMsg,
         directorNote: fixMsg,
         qaFollows: false,
+        images: this.reviewInjectionImages(queuedOwnerRows),
       });
       if (!start) return false; // cancelled while compressing the prior session
+      if (queuedOwnerRows.length) this.markReviewImplementorDelivered(queuedOwnerRows, start.runId);
+      // An append can land while startResumedImplementor is compressing the prior session. It is durable,
+      // so take a second delta after the handle exists and send it to THIS fix rather than the next one.
+      const materializationRows = this.reviewInjections
+        .listOpen(thread.id, "reviewer", claimToken)
+        .filter((row) => row.mode === "append" && row.status === "accepted");
+      if (materializationRows.length) {
+        const queuedDelta = this.queueReviewInjectionsForImplementor(
+          materializationRows,
+          "The instruction arrived while the auto-review fix run was starting; it joined that run.",
+        );
+        this.sendCommunication(
+          start.run,
+          contentWithImages(
+            acknowledgedInjection(queuedDelta.map((row) => `${reviewInjectionLabel(row.id)}: ${row.instruction}`).join("\n\n")),
+            this.reviewInjectionImages(queuedDelta),
+          ),
+          { priority: "now" },
+        );
+        this.markReviewImplementorDelivered(queuedDelta, start.runId);
+      }
       this.flushDirectorNotes(thread.id, start.run);
       let res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, fixMsg, false);
       // Honor anything the owner queued during the fix, exactly as the QA loop does at its hand-off — the
@@ -9671,6 +10398,9 @@ export class ThreadManager implements OrchestratorApi {
       // `this.live` is a window where a Resume/inject would fall through and spawn a SECOND implementor.
       if (!this.cancelled(thread.id)) this.setState(thread.id, "reviewing");
       if (this.cancelled(thread.id)) return false;
+      const deliveredOwnerRows = this.reviewInjections
+        .listOpen(thread.id, "reviewer", claimToken)
+        .filter((row) => row.implementorRunId === start.runId && row.status === "delivered_implementor");
       if (!res || res.isError) {
         // Never leave the auto-resume marker on: `resumeCapParked` hands a CAP_PARK task to runPipeline,
         // which would finish this task through the QA loop and could mark it done — a verdict the reviewer
@@ -9696,7 +10426,19 @@ export class ThreadManager implements OrchestratorApi {
           `The auto-review's fix round didn't finish — ${why} The issues it was sent to fix are still open, so this needs your review.`.slice(0, MAX_REVIEW_ERROR_LEN),
           out,
         );
+        const failed = this.reviewInjections.fail(
+          deliveredOwnerRows.map((row) => row.id),
+          `The auto-review fix implementor did not complete: ${why}`,
+        );
+        for (const row of failed) this.reviewInjectionFeed(thread.id, `✕ ${reviewInjectionLabel(row.id)} was delivered to the fix implementor but that run did not complete: ${why}`);
         return false;
+      }
+      const implemented = this.reviewInjections.markImplemented(
+        deliveredOwnerRows.map((row) => row.id),
+        "The implementor completed; the auto-reviewer must now acknowledge the resulting action and re-check it.",
+      );
+      for (const row of implemented) {
+        this.reviewInjectionFeed(thread.id, `✓ ${reviewInjectionLabel(row.id)} implementation finished in run ${start.runId.slice(0, 8)}; queued for the auto-reviewer's re-check.`);
       }
       return true;
     } finally {
@@ -9764,7 +10506,39 @@ export class ThreadManager implements OrchestratorApi {
       res = prior ? await this.runReviewer(thread, reviewerContinueKickoff(), prior) : await startOver();
       empty = this.markIfEmpty(thread.id, attemptFrom, res);
     }
-    return res;
+    return this.drainLateReviewerInjections(thread, res);
+  }
+
+  /** A WebSocket command can arrive after runRole removed the completed handle but before runAutoReview
+   * settles its verdict. The injection row is written synchronously, so this no-await quiescence check
+   * catches it and opens a reviewer continuation. Once the final check returns empty, runAutoReview moves
+   * straight into its synchronous verdict/fix decision; an instruction arriving later sees the next
+   * deterministic phase instead of being mislabeled as delivered to a dead run. */
+  private async drainLateReviewerInjections(
+    thread: Thread,
+    initial: ResultEvent | undefined,
+  ): Promise<ResultEvent | undefined> {
+    let result = initial;
+    for (let pass = 0; pass < 4; pass++) {
+      const pending = this.pendingReviewInjectionsForRun(thread.id, "reviewer");
+      if (!pending.length) return result;
+      const labels = pending.map((row) => reviewInjectionLabel(row.id)).join(", ");
+      this.reviewInjectionFeed(thread.id, `↪ ${labels} arrived after a reviewer turn ended but before its verdict settled; opening a continuation instead of accepting the stale verdict.`);
+      const prior = this.resumableReviewSession(thread.id);
+      result = prior
+        ? await this.runReviewer(
+            thread,
+            "A current owner instruction arrived after your prior turn ended. The harness has attached it to this turn. Address it before returning a replacement verdict; the earlier verdict is stale.",
+            prior,
+          )
+        : await this.runReviewer(thread, this.freshReviewKickoff(thread));
+    }
+    const stillPending = this.pendingReviewInjectionsForRun(thread.id, "reviewer");
+    if (!stillPending.length) return result;
+    const reason = `Auto-review received more owner instructions while trying to settle than it could drain safely: ${stillPending.map((row) => reviewInjectionLabel(row.id)).join(", ")}. The task remains parked; none was silently ignored.`;
+    this.reviewInjections.fail(stillPending.map((row) => row.id), reason);
+    this.reviewInjectionFeed(thread.id, `✕ ${reason}`);
+    return { type: "result", subtype: "error_during_execution", isError: true, result: reason, errors: [reason] };
   }
 
   /** Whether a reviewer attempt came back empty — recording it as the failure it is when so. An empty run
@@ -9829,10 +10603,19 @@ export class ThreadManager implements OrchestratorApi {
   private finalizeReview(thread: Thread, res: ResultEvent | undefined, fixRounds: number, claimToken: string): void {
     const tried = fixRounds ? ` (after ${fixRounds} fix ${fixRounds === 1 ? "round" : "rounds"})` : "";
     const out = res?.structuredOutput as ReviewerOutput | undefined;
+    const unacknowledged = this.pendingReviewInjectionsForRun(thread.id, "reviewer");
+    if (unacknowledged.length) {
+      const reason = `Auto-review reached a verdict while current owner instruction(s) ${unacknowledged.map((row) => reviewInjectionLabel(row.id)).join(", ")} were still unacknowledged. The stale verdict was rejected and the task remains parked.`;
+      if (!this.parkAutoReview(thread.id, claimToken, reason)) return;
+      this.failReviewEpisodeInjections(thread.id, claimToken, reason);
+      this.postFinding({ threadId: thread.id, fromRole: "reviewer", summary: "Auto-review verdict rejected because an owner instruction was still pending", detail: reason, severity: "warning" });
+      return;
+    }
     if (!res || res.isError || !out) {
       const detail = res ? this.reviewFailureDetail(thread.id, res) : undefined;
       const reason = `Auto-review couldn't reach a verdict${tried}${detail ? ` — ${detail}` : ""} — still needs your review.`.slice(0, MAX_REVIEW_ERROR_LEN);
       if (!this.parkAutoReview(thread.id, claimToken, reason)) return;
+      this.failReviewEpisodeInjections(thread.id, claimToken, reason);
       this.postFinding({
         threadId: thread.id,
         fromRole: "reviewer",
@@ -9845,6 +10628,7 @@ export class ThreadManager implements OrchestratorApi {
     if (!out.accept) {
       const reason = `Auto-review didn't accept it${tried}: ${out.summary}`.slice(0, MAX_REVIEW_ERROR_LEN);
       if (!this.parkAutoReview(thread.id, claimToken, reason, out)) return;
+      this.handBackReviewEpisodeInjections(thread.id, claimToken, out.summary);
       this.postFinding({
         threadId: thread.id,
         fromRole: "reviewer",
@@ -9855,6 +10639,7 @@ export class ThreadManager implements OrchestratorApi {
       return;
     }
     if (!this.persistAutoReviewOutcome(thread.id, claimToken, "accepted", out.summary, out)) return;
+    this.resolveReviewEpisodeInjections(thread.id, claimToken, `The reviewer acknowledged and applied the instruction in its accepted verdict: ${out.summary}`);
     this.postFinding({
       threadId: thread.id,
       fromRole: "reviewer",
@@ -9897,8 +10682,10 @@ export class ThreadManager implements OrchestratorApi {
     // A task settles to 'review' straight out of the QA loop, so a mid-QA account failover can leave a
     // stale liveQa handle behind (the window the QA-inject gate also guards) — drop it so it can't leak.
     this.liveQa.delete(threadId);
+    this.liveQaRunId.delete(threadId);
     this.clearQaFixHandoff(threadId);
     this.liveReviewer.delete(threadId);
+    this.liveReviewerRunId.delete(threadId);
     this.directorNotes.delete(threadId);
     this.queuedForImplementor.delete(threadId);
     this.implementorProvider.delete(threadId);
@@ -11246,6 +12033,13 @@ function formatQaIssues(qa: QaOutput): string {
 function prependUserContent(content: string | unknown[], note: string): string | unknown[] {
   if (typeof content === "string") return `${note}\n\n${content}`;
   return [{ type: "text", text: note }, ...content];
+}
+
+function prependUserContentWithImages(content: UserContent, note: string, images: ImageBlock[]): UserContent {
+  const prefix = contentWithImages(note, images);
+  if (typeof prefix === "string") return prependUserContent(content, prefix);
+  if (typeof content === "string") return [...prefix, { type: "text", text: content }];
+  return [...prefix, ...content];
 }
 
 /** Turn a Claude structured-role config into a self-contained CLI kickoff. CLI backends cannot attach
