@@ -25,7 +25,11 @@ export function App() {
   // Object.is, so the topbar only re-renders when a displayed count actually changes, not on every
   // run/thread upsert that replaces those maps by reference.
   const taskCount = useStore((s) => Object.keys(s.threads).length);
-  const liveAgents = useStore((s) => Object.values(s.runs).filter((r) => runActive(r.state)).length);
+  const coworkCount = useStore((s) => Object.keys(s.coworkSessions).length);
+  const liveAgents = useStore((s) =>
+    Object.values(s.runs).filter((r) => runActive(r.state)).length +
+    Object.values(s.coworkSessions).filter((session) => session.state === "running" || session.state === "stopping").length,
+  );
   const railHidden = useStore((s) => s.railHidden);
   const detailWidth = useStore((s) => s.detailWidth);
   const directorWidth = useStore((s) => s.directorWidth);
@@ -52,7 +56,7 @@ export function App() {
         <Office />
         <Accounts />
         <span className="stat">
-          <b>{taskCount}</b> {taskCount === 1 ? "task" : "tasks"} · <b>{liveAgents}</b> {liveAgents === 1 ? "agent" : "agents"} live
+          <b>{taskCount}</b> {taskCount === 1 ? "task" : "tasks"} · <b>{coworkCount}</b> co-work · <b>{liveAgents}</b> {liveAgents === 1 ? "agent" : "agents"} live
         </span>
         <ApprovalToggle />
         <NotifyBell />
@@ -253,7 +257,7 @@ function ApprovalToggle() {
 function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePane) => void }) {
   const boardView = useStore((s) => s.boardView);
   const setBoardView = useStore((s) => s.setBoardView);
-  const openBoardView = (view: "tasks" | "supervisor") => {
+  const openBoardView = (view: "tasks" | "cowork" | "supervisor") => {
     setBoardView(view);
     setPane("board");
   };
@@ -271,8 +275,8 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
         Director
       </button>
       <button
-        className={"mnav-btn" + (pane === "board" && boardView !== "supervisor" ? " on" : "")}
-        aria-current={pane === "board" && boardView !== "supervisor" ? "page" : undefined}
+        className={"mnav-btn" + (pane === "board" && boardView === "tasks" ? " on" : "")}
+        aria-current={pane === "board" && boardView === "tasks" ? "page" : undefined}
         onClick={() => openBoardView("tasks")}
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -282,6 +286,18 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
           <rect width="7" height="7" x="3" y="14" rx="1" />
         </svg>
         Tasks
+      </button>
+      <button
+        className={"mnav-btn" + (pane === "board" && boardView === "cowork" ? " on" : "")}
+        aria-current={pane === "board" && boardView === "cowork" ? "page" : undefined}
+        onClick={() => openBoardView("cowork")}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M8 11a4 4 0 1 1 8 0v1" />
+          <path d="M5 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2" />
+          <path d="m18 6 .8 2.2L21 9l-2.2.8L18 12l-.8-2.2L15 9l2.2-.8Z" />
+        </svg>
+        Co-work
       </button>
       <button
         className={"mnav-btn" + (pane === "board" && boardView === "supervisor" ? " on" : "")}

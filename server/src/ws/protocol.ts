@@ -12,6 +12,10 @@ import type {
   AgentRun,
   ChatMessage,
   ChatRoomSummary,
+  CoworkActionResult,
+  CoworkMessage,
+  CoworkSession,
+  CoworkTurn,
   DirectorMessage,
   DirectorStatus,
   Finding,
@@ -77,6 +81,7 @@ export type ServerEvent =
       notes: OperatorNote[];
       onlineOffice: OnlineOfficeDTO;
       supervisor: SupervisorSnapshot;
+      coworkSessions: CoworkSession[];
     }
   | { type: "accounts"; accounts: AccountDTO[] }
   // Auto model selection's scoreboard — per-model averages over every graded auto-picked task.
@@ -114,6 +119,14 @@ export type ServerEvent =
   | { type: "thread.git"; threadId: string; status: GitStatus }
   | { type: "thread.gitSummary"; threadId: string; summary: GitSummary }
   | { type: "thread.gitDiff"; threadId: string; path: string; diff: GitFileDiff }
+  // ---- Co-work: durable human-led coding conversations ----
+  | { type: "cowork.session"; session: CoworkSession }
+  | { type: "cowork.removed"; sessionId: string }
+  | { type: "cowork.message"; message: CoworkMessage }
+  | { type: "cowork.history"; sessionId: string; session: CoworkSession | null; turns: CoworkTurn[]; messages: CoworkMessage[] }
+  | { type: "cowork.delta"; sessionId: string; turnId: string; messageId: string; text: string }
+  | { type: "cowork.thinking"; sessionId: string; turnId: string; messageId: string; text: string }
+  | { type: "cowork.action"; sessionId?: string; action: string; clientId?: string; ok: boolean; error?: string; result: CoworkActionResult }
   // ---- the repo-level Git console (the in-app GitHub Desktop) ----
   // `preferred` is the repo of the task the console was opened from (`forThread`), already resolved
   // from its workspace — null when there was no task or it isn't in a checkout. `forThread` is echoed
@@ -181,6 +194,21 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // (its first active stage — planner if enabled, else the implementor). workspace is required since
   // there's no director to resolve one.
   z.object({ type: z.literal("prompt.direct"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, clientId: z.string().uuid().optional() }),
+  // Co-work sessions select either Auto (both fields absent) or one exact provider/model pair. The
+  // service enforces the pair invariant and validates live catalog/capacity before the first process.
+  z.object({
+    type: z.literal("cowork.create"),
+    name: z.string().max(120).optional(),
+    workspace: z.string().min(1).max(600),
+    provider: z.enum(["claude", "codex", "grok", "zai"]).optional(),
+    model: z.string().min(1).max(100).optional(),
+    clientId: z.string().uuid().optional(),
+  }),
+  z.object({ type: z.literal("cowork.send"), sessionId: z.string(), text: z.string().trim().min(1).max(100_000), clientId: z.string().uuid().optional() }),
+  z.object({ type: z.literal("cowork.stop"), sessionId: z.string() }),
+  z.object({ type: z.literal("cowork.rename"), sessionId: z.string(), name: z.string().trim().min(1).max(120) }),
+  z.object({ type: z.literal("cowork.delete"), sessionId: z.string() }),
+  z.object({ type: z.literal("cowork.history"), sessionId: z.string() }),
   z.object({ type: z.literal("question.answer"), questionId: z.string(), answer: z.string() }),
   z.object({
     type: z.literal("thread.inject"),

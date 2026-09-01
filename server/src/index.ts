@@ -18,6 +18,7 @@ import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
 import { startGrokUsageMonitor } from "./agents/grokUsagePing.js";
 import { startZaiUsageMonitor } from "./agents/zaiUsagePing.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
+import { CoworkManager } from "./orchestrator/cowork.js";
 import { Director } from "./orchestrator/director.js";
 import { RepoConsole } from "./orchestrator/repoConsole.js";
 import { OperatorNotes } from "./orchestrator/notes.js";
@@ -108,9 +109,18 @@ async function main(): Promise<void> {
     if (e.type === "accounts") publishAccountUsage(accounts.usageSnapshot());
   });
   const manager = new ThreadManager(db, hub, memory, accounts, freeProviders);
+  const cowork = new CoworkManager(db, hub, {
+    prepare: (input) => manager.prepareCoworkerRun(input),
+    taskConflict: (workspace) => manager.coworkTaskConflict(workspace),
+    observeRateLimit: (target, info) => manager.coworkObserveRateLimit(target, info),
+    isCapped: (target, agent) => manager.coworkRunCapped(target, agent),
+    noteCap: (target, agent) => manager.coworkNoteCap(target, agent),
+    releasedWorkspace: () => manager.coworkReleasedWorkspace(),
+  });
+  manager.attachCoworkWorkspaceGuard((workspace) => cowork.hasLiveWorkspace(workspace));
   // Crash records should show what the pipeline was DOING when it died, and a slow memory climb should be
   // visible in the log BEFORE an OOM abort — the two things missing when crashes vanished without a trace.
-  registerCrashContext("active-work", () => manager.describeActiveWork());
+  registerCrashContext("active-work", () => `${manager.describeActiveWork()}; ${cowork.describeActiveWork()}`);
   // The manager's constructor has just reconciled whatever the previous process left mid-flight. Record it
   // beside the boot line so "did that bounce eat something?" is one grep, not a cross-table reconstruction.
   if (manager.bootReconcile) logRestartReconcile(manager.bootReconcile);
@@ -215,7 +225,7 @@ async function main(): Promise<void> {
     // Pasted images travel inline (base64) in a single prompt.new frame; lift the
     // default ws payload cap so a few screenshots don't get dropped on send.
     await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
-    registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos, onlineOffice });
+    registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos, onlineOffice, cowork });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
 
     // `build` is which dist THIS process loaded, read once at boot — the fact that turns "is the live

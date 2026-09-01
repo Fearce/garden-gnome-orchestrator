@@ -24,6 +24,7 @@ import { ScheduledTasks } from "./ScheduledTasks.js";
 import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
+import { CoWork } from "./CoWork.js";
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -214,7 +215,7 @@ export function Board() {
 
   const tasksView = boardView === "tasks";
   return (
-    <main className={"board" + (frozen ? " frozen" : "")}>
+    <main className={`board board-${boardView}${frozen ? " frozen" : ""}`}>
       <div className="board-head">
         <BoardTabs />
         {tasksView ? (
@@ -230,6 +231,8 @@ export function Board() {
       </div>
       {boardView === "schedules" ? (
         <ScheduledTasks />
+      ) : boardView === "cowork" ? (
+        <CoWork />
       ) : boardView === "notes" ? (
         <OperatorNotes />
       ) : boardView === "supervisor" ? (
@@ -283,6 +286,7 @@ function BoardTabs() {
   const setBoardView = useStore((s) => s.setBoardView);
   const counts = {
     tasks: null,
+    cowork: useStore((s) => Object.keys(s.coworkSessions).length),
     notes: useStore((s) => s.notes.length),
     schedules: useStore((s) => s.schedules.length),
     supervisor: useStore((s) => (s.supervisor.enabled ? s.supervisor.watching : null)),
@@ -305,6 +309,7 @@ function BoardTabs() {
 
 const BOARD_TABS: { view: BoardView; label: string; title: string }[] = [
   { view: "tasks", label: "Tasks", title: "Back to the task board" },
+  { view: "cowork", label: "Co-work", title: "Human-led coding sessions with persistent context" },
   { view: "notes", label: "Notes", title: "Branches, PRs and reminders waiting on you" },
   { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },
   { view: "supervisor", label: "Supervisor", title: "The Director Supervisor watchdog: its state, budget and recent checks/actions" },

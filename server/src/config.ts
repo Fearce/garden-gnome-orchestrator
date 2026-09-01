@@ -50,6 +50,7 @@ const authConfigured = !!authPassword || !!(googleClientId && googleClientSecret
 const exposeBlocked = !localOnly && !authConfigured;
 // Hoisted so the editing-QA ceiling below can default to it: the two are the same class of budget.
 const implementorMaxTurns = Number(process.env.IMPLEMENTOR_MAX_TURNS ?? 100);
+const coworkerMaxTurns = Number(process.env.COWORKER_MAX_TURNS ?? 80);
 
 export const config = {
   serverRoot,
@@ -310,6 +311,7 @@ export const config = {
   // the orchestrator can silently warm-resume the session and keep going (the implementor used to
   // hit an unpredictable SDK default mid-task and park on a manual Resume button).
   implementorMaxTurns,
+  coworkerMaxTurns,
   // The same ceiling for QA when it runs in editing mode (`qaAppliesFixes`): that QA doesn't review a
   // diff, it does implementor-grade work — edits files, builds, runs the suite, commits — so it needs an
   // implementor-grade budget. Read-only QA keeps its own, much smaller ceiling in `qaConfig`.

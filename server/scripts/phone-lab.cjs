@@ -87,6 +87,7 @@ function declaredTabs() {
  *  broken switch would still show. A new view needs a row here; the coverage check enforces it. */
 const PANEL_ROOT = {
   tasks: ".lanes, .board .empty",
+  cowork: ".cowork-shell",
   notes: ".notes-view",
   schedules: ".sched-view",
   supervisor: ".supervisor-view",

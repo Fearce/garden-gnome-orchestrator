@@ -10,6 +10,7 @@ import type { RepoActionDTO, RepoConsole } from "../orchestrator/repoConsole.js"
 import type { Scheduler } from "../orchestrator/scheduler.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
 import type { OnlineOffice } from "../office/onlineOffice.js";
+import type { CoworkManager } from "../orchestrator/cowork.js";
 import { readCodexUsage } from "../agents/codexUsage.js";
 import { readGrokUsage } from "../agents/grokUsage.js";
 import { readZaiUsage } from "../agents/zaiUsage.js";
@@ -39,9 +40,10 @@ export interface WsContext {
   notes: OperatorNotes;
   repos: RepoConsole;
   onlineOffice: OnlineOffice;
+  cowork: CoworkManager;
 }
 
-const STREAMING_EVENTS = new Set(["agent.delta", "agent.thinking", "director.delta"]);
+const STREAMING_EVENTS = new Set(["agent.delta", "agent.thinking", "director.delta", "cowork.delta", "cowork.thinking"]);
 
 function send(socket: WebSocket, event: ServerEvent): void {
   if (socket.readyState !== socket.OPEN) return;
@@ -53,6 +55,18 @@ function send(socket: WebSocket, event: ServerEvent): void {
 
 function sendThreadAction(socket: WebSocket, threadId: string, action: string, result: ThreadActionResult, clientId?: string): void {
   send(socket, { type: "thread.action", threadId, action, clientId, ok: result.ok, state: result.state, error: result.error, message: result.message, result });
+}
+
+function sendCoworkAction(socket: WebSocket, action: string, result: ReturnType<CoworkManager["create"]>, clientId?: string): void {
+  send(socket, {
+    type: "cowork.action",
+    sessionId: result.session?.id,
+    action,
+    clientId,
+    ok: result.ok,
+    error: result.error,
+    result,
+  });
 }
 
 // Bound the connect/snapshot frame so it can't grow without limit as months of history pile up.
@@ -89,6 +103,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     notes: ctx.notes.list(),
     onlineOffice: ctx.onlineOffice.status(),
     supervisor: ctx.manager.supervisorSnapshot(),
+    coworkSessions: ctx.cowork.sessions(),
   };
 }
 
@@ -133,6 +148,26 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
     case "prompt.direct":
       await ctx.director.dispatchDirect(cmd.text, cmd.workspace, cmd.images, cmd.clientId);
       break;
+    case "cowork.create":
+      sendCoworkAction(socket, "create", ctx.cowork.create(cmd), cmd.clientId);
+      break;
+    case "cowork.send":
+      sendCoworkAction(socket, "send", ctx.cowork.send(cmd.sessionId, cmd.text, cmd.clientId), cmd.clientId);
+      break;
+    case "cowork.stop":
+      sendCoworkAction(socket, "stop", await ctx.cowork.stop(cmd.sessionId));
+      break;
+    case "cowork.rename":
+      sendCoworkAction(socket, "rename", ctx.cowork.rename(cmd.sessionId, cmd.name));
+      break;
+    case "cowork.delete":
+      sendCoworkAction(socket, "delete", ctx.cowork.remove(cmd.sessionId));
+      break;
+    case "cowork.history": {
+      const history = ctx.cowork.history(cmd.sessionId);
+      send(socket, { type: "cowork.history", sessionId: cmd.sessionId, ...history });
+      break;
+    }
     case "question.answer":
       ctx.manager.resolveQuestion(cmd.questionId, cmd.answer);
       break;

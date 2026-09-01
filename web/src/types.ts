@@ -145,7 +145,7 @@ export interface ScheduledTask {
 }
 
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
-export type BoardView = "tasks" | "notes" | "schedules" | "supervisor";
+export type BoardView = "tasks" | "cowork" | "notes" | "schedules" | "supervisor";
 
 /** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
 export const NOTE_MAX_CHARS = 255;
@@ -541,6 +541,68 @@ export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
 /** The implementor backends (mirrors the server's ImplementorProvider). */
 export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
 
+// ---- Co-work: durable human-led coding conversations ----
+
+export type CoworkSessionState = "idle" | "running" | "stopping" | "error";
+export type CoworkTurnState = "running" | "done" | "error" | "cancelled" | "interrupted";
+export type CoworkMessageRole = "user" | "coworker" | "system";
+export type CoworkMessageKind = "text" | "thinking" | "tool" | "tool_result" | "system";
+
+export interface CoworkSession {
+  id: string;
+  name: string;
+  autoNamed: boolean;
+  workspace: string;
+  state: CoworkSessionState;
+  requestedProvider: ImplementorProvider | null;
+  requestedModel: string | null;
+  provider: ImplementorProvider | null;
+  model: string | null;
+  effort: Effort | null;
+  account: string | null; // sticky provider account id; required to resume a Claude session under the token that owns it
+  agentSessionId: string | null;
+  activeTurnId: string | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CoworkTurn {
+  id: string;
+  sessionId: string;
+  state: CoworkTurnState;
+  provider: ImplementorProvider | null;
+  model: string | null;
+  effort: Effort | null;
+  account: string | null;
+  agentSessionId: string | null;
+  error: string | null;
+  costUsd: number | null;
+  numTurns: number | null;
+  tokenUsage: TokenUsage | null;
+  startedAt: number;
+  endedAt: number | null;
+}
+
+export interface CoworkMessage {
+  id: string;
+  sessionId: string;
+  turnId: string | null;
+  role: CoworkMessageRole;
+  kind: CoworkMessageKind;
+  content: string;
+  meta: unknown | null;
+  partial: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CoworkActionResult {
+  ok: boolean;
+  session?: CoworkSession;
+  error?: string;
+}
+
 export interface ModelRequest {
   requested: string;
   provider: ImplementorProvider | null;
@@ -828,6 +890,7 @@ export type ServerEvent =
       notes: OperatorNote[];
       onlineOffice: OnlineOfficeDTO;
       supervisor: SupervisorSnapshot;
+      coworkSessions: CoworkSession[];
     }
   | { type: "office.online"; office: OnlineOfficeDTO }
   | { type: "office.join.result"; ok: boolean; error: string | null }
@@ -851,6 +914,13 @@ export type ServerEvent =
   | { type: "thread.git"; threadId: string; status: GitStatus }
   | { type: "thread.gitSummary"; threadId: string; summary: GitSummary }
   | { type: "thread.gitDiff"; threadId: string; path: string; diff: GitFileDiff }
+  | { type: "cowork.session"; session: CoworkSession }
+  | { type: "cowork.removed"; sessionId: string }
+  | { type: "cowork.message"; message: CoworkMessage }
+  | { type: "cowork.history"; sessionId: string; session: CoworkSession | null; turns: CoworkTurn[]; messages: CoworkMessage[] }
+  | { type: "cowork.delta"; sessionId: string; turnId: string; messageId: string; text: string }
+  | { type: "cowork.thinking"; sessionId: string; turnId: string; messageId: string; text: string }
+  | { type: "cowork.action"; sessionId?: string; action: string; clientId?: string; ok: boolean; error?: string; result: CoworkActionResult }
   // ---- the repo-level Git console ----
   // `preferred` = the repo of the task the console was opened from, resolved server-side; null when
   // no task was open or its workspace isn't a checkout. `forThread` echoes the request so a slow
@@ -899,6 +969,12 @@ export type ServerEvent =
 export type ClientCommand =
   | { type: "prompt.new"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
   | { type: "prompt.direct"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
+  | { type: "cowork.create"; name?: string; workspace: string; provider?: ImplementorProvider; model?: string; clientId?: string }
+  | { type: "cowork.send"; sessionId: string; text: string; clientId?: string }
+  | { type: "cowork.stop"; sessionId: string }
+  | { type: "cowork.rename"; sessionId: string; name: string }
+  | { type: "cowork.delete"; sessionId: string }
+  | { type: "cowork.history"; sessionId: string }
   | { type: "question.answer"; questionId: string; answer: string }
   | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt" | "queue"; images?: ImageAttachment[]; clientId?: string }
   | { type: "thread.interrupt"; threadId: string }

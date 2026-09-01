@@ -50,7 +50,7 @@ function envNumber(key) {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-// Per-role turn ceilings, mirroring agents/roles.ts. Only the implementor's is configurable; keep the rest in
+// Per-role turn ceilings, mirroring agents/roles.ts. Keep configurable ceilings
 // sync if a role's maxTurns changes, or a legacy opaque cutoff on that role stops being recognised.
 const ROLE_TURN_CEILING = {
   planner: 40,
@@ -58,6 +58,7 @@ const ROLE_TURN_CEILING = {
   reader: 40,
   qa: 60,
   reviewer: 60,
+  coworker: envNumber("COWORKER_MAX_TURNS") ?? 80,
   implementor: envNumber("IMPLEMENTOR_MAX_TURNS") ?? 100,
 };
 

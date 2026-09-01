@@ -10,6 +10,9 @@ import type {
   ChatMessage,
   ChatRoomSummary,
   ClientCommand,
+  CoworkMessage,
+  CoworkSession,
+  CoworkTurn,
   DirectorItem,
   Effort,
   DirectorMessage,
@@ -64,6 +67,7 @@ export type OutboundMessage =
   | (OutboundBase & { surface: "director" })
   | (OutboundBase & { surface: "office"; room: string })
   | (OutboundBase & { surface: "supervisor"; targetIds: string[] })
+  | (OutboundBase & { surface: "cowork"; sessionId: string })
   | (OutboundBase & { surface: "task"; threadId: string; mode: "append" | "interrupt" | "queue" });
 
 /** Cache key for a Git-console diff. A file's working-tree diff and the same file inside a commit are
@@ -117,6 +121,12 @@ interface State {
   // separate from threadDrafts (the response-text draft) so reasoning and answer stream independently.
   thinkingDrafts: Record<string, ThreadDraft | undefined>;
   selectedThreadId: string | null;
+  coworkSessions: Record<string, CoworkSession>;
+  coworkMessages: Record<string, CoworkMessage[]>;
+  coworkTurns: Record<string, CoworkTurn[]>;
+  selectedCoworkId: string | null;
+  coworkCreating: boolean;
+  coworkActionError: string | null;
   approvalMode: boolean;
   // Server-authoritative pipeline settings (broadcast over WS); the panel edits these via setSettings.
   settings: OrchestratorSettings;
@@ -214,6 +224,13 @@ interface State {
   modelStats: ModelStat[];
 
   select: (id: string | null) => void;
+  selectCowork: (id: string | null) => void;
+  createCowork: (input: { name?: string; workspace: string; provider?: CoworkSession["requestedProvider"]; model?: string | null }) => boolean;
+  sendCowork: (sessionId: string, text: string) => boolean;
+  stopCowork: (sessionId: string) => void;
+  renameCowork: (sessionId: string, name: string) => void;
+  deleteCowork: (sessionId: string) => void;
+  clearCoworkError: () => void;
   // Search the whole director conversation and every task (title, brief, conversation), or clear it.
   searchDirector: (query: string) => void;
   clearDirectorSearch: () => void;
@@ -667,6 +684,12 @@ export const useStore = create<State>((set) => ({
   threadDrafts: {},
   thinkingDrafts: {},
   selectedThreadId: null,
+  coworkSessions: {},
+  coworkMessages: {},
+  coworkTurns: {},
+  selectedCoworkId: null,
+  coworkCreating: false,
+  coworkActionError: null,
   approvalMode: false,
   settings: DEFAULT_SETTINGS,
   codexTest: null,
@@ -717,6 +740,42 @@ export const useStore = create<State>((set) => ({
     set({ selectedThreadId: id });
     if (id) sendCommand({ type: "thread.history", threadId: id });
   },
+  selectCowork: (id) => {
+    set({ selectedCoworkId: id, coworkActionError: null });
+    if (id) sendCommand({ type: "cowork.history", sessionId: id });
+  },
+  createCowork: ({ name, workspace, provider, model }) => {
+    const path = workspace.trim();
+    if (!path) return false;
+    const clientId = newOutboundId();
+    set({ coworkCreating: true, coworkActionError: null });
+    const sent = sendCommand({
+      type: "cowork.create",
+      workspace: path,
+      ...(name?.trim() ? { name: name.trim() } : {}),
+      ...(provider && model ? { provider, model } : {}),
+      clientId,
+    });
+    if (!sent) set({ coworkCreating: false, coworkActionError: "Not delivered — the console is reconnecting." });
+    return sent;
+  },
+  sendCowork: (sessionId, text) => {
+    const content = text.trim();
+    if (!content) return false;
+    const clientId = newOutboundId();
+    set({ coworkActionError: null });
+    return sendOutbound(
+      { id: clientId, surface: "cowork", sessionId, content, createdAt: Date.now(), status: "sending" },
+      { type: "cowork.send", sessionId, text: content, clientId },
+    );
+  },
+  stopCowork: (sessionId) => {
+    set({ coworkActionError: null });
+    sendCommand({ type: "cowork.stop", sessionId });
+  },
+  renameCowork: (sessionId, name) => sendCommand({ type: "cowork.rename", sessionId, name: name.trim() }),
+  deleteCowork: (sessionId) => sendCommand({ type: "cowork.delete", sessionId }),
+  clearCoworkError: () => set({ coworkActionError: null }),
   searchDirector: (query) => {
     const q = query.trim();
     if (!q) {
@@ -1065,6 +1124,8 @@ function applyEvent(ev: ServerEvent): void {
       for (const t of ev.threads) threads[t.id] = t;
       const runs: Record<string, AgentRun> = {};
       for (const r of ev.runs) runs[r.id] = r;
+      const coworkSessions: Record<string, CoworkSession> = {};
+      for (const session of ev.coworkSessions ?? []) coworkSessions[session.id] = session;
       const director: DirectorItem[] = ev.director.map((m: DirectorMessage) => ({
         id: m.id,
         kind: m.role,
@@ -1083,6 +1144,8 @@ function applyEvent(ev: ServerEvent): void {
       useStore.setState((s) => ({
         threads,
         runs,
+        coworkSessions,
+        coworkCreating: false,
         findings: ev.findings,
         questions: ev.questions,
         director,
@@ -1116,8 +1179,92 @@ function applyEvent(ev: ServerEvent): void {
       // the open thread's history; the id-keyed merge fills the gap without dropping live items.
       const selected = useStore.getState().selectedThreadId;
       if (selected) sendCommand({ type: "thread.history", threadId: selected });
+      const selectedCowork = useStore.getState().selectedCoworkId;
+      if (selectedCowork && coworkSessions[selectedCowork]) sendCommand({ type: "cowork.history", sessionId: selectedCowork });
       break;
     }
+    case "cowork.session":
+      useStore.setState((s) => ({ coworkSessions: { ...s.coworkSessions, [ev.session.id]: ev.session } }));
+      break;
+    case "cowork.removed":
+      useStore.setState((s) => {
+        const { [ev.sessionId]: _session, ...coworkSessions } = s.coworkSessions;
+        const { [ev.sessionId]: _messages, ...coworkMessages } = s.coworkMessages;
+        const { [ev.sessionId]: _turns, ...coworkTurns } = s.coworkTurns;
+        return {
+          coworkSessions,
+          coworkMessages,
+          coworkTurns,
+          selectedCoworkId: s.selectedCoworkId === ev.sessionId ? null : s.selectedCoworkId,
+        };
+      });
+      break;
+    case "cowork.message":
+      clearOutboundTimer(ev.message.id);
+      useStore.setState((s) => {
+        const current = s.coworkMessages[ev.message.sessionId] ?? [];
+        const index = current.findIndex((message) => message.id === ev.message.id);
+        const messages = index < 0
+          ? [...current, ev.message]
+          : current.map((message, i) => (i === index ? ev.message : message));
+        messages.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+        return {
+          coworkMessages: { ...s.coworkMessages, [ev.message.sessionId]: messages },
+          outboundMessages: s.outboundMessages.filter((message) => message.id !== ev.message.id),
+        };
+      });
+      break;
+    case "cowork.delta":
+    case "cowork.thinking":
+      useStore.setState((s) => {
+        const current = s.coworkMessages[ev.sessionId] ?? [];
+        const existing = current.find((message) => message.id === ev.messageId);
+        const kind = ev.type === "cowork.delta" ? "text" : "thinking";
+        const message: CoworkMessage = existing
+          ? { ...existing, content: existing.content + ev.text, partial: true, updatedAt: Date.now() }
+          : {
+              id: ev.messageId,
+              sessionId: ev.sessionId,
+              turnId: ev.turnId,
+              role: "coworker",
+              kind,
+              content: ev.text,
+              meta: null,
+              partial: true,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            };
+        return {
+          coworkMessages: {
+            ...s.coworkMessages,
+            [ev.sessionId]: existing
+              ? current.map((item) => (item.id === ev.messageId ? message : item))
+              : [...current, message],
+          },
+        };
+      });
+      break;
+    case "cowork.history":
+      useStore.setState((s) => ({
+        ...(ev.session ? { coworkSessions: { ...s.coworkSessions, [ev.sessionId]: ev.session } } : {}),
+        coworkMessages: { ...s.coworkMessages, [ev.sessionId]: ev.messages },
+        coworkTurns: { ...s.coworkTurns, [ev.sessionId]: ev.turns },
+        outboundMessages: s.outboundMessages.filter(
+          (delivery) => delivery.surface !== "cowork" || delivery.sessionId !== ev.sessionId || !ev.messages.some((message) => message.id === delivery.id),
+        ),
+      }));
+      for (const message of ev.messages) clearOutboundTimer(message.id);
+      break;
+    case "cowork.action":
+      if (ev.clientId && !ev.ok) failOutbound(ev.clientId, ev.error ?? "The Co-worker command failed.");
+      useStore.setState((s) => ({
+        coworkCreating: ev.action === "create" ? false : s.coworkCreating,
+        coworkActionError: ev.ok ? null : ev.error ?? "The Co-worker command failed.",
+        ...(ev.result.session ? { coworkSessions: { ...s.coworkSessions, [ev.result.session.id]: ev.result.session } } : {}),
+        ...(ev.ok && ev.action === "create" && ev.result.session ? { selectedCoworkId: ev.result.session.id } : {}),
+      }));
+      if (ev.ok && ev.action === "create" && ev.result.session) sendCommand({ type: "cowork.history", sessionId: ev.result.session.id });
+      break;
     case "grok.usage":
       useStore.setState({ grokUsage: ev.usage });
       break;

@@ -531,7 +531,7 @@ function ActivityLine({ state }: { state: RepoState }) {
   if (!result) {
     return state.busy.length > 0 ? (
       <div className="gc-activity note">
-        <LiveDot /> {state.busy.length} task{state.busy.length === 1 ? "" : "s"} working in this repo — branch switches, pulls and discards are held back while they run.
+        <LiveDot /> {state.busy.length} agent{state.busy.length === 1 ? "" : "s"} working in this repo — branch switches, pulls and discards are held back while they run.
       </div>
     ) : null;
   }

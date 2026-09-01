@@ -128,7 +128,7 @@ is("cap", { error: "the task failed because we hit your usage limit while writin
 const rolesSrc = fs.readFileSync(path.resolve(__dirname, "..", "src", "agents", "roles.ts"), "utf8");
 const declared = {};
 for (const chunk of rolesSrc.split(/export function /).slice(1)) {
-  const role = chunk.match(/^(\w+?)Config\s*\(/)?.[1];
+  const role = chunk.match(/^(\w+?)Config\s*\(/)?.[1] ?? (chunk.match(/^coworkerRunOptions\s*\(/) ? "coworker" : undefined);
   if (!role) continue;
   const turns = chunk.match(/maxTurns: (.+?),/)?.[1];
   if (turns) declared[role] = turns;

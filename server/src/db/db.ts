@@ -21,6 +21,12 @@ import type {
   ChatMessage,
   ChatRoomSummary,
   ChatScope,
+  CoworkMessage,
+  CoworkMessageKind,
+  CoworkMessageRole,
+  CoworkSession,
+  CoworkTurn,
+  CoworkTurnState,
   DirectorMessage,
   Effort,
   Finding,
@@ -61,6 +67,12 @@ export function newId(): string {
 }
 
 const now = () => Date.now();
+
+function coworkNameFromPrompt(prompt: string, fallback: string): string {
+  const first = prompt.split(/\r?\n/, 1)[0]?.trim().replace(/\s+/g, " ") ?? "";
+  if (!first) return fallback;
+  return first.length > 72 ? `${first.slice(0, 69).trimEnd()}…` : first;
+}
 
 type Row = Record<string, unknown>;
 
@@ -160,6 +172,70 @@ function rowToRun(r: Row): AgentRun {
     capFlagged: r.cap_flagged == null ? null : r.cap_flagged === 1,
     startedAt: r.started_at as number,
     endedAt: (r.ended_at as number | null) ?? null,
+  };
+}
+
+function parseJsonOrNull(raw: unknown): unknown | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function rowToCoworkSession(r: Row): CoworkSession {
+  return {
+    id: r.id as string,
+    name: r.name as string,
+    autoNamed: r.auto_named === 1,
+    workspace: r.workspace as string,
+    state: r.state as CoworkSession["state"],
+    requestedProvider: (r.requested_provider as CoworkSession["requestedProvider"]) ?? null,
+    requestedModel: (r.requested_model as string | null) ?? null,
+    provider: (r.provider as CoworkSession["provider"]) ?? null,
+    model: (r.model as string | null) ?? null,
+    effort: (r.effort as Effort | null) ?? null,
+    account: (r.account as string | null) ?? null,
+    agentSessionId: (r.agent_session_id as string | null) ?? null,
+    activeTurnId: (r.active_turn_id as string | null) ?? null,
+    error: (r.error as string | null) ?? null,
+    createdAt: r.created_at as number,
+    updatedAt: r.updated_at as number,
+  };
+}
+
+function rowToCoworkTurn(r: Row): CoworkTurn {
+  return {
+    id: r.id as string,
+    sessionId: r.session_id as string,
+    state: r.state as CoworkTurn["state"],
+    provider: (r.provider as CoworkTurn["provider"]) ?? null,
+    model: (r.model as string | null) ?? null,
+    effort: (r.effort as Effort | null) ?? null,
+    account: (r.account as string | null) ?? null,
+    agentSessionId: (r.agent_session_id as string | null) ?? null,
+    error: (r.error as string | null) ?? null,
+    costUsd: (r.cost_usd as number | null) ?? null,
+    numTurns: (r.num_turns as number | null) ?? null,
+    tokenUsage: rowToTokenUsage(r),
+    startedAt: r.started_at as number,
+    endedAt: (r.ended_at as number | null) ?? null,
+  };
+}
+
+function rowToCoworkMessage(r: Row): CoworkMessage {
+  return {
+    id: r.id as string,
+    sessionId: r.session_id as string,
+    turnId: (r.turn_id as string | null) ?? null,
+    role: r.role as CoworkMessageRole,
+    kind: r.kind as CoworkMessageKind,
+    content: r.content as string,
+    meta: parseJsonOrNull(r.meta),
+    partial: r.partial === 1,
+    createdAt: r.created_at as number,
+    updatedAt: r.updated_at as number,
   };
 }
 
@@ -808,6 +884,291 @@ export class Db {
     this.raw
       .prepare("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run(key, value);
+  }
+
+  // ---- Co-work sessions ----
+
+  createCoworkSession(input: {
+    name: string;
+    autoNamed: boolean;
+    workspace: string;
+    requestedProvider?: CoworkSession["requestedProvider"];
+    requestedModel?: string | null;
+  }): CoworkSession {
+    const at = now();
+    const session: CoworkSession = {
+      id: newId(),
+      name: input.name,
+      autoNamed: input.autoNamed,
+      workspace: input.workspace,
+      state: "idle",
+      requestedProvider: input.requestedProvider ?? null,
+      requestedModel: input.requestedModel ?? null,
+      provider: null,
+      model: null,
+      effort: null,
+      account: null,
+      agentSessionId: null,
+      activeTurnId: null,
+      error: null,
+      createdAt: at,
+      updatedAt: at,
+    };
+    this.raw.prepare(
+      `INSERT INTO cowork_sessions
+         (id, name, auto_named, workspace, state, requested_provider, requested_model, provider, model,
+          effort, account, agent_session_id, active_turn_id, error, created_at, updated_at)
+       VALUES
+         (@id, @name, @autoNamed, @workspace, @state, @requestedProvider, @requestedModel, @provider, @model,
+          @effort, @account, @agentSessionId, @activeTurnId, @error, @createdAt, @updatedAt)`,
+    ).run({ ...session, autoNamed: session.autoNamed ? 1 : 0 });
+    return session;
+  }
+
+  getCoworkSession(id: string): CoworkSession | null {
+    const row = this.raw.prepare("SELECT * FROM cowork_sessions WHERE id = ?").get(id) as Row | undefined;
+    return row ? rowToCoworkSession(row) : null;
+  }
+
+  listCoworkSessions(): CoworkSession[] {
+    return (this.raw.prepare("SELECT * FROM cowork_sessions ORDER BY updated_at DESC, created_at DESC").all() as Row[]).map(rowToCoworkSession);
+  }
+
+  listCoworkTurns(sessionId: string): CoworkTurn[] {
+    return (this.raw.prepare("SELECT * FROM cowork_turns WHERE session_id = ? ORDER BY started_at ASC, rowid ASC").all(sessionId) as Row[]).map(rowToCoworkTurn);
+  }
+
+  getCoworkTurn(id: string): CoworkTurn | null {
+    const row = this.raw.prepare("SELECT * FROM cowork_turns WHERE id = ?").get(id) as Row | undefined;
+    return row ? rowToCoworkTurn(row) : null;
+  }
+
+  listCoworkMessages(sessionId: string): CoworkMessage[] {
+    return (this.raw.prepare("SELECT * FROM cowork_messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC").all(sessionId) as Row[]).map(rowToCoworkMessage);
+  }
+
+  /** Atomically claim the session and persist the owner prompt. There is no await in this transaction,
+   * so two sockets sending together cannot create two live agent turns for one conversation. */
+  beginCoworkTurn(sessionId: string, content: string, messageId = newId()):
+    | { ok: true; session: CoworkSession; turn: CoworkTurn; message: CoworkMessage }
+    | { ok: false; error: string; session: CoworkSession | null } {
+    return this.raw.transaction(() => {
+      const current = this.getCoworkSession(sessionId);
+      if (!current) return { ok: false as const, error: "Co-work session not found.", session: null };
+      if (current.activeTurnId || current.state === "running" || current.state === "stopping") {
+        return { ok: false as const, error: current.state === "stopping" ? "This turn is still stopping." : "A Co-worker turn is already running.", session: current };
+      }
+      if (this.raw.prepare("SELECT 1 FROM cowork_messages WHERE id = ?").get(messageId)) {
+        return { ok: false as const, error: "This prompt was already received.", session: current };
+      }
+
+      const at = now();
+      const turnId = newId();
+      const nextName = current.autoNamed ? coworkNameFromPrompt(content, current.name) : current.name;
+      const claimed = this.raw.prepare(
+        `UPDATE cowork_sessions
+            SET state='running', active_turn_id=@turnId, error=NULL, name=@name,
+                auto_named=CASE WHEN auto_named=1 THEN 0 ELSE auto_named END, updated_at=@at
+          WHERE id=@sessionId AND active_turn_id IS NULL AND state IN ('idle','error')`,
+      ).run({ sessionId, turnId, name: nextName, at });
+      if (claimed.changes !== 1) {
+        return { ok: false as const, error: "A Co-worker turn is already running.", session: this.getCoworkSession(sessionId) };
+      }
+
+      this.raw.prepare(
+        `INSERT INTO cowork_turns
+           (id, session_id, state, provider, model, effort, account, agent_session_id, error,
+            cost_usd, num_turns, started_at, ended_at)
+         VALUES (?, ?, 'running', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL)`,
+      ).run(turnId, sessionId, at);
+      this.raw.prepare(
+        `INSERT INTO cowork_messages
+           (id, session_id, turn_id, role, kind, content, meta, partial, created_at, updated_at)
+         VALUES (?, ?, ?, 'user', 'text', ?, NULL, 0, ?, ?)`,
+      ).run(messageId, sessionId, turnId, content, at, at);
+
+      const messageRow = this.raw.prepare("SELECT * FROM cowork_messages WHERE id = ?").get(messageId) as Row | undefined;
+      if (!messageRow) throw new Error("Co-work message insert failed");
+      return {
+        ok: true as const,
+        session: this.getCoworkSession(sessionId)!,
+        turn: this.getCoworkTurn(turnId)!,
+        message: rowToCoworkMessage(messageRow),
+      };
+    })();
+  }
+
+  /** Persist the concrete target before the process starts. Both Auto and explicit selection become
+   * sticky here; later turns must request this exact provider/model instead of silently substituting. */
+  setCoworkTurnTarget(input: {
+    sessionId: string;
+    turnId: string;
+    provider: NonNullable<CoworkSession["provider"]>;
+    model: string;
+    effort: Effort;
+    account: string | null;
+  }): CoworkSession | null {
+    const at = now();
+    const changed = this.raw.transaction(() => {
+      const sessionUpdate = this.raw.prepare(
+        `UPDATE cowork_sessions
+            SET provider=@provider, model=@model, effort=@effort, account=@account, updated_at=@at
+          WHERE id=@sessionId AND active_turn_id=@turnId`,
+      ).run({ ...input, at });
+      if (sessionUpdate.changes !== 1) return false;
+      this.raw.prepare(
+        `UPDATE cowork_turns
+            SET provider=@provider, model=@model, effort=@effort, account=@account
+          WHERE id=@turnId AND session_id=@sessionId AND state='running'`,
+      ).run(input);
+      return true;
+    })();
+    return changed ? this.getCoworkSession(input.sessionId) : null;
+  }
+
+  setCoworkStopping(sessionId: string, turnId: string): CoworkSession | null {
+    const result = this.raw.prepare(
+      "UPDATE cowork_sessions SET state='stopping', updated_at=? WHERE id=? AND active_turn_id=? AND state='running'",
+    ).run(now(), sessionId, turnId);
+    return result.changes ? this.getCoworkSession(sessionId) : null;
+  }
+
+  setCoworkAgentSession(sessionId: string, turnId: string, agentSessionId: string): CoworkSession | null {
+    this.raw.transaction(() => {
+      this.raw.prepare(
+        "UPDATE cowork_sessions SET agent_session_id=?, updated_at=? WHERE id=? AND active_turn_id=?",
+      ).run(agentSessionId, now(), sessionId, turnId);
+      this.raw.prepare(
+        "UPDATE cowork_turns SET agent_session_id=? WHERE id=? AND session_id=? AND state='running'",
+      ).run(agentSessionId, turnId, sessionId);
+    })();
+    return this.getCoworkSession(sessionId);
+  }
+
+  upsertCoworkMessage(input: {
+    id?: string;
+    sessionId: string;
+    turnId?: string | null;
+    role: CoworkMessageRole;
+    kind: CoworkMessageKind;
+    content: string;
+    meta?: unknown | null;
+    partial?: boolean;
+    createdAt?: number;
+  }): CoworkMessage {
+    const id = input.id ?? newId();
+    const at = input.createdAt ?? now();
+    const meta = input.meta == null ? null : JSON.stringify(input.meta);
+    this.raw.prepare(
+      `INSERT INTO cowork_messages
+         (id, session_id, turn_id, role, kind, content, meta, partial, created_at, updated_at)
+       VALUES (@id, @sessionId, @turnId, @role, @kind, @content, @meta, @partial, @at, @at)
+       ON CONFLICT(id) DO UPDATE SET
+         content=excluded.content, meta=excluded.meta, partial=excluded.partial, updated_at=excluded.updated_at`,
+    ).run({
+      id,
+      sessionId: input.sessionId,
+      turnId: input.turnId ?? null,
+      role: input.role,
+      kind: input.kind,
+      content: input.content,
+      meta,
+      partial: input.partial ? 1 : 0,
+      at,
+    });
+    return rowToCoworkMessage(this.raw.prepare("SELECT * FROM cowork_messages WHERE id = ?").get(id) as Row);
+  }
+
+  finishCoworkTurn(input: {
+    sessionId: string;
+    turnId: string;
+    state: CoworkTurnState;
+    error?: string | null;
+    agentSessionId?: string | null;
+    costUsd?: number | null;
+    numTurns?: number | null;
+    tokenUsage?: TokenUsage | null;
+  }): CoworkSession | null {
+    const at = now();
+    const sessionState: CoworkSession["state"] = input.state === "error" || input.state === "interrupted" ? "error" : "idle";
+    const usage = input.tokenUsage;
+    this.raw.transaction(() => {
+      this.raw.prepare(
+        `UPDATE cowork_turns SET
+           state=@state, error=@error, agent_session_id=COALESCE(@agentSessionId, agent_session_id),
+           cost_usd=@costUsd, num_turns=@numTurns,
+           input_tokens=@inputTokens, output_tokens=@outputTokens,
+           cache_read_input_tokens=@cacheReadInputTokens,
+           cache_creation_input_tokens=@cacheCreationInputTokens,
+           reasoning_output_tokens=@reasoningOutputTokens, total_tokens=@totalTokens,
+           ended_at=@at
+         WHERE id=@turnId AND session_id=@sessionId AND state='running'`,
+      ).run({
+        ...input,
+        error: input.error ?? null,
+        agentSessionId: input.agentSessionId ?? null,
+        costUsd: input.costUsd ?? null,
+        numTurns: input.numTurns ?? null,
+        inputTokens: usage?.inputTokens ?? null,
+        outputTokens: usage?.outputTokens ?? null,
+        cacheReadInputTokens: usage?.cacheReadInputTokens ?? null,
+        cacheCreationInputTokens: usage?.cacheCreationInputTokens ?? null,
+        reasoningOutputTokens: usage?.reasoningOutputTokens ?? null,
+        totalTokens: usage?.totalTokens ?? null,
+        at,
+      });
+      // active_turn_id is the stale-callback fence: an old process can never settle a newer turn.
+      this.raw.prepare(
+        `UPDATE cowork_sessions SET
+           state=@sessionState, active_turn_id=NULL, error=@error,
+           agent_session_id=COALESCE(@agentSessionId, agent_session_id), updated_at=@at
+         WHERE id=@sessionId AND active_turn_id=@turnId`,
+      ).run({
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        sessionState,
+        error: input.error ?? null,
+        agentSessionId: input.agentSessionId ?? null,
+        at,
+      });
+    })();
+    return this.getCoworkSession(input.sessionId);
+  }
+
+  renameCoworkSession(id: string, name: string): CoworkSession | null {
+    const result = this.raw.prepare("UPDATE cowork_sessions SET name=?, auto_named=0, updated_at=? WHERE id=?").run(name, now(), id);
+    return result.changes ? this.getCoworkSession(id) : null;
+  }
+
+  deleteCoworkSession(id: string): boolean {
+    return this.raw.prepare("DELETE FROM cowork_sessions WHERE id=? AND active_turn_id IS NULL").run(id).changes === 1;
+  }
+
+  /** A process restart never autonomously replays a human-led turn. It closes orphan rows but retains
+   * their provider session id, so the owner's next instruction can deliberately continue the conversation. */
+  interruptOrphanedCoworkTurns(): CoworkSession[] {
+    const active = (this.raw.prepare("SELECT * FROM cowork_sessions WHERE active_turn_id IS NOT NULL OR state IN ('running','stopping')").all() as Row[]).map(rowToCoworkSession);
+    if (!active.length) return [];
+    const at = now();
+    const error = "The server restarted during this turn. The conversation and agent session were preserved; send the next instruction to continue.";
+    this.raw.transaction(() => {
+      for (const session of active) {
+        if (session.activeTurnId) {
+          this.raw.prepare(
+            "UPDATE cowork_turns SET state='interrupted', error=?, ended_at=? WHERE id=? AND state='running'",
+          ).run(error, at, session.activeTurnId);
+          // A streamed reply that survived the crash is substantive history, not a still-live cursor.
+          // Seal every partial row from the interrupted turn before the UI reloads it.
+          this.raw.prepare(
+            "UPDATE cowork_messages SET partial=0, updated_at=? WHERE turn_id=? AND partial=1",
+          ).run(at, session.activeTurnId);
+        }
+        this.raw.prepare(
+          "UPDATE cowork_sessions SET state='error', active_turn_id=NULL, error=?, updated_at=? WHERE id=?",
+        ).run(error, at, session.id);
+      }
+    })();
+    return active.map((session) => this.getCoworkSession(session.id)!).filter(Boolean);
   }
 
   // ---- threads ----

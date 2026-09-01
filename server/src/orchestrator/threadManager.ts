@@ -59,9 +59,9 @@ import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRun
 import { noteGrokCap, readGrokUsage, grokUsageCapped } from "../agents/grokUsage.js";
 import { noteZaiCap, readZaiUsage, zaiUsageCapped } from "../agents/zaiUsage.js";
 import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, CURATED_ZAI_MODELS, uniq } from "../agents/modelCatalog.js";
-import { clampEffort, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort, reviewerConfig } from "../agents/roles.js";
+import { clampEffort, coworkerRunOptions, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort, reviewerConfig } from "../agents/roles.js";
 import { jsonContractInstruction, type JsonSchemaLike } from "../agents/structuredText.js";
-import { CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
+import { CODEX_IMPLEMENTOR_DOCTRINE, COWORKER_PROMPT, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createGitReadServer } from "../bus/gitReadServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
@@ -94,6 +94,7 @@ import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import { DiscordNotifier, parseChannelId, type OwnerNotice } from "./discordNotify.js";
+import type { CoworkTarget, PreparedCoworkRun } from "./cowork.js";
 import { DirectorSupervisor, SUPERVISOR_JUDGE_MAX_TURNS, type SupervisorJudgement } from "./supervisor.js";
 import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
 import type { FreeProviderService } from "../freeProviders/service.js";
@@ -111,6 +112,8 @@ import type {
   AutoReviewSource,
   ChatMessage,
   CodexEffort,
+  CoworkMessage,
+  CoworkSession,
   Effort,
   Finding,
   GrokEffort,
@@ -648,6 +651,14 @@ const CLOSEABLE: ReadonlySet<Thread["state"]> = new Set(["done", "failed", "canc
 // resume settled here with no QA loop) and 'paused' are work the owner can sign off on directly — the
 // pipeline's own only-QA-marks-done rule never applies to these, so without this they'd be stuck.
 const DONEABLE: ReadonlySet<Thread["state"]> = new Set(["review", "paused"]);
+const COWORK_CONFLICT_STATES: ReadonlySet<Thread["state"]> = new Set([
+  "planning",
+  "researching",
+  "implementing",
+  "qa",
+  "reviewing",
+  "awaiting_user",
+]);
 // Reader results normally reach the owner through the in-process MCP bus (`post_finding`). Codex is the
 // safe CLI exception: it has a real read-only sandbox and its schema carries the answer for ThreadManager
 // to post. Grok has no equivalent harness-level read-only boundary, so it remains excluded.
@@ -765,6 +776,10 @@ export class ThreadManager implements OrchestratorApi {
   // 'queued' state and starts when a slot frees. Resumes of in-flight work aren't gated — they
   // continue existing work — but they still count toward the active total.
   private readonly activePipelines = new Set<string>();
+  // Co-work owns a separate lifecycle but shares repositories with task agents. This callback is
+  // attached after CoworkManager is constructed; queue/resume gates consult it so neither surface can
+  // start a writer underneath the other.
+  private coworkWorkspaceBusy: ((workspace: string) => boolean) | null = null;
   // Per-thread identity of the pipeline that currently owns the concurrency slot. A cancel→retry can
   // start a NEW pipeline for a thread while the old one is still unwinding; the newer pipeline replaces
   // this token, so the old pipeline's late releaseSlot() sees a mismatch and must NOT delete the slot
@@ -2551,6 +2566,155 @@ export class ThreadManager implements OrchestratorApi {
     if (target.provider === "codex") this.noteCodexCap(undefined, target.model);
     else if (target.provider === "grok") this.noteGrokCap();
     else if (target.provider === "zai") this.noteZaiCap();
+  }
+
+  /** Resolve and construct one Co-worker turn through the same auth, model, account, effort, and
+   * capacity machinery as implementation. The first Auto turn freezes its concrete target; every
+   * later turn validates and resumes that exact provider/model instead of falling through failover. */
+  prepareCoworkerRun(input: {
+    session: CoworkSession;
+    prompt: string;
+    history: CoworkMessage[];
+  }): PreparedCoworkRun | { error: string } {
+    const { session, prompt, history } = input;
+    const demand = demandForRole("implementor", { effort: session.effort ?? "high" });
+    let provider = session.provider ?? session.requestedProvider ?? undefined;
+    let model = session.model ?? session.requestedModel ?? undefined;
+
+    // A requested or already-resolved target is an exact pin. Reuse the task model gate's catalog,
+    // authentication, independently-metered pool, and runway checks without ever creating a task row.
+    if (provider && model) {
+      const at = Date.now();
+      const strictThread: Thread = {
+        id: `cowork:${session.id}`,
+        title: session.name,
+        state: "intake",
+        workspace: session.workspace,
+        brief: "",
+        rawPrompt: "",
+        modelRequest: { requested: model, provider, model, strict: true },
+        createdAt: at,
+        updatedAt: at,
+      };
+      const snapshot = this.requestedModelCapacitySnapshot(strictThread, demand, at);
+      if (snapshot.error) return { error: snapshot.error.replace(/task/gi, "Co-work session") };
+      if (!snapshot.ready.length) {
+        const wait = snapshot.nextAt
+          ? ` Expected capacity ${formatUntil(snapshot.nextAt, at)} (${new Date(snapshot.nextAt).toLocaleString()}).`
+          : " No reliable reset time is available yet.";
+        return { error: `${model} does not currently have enough safe capacity for a Co-worker turn.${wait} No substitute was started.` };
+      }
+      if (provider === "claude" && session.account) {
+        const accountOption = this.claudeCapacityOptions(demand, at).find((option) => option.accountId === session.account);
+        if (!accountOption) {
+          return { error: "The Claude subscription linked to this Co-work context is no longer enabled. Restore that subscription or create a new session; no account was substituted." };
+        }
+        if (!this.roleCapacityReady(accountOption, demand, at)) {
+          const reset = nextViableAt(accountOption.windows, demand, at);
+          const wait = reset ? ` Try again ${formatUntil(reset, at)} (${new Date(reset).toLocaleString()}).` : " No reliable reset time is available yet.";
+          return { error: `The Claude subscription linked to this Co-work context does not currently have enough safe capacity.${wait} No account or model was substituted.` };
+        }
+      }
+    } else if (provider || model) {
+      return { error: "The saved Co-work target is incomplete. Choose both a provider and model in a new session." };
+    } else {
+      const route = this.resolveImplementorProvider(demand);
+      if (route.error || !route.provider) return { error: route.error ?? "No authenticated coding provider is available." };
+      if (route.allCandidatesCapped || route.allKnownInsufficient) {
+        return { error: "No enabled coding provider currently has enough safe capacity for this Co-worker turn. Try again after capacity resets." };
+      }
+      provider = route.provider;
+    }
+
+    try {
+      const resume = session.agentSessionId ?? undefined;
+      let target: CoworkTarget;
+      let agent: AgentRunLike;
+      let startContent: UserContent;
+
+      if (provider === "claude") {
+        const account = session.account ? this.acctById(session.account) : this.dispatchAccount(demand);
+        if (!account) return { error: "The Claude subscription linked to this Co-work context is unavailable. Restore it or create a new session; no account was substituted." };
+        model ??= this.modelFor(account.id, "implementor");
+        const requestedEffort = session.effort ?? "high";
+        const effort = resolveClaudeEffort(model, clampEffort(requestedEffort, this.accountMaxEffort(account.id)));
+        const cfg = coworkerRunOptions(session.workspace, {
+          resume,
+          effort,
+          ...this.communicationPolicyOptions(),
+        });
+        cfg.model = model;
+        cfg.oauthToken = account.token;
+        target = { provider, model, effort, accountId: account.id, accountLabel: account.label };
+        agent = new AgentRun(cfg);
+        startContent = this.communicationContent(prompt);
+      } else if (provider === "codex") {
+        model ??= this.codexModel();
+        const effort = (session.effort ?? this.codexEffort(model)) as CodexEffort;
+        target = { provider, model, effort, accountId: "openai-codex", accountLabel: `codex:${model}` };
+        const fresh = coworkFreshKickoff(history, prompt);
+        agent = new CodexAgentRun({
+          model,
+          effort,
+          cwd: session.workspace,
+          apiKey: this.openaiApiKey() ?? "",
+          resume,
+          freshFallback: this.communicationContent(fresh),
+        });
+        startContent = this.communicationContent(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"));
+      } else if (provider === "grok") {
+        model ??= this.grokModel();
+        const effort = (session.effort ?? this.grokEffort(model)) as GrokEffort;
+        target = { provider, model, effort, accountId: "xai-grok", accountLabel: `grok:${model}` };
+        const fresh = coworkFreshKickoff(history, prompt);
+        agent = new GrokAgentRun({
+          model,
+          effort,
+          cwd: session.workspace,
+          resume,
+          freshFallback: this.communicationContent(fresh),
+        });
+        startContent = this.communicationContent(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"));
+      } else {
+        model ??= this.zaiModel();
+        const effort = session.effort ?? this.zaiEffort();
+        const cfg = coworkerRunOptions(session.workspace, {
+          resume,
+          effort,
+          ...this.communicationPolicyOptions(),
+        });
+        cfg.model = model;
+        cfg.baseUrl = config.zai.baseUrl;
+        cfg.authToken = this.zaiApiKey();
+        target = { provider: "zai", model, effort, accountId: "zai", accountLabel: `zai:${model}` };
+        agent = new ZaiAgentRun(cfg);
+        startContent = this.communicationContent(prompt);
+      }
+      return { target, agent, startContent };
+    } catch (error) {
+      return { error: `Could not start the Co-worker: ${(error as Error).message || String(error)}` };
+    }
+  }
+
+  coworkObserveRateLimit(target: CoworkTarget, info: RateLimitInfo): void {
+    if (target.provider === "claude" && target.accountId) this.accounts.updateFromRateLimit(target.accountId, info);
+  }
+
+  coworkRunCapped(target: CoworkTarget, agent: AgentRunLike): boolean {
+    if (target.provider === "codex" && agent instanceof CodexAgentRun) return agent.capped;
+    if (target.provider === "grok" && agent instanceof GrokAgentRun) return agent.capped;
+    return agent.rateLimited;
+  }
+
+  coworkNoteCap(target: CoworkTarget, agent: AgentRunLike): void {
+    if (target.provider === "codex") this.noteCodexCap(agent.rateLimitInfo, target.model);
+    else if (target.provider === "grok") this.noteGrokCap(agent.rateLimitInfo);
+    else if (target.provider === "zai") this.noteZaiCap(agent.rateLimitInfo);
+    else if (target.accountId) {
+      // Preserve the account/model pool classification for future normal routing, but intentionally do
+      // not relaunch this turn: Co-work failures always hand control back to the owner.
+      void this.accounts.classifyCap(target.accountId, target.model, agent.rateLimitInfo).catch(() => {});
+    }
   }
 
   /** One no-tools structured judgement call on whichever provider currently has headroom. This is the
@@ -4388,6 +4552,29 @@ export class ThreadManager implements OrchestratorApi {
 
   // ---- concurrency queue ----
 
+  attachCoworkWorkspaceGuard(isBusy: (workspace: string) => boolean): void {
+    this.coworkWorkspaceBusy = isBusy;
+  }
+
+  /** Co-work asks before claiming a workspace. Query both the authoritative active slot set and the
+   * visible task states because reviewer/fix lanes can own a live process outside an ordinary dispatch. */
+  coworkTaskConflict(workspace: string): string | null {
+    const key = normalizeWorkspace(workspace);
+    const task = this.db.listThreads().find(
+      (thread) =>
+        normalizeWorkspace(thread.workspace) === key &&
+        (this.activePipelines.has(thread.id) || COWORK_CONFLICT_STATES.has(thread.state)),
+    );
+    return task
+      ? `Task "${task.title}" is already using this workspace (${task.state}). Wait for it to stop before starting a Co-worker turn.`
+      : null;
+  }
+
+  /** A Co-worker turn just released its repository. Wake normal FIFO work that was held behind it. */
+  coworkReleasedWorkspace(): void {
+    this.recoverReleasedCapacity();
+  }
+
   /** Start a freshly-dispatched task's pipeline now, or hold it in 'queued' if we're at the
    *  concurrency cap. Queued tasks start (FIFO) the moment a running pipeline settles. */
   private enqueueOrRun(threadId: string): void {
@@ -4404,12 +4591,15 @@ export class ThreadManager implements OrchestratorApi {
       return;
     }
     const globalFull = this.activePipelines.size >= this.settings().maxConcurrent;
+    const coworkFull = !!thread && this.coworkWorkspaceBusy?.(thread.workspace) === true;
     const repoFull = !!thread && this.repoAtCapacity(thread.workspace);
     if (globalFull || repoFull) {
       if (!this.dispatchQueue.includes(threadId)) this.dispatchQueue.push(threadId);
       this.setState(threadId, "queued");
       const reason =
-        repoFull && !globalFull
+        coworkFull && !globalFull
+          ? "a Co-worker turn is active in this repo"
+          : repoFull && !globalFull
           ? `${this.activeCountForRepo(thread!.workspace)} task(s) already running in this repo (per-repo cap ${this.repoConcurrencyLimit()})`
           : `${this.activePipelines.size} pipeline(s) at the concurrency cap`;
       this.hub.log("info", `Task ${threadId.slice(0, 8)} queued — ${reason}.`);
@@ -4439,6 +4629,7 @@ export class ThreadManager implements OrchestratorApi {
   /** Whether starting another pipeline for `workspace` would exceed the per-repo cap. Always false when
    *  the cap is 0 (unlimited) — the global maxConcurrent is then the only gate. */
   private repoAtCapacity(workspace: string): boolean {
+    if (this.coworkWorkspaceBusy?.(workspace)) return true;
     const limit = this.repoConcurrencyLimit();
     return limit > 0 && this.activeCountForRepo(workspace) >= limit;
   }
@@ -4448,6 +4639,7 @@ export class ThreadManager implements OrchestratorApi {
    *  not yet reflected in activePipelines. Use `repoAtCapacity` instead when each task is started inside
    *  the loop (a synchronous slot reserve means activeCountForRepo already sees the earlier ones). */
   private repoAtCapacityWith(workspace: string, pending: Map<string, number>): boolean {
+    if (this.coworkWorkspaceBusy?.(workspace)) return true;
     const limit = this.repoConcurrencyLimit();
     if (limit <= 0) return false;
     const key = normalizeWorkspace(workspace);
@@ -8880,6 +9072,13 @@ export class ThreadManager implements OrchestratorApi {
     // A queued task hasn't started yet — it has no implementor session and is waiting for a slot, so a
     // resume must NOT start it past the concurrency cap (it'll start via pumpQueue when a slot frees) and
     // must NOT take the planner-less manual-resume path. Just buffer any steering for its eventual kickoff.
+    if (this.coworkWorkspaceBusy?.(thread.workspace)) {
+      return {
+        ok: false,
+        state: thread.state,
+        error: "A Co-worker turn is using this workspace. Stop it or wait for it to finish before resuming this task.",
+      };
+    }
     if (thread.state === "queued") {
       if (message?.trim()) this.bufferDirectorNote(threadId, message);
       return { ok: true, state: "queued" };
@@ -9247,6 +9446,9 @@ export class ThreadManager implements OrchestratorApi {
   async autoReview(threadId: string, source: AutoReviewSource = "owner"): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    if (this.coworkWorkspaceBusy?.(thread.workspace)) {
+      return { ok: false, state: thread.state, error: "A Co-worker turn is using this workspace. Stop it or wait for it to finish before starting review." };
+    }
     // In-memory is the fast path; the durable episode is the restart/concurrent-manager path. Report the
     // REAL state, not a blanket "reviewing" — mid fix round the board shows 'implementing'.
     if (this.autoReviewOwns(threadId)) {
@@ -11147,6 +11349,21 @@ function providerOfRunAccount(account: string | null | undefined): ImplementorPr
 }
 
 /** Human label for an implementor backend, for the failover findings/notices. */
+/** Full durable handoff used only when a CLI resume wedges and its runner self-heals to a fresh
+ * session. Native resumes carry their own context; this fallback keeps every substantive text block
+ * and relies on the working tree for the edits themselves. */
+function coworkFreshKickoff(history: CoworkMessage[], prompt: string): string {
+  const transcript = history
+    .filter((message) => message.kind === "text" || message.kind === "system")
+    .map((message) => `${message.role === "user" ? "OWNER" : message.role.toUpperCase()}:\n${message.content}`)
+    .join("\n\n");
+  return [
+    COWORKER_PROMPT,
+    transcript ? `DURABLE PRIOR CONVERSATION:\n${transcript}` : undefined,
+    `CURRENT OWNER REQUEST:\n${prompt}`,
+  ].filter(Boolean).join("\n\n");
+}
+
 function providerLabel(p: ImplementorProvider): string {
   return p === "codex" ? "Codex" : p === "grok" ? "Grok" : p === "zai" ? "z.ai" : "Claude";
 }

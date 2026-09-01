@@ -4,7 +4,7 @@ import { EFFORTS, type Effort } from "../types.js";
 import type { AgentRunConfig } from "./runner.js";
 import { conciseCommunicationEnabled, withCommunicationSystemPolicy, type CommunicationPolicyOptions } from "./communicationPolicy.js";
 import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, GIT_SERVER, MEMORY_SERVER, OFFICE_SERVER, OFFICE_TOOLS, READER_TOOLS, T } from "./toolNames.js";
-import { DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_FIX_PROMPT, QA_PROMPT, READER_PROMPT, RESEARCHER_PROMPT, REVIEWER_PROMPT } from "./prompts.js";
+import { COWORKER_PROMPT, DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_FIX_PROMPT, QA_PROMPT, READER_PROMPT, RESEARCHER_PROMPT, REVIEWER_PROMPT } from "./prompts.js";
 
 // Only `summary` is required. `nextAgent` is intentionally OPTIONAL: the code already defaults a
 // missing route to the implementor (threadManager: anything but "researcher" ⇒ implementor), and
@@ -248,6 +248,32 @@ export function implementorConfig(
     // which the orchestrator detects and warm-resumes invisibly (cheap, since the just-ended session's
     // prompt cache is still warm). Without it the SDK default fires unpredictably mid-task → manual Resume.
     maxTurns: config.implementorMaxTurns,
+  };
+  if (opts?.resume) cfg.resume = opts.resume;
+  return cfg;
+}
+
+/** One bounded turn in a persistent Co-work conversation. No bus/office servers and no structured
+ * pipeline output: the owner is the only coordinator and the reply itself is the hand-back. */
+export function coworkerRunOptions(
+  cwd: string,
+  opts?: { resume?: string; effort?: Effort; conciseCommunication?: boolean },
+): AgentRunConfig {
+  const cfg: AgentRunConfig = {
+    model: config.models.implementor,
+    cwd,
+    systemPrompt: withCommunicationSystemPolicy(
+      { type: "preset", preset: "claude_code", append: COWORKER_PROMPT },
+      conciseCommunicationEnabled(opts),
+    ),
+    permissionMode: "bypassPermissions",
+    // A targeted blocker question is returned as the turn's reply. The built-in prompt tool would
+    // bypass the durable Co-work transcript and leave the session waiting in an unrepresented state.
+    disallowedTools: ["AskUserQuestion"],
+    settingSources: ["user", "project", "local"],
+    effort: resolveEffort(opts?.effort),
+    includePartialMessages: true,
+    maxTurns: config.coworkerMaxTurns,
   };
   if (opts?.resume) cfg.resume = opts.resume;
   return cfg;

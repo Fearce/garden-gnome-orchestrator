@@ -316,6 +316,64 @@ CREATE TABLE IF NOT EXISTS auto_review_episodes (
   updated_at     INTEGER NOT NULL
 );
 
+-- Human-led Co-work conversations are intentionally not threads. Keeping them in their own tables
+-- makes it structurally impossible for a completed conversational turn to enter planner/QA/review/done
+-- lifecycle code. The resolved provider/model/effort and agent_session_id stay on the session so each
+-- subsequent owner prompt can resume the exact same agent context.
+CREATE TABLE IF NOT EXISTS cowork_sessions (
+  id                 TEXT PRIMARY KEY,
+  name               TEXT NOT NULL,
+  auto_named         INTEGER NOT NULL DEFAULT 1,
+  workspace          TEXT NOT NULL,
+  state              TEXT NOT NULL DEFAULT 'idle',
+  requested_provider TEXT,
+  requested_model    TEXT,
+  provider           TEXT,
+  model              TEXT,
+  effort             TEXT,
+  account            TEXT,
+  agent_session_id   TEXT,
+  active_turn_id     TEXT,
+  error              TEXT,
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cowork_turns (
+  id                    TEXT PRIMARY KEY,
+  session_id            TEXT NOT NULL REFERENCES cowork_sessions(id) ON DELETE CASCADE,
+  state                 TEXT NOT NULL,
+  provider              TEXT,
+  model                 TEXT,
+  effort                TEXT,
+  account               TEXT,
+  agent_session_id      TEXT,
+  error                 TEXT,
+  cost_usd              REAL,
+  num_turns             INTEGER,
+  input_tokens          INTEGER,
+  output_tokens         INTEGER,
+  cache_read_input_tokens INTEGER,
+  cache_creation_input_tokens INTEGER,
+  reasoning_output_tokens INTEGER,
+  total_tokens          INTEGER,
+  started_at            INTEGER NOT NULL,
+  ended_at              INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS cowork_messages (
+  id          TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL REFERENCES cowork_sessions(id) ON DELETE CASCADE,
+  turn_id     TEXT REFERENCES cowork_turns(id) ON DELETE SET NULL,
+  role        TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  content     TEXT NOT NULL,
+  meta        TEXT,
+  partial     INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_thread     ON agent_runs(thread_id);
 CREATE INDEX IF NOT EXISTS idx_grades_model    ON model_grades(graded_model);
 CREATE INDEX IF NOT EXISTS idx_findings_thread ON findings(thread_id);
@@ -327,4 +385,7 @@ CREATE INDEX IF NOT EXISTS idx_supervisor_events_thread  ON supervisor_events(th
 CREATE INDEX IF NOT EXISTS idx_supervisor_events_created ON supervisor_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_supervisor_chat_created   ON supervisor_chat_turns(created_at);
 CREATE INDEX IF NOT EXISTS idx_auto_review_status        ON auto_review_episodes(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_cowork_sessions_updated    ON cowork_sessions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cowork_turns_session       ON cowork_turns(session_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_cowork_messages_session    ON cowork_messages(session_id, created_at, id);
 `;

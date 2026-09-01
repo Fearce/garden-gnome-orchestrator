@@ -98,7 +98,8 @@ export class RepoConsole {
    *  then task count, then the ones merely found on disk. */
   async list(rescan = false): Promise<RepoRef[]> {
     const threads = this.db.listThreads();
-    const known = [this.selfRepo, ...this.recentRepos(), ...threads.map((t) => t.workspace)]
+    const cowork = this.db.listCoworkSessions();
+    const known = [this.selfRepo, ...this.recentRepos(), ...threads.map((t) => t.workspace), ...cowork.map((session) => session.workspace)]
       .map((p) => (p ?? "").trim())
       .filter(Boolean);
 
@@ -138,6 +139,13 @@ export class RepoConsole {
       if (!ref) continue;
       ref.taskCount++;
       if (WORKING_STATES.has(t.state)) ref.activeCount++;
+    }
+    for (const session of cowork) {
+      const root = workspaceRoot.get((session.workspace ?? "").trim());
+      const ref = root ? roots.get(root) : undefined;
+      if (!ref) continue;
+      ref.taskCount++;
+      if (session.activeTurnId || session.state === "running" || session.state === "stopping") ref.activeCount++;
     }
 
     return [...roots.values()].sort((a, b) => {
@@ -219,6 +227,12 @@ export class RepoConsole {
       if (root !== repoRoot) continue;
       busy.push({ id: t.id, title: t.title, state: t.state });
     }
+    for (const session of this.db.listCoworkSessions()) {
+      if (!session.activeTurnId && session.state !== "running" && session.state !== "stopping") continue;
+      const root = await resolveRepoRoot((session.workspace ?? "").trim());
+      if (root !== repoRoot) continue;
+      busy.push({ id: `cowork:${session.id}`, title: `Co-work: ${session.name}`, state: "implementing" });
+    }
     return busy;
   }
 
@@ -245,5 +259,5 @@ function busyMessage(action: RepoOp["action"], busy: RepoBusyTask[]): string {
   const names = busy.slice(0, 3).map((t) => `“${t.title}”`).join(", ");
   const more = busy.length > 3 ? ` and ${busy.length - 3} more` : "";
   const verb = ACTION_VERB[action] ?? "This";
-  return `${verb} would change files under ${busy.length} running task${busy.length === 1 ? "" : "s"}: ${names}${more}.`;
+  return `${verb} would change files under ${busy.length} running agent${busy.length === 1 ? "" : "s"}: ${names}${more}.`;
 }

@@ -96,6 +96,8 @@ const GATES = [
   "test:qa-budget-scope",
   "test:inject-qa",
   "test:chat-steering",
+  "test:cowork",
+  "test:cowork-ui",
   "test:auto-review",
   "test:model-select",
   "test:model-catalog",

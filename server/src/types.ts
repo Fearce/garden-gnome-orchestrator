@@ -818,6 +818,76 @@ export interface OrchestratorSettings {
 /** The implementor backend chosen at dispatch by the subscription toggles. */
 export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
 
+// ---- Co-work: durable, human-led coding conversations ----
+
+/** Co-work is deliberately separate from ThreadState. A completed turn returns to `idle`; it never
+ * enters QA/review/done or any other autonomous pipeline state. */
+export type CoworkSessionState = "idle" | "running" | "stopping" | "error";
+export type CoworkTurnState = "running" | "done" | "error" | "cancelled" | "interrupted";
+export type CoworkMessageRole = "user" | "coworker" | "system";
+export type CoworkMessageKind = "text" | "thinking" | "tool" | "tool_result" | "system";
+
+/** One long-lived human-led coding conversation. The requested fields preserve an explicit owner pin;
+ * the actual fields become the sticky resolved target on the first turn, including for Auto. */
+export interface CoworkSession {
+  id: string;
+  name: string;
+  autoNamed: boolean;
+  workspace: string;
+  state: CoworkSessionState;
+  requestedProvider: ImplementorProvider | null;
+  requestedModel: string | null;
+  provider: ImplementorProvider | null;
+  model: string | null;
+  effort: Effort | null;
+  account: string | null; // sticky provider account id; required to resume a Claude session under the token that owns it
+  agentSessionId: string | null;
+  activeTurnId: string | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** One bounded agent invocation caused by exactly one owner prompt. */
+export interface CoworkTurn {
+  id: string;
+  sessionId: string;
+  state: CoworkTurnState;
+  provider: ImplementorProvider | null;
+  model: string | null;
+  effort: Effort | null;
+  account: string | null;
+  agentSessionId: string | null;
+  error: string | null;
+  costUsd: number | null;
+  numTurns: number | null;
+  tokenUsage: TokenUsage | null;
+  startedAt: number;
+  endedAt: number | null;
+}
+
+/** A durable conversation item. `partial` rows are updated while output streams so a process restart
+ * cannot erase a substantive reply that had already reached the browser. Tool metadata is full JSON;
+ * the UI may collapse it, but persistence never truncates it. */
+export interface CoworkMessage {
+  id: string;
+  sessionId: string;
+  turnId: string | null;
+  role: CoworkMessageRole;
+  kind: CoworkMessageKind;
+  content: string;
+  meta: unknown | null;
+  partial: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CoworkActionResult {
+  ok: boolean;
+  session?: CoworkSession;
+  error?: string;
+}
+
 /** An explicit owner model/capacity request. This is task-local and strict: automatic model/provider
  * routing remains unchanged for tasks without it, while a requested task never substitutes another
  * model on dispatch, failover, retry, or cap recovery. Mirrored in web/src/types.ts. */
