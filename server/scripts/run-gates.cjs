@@ -101,6 +101,7 @@ const GATES = [
   "test:cowork-health",
   "test:auto-review",
   "test:manual-deployment",
+  "test:manual-deployment-probe",
   "test:model-select",
   "test:model-catalog",
   "test:model-catalog-health",
