@@ -4,7 +4,7 @@
 //   node scripts/probe-office.cjs
 //   npm run probe:office --prefix server
 //
-// Why it exists: on 2026-08-25 Kevin reported "we are 2 connected working on the same repo and it doesn't
+// Why it exists: on 2026-08-25 the operator reported "we are 2 connected working on the same repo and it doesn't
 // seem like our gnomes are collaborating". The relay was healthy, both machines were on it, and the agents
 // had genuinely exchanged file claims — every surface anyone could check said fine. Diagnosing it meant
 // hand-writing SQLite one-liners and curling the relay, because NOTHING in the sweep looks at the online
@@ -25,7 +25,7 @@
 //     — the probe would drift into reporting the room reachable long after the app stopped agreeing.
 //   • The self-echo check is TIME-BOUNDED against the fix. Rows written before it are residue and are
 //     reported as a note, not a failure: a check that cries wolf every night stops being read, and this
-//     one would have gone permanently red on two pre-fix rows sitting in Kevin's vota room forever.
+//     one would have gone permanently red on two pre-fix rows sitting in the operator's old room forever.
 //   • Never open the DB through `Db` — its constructor RUNS MIGRATIONS. Read-only sqlite only.
 //   • Nothing here prints the device token or the join code. The instance NAME is public (every peer
 //     sees it); the credentials are not, and this output goes into a sweep transcript.
@@ -131,7 +131,7 @@ function classifyOfficeRows({ rows, selfName, fixAt }) {
   return out;
 }
 
-/** "Sif @ Mikkel's laptop" -> "Mikkel's laptop". The stamp `receiveRemoteChat` has always written into
+/** "Sif @ remote workstation" -> "remote workstation". The stamp `receiveRemoteChat` has always written into
  *  sender_name, and the only recoverable machine on rows predating the `remote_instance` column. */
 function senderMachine(senderName) {
   const at = typeof senderName === "string" ? senderName.indexOf(" @ ") : -1;
@@ -284,8 +284,8 @@ async function main() {
 
   // The blind spot this section exists for: everything above inspects rooms that FORMED, so two machines
   // that should have met and never did read as an absence of activity. On 2026-08-26 that was exactly the
-  // case — Kevin on `Fearce/garden-gnome-orchestrator`, Mikkel on his `prismicious/…` fork, three agents
-  // in one codebase and two rooms, while this probe printed a clean two-way ✓.
+  // case: one checkout on the upstream repo, another on a fork, three agents in one codebase and two
+  // rooms, while this probe printed a clean two-way pass.
   console.log("\n=== repositories that look like the same project but aren't grouped ===");
   if (!cfg.unlinked.length) {
     console.log("  none — every remote repo sharing a name with one of yours is grouped with it.");

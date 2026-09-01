@@ -21,7 +21,7 @@
 // GOTCHAS:
 //   • Open the live file with `better-sqlite3` directly and `readonly: true` — NEVER `new Db(path)`.
 //     The `Db` constructor RUNS MIGRATIONS, so pointing it at prod to "just read something" writes to
-//     Kevin's database. (To run real `Db` code against real data, snapshot first with `VACUUM INTO` —
+//     the live database. (To run real `Db` code against real data, snapshot first with `VACUUM INTO` —
 //     see .claude/rules/rehearse-a-data-migration.md.)
 //   • Columns are discovered per table via `PRAGMA table_info`, not hardcoded, so a new text column is
 //     searched the day it is added rather than silently skipped.

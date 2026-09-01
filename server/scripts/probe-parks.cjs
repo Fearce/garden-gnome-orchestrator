@@ -287,9 +287,9 @@ function main() {
   if (!abandoned.length) console.log("  ✓ nothing abandoned — no task was left behind by a restart.");
   const lost = reportSection(db, abandoned, ABANDON_CLASSES, classifyAbandoned);
 
-  const needsKevin = parks("stalled") + parks("unknown") + lost("promised") + lost("otherFailure");
+  const needsOwner = parks("stalled") + parks("unknown") + lost("promised") + lost("otherFailure");
   console.log(
-    `\n  ${needsKevin ? "⚠" : "✓"} ${parks("stalled") + parks("unknown")} park(s) stopped mid-pipeline, ` +
+    `\n  ${needsOwner ? "⚠" : "✓"} ${parks("stalled") + parks("unknown")} park(s) stopped mid-pipeline, ` +
       `${parks("verdict")} awaiting a verdict by design, ${parks("capWait")} on the supervisor.`,
   );
   console.log(
