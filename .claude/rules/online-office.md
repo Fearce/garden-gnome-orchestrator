@@ -28,8 +28,8 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
   here only for a repo this machine works, so one remote machine in it IS the collaboration. It counts
   `chat_messages.remote_instance` (per MACHINE, backfilled from `sender_name` for older rows — skipping
   this instance's OWN name, else the self-echo above becomes a phantom teammate in the data).
-- **A FORK is one repository under two keys, and `origin` alone splits it in two.** 2026-08-26: Kevin on
-  `Fearce/garden-gnome-orchestrator`, Mikkel on his `prismicious/…` fork — three agents, one codebase, two
+- **A FORK is one repository under two keys, and `origin` alone splits it in two.** 2026-08-26: one
+  checkout on the upstream repo and another on a fork — three agents, one codebase, two
   rooms, blind to each other, under a clean `probe:office` ✓ (it only inspects rooms that FORMED). Fix:
   `repoAliases` on presence + `rooms[]` on chat; the side holding the other's remote joins BOTH rooms and
   the relay delivers once per peer, stamped with the room THAT peer knows — an older client matches a room

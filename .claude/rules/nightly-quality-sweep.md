@@ -168,7 +168,7 @@ and **exits non-zero on a regression**: duplicate blobs keyed exactly as `addAtt
 insert path that bypassed it). An orphan is a WARNING only — a crash between storing bytes and writing
 the message that points at them leaves one legitimately. Free pages are headroom, not waste: SQLite
 reuses them, so don't propose a `VACUUM` (exclusive lock on a live DB, buys only file size). Growth
-itself is never a failure — once nothing is duplicated, shrinking further is Kevin's retention DECISION.
+itself is never a failure — once nothing is duplicated, shrinking further is the owner's retention decision.
 Gate: `test:db-size`.
 
 ## 9. `npm run probe:office --prefix server` — is the online office two-way, or talking to itself

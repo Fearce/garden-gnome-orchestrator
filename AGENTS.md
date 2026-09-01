@@ -32,10 +32,10 @@ needing an edit/build/verification/broad investigation gets a "needs full pipeli
 for a normal re-dispatch. Bias toward the full `dispatch` when unsure — misrouting to Opus is safe,
 misrouting a real task to the reader is not. The card shows a **READ** badge. See ARCHITECTURE.md §5.
 
-**Auto-review (`thread.autoReview`).** A task parked in `review` is waiting on Kevin; the detail
+**Auto-review (`thread.autoReview`).** A task parked in `review` is waiting on the owner; the detail
 panel's "Auto-review & mark done" button delegates that call to one **reviewer** agent (Opus,
 read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing`, verifies the work,
-`ask_user`s Kevin about anything only he can decide, then settles the task `done` or hands it back to
+`ask_user`s the owner about anything only they can decide, then settles the task `done` or hands it back to
 `review` with its reasons — an errored/verdict-less run always re-parks, never accepts. So `done`
 now has three sources: QA, a manual Mark done, and an accepted auto-review. A durable
 `auto_review_episodes` row owns the current non-reviewer work revision: unattended Supervisor review may

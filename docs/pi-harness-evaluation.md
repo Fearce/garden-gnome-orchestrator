@@ -88,7 +88,7 @@ This is the requirements list the replacement has to satisfy. Everything below i
 | `permissionMode` + `setPermissionMode()` | `bypassPermissions` / `plan` | Unattended running; `plan` for planner/researcher |
 | `effort` | implementor, QA, reviewer | Per-task cost/quality dial |
 | `resume` / `forkSession` | auto-resume, QA loop, cap-park recovery | Survives server restarts — sessions outlive the process |
-| `settingSources: [user, project, local]` | implementor | Pulls in Kevin's global `~/.claude/CLAUDE.md`, repo rules, **and `.claude/settings.json` hooks** (the pgvector memory RAG layer) |
+| `settingSources: [user, project, local]` | implementor | Pulls in the operator's global `~/.claude/CLAUDE.md`, repo rules, **and `.claude/settings.json` hooks** (the pgvector memory RAG layer) |
 | `systemPrompt: preset claude_code` | implementor | The real Claude Code system prompt + our append |
 | `agents` | available | Subagent definitions |
 | `canUseTool` | available | Programmatic per-call gate |

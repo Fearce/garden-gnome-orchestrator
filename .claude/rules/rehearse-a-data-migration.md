@@ -3,7 +3,7 @@
 For any `migrate()` step that REWRITES or DELETES existing rows — a backfill, a de-duplication, a
 retention prune. (A plain `ALTER TABLE … ADD COLUMN` needs none of this; see
 `add-a-broadcast-collection.md` for the schema mechanics.) These run in the `Db` constructor, so they
-execute on Kevin's ~300 MB production database the moment the hub restart lands, before the server
+execute on the live ~300 MB production database the moment the hub restart lands, before the server
 accepts a connection. A gate proves the LOGIC on a synthetic DB; only the real one has the scale and
 the legacy row shapes.
 
@@ -36,7 +36,7 @@ Delete the script and the temp dir when finished — it isn't a repeatable test,
   '%id%'`, re-reading all 188k messages once per duplicate. Correct, gated, invisible to every test —
   the synthetic DB had four rows. Re-indexed to one pass per table: 2.6s, byte-identical result. **Time
   the constructor**; keepAlive restarts a server that looks hung.
-- **Proof of losslessness before touching 300 MB of Kevin's data**, which is what made deploying it a
+- **Proof of losslessness before touching 300 MB of live data**, which is what made deploying it a
   non-event rather than a gamble.
 
 ## The same snapshot answers "does my new QUERY work on real data?"

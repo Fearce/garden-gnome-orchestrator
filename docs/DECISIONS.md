@@ -41,7 +41,7 @@ prevent, so it's stated once, here.
 - **DeepSeek as the anti-park bottom rung.** Conditionally recommended, not built, and only worth it
   if capping out *every* sub simultaneously is actually common.
 - **An Alibaba Coding Plan backend as the second MCP-capable rung.** Recommended, not built — blocked on
-  Kevin subscribing, and on the ~$1 pay-as-you-go test that proves MCP tool use survives the
+  a maintainer subscribing, and on the ~$1 pay-as-you-go test that proves MCP tool use survives the
   Anthropic-compatible endpoint (if it doesn't, the recommendation flips to no).
   `qwen-alibaba-integration-analysis.md` §5-6 has the touch list and the two traps: `buildEnv`'s
   hardcoded `"zai"`/`config.zai.timeoutMs`, and the absent quota API that forces a **local** invocation

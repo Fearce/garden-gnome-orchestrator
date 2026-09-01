@@ -45,10 +45,10 @@ route from its evidence and folding its findings into the brief; a restart mid-p
 record instead of re-running the reader. Bias toward the full `dispatch` when unsure. The card shows
 a **READ** badge until an escalation clears it. See ARCHITECTURE.md §5.
 
-**Auto-review (`thread.autoReview`).** A task parked in `review` is waiting on Kevin; the detail
+**Auto-review (`thread.autoReview`).** A task parked in `review` is waiting on the owner; the detail
 panel's "Auto-review & mark done" button delegates that call to one **reviewer** agent (Opus,
 read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing`, verifies the work,
-`ask_user`s Kevin about anything only he can decide, then settles the task `done` or hands it back to
+`ask_user`s the owner about anything only they can decide, then settles the task `done` or hands it back to
 `review` with its reasons — an errored/verdict-less run always re-parks, never accepts (its two involuntary
 stops are recovered first, sharing one in-process budget of 2: a turn-ceiling cutoff continues the session it
 made progress in — on the backend that holds it, since a review can run on Claude or, when every sub is

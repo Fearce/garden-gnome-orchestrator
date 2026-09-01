@@ -16,7 +16,7 @@ his work arrives as a branch on this repo, not as a fork PR.)
    the PR was authored against an OLDER master, so verify every symbol it references
    still exists (`grep` the touched file). GitHub's `mergeable` flag lies about drift.
 3. **Cherry-pick onto master**, never `gh pr merge`: `git cherry-pick <sha>...`. This
-   preserves the contributor's authorship AND keeps master linear (Kevin's git hygiene).
+   preserves the contributor's authorship AND keeps master linear (the repo's policy).
    Resolve conflicts (usually additive `package.json`/registry blocks — keep both sides).
 4. Verify BEFORE pushing: `npm run typecheck && npm run build`, `npm run test:gates`
    (`server/`), plus any test the PR touched. A fork PR authored against an old base can

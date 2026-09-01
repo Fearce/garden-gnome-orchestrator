@@ -38,7 +38,7 @@ public GitHub repository.** `deploy.sh` seeded `.env` from `.env.example` when n
 `config.ts` documents as existing precisely so that "a relay that started with a guessable code" cannot
 happen. The only warning was an `echo` in the deploy scrollback.
 
-Kevin's live relay is **not** affected: its `.env` was written by hand on 2026-08-24 with a random
+The current live relay is **not** affected: its `.env` was written by hand on 2026-08-24 with a random
 24-character code. This was the fresh-host path — and the path anyone cloning this public repo to run
 their own office would take.
 
