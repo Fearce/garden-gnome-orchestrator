@@ -203,10 +203,12 @@ accepting it. This is catalog coverage, not availability: read step 5 for caps/h
 
 ## Related
 - Office harvest gotchas: `.claude/rules/office-bridge.md`
-- Shared-checkout commits and rebases: global memory `shared-working-tree-collisions`. It is the one
-  that actually exists (`shared-checkout-concurrent-edits`, cited here until 2026-08-27, never did, so
-  the pointer sent people off to re-derive it). Two wrappers, because a plain git command is the wrong
-  reflex in a tree several agents share: `bash ~/Claude/tools/safe-commit.sh <paths> -- -m ...` commits
-  only the paths you name whatever else is staged, and `bash ~/Claude/tools/safe-rebase.sh` replaces
-  `git pull --rebase`, whose `--autostash` stashes the WHOLE tree (every other agent's uncommitted
-  work) and leaves it unapplied if the rebase conflicts.
+- Shared-checkout commits and rebases — **paths verified 2026-09-01; every pointer here was previously
+  wrong in both directions, so confirm a tool exists before citing one.** The memory is this project's
+  `shared-checkout-concurrent-edits` (no global `shared-working-tree-collisions` exists), and the tools
+  live in `~/.claude/scripts`, never as `~/Claude/tools/*.sh`:
+  `python ~/.claude/scripts/safe_commit.py -m "msg" -- <paths>` commits ONLY those paths whatever a
+  peer staged (a bare `git commit` takes the whole shared index) and fails loudly otherwise;
+  `stage_my_hunks.py --keep 1,4 <file>` splits a file you are both inside (pathspec is per-FILE) —
+  then commit the INDEX with no pathspec; `Invoke-SafeRebase.ps1 -Onto master` replaces `git pull
+  --rebase` and proves both sides' hunks survived.
