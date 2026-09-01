@@ -165,6 +165,7 @@ export async function stageGrokPrompt(prompt: string): Promise<string | undefine
  */
 export class GrokAgentRun implements AgentRunLike {
   readonly emitter = new EventEmitter();
+  readonly steeringResultMode = "coalesced" as const;
   sessionId: string | undefined;
   finished = false;
   lastResult: ResultEvent | undefined;

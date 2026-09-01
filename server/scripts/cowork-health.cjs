@@ -8,7 +8,7 @@
 
 const SESSION_STATES = new Set(["idle", "running", "stopping", "error"]);
 const ACTIVE_SESSION_STATES = new Set(["running", "stopping"]);
-const TERMINAL_TURN_STATES = new Set(["done", "error", "cancelled", "interrupted"]);
+const TERMINAL_TURN_STATES = new Set(["done", "error", "cancelled", "interrupted", "timeboxed"]);
 const FAILED_TURN_STATES = new Set(["error", "interrupted"]);
 
 function coworkTablesExist(db) {

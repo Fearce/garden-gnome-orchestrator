@@ -3,8 +3,8 @@
  *
  * Real: SQLite schema/transactions, CoworkManager lifecycle, durable streaming/history, restart
  * reconciliation, cancellation, workspace exclusion, and WebSocket command validation.
- * Stubbed: only the paid provider process. FakeRun exposes the same one-result boundary and session id
- * as the real runners, so the test controls exactly when a human-led turn finishes.
+ * Stubbed: only the paid provider process. FakeRun exposes streaming and coalesced result boundaries
+ * plus a session id, so the test controls exactly when a human-led work slice finishes.
  */
 
 process.env.CAP_RETRY_MS = "0";
@@ -59,10 +59,15 @@ class FakeRun implements AgentRunLike {
   transientApiErrorMessage: string | undefined;
   startedWith: UserContent | undefined;
   stopCalls = 0;
-  private settle: ((result: ResultEvent | undefined) => void) | null = null;
-  private readonly resultPromise = new Promise<ResultEvent | undefined>((resolve) => { this.settle = resolve; });
+  sendError: string | null = null;
+  readonly sends: Array<{ content: UserContent; opts?: SendOpts }> = [];
+  private readonly results: ResultEvent[] = [];
+  private readonly waiters: Array<(result: ResultEvent | undefined) => void> = [];
 
-  constructor(readonly linkedSessionId: string) {}
+  constructor(
+    readonly linkedSessionId: string,
+    readonly steeringResultMode?: "per-message" | "coalesced",
+  ) {}
 
   start(firstMessage: UserContent): this {
     this.startedWith = firstMessage;
@@ -81,7 +86,10 @@ class FakeRun implements AgentRunLike {
     else this.emitter.once("end", cb);
   }
 
-  send(_content: UserContent, _opts?: SendOpts): void {}
+  send(content: UserContent, opts?: SendOpts): void {
+    if (this.sendError) throw new Error(this.sendError);
+    this.sends.push({ content, opts });
+  }
   async interrupt(): Promise<void> { await this.stop(); }
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -91,14 +99,18 @@ class FakeRun implements AgentRunLike {
     this.stopCalls++;
     if (!this.finished) {
       this.finished = true;
-      this.settle?.(undefined);
-      this.settle = null;
+      while (this.waiters.length) this.waiters.shift()?.(undefined);
       this.emitter.emit("end");
     }
   }
 
-  result(): Promise<ResultEvent | undefined> { return this.resultPromise; }
-  nextResult(): Promise<ResultEvent | undefined> { return this.resultPromise; }
+  result(): Promise<ResultEvent | undefined> { return this.nextResult(); }
+  nextResult(): Promise<ResultEvent | undefined> {
+    const ready = this.results.shift();
+    if (ready) return Promise.resolve(ready);
+    if (this.finished) return Promise.resolve(undefined);
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
 
   delta(text: string): void {
     this.emitter.emit("event", { type: "text_delta", text } satisfies AgentEvent);
@@ -127,15 +139,28 @@ class FakeRun implements AgentRunLike {
       },
     };
     this.lastResult = event;
-    this.settle?.(event);
-    this.settle = null;
+    this.emitter.emit("event", event satisfies AgentEvent);
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(event);
+    else this.results.push(event);
+  }
+
+  abort(): void {
+    const event: ResultEvent = { type: "result", subtype: "success", isError: false, aborted: true, terminalReason: "aborted_tools" };
+    this.lastResult = event;
+    this.emitter.emit("event", event satisfies AgentEvent);
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(event);
+    else this.results.push(event);
   }
 
   fail(message: string): void {
     const event: ResultEvent = { type: "result", subtype: "error", isError: true, errors: [message] };
     this.lastResult = event;
-    this.settle?.(event);
-    this.settle = null;
+    this.emitter.emit("event", event satisfies AgentEvent);
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(event);
+    else this.results.push(event);
   }
 }
 
@@ -154,6 +179,7 @@ class FakeRuntime implements CoworkRuntime {
   prepareError: string | null = null;
   released = 0;
   capped = false;
+  steeringResultMode: "per-message" | "coalesced" | undefined;
 
   prepare(input: Parameters<CoworkRuntime["prepare"]>[0]) {
     if (this.prepareError) return { error: this.prepareError };
@@ -163,7 +189,7 @@ class FakeRuntime implements CoworkRuntime {
       prompt: input.prompt,
       history: input.history,
     });
-    const run = new FakeRun(`provider-session-${this.runs.length + 1}`);
+    const run = new FakeRun(`provider-session-${this.runs.length + 1}`, this.steeringResultMode);
     this.runs.push(run);
     return { target: TARGET, agent: run, startContent: input.prompt };
   }
@@ -210,6 +236,10 @@ async function main(): Promise<void> {
     check("a session is created on a canonical workspace", created.ok && created.session?.workspace === realpathSync(workspace));
     check("an explicit model request is durable before any run", created.session?.requestedModel === TARGET.model && created.session.provider === null);
     check("valid Co-work send parses at the WebSocket boundary", clientCommandSchema.safeParse({ type: "cowork.send", sessionId: created.session!.id, text: "Do it" }).success);
+    check(
+      "all three live steering modes parse at the WebSocket boundary",
+      (["queue", "append", "interrupt"] as const).every((mode) => clientCommandSchema.safeParse({ type: "cowork.steer", sessionId: created.session!.id, text: "Adjust it", mode }).success),
+    );
     check("blank turns are rejected at the WebSocket boundary", !clientCommandSchema.safeParse({ type: "cowork.send", sessionId: created.session!.id, text: "   " }).success);
     check("unknown providers are rejected at the WebSocket boundary", !clientCommandSchema.safeParse({ type: "cowork.create", workspace, provider: "other", model: "x" }).success);
 
@@ -246,9 +276,40 @@ async function main(): Promise<void> {
     check("provider session linkage is handed to the next run", runtime.prepared[1]?.agentSessionId === "provider-session-1", runtime.prepared[1]?.agentSessionId ?? "null");
     check("prior prompt and full reply are available to fresh-session fallback", runtime.prepared[1]?.history.some((message) => message.content === longReply) && runtime.prepared[1]?.history.some((message) => message.content.includes("durable Co-work")));
     check("the auto-generated session name stays stable on follow-up", db.getCoworkSession(sessionId)?.name === "Add a durable Co-work feature and verify it.");
-    runtime.runs[1]!.complete("Mobile layout tightened; typecheck passed.");
+
+    console.log("\n3a - queue, inject, and interrupt-and-inject steer the one active slice");
+    const liveRun = runtime.runs[1]!;
+    const queued = cowork.steer(sessionId, "Queue the keyboard pass after the current safe unit.", "queue", "21111111-1111-4111-8111-111111111111");
+    const injected = cowork.steer(sessionId, "Use the shared responsive token now.", "append", "22222222-2222-4222-8222-222222222222");
+    const interrupted = cowork.steer(sessionId, "Stop: preserve the compact header instead.", "interrupt", "23333333-3333-4333-8333-333333333333");
+    check("all live steering actions are accepted", queued.ok && injected.ok && interrupted.ok);
+    const duplicateSteering = cowork.steer(sessionId, "Do not deliver this twice", "queue", "21111111-1111-4111-8111-111111111111");
+    check("a retried steering message is idempotently rejected before provider delivery", !duplicateSteering.ok && liveRun.sends.length === 3);
+    liveRun.sendError = "provider input closed";
+    const failedSteeringId = "24444444-4444-4444-8444-444444444444";
+    const failedSteering = cowork.steer(sessionId, "This transport update must not replay later", "append", failedSteeringId);
+    liveRun.sendError = null;
+    check("a provider delivery failure is recoverable and owner-visible", !failedSteering.ok && failedSteering.error?.includes("saved but could not reach"));
+    check(
+      "steering maps to later, live, and priority-now provider delivery",
+      liveRun.sends[0]?.opts?.priority === "later" && liveRun.sends[1]?.opts === undefined && liveRun.sends[2]?.opts?.priority === "now",
+      JSON.stringify(liveRun.sends.map((send) => send.opts)),
+    );
+    check("steering prompts require a visible acknowledgement", liveRun.sends.every((send) => String(send.content).includes("`ACK:`")));
+    check("steering stays inside one claimed DB turn", db.listCoworkTurns(sessionId).length === 2 && db.getCoworkSession(sessionId)?.activeTurnId === db.listCoworkTurns(sessionId)[1]?.id);
+    const steeringMessages = db.listCoworkMessages(sessionId).filter((message) => message.role === "user" && message.meta && typeof message.meta === "object" && "steeringMode" in message.meta);
+    check("all owner updates are durable with their delivery mode", steeringMessages.length === 4 && steeringMessages.map((message) => (message.meta as { steeringMode: string }).steeringMode).join(",") === "queue,append,interrupt,append");
+    check("delivery status distinguishes received direction from a failed transport", steeringMessages.slice(0, 3).every((message) => (message.meta as { delivery: string }).delivery === "delivered") && (steeringMessages[3]?.meta as { delivery?: string } | null)?.delivery === "failed");
+
+    liveRun.abort();
+    await waitFor(() => db.getCoworkSession(sessionId)?.state === "running", "an interrupt abort does not settle the collaborative slice");
+    liveRun.complete("ACK: preserved the compact header.");
+    liveRun.complete("Queued keyboard pass applied.");
+    liveRun.complete("Responsive token verified.");
     await waitFor(() => db.listCoworkTurns(sessionId).length === 2 && db.getCoworkSession(sessionId)?.state === "idle", "follow-up settles independently");
+    check("steered replies remain substantive transcript entries", db.listCoworkMessages(sessionId).filter((message) => message.turnId === db.listCoworkTurns(sessionId)[1]?.id && message.role === "coworker" && message.kind === "text").length >= 3);
     check("the session remains available instead of becoming done", cowork.sessions().some((session) => session.id === sessionId && session.state === "idle"));
+    check("late steering reports the hand-back instead of leaking into another turn", !cowork.steer(sessionId, "Too late", "append").ok);
 
     console.log("\n4 - workspace conflicts, failures, and cancellation are recoverable");
     const peer = cowork.create({ name: "Same repo peer", workspace });
@@ -275,6 +336,7 @@ async function main(): Promise<void> {
     runtime.prepareError = null;
 
     check("a turn can start after a conflict clears", cowork.send(sessionId, "Exercise failure recovery").ok);
+    check("failed live direction is not replayed into a fresh provider context", !runtime.prepared.at(-1)?.history.some((message) => message.id === failedSteeringId));
     runtime.runs[3]!.fail("provider exploded");
     await waitFor(() => db.getCoworkSession(sessionId)?.state === "error", "provider failure is clear and terminal for only that turn");
     check("failed turn leaves its diagnostic in the conversation", db.listCoworkMessages(sessionId).some((message) => message.role === "system" && message.content.includes("provider exploded")));
@@ -285,6 +347,39 @@ async function main(): Promise<void> {
     await waitFor(() => db.getCoworkSession(sessionId)?.state === "idle", "cancellation returns the session to ready");
     check("cancelled turn is recorded, not retried", db.listCoworkTurns(sessionId).at(-1)?.state === "cancelled");
     check("cancellation posts a usable-session message", db.listCoworkMessages(sessionId).at(-1)?.content.includes("ready for your next instruction"));
+
+    console.log("\n4a - wall-clock boundaries force a collaborative hand-back without a retry");
+    const boundaryRuntime = new FakeRuntime();
+    const boundaryManager = new CoworkManager(db, new EventHub(), boundaryRuntime, { handoffMs: 20, stopMs: 70 });
+    const boundarySession = boundaryManager.create({ name: "Timeboxed pair work", workspace });
+    check("timebox fixture creates", boundarySession.ok);
+    check("timeboxed work slice starts", boundaryManager.send(boundarySession.session!.id, "Start a deliberately slow slice").ok);
+    await waitFor(() => boundaryRuntime.runs[0]?.sends.length === 1, "soft boundary asks the live agent to hand control back");
+    check(
+      "soft boundary interrupts with an explicit concise hand-back prompt",
+      boundaryRuntime.runs[0]?.sends[0]?.opts?.priority === "now" && String(boundaryRuntime.runs[0]?.sends[0]?.content).includes("hand control back now"),
+    );
+    check(
+      "the hand-back request is visible in durable history",
+      db.listCoworkMessages(boundarySession.session!.id).some((message) => message.role === "system" && message.content.includes("Collaboration boundary reached")),
+    );
+    await waitFor(() => db.getCoworkSession(boundarySession.session!.id)?.state === "idle", "hard boundary returns an unresponsive run to idle");
+    check("the bounded turn is recorded as timeboxed, not failed", db.listCoworkTurns(boundarySession.session!.id).at(-1)?.state === "timeboxed");
+    check("timeboxing does not spawn an autonomous continuation", boundaryRuntime.runs.length === 1 && db.listThreads().length === 0);
+    check("the owner can deliberately continue after a timebox", boundaryManager.send(boundarySession.session!.id, "Continue with the next small slice").ok);
+    await boundaryManager.stop(boundarySession.session!.id);
+    await waitFor(() => db.getCoworkSession(boundarySession.session!.id)?.state === "idle", "continued timeboxed session remains stoppable and reusable");
+
+    console.log("\n4b - batch backends coalesce buffered steering into one final result");
+    const batchRuntime = new FakeRuntime();
+    batchRuntime.steeringResultMode = "coalesced";
+    const batchManager = new CoworkManager(db, new EventHub(), batchRuntime, { handoffMs: 5_000, stopMs: 10_000 });
+    const batchSession = batchManager.create({ name: "Batch steering", workspace });
+    check("batch fixture creates and starts", batchSession.ok && batchManager.send(batchSession.session!.id, "Begin the batch-backed slice").ok);
+    check("batch run accepts queued and immediate direction", batchManager.steer(batchSession.session!.id, "Queue this", "queue").ok && batchManager.steer(batchSession.session!.id, "Use this now", "append").ok);
+    batchRuntime.runs[0]!.complete("ACK: both buffered directions were applied in this small slice.");
+    await waitFor(() => db.getCoworkSession(batchSession.session!.id)?.state === "idle", "one coalesced final result settles the active DB turn");
+    check("coalesced steering still creates no task pipeline", db.listCoworkTurns(batchSession.session!.id).length === 1 && db.listThreads().length === 0);
 
     console.log("\n5 - reload and restart preserve history and resumable linkage");
     unsubscribe();

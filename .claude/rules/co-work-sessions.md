@@ -21,8 +21,17 @@ and `probe:task-runs` read `threads`/`agent_runs`, so a wedged Co-work session a
   `this.live`, is what makes one-turn-at-a-time survive a restart. It also claims **only** from
   `idle`/`error`, so a session left claiming `running` can never accept another prompt: reconcile every
   orphan at construction (`interruptOrphanedCoworkTurns`) or the conversation is dead.
-- **The owner message id is the idempotency key.** A resent prompt (reconnect, double-click) with the
-  same id is refused as already received. Don't "simplify" the id away.
+- **Every owner message id is an idempotency key.** Initial prompts and live steering are persisted
+  before provider delivery; a reconnect/double-click with the same id is refused as already received.
+  Don't "simplify" the id or move persistence after `send()`.
+- **Steering stays inside the claimed turn.** `queue` uses priority `later`; `append` follows the
+  shared injection policy; `interrupt` uses priority `now`. Claude/z.ai emit a result per message,
+  while Codex/Grok coalesce buffered directions into one resumed result. Keep the result accounting
+  provider-aware or the DB turn will settle early (lost direction) or wait forever.
+- **Bound the collaboration, not just the SDK.** The Co-worker prompt requests one small useful
+  increment, the role ceiling is deliberately short, and the soft/hard wall timers request a summary
+  then stop an unresponsive run. `timeboxed` is an intentional terminal turn state that returns the
+  session to `idle`; it must not read as an error or trigger a continuation/retry.
 - **`send()` must return the CURRENT row, never the claimed one.** `execute()` can fail synchronously
   in `prepare()` and settle the session before the WebSocket action receipt is written; returning the
   claim then overwrites the UI back to a stale `running` it will never leave (`5efe433`).

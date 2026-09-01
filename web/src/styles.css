@@ -3251,7 +3251,15 @@ button.note-from:hover { color: var(--text-dim); }
 }
 .cowork-message { width: min(820px, 100%); align-self: center; display: flex; flex-direction: column; gap: 5px; }
 .cowork-message.user { align-items: flex-end; }
-.cowork-speaker { padding: 0 3px; color: var(--text-faint); font: 9.5px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.cowork-speaker { padding: 0 3px; display: flex; align-items: center; gap: 7px; color: var(--text-faint); font: 9.5px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.cowork-steering-badge {
+  padding: 2px 6px; color: var(--text-dim); border: 1px solid var(--line); border-radius: 100px;
+  background: var(--bg-2); font-size: 8px; font-weight: 600; letter-spacing: 0.04em;
+}
+.cowork-steering-badge.append { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 42%, var(--line)); }
+.cowork-steering-badge.interrupt { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 46%, var(--line)); }
+.cowork-steering-badge.failed { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 48%, var(--line)); }
+.cowork-steering-badge.pending { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 46%, var(--line)); }
 .cowork-bubble { max-width: 100%; color: var(--text); overflow-wrap: anywhere; }
 .cowork-message.user .cowork-bubble {
   max-width: min(680px, 88%); padding: 10px 13px; white-space: pre-wrap;
@@ -3308,6 +3316,18 @@ button.note-from:hover { color: var(--text-dim); }
 .cowork-stop { gap: 6px; padding: 0 11px; color: var(--text); background: color-mix(in oklch, var(--danger) 21%, var(--bg-3)); font-size: 11px; }
 .cowork-stop:hover:not(:disabled) { background: color-mix(in oklch, var(--danger) 32%, var(--bg-3)); }
 .cowork-stop:disabled { opacity: 0.55; }
+.cowork-steer-row {
+  width: min(820px, 100%); margin: 7px auto 0; display: flex; align-items: center; justify-content: flex-end;
+  gap: 6px; color: var(--text-faint);
+}
+.cowork-steer-label { margin-right: auto; font: 9px var(--font-mono); letter-spacing: 0.07em; text-transform: uppercase; }
+.cowork-steer-row .cowork-steer { min-height: 32px; }
+.cowork-steer-row .cowork-steer:disabled { opacity: 0.32; cursor: not-allowed; }
+.cowork-steer-row .cowork-steer.interrupt {
+  color: var(--warn); border-color: color-mix(in oklch, var(--warn) 33%, var(--line));
+  background: color-mix(in oklch, var(--warn) 6%, transparent);
+}
+.cowork-steer-row .cowork-stop { height: 32px; }
 .cowork-composer-note { width: min(820px, 100%); margin: 5px auto 0; display: flex; justify-content: space-between; gap: 12px; color: var(--text-faint); font-size: 9.5px; }
 
 .cowork-create-modal { width: min(520px, calc(100vw - 28px)); }
@@ -3368,6 +3388,9 @@ button.note-from:hover { color: var(--text-dim); }
   .cowork-composer { min-height: 48px; border-radius: 13px; }
   .cowork-composer textarea { font-size: 16px; }
   .cowork-send, .cowork-stop { min-width: var(--tap); height: var(--tap); }
+  .cowork-steer-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .cowork-steer-label { grid-column: 1 / -1; margin: 0 2px -1px; }
+  .cowork-steer-row .cowork-steer, .cowork-steer-row .cowork-stop { width: 100%; min-height: var(--tap); height: var(--tap); }
   .cowork-composer-note span:first-child { display: none; }
   .cowork-composer-note { justify-content: flex-end; padding-right: 4px; }
   .cowork-no-selection h3, .cowork-chat-empty h3 { font-size: 22px; }

@@ -205,6 +205,13 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     clientId: z.string().uuid().optional(),
   }),
   z.object({ type: z.literal("cowork.send"), sessionId: z.string(), text: z.string().trim().min(1).max(100_000), clientId: z.string().uuid().optional() }),
+  z.object({
+    type: z.literal("cowork.steer"),
+    sessionId: z.string(),
+    text: z.string().trim().min(1).max(100_000),
+    mode: z.enum(["queue", "append", "interrupt"]),
+    clientId: z.string().uuid().optional(),
+  }),
   z.object({ type: z.literal("cowork.stop"), sessionId: z.string() }),
   z.object({ type: z.literal("cowork.rename"), sessionId: z.string(), name: z.string().trim().min(1).max(120) }),
   z.object({ type: z.literal("cowork.delete"), sessionId: z.string() }),

@@ -881,9 +881,12 @@ export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
 /** Co-work is deliberately separate from ThreadState. A completed turn returns to `idle`; it never
  * enters QA/review/done or any other autonomous pipeline state. */
 export type CoworkSessionState = "idle" | "running" | "stopping" | "error";
-export type CoworkTurnState = "running" | "done" | "error" | "cancelled" | "interrupted";
+export type CoworkTurnState = "running" | "done" | "error" | "cancelled" | "interrupted" | "timeboxed";
 export type CoworkMessageRole = "user" | "coworker" | "system";
 export type CoworkMessageKind = "text" | "thinking" | "tool" | "tool_result" | "system";
+/** Owner steering accepted while a Co-worker turn is live. Queue waits for the current safe unit,
+ * append reaches the agent at its next live input point, and interrupt supersedes the active approach. */
+export type CoworkSteeringMode = "queue" | "append" | "interrupt";
 
 /** One long-lived human-led coding conversation. The requested fields preserve an explicit owner pin;
  * the actual fields become the sticky resolved target on the first turn, including for Auto. */
@@ -906,7 +909,7 @@ export interface CoworkSession {
   updatedAt: number;
 }
 
-/** One bounded agent invocation caused by exactly one owner prompt. */
+/** One bounded work slice claimed by an initial owner prompt and optionally refined by live steering. */
 export interface CoworkTurn {
   id: string;
   sessionId: string;

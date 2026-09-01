@@ -71,6 +71,18 @@ const messages: CoworkMessage[] = [
     createdAt: at - 1_000,
     updatedAt: at - 1_000,
   },
+  {
+    id: "steer-failed",
+    sessionId: session.id,
+    turnId: "turn-1",
+    role: "user",
+    kind: "text",
+    content: "Use the alternate token.",
+    meta: { steeringMode: "append", delivery: "failed" },
+    partial: false,
+    createdAt: at - 900,
+    updatedAt: at - 900,
+  },
 ];
 
 function render(): string {
@@ -96,6 +108,7 @@ assert.match(ready, /Tighten the mobile Co-work layout/, "owner message renders 
 assert.match(ready, /Changed the responsive shell/, "Co-worker reply renders durably");
 assert.match(ready, /<strong>Typecheck passed\.<\/strong>/, "agent markdown is rendered as conversation content");
 assert.match(ready, /<details class="cowork-detail tool"/, "tool activity is present but collapsed");
+assert.match(ready, /Delivery failed/, "a failed live direction remains clear after reload");
 assert.match(ready, /What should we work on next\?/, "completed turn hands the composer back to the owner");
 assert.match(ready, /context linked/, "resumable context is disclosed");
 assert.doesNotMatch(ready, />Stop</, "an idle session does not show interruption controls");
@@ -116,7 +129,11 @@ Object.assign(ssrState, {
 const running = render();
 assert.match(running, /Co-worker is working/, "a live turn has clear progress");
 assert.match(running, /cowork-stop[\s\S]*? Stop/, "a live turn exposes interruption");
-assert.match(running, /disabled=""/, "the prompt field is disabled while its one turn runs");
+assert.match(running, />Queue</, "a live turn can queue owner direction without stopping");
+assert.match(running, />Inject</, "a live turn can accept immediate owner direction");
+assert.match(running, /Interrupt &amp; inject/, "a live turn can be superseded with new owner direction");
+assert.match(running, /Add direction to the active work slice/, "the live composer stays available for collaboration");
+assert.doesNotMatch(running, /<textarea[^>]*disabled/, "the live prompt field is not frozen while the Co-worker works");
 
 Object.assign(ssrState, {
   coworkSessions: {
@@ -144,8 +161,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(join(here, "..", "src", "App.tsx"), "utf8");
 const boardSource = readFileSync(join(here, "..", "src", "components", "Board.tsx"), "utf8");
 const coworkSource = readFileSync(join(here, "..", "src", "components", "CoWork.tsx"), "utf8");
+const storeSource = readFileSync(join(here, "..", "src", "store.ts"), "utf8");
 const cssSource = readFileSync(join(here, "..", "src", "styles.css"), "utf8");
 assert.match(coworkSource, /exact model is pinned/i, "explicit model semantics are disclosed");
+assert.match(coworkSource, /small, useful increments/i, "the empty state promises collaborative slices rather than autonomous completion");
+for (const mode of ["queue", "append", "interrupt"]) {
+  assert.match(coworkSource, new RegExp(`submit\\(\\"${mode}\\"\\)`), `${mode} control dispatches its distinct steering mode`);
+}
+assert.match(storeSource, /type: "cowork\.steer"/, "live Co-work directions use the typed steering command instead of opening another turn");
 assert.match(appSource, /openBoardView\("cowork"\)/, "mobile navigation links directly to Co-work");
 assert.match(boardSource, /view: "cowork", label: "Co-work"/, "desktop board navigation includes Co-work");
 assert.match(cssSource, /\.cowork-shell\.has-session \.cowork-session-list \{ display: none; \}/, "mobile selected-session layout swaps the rail for the conversation");

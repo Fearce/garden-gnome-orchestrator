@@ -66,9 +66,11 @@ the window where the fix run has ended but the state hasn't flipped back. So `do
 sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
 
 ## Co-work (the interactive lane — a conversation, not a task)
-The **Co-work** tab is ping-pong development: one owner prompt = one bounded **Co-worker** turn
-(`coworkerRunOptions`/`COWORKER_PROMPT`) that makes the change, verifies proportionately, replies, and
-returns the session to `idle` for the next prompt. It owns **no task** — no `threads`/`agent_runs` row,
+The **Co-work** tab is pair development: an owner prompt claims one short **Co-worker** work slice
+(`coworkerRunOptions`/`COWORKER_PROMPT`) that completes one useful increment, verifies proportionately,
+and hands control back. While it runs, Queue, Inject, and Interrupt & inject persist owner direction in
+the same turn and steer the live provider; a soft/hard wall boundary prevents an unattended long solo
+run and returns a `timeboxed` turn to `idle`. It owns **no task** — no `threads`/`agent_runs` row,
 no findings, no bus/office MCP, no `runPipeline`, no planner/QA/reviewer/supervisor/auto-review — so
 nothing can mark it done and ordinary dispatch is untouched. `orchestrator/cowork.ts` owns the lifecycle
 over `cowork_sessions`/`cowork_turns`/`cowork_messages`, reaching provider/account/capacity routing

@@ -288,6 +288,7 @@ export async function testOpenAiKey(key: string | undefined): Promise<CodexTestR
  */
 export class CodexAgentRun implements AgentRunLike {
   readonly emitter = new EventEmitter();
+  readonly steeringResultMode = "coalesced" as const;
   sessionId: string | undefined;
   finished = false;
   lastResult: ResultEvent | undefined;

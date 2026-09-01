@@ -12,6 +12,7 @@ import type {
   ClientCommand,
   CoworkMessage,
   CoworkSession,
+  CoworkSteeringMode,
   CoworkTurn,
   DirectorItem,
   Effort,
@@ -67,7 +68,7 @@ export type OutboundMessage =
   | (OutboundBase & { surface: "director" })
   | (OutboundBase & { surface: "office"; room: string })
   | (OutboundBase & { surface: "supervisor"; targetIds: string[] })
-  | (OutboundBase & { surface: "cowork"; sessionId: string })
+  | (OutboundBase & { surface: "cowork"; sessionId: string; mode?: "turn" | CoworkSteeringMode })
   | (OutboundBase & { surface: "task"; threadId: string; mode: "append" | "interrupt" | "queue" });
 
 /** Cache key for a Git-console diff. A file's working-tree diff and the same file inside a commit are
@@ -226,7 +227,7 @@ interface State {
   select: (id: string | null) => void;
   selectCowork: (id: string | null) => void;
   createCowork: (input: { name?: string; workspace: string; provider?: CoworkSession["requestedProvider"]; model?: string | null }) => boolean;
-  sendCowork: (sessionId: string, text: string) => boolean;
+  sendCowork: (sessionId: string, text: string, mode?: "turn" | CoworkSteeringMode) => boolean;
   stopCowork: (sessionId: string) => void;
   renameCowork: (sessionId: string, name: string) => void;
   deleteCowork: (sessionId: string) => void;
@@ -765,14 +766,16 @@ export const useStore = create<State>((set) => ({
     if (!sent) set({ coworkCreating: false, coworkActionError: "Not delivered — the console is reconnecting." });
     return sent;
   },
-  sendCowork: (sessionId, text) => {
+  sendCowork: (sessionId, text, mode = "turn") => {
     const content = text.trim();
     if (!content) return false;
     const clientId = newOutboundId();
     set({ coworkActionError: null });
     return sendOutbound(
-      { id: clientId, surface: "cowork", sessionId, content, createdAt: Date.now(), status: "sending" },
-      { type: "cowork.send", sessionId, text: content, clientId },
+      { id: clientId, surface: "cowork", sessionId, content, mode, createdAt: Date.now(), status: "sending" },
+      mode === "turn"
+        ? { type: "cowork.send", sessionId, text: content, clientId }
+        : { type: "cowork.steer", sessionId, text: content, mode, clientId },
     );
   },
   stopCowork: (sessionId) => {

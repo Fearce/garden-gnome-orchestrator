@@ -294,6 +294,16 @@ check("an interrupted turn carrying the restart notice is not an invariant viola
   db.close();
 });
 
+check("a timeboxed collaborative slice is a clean hand-back, not a failure", () => {
+  const { db } = freshDb("timeboxed");
+  addSession(db, "s-boundary", { state: "idle", agent_session_id: "agent-boundary" });
+  addTurn(db, "s-boundary", "t-1", { state: "timeboxed", error: null });
+  const reading = only(db);
+  assert.equal(reading.disposition, "idle", issueText(reading));
+  assert.equal(reading.attention, false, issueText(reading));
+  db.close();
+});
+
 // "Do not silently substitute an explicitly selected model" is the pin's whole point.
 check("a pinned session that ran on another provider/model is flagged as a substitution", () => {
   const { db } = freshDb("substituted");

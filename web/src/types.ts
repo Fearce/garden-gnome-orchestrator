@@ -555,9 +555,10 @@ export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
 // ---- Co-work: durable human-led coding conversations ----
 
 export type CoworkSessionState = "idle" | "running" | "stopping" | "error";
-export type CoworkTurnState = "running" | "done" | "error" | "cancelled" | "interrupted";
+export type CoworkTurnState = "running" | "done" | "error" | "cancelled" | "interrupted" | "timeboxed";
 export type CoworkMessageRole = "user" | "coworker" | "system";
 export type CoworkMessageKind = "text" | "thinking" | "tool" | "tool_result" | "system";
+export type CoworkSteeringMode = "queue" | "append" | "interrupt";
 
 export interface CoworkSession {
   id: string;
@@ -982,6 +983,7 @@ export type ClientCommand =
   | { type: "prompt.direct"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
   | { type: "cowork.create"; name?: string; workspace: string; provider?: ImplementorProvider; model?: string; clientId?: string }
   | { type: "cowork.send"; sessionId: string; text: string; clientId?: string }
+  | { type: "cowork.steer"; sessionId: string; text: string; mode: CoworkSteeringMode; clientId?: string }
   | { type: "cowork.stop"; sessionId: string }
   | { type: "cowork.rename"; sessionId: string; name: string }
   | { type: "cowork.delete"; sessionId: string }

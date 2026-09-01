@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store.js";
-import type { CoworkMessage, CoworkSession, ImplementorProvider } from "../types.js";
+import type { CoworkMessage, CoworkSession, CoworkSteeringMode, ImplementorProvider } from "../types.js";
 import { FolderPicker } from "./FolderPicker.js";
 import { Markdown } from "./Markdown.js";
 import { PathInput } from "./PathInput.js";
@@ -50,7 +50,8 @@ export function CoWork() {
   );
   const selected = selectedId ? sessionsById[selectedId] : undefined;
   const pending = selectedId
-    ? outbound.filter((message) => message.surface === "cowork" && message.sessionId === selectedId)
+    ? outbound.filter((message): message is Extract<typeof message, { surface: "cowork" }> =>
+      message.surface === "cowork" && message.sessionId === selectedId)
     : [];
   const activitySignature = `${messages.length}:${messages.reduce((chars, message) => chars + message.content.length, 0)}:${pending.length}`;
 
@@ -65,11 +66,13 @@ export function CoWork() {
     if (selectedId && !sessionsById[selectedId]) select(null);
   }, [selectedId, sessionsById, select]);
 
-  const submit = () => {
+  const submit = (mode: "turn" | CoworkSteeringMode = selected?.state === "running" ? "append" : "turn") => {
     if (!selected) return;
     const text = drafts[selected.id] ?? "";
-    if (!text.trim() || selected.state === "running" || selected.state === "stopping") return;
-    if (send(selected.id, text)) setDrafts((all) => ({ ...all, [selected.id]: "" }));
+    if (!text.trim() || selected.state === "stopping") return;
+    if (mode === "turn" && selected.state === "running") return;
+    if (mode !== "turn" && selected.state !== "running") return;
+    if (send(selected.id, text, mode)) setDrafts((all) => ({ ...all, [selected.id]: "" }));
   };
 
   return (
@@ -181,7 +184,7 @@ export function CoWork() {
                 <div className="cowork-chat-empty">
                   <div className="cowork-empty-mark"><SparkIcon /></div>
                   <h3>Work directly with your Co-worker</h3>
-                  <p>Give one instruction at a time. It will change this workspace, verify the work, and hand control back to you.</p>
+                  <p>Work in small, useful increments. Your Co-worker acts, verifies, and hands control back instead of disappearing into a solo project.</p>
                   <div className="cowork-start-facts">
                     <span><CheckIcon /> Persistent context</span>
                     <span><CheckIcon /> One bounded turn</span>
@@ -194,12 +197,20 @@ export function CoWork() {
                 <div key={message.id} className="cowork-message user pending">
                   <div className="cowork-bubble">{message.content}</div>
                   <span className={message.status === "failed" ? "delivery-failed" : "delivery-sending"}>
-                    {message.status === "failed" ? message.error ?? "Not delivered" : "sending…"}
+                    {message.status === "failed"
+                      ? message.error ?? "Not delivered"
+                      : message.mode === "queue"
+                        ? "queueing…"
+                        : message.mode === "interrupt"
+                          ? "interrupting…"
+                          : message.mode === "append"
+                            ? "injecting…"
+                            : "sending…"}
                   </span>
                 </div>
               ))}
               {selected.state === "running" && !messages.some((message) => message.turnId === selected.activeTurnId && message.role === "coworker") ? (
-                <div className="cowork-working"><span /><span /><span /> Co-worker is working</div>
+                <div className="cowork-working"><span /><span /><span /> Co-worker is working — steer it any time</div>
               ) : null}
             </div>
 
@@ -207,8 +218,8 @@ export function CoWork() {
               <div className={`cowork-composer${selected.state === "running" ? " active" : ""}`}>
                 <textarea
                   value={drafts[selected.id] ?? ""}
-                  placeholder={selected.state === "running" ? "Your Co-worker is handling the current instruction…" : "What should we work on next?"}
-                  disabled={selected.state === "running" || selected.state === "stopping"}
+                  placeholder={selected.state === "running" ? "Add direction to the active work slice…" : "What should we work on next?"}
+                  disabled={selected.state === "stopping"}
                   rows={1}
                   onChange={(event) => {
                     setDrafts((all) => ({ ...all, [selected.id]: event.target.value }));
@@ -218,22 +229,54 @@ export function CoWork() {
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
-                      submit();
+                      submit(selected.state === "running" ? "append" : "turn");
                     }
                   }}
                 />
-                {selected.state === "running" || selected.state === "stopping" ? (
-                  <button className="cowork-stop" disabled={selected.state === "stopping"} onClick={() => stop(selected.id)}>
-                    <StopIcon /> {selected.state === "stopping" ? "Stopping" : "Stop"}
+                {selected.state === "stopping" ? (
+                  <button className="cowork-stop" disabled>
+                    <StopIcon /> Stopping
                   </button>
-                ) : (
-                  <button className="cowork-send" disabled={!drafts[selected.id]?.trim()} onClick={submit} aria-label="Send instruction">
+                ) : selected.state !== "running" ? (
+                  <button className="cowork-send" disabled={!drafts[selected.id]?.trim()} onClick={() => submit("turn")} aria-label="Send instruction">
                     <SendIcon />
                   </button>
-                )}
+                ) : null}
               </div>
+              {selected.state === "running" ? (
+                <div className="cowork-steer-row" aria-label="Steer active Co-worker turn">
+                  <span className="cowork-steer-label">Active direction</span>
+                  <button
+                    className="btn ghost sm cowork-steer queue"
+                    disabled={!drafts[selected.id]?.trim()}
+                    onClick={() => submit("queue")}
+                    title="Finish the current safe unit, then apply this before handing control back"
+                  >
+                    Queue
+                  </button>
+                  <button
+                    className="btn primary sm cowork-steer inject"
+                    disabled={!drafts[selected.id]?.trim()}
+                    onClick={() => submit("append")}
+                    title="Apply this at the next safe point while preserving compatible progress"
+                  >
+                    Inject
+                  </button>
+                  <button
+                    className="btn ghost sm cowork-steer interrupt"
+                    disabled={!drafts[selected.id]?.trim()}
+                    onClick={() => submit("interrupt")}
+                    title="Stop the current approach and apply this direction immediately"
+                  >
+                    Interrupt &amp; inject
+                  </button>
+                  <button className="cowork-stop" onClick={() => stop(selected.id)} title="Stop this work slice without another instruction">
+                    <StopIcon /> Stop
+                  </button>
+                </div>
+              ) : null}
               <div className="cowork-composer-note">
-                <span>Enter to send · Shift+Enter for a new line</span>
+                <span>{selected.state === "running" ? "Enter injects · Shift+Enter for a new line" : "Enter to send · Shift+Enter for a new line"}</span>
                 {selected.agentSessionId ? <span className="mono">context linked</span> : <span>new context</span>}
               </div>
             </footer>
@@ -253,6 +296,7 @@ export function CoWork() {
 }
 
 function CoworkBubble({ message }: { message: CoworkMessage }) {
+  const meta = message.meta && typeof message.meta === "object" ? message.meta as Record<string, unknown> : null;
   if (message.kind === "thinking") {
     return (
       <details className="cowork-detail thinking">
@@ -262,7 +306,6 @@ function CoworkBubble({ message }: { message: CoworkMessage }) {
     );
   }
   if (message.kind === "tool" || message.kind === "tool_result") {
-    const meta = message.meta && typeof message.meta === "object" ? message.meta as Record<string, unknown> : null;
     const label = message.kind === "tool"
       ? String(meta?.name ?? message.content)
       : `${meta?.isError ? "Failed" : "Finished"} ${String(meta?.id ?? "tool")}`;
@@ -276,9 +319,25 @@ function CoworkBubble({ message }: { message: CoworkMessage }) {
   if (message.role === "system" || message.kind === "system") {
     return <div className="cowork-system-message"><span>{message.content}</span></div>;
   }
+  const steeringMode = message.role === "user" && typeof meta?.steeringMode === "string" ? meta.steeringMode : null;
+  const steeringDelivery = typeof meta?.delivery === "string" ? meta.delivery : null;
+  const steeringLabel = steeringDelivery === "failed"
+    ? "Delivery failed"
+    : steeringDelivery === "pending"
+      ? "Delivery unconfirmed"
+      : steeringMode === "queue"
+        ? "Queued"
+        : steeringMode === "append"
+          ? "Injected"
+          : steeringMode === "interrupt"
+            ? "Interrupted + injected"
+            : null;
   return (
     <article className={`cowork-message ${message.role}${message.partial ? " partial" : ""}`}>
-      <div className="cowork-speaker">{message.role === "user" ? "You" : "Co-worker"}</div>
+      <div className="cowork-speaker">
+        {message.role === "user" ? "You" : "Co-worker"}
+        {steeringLabel ? <span className={`cowork-steering-badge ${steeringMode} ${steeringDelivery ?? ""}`}>{steeringLabel}</span> : null}
+      </div>
       <div className="cowork-bubble">
         {message.role === "coworker" ? <Markdown text={message.content} /> : message.content}
         {message.partial ? <span className="cowork-caret" /> : null}

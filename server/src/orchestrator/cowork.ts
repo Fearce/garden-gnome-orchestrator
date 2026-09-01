@@ -2,11 +2,14 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, basename } from "node:path";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
-import type { AgentRunLike, ResultEvent, UserContent } from "../agents/runner.js";
+import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "../agents/runner.js";
+import { config } from "../config.js";
+import { injectionSendOptions } from "./injection.js";
 import type {
   CoworkActionResult,
   CoworkMessage,
   CoworkSession,
+  CoworkSteeringMode,
   CoworkTurn,
   Effort,
   ImplementorProvider,
@@ -40,13 +43,64 @@ export interface CoworkRuntime {
   releasedWorkspace(): void;
 }
 
+export interface CoworkTimebox {
+  handoffMs: number;
+  stopMs: number;
+}
+
 interface LiveCoworkTurn {
   turnId: string;
   run: AgentRunLike;
   cancelled: boolean;
+  timeboxed: boolean;
+  acceptingSteering: boolean;
+  expectedResults: number;
+  steeringAccepted: boolean;
+  rotateStream: () => void;
+  handoffTimer?: NodeJS.Timeout;
+  stopTimer?: NodeJS.Timeout;
 }
 
 const MAX_ERROR_CHARS = 8_000;
+
+const TIMEBOX_HANDOFF = [
+  "[CO-WORK COLLABORATION BOUNDARY]",
+  "Stop starting new work. Finish only the operation already in flight, leave the workspace safe, and hand control back now.",
+  "Reply concisely with: the useful increment completed, verification actually run, anything still in progress, and the best next owner-directed step.",
+  "[/CO-WORK COLLABORATION BOUNDARY]",
+].join("\n");
+
+function steeringPrompt(mode: CoworkSteeringMode, message: string): string {
+  const direction = mode === "queue"
+    ? "Finish the current safe unit, then apply this before handing control back. Do not expand beyond it."
+    : mode === "append"
+      ? "Apply this at the next safe point. Preserve compatible progress and change direction where needed."
+      : "Stop the current approach at the next safe boundary. This supersedes conflicting prior direction; apply it immediately.";
+  return [
+    `[CO-WORK OWNER ${mode === "queue" ? "QUEUE" : mode === "append" ? "INJECTION" : "INTERRUPT & INJECT"}]`,
+    message,
+    `[/CO-WORK OWNER ${mode === "queue" ? "QUEUE" : mode === "append" ? "INJECTION" : "INTERRUPT & INJECT"}]`,
+    direction,
+    "Begin the response to this update with `ACK:` and briefly say how you are applying it.",
+  ].join("\n\n");
+}
+
+function addCount(a: number | null | undefined, b: number | null | undefined): number | null {
+  return a == null && b == null ? null : (a ?? 0) + (b ?? 0);
+}
+
+function addTokenUsage(a: CoworkTurn["tokenUsage"], b: CoworkTurn["tokenUsage"]): CoworkTurn["tokenUsage"] {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
+    cacheCreationInputTokens: a.cacheCreationInputTokens + b.cacheCreationInputTokens,
+    reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+  };
+}
 
 function resultError(result: ResultEvent | undefined, fallback?: string): string {
   const text = result?.errors?.filter(Boolean).join("\n") || fallback || result?.result || result?.subtype;
@@ -70,6 +124,18 @@ function workspaceName(workspace: string): string {
   return basename(workspace.replace(/[\\/]+$/, "")) || "New Co-work";
 }
 
+/** Failed/unconfirmed live directions remain visible in the durable UI transcript, but a fresh
+ * provider must not later apply them as if delivery had succeeded. `accepted` is the pre-delivery-
+ * state-machine legacy value from the first steering build and is treated as delivered. */
+function providerHistory(messages: CoworkMessage[]): CoworkMessage[] {
+  return messages.filter((message) => {
+    if (message.role !== "user" || !message.meta || typeof message.meta !== "object") return true;
+    const meta = message.meta as Record<string, unknown>;
+    if (typeof meta.steeringMode !== "string") return true;
+    return meta.delivery !== "failed" && meta.delivery !== "pending";
+  });
+}
+
 /** Durable, one-turn-at-a-time, human-led coding conversations. This class never creates a Thread and
  * has no planner/QA/supervisor hooks; completing a turn always returns the session to idle. */
 export class CoworkManager {
@@ -79,6 +145,10 @@ export class CoworkManager {
     readonly db: Db,
     readonly hub: EventHub,
     private readonly runtime: CoworkRuntime,
+    private readonly timebox: CoworkTimebox = {
+      handoffMs: config.coworkerHandoffMs,
+      stopMs: config.coworkerStopMs,
+    },
   ) {
     for (const session of this.db.interruptOrphanedCoworkTurns()) {
       const message = this.db.upsertCoworkMessage({
@@ -188,7 +258,7 @@ export class CoworkManager {
 
     // Read the prior transcript before beginCoworkTurn adds this prompt; fresh-session fallback should
     // include the history once and the current instruction once.
-    const history = this.db.listCoworkMessages(sessionId);
+    const history = providerHistory(this.db.listCoworkMessages(sessionId));
     const claimed = this.db.beginCoworkTurn(sessionId, text, clientId);
     if (!claimed.ok) return { ok: false, session: claimed.session ?? undefined, error: claimed.error };
     this.hub.publish({ type: "cowork.message", message: claimed.message });
@@ -199,6 +269,67 @@ export class CoworkManager {
     return { ok: true, session: this.db.getCoworkSession(sessionId) ?? claimed.session };
   }
 
+  /** Deliver owner direction into the one live Co-worker run. Unlike send(), this deliberately does
+   * not claim a second DB turn: the update is part of the active collaborative slice and the manager
+   * keeps that slice open until the provider has returned a result for every accepted update. */
+  steer(sessionId: string, prompt: string, mode: CoworkSteeringMode, clientId?: string): CoworkActionResult {
+    const text = prompt.trim();
+    if (!text) return { ok: false, error: "Write a direction first." };
+    const session = this.db.getCoworkSession(sessionId);
+    if (!session) return { ok: false, error: "Co-work session not found." };
+    const live = this.live.get(sessionId);
+    if (!live || session.activeTurnId !== live.turnId || session.state !== "running" || !live.acceptingSteering) {
+      return {
+        ok: false,
+        session,
+        error: session.state === "stopping"
+          ? "This turn is already stopping. Send a new instruction after it settles."
+          : "The active turn just finished. Send this as the next Co-work turn instead.",
+      };
+    }
+
+    const accepted = this.db.appendCoworkSteering({
+      sessionId,
+      turnId: live.turnId,
+      content: text,
+      mode,
+      messageId: clientId,
+    });
+    if (!accepted.ok) return { ok: false, session: accepted.session ?? undefined, error: accepted.error };
+    this.hub.publish({ type: "cowork.message", message: accepted.message });
+    this.publishSession(accepted.session);
+
+    try {
+      this.deliverLiveDirection(live, steeringPrompt(mode, text), mode);
+      const delivered = this.db.upsertCoworkMessage({
+        id: accepted.message.id,
+        sessionId,
+        turnId: live.turnId,
+        role: "user",
+        kind: "text",
+        content: text,
+        meta: { steeringMode: mode, delivery: "delivered" },
+        createdAt: accepted.message.createdAt,
+      });
+      this.hub.publish({ type: "cowork.message", message: delivered });
+    } catch (error) {
+      const reason = (error as Error).message || String(error);
+      const failed = this.db.upsertCoworkMessage({
+        id: accepted.message.id,
+        sessionId,
+        turnId: live.turnId,
+        role: "user",
+        kind: "text",
+        content: text,
+        meta: { steeringMode: mode, delivery: "failed", error: reason },
+        createdAt: accepted.message.createdAt,
+      });
+      this.hub.publish({ type: "cowork.message", message: failed });
+      return { ok: false, session: this.db.getCoworkSession(sessionId) ?? accepted.session, error: `Direction was saved but could not reach the live agent: ${reason}` };
+    }
+    return { ok: true, session: this.db.getCoworkSession(sessionId) ?? accepted.session };
+  }
+
   async stop(sessionId: string): Promise<CoworkActionResult> {
     const session = this.db.getCoworkSession(sessionId);
     if (!session) return { ok: false, error: "Co-work session not found." };
@@ -207,6 +338,7 @@ export class CoworkManager {
       return { ok: false, session, error: "No Co-worker turn is running." };
     }
     live.cancelled = true;
+    live.acceptingSteering = false;
     const stopping = this.db.setCoworkStopping(sessionId, live.turnId);
     if (stopping) this.publishSession(stopping);
     try {
@@ -215,6 +347,55 @@ export class CoworkManager {
       // execute() owns the terminal transition and remains able to settle after a failed stop call.
     }
     return { ok: true, session: this.db.getCoworkSession(sessionId) ?? session };
+  }
+
+  private deliverLiveDirection(live: LiveCoworkTurn, content: string, mode: CoworkSteeringMode): void {
+    live.rotateStream();
+    live.expectedResults++;
+    live.steeringAccepted = true;
+    let options: SendOpts | undefined;
+    if (mode === "queue") options = { priority: "later" };
+    else options = injectionSendOptions(live.run, mode);
+    try {
+      live.run.send(content, options);
+    } catch (error) {
+      live.expectedResults = Math.max(0, live.expectedResults - 1);
+      throw error;
+    }
+  }
+
+  /** Soft wall-clock boundary shared by streaming and batch backends. It asks for a clean hand-back
+   * through the same priority-now path as owner steering, so partial work is summarized instead of
+   * silently killed. No pipeline retry or continuation is started. */
+  private requestTimedHandoff(sessionId: string, turnId: string): void {
+    const live = this.live.get(sessionId);
+    if (!live || live.turnId !== turnId || live.cancelled || live.timeboxed || !live.acceptingSteering) return;
+    const message = this.db.upsertCoworkMessage({
+      sessionId,
+      turnId,
+      role: "system",
+      kind: "system",
+      content: "Collaboration boundary reached — asking the Co-worker to summarize this work slice and hand control back.",
+    });
+    this.hub.publish({ type: "cowork.message", message });
+    try {
+      this.deliverLiveDirection(live, TIMEBOX_HANDOFF, "interrupt");
+    } catch {
+      this.enforceTimedHandoff(sessionId, turnId);
+    }
+  }
+
+  /** Hard backstop for a provider that ignores the soft hand-back. This is an intentional timebox, not
+   * a failure and not an autonomous retry: execute() records `timeboxed`, returns the session to idle,
+   * and preserves the provider session id for the owner's deliberate next prompt. */
+  private enforceTimedHandoff(sessionId: string, turnId: string): void {
+    const live = this.live.get(sessionId);
+    if (!live || live.turnId !== turnId || live.cancelled || live.timeboxed) return;
+    live.timeboxed = true;
+    live.acceptingSteering = false;
+    const stopping = this.db.setCoworkStopping(sessionId, turnId);
+    if (stopping) this.publishSession(stopping);
+    void live.run.stop().catch(() => {});
   }
 
   private sameWorkspace(sessionId: string, workspace: string): boolean {
@@ -251,17 +432,32 @@ export class CoworkManager {
     }
     this.publishSession(targetSession);
 
-    const live: LiveCoworkTurn = { turnId: turn.id, run: prepared.agent, cancelled: false };
+    const live: LiveCoworkTurn = {
+      turnId: turn.id,
+      run: prepared.agent,
+      cancelled: false,
+      timeboxed: false,
+      acceptingSteering: true,
+      expectedResults: 1,
+      steeringAccepted: false,
+      rotateStream: () => {},
+    };
     this.live.set(session.id, live);
+    let streamPart = 0;
     let reply = "";
     let thinking = "";
     let eventError: string | undefined;
-    const replyId = `${turn.id}:reply`;
-    const thinkingId = `${turn.id}:thinking`;
+    let latestResult: ResultEvent | undefined;
+    let totalCostUsd: number | null = null;
+    let totalTurns: number | null = null;
+    let totalTokenUsage: CoworkTurn["tokenUsage"] = null;
+    const seenResults = new Set<ResultEvent>();
 
+    const messageId = (kind: "text" | "thinking"): string =>
+      `${turn.id}:${kind === "text" ? "reply" : "thinking"}${streamPart ? `:${streamPart}` : ""}`;
     const persistStream = (kind: "text" | "thinking", content: string, partial: boolean): CoworkMessage =>
       this.db.upsertCoworkMessage({
-        id: kind === "text" ? replyId : thinkingId,
+        id: messageId(kind),
         sessionId: session.id,
         turnId: turn.id,
         role: "coworker",
@@ -269,6 +465,41 @@ export class CoworkManager {
         content,
         partial,
       });
+    const sealStream = (): void => {
+      if (reply) this.hub.publish({ type: "cowork.message", message: persistStream("text", reply, false) });
+      if (thinking) this.hub.publish({ type: "cowork.message", message: persistStream("thinking", thinking, false) });
+    };
+    live.rotateStream = () => {
+      sealStream();
+      streamPart++;
+      reply = "";
+      thinking = "";
+    };
+
+    const recordResult = (result: ResultEvent): void => {
+      if (seenResults.has(result)) return;
+      seenResults.add(result);
+      latestResult = result;
+      totalCostUsd = addCount(totalCostUsd, result.costUsd);
+      totalTurns = addCount(totalTurns, result.numTurns);
+      totalTokenUsage = addTokenUsage(totalTokenUsage, result.tokenUsage ?? null);
+      if (result.aborted) eventError = undefined;
+      if (!reply && !result.isError && result.result?.trim()) {
+        reply = result.result;
+        this.hub.publish({ type: "cowork.message", message: persistStream("text", reply, false) });
+      }
+      // Codex/Grok suppress the superseded batch result and emit one final result after consuming every
+      // buffered update. Claude/z.ai emit one result per user message, including an explicit aborted
+      // result when priority-now steering supersedes the current response.
+      if (prepared.agent.steeringResultMode === "coalesced" && live.steeringAccepted && !result.aborted) {
+        live.expectedResults = 0;
+      } else {
+        live.expectedResults = Math.max(0, live.expectedResults - 1);
+      }
+      if (result.isError && !result.aborted) live.expectedResults = 0;
+      if (live.expectedResults === 0) live.acceptingSteering = false;
+      else live.rotateStream();
+    };
 
     const off = prepared.agent.onEvent((event) => {
       switch (event.type) {
@@ -283,7 +514,7 @@ export class CoworkManager {
         case "text_delta":
           reply += event.text;
           persistStream("text", reply, true);
-          this.hub.publish({ type: "cowork.delta", sessionId: session.id, turnId: turn.id, messageId: replyId, text: event.text });
+          this.hub.publish({ type: "cowork.delta", sessionId: session.id, turnId: turn.id, messageId: messageId("text"), text: event.text });
           break;
         case "text": {
           // Claude emits deltas followed by the same committed block; CLI backends may emit only text.
@@ -297,7 +528,7 @@ export class CoworkManager {
         case "thinking_delta":
           thinking += event.text;
           persistStream("thinking", thinking, true);
-          this.hub.publish({ type: "cowork.thinking", sessionId: session.id, turnId: turn.id, messageId: thinkingId, text: event.text });
+          this.hub.publish({ type: "cowork.thinking", sessionId: session.id, turnId: turn.id, messageId: messageId("thinking"), text: event.text });
           break;
         case "thinking": {
           if (!thinking) thinking = event.text;
@@ -338,65 +569,82 @@ export class CoworkManager {
         case "error":
           eventError = event.message;
           break;
+        case "result":
+          recordResult(event);
+          break;
         default:
           break;
       }
     });
 
-    let result: ResultEvent | undefined;
+    live.handoffTimer = setTimeout(() => this.requestTimedHandoff(session.id, turn.id), this.timebox.handoffMs);
+    live.handoffTimer.unref?.();
+    live.stopTimer = setTimeout(() => this.enforceTimedHandoff(session.id, turn.id), this.timebox.stopMs);
+    live.stopTimer.unref?.();
+
     try {
       prepared.agent.start(prepared.startContent);
-      result = await prepared.agent.result();
+      let first = true;
+      while (true) {
+        const result = first ? await prepared.agent.result() : await prepared.agent.nextResult();
+        first = false;
+        if (result) recordResult(result);
+        if (live.cancelled || live.timeboxed || !result) break;
+        if (result.isError && !result.aborted) break;
+        if (live.expectedResults === 0) break;
+        if (prepared.agent.finished) {
+          eventError = "The provider ended before every accepted Co-work direction produced a reply.";
+          break;
+        }
+      }
     } catch (error) {
       eventError = (error as Error).message || String(error);
     } finally {
+      live.acceptingSteering = false;
+      if (live.handoffTimer) clearTimeout(live.handoffTimer);
+      if (live.stopTimer) clearTimeout(live.stopTimer);
       off();
       await prepared.agent.stop().catch(() => {});
     }
 
-    // A result-only backend still gets a durable reply. Do not replace a richer streamed transcript.
-    if (!reply && result?.result?.trim()) {
-      reply = result.result;
-      const message = persistStream("text", reply, false);
-      this.hub.publish({ type: "cowork.message", message });
-    } else if (reply) {
-      const message = persistStream("text", reply, false);
-      this.hub.publish({ type: "cowork.message", message });
-    }
-    if (thinking) {
-      const message = persistStream("thinking", thinking, false);
-      this.hub.publish({ type: "cowork.message", message });
-    }
+    sealStream();
 
     const stillLive = this.live.get(session.id);
     const cancelled = stillLive?.turnId === turn.id && stillLive.cancelled;
+    const hardTimebox = stillLive?.turnId === turn.id && stillLive.timeboxed;
     if (stillLive?.turnId === turn.id) this.live.delete(session.id);
     const capped = this.runtime.isCapped(prepared.target, prepared.agent);
     if (capped) this.runtime.noteCap(prepared.target, prepared.agent);
-    const failed = !cancelled && (!result || result.isError || !!eventError || capped);
+    const turnLimit = latestResult?.subtype === "error_max_turns";
+    const timeboxed = hardTimebox || turnLimit;
+    const failed = !cancelled && !timeboxed && (!latestResult || (latestResult.isError && !latestResult.aborted) || !!eventError || capped);
     const error = failed
       ? capped
         ? `${prepared.target.model} has no usable capacity for this turn. No substitute was started; send again when that model's capacity is available.`
-        : resultError(result, eventError)
+        : resultError(latestResult, eventError)
       : null;
 
     const updated = this.db.finishCoworkTurn({
       sessionId: session.id,
       turnId: turn.id,
-      state: cancelled ? "cancelled" : failed ? "error" : "done",
+      state: cancelled ? "cancelled" : timeboxed ? "timeboxed" : failed ? "error" : "done",
       error,
       agentSessionId: prepared.agent.sessionId ?? null,
-      costUsd: result?.costUsd ?? null,
-      numTurns: result?.numTurns ?? null,
-      tokenUsage: result?.tokenUsage ?? null,
+      costUsd: totalCostUsd,
+      numTurns: totalTurns,
+      tokenUsage: totalTokenUsage,
     });
-    if (cancelled || error) {
+    if (cancelled || timeboxed || error) {
       const message = this.db.upsertCoworkMessage({
         sessionId: session.id,
         turnId: turn.id,
         role: "system",
         kind: "system",
-        content: cancelled ? "Turn stopped. The session is ready for your next instruction." : error!,
+        content: cancelled
+          ? "Turn stopped. The session is ready for your next instruction."
+          : timeboxed
+            ? "This collaborative work slice reached its hand-back boundary. Changes and context were preserved; review the progress above and choose the next instruction."
+            : error!,
       });
       this.hub.publish({ type: "cowork.message", message });
     }

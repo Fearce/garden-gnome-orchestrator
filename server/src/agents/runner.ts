@@ -96,6 +96,10 @@ export function claudeTokenUsage(modelUsage: unknown): TokenUsage | undefined {
  */
 export interface AgentRunLike {
   readonly emitter: EventEmitter;
+  /** Batch CLIs collapse every buffered steering message into one resumed process/result. Streaming
+   * SDK runs yield one result per accepted user message. Co-work uses this to keep a live turn open
+   * until every owner update has actually reached its backend. */
+  readonly steeringResultMode?: "per-message" | "coalesced";
   sessionId: string | undefined;
   finished: boolean;
   lastResult: ResultEvent | undefined;

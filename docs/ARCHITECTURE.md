@@ -442,8 +442,11 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   (b) `interrupt → resume(sessionId)` with augmented context — chosen by
   severity / a thread policy / the director.
 - **Co-work — the interactive lane, outside this state machine entirely.**
-  `orchestrator/cowork.ts` (`CoworkManager`) runs human-led ping-pong sessions: one owner prompt is
-  one bounded **Co-worker** turn that ends by returning the session to `idle`. It creates **no
+  `orchestrator/cowork.ts` (`CoworkManager`) runs human-led pair sessions: an owner prompt claims one
+  short **Co-worker** work slice, and live `queue` / `append` / `interrupt` steering remains inside
+  that durable turn. Prompt, role-turn, and wall-clock boundaries make it complete one useful
+  increment and return control; an unresponsive run becomes a clean `timeboxed` hand-back to `idle`.
+  It creates **no
   `Thread`**, so none of the diagram above applies — no route selection, no planner/QA/reviewer/
   supervisor/auto-review, no autonomous retry, no path to `done`. It reaches ThreadManager only
   through the narrow `CoworkRuntime` interface (`prepare` / `taskConflict` / `observeRateLimit` /
@@ -488,7 +491,7 @@ a single discriminated union (`zod`-validated). Highlights:
   `thread.history`, `thread.approve` / `approval.set`, `thread.changes`, `snapshot.request`.
 - The Co-work lane has its own pair: S→C `cowork.session` / `cowork.removed` /
   `cowork.message` / `cowork.history` / `cowork.delta` / `cowork.thinking` /
-  `cowork.action`, and C→S `cowork.create` / `cowork.send` / `cowork.stop` /
+  `cowork.action`, and C→S `cowork.create` / `cowork.send` / `cowork.steer` / `cowork.stop` /
   `cowork.rename` / `cowork.delete` / `cowork.history`. `cowork.action` echoes the
   originating `clientId` so a receipt can never overwrite newer session state.
 

@@ -26,6 +26,7 @@ import type {
   CoworkMessageKind,
   CoworkMessageRole,
   CoworkSession,
+  CoworkSteeringMode,
   CoworkTurn,
   CoworkTurnState,
   DirectorMessage,
@@ -999,6 +1000,55 @@ export class Db {
         turn: this.getCoworkTurn(turnId)!,
         message: rowToCoworkMessage(messageRow),
       };
+    })();
+  }
+
+  /** Persist a live owner update against the exact active turn before it is sent to the provider.
+   * The active_turn_id predicate is the same stale-callback fence used by finishCoworkTurn: a message
+   * can never leak into a later turn if completion races the WebSocket command. */
+  appendCoworkSteering(input: {
+    sessionId: string;
+    turnId: string;
+    content: string;
+    mode: CoworkSteeringMode;
+    messageId?: string;
+  }):
+    | { ok: true; session: CoworkSession; message: CoworkMessage }
+    | { ok: false; error: string; session: CoworkSession | null } {
+    return this.raw.transaction(() => {
+      const current = this.getCoworkSession(input.sessionId);
+      if (!current) return { ok: false as const, error: "Co-work session not found.", session: null };
+      if (current.activeTurnId !== input.turnId || current.state !== "running") {
+        return {
+          ok: false as const,
+          error: current.state === "stopping" ? "This turn is already stopping." : "The active Co-worker turn already finished.",
+          session: current,
+        };
+      }
+      const messageId = input.messageId ?? newId();
+      if (this.raw.prepare("SELECT 1 FROM cowork_messages WHERE id = ?").get(messageId)) {
+        return { ok: false as const, error: "This direction was already received.", session: current };
+      }
+      const at = now();
+      this.raw.prepare(
+        `INSERT INTO cowork_messages
+           (id, session_id, turn_id, role, kind, content, meta, partial, created_at, updated_at)
+         VALUES (?, ?, ?, 'user', 'text', ?, ?, 0, ?, ?)`,
+      ).run(
+        messageId,
+        input.sessionId,
+        input.turnId,
+        input.content,
+        JSON.stringify({ steeringMode: input.mode, delivery: "pending" }),
+        at,
+        at,
+      );
+      this.raw.prepare(
+        "UPDATE cowork_sessions SET updated_at=? WHERE id=? AND active_turn_id=? AND state='running'",
+      ).run(at, input.sessionId, input.turnId);
+      const row = this.raw.prepare("SELECT * FROM cowork_messages WHERE id=?").get(messageId) as Row | undefined;
+      if (!row) throw new Error("Co-work steering message insert failed");
+      return { ok: true as const, session: this.getCoworkSession(input.sessionId)!, message: rowToCoworkMessage(row) };
     })();
   }
 

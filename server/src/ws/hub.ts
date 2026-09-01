@@ -154,6 +154,9 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
     case "cowork.send":
       sendCoworkAction(socket, "send", ctx.cowork.send(cmd.sessionId, cmd.text, cmd.clientId), cmd.clientId);
       break;
+    case "cowork.steer":
+      sendCoworkAction(socket, cmd.mode, ctx.cowork.steer(cmd.sessionId, cmd.text, cmd.mode, cmd.clientId), cmd.clientId);
+      break;
     case "cowork.stop":
       sendCoworkAction(socket, "stop", await ctx.cowork.stop(cmd.sessionId));
       break;
