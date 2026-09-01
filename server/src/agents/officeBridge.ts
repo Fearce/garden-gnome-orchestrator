@@ -1,8 +1,9 @@
 import { NOTE_MAX_CHARS, type ChatScope } from "../types.js";
 
 /**
- * CLI backends (Codex, Grok) have no in-process MCP tools. Three deliberately simple markers preserve
- * the side effects an implementor needs most: office chat, owner notes, and owner-facing deliverables.
+ * CLI backends (Codex, Grok) have no in-process MCP tools. Deliberately simple markers preserve
+ * the side effects an implementor needs most: office chat, owner notes, owner-facing deliverables,
+ * and the structured manual-deploy-only terminal handoff.
  * The runner intercepts them, strips valid markers from the task transcript, and posts through the
  * same orchestrator services used by the real MCP tools.
  *
@@ -64,6 +65,12 @@ const MAX_OPERATOR_NOTE_WIRE_CHARS = NOTE_MAX_CHARS + 700;
 const DELIVERABLE_RE = /`?DELIVERABLE[ \t]*:[ \t]*/gi;
 const MAX_DELIVERABLE_WIRE_CHARS = 4096;
 
+// Load-bearing terminal evidence is JSON, unlike the human text bridges. Keeping it behind an exact
+// marker lets the runner strip it from the owner-facing transcript and hand the parsed object to the
+// same validator the in-process MCP tool uses.
+const MANUAL_DEPLOY_ONLY_RE = /`?MANUAL_DEPLOY_ONLY[ \t]*:[ \t]*/gi;
+const MAX_MANUAL_DEPLOY_ONLY_WIRE_CHARS = 12_000;
+
 export interface ExtractOfficeChatOpts {
   /**
    * When true (default), a marker that runs to end-of-string is treated as complete (Codex whole
@@ -90,6 +97,10 @@ export interface CliOperatorNote {
 export interface CliDeliverable {
   label: string;
   path: string;
+}
+
+export interface CliManualDeployment {
+  claim: unknown;
 }
 
 export interface ExtractOperatorNotesOpts {
@@ -119,11 +130,64 @@ export function extractCliBridgeMessages(
   posts: Array<{ scope: ChatScope; body: string }>;
   notes: CliOperatorNote[];
   deliverables: CliDeliverable[];
+  manualDeployments: CliManualDeployment[];
 } {
-  const files = extractDeliverables(text, opts);
+  const deployment = extractManualDeployments(text, opts);
+  const files = extractDeliverables(deployment.visible, opts);
   const office = extractOfficeChat(files.visible, opts);
   const notes = extractOperatorNotes(office.visible, opts);
-  return { visible: notes.visible, posts: office.posts, notes: notes.notes, deliverables: files.deliverables };
+  return {
+    visible: notes.visible,
+    posts: office.posts,
+    notes: notes.notes,
+    deliverables: files.deliverables,
+    manualDeployments: deployment.manualDeployments,
+  };
+}
+
+/** Strip valid one-line MANUAL_DEPLOY_ONLY JSON markers. Malformed payloads remain visible so the
+ * terminal classifier cannot silently discard the only evidence that an agent attempted to provide. */
+export function extractManualDeployments(
+  text: string,
+  opts?: ExtractOfficeChatOpts,
+): { visible: string; manualDeployments: CliManualDeployment[] } {
+  const openEnded = opts?.openEnded !== false;
+  const manualDeployments: CliManualDeployment[] = [];
+  if (!text) return { visible: "", manualDeployments };
+  let out = "";
+  let cursor = 0;
+  MANUAL_DEPLOY_ONLY_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = MANUAL_DEPLOY_ONLY_RE.exec(text)) !== null) {
+    const markerStart = match.index;
+    const bodyStart = MANUAL_DEPLOY_ONLY_RE.lastIndex;
+    out += text.slice(cursor, markerStart);
+    const taken = takeManualDeploymentBody(text, bodyStart, openEnded, match[0].startsWith("`"));
+    if (!taken.complete) {
+      cursor = markerStart;
+      MANUAL_DEPLOY_ONLY_RE.lastIndex = text.length;
+      break;
+    }
+    const markerEnd = taken.bodyEnd + (taken.trailingTick ? 1 : 0);
+    try {
+      const claim = JSON.parse(taken.body) as unknown;
+      if (!claim || typeof claim !== "object" || Array.isArray(claim)) throw new Error("not an object");
+      manualDeployments.push({ claim });
+      out += "\n";
+    } catch {
+      out += text.slice(markerStart, markerEnd);
+    }
+    cursor = markerEnd;
+    MANUAL_DEPLOY_ONLY_RE.lastIndex = cursor;
+  }
+  out += text.slice(cursor);
+  const hasOpenMarker = !openEnded && endsWithOpenCliBridgeMarker(out);
+  return {
+    visible: hasOpenMarker
+      ? out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
+      : out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(),
+    manualDeployments,
+  };
 }
 
 /**
@@ -407,7 +471,7 @@ function takeOperatorNoteBody(
       complete = true;
       break;
     }
-    if (startsOfficeMarker(text, i) || startsDeliverableMarker(text, i)) {
+    if (startsOfficeMarker(text, i) || startsDeliverableMarker(text, i) || startsManualDeploymentMarker(text, i)) {
       complete = true;
       break;
     }
@@ -450,7 +514,7 @@ function takeDeliverableBody(
       complete = true;
       break;
     }
-    if (startsDeliverableMarker(text, i) || startsOfficeMarker(text, i) || startsOperatorNoteMarker(text, i)) {
+    if (startsDeliverableMarker(text, i) || startsOfficeMarker(text, i) || startsOperatorNoteMarker(text, i) || startsManualDeploymentMarker(text, i)) {
       complete = true;
       break;
     }
@@ -475,6 +539,12 @@ function startsDeliverableMarker(text: string, i: number): boolean {
   return /^deliverable[ \t]*:/i.test(text.slice(j));
 }
 
+function startsManualDeploymentMarker(text: string, i: number): boolean {
+  let j = i;
+  if (text[j] === "`") j++;
+  return /^manual_deploy_only[ \t]*:/i.test(text.slice(j));
+}
+
 /** True when a Grok stream ends inside an incomplete deliverable line. */
 export function endsWithOpenDeliverableMarker(text: string): boolean {
   if (!text) return false;
@@ -487,8 +557,56 @@ export function endsWithOpenDeliverableMarker(text: string): boolean {
   return !takeDeliverableBody(text, bodyStart, false).complete;
 }
 
+/** True when a Grok stream ends inside an incomplete MANUAL_DEPLOY_ONLY JSON line. */
+export function endsWithOpenManualDeploymentMarker(text: string): boolean {
+  if (!text) return false;
+  MANUAL_DEPLOY_ONLY_RE.lastIndex = 0;
+  let last: RegExpExecArray | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = MANUAL_DEPLOY_ONLY_RE.exec(text)) !== null) last = match;
+  if (!last) return false;
+  const bodyStart = last.index + last[0].length;
+  return !takeManualDeploymentBody(text, bodyStart, false, last[0].startsWith("`")).complete;
+}
+
 function endsWithOpenCliBridgeMarker(text: string): boolean {
-  return endsWithOpenOfficeMarker(text) || endsWithOpenOperatorNoteMarker(text) || endsWithOpenDeliverableMarker(text);
+  return endsWithOpenOfficeMarker(text) || endsWithOpenOperatorNoteMarker(text) || endsWithOpenDeliverableMarker(text) || endsWithOpenManualDeploymentMarker(text);
+}
+
+function takeManualDeploymentBody(
+  text: string,
+  bodyStart: number,
+  openEnded: boolean,
+  wrapped: boolean,
+): { body: string; bodyEnd: number; trailingTick: boolean; complete: boolean } {
+  let i = bodyStart;
+  let trailingTick = false;
+  let complete = false;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === "\n" || ch === "\r") {
+      complete = true;
+      break;
+    }
+    if (wrapped && ch === "`") {
+      trailingTick = true;
+      complete = true;
+      break;
+    }
+    if (
+      startsOfficeMarker(text, i) ||
+      startsOperatorNoteMarker(text, i) ||
+      startsDeliverableMarker(text, i) ||
+      (i > bodyStart && startsManualDeploymentMarker(text, i)) ||
+      i - bodyStart >= MAX_MANUAL_DEPLOY_ONLY_WIRE_CHARS
+    ) {
+      complete = true;
+      break;
+    }
+    i++;
+  }
+  if (!complete && i >= text.length) complete = openEnded;
+  return { body: text.slice(bodyStart, i).trim(), bodyEnd: i, trailingTick, complete };
 }
 
 /** Scan forward from `bodyStart` for the end of one office-bridge body. */
@@ -562,6 +680,12 @@ function takeOfficeBody(
     // A deliverable marker on the same glued line is harvested first by the runners, but keep this
     // boundary too so direct extractor use and future ordering changes cannot leak a path into chat.
     if (startsDeliverableMarker(text, i)) {
+      bodyParts.push(text.slice(lineStart, i));
+      complete = true;
+      break;
+    }
+
+    if (startsManualDeploymentMarker(text, i)) {
       bodyParts.push(text.slice(lineStart, i));
       complete = true;
       break;

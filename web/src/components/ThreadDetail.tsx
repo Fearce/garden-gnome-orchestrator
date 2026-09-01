@@ -10,6 +10,7 @@ import { Deliverables } from "./Deliverables.js";
 import { columnDragMax, useColumnResize } from "./useColumnResize.js";
 import { Markdown } from "./Markdown.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
+import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -876,6 +877,7 @@ export function ThreadDetail() {
           </>
         )}
       </div>
+      <ManualDeploymentHandoff deployment={thread.state === "done" ? thread.manualDeployment : null} />
       {thread.state === "awaiting_approval" && (
         <div className="approval">
           <div className="approval-head">⏸ Plan ready — approve to build, or reject with feedback</div>

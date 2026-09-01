@@ -45,6 +45,8 @@ export interface CodexRunConfig {
   onOperatorNote?: (body: string, url?: string) => void;
   /** A standalone `DELIVERABLE: <label> | <path>` marker is recorded as a real deliverable finding. */
   onDeliverable?: (label: string, path: string) => void;
+  /** Structured evidence that the only remaining action is the owner's manual deployment. */
+  onManualDeployOnly?: (claim: unknown) => void;
   /** When set, this run is a structured role (planner/researcher/qa) rather than the free-form implementor:
    *  the CLI can't be handed our json_schema tool, so the kickoff instructs it to end with a fenced ```json
    *  block, and its final message is parsed against this schema into `result.structuredOutput`. A parse/shape
@@ -719,6 +721,13 @@ export class CodexAgentRun implements AgentRunLike {
               this.cfg.onDeliverable?.(deliverable.label, deliverable.path);
             } catch {
               /* best-effort side channel; QA's deterministic check still catches a failed post */
+            }
+          }
+          for (const deployment of bridge.manualDeployments) {
+            try {
+              this.cfg.onManualDeployOnly?.(deployment.claim);
+            } catch {
+              /* authoritative validation happens in ThreadManager; a bad side-channel cannot fail the turn */
             }
           }
           if (bridge.visible) {

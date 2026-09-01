@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
-import { endsWithOpenDeliverableMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, extractCliBridgeMessages } from "./officeBridge.js";
+import { endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, extractCliBridgeMessages } from "./officeBridge.js";
 import {
   formatStructuredRoleFeed,
   parseStructuredText,
@@ -44,6 +44,8 @@ export interface GrokRunConfig {
   onOperatorNote?: (body: string, url?: string) => void;
   /** A standalone `DELIVERABLE: <label> | <path>` marker is recorded as a real deliverable finding. */
   onDeliverable?: (label: string, path: string) => void;
+  /** Structured evidence that the only remaining action is the owner's manual deployment. */
+  onManualDeployOnly?: (claim: unknown) => void;
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Grok headless takes only a
@@ -604,7 +606,8 @@ export class GrokAgentRun implements AgentRunLike {
       !this.textBuf.endsWith("\n") &&
       !endsWithOpenOfficeMarker(this.textBuf) &&
       !endsWithOpenOperatorNoteMarker(this.textBuf) &&
-      !endsWithOpenDeliverableMarker(this.textBuf)
+      !endsWithOpenDeliverableMarker(this.textBuf) &&
+      !endsWithOpenManualDeploymentMarker(this.textBuf)
     ) {
       this.textBuf += "\n";
     }
@@ -635,6 +638,13 @@ export class GrokAgentRun implements AgentRunLike {
         this.cfg.onDeliverable?.(deliverable.label, deliverable.path);
       } catch {
         /* best-effort side channel; QA's deterministic check still catches a failed post */
+      }
+    }
+    for (const deployment of bridge.manualDeployments) {
+      try {
+        this.cfg.onManualDeployOnly?.(deployment.claim);
+      } catch {
+        /* authoritative validation happens in ThreadManager; a bad side-channel cannot fail the turn */
       }
     }
     this.textBuf = bridge.visible;

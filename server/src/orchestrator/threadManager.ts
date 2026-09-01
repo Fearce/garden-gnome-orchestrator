@@ -93,6 +93,16 @@ import { validRepoPath } from "../git/repoOps.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
+import {
+  declareManualDeployment,
+  invalidateManualDeployment,
+  MANUAL_DEPLOYMENT_HANDOFF_SUMMARY,
+  manualDeploymentHandoffDetail,
+  parseManualDeployment,
+  parseManualDeploymentClaim,
+  qualifyManualDeployment,
+  verifyManualDeployment,
+} from "./manualDeployment.js";
 import { DiscordNotifier, parseChannelId, type OwnerNotice } from "./discordNotify.js";
 import type { CoworkTarget, PreparedCoworkRun } from "./cowork.js";
 import { DirectorSupervisor, SUPERVISOR_JUDGE_MAX_TURNS, type SupervisorJudgement } from "./supervisor.js";
@@ -126,6 +136,9 @@ import type {
   GrokEffort,
   ImageAttachment,
   ImplementorProvider,
+  ManualDeployment,
+  ManualDeploymentClaim,
+  ManualDeploymentVerifier,
   ModelOverrides,
   ModelPick,
   ModelRequest,
@@ -228,6 +241,11 @@ function byInstance(agents: RelayPresentAgent[]): Map<string, RelayPresentAgent[
 
 type ResultEvent = Extract<AgentEvent, { type: "result" }>;
 type Acct = { id: string; label: string; token: string | undefined };
+interface ManualDeploymentBoundaryResult {
+  attempted: boolean;
+  done: boolean;
+  reason?: string;
+}
 import type {
   AskUserInput,
   ChatPostInput,
@@ -235,6 +253,7 @@ import type {
   DispatchInput,
   OrchestratorApi,
   PostFindingInput,
+  RecordManualDeploymentInput,
   RosterEntry,
   ThreadActionResult,
 } from "./api.js";
@@ -899,6 +918,7 @@ export class ThreadManager implements OrchestratorApi {
     this.restoreActiveDeadlines();
     this.markInterrupted();
     this.reconcileReviewInjectionsAfterRestart();
+    this.reconcileManualDeployments();
     this.applyAccountEnabled();
     this.applyAccountWeeklySafety();
     this.accounts.setSpreadUsage(this.settingBool("setting_spread_usage", false));
@@ -1242,6 +1262,11 @@ export class ThreadManager implements OrchestratorApi {
     // enabled+authed+under caps) → also resume QA-phase parks: runRole fails planner/researcher/QA over
     // to a ready CLI when Claude is still capped (see the Claude→CLI handoff in runRole). Older parks
     // that still carry CAP_PARK_QA_MARK in their error text are therefore unblocked by CLI headroom too.
+    for (const thread of this.capParkedThreads()) {
+      if (!this.settleManualDeployment(thread.id)) continue;
+      this.capParked.delete(thread.id);
+      this.capResumeNotifiedAt.delete(thread.id);
+    }
     let slots = this.settings().maxConcurrent - this.activePipelines.size;
     if (slots <= 0) {
       this.armCapResumeWake();
@@ -4869,6 +4894,10 @@ export class ThreadManager implements OrchestratorApi {
 
   private setState(threadId: string, state: Thread["state"], error?: string | null): void {
     const current = this.db.getThread(threadId);
+    if (!["done", "cancelled", "closed"].includes(state) && this.settleManualDeployment(threadId)) {
+      this.hub.log("info", `Ignored stale ${state} transition for terminal manual-deployment task ${threadId.slice(0, 8)}.`);
+      return;
+    }
     // A provider can finish unwinding after its deadline stop and try to publish the stage it was
     // heading toward. Keep the durable deadline park authoritative against every such stale write.
     // Cancel/close remain available to the operator; a deliberate Resume first removes the marker.
@@ -4893,7 +4922,13 @@ export class ThreadManager implements OrchestratorApi {
   private publishState(t: Thread): void {
     this.hub.publish({ type: "thread.upsert", thread: t });
     if (t.state === "done") {
-      this.notifyOwner(`✓ done: "${t.title}"`, { kind: "done", title: t.title, repo: t.workspace });
+      const deployment = t.manualDeployment?.status === "verified" ? t.manualDeployment : null;
+      this.notifyOwner(
+        deployment
+          ? `Complete in GGO: "${t.title}" - manual deployment to ${deployment.environment} remains pending.`
+          : `✓ done: "${t.title}"`,
+        { kind: "done", title: t.title, detail: deployment ? deployment.instructions : undefined, repo: t.workspace },
+      );
       void this.announceDone(t);
     }
     // A cap-park lands in 'review' too, but it's auto-handled by the supervisor — don't ping "needs your
@@ -6466,6 +6501,7 @@ export class ThreadManager implements OrchestratorApi {
     // Synchronous last gate before any provider process is constructed. It complements the timer:
     // an OS-delayed alarm still cannot let a new paid turn cross an already-elapsed hard deadline.
     if (this.cancelled(thread.id)) throw new Error("Task execution is stopped by its hard deadline.");
+    this.invalidateManualDeploymentForNewWork(thread.id, "an implementor turn started or resumed");
     this.setState(thread.id, "implementing");
     // Claude uses the planner's per-task effort (with the xhigh gate applied). Codex has its own
     // operator-selected reasoning effort because the CLI takes a persistent model_reasoning_effort.
@@ -6521,6 +6557,9 @@ export class ThreadManager implements OrchestratorApi {
         onDeliverable: (label, path) => {
           this.postCliDeliverable(thread, "implementor", runId, label, path);
         },
+        onManualDeployOnly: (claim) => {
+          this.recordCliManualDeployment(thread, runId, claim);
+        },
       });
       // If this run had to self-heal a wedged resume, remember it so every later turn skips the resume
       // attempt (and its 60s watchdog) and goes straight to fresh — resume keeps wedging on this thread.
@@ -6552,6 +6591,9 @@ export class ThreadManager implements OrchestratorApi {
         },
         onDeliverable: (label, path) => {
           this.postCliDeliverable(thread, "implementor", runId, label, path);
+        },
+        onManualDeployOnly: (claim) => {
+          this.recordCliManualDeployment(thread, runId, claim);
         },
       });
       // Reuse the CLI-resume-wedged set (shared by both CLI backends): once a resume self-heals to fresh,
@@ -7858,6 +7900,16 @@ export class ThreadManager implements OrchestratorApi {
     this.capParked.delete(thread.id);
 
     if (res && !res.isError) {
+      const deployment = this.verifyManualDeploymentAtBoundary(
+        thread,
+        "implementor_no_qa",
+        undefined,
+        this.latestRunIdOf(thread.id, "implementor"),
+      );
+      if (deployment.attempted) {
+        if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
+        return true;
+      }
       this.postFinding({
         threadId: thread.id,
         fromRole: "implementor",
@@ -8027,6 +8079,16 @@ export class ThreadManager implements OrchestratorApi {
     if (!pipe.qaEnabled) {
       if (this.cancelled(thread.id)) return;
       if (res && !res.isError) {
+        const deployment = this.verifyManualDeploymentAtBoundary(
+          thread,
+          "implementor_no_qa",
+          undefined,
+          this.latestRunIdOf(thread.id, "implementor"),
+        );
+        if (deployment.attempted) {
+          if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
+          return;
+        }
         this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Implementor finished — QA review is disabled, accepted as done.", severity: "info" });
         await this.runSelfImprovement(thread, effort, kickoff);
         if (this.cancelled(thread.id)) return;
@@ -8133,6 +8195,7 @@ export class ThreadManager implements OrchestratorApi {
         // rather than accepting potentially unverified edits; it costs one more review and fails safe.
         const changed = qa.changed !== false;
         if (changed) {
+          this.invalidateManualDeploymentForNewWork(thread.id, "QA changed the implementation after the deployment claim");
           if (round >= pipe.maxQaRounds) {
             this.postFinding({
               threadId: thread.id,
@@ -8184,6 +8247,17 @@ export class ThreadManager implements OrchestratorApi {
             continue;
           }
         }
+        const deployment = this.verifyManualDeploymentAtBoundary(
+          thread,
+          "qa",
+          qa.manualDeployment,
+          this.latestRunIdOf(thread.id, "qa"),
+          (qa.issues ?? []).map((issue) => `QA still reports an issue: ${issue.description}`),
+        );
+        if (deployment.attempted) {
+          if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
+          return;
+        }
         this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed without further changes: ${qa.summary}`, severity: "info" });
         await this.runSelfImprovement(thread, effort, kickoff);
         if (this.cancelled(thread.id)) return;
@@ -8200,6 +8274,17 @@ export class ThreadManager implements OrchestratorApi {
           if (this.cancelled(thread.id)) return;
           if (this.settleOwnerQaBypass(thread, res)) return;
           if (round < pipe.maxQaRounds) continue; // re-QA the newly-done work
+        }
+        const deployment = this.verifyManualDeploymentAtBoundary(
+          thread,
+          "qa",
+          qa.manualDeployment,
+          this.latestRunIdOf(thread.id, "qa"),
+          (qa.issues ?? []).map((issue) => `QA still reports an issue: ${issue.description}`),
+        );
+        if (deployment.attempted) {
+          if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
+          return;
         }
         this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed: ${qa.summary}`, severity: "info" });
         await this.runSelfImprovement(thread, effort, kickoff);
@@ -9025,6 +9110,9 @@ export class ThreadManager implements OrchestratorApi {
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     const qaBypassRequested = thread ? this.armOwnerQaBypass(threadId, message) : false;
+    if (thread && !qaBypassRequested) {
+      this.invalidateManualDeploymentForNewWork(threadId, "the owner added new task instructions");
+    }
     // Auto-retitle the lane to reflect the LATEST directive — the user runs several tasks at once and
     // loses track when a lane's scope drifts from its original title. Fire-and-forget (void): the
     // model call must never block, slow, or throw into the inject path. Covers every inject branch
@@ -9606,6 +9694,11 @@ export class ThreadManager implements OrchestratorApi {
     // is terminal until an explicit Retry, so never let that stale timer resurrect gameplay or other
     // autonomous work behind the operator's back.
     if (thread.state === "cancelled") return { ok: false, error: "Task is cancelled. Retry it to start again." };
+    if (message?.trim()) {
+      this.invalidateManualDeploymentForNewWork(threadId, "the task was resumed with new instructions");
+    } else if (this.settleManualDeployment(threadId)) {
+      return { ok: true, state: "done", message: "Complete in GGO; the verified manual deployment remains pending." };
+    }
     if (!existsSync(thread.workspace)) {
       this.setState(threadId, "failed", `Can't resume — workspace "${thread.workspace}" does not exist. Re-dispatch this task with a valid path.`);
       return { ok: false, error: `Workspace "${thread.workspace}" does not exist.` };
@@ -9805,8 +9898,19 @@ export class ThreadManager implements OrchestratorApi {
     await this.awaitImplementorCompletion(thread, this.implementorEffort(thread.id), baseKickoff, start.run, start.accountId, false, resumeNudge, false)
       .then((result) => {
         implementationFinished = !!result && !result.isError;
-        // A re-cap during the manual resume tags it for the supervisor; a clean finish parks for review.
-        if (this.db.getThread(thread.id)?.state === "implementing") this.settleReview(thread.id, "Resume finished — needs your review.");
+        const deployment = implementationFinished
+          ? this.verifyManualDeploymentAtBoundary(thread, "implementor_no_qa", undefined, start!.runId)
+          : { attempted: false, done: false };
+        // A re-cap during the manual resume tags it for the supervisor; an ordinary clean finish parks
+        // for review. The strictly verified deployment-only exception is already terminalized above.
+        if (this.db.getThread(thread.id)?.state === "implementing") {
+          this.settleReview(
+            thread.id,
+            deployment.attempted
+              ? (deployment.reason ?? "The manual deployment handoff could not be verified.")
+              : "Resume finished — needs your review.",
+          );
+        }
       })
       .catch((e) => this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)} ended in error: ${String(e)}`))
       .finally(() => {
@@ -10017,6 +10121,9 @@ export class ThreadManager implements OrchestratorApi {
   async markDone(threadId: string): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    if (this.settleManualDeployment(threadId)) {
+      return { ok: true, state: "done", message: "Complete in GGO; the verified manual deployment remains pending." };
+    }
     if (thread.state === "done") return { ok: true, state: "done" };
     if (this.deadlineParked(thread)) {
       return { ok: false, state: "review", error: "This task was stopped mid-work by its hard deadline. Clear or extend it and Resume before marking the work done." };
@@ -10025,6 +10132,11 @@ export class ThreadManager implements OrchestratorApi {
       return { ok: false, error: `A ${thread.state} task can't be marked done — only a parked (review/paused) task can.` };
     }
     await this.forceStopThreadRuns(threadId);
+    const deployment = this.verifyManualDeploymentAtBoundary(thread, "owner");
+    if (deployment.attempted) {
+      if (deployment.done) return { ok: true, state: "done", message: "Complete in GGO; the verified manual deployment remains pending." };
+      return { ok: false, state: thread.state, error: deployment.reason ?? "The manual deployment handoff could not be verified." };
+    }
     const overriddenInjections = this.reviewInjections.listOpen(threadId);
     if (overriddenInjections.length) {
       const reason = "The owner manually marked the task done before this instruction completed.";
@@ -10045,6 +10157,9 @@ export class ThreadManager implements OrchestratorApi {
   async autoReview(threadId: string, source: AutoReviewSource = "owner"): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    if (this.settleManualDeployment(threadId)) {
+      return { ok: true, state: "done", message: "Complete in GGO; the verified manual deployment remains pending." };
+    }
     if (this.coworkWorkspaceBusy?.(thread.workspace)) {
       return { ok: false, state: thread.state, error: "A Co-worker turn is using this workspace. Stop it or wait for it to finish before starting review." };
     }
@@ -10641,8 +10756,35 @@ export class ThreadManager implements OrchestratorApi {
       });
       return;
     }
-    if (!this.persistAutoReviewOutcome(thread.id, claimToken, "accepted", out.summary, out)) return;
+    const deployment = this.verifyManualDeploymentAtBoundary(
+      thread,
+      "reviewer",
+      out.manualDeployment,
+      this.latestRunIdOf(thread.id, "reviewer"),
+      (out.issues ?? []).map((issue) => `The reviewer still reports an issue: ${issue.description}`),
+      false,
+    );
+    if (deployment.attempted && !deployment.done) {
+      const reason = deployment.reason ?? "The manual deployment handoff could not be verified.";
+      if (!this.parkAutoReview(thread.id, claimToken, reason, out)) return;
+      this.handBackReviewEpisodeInjections(thread.id, claimToken, reason);
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "reviewer",
+        summary: "Auto-review could not accept the manual deployment handoff",
+        detail: reason,
+        severity: "warning",
+      });
+      return;
+    }
+    if (!this.persistAutoReviewOutcome(thread.id, claimToken, "accepted", out.summary, out)) {
+      if (deployment.done && this.db.getThread(thread.id)?.state !== "done") {
+        this.invalidateManualDeploymentForNewWork(thread.id, "the reviewer lost its durable ownership fence before acceptance settled");
+      }
+      return;
+    }
     this.resolveReviewEpisodeInjections(thread.id, claimToken, `The reviewer acknowledged and applied the instruction in its accepted verdict: ${out.summary}`);
+    if (deployment.done) this.settleManualDeployment(thread.id);
     this.postFinding({
       threadId: thread.id,
       fromRole: "reviewer",
@@ -10810,6 +10952,322 @@ export class ThreadManager implements OrchestratorApi {
     this.hub.publish({ type: "finding", finding });
     this.route(finding);
     return finding;
+  }
+
+  recordManualDeployment(input: RecordManualDeploymentInput): ThreadActionResult {
+    const thread = this.db.getThread(input.threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (["done", "cancelled", "closed"].includes(thread.state)) {
+      return { ok: false, state: thread.state, error: `A ${thread.state} task cannot record new deployment evidence.` };
+    }
+    if (input.fromRole !== "implementor") {
+      return { ok: false, state: thread.state, error: "Only the implementor may declare this handoff through the bus; QA/reviewer evidence belongs in their structured verdict." };
+    }
+    const run = this.db.getRun(input.fromRunId);
+    const latestRunId = this.latestRunIdOf(input.threadId, "implementor");
+    if (!run || run.threadId !== input.threadId || run.role !== input.fromRole || latestRunId !== run.id || run.endedAt != null) {
+      return { ok: false, state: thread.state, error: "The deployment handoff did not come from this task's current durable implementor run." };
+    }
+    const prior = parseManualDeployment(this.db.getThreadStageOutputs(thread.id).manualDeployment);
+    if (prior?.status === "verified") {
+      return { ok: false, state: thread.state, error: "This task already has a verified terminal deployment handoff." };
+    }
+    const claim = parseManualDeploymentClaim(input.claim);
+    if (!claim) {
+      const reason = "The manual deployment evidence is incomplete or malformed.";
+      this.db.updateThreadStageOutputs(thread.id, {
+        ...(prior ? { manualDeployment: invalidateManualDeployment(prior, reason) } : {}),
+        manualDeploymentAttempt: { runId: input.fromRunId, at: Date.now(), reason },
+      });
+      this.publishManualDeploymentProjection(thread.id);
+      return { ok: false, state: thread.state, error: reason };
+    }
+    const blockers = this.manualDeploymentBlockers(thread.id, input.fromRunId);
+    const qualified = qualifyManualDeployment(thread.workspace, claim, config.noPushRepoPattern, blockers);
+    if (!qualified.ok) {
+      const reason = this.manualDeploymentReason(qualified.reasons);
+      this.db.updateThreadStageOutputs(thread.id, {
+        manualDeployment: invalidateManualDeployment(declareManualDeployment(claim, "implementor", input.fromRunId), reason),
+        manualDeploymentAttempt: { runId: input.fromRunId, at: Date.now(), reason },
+      });
+      this.publishManualDeploymentProjection(thread.id);
+      return { ok: false, state: thread.state, error: reason };
+    }
+    this.db.updateThreadStageOutputs(thread.id, {
+      manualDeployment: declareManualDeployment(claim, "implementor", input.fromRunId),
+      manualDeploymentAttempt: null,
+    });
+    this.publishManualDeploymentProjection(thread.id);
+    return { ok: true, state: thread.state, message: "Structured deploy-only evidence recorded; the completion boundary will verify it again." };
+  }
+
+  private recordCliManualDeployment(thread: Thread, runId: string, rawClaim: unknown): void {
+    const claim = parseManualDeploymentClaim(rawClaim);
+    if (claim) {
+      const result = this.recordManualDeployment({ threadId: thread.id, fromRole: "implementor", fromRunId: runId, claim });
+      if (!result.ok) this.hub.log("warn", `Rejected manual-deployment evidence from ${runId.slice(0, 8)}: ${result.error ?? "unknown reason"}`);
+      return;
+    }
+    const reason = "The CLI manual deployment marker contained incomplete or malformed evidence.";
+    const prior = parseManualDeployment(this.db.getThreadStageOutputs(thread.id).manualDeployment);
+    this.db.updateThreadStageOutputs(thread.id, {
+      ...(prior ? { manualDeployment: invalidateManualDeployment(prior, reason) } : {}),
+      manualDeploymentAttempt: { runId, at: Date.now(), reason },
+    });
+    this.publishManualDeploymentProjection(thread.id);
+    this.hub.log("warn", `Rejected malformed manual-deployment marker from ${runId.slice(0, 8)}.`);
+  }
+
+  /** Meaningful orchestration work that a structured assertion cannot waive. The one allowed run is the
+   * verifier currently crossing this boundary; its completed result may still be unwinding in the DB. */
+  private manualDeploymentBlockers(threadId: string, allowedRunId?: string | null): string[] {
+    const blockers: string[] = [];
+    const thread = this.db.getThread(threadId);
+    if (!thread) return ["The task no longer exists."];
+    if (this.db.listOpenQuestions().some((question) => question.threadId === threadId)) {
+      blockers.push("An owner question is still unresolved.");
+    }
+    const openInjections = this.reviewInjections.listOpen(threadId).filter((row) => {
+      if (!allowedRunId) return true;
+      if (row.status === "acknowledged_reviewer" && row.reviewerRunId === allowedRunId) return false;
+      if (row.status === "delivered_implementor" && row.implementorRunId === allowedRunId) return false;
+      return true;
+    });
+    if (openInjections.length) blockers.push("A current owner/reviewer instruction is still unresolved.");
+    const stage = this.db.getThreadStageOutputs(threadId);
+    if (stage.qaFixHandoff || stage.qaSuperseded || stage.reviewFixing || stage.selfImproving) {
+      blockers.push("A required QA/reviewer or post-task work handoff is still open.");
+    }
+    if (stage.shotgunRecoveryBlocked || (stage.shotgunChildren?.length && !stage.shotgunIntegrated)) {
+      blockers.push("Collaborator integration or recovery is still incomplete.");
+    }
+    if (this.pendingApprovals.has(threadId) || thread.state === "awaiting_approval") blockers.push("Required owner approval is still pending.");
+    if (this.pendingResumeMsgs.get(threadId)?.length || this.directorNotes.get(threadId)?.length || this.queuedForImplementor.get(threadId)?.length) {
+      blockers.push("Queued owner instructions still require implementation.");
+    }
+    if (this.deadlineParked(thread) || this.deadlineDue(thread)) blockers.push("The task is stopped by its hard deadline.");
+    if (["failed", "paused", "cancelled", "closed"].includes(thread.state)) blockers.push(`The task is ${thread.state}, so unfinished work may remain.`);
+    const otherActiveRuns = this.db.listActiveRuns().filter((run) => run.threadId === threadId && run.id !== allowedRunId);
+    if (otherActiveRuns.length) blockers.push("Another agent run is still active on the task.");
+    return blockers;
+  }
+
+  /** Cross an acceptance boundary using only versioned evidence plus current Git/orchestration facts.
+   * A malformed or rejected attempt is load-bearing: callers must park instead of silently taking their
+   * ordinary done path. Reviewer acceptance sets `settle:false` so its existing CAS owns the state change. */
+  private verifyManualDeploymentAtBoundary(
+    thread: Thread,
+    verifier: ManualDeploymentVerifier,
+    rawClaim?: unknown,
+    verifierRunId?: string | null,
+    extraBlockers: readonly string[] = [],
+    settle = true,
+  ): ManualDeploymentBoundaryResult {
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    let marker = parseManualDeployment(stage.manualDeployment);
+    let claim: ManualDeploymentClaim | null = null;
+
+    if (rawClaim != null) {
+      claim = parseManualDeploymentClaim(rawClaim);
+      if (!claim) return this.rejectManualDeploymentBoundary(thread, marker, verifierRunId, "The verifier returned incomplete or malformed manual deployment evidence.");
+      if (marker && marker.status !== "invalidated" && (
+        marker.claim.commitSha !== claim.commitSha || marker.claim.remoteRef !== claim.remoteRef
+      )) {
+        return this.rejectManualDeploymentBoundary(thread, marker, verifierRunId, "The implementor and verifier named different commits or integration refs.");
+      }
+      const declaredBy: ManualDeployment["declaredBy"] = verifier === "qa" ? "qa" : verifier === "reviewer" ? "reviewer" : "implementor";
+      marker = declareManualDeployment(claim, declaredBy, verifierRunId ?? marker?.declaredRunId ?? "unknown-run");
+    } else if (marker?.status !== "invalidated") {
+      claim = marker?.claim ?? null;
+    }
+
+    if (!claim || !marker) {
+      const attempt = stage.manualDeploymentAttempt;
+      return attempt
+        ? { attempted: true, done: false, reason: attempt.reason }
+        : { attempted: false, done: false };
+    }
+
+    const blockers = [
+      ...extraBlockers,
+      ...this.manualDeploymentRunBlockers(thread.id, marker, verifier, verifierRunId),
+      ...this.manualDeploymentBlockers(thread.id, verifierRunId ?? marker.declaredRunId),
+    ];
+    const qualified = qualifyManualDeployment(thread.workspace, claim, config.noPushRepoPattern, blockers);
+    if (!qualified.ok) {
+      return this.rejectManualDeploymentBoundary(thread, marker, verifierRunId, this.manualDeploymentReason(qualified.reasons));
+    }
+
+    const verified = verifyManualDeployment(marker, verifier, verifierRunId);
+    this.db.updateThreadStageOutputs(thread.id, { manualDeployment: verified, manualDeploymentAttempt: null });
+    this.publishManualDeploymentProjection(thread.id);
+    if (!settle) return { attempted: true, done: true };
+    const done = this.settleManualDeployment(thread.id);
+    return done
+      ? { attempted: true, done: true }
+      : { attempted: true, done: false, reason: this.db.getThreadStageOutputs(thread.id).manualDeploymentAttempt?.reason ?? "The manual deployment handoff could not be terminalized safely." };
+  }
+
+  private rejectManualDeploymentBoundary(
+    thread: Thread,
+    marker: ManualDeployment | null,
+    runId: string | null | undefined,
+    reason: string,
+  ): ManualDeploymentBoundaryResult {
+    const clipped = reason.slice(0, 1_500);
+    const rejected = marker ? invalidateManualDeployment(marker, clipped) : null;
+    const prior = this.db.getThreadStageOutputs(thread.id).manualDeploymentAttempt;
+    this.db.updateThreadStageOutputs(thread.id, {
+      ...(rejected ? { manualDeployment: rejected } : {}),
+      manualDeploymentAttempt: { runId: runId ?? marker?.declaredRunId ?? "unknown-run", at: Date.now(), reason: clipped },
+    });
+    this.publishManualDeploymentProjection(thread.id);
+    if (prior?.reason !== clipped || !this.db.listFindings(thread.id).some((finding) => finding.summary === "Manual deployment handoff needs attention" && finding.detail === clipped)) {
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "director",
+        summary: "Manual deployment handoff needs attention",
+        detail: clipped,
+        severity: "warning",
+      });
+    }
+    return { attempted: true, done: false, reason: clipped };
+  }
+
+  private manualDeploymentReason(reasons: readonly string[]): string {
+    return [...new Set(reasons.map((reason) => reason.trim()).filter(Boolean))].join(" ").slice(0, 1_500);
+  }
+
+  private manualDeploymentRunBlockers(
+    threadId: string,
+    marker: ManualDeployment,
+    verifier: ManualDeploymentVerifier | undefined,
+    verifierRunId: string | null | undefined,
+  ): string[] {
+    const blockers: string[] = [];
+    const declared = this.db.getRun(marker.declaredRunId);
+    if (!declared || declared.threadId !== threadId || declared.role !== marker.declaredBy || declared.error) {
+      blockers.push("The declaration is not tied to a successful durable run on this task.");
+    }
+    if (verifier && verifier !== "owner") {
+      const expectedRole: Role = verifier === "implementor_no_qa" ? "implementor" : verifier;
+      const verified = verifierRunId ? this.db.getRun(verifierRunId) : null;
+      if (!verified || verified.threadId !== threadId || verified.role !== expectedRole || verified.error) {
+        blockers.push("The verification is not tied to a successful durable run on this task.");
+      }
+    }
+    return blockers;
+  }
+
+  /** Public for the Supervisor's zero-token convergence gate. A verified marker is rechecked before the
+   * first transition, then remains terminal and idempotent even if the shared repository changes later. */
+  settleManualDeployment(threadId: string): boolean {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return false;
+    const marker = parseManualDeployment(this.db.getThreadStageOutputs(threadId).manualDeployment);
+    if (marker?.status !== "verified" || ["cancelled", "closed"].includes(thread.state)) return false;
+
+    if (thread.state !== "done") {
+      const qualified = qualifyManualDeployment(
+        thread.workspace,
+        marker.claim,
+        config.noPushRepoPattern,
+        [
+          ...this.manualDeploymentRunBlockers(threadId, marker, marker.verifiedBy, marker.verifiedRunId),
+          ...this.manualDeploymentBlockers(threadId, marker.verifiedRunId ?? marker.declaredRunId),
+        ],
+      );
+      if (!qualified.ok) {
+        this.rejectManualDeploymentBoundary(thread, marker, marker.verifiedRunId, this.manualDeploymentReason(qualified.reasons));
+        return false;
+      }
+    }
+
+    const settled = this.db.finishManualDeployment(threadId, MANUAL_DEPLOYMENT_HANDOFF_SUMMARY);
+    if (!settled || settled.state !== "done") return false;
+    if (marker.verifiedBy === "reviewer" && marker.verifiedRunId) {
+      const handled = this.reviewInjections.listOpen(threadId).filter(
+        (row) => row.status === "acknowledged_reviewer" && row.reviewerRunId === marker.verifiedRunId,
+      );
+      if (handled.length) this.reviewInjections.resolve(handled.map((row) => row.id), "The accepted reviewer verdict completed this instruction.");
+    }
+    this.ensureManualDeploymentHandoff(settled, marker);
+    if (thread.state !== settled.state || thread.error !== settled.error) this.publishState(settled);
+    return true;
+  }
+
+  private ensureManualDeploymentHandoff(thread: Thread, marker: ManualDeployment): void {
+    const detail = manualDeploymentHandoffDetail(marker.claim, config.ownerName);
+    if (!this.db.listFindings(thread.id).some((finding) => finding.summary === MANUAL_DEPLOYMENT_HANDOFF_SUMMARY && finding.detail === detail)) {
+      this.postFinding({ threadId: thread.id, fromRole: "director", summary: MANUAL_DEPLOYMENT_HANDOFF_SUMMARY, detail, severity: "info" });
+    }
+    const feed = `Complete in GGO. Manual deployment remains pending for ${marker.claim.environment} at ${marker.claim.commitSha.slice(0, 12)}. ${marker.claim.instructions}`;
+    if (!this.db.listMessages(thread.id).some((message) => message.kind === "system" && message.content === feed)) {
+      const message = this.db.addMessage({ threadId: thread.id, role: "director", kind: "system", content: feed });
+      this.hub.publish({ type: "thread.message", threadId: thread.id, message });
+    }
+  }
+
+  private publishManualDeploymentProjection(threadId: string): void {
+    const updated = this.db.getThread(threadId);
+    if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
+  }
+
+  private invalidateManualDeploymentForNewWork(threadId: string, reason: string): void {
+    const stage = this.db.getThreadStageOutputs(threadId);
+    if (!stage.manualDeployment && !stage.manualDeploymentAttempt) return;
+    this.db.updateThreadStageOutputs(threadId, { manualDeployment: null, manualDeploymentAttempt: null });
+    this.publishManualDeploymentProjection(threadId);
+    this.hub.log("info", `Cleared prior manual-deployment evidence for ${threadId.slice(0, 8)}: ${reason}`);
+  }
+
+  /** Boot migration/repair. It recognizes only the new structured marker, a structured accepted reviewer
+   * verdict, or a successful no-QA run that owns the matching declaration. Prose-only review parks are
+   * deliberately counted as ambiguous and left untouched. */
+  private reconcileManualDeployments(): void {
+    let repaired = 0;
+    let ambiguous = 0;
+    for (const thread of this.db.listThreads()) {
+      const stage = this.db.getThreadStageOutputs(thread.id);
+      const marker = parseManualDeployment(stage.manualDeployment);
+      if (marker?.status === "verified") {
+        if (this.settleManualDeployment(thread.id)) {
+          if (thread.state !== "done") repaired++;
+        }
+        else ambiguous++;
+        continue;
+      }
+      if (marker?.status === "invalidated" || stage.manualDeploymentAttempt) {
+        ambiguous++;
+        continue;
+      }
+
+      const episode = this.db.getAutoReviewEpisode(thread.id);
+      const acceptedClaim = episode?.status === "accepted" && episode.verdict?.accept === true
+        ? parseManualDeploymentClaim(episode.verdict.manualDeployment)
+        : null;
+      if (acceptedClaim && episode?.verdictRunId) {
+        const boundary = this.verifyManualDeploymentAtBoundary(thread, "reviewer", acceptedClaim, episode.verdictRunId);
+        if (boundary.done) repaired++;
+        else ambiguous++;
+        continue;
+      }
+
+      if (marker?.status === "declared") {
+        const run = this.db.getRun(marker.declaredRunId);
+        const noQa = stage.routeDecision?.useQa === false || stage.ownerQaBypassedAt != null;
+        if (noQa && run?.role === "implementor" && run.state === "done" && !run.error) {
+          const boundary = this.verifyManualDeploymentAtBoundary(thread, "implementor_no_qa", undefined, run.id);
+          if (boundary.done) repaired++;
+          else ambiguous++;
+        } else {
+          ambiguous++;
+        }
+      }
+    }
+    if (repaired || ambiguous) {
+      this.hub.log("info", `Manual-deployment reconciliation repaired ${repaired} task(s); left ${ambiguous} ambiguous task(s) unchanged.`);
+    }
   }
 
   private route(finding: Finding): void {
@@ -11827,7 +12285,7 @@ export function qaFixFreshKickoff(thread: Thread, plan: PlanOutput | undefined, 
  * tells the shared QA system prompt whether the operator has disabled automatic pushes for this task. */
 function qaFixCommitPolicy(autoPush: boolean): string {
   return autoPush
-    ? "## QA fix commit policy\nIf you changed task files in this QA run, stage only your own hunks and make a focused Conventional Commit. Push it to the tracked remote before returning your verdict unless the repo's existing Vota no-push rule applies. Do not commit when you made no changes."
+    ? "## QA fix commit policy\nIf you changed task files in this QA run, stage only your own hunks and make a focused Conventional Commit. Push it to the tracked remote before returning your verdict unless the configured commit-only remote rule applies. Do not commit when you made no changes."
     : "## QA fix commit policy\nAuto-push is OFF for this task. If you changed task files in this QA run, stage only your own hunks and make a focused Conventional Commit, but do NOT push it. Do not commit when you made no changes.";
 }
 

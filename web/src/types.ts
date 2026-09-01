@@ -97,6 +97,16 @@ export interface ShotgunAssignment {
   files: string[];
 }
 
+/** Owner-facing projection of a versioned deployment-only handoff. The full evidence remains server-side. */
+export interface ManualDeploymentSummary {
+  status: "declared" | "verified" | "invalidated";
+  commitSha: string;
+  environment: string;
+  instructions: string;
+  verifiedAt?: number | null;
+  invalidReason?: string | null;
+}
+
 export interface Thread {
   id: string;
   title: string;
@@ -123,6 +133,7 @@ export interface Thread {
   agentCount?: number | null;
   parentId?: string | null;
   assignment?: ShotgunAssignment | null;
+  manualDeployment?: ManualDeploymentSummary | null;
   createdAt: number;
   updatedAt: number;
 }

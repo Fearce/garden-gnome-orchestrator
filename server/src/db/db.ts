@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
+import { manualDeploymentSummary, parseManualDeployment, parseManualDeploymentClaim } from "../orchestrator/manualDeployment.js";
 import {
   BACKFILL_CHUNK,
   FTS_CURSOR_KEY,
@@ -119,6 +120,7 @@ function rowToThread(r: Row): Thread {
     agentCount: (r.agent_count as number | null) ?? null,
     parentId: (r.parent_id as string | null) ?? null,
     assignment: parseAssignment(r.assignment),
+    manualDeployment: manualDeploymentSummary(parseStageOutputs(r.stage_outputs).manualDeployment),
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
   };
@@ -360,10 +362,12 @@ function parseReviewerVerdict(raw: unknown): ReviewerOutput | null {
   try {
     const value = JSON.parse(raw) as Partial<ReviewerOutput> | null;
     if (!value || typeof value.accept !== "boolean" || typeof value.summary !== "string") return null;
+    const manualDeployment = parseManualDeploymentClaim(value.manualDeployment);
     return {
       accept: value.accept,
       summary: value.summary,
       ...(Array.isArray(value.issues) ? { issues: value.issues } : {}),
+      ...(manualDeployment ? { manualDeployment } : {}),
     };
   } catch {
     return null;
@@ -1394,6 +1398,10 @@ export class Db {
    * auto-review outcome and may be delegated. A non-null reason is durable across restarts and prevents
    * both another reviewer launch and another paid Supervisor judgement over the same unchanged work. */
   autoReviewAutomationBlock(threadId: string): string | null {
+    const deployment = parseManualDeployment(this.getThreadStageOutputs(threadId).manualDeployment);
+    if (deployment?.status === "verified") {
+      return "This task has a verified manual deployment handoff and is terminal in GGO.";
+    }
     const revision = this.autoReviewRevision(threadId);
     const episode = this.getAutoReviewEpisode(threadId);
     if (!revision || !episode || episode.revision !== revision) return null;
@@ -1410,6 +1418,10 @@ export class Db {
     return this.raw.transaction((): AutoReviewClaimResult => {
       const current = this.getThread(threadId);
       if (!current) return { ok: false, thread: null, reason: "No such task." };
+      const deployment = parseManualDeployment(this.getThreadStageOutputs(threadId).manualDeployment);
+      if (deployment?.status === "verified") {
+        return { ok: false, thread: current, reason: "This task is complete in GGO and only its manual deployment remains; Auto-review is suppressed." };
+      }
       if (current.state !== "review") {
         const active = this.getAutoReviewEpisode(threadId);
         if (active?.status === "running" && ["reviewing", "implementing", "awaiting_user"].includes(current.state)) {
@@ -1532,6 +1544,37 @@ export class Db {
           at,
         });
       return { ok: true, thread: this.getThread(input.threadId)!, episode: this.getAutoReviewEpisode(input.threadId)! };
+    })();
+  }
+
+  /** Atomically terminalize a strictly verified deploy-only handoff and consume any reviewer claim.
+   * The structured stage marker is the authority; callers cannot use this for ordinary tasks. */
+  finishManualDeployment(threadId: string, reason: string): Thread | null {
+    return this.raw.transaction((): Thread | null => {
+      const current = this.getThread(threadId);
+      if (!current) return null;
+      const deployment = parseManualDeployment(this.getThreadStageOutputs(threadId).manualDeployment);
+      if (deployment?.status !== "verified") return current;
+      if (["cancelled", "closed"].includes(current.state)) return current;
+      const at = now();
+      if (current.state !== "done" || current.error != null) {
+        this.raw.prepare("UPDATE threads SET state='done', error=NULL, updated_at=? WHERE id=?").run(at, threadId);
+      }
+      const episode = this.getAutoReviewEpisode(threadId);
+      if (episode && episode.status !== "accepted") {
+        this.raw.prepare(
+          `UPDATE auto_review_episodes
+              SET revision=@revision, status='accepted', claim_token=NULL, reason=@reason,
+                  settled_at=@at, updated_at=@at
+            WHERE thread_id=@threadId`,
+        ).run({
+          threadId,
+          revision: this.autoReviewRevision(threadId) ?? episode.revision,
+          reason,
+          at,
+        });
+      }
+      return this.getThread(threadId);
     })();
   }
 

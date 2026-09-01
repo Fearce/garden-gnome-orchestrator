@@ -71,6 +71,38 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
     },
   );
 
+  const handoffManualDeployment = tool(
+    "handoff_manual_deployment",
+    `Declare the narrow terminal handoff where this task's committed, verified change in a configured commit-only repository has NO remaining work except ${config.ownerName}'s external/manual deployment. Call only at the end, after the commit exists, the worktree is clean, the declared remote ref has no commits missing locally, and every required check passed. Never use it when a test failed/was skipped, work is uncommitted, merge/divergence exists, credentials/data or an owner decision are missing, another blocker remains, or essential post-deploy verification is still required. The server verifies Git state independently; this declaration cannot waive unfinished work.`,
+    {
+      version: z.literal(1),
+      commitSha: z.string().regex(/^[0-9a-fA-F]{40}$/),
+      remoteRef: z.string().min(1).max(200),
+      environment: z.string().min(1).max(120),
+      instructions: z.string().min(1).max(2000),
+      verification: z.array(z.object({ command: z.string().min(1).max(2000), outcome: z.literal("passed") })).min(1).max(25),
+      assertions: z.object({
+        implementationCommitted: z.literal(true),
+        requiredVerificationPassed: z.literal(true),
+        noUncommittedChanges: z.literal(true),
+        noMergeOrDivergence: z.literal(true),
+        credentialsAndDataReady: z.literal(true),
+        noOwnerDecisionRequired: z.literal(true),
+        noAdditionalBlockers: z.literal(true),
+        postDeployVerificationRequired: z.literal(false),
+      }),
+    },
+    async (args) => {
+      const runId = ctx.getRunId();
+      if (!runId) return { content: [{ type: "text", text: "Deployment handoff not recorded: this run has no durable id." }], isError: true };
+      const result = api.recordManualDeployment({ threadId: ctx.threadId, fromRole: ctx.role, fromRunId: runId, claim: args });
+      return {
+        content: [{ type: "text", text: result.ok ? (result.message ?? "Manual deployment handoff recorded for terminal verification.") : `Deployment handoff not recorded: ${result.error}` }],
+        ...(result.ok ? {} : { isError: true }),
+      };
+    },
+  );
+
   const postOperatorNote = tool(
     "post_operator_note",
     `Leave a SHORT pointer on ${config.ownerName}'s note list — the one place they look for work now waiting on THEM personally. Post one when you finish something only they can do next: a branch you pushed for review, a pull request you opened, a change waiting on their approval or merge. They click the link, deal with it, and delete the note.
@@ -183,6 +215,6 @@ Post at most one or two per task, at the END, once the thing is actually there t
   return createSdkMcpServer({
     name: BUS_SERVER,
     version: "0.1.0",
-    tools: [postFinding, postDeliverable, readFindings, notifyThread, askUser, postOperatorNote],
+    tools: [postFinding, postDeliverable, handoffManualDeployment, readFindings, notifyThread, askUser, postOperatorNote],
   });
 }

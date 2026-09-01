@@ -1,7 +1,7 @@
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, QuestionOption, Role, Severity, ShotgunAssignment, Thread, ThreadLane } from "../types.js";
+import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, Thread, ThreadLane } from "../types.js";
 
 export interface DispatchInput {
   title: string;
@@ -45,6 +45,13 @@ export interface PostFindingInput {
   path?: string | null; // deliverable only — file path (absolute or relative to the task workspace)
   label?: string | null; // deliverable only — human-readable label
   severity?: Severity;
+}
+
+export interface RecordManualDeploymentInput {
+  threadId: string;
+  fromRole: Role;
+  fromRunId: string;
+  claim: ManualDeploymentClaim;
 }
 
 export interface ThreadActionResult {
@@ -103,6 +110,10 @@ export interface OrchestratorApi {
 
   /** Record a finding and route it (inject into a live implementor if apt). */
   postFinding(input: PostFindingInput): Finding;
+
+  /** Persist a structured deploy-only declaration. Qualification and terminal settlement remain
+   * server-owned; callers cannot mark a task done merely by invoking this write. */
+  recordManualDeployment(input: RecordManualDeploymentInput): ThreadActionResult;
 
   /** Post a message to the office (general room) or this task's project room; broadcasts it live. */
   chatPost(input: ChatPostInput): ChatMessage;

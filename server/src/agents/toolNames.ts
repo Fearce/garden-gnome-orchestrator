@@ -15,6 +15,7 @@ export const T = {
   readMemory: `mcp__${MEMORY_SERVER}__read_memory`,
   postFinding: `mcp__${BUS_SERVER}__post_finding`,
   postDeliverable: `mcp__${BUS_SERVER}__post_deliverable`,
+  handoffManualDeployment: `mcp__${BUS_SERVER}__handoff_manual_deployment`,
   readFindings: `mcp__${BUS_SERVER}__read_findings`,
   notifyThread: `mcp__${BUS_SERVER}__notify_thread`,
   busAskUser: `mcp__${BUS_SERVER}__ask_user`,
@@ -40,7 +41,7 @@ export const T = {
   deleteScheduledTask: `mcp__${DIRECTOR_SERVER}__delete_scheduled_task`,
 } as const;
 
-export const BUS_TOOLS = [T.postFinding, T.postDeliverable, T.readFindings, T.notifyThread, T.busAskUser, T.postNote];
+export const BUS_TOOLS = [T.postFinding, T.postDeliverable, T.handoffManualDeployment, T.readFindings, T.notifyThread, T.busAskUser, T.postNote];
 export const OFFICE_TOOLS = [T.officeLook, T.officeSetName, T.chatPost, T.chatRead];
 // Read-only tools the reader lane runs with — the codebase-read surface (Read/Grep/Glob are built-in and
 // added alongside these in readerConfig) plus allowlisted git history. No write/edit/shell tool appears

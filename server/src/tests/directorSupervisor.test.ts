@@ -106,6 +106,7 @@ interface Fixture {
   resumeDetails: { threadId: string; message?: string; operatorInitiated?: boolean }[];
   autoReviews: string[];
   autoReviewSources: (AutoReviewSource | undefined)[];
+  manualSettlements: string[];
   prompts: string[];
   getJudgeCalls(): number;
   setVerdict(verdict: Verdict | null): void;
@@ -113,6 +114,7 @@ interface Fixture {
   setBeforeJudge(action: (() => void) | undefined): void;
   setCorrectionCanLand(on: boolean): void;
   setDiscord(on: boolean): void;
+  setManualDeploymentSettlement(on: boolean): void;
   create(config?: Partial<SupervisorConfig>): DirectorSupervisor;
   close(): void;
 }
@@ -130,9 +132,11 @@ function fixture(): Fixture {
   const resumeDetails: { threadId: string; message?: string; operatorInitiated?: boolean }[] = [];
   const autoReviews: string[] = [];
   const autoReviewSources: (AutoReviewSource | undefined)[] = [];
+  const manualSettlements: string[] = [];
   const prompts: string[] = [];
   let calls = 0;
   let discord = false;
+  let manualDeploymentSettles = false;
   let correctionCanLand = false;
   let beforeJudge: (() => void) | undefined;
   let next: unknown | null = { action: "comment", message: "A bounded note is useful.", reasoning: "The task has no live run.", requiresOwner: false };
@@ -140,6 +144,10 @@ function fixture(): Fixture {
   const host: SupervisorHost = {
     db,
     hub,
+    settleManualDeployment(threadId: string): boolean {
+      manualSettlements.push(threadId);
+      return manualDeploymentSettles;
+    },
     async supervisorJudge(prompt: string, _schema: JsonSchemaLike): Promise<SupervisorJudgement | null> {
       calls++;
       prompts.push(prompt);
@@ -203,6 +211,7 @@ function fixture(): Fixture {
     resumeDetails,
     autoReviews,
     autoReviewSources,
+    manualSettlements,
     prompts,
     getJudgeCalls: () => calls,
     setVerdict: (verdict) => {
@@ -219,6 +228,9 @@ function fixture(): Fixture {
     },
     setDiscord: (on) => {
       discord = on;
+    },
+    setManualDeploymentSettlement: (on) => {
+      manualDeploymentSettles = on;
     },
     create: (config) => new DirectorSupervisor(host, config),
     close: () => {
@@ -264,6 +276,23 @@ async function main(): Promise<void> {
       supervisor.setEnabled(true);
       await supervisor.runNow();
       check("recent findings count as activity and avoid a false stalled-task check-in", f.getJudgeCalls() === 0 && f.db.listSupervisorEvents().length === 0);
+      supervisor.setEnabled(false);
+    } finally {
+      f.close();
+    }
+  }
+  {
+    const f = fixture();
+    try {
+      const task = makeTask(f.db, "verified manual deployment handoff", "review", true);
+      f.setManualDeploymentSettlement(true);
+      const supervisor = f.create();
+      supervisor.setEnabled(true);
+      await supervisor.runNow();
+      check(
+        "verified manual deployment settles before Supervisor judgement or Auto-review",
+        f.manualSettlements.includes(task.id) && f.getJudgeCalls() === 0 && f.autoReviews.length === 0,
+      );
       supervisor.setEnabled(false);
     } finally {
       f.close();

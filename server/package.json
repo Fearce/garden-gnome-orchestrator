@@ -97,6 +97,7 @@
     "test:cowork": "tsx src/tests/cowork.itest.ts",
     "test:cowork-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/cowork-ui.test.tsx",
     "test:auto-review": "tsx src/tests/autoReview.itest.ts",
+    "test:manual-deployment": "tsx src/tests/manualDeployment.test.ts && tsx src/tests/manualDeployment.itest.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/manual-deployment-ui.test.tsx",
     "test:model-select": "tsx src/tests/modelSelection.test.ts",
     "test:model-catalog": "tsx src/tests/modelCatalog.test.ts",
     "test:model-catalog-health": "node scripts/model-catalog-health.test.cjs",

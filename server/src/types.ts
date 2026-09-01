@@ -158,6 +158,8 @@ export interface Thread {
   agentCount?: number | null; // collaborators the owner asked for; null/1 = an ordinary single-agent task
   parentId?: string | null; // set on a COLLABORATOR: the lead task it belongs to (hidden from the board, shown inside the lead)
   assignment?: ShotgunAssignment | null; // a collaborator's owned share — objective + the files it exclusively owns
+  /** Owner-facing projection of the durable deploy-only handoff stored in stage_outputs. */
+  manualDeployment?: ManualDeploymentSummary | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -475,6 +477,8 @@ export interface QaOutput {
   /** Set by a QA-fixes run when it actually changed the working tree. The pipeline uses this to send
    *  the changed work to another QA pass instead of bouncing it back through the implementor. */
   changed?: boolean;
+  /** Present only when QA proves manual deployment is the sole remaining action. */
+  manualDeployment?: ManualDeploymentClaim;
 }
 
 export interface ResearchOutput {
@@ -520,6 +524,54 @@ export interface ReviewerOutput {
   accept: boolean; // the work genuinely satisfies the brief and can be accepted as finished
   summary: string; // what was verified and why it was (or wasn't) accepted
   issues?: QaIssue[]; // when not accepting: the concrete reasons, so the owner sees the list without re-reviewing
+  manualDeployment?: ManualDeploymentClaim;
+}
+
+/** Structured evidence for the narrow terminal exception where all repository work is complete and
+ * only an external/manual deployment remains. Incomplete evidence fails closed. */
+export interface ManualDeploymentClaim {
+  version: 1;
+  commitSha: string;
+  remoteRef: string;
+  environment: string;
+  instructions: string;
+  verification: Array<{ command: string; outcome: "passed" }>;
+  assertions: {
+    implementationCommitted: true;
+    requiredVerificationPassed: true;
+    noUncommittedChanges: true;
+    noMergeOrDivergence: true;
+    credentialsAndDataReady: true;
+    noOwnerDecisionRequired: true;
+    noAdditionalBlockers: true;
+    postDeployVerificationRequired: false;
+  };
+}
+
+export type ManualDeploymentVerifier = "qa" | "reviewer" | "owner" | "implementor_no_qa";
+
+/** Durable stage marker. A verified marker is a terminal fence for restart, Supervisor, and cap paths. */
+export interface ManualDeployment {
+  kind: "manual_deployment";
+  version: 1;
+  status: "declared" | "verified" | "invalidated";
+  claim: ManualDeploymentClaim;
+  declaredBy: "implementor" | "qa" | "reviewer";
+  declaredRunId: string;
+  declaredAt: number;
+  verifiedBy?: ManualDeploymentVerifier;
+  verifiedRunId?: string | null;
+  verifiedAt?: number;
+  invalidReason?: string;
+}
+
+export interface ManualDeploymentSummary {
+  status: ManualDeployment["status"];
+  commitSha: string;
+  environment: string;
+  instructions: string;
+  verifiedAt?: number | null;
+  invalidReason?: string | null;
 }
 
 /** Who requested one auto-review episode. `owner` covers the authenticated button/API and explicit
@@ -649,6 +701,12 @@ export interface StageOutputs {
   // automatic, sticky classification), this human override wins at every later implementor-to-QA
   // boundary, including after a server restart. A Retry wipes stage_outputs and resets it.
   ownerQaBypassedAt?: number;
+  // Never inferred from ordinary findings or error prose; this versioned evidence is the only
+  // automatic route from a deploy-only handoff to done.
+  manualDeployment?: ManualDeployment | null;
+  /** A malformed/rejected CLI/MCP declaration is kept so a no-QA completion cannot silently ignore
+   * load-bearing evidence and take the ordinary done path. Cleared only by a new work episode. */
+  manualDeploymentAttempt?: { runId: string; at: number; reason: string } | null;
   qaRoundsUsed?: number; // QA rounds already spent in the current implementor→QA episode — persisted so a
   // `qaCapRetryRound` is set when this already-charged QA attempt was provider-capped. It makes
   // auto-resume rerun QA directly (never the finished implementor), including at the normal round cap.

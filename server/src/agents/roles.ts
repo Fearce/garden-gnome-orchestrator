@@ -71,6 +71,52 @@ export const RESEARCH_SCHEMA: Record<string, unknown> = {
   },
 };
 
+const MANUAL_DEPLOYMENT_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["version", "commitSha", "remoteRef", "environment", "instructions", "verification", "assertions"],
+  properties: {
+    version: { type: "integer", enum: [1] },
+    commitSha: { type: "string", pattern: "^[0-9a-fA-F]{40}$" },
+    remoteRef: { type: "string", minLength: 1, maxLength: 200 },
+    environment: { type: "string", minLength: 1, maxLength: 120 },
+    instructions: { type: "string", minLength: 1, maxLength: 2000 },
+    verification: {
+      type: "array",
+      minItems: 1,
+      maxItems: 25,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["command", "outcome"],
+        properties: {
+          command: { type: "string", minLength: 1, maxLength: 2000 },
+          outcome: { type: "string", enum: ["passed"] },
+        },
+      },
+    },
+    assertions: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "implementationCommitted", "requiredVerificationPassed", "noUncommittedChanges",
+        "noMergeOrDivergence", "credentialsAndDataReady", "noOwnerDecisionRequired",
+        "noAdditionalBlockers", "postDeployVerificationRequired",
+      ],
+      properties: {
+        implementationCommitted: { type: "boolean", enum: [true] },
+        requiredVerificationPassed: { type: "boolean", enum: [true] },
+        noUncommittedChanges: { type: "boolean", enum: [true] },
+        noMergeOrDivergence: { type: "boolean", enum: [true] },
+        credentialsAndDataReady: { type: "boolean", enum: [true] },
+        noOwnerDecisionRequired: { type: "boolean", enum: [true] },
+        noAdditionalBlockers: { type: "boolean", enum: [true] },
+        postDeployVerificationRequired: { type: "boolean", enum: [false] },
+      },
+    },
+  },
+};
+
 export const QA_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
@@ -92,6 +138,7 @@ export const QA_SCHEMA: Record<string, unknown> = {
         },
       },
     },
+    manualDeployment: MANUAL_DEPLOYMENT_SCHEMA,
   },
 };
 
@@ -133,6 +180,7 @@ export const REVIEWER_SCHEMA: Record<string, unknown> = {
         },
       },
     },
+    manualDeployment: MANUAL_DEPLOYMENT_SCHEMA,
   },
 };
 

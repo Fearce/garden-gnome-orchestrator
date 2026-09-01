@@ -57,6 +57,8 @@ export interface SupervisorJudgement {
  *  `OrchestratorApi` so this file never has to import ThreadManager (no cycle) and every capability the
  *  supervisor has is visible in one place. ThreadManager satisfies this structurally. */
 export interface SupervisorHost extends SupervisorChatHost {
+  /** Zero-token terminal reconciliation for a strictly verified external deployment handoff. */
+  settleManualDeployment(threadId: string): boolean;
   supervisorJudge(prompt: string, schema: JsonSchemaLike): Promise<SupervisorJudgement | null>;
   /** Send a supervisor correction through ThreadManager's normal injection gates. The host decides
    *  whether a live/materializing agent can actually receive it; the supervisor must not turn a
@@ -653,6 +655,10 @@ export class DirectorSupervisor {
     if (!this.enabled) return;
     const thread = this.host.db.getThread(threadId);
     if (!thread) return;
+
+    // This check is deterministic and free. A verified deployment handoff is terminal, so it wins
+    // before done notifications, stall assessment, a Supervisor judgement, or Auto-review dispatch.
+    if (this.host.settleManualDeployment(threadId)) return;
 
     if (thread.state === "done") {
       this.handleDone(thread, trigger);

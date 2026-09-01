@@ -6,10 +6,12 @@ import {
   endsWithOpenDeliverableMarker,
   endsWithOpenOfficeMarker,
   endsWithOpenOperatorNoteMarker,
+  endsWithOpenManualDeploymentMarker,
   extractCliBridgeMessages,
   extractDeliverables,
   extractOfficeChat,
   extractOperatorNotes,
+  extractManualDeployments,
 } from "../agents/officeBridge.js";
 
 // Canonical standalone line (Codex agent_message shape).
@@ -479,6 +481,26 @@ import {
   assert.deepEqual(first.deliverables, []);
   const finished = extractCliBridgeMessages(first.visible + "report.md\n", { openEnded: true });
   assert.deepEqual(finished.deliverables, [{ label: "Final report", path: "C:\\work\\final report.md" }]);
+}
+
+// Load-bearing manual-deployment evidence is parsed as JSON and removed from the owner transcript.
+{
+  const raw = 'Finished.\nMANUAL_DEPLOY_ONLY: {"version":1,"commitSha":"abc"}\nReady.';
+  const result = extractManualDeployments(raw);
+  assert.deepEqual(result.manualDeployments, [{ claim: { version: 1, commitSha: "abc" } }]);
+  assert.ok(!result.visible.includes("MANUAL_DEPLOY_ONLY"));
+  assert.match(result.visible, /Finished/);
+  assert.match(result.visible, /Ready/);
+
+  const partial = extractCliBridgeMessages('MANUAL_DEPLOY_ONLY: {"version":1', { openEnded: false });
+  assert.deepEqual(partial.manualDeployments, []);
+  assert.equal(endsWithOpenManualDeploymentMarker(partial.visible), true);
+  const finished = extractCliBridgeMessages(partial.visible + "}\n", { openEnded: true });
+  assert.deepEqual(finished.manualDeployments, [{ claim: { version: 1 } }]);
+
+  const malformed = extractCliBridgeMessages("MANUAL_DEPLOY_ONLY: definitely-not-json\n");
+  assert.deepEqual(malformed.manualDeployments, []);
+  assert.match(malformed.visible, /MANUAL_DEPLOY_ONLY/, "malformed terminal evidence remains auditable in the transcript");
 }
 
 console.log("All officeBridge extraction checks passed.");
