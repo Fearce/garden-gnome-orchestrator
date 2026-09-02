@@ -74,7 +74,7 @@
     "test:recovery-features": "node scripts/recovery-features.test.cjs",
     "test:office-health": "node scripts/office-health.test.cjs",
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
-    "test:office-gating": "tsx src/tests/officeGating.itest.ts",
+    "test:office-gating": "tsx src/tests/officeGating.itest.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/office-navigation.test.tsx",
     "test:online-office": "tsx src/tests/onlineOffice.itest.ts",
     "test:relay-core": "tsx ../relay/src/core.test.ts",
     "test:relay-access": "tsx ../relay/src/access.test.ts",

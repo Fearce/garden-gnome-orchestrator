@@ -124,8 +124,9 @@ function useNow(active: boolean, ms: number): number {
 }
 
 /** The office: the strip of working gnomes in the top bar, plus the expandable chatroom panel. One
- *  gnome per active task paces the strip; 2+ tasks in the same repo huddle together (a project room)
- *  and clicking them opens that room. Clicking a lone gnome opens the general office. */
+ *  gnome per active task paces the strip; 2+ tasks in the same repo huddle together. Every local
+ *  worker click opens its repository room directly, including a lone worker — the director remains
+ *  the deliberate entry point for the general office. */
 export function Office() {
   const runs = useStore(useShallow((s) => Object.values(s.runs).filter((r) => r.state === "starting" || r.state === "running")));
   const threads = useStore((s) => s.threads);
@@ -226,6 +227,7 @@ export function Office() {
           // Pace the gnome from the runtime model; cap failover can move the director between providers.
           style={{ "--pace-dur": `${pacePeriodForModel(directorStatus?.model ?? "claude-sonnet")}s`, "--pace-delay": "0s" } as CSSProperties}
           onClick={() => openOffice(GENERAL_ROOM)}
+          data-office-room={GENERAL_ROOM}
           title={directorBusy ? "The director is working — click to open the office chat" : "The director — click to open the office chat"}
         >
           <Pacer role="director" active={directorBusy} />
@@ -237,6 +239,7 @@ export function Office() {
                 key={g.key}
                 className={"office-huddle" + (g.remotes.length ? " cross-machine" : "")}
                 onClick={() => openOffice(g.room!)}
+                data-office-room={g.room}
                 title={huddleTitle(g, (w) => nameOf(w.threadId, w.role))}
               >
                 <span className="office-huddle-gnomes">
@@ -260,8 +263,9 @@ export function Office() {
                   key={w.threadId}
                   className="office-walker"
                   style={{ "--pace-dur": `${pacePeriodForModel(w.model)}s`, "--pace-delay": `${(i % 4) * 0.6}s` } as CSSProperties}
-                  onClick={() => openOffice(GENERAL_ROOM)}
-                  title={`${nameOf(w.threadId, w.role)} (${w.role}) on "${w.title}" — click to open the office chat`}
+                  onClick={() => openOffice(repoRoom(w.workspace))}
+                  data-office-room={repoRoom(w.workspace)}
+                  title={`${nameOf(w.threadId, w.role)} (${w.role}) on "${w.title}" — click to open this agent's project chat`}
                 >
                   <Pacer role={w.role} active={true} />
                   {bubbleFor(byRun.get(w.runId)) ? <span className="office-bubble">{bubbleFor(byRun.get(w.runId))}</span> : null}
@@ -382,10 +386,31 @@ function OfficePanel() {
     if (el.scrollTop < 80 && hasMore && !loading) loadMoreRoom(officeRoom);
   };
 
-  // Project rooms with ≥2 participants are the real collaborations worth a tab; the general room is
-  // always shown. A participant may be a machine on the far side of the online office — see
-  // isCollaborationRoom.
-  const projectRooms = rooms.filter(isCollaborationRoom);
+  // The normal room strip stays limited to real collaborations. A direct click on a lone worker is
+  // the one exception: keep that selected repository visible as a contextual tab even when it has no
+  // collaboration history yet, so the panel never opens with only an inactive "Office" tab.
+  const openedProjectRoom = officeRoom === GENERAL_ROOM
+    ? undefined
+    : rooms.find((room) => room.room === officeRoom);
+  const openedWorkspace = openedProjectRoom?.workspace ?? Object.values(threads)
+    .find((thread) => repoRoom(thread.workspace) === officeRoom)?.workspace;
+  const directProjectRoom = officeRoom !== GENERAL_ROOM && (!openedProjectRoom || !isCollaborationRoom(openedProjectRoom));
+  const projectRooms: Array<{ room: ChatRoomSummary; direct: boolean }> = rooms
+    .filter(isCollaborationRoom)
+    .map((room) => ({ room, direct: false }));
+  if (officeRoom !== GENERAL_ROOM && !projectRooms.some(({ room }) => room.room === officeRoom)) {
+    projectRooms.unshift({
+      room: openedProjectRoom ?? {
+        room: officeRoom,
+        workspace: openedWorkspace ?? officeRoom.replace(/^repo:/, ""),
+        threadIds: [],
+        remoteInstances: [],
+        messageCount: 0,
+        lastAt: 0,
+      },
+      direct: true,
+    });
+  }
 
   const send = () => {
     const text = draft.trim();
@@ -403,16 +428,16 @@ function OfficePanel() {
             <button className={"office-tab" + (officeRoom === GENERAL_ROOM ? " on" : "")} onClick={() => open(GENERAL_ROOM)}>
               Office
             </button>
-            {projectRooms.map((r) => (
+            {projectRooms.map(({ room: r, direct }) => (
               <button
                 key={r.room}
                 className={"office-tab" + (officeRoom === r.room ? " on" : "")}
                 onClick={() => open(r.room)}
-                title={roomTabTitle(r)}
+                title={direct ? `Direct chat for ${r.workspace}` : roomTabTitle(r)}
               >
                 {/* Participants, not local tasks: a room whose conversation is entirely cross-machine has
                     no local task in it and used to render a bare "0". */}
-                {leaf(r.workspace)} <span className="office-tab-n">{r.threadIds.length + r.remoteInstances.length}</span>
+                {leaf(r.workspace)} {direct ? null : <span className="office-tab-n">{r.threadIds.length + r.remoteInstances.length}</span>}
               </button>
             ))}
           </div>
@@ -423,7 +448,9 @@ function OfficePanel() {
         <div className="office-panel-sub">
           {officeRoom === GENERAL_ROOM
             ? "The general office — every active agent can talk here."
-            : "Project room — agents sharing this repository coordinate here."}
+            : directProjectRoom
+              ? "This agent's project chat — messages go only to live agents in this repository."
+              : "Project room — agents sharing this repository coordinate here."}
         </div>
         {/* The "earlier messages" hint sits OUTSIDE the scroll container so its mount/unmount (when the
             room becomes fully loaded) never shifts the scroll anchor mid-prepend. */}
@@ -432,7 +459,9 @@ function OfficePanel() {
         ) : null}
         <div className="office-msgs" ref={bodyRef} onScroll={onScroll}>
           {messages.length === 0 ? (
-            <div className="office-empty">No messages yet{officeRoom === GENERAL_ROOM ? "" : " — they just grouped up"}.</div>
+            <div className="office-empty">
+              No messages yet{officeRoom === GENERAL_ROOM ? "" : directProjectRoom ? " — send this agent a note" : " — they just grouped up"}.
+            </div>
           ) : (
             messages.map((m) => (
               <OfficeMsg
@@ -457,7 +486,9 @@ function OfficePanel() {
             placeholder={
               officeRoom === GENERAL_ROOM
                 ? "Message the whole office as director… (Enter to send)"
-                : "Message this repo's agents as director — they'll coordinate who takes it… (Enter to send)"
+                : directProjectRoom
+                  ? "Message this project's agent as director… (Enter to send)"
+                  : "Message this repo's agents as director — they'll coordinate who takes it… (Enter to send)"
             }
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
