@@ -27,25 +27,32 @@ db.exec(`
   CREATE TABLE attachments (id TEXT PRIMARY KEY, name TEXT, media_type TEXT, data TEXT, sha256 TEXT, created_at INTEGER);
   CREATE TABLE messages (id TEXT PRIMARY KEY, content TEXT, attachments TEXT NOT NULL DEFAULT '[]', created_at INTEGER);
   CREATE TABLE director_messages (id TEXT PRIMARY KEY, content TEXT, attachments TEXT NOT NULL DEFAULT '[]', created_at INTEGER);
+  CREATE TABLE cowork_messages (id TEXT PRIMARY KEY, content TEXT, attachments TEXT NOT NULL DEFAULT '[]', created_at INTEGER);
   CREATE INDEX idx_messages_created ON messages(created_at);
 `);
 
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
 const now = Date.now();
-const addBlob = (id, name, data, { hashed = true } = {}) =>
+const addBlob = (id, name, data, { hashed = true, mediaType = "image/png" } = {}) =>
   db
     .prepare("INSERT INTO attachments(id, name, media_type, data, sha256, created_at) VALUES(?,?,?,?,?,?)")
-    .run(id, name, "image/png", data, hashed ? sha(data) : null, now);
+    .run(id, name, mediaType, data, hashed ? sha(data) : null, now);
 const addMessage = (id, refIds, at = now) =>
   db
     .prepare("INSERT INTO messages(id, content, attachments, created_at) VALUES(?,?,?,?)")
     .run(id, "x".repeat(100), JSON.stringify(refIds.map((r) => ({ id: r, name: "image.png", mediaType: "image/png" }))), at);
+const addCoworkMessage = (id, refIds, at = now) =>
+  db
+    .prepare("INSERT INTO cowork_messages(id, content, attachments, created_at) VALUES(?,?,?,?)")
+    .run(id, "pair on this", JSON.stringify(refIds.map((r) => ({ id: r, name: "notes.txt", mediaType: "text/plain" }))), at);
 
-// ---- a healthy store: one row per picture, every row referenced -------------------------------------
+// ---- a healthy store: one row per attachment, every row referenced ----------------------------------
 const PIC = "A".repeat(4096);
 const OTHER = "B".repeat(4096);
+const COWORK_FILE = "C".repeat(4096);
 addBlob("keep-1", "image.png", PIC);
 addBlob("keep-2", "other.png", OTHER);
+addBlob("keep-cowork", "notes.txt", COWORK_FILE, { mediaType: "text/plain" });
 addMessage("m1", ["keep-1"]);
 db.prepare("INSERT INTO director_messages(id, content, attachments, created_at) VALUES(?,?,?,?)").run(
   "d1",
@@ -54,12 +61,14 @@ db.prepare("INSERT INTO director_messages(id, content, attachments, created_at) 
   now,
 );
 addMessage("m2", ["keep-2"]);
+addCoworkMessage("cm1", ["keep-cowork"]);
 
 let r = attachmentRedundancy(db);
-assert.equal(r.duplicateRows, 0, "one row per picture is not a duplicate");
+assert.equal(r.duplicateRows, 0, "one row per attachment is not a duplicate");
 assert.equal(r.orphanRows, 0, "every blob is referenced");
 assert.equal(r.unhashedRows, 0);
-assert.equal(r.referenced, 2, "counts DISTINCT pictures, not references — keep-1 is referenced twice");
+assert.equal(r.referenced, 3, "counts DISTINCT attachments, not refs — keep-1 is referenced twice and Co-work-only bytes count");
+assert.deepEqual(r.referenceTables, ["messages", "director_messages", "cowork_messages"]);
 assert.equal(verdictFor(r).ok, true, "a healthy store is green");
 assert.equal(verdictFor(r).fatal, false);
 

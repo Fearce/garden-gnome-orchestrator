@@ -463,7 +463,9 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   CAS in `beginCoworkTurn`; `interruptOrphanedCoworkTurns` reconciles a restart at construction and
   seals partial rows. A live Co-worker turn and a task agent are mutually exclusive per workspace
   (`attachCoworkWorkspaceGuard` ↔ `coworkTaskConflict`). Debug with `probe:cowork` — the task-side
-  probes cannot see this lane. Traps: `.claude/rules/co-work-sessions.md`.
+  probes cannot see this lane; it also catches malformed, missing, or metadata-drifted attachment
+  refs without treating the disposable materialized cache as durable state. Traps:
+  `.claude/rules/co-work-sessions.md`.
 
 ## 6. Persistence (`server/src/db/`)
 

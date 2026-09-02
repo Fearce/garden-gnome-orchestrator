@@ -165,8 +165,9 @@ pictures stored per reference; `1cd7154`). **Measure table size with `dbstat`, n
 probe does, folding each index into the table it serves. It also standing-checks the attachment store
 and **exits non-zero on a regression**: duplicate blobs keyed exactly as `addAttachment` keys its dedupe
 (sha256+name+type, so a deliberately re-named copy is not miscounted), and rows with no sha256 (an
-insert path that bypassed it). An orphan is a WARNING only — a crash between storing bytes and writing
-the message that points at them leaves one legitimately. Free pages are headroom, not waste: SQLite
+insert path that bypassed it). Its reference scan covers task, Director, and Co-work messages; omitting
+one makes live blobs from that lane look orphaned. An orphan is a WARNING only — a crash between storing
+bytes and writing the message that points at them leaves one legitimately. Free pages are headroom, not waste: SQLite
 reuses them, so don't propose a `VACUUM` (exclusive lock on a live DB, buys only file size). Growth
 itself is never a failure — once nothing is duplicated, shrinking further is the owner's retention decision.
 Gate: `test:db-size`.

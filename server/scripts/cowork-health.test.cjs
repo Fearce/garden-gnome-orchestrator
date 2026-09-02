@@ -3,8 +3,9 @@
 //
 // Every scenario here is a shape the running server can actually produce: a restart mid-turn, a claim
 // nothing released, a pin that was substituted, one provider session reaching two conversations, or
-// a live direction with a failed/unconfirmed delivery. The classifier makes those readable without
-// hand-written SQLite joins, so it is gated like any other classifier in this repo.
+// a live direction with a failed/unconfirmed delivery, or durable attachment refs that no longer
+// resolve. The classifier makes those readable without hand-written SQLite joins, so it is gated like
+// any other classifier in this repo.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -12,7 +13,13 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { coworkBoardIssues, coworkReading, coworkTablesExist, selectCoworkRows } = require("./cowork-health.cjs");
+const {
+  coworkBoardIssues,
+  coworkReading,
+  coworkSchemaIssue,
+  coworkTablesExist,
+  selectCoworkRows,
+} = require("./cowork-health.cjs");
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "ggo-cowork-health-"));
 const probe = path.resolve(__dirname, "probe-cowork.cjs");
@@ -43,6 +50,14 @@ function freshDb(name) {
       state TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE attachments (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      media_type TEXT NOT NULL,
+      data TEXT NOT NULL,
+      sha256 TEXT,
+      created_at INTEGER NOT NULL
     );
     CREATE TABLE cowork_sessions (
       id TEXT PRIMARY KEY,
@@ -85,6 +100,7 @@ function freshDb(name) {
       role TEXT NOT NULL,
       kind TEXT NOT NULL,
       content TEXT NOT NULL,
+      attachments TEXT NOT NULL DEFAULT '[]',
       meta TEXT,
       partial INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
@@ -160,6 +176,7 @@ function addMessage(db, sessionId, id, overrides = {}) {
     role: "user",
     kind: "text",
     content: "do the thing",
+    attachments: "[]",
     meta: null,
     partial: 0,
     created_at: 1_100,
@@ -168,10 +185,26 @@ function addMessage(db, sessionId, id, overrides = {}) {
   };
   db.prepare(
     `INSERT INTO cowork_messages
-       (id,session_id,turn_id,role,kind,content,meta,partial,created_at,updated_at)
-     VALUES (@id,@session_id,@turn_id,@role,@kind,@content,@meta,@partial,@created_at,@updated_at)`,
+       (id,session_id,turn_id,role,kind,content,attachments,meta,partial,created_at,updated_at)
+     VALUES (@id,@session_id,@turn_id,@role,@kind,@content,@attachments,@meta,@partial,@created_at,@updated_at)`,
   ).run(row);
   return row;
+}
+
+function addAttachment(db, id, overrides = {}) {
+  const row = {
+    id,
+    name: `${id}.txt`,
+    media_type: "text/plain",
+    data: Buffer.from(`contents of ${id}`).toString("base64"),
+    sha256: `sha-${id}`,
+    created_at: 1_050,
+    ...overrides,
+  };
+  db.prepare(
+    "INSERT INTO attachments(id,name,media_type,data,sha256,created_at) VALUES(@id,@name,@media_type,@data,@sha256,@created_at)",
+  ).run(row);
+  return { id: row.id, name: row.name, mediaType: row.media_type };
 }
 
 function addSteering(db, sessionId, id, overrides = {}) {
@@ -181,11 +214,13 @@ function addSteering(db, sessionId, id, overrides = {}) {
     delivery: "delivered",
     error: null,
     content: "adjust the active slice",
+    attachments: "[]",
     ...overrides,
   };
   return addMessage(db, sessionId, id, {
     turn_id: input.turnId,
     content: input.content,
+    attachments: input.attachments,
     meta: JSON.stringify({ steeringMode: input.mode, delivery: input.delivery, error: input.error }),
   });
 }
@@ -220,6 +255,78 @@ check("a settled session with a finished turn reads idle and clean", () => {
   assert.equal(reading.session.messages.replies, 1);
   assert.equal(reading.costUsd, 0.25);
   assert.deepEqual(coworkBoardIssues(db, [reading]), []);
+  db.close();
+});
+
+check("valid durable attachment refs are counted and resolve to matching stored blobs", () => {
+  const { db, file } = freshDb("attachments-healthy");
+  addSession(db, "s-files", { agent_session_id: "agent-files" });
+  addTurn(db, "s-files", "t-1");
+  const screenshot = addAttachment(db, "a-shot", { name: "screen.png", media_type: "image/png" });
+  const source = addAttachment(db, "a-source", { name: "widget.tsx", media_type: "text/plain" });
+  addMessage(db, "s-files", "m-files", {
+    turn_id: "t-1",
+    attachments: JSON.stringify([screenshot, source, screenshot]),
+  });
+  const reading = only(db);
+  assert.equal(reading.disposition, "idle", issueText(reading));
+  assert.deepEqual(reading.session.attachments, {
+    messageRows: 1,
+    refs: 3,
+    unique: 2,
+    stored: 2,
+    malformed: [],
+    missing: [],
+    metadataMismatches: [],
+  });
+  db.close();
+
+  const run = runProbe(file);
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /attachments: messages=1; refs=3; unique=2; stored=2; missing=0; invalid=0; metadata drift=0/);
+});
+
+check("a missing attachment blob is a permanent-history violation", () => {
+  const { db, file } = freshDb("attachments-missing");
+  addSession(db, "s-missing");
+  const missing = { id: "gone-blob", name: "evidence.png", mediaType: "image/png" };
+  addMessage(db, "s-missing", "m-missing", { attachments: JSON.stringify([missing]) });
+  const reading = only(db);
+  assert.match(issueText(reading), /references missing attachment gone-blob \("evidence\.png"\)/);
+  assert.equal(reading.session.attachments.missing.length, 1);
+  db.close();
+
+  const run = runProbe(file);
+  assert.equal(run.status, 1, run.stdout);
+  assert.match(run.stdout, /ISSUE: message m-missin references missing attachment gone-blob/);
+});
+
+check("attachment ref metadata must match the shared blob row", () => {
+  const { db } = freshDb("attachments-metadata");
+  addSession(db, "s-drift");
+  const stored = addAttachment(db, "a-drift", { name: "report.txt", media_type: "text/plain" });
+  addMessage(db, "s-drift", "m-drift", {
+    attachments: JSON.stringify([{ ...stored, name: "script.html", mediaType: "text/html" }]),
+  });
+  const reading = only(db);
+  assert.equal(reading.session.attachments.metadataMismatches.length, 1);
+  assert.match(issueText(reading), /metadata differs from storage/);
+  assert.match(issueText(reading), /script\.html.*text\/html.*report\.txt.*text\/plain/);
+  db.close();
+});
+
+check("malformed attachment JSON and incomplete refs cannot disappear as an empty attachment list", () => {
+  const { db } = freshDb("attachments-malformed");
+  addSession(db, "s-malformed");
+  addMessage(db, "s-malformed", "m-json", { attachments: "{broken" });
+  addMessage(db, "s-malformed", "m-shape", { attachments: JSON.stringify({ id: "not-an-array" }) });
+  addMessage(db, "s-malformed", "m-ref", { attachments: JSON.stringify([{ id: "missing-fields" }]) });
+  const reading = only(db);
+  const issues = issueText(reading);
+  assert.equal(reading.session.attachments.malformed.length, 3);
+  assert.match(issues, /attachments is not valid JSON/);
+  assert.match(issues, /attachments is not a JSON array/);
+  assert.match(issues, /not a complete \{id,name,mediaType\} reference/);
   db.close();
 });
 
@@ -535,7 +642,13 @@ check("--json carries the verdict, counts, issues and the turn trail", () => {
   addSession(db, "s-json", { agent_session_id: "agent-1" });
   addTurn(db, "s-json", "t-1", { cost_usd: 0.5 });
   addTurn(db, "s-json", "t-2", { state: "error", error: "boom", cost_usd: 0.25 });
-  addSteering(db, "s-json", "m-json", { mode: "interrupt", delivery: "delivered", content: "preserve the compact header" });
+  const ref = addAttachment(db, "a-json", { name: "reference.png", media_type: "image/png" });
+  addSteering(db, "s-json", "m-json", {
+    mode: "interrupt",
+    delivery: "delivered",
+    content: "preserve the compact header",
+    attachments: JSON.stringify([ref]),
+  });
   db.close();
   const run = runProbe(file, "--json");
   assert.equal(run.status, 0, run.stderr);
@@ -549,6 +662,8 @@ check("--json carries the verdict, counts, issues and the turn trail", () => {
   assert.equal(payload.entries[0].steering.total, 1);
   assert.equal(payload.entries[0].steering.byMode.interrupt, 1);
   assert.equal(payload.entries[0].steering.messages[0].content, "preserve the compact header");
+  assert.equal(payload.entries[0].attachments.refs, 1);
+  assert.equal(payload.entries[0].attachments.stored, 1);
 });
 
 check("an unknown flag or a second positional is a usage error", () => {
@@ -561,7 +676,7 @@ check("an unknown flag or a second positional is a usage error", () => {
   assert.equal(two.status, 2);
 });
 
-check("a DB predating the Co-work lane exits 2 rather than reporting a clean board", () => {
+check("a DB predating the Co-work lane exits 2 and names the missing schema", () => {
   const file = path.join(temp, "legacy.sqlite");
   const legacy = new Database(file);
   legacy.exec("CREATE TABLE threads(id TEXT PRIMARY KEY)");
@@ -569,7 +684,24 @@ check("a DB predating the Co-work lane exits 2 rather than reporting a clean boa
   legacy.close();
   const run = runProbe(file);
   assert.equal(run.status, 2);
-  assert.match(run.stderr, /predates the Co-work lane/);
+  assert.match(run.stderr, /missing table\(s\): cowork_sessions, cowork_turns, cowork_messages, attachments/);
+});
+
+check("a pre-file-sharing Co-work DB is not misreported as a healthy attachment store", () => {
+  const file = path.join(temp, "before-file-sharing.sqlite");
+  const legacy = new Database(file);
+  legacy.exec(`
+    CREATE TABLE cowork_sessions(id TEXT PRIMARY KEY);
+    CREATE TABLE cowork_turns(id TEXT PRIMARY KEY);
+    CREATE TABLE cowork_messages(id TEXT PRIMARY KEY);
+    CREATE TABLE attachments(id TEXT PRIMARY KEY);
+  `);
+  assert.equal(coworkTablesExist(legacy), false);
+  assert.equal(coworkSchemaIssue(legacy), "cowork_messages has no attachments column");
+  legacy.close();
+  const run = runProbe(file);
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /cowork_messages has no attachments column/);
 });
 
 fs.rmSync(temp, { recursive: true, force: true });

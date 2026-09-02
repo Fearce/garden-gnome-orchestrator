@@ -4,8 +4,9 @@
 // to it: a wedged Co-work session shows up nowhere at all. What can actually go wrong is durable-state
 // incoherence — a turn claim nothing is able to release, a partial reply left mid-stream by a restart,
 // an explicit model pin that was silently substituted, one provider session shared by two
-// conversations, or live steering whose delivery outcome is unclear. Classify all of that here, once,
-// instead of hand-writing SQLite joins per incident.
+// conversations, live steering whose delivery outcome is unclear, or an attachment reference that no
+// longer resolves to the bytes/name/type shown in history. Classify all of that here, once, instead of
+// hand-writing SQLite joins per incident.
 
 const SESSION_STATES = new Set(["idle", "running", "stopping", "error"]);
 const ACTIVE_SESSION_STATES = new Set(["running", "stopping"]);
@@ -14,12 +15,23 @@ const FAILED_TURN_STATES = new Set(["error", "interrupted"]);
 const STEERING_MODES = new Set(["queue", "append", "interrupt"]);
 const STEERING_DELIVERIES = new Set(["delivered", "pending", "failed"]);
 
+function coworkSchemaIssue(db) {
+  const required = ["cowork_sessions", "cowork_turns", "cowork_messages", "attachments"];
+  const names = new Set(
+    db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name IN (${required.map(() => "?").join(",")})`)
+      .all(...required)
+      .map((row) => row.name),
+  );
+  const missing = required.filter((name) => !names.has(name));
+  if (missing.length) return `missing table(s): ${missing.join(", ")}`;
+  const messageColumns = new Set(db.prepare("PRAGMA table_info(cowork_messages)").all().map((row) => row.name));
+  if (!messageColumns.has("attachments")) return "cowork_messages has no attachments column";
+  return null;
+}
+
 function coworkTablesExist(db) {
-  const names = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('cowork_sessions','cowork_turns','cowork_messages')")
-    .all()
-    .map((row) => row.name);
-  return names.length === 3;
+  return coworkSchemaIssue(db) == null;
 }
 
 /** Every session, newest activity first, each with its full turn trail and message tallies. A board
@@ -81,6 +93,86 @@ function steeringSummary(messages) {
     byDelivery[delivery] += 1;
   }
   return { total: messages.length, byMode, byDelivery, messages };
+}
+
+function parseAttachmentPayload(row) {
+  let value;
+  try {
+    value = JSON.parse(row.attachments);
+  } catch {
+    return { refs: [], errors: ["attachments is not valid JSON"] };
+  }
+  if (!Array.isArray(value)) return { refs: [], errors: ["attachments is not a JSON array"] };
+
+  const refs = [];
+  const errors = [];
+  for (let index = 0; index < value.length; index++) {
+    const ref = value[index];
+    if (
+      !ref ||
+      typeof ref !== "object" ||
+      !nonBlank(ref.id) ||
+      !nonBlank(ref.name) ||
+      !nonBlank(ref.mediaType)
+    ) {
+      errors.push(`attachment ${index + 1} is not a complete {id,name,mediaType} reference`);
+      continue;
+    }
+    refs.push({ id: ref.id, name: ref.name, mediaType: ref.mediaType });
+  }
+  return { refs, errors };
+}
+
+/** The attachment cache under data/cowork-attachments is deliberately disposable and rebuilt before a
+ * turn. This checks the durable half only: every message ref must parse, resolve, and describe the same
+ * blob row. A missing cache file is rehydratable; a missing blob row is permanent conversation loss. */
+function attachmentSummary(db, sessionId) {
+  const rows = db
+    .prepare("SELECT id, attachments FROM cowork_messages WHERE session_id=? ORDER BY created_at ASC, rowid ASC")
+    .all(sessionId);
+  const readBlob = db.prepare("SELECT id, name, media_type FROM attachments WHERE id=?");
+  const blobs = new Map();
+  const ids = new Set();
+  const storedIds = new Set();
+  const malformed = [];
+  const missing = [];
+  const metadataMismatches = [];
+  let messageRows = 0;
+  let refs = 0;
+
+  for (const row of rows) {
+    const parsed = parseAttachmentPayload(row);
+    if (parsed.refs.length || parsed.errors.length) messageRows += 1;
+    for (const error of parsed.errors) malformed.push({ messageId: row.id, error });
+    for (const ref of parsed.refs) {
+      refs += 1;
+      ids.add(ref.id);
+      if (!blobs.has(ref.id)) blobs.set(ref.id, readBlob.get(ref.id) ?? null);
+      const blob = blobs.get(ref.id);
+      if (!blob) {
+        missing.push({ messageId: row.id, ref });
+        continue;
+      }
+      storedIds.add(ref.id);
+      if (blob.name !== ref.name || blob.media_type !== ref.mediaType) {
+        metadataMismatches.push({
+          messageId: row.id,
+          ref,
+          stored: { name: blob.name, mediaType: blob.media_type },
+        });
+      }
+    }
+  }
+
+  return {
+    messageRows,
+    refs,
+    unique: ids.size,
+    stored: storedIds.size,
+    malformed,
+    missing,
+    metadataMismatches,
+  };
 }
 
 function normalizeSession(db, row) {
@@ -157,6 +249,7 @@ function normalizeSession(db, row) {
       system: Number(messages?.system ?? 0),
       lastAt: messages?.lastAt == null ? null : Number(messages.lastAt),
     },
+    attachments: attachmentSummary(db, row.id),
     steering,
     danglingPartials,
   };
@@ -228,6 +321,23 @@ function checkPartials(session, issues) {
   );
 }
 
+function checkAttachments(session, issues) {
+  for (const problem of session.attachments.malformed) {
+    issues.push(`message ${problem.messageId.slice(0, 8)} has invalid attachment data: ${problem.error}`);
+  }
+  for (const problem of session.attachments.missing) {
+    issues.push(
+      `message ${problem.messageId.slice(0, 8)} references missing attachment ${problem.ref.id} (${JSON.stringify(problem.ref.name)})`,
+    );
+  }
+  for (const problem of session.attachments.metadataMismatches) {
+    issues.push(
+      `message ${problem.messageId.slice(0, 8)} attachment ${problem.ref.id} metadata differs from storage ` +
+        `(ref ${JSON.stringify(problem.ref.name)}/${problem.ref.mediaType}; stored ${JSON.stringify(problem.stored.name)}/${problem.stored.mediaType})`,
+    );
+  }
+}
+
 function checkSteering(session, issues, notes) {
   const turnIds = new Set(session.turns.map((turn) => turn.id));
   let failed = 0;
@@ -283,6 +393,7 @@ function coworkReading(session) {
   checkTurnTrail(session, issues);
   checkPin(session, issues);
   checkPartials(session, issues);
+  checkAttachments(session, issues);
   const deliveryConcern = checkSteering(session, issues, notes);
 
   const last = lastTurn(session);
@@ -346,6 +457,7 @@ function coworkBoardIssues(db, readings) {
 module.exports = {
   coworkBoardIssues,
   coworkReading,
+  coworkSchemaIssue,
   coworkTablesExist,
   selectCoworkRows,
 };

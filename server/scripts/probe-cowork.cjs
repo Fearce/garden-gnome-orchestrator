@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Read-only audit of the Co-work lane: session state, the turn trail, live-steering delivery, and the
-// durable invariants no task-side probe can see (Co-work owns no thread and writes no agent_runs row).
+// Read-only audit of the Co-work lane: session state, the turn trail, live-steering delivery, attachment
+// references, and the durable invariants no task-side probe can see (Co-work owns no thread/agent_runs row).
 // Exit 0 = no invariant violations, 1 = actionable inconsistency, 2 = usage/schema error.
 
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { coworkBoardIssues, coworkReading, coworkTablesExist, selectCoworkRows } = require("./cowork-health.cjs");
+const { coworkBoardIssues, coworkReading, coworkSchemaIssue, selectCoworkRows } = require("./cowork-health.cjs");
 
 const args = process.argv.slice(2);
 const json = args.includes("--json");
@@ -28,9 +28,10 @@ try {
   process.exit(2);
 }
 
-if (!coworkTablesExist(db)) {
+const schemaIssue = coworkSchemaIssue(db);
+if (schemaIssue) {
   db.close();
-  console.error(`cowork_sessions/cowork_turns/cowork_messages are absent in ${dbPath}; this DB predates the Co-work lane.`);
+  console.error(`The required Co-work schema is unavailable in ${dbPath}: ${schemaIssue}.`);
   process.exit(2);
 }
 
@@ -98,6 +99,7 @@ function publicEntry(reading) {
     turns: session.turns.length,
     costUsd: reading.costUsd,
     messages: session.messages,
+    attachments: session.attachments,
     steering: session.steering,
     updatedAt: session.updatedAt,
     trail: session.turns.map((turn) => ({
@@ -152,6 +154,19 @@ if (json) {
     console.log(
       `  target: ${target(session)}; resume linkage: ${session.agentSessionId ? `${session.agentSessionId.slice(0, 12)}… (next turn continues it)` : "none (next turn starts fresh)"}`,
     );
+    if (
+      session.attachments.refs ||
+      session.attachments.malformed.length ||
+      session.attachments.missing.length ||
+      session.attachments.metadataMismatches.length
+    ) {
+      console.log(
+        `  attachments: messages=${session.attachments.messageRows}; refs=${session.attachments.refs}; ` +
+          `unique=${session.attachments.unique}; stored=${session.attachments.stored}; ` +
+          `missing=${session.attachments.missing.length}; invalid=${session.attachments.malformed.length}; ` +
+          `metadata drift=${session.attachments.metadataMismatches.length}`,
+      );
+    }
     if (session.error) console.log(`  session error: ${short(session.error)}`);
     if (session.steering.total) {
       const modes = session.steering.byMode;

@@ -17,9 +17,9 @@
 //     (sha256 + name + media_type). Any hit means content-addressing regressed. That is a code defect,
 //     so it EXITS NON-ZERO.
 //   • attachment rows with no sha256 — an insert path that bypassed `addAttachment` entirely.
-//   • orphaned blobs nothing references — the pruning in deleteThread/resetThreadForRetry regressed, or
-//     a crash landed between storing bytes and writing the message that points at them. Reported as a
-//     warning, not a failure: the second case is a real (rare) possibility that no code change prevents.
+//   • orphaned blobs nothing references across task, Director, OR Co-work messages — the relevant
+//     deletion prune regressed, or a crash landed between storing bytes and writing the message that
+//     points at them. Reported as a warning, not a failure: the latter is a real rare possibility.
 //
 // GOTCHAS:
 //   • Free pages are NOT waste and NOT a leak. SQLite reuses them for new writes, so a file with free
@@ -72,8 +72,19 @@ function attachmentRedundancy(db) {
     .get();
   const unhashed = db.prepare("SELECT COUNT(*) n FROM attachments WHERE sha256 IS NULL").get();
 
+  const candidateTables = ["messages", "director_messages", "cowork_messages"];
+  const existingTables = new Set(
+    db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name IN (${candidateTables.map(() => "?").join(",")})`)
+      .all(...candidateTables)
+      .map((row) => row.name),
+  );
+  const referenceTables = candidateTables.filter((table) => {
+    if (!existingTables.has(table)) return false;
+    return db.prepare(`PRAGMA table_info(${table})`).all().some((column) => column.name === "attachments");
+  });
   const referenced = new Set();
-  for (const table of ["messages", "director_messages"]) {
+  for (const table of referenceTables) {
     for (const r of db.prepare(`SELECT attachments FROM ${table} WHERE attachments != '[]'`).all()) {
       try {
         for (const a of JSON.parse(r.attachments)) if (a && a.id) referenced.add(a.id);
@@ -97,6 +108,7 @@ function attachmentRedundancy(db) {
     orphanRows,
     orphanBytes,
     referenced: referenced.size,
+    referenceTables,
   };
 }
 
@@ -196,10 +208,12 @@ function main() {
 
   const redundancy = attachmentRedundancy(db);
   const verdict = verdictFor(redundancy);
-  console.log("\n=== stored-image integrity ===");
-  console.log(`  ${num(redundancy.referenced)} distinct picture(s) referenced from messages + director messages`);
+  console.log("\n=== stored-attachment integrity ===");
+  console.log(
+    `  ${num(redundancy.referenced)} distinct blob(s) referenced from ${redundancy.referenceTables.join(" + ") || "no message tables"}`,
+  );
   if (verdict.ok) {
-    console.log("  ✓ every picture stored once, all hashed, none orphaned");
+    console.log("  ✓ every attachment stored once, all hashed, none orphaned");
   } else {
     for (const p of verdict.problems) console.log(`  ${p.fatal ? "✗" : "⚠"} ${p.text}`);
   }
