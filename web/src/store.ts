@@ -19,6 +19,7 @@ import type {
   DirectorMessage,
   DirectorStatus,
   FeedItem,
+  FileAttachment,
   Finding,
   GitSummary,
   GitStatus,
@@ -68,7 +69,7 @@ export type OutboundMessage =
   | (OutboundBase & { surface: "director" })
   | (OutboundBase & { surface: "office"; room: string })
   | (OutboundBase & { surface: "supervisor"; targetIds: string[] })
-  | (OutboundBase & { surface: "cowork"; sessionId: string; mode?: "turn" | CoworkSteeringMode })
+  | (OutboundBase & { surface: "cowork"; sessionId: string; mode?: "turn" | CoworkSteeringMode; attachments?: FileAttachment[] })
   | (OutboundBase & { surface: "task"; threadId: string; mode: "append" | "interrupt" | "queue" });
 
 /** Cache key for a Git-console diff. A file's working-tree diff and the same file inside a commit are
@@ -227,7 +228,7 @@ interface State {
   select: (id: string | null) => void;
   selectCowork: (id: string | null) => void;
   createCowork: (input: { name?: string; workspace: string; provider?: CoworkSession["requestedProvider"]; model?: string | null }) => boolean;
-  sendCowork: (sessionId: string, text: string, mode?: "turn" | CoworkSteeringMode) => boolean;
+  sendCowork: (sessionId: string, text: string, mode?: "turn" | CoworkSteeringMode, attachments?: FileAttachment[]) => boolean;
   stopCowork: (sessionId: string) => void;
   renameCowork: (sessionId: string, name: string) => void;
   deleteCowork: (sessionId: string) => void;
@@ -766,16 +767,29 @@ export const useStore = create<State>((set) => ({
     if (!sent) set({ coworkCreating: false, coworkActionError: "Not delivered — the console is reconnecting." });
     return sent;
   },
-  sendCowork: (sessionId, text, mode = "turn") => {
-    const content = text.trim();
+  sendCowork: (sessionId, text, mode = "turn", attachments = []) => {
+    const content = text.trim() || (attachments.length === 1
+      ? `Review the attached file ${JSON.stringify(attachments[0]!.name)}.`
+      : attachments.length
+        ? `Review the ${attachments.length} attached files.`
+        : "");
     if (!content) return false;
     const clientId = newOutboundId();
     set({ coworkActionError: null });
     return sendOutbound(
-      { id: clientId, surface: "cowork", sessionId, content, mode, createdAt: Date.now(), status: "sending" },
+      {
+        id: clientId,
+        surface: "cowork",
+        sessionId,
+        content,
+        mode,
+        attachments: attachments.length ? attachments : undefined,
+        createdAt: Date.now(),
+        status: "sending",
+      },
       mode === "turn"
-        ? { type: "cowork.send", sessionId, text: content, clientId }
-        : { type: "cowork.steer", sessionId, text: content, mode, clientId },
+        ? { type: "cowork.send", sessionId, text: content, attachments: attachments.length ? attachments : undefined, clientId }
+        : { type: "cowork.steer", sessionId, text: content, mode, attachments: attachments.length ? attachments : undefined, clientId },
     );
   },
   stopCowork: (sessionId) => {

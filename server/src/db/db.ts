@@ -31,6 +31,7 @@ import type {
   CoworkTurnState,
   DirectorMessage,
   Effort,
+  FileAttachment,
   Finding,
   FindingKind,
   ImplementorProvider,
@@ -228,6 +229,7 @@ function rowToCoworkTurn(r: Row): CoworkTurn {
 }
 
 function rowToCoworkMessage(r: Row): CoworkMessage {
+  const refs = parseAttachments(r.attachments);
   return {
     id: r.id as string,
     sessionId: r.session_id as string,
@@ -235,6 +237,7 @@ function rowToCoworkMessage(r: Row): CoworkMessage {
     role: r.role as CoworkMessageRole,
     kind: r.kind as CoworkMessageKind,
     content: r.content as string,
+    attachments: refs.length ? refs : undefined,
     meta: parseJsonOrNull(r.meta),
     partial: r.partial === 1,
     createdAt: r.created_at as number,
@@ -539,8 +542,8 @@ function snippetAround(text: string, q: string, before = 90, after = 240): strin
   return (start > 0 ? "…" : "") + slice + (end < text.length ? "…" : "");
 }
 
-/** The two tables whose `attachments` JSON column can hold a reference to a stored blob. */
-const REF_TABLES = ["messages", "director_messages"] as const;
+/** Every table whose `attachments` JSON column can hold a reference to a stored blob. */
+const REF_TABLES = ["messages", "director_messages", "cowork_messages"] as const;
 
 /** A row that references a blob, addressed by primary key so a rewrite doesn't scan the table. */
 interface RefRow {
@@ -581,6 +584,7 @@ export class Db {
       "ALTER TABLE agent_runs ADD COLUMN effort TEXT",
       "ALTER TABLE director_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE cowork_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
       "ALTER TABLE threads ADD COLUMN effort_override TEXT",
       "ALTER TABLE threads ADD COLUMN model_request TEXT",
@@ -954,7 +958,7 @@ export class Db {
 
   /** Atomically claim the session and persist the owner prompt. There is no await in this transaction,
    * so two sockets sending together cannot create two live agent turns for one conversation. */
-  beginCoworkTurn(sessionId: string, content: string, messageId = newId()):
+  beginCoworkTurn(sessionId: string, content: string, messageId = newId(), attachments: FileAttachment[] = []):
     | { ok: true; session: CoworkSession; turn: CoworkTurn; message: CoworkMessage }
     | { ok: false; error: string; session: CoworkSession | null } {
     return this.raw.transaction(() => {
@@ -988,9 +992,17 @@ export class Db {
       ).run(turnId, sessionId, at);
       this.raw.prepare(
         `INSERT INTO cowork_messages
-           (id, session_id, turn_id, role, kind, content, meta, partial, created_at, updated_at)
-         VALUES (?, ?, ?, 'user', 'text', ?, NULL, 0, ?, ?)`,
-      ).run(messageId, sessionId, turnId, content, at, at);
+           (id, session_id, turn_id, role, kind, content, attachments, meta, partial, created_at, updated_at)
+         VALUES (?, ?, ?, 'user', 'text', ?, ?, NULL, 0, ?, ?)`,
+      ).run(
+        messageId,
+        sessionId,
+        turnId,
+        content,
+        JSON.stringify(attachments.map((file) => this.addAttachment({ name: file.name, mediaType: file.mediaType, data: file.dataBase64 }))),
+        at,
+        at,
+      );
 
       const messageRow = this.raw.prepare("SELECT * FROM cowork_messages WHERE id = ?").get(messageId) as Row | undefined;
       if (!messageRow) throw new Error("Co-work message insert failed");
@@ -1012,6 +1024,7 @@ export class Db {
     content: string;
     mode: CoworkSteeringMode;
     messageId?: string;
+    attachments?: FileAttachment[];
   }):
     | { ok: true; session: CoworkSession; message: CoworkMessage }
     | { ok: false; error: string; session: CoworkSession | null } {
@@ -1030,15 +1043,19 @@ export class Db {
         return { ok: false as const, error: "This direction was already received.", session: current };
       }
       const at = now();
+      const attachments = (input.attachments ?? []).map((file) =>
+        this.addAttachment({ name: file.name, mediaType: file.mediaType, data: file.dataBase64 }),
+      );
       this.raw.prepare(
         `INSERT INTO cowork_messages
-           (id, session_id, turn_id, role, kind, content, meta, partial, created_at, updated_at)
-         VALUES (?, ?, ?, 'user', 'text', ?, ?, 0, ?, ?)`,
+           (id, session_id, turn_id, role, kind, content, attachments, meta, partial, created_at, updated_at)
+         VALUES (?, ?, ?, 'user', 'text', ?, ?, ?, 0, ?, ?)`,
       ).run(
         messageId,
         input.sessionId,
         input.turnId,
         input.content,
+        JSON.stringify(attachments),
         JSON.stringify({ steeringMode: input.mode, delivery: "pending" }),
         at,
         at,
@@ -1106,6 +1123,7 @@ export class Db {
     role: CoworkMessageRole;
     kind: CoworkMessageKind;
     content: string;
+    attachments?: AttachmentRef[];
     meta?: unknown | null;
     partial?: boolean;
     createdAt?: number;
@@ -1113,12 +1131,15 @@ export class Db {
     const id = input.id ?? newId();
     const at = input.createdAt ?? now();
     const meta = input.meta == null ? null : JSON.stringify(input.meta);
+    const attachments = JSON.stringify(input.attachments ?? []);
     this.raw.prepare(
       `INSERT INTO cowork_messages
-         (id, session_id, turn_id, role, kind, content, meta, partial, created_at, updated_at)
-       VALUES (@id, @sessionId, @turnId, @role, @kind, @content, @meta, @partial, @at, @at)
+         (id, session_id, turn_id, role, kind, content, attachments, meta, partial, created_at, updated_at)
+       VALUES (@id, @sessionId, @turnId, @role, @kind, @content, @attachments, @meta, @partial, @at, @at)
        ON CONFLICT(id) DO UPDATE SET
-         content=excluded.content, meta=excluded.meta, partial=excluded.partial, updated_at=excluded.updated_at`,
+         content=excluded.content,
+         attachments=CASE WHEN @replaceAttachments=1 THEN excluded.attachments ELSE cowork_messages.attachments END,
+         meta=excluded.meta, partial=excluded.partial, updated_at=excluded.updated_at`,
     ).run({
       id,
       sessionId: input.sessionId,
@@ -1126,6 +1147,8 @@ export class Db {
       role: input.role,
       kind: input.kind,
       content: input.content,
+      attachments,
+      replaceAttachments: input.attachments === undefined ? 0 : 1,
       meta,
       partial: input.partial ? 1 : 0,
       at,
@@ -1195,7 +1218,12 @@ export class Db {
   }
 
   deleteCoworkSession(id: string): boolean {
-    return this.raw.prepare("DELETE FROM cowork_sessions WHERE id=? AND active_turn_id IS NULL").run(id).changes === 1;
+    return this.raw.transaction(() => {
+      const blobs = this.coworkAttachmentIds(id);
+      const deleted = this.raw.prepare("DELETE FROM cowork_sessions WHERE id=? AND active_turn_id IS NULL").run(id).changes === 1;
+      if (deleted) this.pruneAttachments(blobs);
+      return deleted;
+    })();
   }
 
   /** A process restart never autonomously replays a human-led turn. It closes orphan rows but retains
@@ -2738,9 +2766,9 @@ export class Db {
     }));
   }
 
-  // ---- attachments (image bytes; served on demand over HTTP, refs over WS) ----
+  // ---- attachments (owner file bytes; served on demand over HTTP, refs over WS) ----
   /** Content-addressed: the same bytes under the same name/type reuse the stored row rather than adding
-   *  another copy. One image legitimately hangs off several messages — the director's and every task it
+   *  another copy. One attachment legitimately hangs off several messages — the director's and every task it
    *  was dispatched to — and storing it per reference is what made blobs the biggest table in the DB.
    *  Keyed on name/type as well as the hash so a re-upload under a different name keeps its own filename
    *  when it's served back over /api/attachment/:id. */
@@ -2781,6 +2809,13 @@ export class Db {
     const rows = this.raw
       .prepare("SELECT attachments FROM messages WHERE thread_id = ? AND attachments != '[]'")
       .all(threadId) as Row[];
+    return rows.flatMap((r) => parseAttachments(r.attachments).map((ref) => ref.id));
+  }
+
+  private coworkAttachmentIds(sessionId: string): string[] {
+    const rows = this.raw
+      .prepare("SELECT attachments FROM cowork_messages WHERE session_id = ? AND attachments != '[]'")
+      .all(sessionId) as Row[];
     return rows.flatMap((r) => parseAttachments(r.attachments).map((ref) => ref.id));
   }
 

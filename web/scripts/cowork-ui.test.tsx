@@ -42,6 +42,10 @@ const messages: CoworkMessage[] = [
     role: "user",
     kind: "text",
     content: "Tighten the mobile Co-work layout.",
+    attachments: [
+      { id: "screenshot-1", name: "layout.png", mediaType: "image/png" },
+      { id: "source-1", name: "header.tsx", mediaType: "text/plain" },
+    ],
     meta: null,
     partial: false,
     createdAt: at - 2_000,
@@ -105,12 +109,16 @@ assert.match(ready, /Polish persistent chat/, "session name remains visible");
 assert.match(ready, /garden/, "workspace identity remains visible");
 assert.match(ready, /codex.*gpt-5\.6-sol/s, "resolved provider/model remains visible");
 assert.match(ready, /Tighten the mobile Co-work layout/, "owner message renders durably");
+assert.match(ready, /api\/attachment\/screenshot-1/, "a sent screenshot renders from durable attachment storage");
+assert.match(ready, /header\.tsx/, "an ordinary sent file renders by name after reload");
+assert.match(ready, /api\/attachment\/source-1\?download=1/, "ordinary files use the forced-download route");
 assert.match(ready, /Changed the responsive shell/, "Co-worker reply renders durably");
 assert.match(ready, /<strong>Typecheck passed\.<\/strong>/, "agent markdown is rendered as conversation content");
 assert.match(ready, /<details class="cowork-detail tool"/, "tool activity is present but collapsed");
 assert.match(ready, /Delivery failed/, "a failed live direction remains clear after reload");
 assert.match(ready, /What should we work on next\?/, "completed turn hands the composer back to the owner");
 assert.match(ready, /context linked/, "resumable context is disclosed");
+assert.match(ready, /Attach screenshots or files/, "the idle composer exposes a generic attachment picker");
 assert.doesNotMatch(ready, />Stop</, "an idle session does not show interruption controls");
 
 Object.assign(ssrState, {
@@ -132,7 +140,7 @@ assert.match(running, /cowork-stop[\s\S]*? Stop/, "a live turn exposes interrupt
 assert.match(running, />Queue</, "a live turn can queue owner direction without stopping");
 assert.match(running, />Inject</, "a live turn can accept immediate owner direction");
 assert.match(running, /Interrupt &amp; inject/, "a live turn can be superseded with new owner direction");
-assert.match(running, /Add direction to the active work slice/, "the live composer stays available for collaboration");
+assert.match(running, /Add direction or attach a file/, "the live composer stays available for text and attachment collaboration");
 assert.doesNotMatch(running, /<textarea[^>]*disabled/, "the live prompt field is not frozen while the Co-worker works");
 
 Object.assign(ssrState, {
@@ -161,17 +169,23 @@ const here = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(join(here, "..", "src", "App.tsx"), "utf8");
 const boardSource = readFileSync(join(here, "..", "src", "components", "Board.tsx"), "utf8");
 const coworkSource = readFileSync(join(here, "..", "src", "components", "CoWork.tsx"), "utf8");
+const attachmentsSource = readFileSync(join(here, "..", "src", "lib", "attachments.tsx"), "utf8");
 const storeSource = readFileSync(join(here, "..", "src", "store.ts"), "utf8");
 const cssSource = readFileSync(join(here, "..", "src", "styles.css"), "utf8");
 assert.match(coworkSource, /exact model is pinned/i, "explicit model semantics are disclosed");
 assert.match(coworkSource, /small, useful increments/i, "the empty state promises collaborative slices rather than autonomous completion");
+assert.match(coworkSource, /useCoworkAttachments/, "the Co-work composer owns paste, drop, and file-picker state");
+assert.match(coworkSource, /onPaste=\{attachments\.onPaste\}/, "clipboard screenshots and files reach the attachment input");
+assert.match(attachmentsSource, /function CoworkAttachButton[\s\S]*type="file"[\s\S]*multiple/, "the Co-work picker accepts multiple arbitrary files without an image-only filter");
+assert.match(attachmentsSource, /generation\.current/, "an async file read is fenced when the owner switches sessions");
 for (const mode of ["queue", "append", "interrupt"]) {
   assert.match(coworkSource, new RegExp(`submit\\(\\"${mode}\\"\\)`), `${mode} control dispatches its distinct steering mode`);
 }
 assert.match(storeSource, /type: "cowork\.steer"/, "live Co-work directions use the typed steering command instead of opening another turn");
+assert.match(storeSource, /attachments: attachments\.length \? attachments : undefined/, "initial and live Co-work commands carry their selected files");
 assert.match(appSource, /openBoardView\("cowork"\)/, "mobile navigation links directly to Co-work");
 assert.match(boardSource, /view: "cowork", label: "Co-work"/, "desktop board navigation includes Co-work");
 assert.match(cssSource, /\.cowork-shell\.has-session \.cowork-session-list \{ display: none; \}/, "mobile selected-session layout swaps the rail for the conversation");
 assert.match(cssSource, /\.cowork-back/, "mobile conversation has an in-view back control");
 
-console.log("Co-work UI gate passed - session creation, durable transcript, live, error/recovery, desktop, and mobile states are covered.");
+console.log("Co-work UI gate passed - session creation, durable transcript, live steering, attachments, navigation, desktop, and mobile states are covered.");

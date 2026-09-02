@@ -236,10 +236,16 @@ export interface Finding {
   createdAt: number;
 }
 
-export interface ImageAttachment {
+export interface FileAttachment {
   name: string;
   mediaType: string;
   dataBase64: string;
+}
+
+export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
+export interface ImageAttachment extends FileAttachment {
+  mediaType: ImageMediaType;
 }
 
 export interface AttachmentRef {
@@ -603,6 +609,7 @@ export interface CoworkMessage {
   role: CoworkMessageRole;
   kind: CoworkMessageKind;
   content: string;
+  attachments?: AttachmentRef[];
   meta: unknown | null;
   partial: boolean;
   createdAt: number;
@@ -982,8 +989,8 @@ export type ClientCommand =
   | { type: "prompt.new"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
   | { type: "prompt.direct"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
   | { type: "cowork.create"; name?: string; workspace: string; provider?: ImplementorProvider; model?: string; clientId?: string }
-  | { type: "cowork.send"; sessionId: string; text: string; clientId?: string }
-  | { type: "cowork.steer"; sessionId: string; text: string; mode: CoworkSteeringMode; clientId?: string }
+  | { type: "cowork.send"; sessionId: string; text: string; attachments?: FileAttachment[]; clientId?: string }
+  | { type: "cowork.steer"; sessionId: string; text: string; mode: CoworkSteeringMode; attachments?: FileAttachment[]; clientId?: string }
   | { type: "cowork.stop"; sessionId: string }
   | { type: "cowork.rename"; sessionId: string; name: string }
   | { type: "cowork.delete"; sessionId: string }

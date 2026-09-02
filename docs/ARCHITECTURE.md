@@ -446,8 +446,12 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   short **Co-worker** work slice, and live `queue` / `append` / `interrupt` steering remains inside
   that durable turn. Prompt, role-turn, and wall-clock boundaries make it complete one useful
   increment and return control; an unresponsive run becomes a clean `timeboxed` hand-back to `idle`.
-  It creates **no
-  `Thread`**, so none of the diagram above applies — no route selection, no planner/QA/reviewer/
+  Owner messages may include screenshots or arbitrary files. Bytes use the shared content-addressed
+  `attachments` store; refs live transactionally on `cowork_messages`, images also become native
+  provider blocks, and every attachment is materialized under a session-isolated server data path so
+  every coding backend can inspect it. Non-image HTTP responses are forced downloads, never active
+  same-origin content. It creates **no `Thread`**, so none of the diagram above applies — no route
+  selection, no planner/QA/reviewer/
   supervisor/auto-review, no autonomous retry, no path to `done`. It reaches ThreadManager only
   through the narrow `CoworkRuntime` interface (`prepare` / `taskConflict` / `observeRateLimit` /
   `isCapped` / `noteCap` / `releasedWorkspace`), which is what keeps pipeline state out of the
@@ -468,7 +472,8 @@ metadata**; the Agent SDK already persists Claude session transcripts as JSONL
 on disk (resumable by `session_id`). Tables: `threads`, `agent_runs`,
 `messages`, `findings`, `questions`, `director_messages`, `attachments`, `kv`,
 and the Co-work lane's own `cowork_sessions` / `cowork_turns` / `cowork_messages`
-(§5) — deliberately separate from `threads`, so a conversation is never a task.
+(§5) — deliberately separate from `threads`, so a conversation is never a task. The three message
+tables hold lightweight attachment refs; the shared `attachments` table deduplicates their bytes.
 `threads.stage_outputs` (JSON, nullable) holds the per-stage outputs that make a
 task resumable (§5) — kept off the WS wire (it can be multi-KB) and read only by
 the resume path, not folded into the `Thread` DTO. Schema inlined in

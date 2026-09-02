@@ -3,8 +3,16 @@ import { isAbsolute, basename } from "node:path";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "../agents/runner.js";
+import { contentWithImages, type ImageBlock } from "../attachments.js";
 import { config } from "../config.js";
 import { injectionSendOptions } from "./injection.js";
+import {
+  coworkContentWithAttachments,
+  coworkImageBlocks,
+  materializeCoworkAttachments,
+  removeCoworkAttachmentFiles,
+  validateCoworkAttachments,
+} from "../coworkAttachments.js";
 import type {
   CoworkActionResult,
   CoworkMessage,
@@ -12,6 +20,7 @@ import type {
   CoworkSteeringMode,
   CoworkTurn,
   Effort,
+  FileAttachment,
   ImplementorProvider,
   RateLimitInfo,
 } from "../types.js";
@@ -35,7 +44,7 @@ export interface PreparedCoworkRun {
  * lets the conversational lifecycle test against a deterministic fake without constructing the task
  * pipeline, and keeps pipeline state out of Co-work itself. */
 export interface CoworkRuntime {
-  prepare(input: { session: CoworkSession; prompt: string; history: CoworkMessage[] }): PreparedCoworkRun | { error: string };
+  prepare(input: { session: CoworkSession; prompt: string; history: CoworkMessage[]; images: ImageBlock[] }): PreparedCoworkRun | { error: string };
   taskConflict(workspace: string): string | null;
   observeRateLimit(target: CoworkTarget, info: RateLimitInfo): void;
   isCapped(target: CoworkTarget, agent: AgentRunLike): boolean;
@@ -122,6 +131,11 @@ function cleanName(value: string): string {
 
 function workspaceName(workspace: string): string {
   return basename(workspace.replace(/[\\/]+$/, "")) || "New Co-work";
+}
+
+function attachmentOnlyPrompt(files: FileAttachment[]): string {
+  if (files.length === 1) return `Review the attached file ${JSON.stringify(files[0]!.name)}.`;
+  return `Review the ${files.length} attached files.`;
 }
 
 /** Failed/unconfirmed live directions remain visible in the durable UI transcript, but a fresh
@@ -238,17 +252,24 @@ export class CoworkManager {
     if (!session) return { ok: false, error: "Co-work session not found." };
     if (session.activeTurnId || this.live.has(sessionId)) return { ok: false, session, error: "Stop the running turn before deleting this session." };
     if (!this.db.deleteCoworkSession(sessionId)) return { ok: false, session, error: "The session could not be deleted while it was active." };
+    try {
+      removeCoworkAttachmentFiles(this.db, sessionId);
+    } catch (error) {
+      this.hub.log("warn", `Could not remove cached files for deleted Co-work session ${sessionId.slice(0, 8)}: ${(error as Error).message || String(error)}`);
+    }
     this.hub.publish({ type: "cowork.removed", sessionId });
     return { ok: true };
   }
 
   /** Claims and starts one bounded turn, but does not await its potentially long agent run. The durable
    * user echo and running state are visible before this method returns to the WebSocket handler. */
-  send(sessionId: string, prompt: string, clientId?: string): CoworkActionResult {
-    const text = prompt.trim();
-    if (!text) return { ok: false, error: "Write an instruction first." };
+  send(sessionId: string, prompt: string, clientId?: string, attachments: FileAttachment[] = []): CoworkActionResult {
+    const text = prompt.trim() || (attachments.length ? attachmentOnlyPrompt(attachments) : "");
+    if (!text) return { ok: false, error: "Write an instruction or attach a file first." };
     const session = this.db.getCoworkSession(sessionId);
     if (!session) return { ok: false, error: "Co-work session not found." };
+    const attachmentError = validateCoworkAttachments(attachments);
+    if (attachmentError) return { ok: false, session, error: attachmentError };
     if (!existsSync(session.workspace)) return { ok: false, session, error: `Workspace "${session.workspace}" no longer exists.` };
     const conflict = this.runtime.taskConflict(session.workspace);
     if (conflict) return { ok: false, session, error: conflict };
@@ -259,11 +280,11 @@ export class CoworkManager {
     // Read the prior transcript before beginCoworkTurn adds this prompt; fresh-session fallback should
     // include the history once and the current instruction once.
     const history = providerHistory(this.db.listCoworkMessages(sessionId));
-    const claimed = this.db.beginCoworkTurn(sessionId, text, clientId);
+    const claimed = this.db.beginCoworkTurn(sessionId, text, clientId, attachments);
     if (!claimed.ok) return { ok: false, session: claimed.session ?? undefined, error: claimed.error };
     this.hub.publish({ type: "cowork.message", message: claimed.message });
     this.publishSession(claimed.session);
-    void this.execute(claimed.session, claimed.turn, text, history);
+    void this.execute(claimed.session, claimed.turn, text, history, claimed.message);
     // prepare() failures can settle synchronously before the WebSocket action receipt is sent. Return
     // the current row so that receipt cannot overwrite the UI with the stale running claim.
     return { ok: true, session: this.db.getCoworkSession(sessionId) ?? claimed.session };
@@ -272,11 +293,13 @@ export class CoworkManager {
   /** Deliver owner direction into the one live Co-worker run. Unlike send(), this deliberately does
    * not claim a second DB turn: the update is part of the active collaborative slice and the manager
    * keeps that slice open until the provider has returned a result for every accepted update. */
-  steer(sessionId: string, prompt: string, mode: CoworkSteeringMode, clientId?: string): CoworkActionResult {
-    const text = prompt.trim();
-    if (!text) return { ok: false, error: "Write a direction first." };
+  steer(sessionId: string, prompt: string, mode: CoworkSteeringMode, clientId?: string, attachments: FileAttachment[] = []): CoworkActionResult {
+    const text = prompt.trim() || (attachments.length ? attachmentOnlyPrompt(attachments) : "");
+    if (!text) return { ok: false, error: "Write a direction or attach a file first." };
     const session = this.db.getCoworkSession(sessionId);
     if (!session) return { ok: false, error: "Co-work session not found." };
+    const attachmentError = validateCoworkAttachments(attachments);
+    if (attachmentError) return { ok: false, session, error: attachmentError };
     const live = this.live.get(sessionId);
     if (!live || session.activeTurnId !== live.turnId || session.state !== "running" || !live.acceptingSteering) {
       return {
@@ -294,13 +317,16 @@ export class CoworkManager {
       content: text,
       mode,
       messageId: clientId,
+      attachments,
     });
     if (!accepted.ok) return { ok: false, session: accepted.session ?? undefined, error: accepted.error };
     this.hub.publish({ type: "cowork.message", message: accepted.message });
     this.publishSession(accepted.session);
 
     try {
-      this.deliverLiveDirection(live, steeringPrompt(mode, text), mode);
+      const files = materializeCoworkAttachments(this.db, sessionId, accepted.message.attachments);
+      const direction = coworkContentWithAttachments(this.db, sessionId, steeringPrompt(mode, text), accepted.message.attachments);
+      this.deliverLiveDirection(live, contentWithImages(direction, coworkImageBlocks(files)), mode);
       const delivered = this.db.upsertCoworkMessage({
         id: accepted.message.id,
         sessionId,
@@ -308,6 +334,7 @@ export class CoworkManager {
         role: "user",
         kind: "text",
         content: text,
+        attachments: accepted.message.attachments,
         meta: { steeringMode: mode, delivery: "delivered" },
         createdAt: accepted.message.createdAt,
       });
@@ -321,6 +348,7 @@ export class CoworkManager {
         role: "user",
         kind: "text",
         content: text,
+        attachments: accepted.message.attachments,
         meta: { steeringMode: mode, delivery: "failed", error: reason },
         createdAt: accepted.message.createdAt,
       });
@@ -349,7 +377,7 @@ export class CoworkManager {
     return { ok: true, session: this.db.getCoworkSession(sessionId) ?? session };
   }
 
-  private deliverLiveDirection(live: LiveCoworkTurn, content: string, mode: CoworkSteeringMode): void {
+  private deliverLiveDirection(live: LiveCoworkTurn, content: UserContent, mode: CoworkSteeringMode): void {
     live.rotateStream();
     live.expectedResults++;
     live.steeringAccepted = true;
@@ -403,10 +431,25 @@ export class CoworkManager {
     return !!other && normalizeWorkspace(other.workspace) === normalizeWorkspace(workspace);
   }
 
-  private async execute(session: CoworkSession, turn: CoworkTurn, prompt: string, history: CoworkMessage[]): Promise<void> {
+  private async execute(
+    session: CoworkSession,
+    turn: CoworkTurn,
+    prompt: string,
+    history: CoworkMessage[],
+    ownerMessage: CoworkMessage,
+  ): Promise<void> {
     let prepared: PreparedCoworkRun | { error: string };
     try {
-      prepared = this.runtime.prepare({ session, prompt, history });
+      // Rebuild every prior path too: a data-directory restore or manually cleared cache must not make
+      // an old file reference lie when a fresh provider fallback replays the durable conversation.
+      materializeCoworkAttachments(this.db, session.id, history.flatMap((message) => message.attachments ?? []));
+      const files = materializeCoworkAttachments(this.db, session.id, ownerMessage.attachments);
+      prepared = this.runtime.prepare({
+        session,
+        prompt: coworkContentWithAttachments(this.db, session.id, prompt, ownerMessage.attachments),
+        history,
+        images: coworkImageBlocks(files),
+      });
     } catch (error) {
       prepared = { error: (error as Error).message || String(error) };
     }

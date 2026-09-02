@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { AttachmentRef, ImageAttachment } from "../types.js";
+import type { AttachmentRef, FileAttachment, ImageAttachment, ImageMediaType } from "../types.js";
 import { useStore } from "../store.js";
+import { FileIcon, fileKindOf } from "../components/FileIcon.js";
 import { apiUrl } from "./base.js";
 
 export const MAX_IMAGES = 8;
@@ -12,10 +13,14 @@ export const MAX_IMAGE_BASE64_BYTES = 5 * 1024 * 1024;
  *  exists to prevent: it let every image between 3.75MB and 5MB through to be rejected mid-run, killing
  *  the task that carried it (2026-08-26 — one $8 implementor run, and four such images already stored). */
 export const MAX_IMAGE_BYTES = Math.floor((MAX_IMAGE_BASE64_BYTES * 3) / 4);
-const OK_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const OK_TYPES = new Set<ImageMediaType>(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
-export function attachmentUrl(ref: AttachmentRef): string {
-  return apiUrl(`/api/attachment/${ref.id}`);
+function isImageAttachment(file: FileAttachment): file is ImageAttachment {
+  return OK_TYPES.has(file.mediaType as ImageMediaType);
+}
+
+export function attachmentUrl(ref: AttachmentRef, download = false): string {
+  return apiUrl(`/api/attachment/${ref.id}${download ? "?download=1" : ""}`);
 }
 
 function previewUrl(a: ImageAttachment): string {
@@ -26,9 +31,7 @@ function previewUrl(a: ImageAttachment): string {
  *  appears reads as a broken paste, and the operator sends the prompt believing the agent can see it. */
 type Rejection = "type" | "size";
 
-async function fileToAttachment(f: File): Promise<ImageAttachment | Rejection> {
-  if (!OK_TYPES.has(f.type)) return "type";
-  if (f.size > MAX_IMAGE_BYTES) return "size";
+async function readBase64(f: File): Promise<string | null> {
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(String(r.result));
@@ -36,8 +39,15 @@ async function fileToAttachment(f: File): Promise<ImageAttachment | Rejection> {
     r.readAsDataURL(f);
   });
   const comma = dataUrl.indexOf(",");
-  if (comma < 0) return "type";
-  return { name: f.name || "image", mediaType: f.type, dataBase64: dataUrl.slice(comma + 1) };
+  return comma < 0 ? null : dataUrl.slice(comma + 1);
+}
+
+async function fileToAttachment(f: File): Promise<ImageAttachment | Rejection> {
+  if (!OK_TYPES.has(f.type as ImageMediaType)) return "type";
+  if (f.size > MAX_IMAGE_BYTES) return "size";
+  const dataBase64 = await readBase64(f);
+  if (dataBase64 == null) return "type";
+  return { name: f.name || "image", mediaType: f.type as ImageMediaType, dataBase64 };
 }
 
 const MAX_IMAGE_MB = (MAX_IMAGE_BYTES / (1024 * 1024)).toFixed(1);
@@ -146,6 +156,191 @@ export function ComposerThumbs({ images, onRemove }: { images: ImageAttachment[]
         </div>
       ))}
     </div>
+  );
+}
+
+export const MAX_COWORK_ATTACHMENTS = 8;
+export const MAX_COWORK_FILE_BYTES = 10 * 1024 * 1024;
+export const MAX_COWORK_TOTAL_BYTES = 25 * 1024 * 1024;
+
+interface CoworkDraftAttachment {
+  file: FileAttachment;
+  bytes: number;
+}
+
+export interface CoworkAttachmentsApi {
+  files: FileAttachment[];
+  dragging: boolean;
+  addFiles: (files: FileList | File[]) => void;
+  remove: (index: number) => void;
+  clear: () => void;
+  onPaste: (event: React.ClipboardEvent) => void;
+  dropHandlers: {
+    onDragOver: (event: React.DragEvent) => void;
+    onDragLeave: (event: React.DragEvent) => void;
+    onDrop: (event: React.DragEvent) => void;
+  };
+}
+
+function coworkAttachmentNotice(rejected: { imageSize: number; fileSize: number; unreadable: number; count: number; total: number }): void {
+  const reasons: string[] = [];
+  if (rejected.imageSize) reasons.push(`${rejected.imageSize} screenshot${rejected.imageSize === 1 ? " is" : "s are"} over ${MAX_IMAGE_MB} MB`);
+  if (rejected.fileSize) reasons.push(`${rejected.fileSize} file${rejected.fileSize === 1 ? " is" : "s are"} over ${MAX_COWORK_FILE_BYTES / 1024 / 1024} MB`);
+  if (rejected.unreadable) reasons.push(`${rejected.unreadable} file${rejected.unreadable === 1 ? " could" : "s could"} not be read`);
+  if (rejected.count) reasons.push(`only ${MAX_COWORK_ATTACHMENTS} attachments fit in one message`);
+  if (rejected.total) reasons.push(`attachments must total ${MAX_COWORK_TOTAL_BYTES / 1024 / 1024} MB or less`);
+  if (reasons.length) {
+    useStore.setState({ notice: { level: "warn", title: "Not attached", message: `${reasons.join(", and ")}. Split or shrink the files, then try again.` } });
+  }
+}
+
+/** Co-work accepts screenshots plus arbitrary files. Screenshots retain the stricter provider image
+ * ceiling; all files share count/per-file/total caps that keep one WebSocket frame below its 64 MB limit. */
+export function useCoworkAttachments(): CoworkAttachmentsApi {
+  const [items, setItems] = useState<CoworkDraftAttachment[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const itemsRef = useRef<CoworkDraftAttachment[]>([]);
+  const generation = useRef(0);
+
+  const replace = useCallback((next: CoworkDraftAttachment[]) => {
+    itemsRef.current = next;
+    setItems(next);
+  }, []);
+
+  const addFiles = useCallback((input: FileList | File[]) => {
+    const startedInGeneration = generation.current;
+    void (async () => {
+      const candidates: CoworkDraftAttachment[] = [];
+      const rejected = { imageSize: 0, fileSize: 0, unreadable: 0, count: 0, total: 0 };
+      for (const source of Array.from(input)) {
+        const image = OK_TYPES.has(source.type as ImageMediaType);
+        if (image && source.size > MAX_IMAGE_BYTES) { rejected.imageSize++; continue; }
+        if (!image && source.size > MAX_COWORK_FILE_BYTES) { rejected.fileSize++; continue; }
+        let dataBase64: string | null;
+        try {
+          dataBase64 = await readBase64(source);
+        } catch {
+          rejected.unreadable++;
+          continue;
+        }
+        if (dataBase64 == null) { rejected.fileSize++; continue; }
+        candidates.push({
+          file: {
+            name: (source.name || (image ? "screenshot" : "attachment")).slice(0, 240),
+            mediaType: source.type || "application/octet-stream",
+            dataBase64,
+          },
+          bytes: source.size,
+        });
+      }
+
+      // Switching sessions or sending while FileReader was busy invalidates this batch. Without the
+      // generation fence, a large file selected in session A could finish loading into session B.
+      if (startedInGeneration !== generation.current) return;
+
+      const next = [...itemsRef.current];
+      let bytes = next.reduce((sum, item) => sum + item.bytes, 0);
+      for (const candidate of candidates) {
+        if (next.length >= MAX_COWORK_ATTACHMENTS) { rejected.count++; continue; }
+        if (bytes + candidate.bytes > MAX_COWORK_TOTAL_BYTES) { rejected.total++; continue; }
+        next.push(candidate);
+        bytes += candidate.bytes;
+      }
+      if (next.length !== itemsRef.current.length) replace(next);
+      coworkAttachmentNotice(rejected);
+    })();
+  }, [replace]);
+
+  const remove = useCallback((index: number) => replace(itemsRef.current.filter((_, itemIndex) => itemIndex !== index)), [replace]);
+  const clear = useCallback(() => {
+    generation.current++;
+    replace([]);
+  }, [replace]);
+  useEffect(() => () => { generation.current++; }, []);
+  const onPaste = useCallback((event: React.ClipboardEvent) => {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => !!file);
+    if (files.length) {
+      event.preventDefault();
+      addFiles(files);
+    }
+  }, [addFiles]);
+
+  return {
+    files: items.map((item) => item.file),
+    dragging,
+    addFiles,
+    remove,
+    clear,
+    onPaste,
+    dropHandlers: {
+      onDragOver: (event) => {
+        if (Array.from(event.dataTransfer.types).includes("Files")) {
+          event.preventDefault();
+          setDragging(true);
+        }
+      },
+      onDragLeave: (event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+      },
+      onDrop: (event) => {
+        event.preventDefault();
+        setDragging(false);
+        if (event.dataTransfer.files.length) addFiles(event.dataTransfer.files);
+      },
+    },
+  };
+}
+
+export function CoworkComposerAttachments({
+  files,
+  onRemove,
+}: {
+  files: FileAttachment[];
+  onRemove?: (index: number) => void;
+}) {
+  if (!files.length) return null;
+  return (
+    <div className="cowork-attachment-drafts">
+      {files.map((file, index) => isImageAttachment(file) ? (
+        <div className="thumb" key={`${file.name}:${index}`} title={file.name}>
+          <img src={previewUrl(file)} alt={file.name} />
+          {onRemove ? <button className="thumb-x" type="button" onClick={() => onRemove(index)} aria-label={`Remove ${file.name}`}>×</button> : null}
+        </div>
+      ) : (
+        <div className="cowork-file-draft" key={`${file.name}:${index}`} title={file.name}>
+          <FileIcon kind={fileKindOf(file.name)} size={20} />
+          <span>{file.name}</span>
+          {onRemove ? <button type="button" onClick={() => onRemove(index)} aria-label={`Remove ${file.name}`}>×</button> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Sent Co-work attachments: screenshots open in the existing zoomable lightbox; other files use a
+ * compact, forced-download card so potentially active content never renders in the console origin. */
+export function CoworkMessageAttachments({ refs }: { refs?: AttachmentRef[] }) {
+  if (!refs?.length) return null;
+  const images = refs.filter((ref) => OK_TYPES.has(ref.mediaType as ImageMediaType));
+  const files = refs.filter((ref) => !OK_TYPES.has(ref.mediaType as ImageMediaType));
+  return (
+    <>
+      <MessageThumbs refs={images} />
+      {files.length ? (
+        <div className="cowork-message-files">
+          {files.map((ref, index) => (
+            <a key={`${ref.id}:${index}`} href={attachmentUrl(ref, true)} download={ref.name} title={`Download ${ref.name}`}>
+              <FileIcon kind={fileKindOf(ref.name)} size={20} />
+              <span>{ref.name}</span>
+              <small>Download</small>
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -377,6 +572,38 @@ export function AttachButton({ onPick }: { onPick: (files: FileList) => void }) 
         onClick={() => ref.current?.click()}
       >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+        </svg>
+      </button>
+    </>
+  );
+}
+
+/** Co-work's picker deliberately has no accept filter: screenshots get visual previews, while source,
+ * documents, archives and other files become safe download cards plus agent-readable local copies. */
+export function CoworkAttachButton({ onPick, disabled = false }: { onPick: (files: FileList) => void; disabled?: boolean }) {
+  const ref = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input
+        ref={ref}
+        type="file"
+        multiple
+        style={{ display: "none" }}
+        onChange={(event) => {
+          if (event.target.files?.length) onPick(event.target.files);
+          event.target.value = "";
+        }}
+      />
+      <button
+        className="cowork-attach"
+        type="button"
+        title="Attach screenshots or files"
+        aria-label="Attach screenshots or files"
+        disabled={disabled}
+        onClick={() => ref.current?.click()}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
         </svg>
       </button>

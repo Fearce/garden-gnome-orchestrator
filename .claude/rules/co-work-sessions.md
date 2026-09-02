@@ -24,6 +24,13 @@ Queue/Inject/Interrupt delivery ledger (delivered / failed / unconfirmed). Gate 
 - **Every owner message id is an idempotency key.** Initial prompts and live steering are persisted
   before provider delivery; a reconnect/double-click with the same id is refused as already received.
   Don't "simplify" the id or move persistence after `send()`.
+- **Attachments are message data, not loose uploads.** Store their blob refs inside the same
+  `beginCoworkTurn` / `appendCoworkSteering` transaction as the owner row; otherwise a lost claim or
+  raced steering command leaks orphan blobs. `cowork_messages.attachments` must stay in `REF_TABLES`,
+  and session deletion must prune unshared blobs plus its materialized cache. Screenshots travel both
+  as native image blocks and as safe agent-readable paths; other files travel by path. Re-materialize
+  prior refs before every turn so reload/cache loss cannot break fresh fallback. Fence asynchronous
+  browser reads when switching sessions or one session's large file can finish loading into another.
 - **Steering stays inside the claimed turn.** `queue` uses priority `later`; `append` follows the
   shared injection policy; `interrupt` uses priority `now`. Claude/z.ai emit a result per message,
   while Codex/Grok coalesce buffered directions into one resumed result. Keep the result accounting

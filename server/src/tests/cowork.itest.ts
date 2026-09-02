@@ -12,17 +12,19 @@ process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
 
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "../agents/runner.js";
-import type { CoworkMessage, RateLimitInfo, AgentEvent } from "../types.js";
+import { contentWithImages } from "../attachments.js";
+import type { CoworkMessage, FileAttachment, RateLimitInfo, AgentEvent } from "../types.js";
 import type { CoworkRuntime, CoworkTarget } from "../orchestrator/cowork.js";
 import type { AccountManager } from "../accounts/accountManager.js";
 
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { CoworkManager } = await import("../orchestrator/cowork.js");
+const { coworkAttachmentPath } = await import("../coworkAttachments.js");
 const { clientCommandSchema } = await import("../ws/protocol.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
@@ -40,6 +42,21 @@ function check(label: string, condition: unknown, detail?: string): void {
     failures.push(label + (detail ? ` -- ${detail}` : ""));
     console.log(`  FAIL ${label}${detail ? ` -- ${detail}` : ""}`);
   }
+}
+
+function contentText(content: UserContent | undefined): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block): block is { type: "text"; text: string } => !!block && typeof block === "object" && (block as { type?: string }).type === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
+
+function contentImages(content: UserContent | undefined): number {
+  return Array.isArray(content)
+    ? content.filter((block) => !!block && typeof block === "object" && (block as { type?: string }).type === "image").length
+    : 0;
 }
 
 async function waitFor(predicate: () => boolean, label: string, timeoutMs = 2_000): Promise<void> {
@@ -174,7 +191,7 @@ const TARGET: CoworkTarget = {
 
 class FakeRuntime implements CoworkRuntime {
   readonly runs: FakeRun[] = [];
-  readonly prepared: { sessionId: string; agentSessionId: string | null; prompt: string; history: CoworkMessage[] }[] = [];
+  readonly prepared: { sessionId: string; agentSessionId: string | null; prompt: string; history: CoworkMessage[]; images: number }[] = [];
   conflict: string | null = null;
   prepareError: string | null = null;
   released = 0;
@@ -188,10 +205,11 @@ class FakeRuntime implements CoworkRuntime {
       agentSessionId: input.session.agentSessionId,
       prompt: input.prompt,
       history: input.history,
+      images: input.images.length,
     });
     const run = new FakeRun(`provider-session-${this.runs.length + 1}`, this.steeringResultMode);
     this.runs.push(run);
-    return { target: TARGET, agent: run, startContent: input.prompt };
+    return { target: TARGET, agent: run, startContent: contentWithImages(input.prompt, input.images) };
   }
 
   taskConflict(): string | null { return this.conflict; }
@@ -218,6 +236,16 @@ async function main(): Promise<void> {
   const workspace = join(root, "workspace");
   const database = join(root, "orchestrator.sqlite");
   mkdirSync(workspace, { recursive: true });
+  const screenshot: FileAttachment = {
+    name: "layout.png",
+    mediaType: "image/png",
+    dataBase64: Buffer.from("small screenshot bytes").toString("base64"),
+  };
+  const sourceFile: FileAttachment = {
+    name: "button.tsx",
+    mediaType: "text/plain",
+    dataBase64: Buffer.from("export const Button = () => <button />;\n").toString("base64"),
+  };
 
   let db = new Db(database);
   const hub = new EventHub();
@@ -237,22 +265,45 @@ async function main(): Promise<void> {
     check("an explicit model request is durable before any run", created.session?.requestedModel === TARGET.model && created.session.provider === null);
     check("valid Co-work send parses at the WebSocket boundary", clientCommandSchema.safeParse({ type: "cowork.send", sessionId: created.session!.id, text: "Do it" }).success);
     check(
+      "screenshots and ordinary files parse at the WebSocket boundary",
+      clientCommandSchema.safeParse({ type: "cowork.send", sessionId: created.session!.id, text: "Use these", attachments: [screenshot, sourceFile] }).success,
+    );
+    check(
       "all three live steering modes parse at the WebSocket boundary",
       (["queue", "append", "interrupt"] as const).every((mode) => clientCommandSchema.safeParse({ type: "cowork.steer", sessionId: created.session!.id, text: "Adjust it", mode }).success),
     );
     check("blank turns are rejected at the WebSocket boundary", !clientCommandSchema.safeParse({ type: "cowork.send", sessionId: created.session!.id, text: "   " }).success);
+    check(
+      "invalid attachment bytes and path-shaped names are rejected at the WebSocket boundary",
+      !clientCommandSchema.safeParse({ type: "cowork.send", sessionId: created.session!.id, text: "Bad file", attachments: [{ ...sourceFile, dataBase64: "not-base64" }] }).success &&
+        !clientCommandSchema.safeParse({ type: "cowork.send", sessionId: created.session!.id, text: "Bad name", attachments: [{ ...sourceFile, name: "../outside.txt" }] }).success,
+    );
     check("unknown providers are rejected at the WebSocket boundary", !clientCommandSchema.safeParse({ type: "cowork.create", workspace, provider: "other", model: "x" }).success);
 
     const sessionId = created.session!.id;
+    const rejectedAttachment = cowork.send(sessionId, "Do not persist this", undefined, [{ ...sourceFile, dataBase64: "%%%" }]);
+    check("direct manager callers cannot bypass attachment validation", !rejectedAttachment.ok && db.listCoworkTurns(sessionId).length === 0);
     console.log("\n2 - one owner prompt claims exactly one bounded turn");
     const clientId = "db39da8d-5a43-4a44-85ae-335b14434991";
-    const first = cowork.send(sessionId, "Add a durable Co-work feature and verify it.", clientId);
+    const first = cowork.send(sessionId, "Add a durable Co-work feature and verify it.", clientId, [screenshot, sourceFile]);
     check("first prompt starts", first.ok);
     check("running state and active turn are persisted before reply", db.getCoworkSession(sessionId)?.state === "running" && !!db.getCoworkSession(sessionId)?.activeTurnId);
     const duplicate = cowork.send(sessionId, "Start an overlapping turn");
     check("a second prompt cannot overlap", !duplicate.ok && duplicate.error?.includes("already running"));
     check("only one turn row exists", db.listCoworkTurns(sessionId).length === 1);
     check("the owner echo uses the client id for delivery acknowledgement", db.listCoworkMessages(sessionId)[0]?.id === clientId);
+    const ownerAttachments = db.listCoworkMessages(sessionId)[0]?.attachments ?? [];
+    const sourceRef = ownerAttachments.find((attachment) => attachment.name === sourceFile.name);
+    check("the owner echo durably references both uploaded files", ownerAttachments.length === 2 && !!sourceRef);
+    check(
+      "files are materialized at server-generated agent-readable paths",
+      !!sourceRef && existsSync(coworkAttachmentPath(db, sessionId, sourceRef)) && readFileSync(coworkAttachmentPath(db, sessionId, sourceRef), "utf8").includes("Button"),
+    );
+    check(
+      "the active agent receives the path manifest plus a native screenshot block",
+      runtime.prepared[0]?.prompt.includes("button.tsx") && runtime.prepared[0]?.prompt.includes("CO-WORK OWNER ATTACHMENTS") &&
+        runtime.prepared[0]?.images === 1 && contentImages(runtime.runs[0]?.startedWith) === 1,
+    );
     check("Co-work creates no autonomous task thread", db.listThreads().length === 0);
     check("the requested target and provider account became sticky", db.getCoworkSession(sessionId)?.model === TARGET.model && db.getCoworkSession(sessionId)?.provider === TARGET.provider && db.getCoworkSession(sessionId)?.account === TARGET.accountId);
     check("the first prompt auto-names once", db.getCoworkSession(sessionId)?.name === "Add a durable Co-work feature and verify it." && db.getCoworkSession(sessionId)?.autoNamed === false);
@@ -279,9 +330,9 @@ async function main(): Promise<void> {
 
     console.log("\n3a - queue, inject, and interrupt-and-inject steer the one active slice");
     const liveRun = runtime.runs[1]!;
-    const queued = cowork.steer(sessionId, "Queue the keyboard pass after the current safe unit.", "queue", "21111111-1111-4111-8111-111111111111");
-    const injected = cowork.steer(sessionId, "Use the shared responsive token now.", "append", "22222222-2222-4222-8222-222222222222");
-    const interrupted = cowork.steer(sessionId, "Stop: preserve the compact header instead.", "interrupt", "23333333-3333-4333-8333-333333333333");
+    const queued = cowork.steer(sessionId, "Queue the keyboard pass after the current safe unit.", "queue", "21111111-1111-4111-8111-111111111111", [sourceFile]);
+    const injected = cowork.steer(sessionId, "Use the shared responsive token now.", "append", "22222222-2222-4222-8222-222222222222", [screenshot]);
+    const interrupted = cowork.steer(sessionId, "Stop: preserve the compact header instead.", "interrupt", "23333333-3333-4333-8333-333333333333", [screenshot, sourceFile]);
     check("all live steering actions are accepted", queued.ok && injected.ok && interrupted.ok);
     const duplicateSteering = cowork.steer(sessionId, "Do not deliver this twice", "queue", "21111111-1111-4111-8111-111111111111");
     check("a retried steering message is idempotently rejected before provider delivery", !duplicateSteering.ok && liveRun.sends.length === 3);
@@ -295,10 +346,17 @@ async function main(): Promise<void> {
       liveRun.sends[0]?.opts?.priority === "later" && liveRun.sends[1]?.opts === undefined && liveRun.sends[2]?.opts?.priority === "now",
       JSON.stringify(liveRun.sends.map((send) => send.opts)),
     );
-    check("steering prompts require a visible acknowledgement", liveRun.sends.every((send) => String(send.content).includes("`ACK:`")));
+    check("steering prompts require a visible acknowledgement", liveRun.sends.every((send) => contentText(send.content).includes("`ACK:`")));
+    check(
+      "queue, inject, and interrupt-and-inject preserve files while screenshots reach the provider natively",
+      contentText(liveRun.sends[0]?.content).includes("button.tsx") && contentImages(liveRun.sends[0]?.content) === 0 &&
+        contentText(liveRun.sends[1]?.content).includes("layout.png") && contentImages(liveRun.sends[1]?.content) === 1 &&
+        contentText(liveRun.sends[2]?.content).includes("button.tsx") && contentImages(liveRun.sends[2]?.content) === 1,
+    );
     check("steering stays inside one claimed DB turn", db.listCoworkTurns(sessionId).length === 2 && db.getCoworkSession(sessionId)?.activeTurnId === db.listCoworkTurns(sessionId)[1]?.id);
     const steeringMessages = db.listCoworkMessages(sessionId).filter((message) => message.role === "user" && message.meta && typeof message.meta === "object" && "steeringMode" in message.meta);
     check("all owner updates are durable with their delivery mode", steeringMessages.length === 4 && steeringMessages.map((message) => (message.meta as { steeringMode: string }).steeringMode).join(",") === "queue,append,interrupt,append");
+    check("steering attachment references survive the pending-to-delivered metadata update", steeringMessages.slice(0, 3).map((message) => message.attachments?.length ?? 0).join(",") === "1,1,2");
     check("delivery status distinguishes received direction from a failed transport", steeringMessages.slice(0, 3).every((message) => (message.meta as { delivery: string }).delivery === "delivered") && (steeringMessages[3]?.meta as { delivery?: string } | null)?.delivery === "failed");
 
     liveRun.abort();
@@ -381,11 +439,33 @@ async function main(): Promise<void> {
     await waitFor(() => db.getCoworkSession(batchSession.session!.id)?.state === "idle", "one coalesced final result settles the active DB turn");
     check("coalesced steering still creates no task pipeline", db.listCoworkTurns(batchSession.session!.id).length === 1 && db.listThreads().length === 0);
 
+    console.log("\n4c - attachment-only turns and session cleanup are complete");
+    const disposableRuntime = new FakeRuntime();
+    const disposableManager = new CoworkManager(db, new EventHub(), disposableRuntime);
+    const disposable = disposableManager.create({ name: "Attachment cleanup", workspace });
+    const disposableFile: FileAttachment = {
+      name: "notes.md",
+      mediaType: "text/markdown",
+      dataBase64: Buffer.from("# Uploaded notes\n").toString("base64"),
+    };
+    check("an attachment alone is a valid owner turn", disposable.ok && disposableManager.send(disposable.session!.id, "", undefined, [disposableFile]).ok);
+    disposableRuntime.runs[0]!.complete("Read the uploaded notes.");
+    await waitFor(() => db.getCoworkSession(disposable.session!.id)?.state === "idle", "attachment-only turn settles normally");
+    const disposableRef = db.listCoworkMessages(disposable.session!.id)[0]?.attachments?.[0];
+    const disposablePath = disposableRef ? coworkAttachmentPath(db, disposable.session!.id, disposableRef) : "";
+    check("attachment-only prompts are named and materialized clearly", !!disposableRef && disposableRuntime.prepared[0]?.prompt.includes("notes.md") && existsSync(disposablePath));
+    check("deleting a session removes its unique blob and materialized copy", !!disposableRef && disposableManager.remove(disposable.session!.id).ok && db.getAttachment(disposableRef.id) === null && !existsSync(disposablePath));
+
     console.log("\n5 - reload and restart preserve history and resumable linkage");
     unsubscribe();
     db.raw.close();
     db = new Db(database);
-    check("reload retains sessions, turns, and substantive output", db.getCoworkSession(sessionId)?.agentSessionId === "provider-session-5" && db.listCoworkMessages(sessionId).some((message) => message.content === longReply));
+    check(
+      "reload retains sessions, turns, substantive output, and attachment references",
+      db.getCoworkSession(sessionId)?.agentSessionId === "provider-session-5" &&
+        db.listCoworkMessages(sessionId).some((message) => message.content === longReply) &&
+        db.listCoworkMessages(sessionId)[0]?.attachments?.length === 2,
+    );
 
     const orphan = db.createCoworkSession({ name: "Interrupted", autoNamed: false, workspace });
     const orphanClaim = db.beginCoworkTurn(orphan.id, "Half-finished work");
@@ -409,14 +489,51 @@ async function main(): Promise<void> {
     check("restart marks the orphaned turn interrupted without autonomous replay", reconciled.state === "error" && reconciled.activeTurnId === null && restartRuntime.runs.length === 0);
     check("restart preserves the provider session and seals partial output", reconciled.agentSessionId === "resumable-after-restart" && db.listCoworkMessages(orphan.id).some((message) => message.content === "Substantive partial result" && !message.partial));
     check("restart adds an understandable durable diagnostic", db.listCoworkMessages(orphan.id).some((message) => message.role === "system" && message.content.includes("server restarted")));
-    check("the owner can deliberately continue after restart", restarted.send(orphan.id, "Continue from what survived").ok && restartRuntime.prepared[0]?.agentSessionId === "resumable-after-restart");
-    restartRuntime.runs[0]!.complete("Continued successfully");
+    const reloadedSource = db.listCoworkMessages(sessionId)[0]?.attachments?.find((attachment) => attachment.name === sourceFile.name);
+    const reloadedPath = reloadedSource ? coworkAttachmentPath(db, sessionId, reloadedSource) : "";
+    if (reloadedPath) rmSync(reloadedPath, { force: true });
+    check("a later turn rebuilds a missing attachment cache from durable bytes", restarted.send(sessionId, "Re-open the component I attached earlier.").ok && !!reloadedSource && existsSync(reloadedPath));
+    restartRuntime.runs[0]!.complete("Re-opened the durable component.");
+    await waitFor(() => db.getCoworkSession(sessionId)?.state === "idle", "post-reload attachment follow-up completes normally");
+    check("the owner can deliberately continue after restart", restarted.send(orphan.id, "Continue from what survived").ok && restartRuntime.prepared[1]?.agentSessionId === "resumable-after-restart");
+    restartRuntime.runs[1]!.complete("Continued successfully");
     await waitFor(() => db.getCoworkSession(orphan.id)?.state === "idle", "post-restart follow-up completes normally");
 
     check("session/message events were emitted for live UI convergence", events.includes("cowork.session") && events.includes("cowork.message") && events.includes("cowork.delta"));
   } finally {
     try { db.raw.close(); } catch { /* already closed */ }
     rmSync(root, { recursive: true, force: true });
+  }
+
+  console.log("\n5a - existing Co-work databases migrate without losing history");
+  const migrationRoot = mkdtempSync(join(tmpdir(), "cowork-attachment-migration-"));
+  const migrationFile = join(migrationRoot, "orchestrator.sqlite");
+  try {
+    let legacyDb = new Db(migrationFile);
+    const legacySession = legacyDb.createCoworkSession({ name: "Before attachments", autoNamed: false, workspace: migrationRoot });
+    legacyDb.raw.exec("DROP TABLE cowork_messages");
+    legacyDb.raw.exec(`CREATE TABLE cowork_messages (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES cowork_sessions(id) ON DELETE CASCADE,
+      turn_id TEXT REFERENCES cowork_turns(id) ON DELETE SET NULL,
+      role TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      content TEXT NOT NULL,
+      meta TEXT,
+      partial INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`);
+    legacyDb.raw.prepare("INSERT INTO cowork_messages VALUES (?, ?, NULL, 'user', 'text', 'existing history', NULL, 0, 1, 1)").run("legacy-message", legacySession.id);
+    legacyDb.raw.close();
+
+    legacyDb = new Db(migrationFile);
+    const columns = (legacyDb.raw.prepare("PRAGMA table_info(cowork_messages)").all() as Array<{ name: string }>).map((column) => column.name);
+    check("migration adds the durable attachment column", columns.includes("attachments"));
+    check("migration preserves pre-attachment conversation rows", legacyDb.listCoworkMessages(legacySession.id)[0]?.content === "existing history");
+    legacyDb.raw.close();
+  } finally {
+    rmSync(migrationRoot, { recursive: true, force: true });
   }
 
   console.log("\n6 - normal task routing honors the same repository lock");

@@ -432,11 +432,17 @@ export interface TaskSearchHit {
 
 export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 
-/** An image the user pasted/dropped, carried inline (base64) from the GUI on send. */
-export interface ImageAttachment {
+/** A file the user pasted/dropped, carried inline (base64) from the GUI on send. The server persists
+ * bytes once and sends only AttachmentRef over history/events. */
+export interface FileAttachment {
   name: string;
-  mediaType: ImageMediaType;
+  mediaType: string;
   dataBase64: string;
+}
+
+/** The image-only subset supported as a native multimodal provider content block. */
+export interface ImageAttachment extends FileAttachment {
+  mediaType: ImageMediaType;
 }
 
 /** Lightweight reference to a stored attachment — carried over WS instead of the bytes. */
@@ -937,6 +943,7 @@ export interface CoworkMessage {
   role: CoworkMessageRole;
   kind: CoworkMessageKind;
   content: string;
+  attachments?: AttachmentRef[];
   meta: unknown | null;
   partial: boolean;
   createdAt: number;

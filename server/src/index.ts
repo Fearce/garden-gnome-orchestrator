@@ -391,18 +391,31 @@ async function main(): Promise<void> {
       return reply.redirect("/");
     });
 
-    // Serve pasted-image bytes on demand (refs travel over WS; bytes stay off it).
+    // Serve pasted attachment bytes on demand (refs travel over WS; bytes stay off it). Only the four
+    // audited image types may render inline; every other owner file is forced to download, so HTML/SVG
+    // or an executable can never become same-origin active content even if its supplied MIME lies.
     const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-    app.get<{ Params: { id: string } }>("/api/attachment/:id", async (req, reply) => {
+    app.get<{ Params: { id: string }; Querystring: { download?: string } }>("/api/attachment/:id", async (req, reply) => {
       if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
       const a = db.getAttachment(req.params.id);
       if (!a) return reply.code(404).send({ error: "not found" });
-      const type = ALLOWED_IMAGE_TYPES.has(a.mediaType) ? a.mediaType : "application/octet-stream";
-      return reply
-        .header("content-type", type)
+      const inlineImage = ALLOWED_IMAGE_TYPES.has(a.mediaType);
+      const response = reply
+        .header("content-type", inlineImage ? a.mediaType : "application/octet-stream")
         .header("x-content-type-options", "nosniff")
-        .header("cache-control", "private, max-age=31536000, immutable")
-        .send(Buffer.from(a.data, "base64"));
+        .header("cache-control", "private, max-age=31536000, immutable");
+      if (!inlineImage || req.query.download !== undefined) {
+        const fallback = a.name.replace(/["\\\r\n]/g, "_").replace(/[^\x20-\x7e]/g, "_").slice(0, 180) || "attachment";
+        const headerName = Array.from(a.name.replace(/[\r\n]/g, "").slice(0, 240))
+          .map((char) => {
+            const point = char.codePointAt(0) ?? 0;
+            return point >= 0xd800 && point <= 0xdfff ? "�" : char;
+          })
+          .join("");
+        const encoded = encodeURIComponent(headerName);
+        response.header("content-disposition", `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`);
+      }
+      return response.send(Buffer.from(a.data, "base64"));
     });
 
     if (process.env.ORCH_LAB_FIXTURES === "1") {

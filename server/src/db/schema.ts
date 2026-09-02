@@ -150,7 +150,8 @@ CREATE TABLE IF NOT EXISTS director_messages (
 );
 
 -- sha256 of the data column, so the same bytes are stored once however many messages reference them: an
--- image dropped into the director is attached to BOTH the director message and the dispatched task's.
+-- image dropped into the director may be attached to both director and task rows, while Co-work also
+-- stores arbitrary owner files here and references them from cowork_messages.
 CREATE TABLE IF NOT EXISTS attachments (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
@@ -392,6 +393,7 @@ CREATE TABLE IF NOT EXISTS cowork_messages (
   role        TEXT NOT NULL,
   kind        TEXT NOT NULL,
   content     TEXT NOT NULL,
+  attachments TEXT NOT NULL DEFAULT '[]',
   meta        TEXT,
   partial     INTEGER NOT NULL DEFAULT 0,
   created_at  INTEGER NOT NULL,

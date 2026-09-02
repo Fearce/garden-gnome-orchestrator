@@ -8,6 +8,11 @@ import type { RepoCommitDetail } from "../git/repoOps.js";
 import type { ThreadActionResult } from "../orchestrator/api.js";
 import type { RepoActionDTO, RepoRef, RepoStateDTO } from "../orchestrator/repoConsole.js";
 import type { OnlineOfficeDTO } from "../office/onlineOffice.js";
+import {
+  MAX_COWORK_ATTACHMENTS,
+  MAX_COWORK_FILE_BASE64_CHARS,
+  validateCoworkAttachments,
+} from "../coworkAttachments.js";
 import type {
   AgentRun,
   ChatMessage,
@@ -185,6 +190,15 @@ const imageAttachmentSchema = z.object({
   dataBase64: z.string(),
 });
 const imagesField = z.array(imageAttachmentSchema).max(8).optional();
+const coworkAttachmentSchema = z.object({
+  name: z.string().trim().min(1).max(240),
+  mediaType: z.string().trim().min(1).max(200),
+  dataBase64: z.string().max(MAX_COWORK_FILE_BASE64_CHARS),
+});
+const coworkAttachmentsField = z.array(coworkAttachmentSchema).max(MAX_COWORK_ATTACHMENTS).superRefine((files, ctx) => {
+  const error = validateCoworkAttachments(files);
+  if (error) ctx.addIssue({ code: z.ZodIssueCode.custom, message: error });
+}).optional();
 
 export const clientCommandSchema = z.discriminatedUnion("type", [
   // source:"voice" marks a spoken prompt (voice-gateway): the director gets a TTS-aware note
@@ -204,12 +218,19 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     model: z.string().min(1).max(100).optional(),
     clientId: z.string().uuid().optional(),
   }),
-  z.object({ type: z.literal("cowork.send"), sessionId: z.string(), text: z.string().trim().min(1).max(100_000), clientId: z.string().uuid().optional() }),
+  z.object({
+    type: z.literal("cowork.send"),
+    sessionId: z.string(),
+    text: z.string().trim().min(1).max(100_000),
+    attachments: coworkAttachmentsField,
+    clientId: z.string().uuid().optional(),
+  }),
   z.object({
     type: z.literal("cowork.steer"),
     sessionId: z.string(),
     text: z.string().trim().min(1).max(100_000),
     mode: z.enum(["queue", "append", "interrupt"]),
+    attachments: coworkAttachmentsField,
     clientId: z.string().uuid().optional(),
   }),
   z.object({ type: z.literal("cowork.stop"), sessionId: z.string() }),

@@ -70,7 +70,10 @@ The **Co-work** tab is pair development: an owner prompt claims one short **Co-w
 (`coworkerRunOptions`/`COWORKER_PROMPT`) that completes one useful increment, verifies proportionately,
 and hands control back. While it runs, Queue, Inject, and Interrupt & inject persist owner direction in
 the same turn and steer the live provider; a soft/hard wall boundary prevents an unattended long solo
-run and returns a `timeboxed` turn to `idle`. It owns **no task** — no `threads`/`agent_runs` row,
+run and returns a `timeboxed` turn to `idle`. Initial and live messages accept pasted/dropped/selected
+screenshots and files: refs and bytes survive reload, native image blocks reach capable providers, and
+every file gets a session-isolated agent-readable cache path plus an auth-gated download. It owns **no
+task** — no `threads`/`agent_runs` row,
 no findings, no bus/office MCP, no `runPipeline`, no planner/QA/reviewer/supervisor/auto-review — so
 nothing can mark it done and ordinary dispatch is untouched. `orchestrator/cowork.ts` owns the lifecycle
 over `cowork_sessions`/`cowork_turns`/`cowork_messages`, reaching provider/account/capacity routing

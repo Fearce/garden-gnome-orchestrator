@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store.js";
 import type { CoworkMessage, CoworkSession, CoworkSteeringMode, ImplementorProvider } from "../types.js";
+import {
+  CoworkAttachButton,
+  CoworkComposerAttachments,
+  CoworkMessageAttachments,
+  useCoworkAttachments,
+} from "../lib/attachments.js";
 import { FolderPicker } from "./FolderPicker.js";
 import { Markdown } from "./Markdown.js";
 import { PathInput } from "./PathInput.js";
@@ -38,11 +44,13 @@ export function CoWork() {
   const rename = useStore((state) => state.renameCowork);
   const remove = useStore((state) => state.deleteCowork);
   const actionError = useStore((state) => state.coworkActionError);
+  const attachments = useCoworkAttachments();
   const [newOpen, setNewOpen] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const attachmentSession = useRef(selectedId);
 
   const sessions = useMemo(
     () => Object.values(sessionsById).sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt),
@@ -53,7 +61,7 @@ export function CoWork() {
     ? outbound.filter((message): message is Extract<typeof message, { surface: "cowork" }> =>
       message.surface === "cowork" && message.sessionId === selectedId)
     : [];
-  const activitySignature = `${messages.length}:${messages.reduce((chars, message) => chars + message.content.length, 0)}:${pending.length}`;
+  const activitySignature = `${messages.length}:${messages.reduce((chars, message) => chars + message.content.length + (message.attachments?.length ?? 0), 0)}:${pending.length}`;
 
   useEffect(() => {
     const node = scrollRef.current;
@@ -66,13 +74,23 @@ export function CoWork() {
     if (selectedId && !sessionsById[selectedId]) select(null);
   }, [selectedId, sessionsById, select]);
 
+  useEffect(() => {
+    if (attachmentSession.current !== selectedId) {
+      attachmentSession.current = selectedId;
+      attachments.clear();
+    }
+  }, [selectedId, attachments.clear]);
+
   const submit = (mode: "turn" | CoworkSteeringMode = selected?.state === "running" ? "append" : "turn") => {
     if (!selected) return;
     const text = drafts[selected.id] ?? "";
-    if (!text.trim() || selected.state === "stopping") return;
+    if ((!text.trim() && !attachments.files.length) || selected.state === "stopping") return;
     if (mode === "turn" && selected.state === "running") return;
     if (mode !== "turn" && selected.state !== "running") return;
-    if (send(selected.id, text, mode)) setDrafts((all) => ({ ...all, [selected.id]: "" }));
+    if (send(selected.id, text, mode, attachments.files)) {
+      setDrafts((all) => ({ ...all, [selected.id]: "" }));
+      attachments.clear();
+    }
   };
 
   return (
@@ -196,6 +214,7 @@ export function CoWork() {
               {pending.map((message) => (
                 <div key={message.id} className="cowork-message user pending">
                   <div className="cowork-bubble">{message.content}</div>
+                  <CoworkComposerAttachments files={message.attachments ?? []} />
                   <span className={message.status === "failed" ? "delivery-failed" : "delivery-sending"}>
                     {message.status === "failed"
                       ? message.error ?? "Not delivered"
@@ -215,40 +234,53 @@ export function CoWork() {
             </div>
 
             <footer className="cowork-composer-wrap">
-              <div className={`cowork-composer${selected.state === "running" ? " active" : ""}`}>
-                <textarea
-                  value={drafts[selected.id] ?? ""}
-                  placeholder={selected.state === "running" ? "Add direction to the active work slice…" : "What should we work on next?"}
-                  disabled={selected.state === "stopping"}
-                  rows={1}
-                  onChange={(event) => {
-                    setDrafts((all) => ({ ...all, [selected.id]: event.target.value }));
-                    event.currentTarget.style.height = "auto";
-                    event.currentTarget.style.height = `${Math.min(180, event.currentTarget.scrollHeight)}px`;
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      submit(selected.state === "running" ? "append" : "turn");
-                    }
-                  }}
-                />
-                {selected.state === "stopping" ? (
-                  <button className="cowork-stop" disabled>
-                    <StopIcon /> Stopping
-                  </button>
-                ) : selected.state !== "running" ? (
-                  <button className="cowork-send" disabled={!drafts[selected.id]?.trim()} onClick={() => submit("turn")} aria-label="Send instruction">
-                    <SendIcon />
-                  </button>
-                ) : null}
+              <div
+                className={`cowork-composer${selected.state === "running" ? " active" : ""}${attachments.dragging ? " dragging" : ""}`}
+                {...attachments.dropHandlers}
+              >
+                <CoworkComposerAttachments files={attachments.files} onRemove={attachments.remove} />
+                <div className="cowork-composer-main">
+                  <CoworkAttachButton onPick={attachments.addFiles} disabled={selected.state === "stopping"} />
+                  <textarea
+                    value={drafts[selected.id] ?? ""}
+                    placeholder={selected.state === "running" ? "Add direction or attach a file…" : "What should we work on next?"}
+                    disabled={selected.state === "stopping"}
+                    rows={1}
+                    onPaste={attachments.onPaste}
+                    onChange={(event) => {
+                      setDrafts((all) => ({ ...all, [selected.id]: event.target.value }));
+                      event.currentTarget.style.height = "auto";
+                      event.currentTarget.style.height = `${Math.min(180, event.currentTarget.scrollHeight)}px`;
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        submit(selected.state === "running" ? "append" : "turn");
+                      }
+                    }}
+                  />
+                  {selected.state === "stopping" ? (
+                    <button className="cowork-stop" disabled>
+                      <StopIcon /> Stopping
+                    </button>
+                  ) : selected.state !== "running" ? (
+                    <button
+                      className="cowork-send"
+                      disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
+                      onClick={() => submit("turn")}
+                      aria-label="Send instruction"
+                    >
+                      <SendIcon />
+                    </button>
+                  ) : null}
+                </div>
               </div>
               {selected.state === "running" ? (
                 <div className="cowork-steer-row" aria-label="Steer active Co-worker turn">
                   <span className="cowork-steer-label">Active direction</span>
                   <button
                     className="btn ghost sm cowork-steer queue"
-                    disabled={!drafts[selected.id]?.trim()}
+                    disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
                     onClick={() => submit("queue")}
                     title="Finish the current safe unit, then apply this before handing control back"
                   >
@@ -256,7 +288,7 @@ export function CoWork() {
                   </button>
                   <button
                     className="btn primary sm cowork-steer inject"
-                    disabled={!drafts[selected.id]?.trim()}
+                    disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
                     onClick={() => submit("append")}
                     title="Apply this at the next safe point while preserving compatible progress"
                   >
@@ -264,7 +296,7 @@ export function CoWork() {
                   </button>
                   <button
                     className="btn ghost sm cowork-steer interrupt"
-                    disabled={!drafts[selected.id]?.trim()}
+                    disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
                     onClick={() => submit("interrupt")}
                     title="Stop the current approach and apply this direction immediately"
                   >
@@ -276,7 +308,7 @@ export function CoWork() {
                 </div>
               ) : null}
               <div className="cowork-composer-note">
-                <span>{selected.state === "running" ? "Enter injects · Shift+Enter for a new line" : "Enter to send · Shift+Enter for a new line"}</span>
+                <span>{selected.state === "running" ? "Enter injects · paste or drop files" : "Enter to send · paste or drop files"}</span>
                 {selected.agentSessionId ? <span className="mono">context linked</span> : <span>new context</span>}
               </div>
             </footer>
@@ -340,6 +372,7 @@ function CoworkBubble({ message }: { message: CoworkMessage }) {
       </div>
       <div className="cowork-bubble">
         {message.role === "coworker" ? <Markdown text={message.content} /> : message.content}
+        <CoworkMessageAttachments refs={message.attachments} />
         {message.partial ? <span className="cowork-caret" /> : null}
       </div>
     </article>

@@ -114,6 +114,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
+import { coworkContentWithAttachments } from "../coworkAttachments.js";
 import { acknowledgedInjection, injectionSendOptions, structuredAcknowledgedInjection } from "./injection.js";
 import {
   ReviewInjectionStore,
@@ -2662,8 +2663,9 @@ export class ThreadManager implements OrchestratorApi {
     session: CoworkSession;
     prompt: string;
     history: CoworkMessage[];
+    images: ImageBlock[];
   }): PreparedCoworkRun | { error: string } {
-    const { session, prompt, history } = input;
+    const { session, prompt, history, images } = input;
     const demand = demandForRole("implementor", { effort: session.effort ?? "high" });
     let provider = session.provider ?? session.requestedProvider ?? undefined;
     let model = session.model ?? session.requestedModel ?? undefined;
@@ -2734,12 +2736,12 @@ export class ThreadManager implements OrchestratorApi {
         cfg.oauthToken = account.token;
         target = { provider, model, effort, accountId: account.id, accountLabel: account.label };
         agent = new AgentRun(cfg);
-        startContent = this.communicationContent(prompt);
+        startContent = this.communicationContent(contentWithImages(prompt, images));
       } else if (provider === "codex") {
         model ??= this.codexModel();
         const effort = (session.effort ?? this.codexEffort(model)) as CodexEffort;
         target = { provider, model, effort, accountId: "openai-codex", accountLabel: `codex:${model}` };
-        const fresh = coworkFreshKickoff(history, prompt);
+        const fresh = coworkFreshKickoff(this.db, history, prompt);
         agent = new CodexAgentRun({
           model,
           effort,
@@ -2748,12 +2750,12 @@ export class ThreadManager implements OrchestratorApi {
           resume,
           freshFallback: this.communicationContent(fresh),
         });
-        startContent = this.communicationContent(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"));
+        startContent = this.communicationContent(contentWithImages(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"), images));
       } else if (provider === "grok") {
         model ??= this.grokModel();
         const effort = (session.effort ?? this.grokEffort(model)) as GrokEffort;
         target = { provider, model, effort, accountId: "xai-grok", accountLabel: `grok:${model}` };
-        const fresh = coworkFreshKickoff(history, prompt);
+        const fresh = coworkFreshKickoff(this.db, history, prompt);
         agent = new GrokAgentRun({
           model,
           effort,
@@ -2761,7 +2763,7 @@ export class ThreadManager implements OrchestratorApi {
           resume,
           freshFallback: this.communicationContent(fresh),
         });
-        startContent = this.communicationContent(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"));
+        startContent = this.communicationContent(contentWithImages(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"), images));
       } else {
         model ??= this.zaiModel();
         const effort = session.effort ?? this.zaiEffort();
@@ -2775,7 +2777,7 @@ export class ThreadManager implements OrchestratorApi {
         cfg.authToken = this.zaiApiKey();
         target = { provider: "zai", model, effort, accountId: "zai", accountLabel: `zai:${model}` };
         agent = new ZaiAgentRun(cfg);
-        startContent = this.communicationContent(prompt);
+        startContent = this.communicationContent(contentWithImages(prompt, images));
       }
       return { target, agent, startContent };
     } catch (error) {
@@ -12616,10 +12618,13 @@ function providerOfRunAccount(account: string | null | undefined): ImplementorPr
 /** Full durable handoff used only when a CLI resume wedges and its runner self-heals to a fresh
  * session. Native resumes carry their own context; this fallback keeps every substantive text block
  * and relies on the working tree for the edits themselves. */
-function coworkFreshKickoff(history: CoworkMessage[], prompt: string): string {
+function coworkFreshKickoff(db: Db, history: CoworkMessage[], prompt: string): string {
   const transcript = history
     .filter((message) => message.kind === "text" || message.kind === "system")
-    .map((message) => `${message.role === "user" ? "OWNER" : message.role.toUpperCase()}:\n${message.content}`)
+    .map((message) => {
+      const content = coworkContentWithAttachments(db, message.sessionId, message.content, message.attachments);
+      return `${message.role === "user" ? "OWNER" : message.role.toUpperCase()}:\n${content}`;
+    })
     .join("\n\n");
   return [
     COWORKER_PROMPT,
