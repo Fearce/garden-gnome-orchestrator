@@ -165,6 +165,27 @@ async function verifyDesktop(browser, dataDir) {
     check("only one settings page is visible at a time", (await page.locator(".settings-category-panel:visible").count()) === 1);
     await page.click('[data-settings-category="pipeline"]');
     check("a rail category opens its matching page", (await page.locator("#settings-page-title").innerText()) === "Pipeline");
+
+    const desktopSearch = page.locator('.settings-search-desktop input[aria-label="Search settings"]');
+    check("the desktop settings rail exposes keyword search", await desktopSearch.isVisible());
+    await page.keyboard.press("Control+f");
+    check("Ctrl+F focuses settings search instead of browser find", await desktopSearch.evaluate((input) => document.activeElement === input));
+    await desktopSearch.fill("discord");
+    check("search replaces the category page with matching results", (await page.locator("#settings-page-title").innerText()) === "Search results");
+    const discordResult = page.locator(".settings-search-result").filter({ hasText: "Post to Discord" });
+    check("setting-name keywords find the exact setting", (await discordResult.count()) === 1, await page.locator(".settings-search-results").innerText());
+    await desktopSearch.fill("right-click");
+    check("help-text keywords find the exact setting", (await page.locator(".settings-search-result").filter({ hasText: "Channel ID" }).count()) === 1, await page.locator(".settings-search-results").innerText());
+    await desktopSearch.fill("discord");
+    await discordResult.click();
+    check("a result opens the setting's category", (await page.locator("#settings-page-title").innerText()) === "Voice & alerts");
+    const discordToggle = page.locator('[role="switch"][aria-label="Post to Discord"]');
+    check("a result focuses its exact control", await discordToggle.evaluate((control) => document.activeElement === control));
+    check("a result briefly highlights its exact row", await page.locator('.settings-row.settings-search-target:has([aria-label="Post to Discord"])').isVisible());
+    await desktopSearch.fill("definitely-not-a-setting");
+    check("an unmatched keyword gets a clear empty state", await page.locator(".settings-search-empty").isVisible());
+    await desktopSearch.press("Escape");
+    check("Escape clears an active search without closing Settings", await page.locator(SETTINGS).isVisible() && (await desktopSearch.inputValue()) === "");
     await page.click('[data-settings-category="general"]');
 
     check("the Agent communication group renders", (await page.locator(GROUP).count()) === 1);
@@ -223,6 +244,14 @@ async function verifyMobile(browser, dataDir) {
     check("the phone pass really uses touch media", media.coarse && media.hoverNone, JSON.stringify(media));
     check("the category rail collapses on a phone", !(await page.locator(".settings-sidebar").isVisible()));
     check("the phone exposes the compact category picker", await page.locator('.settings-mobile-nav select[aria-label="Settings category"]').isVisible());
+    const mobileSearch = page.locator('.settings-search-mobile input[aria-label="Search settings"]');
+    check("the phone keeps settings search visible", await mobileSearch.isVisible());
+    await mobileSearch.fill("drag reorder");
+    check("phone search is clearly global, not scoped to the old page", (await page.locator('.settings-mobile-nav select[aria-label="Settings category"]').inputValue()) === "");
+    const dragResult = page.locator(".settings-search-result").filter({ hasText: "Drag to reorder" });
+    check("multi-word search finds a matching phone setting", (await dragResult.count()) === 1, await page.locator(".settings-search-results").innerText());
+    await dragResult.tap();
+    check("a phone search result opens its matching page", (await page.locator("#settings-page-title").innerText()) === "Interface");
     await page.selectOption('.settings-mobile-nav select[aria-label="Settings category"]', "interface");
     check("the phone picker opens its matching page", (await page.locator("#settings-page-title").innerText()) === "Interface");
     await page.selectOption('.settings-mobile-nav select[aria-label="Settings category"]', "general");

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_EFFORTS, ZAI_SUB_ID, codexEffortsForModel, grokEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type ZaiEffort } from "../types.js";
@@ -14,20 +14,39 @@ interface SettingsCategory {
   section: "Orchestrator" | "Providers" | "Workspace";
   label: string;
   description: string;
+  keywords: string;
 }
 
 const SETTINGS_CATEGORIES = [
-  { id: "general", section: "Orchestrator", label: "General", description: "Set the director's identity and how agents communicate with you." },
-  { id: "pipeline", section: "Orchestrator", label: "Pipeline", description: "Control task execution, reviews, concurrency, and supervision." },
-  { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced." },
-  { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits." },
-  { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles." },
-  { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications." },
-  { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles." },
-  { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed." },
+  { id: "general", section: "Orchestrator", label: "General", description: "Set the director's identity and how agents communicate with you.", keywords: "name wording concise detailed communication tone" },
+  { id: "pipeline", section: "Orchestrator", label: "Pipeline", description: "Control task execution, reviews, concurrency, and supervision.", keywords: "planner research implementor qa review auto push git parallel workers supervisor models" },
+  { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced.", keywords: "tokens quota capacity allowance polling reset spread resume budget" },
+  { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits.", keywords: "claude anthropic codex openai chatgpt grok xai zai glm api keys accounts models effort weekly safety" },
+  { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
+  { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
+  { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles.", keywords: "relay collaboration coworkers team machine url password presence chatroom" },
+  { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed.", keywords: "composer board completed drag reorder output model picker recent repositories ui" },
 ] as const satisfies readonly SettingsCategory[];
 
 const SETTINGS_SECTIONS: readonly SettingsCategory["section"][] = ["Orchestrator", "Providers", "Workspace"];
+const SETTINGS_FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "summary",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
+
+interface SettingsSearchResult {
+  category: SettingsCategory;
+  element: HTMLElement | null;
+  hint: string;
+  key: string;
+  label: string;
+  rank: number;
+}
 
 /** The gear-icon settings dialog. Categories keep the growing collection approachable while every
  *  control remains mounted, preserving in-progress credential and text drafts as the owner moves around. */
@@ -41,37 +60,132 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const taskDragAndDrop = useStore((s) => s.taskDragAndDrop);
   const setTaskDragAndDrop = useStore((s) => s.setTaskDragAndDrop);
   const [activeCategoryId, setActiveCategoryId] = useState<SettingsCategoryId>("general");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SettingsSearchResult[]>([]);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const desktopSearchRef = useRef<HTMLInputElement>(null);
+  const mobileSearchRef = useRef<HTMLInputElement>(null);
   const activeCategory = SETTINGS_CATEGORIES.find((category) => category.id === activeCategoryId) ?? SETTINGS_CATEGORIES[0];
+  const isSearching = normalizeSettingsSearchText(searchQuery).length > 0;
 
   const chooseCategory = (id: SettingsCategoryId) => {
+    setSearchQuery("");
+    setSearchResults([]);
     setActiveCategoryId(id);
     if (contentRef.current) contentRef.current.scrollTop = 0;
   };
 
+  const updateSearch = (query: string) => {
+    setSearchQuery(query);
+    setSearchResults(query.trim() && dialogRef.current ? collectSettingsSearchResults(dialogRef.current, query) : []);
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  };
+
+  const focusFirstSearchResult = () => {
+    dialogRef.current?.querySelector<HTMLButtonElement>(".settings-search-result")?.focus();
+  };
+
+  const openSearchResult = (result: SettingsSearchResult) => {
+    chooseCategory(result.category.id);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const target = result.element;
+      if (!target?.isConnected) return;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.classList.remove("settings-search-target");
+      void target.offsetWidth;
+      target.classList.add("settings-search-target");
+      window.setTimeout(() => {
+        if (target.isConnected) target.classList.remove("settings-search-target");
+      }, 1800);
+      const focusTarget = target.matches(SETTINGS_FOCUSABLE_SELECTOR)
+        ? target
+        : settingsFocusableControls(target)[0];
+      focusTarget?.focus({ preventScroll: true });
+    }));
+  };
+
   useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusFirstControl = () => {
+      const first = dialog ? settingsFocusableControls(dialog)[0] : undefined;
+      (first ?? dialog)?.focus({ preventScroll: true });
+    };
+    const frame = window.requestAnimationFrame(focusFirstControl);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        const search = [desktopSearchRef.current, mobileSearchRef.current]
+          .find((input) => input && input.getClientRects().length > 0);
+        if (search) {
+          e.preventDefault();
+          search.focus();
+          search.select();
+          return;
+        }
+      }
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab" || !dialog) return;
+
+      const focusable = settingsFocusableControls(dialog);
+      if (focusable.length === 0) {
+        e.preventDefault();
+        dialog.focus({ preventScroll: true });
+        return;
+      }
+
+      const current = document.activeElement;
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      if (e.shiftKey) {
+        if (!current || !dialog.contains(current) || current === first) {
+          e.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+      if (!current || !dialog.contains(current) || current === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", onKey);
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
   }, [onClose]);
 
   return (
     <div className="settings-scrim" onClick={onClose}>
       <div
+        ref={dialogRef}
         className="settings-pop"
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
-        aria-labelledby="settings-page-title"
+        aria-labelledby="settings-dialog-title settings-page-title"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
+        <span id="settings-dialog-title" className="settings-dialog-title-sr">Settings</span>
         <aside className="settings-sidebar" aria-label="Settings categories">
           <div className="settings-sidebar-title">
             <span className="settings-sidebar-mark" aria-hidden="true">G</span>
             <span>Settings</span>
           </div>
+          <SettingsSearchField
+            className="settings-search-desktop"
+            inputRef={desktopSearchRef}
+            query={searchQuery}
+            onChange={updateSearch}
+            onMoveToResults={focusFirstSearchResult}
+          />
           <nav className="settings-nav">
             {SETTINGS_SECTIONS.map((section) => (
               <div className="settings-nav-section" key={section}>
@@ -80,10 +194,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   <button
                     key={category.id}
                     type="button"
-                    className={"settings-nav-item" + (category.id === activeCategoryId ? " active" : "")}
+                    className={"settings-nav-item" + (!isSearching && category.id === activeCategoryId ? " active" : "")}
                     data-settings-category={category.id}
                     aria-controls={`settings-category-${category.id}`}
-                    aria-current={category.id === activeCategoryId ? "page" : undefined}
+                    aria-current={!isSearching && category.id === activeCategoryId ? "page" : undefined}
                     onClick={() => chooseCategory(category.id)}
                   >
                     <SettingsCategoryIcon category={category.id} />
@@ -99,21 +213,34 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           <div className="settings-head">
             <div className="settings-head-copy">
               <div className="settings-head-kicker">Settings</div>
-              <h3 id="settings-page-title">{activeCategory.label}</h3>
-              <p>{activeCategory.description}</p>
+              <h3 id="settings-page-title">{isSearching ? "Search results" : activeCategory.label}</h3>
+              <p aria-live="polite">
+                {isSearching
+                  ? `${searchResults.length} ${searchResults.length === 1 ? "match" : "matches"} for “${searchQuery.trim()}”`
+                  : activeCategory.description}
+              </p>
             </div>
             <button className="settings-x" aria-label="Close settings" onClick={onClose}>
               ✕
             </button>
           </div>
 
+          <SettingsSearchField
+            className="settings-search-mobile"
+            inputRef={mobileSearchRef}
+            query={searchQuery}
+            onChange={updateSearch}
+            onMoveToResults={focusFirstSearchResult}
+          />
+
           <label className="settings-mobile-nav">
             <span>Category</span>
             <select
               aria-label="Settings category"
-              value={activeCategoryId}
+              value={isSearching ? "" : activeCategoryId}
               onChange={(event) => chooseCategory(event.target.value as SettingsCategoryId)}
             >
+              <option value="" disabled>All settings</option>
               {SETTINGS_SECTIONS.map((section) => (
                 <optgroup key={section} label={section}>
                   {SETTINGS_CATEGORIES.filter((category) => category.section === section).map((category) => (
@@ -125,7 +252,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           </label>
 
           <div className="settings-content" ref={contentRef}>
-            <SettingsCategoryPanel id="general" active={activeCategoryId === "general"}>
+            {isSearching ? (
+              <SettingsSearchResults query={searchQuery} results={searchResults} onOpen={openSearchResult} />
+            ) : null}
+            <SettingsCategoryPanel id="general" active={!isSearching && activeCategoryId === "general"}>
               <Group label="Director">
                 <TextRow
                   label="Director name"
@@ -149,7 +279,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               </Group>
             </SettingsCategoryPanel>
 
-            <SettingsCategoryPanel id="pipeline" active={activeCategoryId === "pipeline"}>
+            <SettingsCategoryPanel id="pipeline" active={!isSearching && activeCategoryId === "pipeline"}>
               <Group label="Pipeline">
                 <ToggleRow
                   label="Auto-push"
@@ -233,7 +363,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               </p>
             </SettingsCategoryPanel>
 
-            <SettingsCategoryPanel id="usage" active={activeCategoryId === "usage"}>
+            <SettingsCategoryPanel id="usage" active={!isSearching && activeCategoryId === "usage"}>
               <Group label="Usage safeguards">
                 <ToggleRow
                   label="Token safety limit"
@@ -284,19 +414,19 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               </Group>
             </SettingsCategoryPanel>
 
-            <SettingsCategoryPanel id="subscriptions" active={activeCategoryId === "subscriptions"}>
+            <SettingsCategoryPanel id="subscriptions" active={!isSearching && activeCategoryId === "subscriptions"}>
               <Group label="Subscriptions">
                 <SubscriptionsSection />
               </Group>
             </SettingsCategoryPanel>
 
-            <SettingsCategoryPanel id="free-ai" active={activeCategoryId === "free-ai"}>
+            <SettingsCategoryPanel id="free-ai" active={!isSearching && activeCategoryId === "free-ai"}>
               <Group label="Free AI connections">
                 <FreeProviders />
               </Group>
             </SettingsCategoryPanel>
 
-            <SettingsCategoryPanel id="voice-alerts" active={activeCategoryId === "voice-alerts"}>
+            <SettingsCategoryPanel id="voice-alerts" active={!isSearching && activeCategoryId === "voice-alerts"}>
               <Group label="Voice mode">
                 <VoiceSection />
               </Group>
@@ -305,13 +435,13 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               </Group>
             </SettingsCategoryPanel>
 
-            <SettingsCategoryPanel id="office" active={activeCategoryId === "office"}>
+            <SettingsCategoryPanel id="office" active={!isSearching && activeCategoryId === "office"}>
               <Group label="Online office">
                 <OnlineOfficeSection />
               </Group>
             </SettingsCategoryPanel>
 
-            <SettingsCategoryPanel id="interface" active={activeCategoryId === "interface"}>
+            <SettingsCategoryPanel id="interface" active={!isSearching && activeCategoryId === "interface"}>
               <Group label="Composer">
                 <ToggleRow
                   label="Show model & effort pickers"
@@ -369,6 +499,224 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         </section>
       </div>
     </div>
+  );
+}
+
+function settingsFocusableControls(root: HTMLElement) {
+  return Array.from(root.querySelectorAll<HTMLElement>(SETTINGS_FOCUSABLE_SELECTOR)).filter((el) => {
+    if (el.closest("[hidden]")) return false;
+    return el.getClientRects().length > 0;
+  });
+}
+
+const SETTINGS_SEARCH_CANDIDATE_SELECTOR = [
+  ".settings-row",
+  ".sub-card",
+  ".sub-field",
+  ".free-provider-card",
+  ".office-field",
+  ".office-join",
+  ".office-joined",
+].join(", ");
+
+function normalizeSettingsSearchText(value: string) {
+  return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function collectSettingsSearchResults(root: HTMLElement, query: string): SettingsSearchResult[] {
+  const normalizedQuery = normalizeSettingsSearchText(query);
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return [];
+
+  const results: SettingsSearchResult[] = [];
+  SETTINGS_CATEGORIES.forEach((category) => {
+    const panel = root.querySelector<HTMLElement>(`[data-settings-panel="${category.id}"]`);
+    if (!panel) return;
+
+    const matchingElements = Array.from(panel.querySelectorAll<HTMLElement>(SETTINGS_SEARCH_CANDIDATE_SELECTOR))
+      .filter((element) => {
+        // A free-provider card is collapsed by default. Return the card itself instead of an invisible
+        // credential field nested inside it, so opening a result always lands on something visible.
+        if (!element.classList.contains("free-provider-card") && element.closest(".free-provider-card")) return false;
+        const searchable = normalizeSettingsSearchText(element.textContent ?? "");
+        return tokens.every((token) => searchable.includes(token));
+      });
+
+    // Prefer the most specific matching row/field. A provider card is useful for a provider-name query,
+    // but redundant when one of its individual settings already contains every search term.
+    const specificElements = matchingElements.filter((element) => (
+      !matchingElements.some((other) => other !== element && element.contains(other))
+    ));
+
+    for (const [elementIndex, element] of specificElements.entries()) {
+      const baseLabel = settingsSearchElementLabel(element) || `${category.label} setting`;
+      const context = element.matches(".sub-field, .office-field")
+        ? element.closest(".sub-card")?.querySelector<HTMLElement>(".sub-name")?.textContent?.trim()
+        : undefined;
+      const label = context ? `${context}: ${baseLabel}` : baseLabel;
+      results.push({
+        category,
+        element,
+        hint: settingsSearchElementHint(element, baseLabel, category.description),
+        key: `${category.id}:${elementIndex}:${label}`,
+        label,
+        rank: settingsSearchRank(label, normalizedQuery),
+      });
+    }
+
+    const categoryText = normalizeSettingsSearchText(`${category.label} ${category.description} ${category.keywords}`);
+    const categoryMatches = tokens.every((token) => categoryText.includes(token));
+    const panelText = normalizeSettingsSearchText(panel.textContent ?? "");
+    const panelOnlyMatch = specificElements.length === 0 && tokens.every((token) => panelText.includes(token));
+    if (specificElements.length === 0 && (categoryMatches || panelOnlyMatch)) {
+      results.push({
+        category,
+        element: null,
+        hint: category.description,
+        key: `${category.id}:category`,
+        label: category.label,
+        rank: settingsSearchRank(category.label, normalizedQuery),
+      });
+    }
+  });
+
+  return results
+    .sort((a, b) => a.rank - b.rank
+      || SETTINGS_CATEGORIES.findIndex((category) => category.id === a.category.id)
+        - SETTINGS_CATEGORIES.findIndex((category) => category.id === b.category.id)
+      || a.label.localeCompare(b.label))
+    .slice(0, 40);
+}
+
+function settingsSearchElementLabel(element: HTMLElement) {
+  const label = element.querySelector<HTMLElement>([
+    ".settings-row-label",
+    ".sub-name",
+    ".free-provider-name",
+    ".sub-label",
+    ".office-field > span",
+    ".office-state",
+  ].join(", "))?.textContent?.trim();
+  if (label) return label;
+  if (element.classList.contains("office-join")) return "Join the online office";
+  if (element.classList.contains("office-joined")) return "Online office status";
+  return "";
+}
+
+function settingsSearchElementHint(element: HTMLElement, label: string, fallback: string) {
+  const explicitHint = element.querySelector<HTMLElement>([
+    ".settings-row-hint",
+    ".sub-card-meta",
+    ".free-provider-tier",
+    ".sub-msg",
+  ].join(", "))?.textContent?.trim();
+  const raw = explicitHint || (element.textContent ?? "").replace(label, "").trim() || fallback;
+  const compact = raw.replace(/\s+/g, " ");
+  return compact.length > 180 ? `${compact.slice(0, 177).trimEnd()}…` : compact;
+}
+
+function settingsSearchRank(label: string, normalizedQuery: string) {
+  const normalizedLabel = normalizeSettingsSearchText(label);
+  if (normalizedLabel === normalizedQuery) return 0;
+  if (normalizedLabel.startsWith(normalizedQuery)) return 1;
+  if (normalizedLabel.includes(normalizedQuery)) return 2;
+  return 3;
+}
+
+function SettingsSearchField({
+  className,
+  inputRef,
+  query,
+  onChange,
+  onMoveToResults,
+}: {
+  className: string;
+  inputRef: RefObject<HTMLInputElement | null>;
+  query: string;
+  onChange: (query: string) => void;
+  onMoveToResults: () => void;
+}) {
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape" && query) {
+      event.preventDefault();
+      event.stopPropagation();
+      onChange("");
+      return;
+    }
+    if (event.key === "ArrowDown" && query) {
+      event.preventDefault();
+      onMoveToResults();
+    }
+  };
+
+  return (
+    <div className={`settings-search ${className}`} role="search">
+      <svg className="settings-search-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="11" cy="11" r="6.5" />
+        <path d="m16 16 4 4" />
+      </svg>
+      <input
+        ref={inputRef}
+        type="search"
+        aria-label="Search settings"
+        autoComplete="off"
+        placeholder="Search settings"
+        spellCheck={false}
+        value={query}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={onKeyDown}
+      />
+      {query ? (
+        <button type="button" className="settings-search-clear" aria-label="Clear settings search" onClick={() => onChange("")}>×</button>
+      ) : (
+        <kbd className="settings-search-shortcut" aria-hidden="true">Ctrl F</kbd>
+      )}
+    </div>
+  );
+}
+
+function SettingsSearchResults({
+  query,
+  results,
+  onOpen,
+}: {
+  query: string;
+  results: SettingsSearchResult[];
+  onOpen: (result: SettingsSearchResult) => void;
+}) {
+  if (results.length === 0) {
+    return (
+      <div className="settings-search-empty" role="status">
+        <SearchEmptyIcon />
+        <strong>No settings found</strong>
+        <span>Nothing matches “{query.trim()}”. Try a setting name or keyword like usage, Discord, or drag.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="settings-search-results" aria-label="Matching settings">
+      {results.map((result) => (
+        <button key={result.key} type="button" className="settings-search-result" onClick={() => onOpen(result)}>
+          <span className="settings-search-result-icon"><SettingsCategoryIcon category={result.category.id} /></span>
+          <span className="settings-search-result-copy">
+            <span className="settings-search-result-category">{result.category.label}</span>
+            <span className="settings-search-result-label">{result.label}</span>
+            <span className="settings-search-result-hint">{result.hint}</span>
+          </span>
+          <span className="settings-search-result-arrow" aria-hidden="true">›</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SearchEmptyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="m15.5 15.5 4 4M8.5 8.5l4 4m0-4-4 4" />
+    </svg>
   );
 }
 
