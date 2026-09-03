@@ -901,6 +901,65 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("director supervisor: board-wide review chat");
+  {
+    const f = fixture();
+    try {
+      const firstReview = makeTask(f.db, "First task awaiting verification", "review");
+      const secondReview = makeTask(f.db, "Second task awaiting verification", "review");
+      const capacityReview = makeTask(f.db, "Review task waiting for capacity", "review");
+      f.db.updateThread(capacityReview.id, { error: "Auto-resume pending - reviewer capacity is exhausted" });
+      // Fill the bounded model catalog with newer active work. Board review resolution must still use
+      // the complete server-owned review scope, not only whichever 40 tasks were shown to the model.
+      for (let i = 0; i < 42; i++) makeTask(f.db, `Still implementing ${i + 1}`, "implementing");
+      makeTask(f.db, "Already done", "done");
+      const supervisor = f.create();
+
+      const exactReviewSweep = "check all our tasks in review if theyre actually done otherwise resume/review/mark done thanks";
+      const beforeReviewJudges = f.getJudgeCalls();
+      const reviewSweep = supervisor.sendChatMessage(exactReviewSweep, []);
+      const reviewSweepResult = await waitForChatTurn(f.db, reviewSweep.id);
+      const reviewIds = new Set(reviewSweepResult.actionResults.map((result) => result.threadId));
+      check(
+        "the exact board-wide production request deterministically delegates every eligible review task",
+        reviewSweepResult.status === "succeeded" &&
+          reviewSweepResult.usedAgent === false &&
+          reviewSweepResult.targets.length === 0 &&
+          reviewIds.size === 2 &&
+          reviewIds.has(firstReview.id) &&
+          reviewIds.has(secondReview.id) &&
+          reviewSweepResult.actionResults.every((result) => result.action === "start_auto_review" && result.ok) &&
+          f.getJudgeCalls() === beforeReviewJudges,
+      );
+      check(
+        "a board review sweep preserves reviewer acceptance and capacity-recovery boundaries",
+        !reviewIds.has(capacityReview.id) &&
+          f.autoReviewSources.length === 2 &&
+          f.autoReviewSources.every((source) => source === "owner") &&
+          /reviewer.*only path.*mark a task done/i.test(reviewSweepResult.response ?? "") &&
+          /1 review task is already waiting for automatic capacity recovery/i.test(reviewSweepResult.response ?? ""),
+      );
+
+      f.setJudgement({
+        reply: "I can delegate the normal review backlog to the existing verifier without bypassing acceptance.",
+        needsOwner: false,
+        actions: [],
+        boardActions: [{ action: "start_auto_review", message: "Verify each task against its brief.", mode: "append" }],
+      });
+      const plannedReview = supervisor.sendChatMessage("Safely process the parked verification backlog.", []);
+      const plannedReviewResult = await waitForChatTurn(f.db, plannedReview.id);
+      check(
+        "a model-planned board review uses the same server-owned eligible scope",
+        plannedReviewResult.status === "succeeded" &&
+          plannedReviewResult.usedAgent === true &&
+          plannedReviewResult.actionResults.length === 2 &&
+          plannedReviewResult.actionResults.every((result) => reviewIds.has(result.threadId) && result.action === "start_auto_review" && result.ok),
+      );
+    } finally {
+      f.close();
+    }
+  }
+
   console.log("director supervisor: chat protocol and authorization boundary");
   {
     const clientId = crypto.randomUUID();

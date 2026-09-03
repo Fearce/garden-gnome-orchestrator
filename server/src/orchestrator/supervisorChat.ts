@@ -39,7 +39,7 @@ interface ProposedAction {
 }
 
 interface ProposedBoardAction {
-  action: "status" | "steer";
+  action: "status" | "steer" | "start_auto_review";
   message: string;
   mode: "append" | "queue";
 }
@@ -86,7 +86,7 @@ export const SUPERVISOR_CHAT_SCHEMA: JsonSchemaLike = {
         additionalProperties: false,
         required: ["action", "message", "mode"],
         properties: {
-          action: { type: "string", enum: ["status", "steer"] },
+          action: { type: "string", enum: ["status", "steer", "start_auto_review"] },
           message: { type: "string" },
           mode: { type: "string", enum: ["append", "queue"] },
         },
@@ -188,6 +188,26 @@ function deterministicDecision(turn: SupervisorChatTurn, thread: Thread | undefi
 function deterministicBoardDecision(turn: SupervisorChatTurn): SupervisorChatDecision | null {
   if (turn.targets.length) return null;
   const text = turn.content;
+  const namesReviewBacklog =
+    /\b(?:all|every)\b.{0,80}\b(?:tasks?|items?)\b.{0,40}\b(?:in|awaiting|pending)\s+(?:auto[- ]?)?review\b/i.test(text) ||
+    /\b(?:all|every)\b.{0,50}\breview\s+(?:tasks?|items?|backlog)\b/i.test(text);
+  const asksToVerifyReview =
+    /\b(?:check|verify|auto[- ]review)\b/i.test(text) ||
+    /\breview\b.{0,40}\b(?:all|every)\b/i.test(text) ||
+    /\b(?:have|let)\b.{0,30}\b(?:the\s+)?reviewer\b/i.test(text);
+  if (namesReviewBacklog && asksToVerifyReview) {
+    return {
+      reply: "I will delegate each eligible review item to the existing auto-reviewer. The reviewer verifies the work, sends unfinished work through its normal fix or hand-back flow, and is the only path here that can mark a task done.",
+      needsOwner: false,
+      actions: [],
+      boardActions: [{
+        action: "start_auto_review",
+        mode: "append",
+        message: "Verify this task against its brief and workspace. Accept it only if the existing auto-review requirements pass; otherwise use the normal fix or hand-back flow.",
+      }],
+    };
+  }
+
   const namesGroup = /\b(?:tasks?|agents?|them|they|all|everything)\b/i.test(text);
   const namesCurrentWork = /\b(?:running|active|in[ -]progress|we have|currently)\b/i.test(text);
   const asksToFinish = /\b(?:finish(?:\s+up)?|wrap\s+up|complete\s+(?:their|the|current))\b/i.test(text);
@@ -270,7 +290,7 @@ function parseDecision(output: unknown, allowedIds: ReadonlySet<string>, allowBo
   for (const item of rawBoardActions) {
     if (!item || typeof item !== "object" || Array.isArray(item)) return null;
     const value = item as Record<string, unknown>;
-    if (value.action !== "status" && value.action !== "steer") return null;
+    if (value.action !== "status" && value.action !== "steer" && value.action !== "start_auto_review") return null;
     const message = typeof value.message === "string" ? clip(value.message, MAX_ACTION_MESSAGE_CHARS) : "";
     const mode = value.mode === "append" || value.mode === "queue" ? value.mode : null;
     if (!mode || (value.action === "steer" && !message)) return null;
@@ -339,7 +359,7 @@ function buildPrompt(db: Db, turn: SupervisorChatTurn, candidates: Thread[]): st
     "",
     explicit
       ? "The owner explicitly selected the task(s) below. They are the complete action scope: never propose an action for any other task."
-      : "No task was selected. This is a board-wide request. You may answer a board status question, use one boardActions entry for a clear common instruction to active work, or act on one catalog task only when the request identifies it unambiguously. Otherwise ask the owner to select the task.",
+      : "No task was selected. This is a board-wide request. You may answer a board status question, use one boardActions entry for a clear common instruction to active work or a review-backlog sweep, or act on one catalog task only when the request identifies it unambiguously. Otherwise ask the owner to select the task.",
     "Task creation, dispatch, or unrelated new work belongs in Director. If asked for that, explain this and return no actions. Never silently create or duplicate a task.",
     "If the request is ambiguous, needs a product/owner decision, or names a task you cannot identify, set needsOwner=true, ask one concrete question in reply, and take no action affected by that ambiguity.",
     "Do not claim an operation succeeded in reply. The server validates fresh state and executes actions only after your answer; phrase the reply as your assessment/intent, then the UI appends authoritative results.",
@@ -354,7 +374,9 @@ function buildPrompt(db: Db, turn: SupervisorChatTurn, candidates: Thread[]): st
     "- escalate: add a visible warning that needs the owner's attention. It does not pretend to resolve the blocker.",
     "There is intentionally no cancel, retry, delete, close, dispatch, or mark-done action.",
     "Use at most one state-changing action per task. Put the exact instruction/finding text in message. mode is required for every action but ignored unless action=steer. Use threadId from the catalog for per-task actions (taskId is accepted only as a compatibility alias).",
-    "For a clear board-wide common request, return actions=[] and exactly one boardActions entry. The server expands it to at most 8 reachable top-level tasks currently in planning, researching, implementing, QA, or reviewing. Board actions never include parked/done/cancelled/closed work. Board steering supports append or queue only; it preserves current sessions and never cold-resumes or interrupts them. Board pause/resume/review/escalate and destructive or acceptance-bypass requests are out of scope.",
+    "For a clear board-wide common request, return actions=[] and exactly one boardActions entry. For action=steer or status, the server expands it to at most 8 reachable top-level tasks currently in planning, researching, implementing, QA, or reviewing. Board steering supports append or queue only; it preserves current sessions and never cold-resumes or interrupts them.",
+    "For a clear request to verify all tasks parked in review, use boardActions action=start_auto_review. The server expands it to at most 8 top-level tasks in normal review and skips capacity-owned auto-resume parks. Each existing reviewer independently verifies its task and owns the accept-as-done decision; the Supervisor never marks work done directly. A request to mark tasks done without this review remains an acceptance bypass and is out of scope.",
+    "Board pause/resume/escalate and destructive or acceptance-bypass requests are out of scope.",
     "",
     "Recent supervisor conversation:",
     conversationContext(db.listSupervisorChatTurns(CHAT_HISTORY_TURNS + 1), turn.id),
@@ -496,26 +518,43 @@ export class SupervisorChat {
 
     if (decision.boardActions.length) {
       const board = decision.boardActions[0]!;
-      const active = candidates.filter((thread) => BOARD_ACTIVE_STATES.has(thread.state));
-      const reachable = board.action === "steer"
-        ? active.filter((thread) => this.host.canInjectSupervisorInstruction(thread.id))
-        : active;
+      // The model catalog is deliberately bounded, but a server-owned review sweep must not miss an
+      // older review item merely because newer active tasks filled that catalog. Resolve this one safe
+      // scope from the fresh board, then retain the normal per-turn action limit below.
+      const boardCandidates = board.action === "start_auto_review"
+        ? this.host.db.listThreads().filter((thread) => !thread.parentId && thread.state === "review")
+        : candidates;
+      for (const thread of boardCandidates) stateSeen.set(thread.id, thread.state);
+      const active = boardCandidates.filter((thread) => BOARD_ACTIVE_STATES.has(thread.state));
+      const reviewParked = boardCandidates.filter((thread) => thread.state === "review");
+      const eligibleReview = reviewParked.filter((thread) => !CAP_PARK_MARKER.test(thread.error ?? ""));
+      const reachable = board.action === "start_auto_review"
+        ? eligibleReview
+        : board.action === "steer"
+          ? active.filter((thread) => this.host.canInjectSupervisorInstruction(thread.id))
+          : active;
       const scoped = reachable.slice(0, MAX_TARGETS);
       decision.actions = scoped.map((thread) => ({
         threadId: thread.id,
         action: board.action,
         message: board.message,
         mode: board.mode,
-        boardWide: true,
+        boardWide: board.action === "steer",
       }));
-      const unavailable = active.length - reachable.length;
+      const unavailable = board.action === "steer" ? active.length - reachable.length : 0;
+      const capacityParked = board.action === "start_auto_review" ? reviewParked.length - eligibleReview.length : 0;
       const overLimit = Math.max(0, reachable.length - scoped.length);
-      const scope = scoped.length
-        ? `Scope resolved to ${scoped.length} reachable active task${scoped.length === 1 ? "" : "s"}.`
-        : "No reachable active task is running, so nothing will be changed.";
+      const scope = board.action === "start_auto_review"
+        ? scoped.length
+          ? `Scope resolved to ${scoped.length} eligible review task${scoped.length === 1 ? "" : "s"}.`
+          : "No eligible normal review task is parked, so nothing will be changed."
+        : scoped.length
+          ? `Scope resolved to ${scoped.length} reachable active task${scoped.length === 1 ? "" : "s"}.`
+          : "No reachable active task is running, so nothing will be changed.";
       const exclusions = [
         unavailable ? `${unavailable} active task${unavailable === 1 ? " has" : "s have"} no live session and will not be cold-resumed.` : "",
-        overLimit ? `${overLimit} additional active task${overLimit === 1 ? " is" : "s are"} outside the board limit and will not be changed.` : "",
+        capacityParked ? `${capacityParked} review task${capacityParked === 1 ? " is" : "s are"} already waiting for automatic capacity recovery and will not be reviewed as finished work.` : "",
+        overLimit ? `${overLimit} additional ${board.action === "start_auto_review" ? "review" : "active"} task${overLimit === 1 ? " is" : "s are"} outside the board limit and will not be changed.` : "",
       ].filter(Boolean).join(" ");
       decision.reply = clip(`${decision.reply} ${scope}${exclusions ? ` ${exclusions}` : ""}`, MAX_REPLY_CHARS);
     } else if (turn.targets.length === 0) {
@@ -632,7 +671,9 @@ export class SupervisorChat {
       }
       case "start_auto_review": {
         if (current.state !== "review" || CAP_PARK_MARKER.test(current.error ?? "")) return base(false, "Auto-review can start only from a normal review park, not this task's current state.");
-        const result = await this.host.autoReview(current.id);
+        // Supervisor chat is an explicit authenticated owner instruction. Keep it distinct from the
+        // unattended watchdog, whose one-attempt-per-revision convergence guard uses source=supervisor.
+        const result = await this.host.autoReview(current.id, "owner");
         return base(result.ok, resultText(result, "Started the existing auto-reviewer; its verdict remains the only acceptance decision."), result.state ?? this.host.db.getThread(current.id)?.state ?? current.state);
       }
     }
