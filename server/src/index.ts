@@ -22,6 +22,7 @@ import { CoworkManager } from "./orchestrator/cowork.js";
 import { Director } from "./orchestrator/director.js";
 import { RepoConsole } from "./orchestrator/repoConsole.js";
 import { OperatorNotes } from "./orchestrator/notes.js";
+import { DeployGate, ACTIVE_TASK_STATES, isLoopbackAddress, duration } from "./orchestrator/deployGate.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
 import { OnlineOffice } from "./office/onlineOffice.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
@@ -138,6 +139,24 @@ async function main(): Promise<void> {
   // own checkout (resolved from server/, so it holds in dev and in the built dist alike) even before any
   // task has been dispatched.
   const repos = new RepoConsole(db, config.serverRoot);
+  // How often an AGENT may bounce this server. Deploying tree-kills the console and every live agent,
+  // and with several tasks running — each finishing its own patch — that was landing every few minutes.
+  // Standalone over (db, hub) like notes/scheduler: it reads the board through one count and owns the
+  // restart itself, so a deploy held now still goes live without the agent waiting around for it.
+  const deployGate = new DeployGate({
+    db,
+    hub,
+    activeTasks: () => db.countThreadsInStates(ACTIVE_TASK_STATES),
+    liveBuild: () => buildInfo(),
+    window: { minIntervalMs: config.deployGate.minIntervalMs, minActiveTasks: config.deployGate.minActiveTasks },
+    pollMs: config.deployGate.pollMs,
+  });
+  hub.log(
+    "info",
+    config.deployGate.minIntervalMs > 0
+      ? `deploy gate: agents may bounce this server once per ${duration(config.deployGate.minIntervalMs)} while ${config.deployGate.minActiveTasks}+ tasks are running`
+      : `deploy gate: off — every agent deploy restarts immediately (DEPLOY_GATE_MIN_INTERVAL_MS=0)`,
+  );
   // The Online Office: this instance's link to the shared relay, where agents on OTHER machines working
   // the same repository show up as coworkers. Standalone over (db, hub) + three callbacks into the
   // manager — off entirely until the operator joins one in Settings.
@@ -162,6 +181,7 @@ async function main(): Promise<void> {
       () => onlineOffice.start(),
       () => accounts.start(),
       () => scheduler.start(),
+      () => deployGate.start(),
       () => manager.startModelCatalog(),
       () => freeProviders.start(),
       () => startUpdatePoll(),
@@ -260,6 +280,30 @@ async function main(): Promise<void> {
       const result = await applyUpdate();
       if (!result.ok) return reply.code(409).send(result);
       return result;
+    });
+
+    // ---- the deploy gate: an agent asking to bounce this server onto the dist it just built ----
+    // `npm run deploy` posts here instead of calling the script-hub directly, so several tasks each
+    // shipping their own patch collapse into ONE restart while the owner is multitasking. Never a
+    // refusal: the gate either bounces now or takes the restart over and fires it when the window opens.
+    //
+    // Loopback-or-authed rather than cookie-only: the caller is a local child process with no session,
+    // and any local process could already POST the script-hub's own restart — so this is a coordination
+    // point, not a privilege boundary. What it must exclude is the LAN, which this console is on.
+    const deployGateReachable = (req: { ip: string; headers: { cookie?: string } }): boolean =>
+      isLoopbackAddress(req.ip) || isAuthed(req.headers.cookie);
+
+    app.post<{ Body: { label?: string; commit?: string; stampedAt?: number } }>("/api/deploy/restart", async (req, reply) => {
+      if (!deployGateReachable(req)) return reply.code(401).send({ error: "unauthorized" });
+      return deployGate.request(req.body ?? {});
+    });
+
+    // What the gate would do right now — read by `deploy -- --verify`, so a deferred deploy reads as
+    // "staged, live at 14:20" instead of the alarming "your change is NOT running".
+    app.get("/api/deploy/gate", async (req, reply) => {
+      if (!deployGateReachable(req)) return reply.code(401).send({ error: "unauthorized" });
+      reply.header("cache-control", "no-store");
+      return deployGate.status();
     });
 
     // ---- voice-gateway bridge: the composer's mic toggle → the local voice-gateway (:3960) ----

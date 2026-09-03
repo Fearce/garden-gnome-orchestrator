@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { config } from "./config.js";
-import { SUPERVISED_RESTART_CODE } from "./crashLog.js";
+import { restartRoute, scheduleRestartSelf } from "./selfRestart.js";
 
 // Self-update from git: the orchestrator periodically `git fetch`es its own checkout and reports how
 // many commits the tracked upstream is ahead, so the console can surface a quiet "update available"
@@ -16,10 +16,6 @@ const FETCH_THROTTLE_MS = 5 * 60_000;
 const GIT_TIMEOUT_MS = 30_000;
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
 const BUILD_TIMEOUT_MS = 6 * 60_000;
-// The script-hub that owns this server's process on the Windows deployment. Its atomic restart re-arms
-// keepAlive and survives the caller being killed mid-restart (see CLAUDE.md "Deploying a change").
-const HUB_URL = (process.env.SCRIPT_HUB_URL || "http://127.0.0.1:3939").replace(/\/$/, "");
-const HUB_ID = process.env.SCRIPT_HUB_ID || "claude-orchestrator";
 
 export interface UpdateStatus {
   /** The checked-out branch, or "HEAD" when detached. */
@@ -237,38 +233,6 @@ function installTargets(changed: string[]): Array<{ label: string; cwd: string }
   return out;
 }
 
-async function hubReachable(): Promise<boolean> {
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 1500);
-    const r = await fetch(`${HUB_URL}/`, { signal: ctrl.signal }).catch(() => null);
-    clearTimeout(t);
-    return !!r; // any HTTP response means the hub process is up (even a 404)
-  } catch {
-    return false;
-  }
-}
-
-// Fire the atomic restart AFTER the apply response has flushed (the hub tree-kills this process, so we
-// can't await it). The rebooted server auto-resumes in-flight tasks; the client polls health and reloads.
-function scheduleRestart(): void {
-  setTimeout(() => {
-    void fetch(`${HUB_URL}/api/restart`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: HUB_ID }),
-    }).catch(() => {});
-  }, 800);
-}
-
-// Under the process supervisor (server/scripts/supervise.cjs, the `serve` path) there is no script-hub —
-// a self-restart is a clean exit with the agreed code, which the supervisor treats as a requested restart
-// and respawns onto the freshly-built source without counting a crash. Fires after the apply response has
-// flushed, mirroring scheduleRestart.
-function scheduleSupervisedRestart(): void {
-  setTimeout(() => process.exit(SUPERVISED_RESTART_CODE), 800);
-}
-
 /** Pull the latest upstream, install changed package sets, rebuild, and (if server code changed) restart. User-initiated only. */
 export async function applyUpdate(): Promise<ApplyResult> {
   const res: ApplyResult = {
@@ -334,19 +298,18 @@ export async function applyUpdate(): Promise<ApplyResult> {
     res.ok = true;
     cache = await gitStatusAt(); // behind should now be 0
 
-    // Backend code changed → the running process must restart to load it. Under the supervisor, exit with
-    // the restart code and let it respawn; otherwise prefer the hub's atomic restart; if neither owns this
-    // process, the web is already rebuilt, so report that the server side needs a manual restart rather
-    // than silently leaving stale backend code running.
+    // Backend code changed → the running process must restart to load it. If neither the supervisor nor
+    // the hub owns this process, the web is already rebuilt, so report that the server side needs a
+    // manual restart rather than silently leaving stale backend code running.
+    //
+    // Deliberately NOT gated by the deploy gate: this restart is the owner clicking the update badge,
+    // and the gate exists to stop AGENTS interrupting them, never the other way round.
     if (res.serverChanged) {
-      if (process.env.ORCH_SUPERVISED === "1") {
-        res.restarting = true;
-        scheduleSupervisedRestart();
-      } else if (await hubReachable()) {
-        res.restarting = true;
-        scheduleRestart();
-      } else {
+      if ((await restartRoute()) === "none") {
         res.needsManualRestart = true;
+      } else {
+        res.restarting = true;
+        scheduleRestartSelf();
       }
     }
     return res;

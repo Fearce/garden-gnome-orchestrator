@@ -1398,6 +1398,15 @@ export class Db {
     return (this.raw.prepare("SELECT * FROM threads ORDER BY created_at DESC").all() as Row[]).map(rowToThread);
   }
 
+  /** How many tasks sit in any of these states. A count, so a caller that only wants the number never
+   *  pays for hydrating every row of a table that grows for the life of the install. */
+  countThreadsInStates(states: readonly ThreadState[]): number {
+    if (!states.length) return 0;
+    const holes = states.map(() => "?").join(",");
+    const r = this.raw.prepare(`SELECT COUNT(*) AS n FROM threads WHERE state IN (${holes})`).get(...states) as Row;
+    return Number(r.n ?? 0);
+  }
+
   /** Record the task's baseline HEAD sha (captured at dispatch) for task-scoped Changes attribution.
    *  Managed on its own — the generic updateThread SQL never writes this column, so a routine state
    *  change can't clobber the baseline once it's set. */

@@ -137,8 +137,17 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   not count), names what it excluded, and refuses to rebuild `web/dist` from someone else's WIP.
   `-- --plan` prints the decision and touches nothing; `-- --verify` (no build, no bounce) answers "is my
   change live?" and is what the auto-resumed session runs, since the restart kills you. Gate:
-  `test:deploy-plan`. By hand it is `POST http://127.0.0.1:3939/api/restart {"id":"claude-orchestrator"}`
-  (atomic: runs in the hub, outside this server's tree, survives the caller, re-arms keepAlive).
+  `test:deploy-plan`.
+- **`restart HELD` is a FINISHED deploy — never route around it.** `deploy` asks the running server
+  (`POST :4317/api/deploy/restart`), not the hub, so while **2+ tasks run** agent restarts collapse to
+  **one per hour** (`orchestrator/deployGate.ts`, gate `test:deploy-gate`). `dist` still builds at once;
+  the gate owns the bounce and fires it when the window opens (early if the board quiets), so everything
+  staged meanwhile rides that one restart. Held exits 0; `--verify` then says `⏸ … BUILT and STAGED`, also
+  0. Bouncing by hand instead IS the interruption the owner asked to stop. The owner's own update-badge
+  restart is never gated; `DEPLOY_GATE_MIN_INTERVAL_MS=0` turns it off.
+  By hand it is `POST http://127.0.0.1:3939/api/restart {"id":"claude-orchestrator"}` (atomic: runs in the
+  hub, outside this server's tree, survives the caller, re-arms keepAlive) — it **bypasses the gate**, so
+  keep it for when :4317 itself is down.
 - **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
   runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.

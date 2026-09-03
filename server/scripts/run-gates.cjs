@@ -44,6 +44,7 @@ const GATES = [
   "test:search-index",
   "test:probe-text",
   "test:deploy-plan",
+  "test:deploy-gate",
   "test:compiled-diff",
   "test:tree-owner",
   "test:api-errors",

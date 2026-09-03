@@ -348,6 +348,21 @@ export const config = {
   // Current frontier Claude models and Grok 4.6 support xhigh. Keep it available by default so smart
   // selection can use every supported tier; a machine can still opt out explicitly in its local env.
   enableXhigh: process.env.ENABLE_XHIGH !== "false",
+  // ---- The deploy gate (how often an AGENT may bounce this server) ----
+  // A deploy tree-kills the console and every live agent. Tasks auto-resume, the owner does not: with
+  // several tasks running, each shipping its own patch, that lands every few minutes. So while the
+  // owner is multitasking, agent-initiated restarts collapse to one per window — the build is still
+  // compiled immediately, and the gate fires the bounce itself once the window opens
+  // (orchestrator/deployGate.ts). The owner's own restarts are never gated.
+  deployGate: {
+    // 0 removes the limit entirely (agents bounce on every deploy, the pre-gate behaviour).
+    minIntervalMs: Math.max(0, numEnv(process.env.DEPLOY_GATE_MIN_INTERVAL_MS, 3_600_000)),
+    // Running tasks at which a bounce becomes expensive enough to hold. 2 = "more than one task active".
+    minActiveTasks: Math.max(1, Math.floor(numEnv(process.env.DEPLOY_GATE_MIN_ACTIVE_TASKS, 2))),
+    // How often a held restart re-checks its window. It can open EARLY — the board dropping back below
+    // minActiveTasks makes the bounce cheap again, so waiting out the full hour would be pointless.
+    pollMs: Math.max(1_000, numEnv(process.env.DEPLOY_GATE_POLL_MS, 30_000)),
+  },
   // Resume strategy. A *recent* resume hits a still-warm prompt cache (≈1h TTL on a subscription),
   // so a normal full resume is cheap AND keeps full fidelity — we only compress once the cache has
   // likely gone cold. resumeWarmMinutes is that boundary (default 40, safely under the 1h TTL):

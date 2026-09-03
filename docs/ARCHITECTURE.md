@@ -44,6 +44,24 @@ the director.
 
 Ports are in the script-hub integer-port convention; both registered there.
 
+**Restarting the process (`orchestrator/deployGate.ts` + `selfRestart.ts`).** Who owns this
+process differs per deployment — the script-hub's atomic `/api/restart` under keepAlive on
+Windows, `scripts/supervise.cjs` and a clean exit with code 75 under `npm run serve` — so
+`selfRestart.ts` is the single place that knows which, shared by the update badge and the
+deploy gate. A restart tree-kills the console and every live agent (tasks auto-resume; the
+owner does not), so `DeployGate` rate-limits **agent-initiated** bounces: while
+`deployGate.minActiveTasks` (2) or more tasks are in a running state, they collapse to one per
+`minIntervalMs` (1h). It never refuses — `deploy.cjs` still compiles `dist` immediately, and
+the gate takes the bounce over, holding it in kv (so it survives the very restart it is waiting
+for) and firing it itself at `readyAt`, or earlier if the board quiets first. Everything staged
+meanwhile rides that one restart. A bounce from any other cause counts as the window's start
+(`max(kv, this process's boot)`), a held restart whose build some other bounce already deployed
+is dropped at boot rather than spent, and a refused fire (elevated listener) rolls the window
+claim back and retries on a backoff. The owner's own restarts are never gated. Standalone over
+`(Db, EventHub)` like `notes.ts`/`scheduler.ts`; reached at `POST /api/deploy/restart` +
+`GET /api/deploy/gate`, loopback-or-authed because the caller is a local child process holding
+no session. Gate: `test:deploy-gate`.
+
 ## 3. Agent runtime (`server/src/agents/runner.ts`)
 
 One thin wrapper over the Agent SDK `query()`. Every agent we run is an

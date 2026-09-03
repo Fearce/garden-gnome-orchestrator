@@ -49,6 +49,7 @@
     "test:search-index": "tsx src/tests/searchIndex.test.ts",
     "test:probe-text": "tsx src/tests/probeText.test.ts",
     "test:deploy-plan": "node scripts/deploy-plan.test.cjs",
+    "test:deploy-gate": "tsx src/tests/deployGate.itest.ts",
     "test:compiled-diff": "node scripts/compiled-diff.test.cjs",
     "test:tree-owner": "node scripts/tree-owner.test.cjs",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",

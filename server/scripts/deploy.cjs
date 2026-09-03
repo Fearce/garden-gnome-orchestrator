@@ -20,6 +20,12 @@
 // You are usually a child process of :4317, so the restart KILLS YOU. That is the designed flow (the
 // rebooted server auto-resumes in-flight tasks): everything worth reading is printed BEFORE the restart
 // is issued, and the resumed session finishes with `-- --verify`.
+//
+// The restart is REQUESTED from the running orchestrator's deploy gate, not issued to the script-hub
+// directly. While the owner has more than one task running, the gate collapses agent restarts to one an
+// hour and fires the held one itself — so `dist` still ships immediately, and several tasks each landing
+// a patch cost the owner one interruption instead of one per patch. A held deploy prints "restart HELD"
+// and exits 0: it is finished work, not a failure, and `--verify` says the same afterwards.
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -187,13 +193,96 @@ async function liveBuild() {
   }
 }
 
-async function restart() {
+async function restartViaHub() {
   const r = await fetch(`${HUB_URL}/api/restart`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ id: HUB_ID }),
   });
-  return r.json().catch(() => null);
+  const reply = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(`the script-hub restart endpoint answered HTTP ${r.status}`);
+  return reply;
+}
+
+/**
+ * Ask the running orchestrator's deploy gate to bounce, rather than calling the script-hub directly.
+ *
+ * The gate is what keeps several tasks — each finishing its own patch — from restarting the owner's
+ * console every few minutes: while more than one task is running it collapses agent restarts to one an
+ * hour and fires the held one itself. It never refuses, so the build always lands; only the timing moves.
+ *
+ * Falls back to the hub only when the server is DOWN (there is nobody to interrupt) or a running build
+ * is OLDER than this feature and returns 404 (the one-time bootstrap). A live gate timeout/error is a
+ * failure, never permission to route around a limit whose whole contract is that it is hard.
+ */
+async function requestRestart(payload) {
+  let response;
+  try {
+    response = await fetch(`${BASE}/api/deploy/restart`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (e) {
+    // Connection refused means the server is down: there is nobody to interrupt and the hub is the
+    // recovery path. A timeout while a listener still exists is different — bypassing it would turn a
+    // busy event loop into an ungated restart, violating the hard limit this route exists to enforce.
+    const pid = listenerPid(PORT);
+    if (pid != null) {
+      throw new Error(`${BASE} did not answer its deploy gate while pid ${pid} is still listening; refusing to bypass the one-restart-per-hour limit (${String(e)})`);
+    }
+    warn(`${BASE} has no listener — restarting through the script-hub recovery path`);
+    return { via: "hub", reply: await restartViaHub() };
+  }
+  if (response.ok) {
+    const gate = await response.json();
+    if (!gate || (gate.outcome !== "restarting" && gate.outcome !== "deferred")) {
+      throw new Error(`the deploy gate returned an invalid response; refusing to bypass the one-restart-per-hour limit`);
+    }
+    return { via: "gate", gate };
+  }
+  // The only live-server bypass is bootstrap: a build older than the gate has no route to enforce it.
+  // Authentication failures and server errors prove a listener is present, so routing around them would
+  // make the supposedly hard limit best-effort precisely when the server is unhealthy or misconfigured.
+  if (response.status !== 404) {
+    throw new Error(`the deploy gate answered ${response.status}; refusing to bypass the one-restart-per-hour limit`);
+  }
+  warn(`the running server predates the deploy gate — using the script-hub once to install it`);
+  return { via: "hub", reply: await restartViaHub() };
+}
+
+/** What the gate is currently holding, if anything. Null whenever it cannot be read — an unreachable
+ *  gate must never be reported as "your deploy is safely staged". */
+async function gateStatus() {
+  try {
+    const r = await fetch(`${BASE}/api/deploy/gate`, { signal: AbortSignal.timeout(8000) });
+    return r.ok ? await r.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The stamp on the dist sitting on disk right now — what the NEXT restart will load. */
+function distStamp() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(DIST, ".build-info.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is HEAD's server code already compiled into the local `dist`, merely waiting for a restart?
+ *
+ * Compared by CONTENT via the shared `liveness` predicate, for the same reason `--verify` is: a
+ * docs-only or scripts-only commit moves HEAD without changing a single compiled byte, and calling that
+ * "not staged" would send the caller off to rebuild and bounce prod for nothing.
+ */
+function stagedInDist(commit) {
+  const stamp = distStamp();
+  if (!stamp || !stamp.commit || !commit) return false;
+  return liveness(stamp.commit, commit).live;
 }
 
 /** The hub answers 200 with nothing killed when the listener is elevated — a silent no-op that reads
@@ -223,12 +312,49 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (m) => console.log(m);
 const warn = (m) => console.log(`  ⚠ ${m}`);
 
+/** The other half of `--plan`: would this deploy bounce the server now, or be held? Read-only. */
+async function printRestartPlan() {
+  const status = await gateStatus();
+  if (!status) {
+    log(`  restart     : deploy gate unreachable — the script-hub would be asked directly`);
+    return;
+  }
+  if (status.pending) {
+    log(`  restart     : one is ALREADY held until ${status.pendingLabel} (${status.pending.requesters.length} staged) — this build would ride it`);
+    return;
+  }
+  log(`  restart     : ${status.decision.allow ? "immediate" : "HELD"} — ${status.decision.reason}`);
+}
+
 function printPlan(plan, commit) {
   log(`\ndeploy plan — HEAD ${commit ? commit.slice(0, 8) : "unknown"}`);
   log(`  server dist : ${plan.server === "plain" ? "plain tsc (nothing uncommitted compiles in)" : "HEAD-only archive build"}`);
   for (const p of plan.serverBlockers) log(`      excluded: ${p}`);
   log(`  web dist    : ${plan.web === "plain" ? "vite build" : "SKIPPED — uncommitted web sources"}`);
   for (const p of plan.webBlockers) log(`      blocking: ${p}`);
+}
+
+/** Who is deploying, for the gate's log line and the owner's "restart held" banner. `--label "…"`, else
+ *  DEPLOY_LABEL, else the gate says "an agent" — it is provenance, never a decision input. */
+function deployLabel(args) {
+  const i = args.indexOf("--label");
+  const flag = i >= 0 ? args[i + 1] : null;
+  return (flag || process.env.DEPLOY_LABEL || "").trim() || null;
+}
+
+/**
+ * The restart was HELD, and that is a success: `dist` is built and the orchestrator owns the bounce.
+ *
+ * Said plainly and at length on purpose. The reflex on "not restarted" is to go restart it by hand
+ * through the hub, which puts the interruption straight back — so the output has to leave no doubt that
+ * waiting IS the finished state.
+ */
+function printHeld(gate) {
+  log(`\n⏸ restart HELD — ${gate.reason}`);
+  log(`  dist is built and stamped; the orchestrator bounces ITSELF onto it at ${gate.readyAtLabel} (in ${gate.waitLabel}).`);
+  log(`  ${gate.staged} staged build(s) ride that one restart, so the owner is interrupted once — not once per patch.`);
+  log(`  ✓ nothing further to do. Do NOT restart through the hub by hand; that is the interruption this prevents.`);
+  log(`  confirm any time with:  npm run deploy --prefix server -- --verify`);
 }
 
 /** A one-line "and the web half" note, since `web/dist` is static: a web-only change is live once it is
@@ -272,11 +398,33 @@ async function verifyOnly(commit) {
     log(`✗ live: build ${live}, HEAD is ${head8} — git cannot compare them (rebased away?), so this cannot prove your change is running.`);
     return 1;
   }
+  // Held by the deploy gate is a THIRD answer, distinct from both "running" and "not running": the
+  // build is done and the orchestrator owns the bounce, so there is nothing for the caller to do. Exit
+  // 0 — a non-zero here is read as "act", and the only action available is bypassing the gate by hand,
+  // which is exactly the interruption it exists to prevent.
+  const held = await heldRestart(commit);
+  if (held) {
+    log(`⏸ live: build ${live}, HEAD is ${head8} — your change is BUILT and STAGED, not yet running.`);
+    log(`  the deploy gate is holding the restart until ${held.pendingLabel} — ${held.pending.requesters.length} staged build(s) ride it.`);
+    log(`  ${held.decision.allow ? "the window is open; it fires on the gate's next tick" : held.decision.reason}`);
+    log(`  nothing to do: the orchestrator bounces itself onto this dist then. Do NOT restart it by hand.`);
+    if (web) log(web);
+    return 0;
+  }
+
   const files = v.serverChanged ?? [];
   log(`✗ live: build ${live}, HEAD is ${head8} — your change is NOT running.`);
   log(`  ${files.length} runtime server file(s) differ: ${files.slice(0, 3).join(", ")}${files.length > 3 ? ", …" : ""}`);
   if (web) log(web);
   return 1;
+}
+
+/** A held restart that would deploy THIS commit — both halves matter. A pending bounce for someone
+ *  else's build says nothing about yours unless your code is already in the dist it will load. */
+async function heldRestart(commit) {
+  if (!stagedInDist(commit)) return null;
+  const status = await gateStatus();
+  return status && status.pending ? status : null;
 }
 
 async function main() {
@@ -287,7 +435,10 @@ async function main() {
   if (args.includes("--verify")) process.exit(await verifyOnly(commit));
 
   printPlan(plan, commit);
-  if (args.includes("--plan")) process.exit(0);
+  if (args.includes("--plan")) {
+    await printRestartPlan();
+    process.exit(0);
+  }
 
   log("\nbuilding…");
   if (plan.web === "plain") buildWeb();
@@ -305,10 +456,15 @@ async function main() {
   }
 
   const oldPid = listenerPid(PORT);
-  log(`\nrestarting ${HUB_ID} (atomic, via the hub — this process is a child of pid ${oldPid ?? "?"} and may die here)`);
+  log(`\nasking the deploy gate to restart ${HUB_ID} (this process is a child of pid ${oldPid ?? "?"} and may die here)`);
   log(`if this session ends now, the resumed one finishes with:  npm run deploy --prefix server -- --verify`);
-  const reply = await restart();
-  if (restartLookedLikeANoop(reply)) {
+  const outcome = await requestRestart({ label: deployLabel(args), commit, stampedAt: stamp.at ?? null });
+
+  if (outcome.via === "gate" && outcome.gate.outcome === "deferred") {
+    printHeld(outcome.gate);
+    process.exit(0);
+  }
+  if (outcome.via === "hub" && restartLookedLikeANoop(outcome.reply)) {
     warn("the hub reported a restart that killed nothing — the listener is probably elevated.");
     warn("self-elevate the kill, then let keepAlive respawn: Start-Process powershell -Verb RunAs -File <kill.ps1>");
     process.exit(1);
@@ -323,7 +479,7 @@ async function main() {
   process.exit(0);
 }
 
-module.exports = { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput };
+module.exports = { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, printHeld };
 
 if (require.main === module) {
   main().catch((e) => {
