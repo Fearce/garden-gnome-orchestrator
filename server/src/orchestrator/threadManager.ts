@@ -152,6 +152,7 @@ import type {
   ReviewerOutput,
   Role,
   RouteDecision,
+  Severity,
   StageOutputs,
   SupervisorSnapshot,
   Thread,
@@ -166,6 +167,9 @@ import type { RelayChat, RelayPresentAgent } from "../office/onlineProtocol.js";
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
 const MAX_MODEL_SUB_ENTRIES = 64;
 const IMAGE_MEDIA_TYPES = new Set<ImageAttachment["mediaType"]>(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+/** Identifies the routing/capacity notes `postRoutingNote` owns, so a resume compares against the last
+ *  one of its own kind rather than against whatever finding an agent happened to post in between. */
+const ROUTING_NOTE_RE = /^(Usage-aware routing |Low quota runway on )/;
 
 /** A concrete backend/model/account the provider-neutral director can start on. `key` is persisted by
  *  Director so auto-selection happens once and is reused until this target loses headroom. */
@@ -4617,6 +4621,21 @@ export class ThreadManager implements OrchestratorApi {
     return chosen;
   }
 
+  /** How many Claude subscriptions routing may actually pick between. Read from the persisted operator
+   *  toggles (the same kv `applyAccountEnabled` restores on boot) rather than the live AccountManager,
+   *  so a focused test harness that stubs only `hasHeadroom`/`dispatchPreview` still answers honestly. */
+  private enabledClaudeAccounts(): number {
+    return config.accounts.filter((account) => this.db.kvGet(`account_enabled_${account.id}`) !== "0").length;
+  }
+
+  /** Did routing have a decision to make at all? One backend candidate and one enabled subscription
+   *  means the destination was fixed before the gate ran, so announcing a "choice" is noise the owner
+   *  sees again on every dispatch, resume and inject. */
+  private routingHadAlternatives(candidates: ProviderCandidate[]): boolean {
+    if (candidates.length > 1) return true;
+    return candidates[0]?.provider === "claude" && this.enabledClaudeAccounts() > 1;
+  }
+
   /** Put the same quota facts that made the decision on the task, rather than hiding them in a server log. */
   private noteCapacityRoute(
     thread: Thread,
@@ -4627,15 +4646,20 @@ export class ThreadManager implements OrchestratorApi {
     const selected = candidates.find((candidate) => candidate.provider === chosen);
     if (!selected) return;
     const assessment = assessCapacity(candidateCapacityWindows(selected), demand);
+    // Single backend, single subscription: there was no route to report. The only fact still worth the
+    // owner's attention is a genuine shortage on the one pool the task has to use, and that is posted as
+    // a capacity warning rather than as a routing decision that never happened.
+    if (!this.routingHadAlternatives(candidates)) {
+      if (assessment.status === "at-risk") this.noteSolePoolAtRisk(thread, demand, selected);
+      return;
+    }
     if (candidates.length < 2 && !demand.substantial && assessment.status === "viable") return;
     const status = assessment.status === "viable"
       ? "enough quota runway"
       : assessment.status === "unknown"
         ? "quota telemetry unavailable"
         : "the least-risky available pool";
-    this.postFinding({
-      threadId: thread.id,
-      fromRole: "director",
+    this.postRoutingNote(thread.id, "director", {
       summary: `Usage-aware routing chose ${providerLabel(chosen)} — ${status}`,
       detail: [
         `Workload reserve: ${demandSummary(demand)}.`,
@@ -4646,6 +4670,36 @@ export class ThreadManager implements OrchestratorApi {
       ].filter(Boolean).join("\n"),
       severity: assessment.status === "at-risk" ? "warning" : "info",
     });
+  }
+
+  /** The one pool this deployment has is short of the reserve this run wants. Nothing was routed, so say
+   *  what is actually true: the work starts anyway, and the cap park + reset auto-resume catch the rest. */
+  private noteSolePoolAtRisk(thread: Thread, demand: CapacityDemand, selected: ProviderCandidate): void {
+    this.postRoutingNote(thread.id, "director", {
+      summary: `Low quota runway on ${selected.capacityLabel ?? providerLabel(selected.provider)} — starting anyway`,
+      detail: [
+        `Workload reserve: ${demandSummary(demand)}.`,
+        describeProviderCapacity(selected, demand),
+        "No other backend or subscription is enabled, so there is nothing to route to. Mid-task failover and reset auto-resume remain armed.",
+      ].join("\n"),
+      severity: "warning",
+    });
+  }
+
+  /** Post a routing/capacity note unless it repeats the last one this task already carries. A resume or
+   *  inject re-runs the gate, and an unchanged verdict re-announced every time is exactly the noise these
+   *  notes exist to prevent. Read from the durable findings, so it holds across a restart too. */
+  private postRoutingNote(
+    threadId: string,
+    fromRole: Role,
+    note: { summary: string; detail: string; severity: Severity },
+  ): void {
+    const previous = this.db
+      .listFindings(threadId)
+      .filter((finding) => ROUTING_NOTE_RE.test(finding.summary))
+      .at(-1);
+    if (previous?.summary === note.summary) return;
+    this.postFinding({ threadId, fromRole, summary: note.summary, detail: note.detail, severity: note.severity });
   }
 
   // ---- concurrency queue ----
@@ -5741,9 +5795,7 @@ export class ThreadManager implements OrchestratorApi {
       }
       if (provider !== "claude") {
         const claudeFree = this.accounts.hasHeadroom();
-        this.postFinding({
-          threadId: thread.id,
-          fromRole: role,
+        this.postRoutingNote(thread.id, role, {
           summary: `Usage-aware routing selected ${providerLabel(provider)} for ${role}`,
           detail: [
             `Workload reserve: ${demandSummary(demand)}.`,

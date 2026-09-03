@@ -29,6 +29,7 @@
     "test:reader": "tsx src/tests/reader.itest.ts",
     "test:route-selection": "tsx src/tests/routeSelection.test.ts",
     "test:route-pipeline": "tsx src/tests/routeSelection.itest.ts",
+    "test:routing-notes": "tsx src/tests/routingNotes.itest.ts",
     "test:structured": "tsx src/tests/structuredText.itest.ts",
     "test:effort": "tsx src/tests/effortCap.itest.ts",
     "test:cron": "tsx src/tests/cron.test.ts",

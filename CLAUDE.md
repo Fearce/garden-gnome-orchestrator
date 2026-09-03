@@ -301,6 +301,15 @@ account. Unknown telemetry never freezes an otherwise dispatchable API-key/cold-
 `test:capacity-routing` and `test:codex-usage` (plus `test:provider-fallback`, `test:qa-budget`, `test:auto-model`, and
 `test:codex-pools` for wiring/recovery).
 
+**The gate only ANNOUNCES a route when it chose one.** A "Usage-aware routing chose …" finding needs a
+real alternative — a second backend candidate, or a second enabled Claude subscription — because an
+implementor's demand is always `substantial`, and the gate re-runs on every dispatch, manual resume and
+cold inject (`injectThread` → `resumeThread` → `resumeImplementorOnly`). One sub with nothing else
+enabled therefore used to re-post a decision that never happened, on every inject. Now that case is
+silent; a sole pool that is genuinely short of the reserve posts a plain capacity warning ("Low quota
+runway on … — starting anyway") instead of claiming a choice, and `postRoutingNote` drops any note that
+repeats the task's previous one, so only a CHANGED verdict re-announces. Gate: `test:routing-notes`.
+
 ## Auto model selection (`settings.autoModelSelection`, off by default)
 On, the implementor's model + effort become a per-task judgement: just before the implementor stage,
 `orchestrator/modelSelector.ts` makes ONE no-tools structured judgement on whichever provider currently has

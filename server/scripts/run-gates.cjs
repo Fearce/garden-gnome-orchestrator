@@ -91,6 +91,7 @@ const GATES = [
   "test:reader",
   "test:route-selection",
   "test:route-pipeline",
+  "test:routing-notes",
   "test:token-freeze",
   "test:qa-budget",
   "test:qa-budget-scope",
