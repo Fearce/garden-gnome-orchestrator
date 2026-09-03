@@ -1276,6 +1276,12 @@ export class ThreadManager implements OrchestratorApi {
    *  through the same failed→runPipeline path the boot auto-resume uses (full resume-aware pipeline, QA
    *  included), clearing the marker so a later non-cap park isn't misread. */
   private resumeCapParked(): void {
+    // Both callers are unref'd timers that outlive the work that armed them: the periodic supervisor
+    // interval and the deferred post-slot-release sweep. Neither can be cancelled from the shutdown path,
+    // so a sweep can land after the database was closed — an uncatchable throw out of a timer callback,
+    // which is a crashed process rather than a skipped sweep. A closed DB means there is nothing left to
+    // resume anyway.
+    if (!this.db.raw.open) return;
     // Headroom on ANY backend can unpark work. Claude free → resume anything. CLI free (Codex/Grok
     // enabled+authed+under caps) → also resume QA-phase parks: runRole fails planner/researcher/QA over
     // to a ready CLI when Claude is still capped (see the Claude→CLI handoff in runRole). Older parks

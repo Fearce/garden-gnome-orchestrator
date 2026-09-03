@@ -520,21 +520,35 @@ try {
     ];
   };
   const readyMessage = internals.capParkMessage(directQaRace.id, "implementor");
-  check("a park message reports the viable Codex pool as ready now", readyMessage.includes("Codex general pool has viable capacity now"), readyMessage);
+  check("a park message briefly reports the viable Codex pool", readyMessage.includes("Codex general pool is ready; it will restart when a pipeline slot opens"), readyMessage);
   check("a ready pool suppresses the misleading all-capacity-capped claim", !readyMessage.includes("all compatible capacity is currently capped"), readyMessage);
   check("a ready pool suppresses an irrelevant future reset estimate", !readyMessage.includes("Next viable capacity is expected"), readyMessage);
   check("park wording and reset timing use one immutable capacity snapshot", capacitySnapshotReads === 1, String(capacitySnapshotReads));
   internals.roleCapacityOptions = realRoleCapacityOptions;
 
   // A capacity park created during final unwind used to wait for CAP_RETRY_MS even after its slot became
-  // free. Queue fairness remains first, then the same supervisor scan runs synchronously.
+  // free. Queue fairness stays synchronous; the capacity sweep is DEFERRED a short beat so the settling
+  // pipeline finishes unwinding first and a burst of settles collapses into one board read. What this
+  // pins is the invariant, not the beat: queued work claims the slot first, and the capacity recheck
+  // still lands promptly rather than waiting out CAP_RETRY_MS.
   const realPumpQueue = internals.pumpQueue;
   const realResumeCapParked = internals.resumeCapParked;
   const recoveryOrder: string[] = [];
   internals.pumpQueue = () => recoveryOrder.push("queue");
   internals.resumeCapParked = () => recoveryOrder.push("capacity");
   internals.recoverReleasedCapacity();
-  check("slot release immediately rechecks capacity parks after queued work", recoveryOrder.join(" -> ") === "queue -> capacity", recoveryOrder.join(" -> "));
+  check("queued work claims a released slot before any capacity sweep", recoveryOrder.join(" -> ") === "queue", recoveryOrder.join(" -> "));
+  // Coalescing latch: extra releases in the same beat must not queue a second board read.
+  internals.recoverReleasedCapacity();
+  const sweepDeadline = Date.now() + 5_000;
+  while (!recoveryOrder.includes("capacity") && Date.now() < sweepDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  check(
+    "slot release still rechecks capacity parks without waiting out CAP_RETRY_MS",
+    recoveryOrder.join(" -> ") === "queue -> queue -> capacity",
+    recoveryOrder.join(" -> "),
+  );
   internals.pumpQueue = realPumpQueue;
   internals.resumeCapParked = realResumeCapParked;
 
@@ -687,6 +701,18 @@ try {
   check("boot recovery preserves the parked task's saved Codex session", bootInternals.latestImplementorSession(bootPark.id) === "saved-codex-after-boot", bootInternals.latestImplementorSession(bootPark.id));
   check("boot recovery inherits no session-wedge provider cooldown", !bootInternals.providerStartupCoolingDown("codex"));
   bootDb.raw.close();
+  // Both callers of the capacity sweep are unref'd timers nothing can cancel: the supervisor interval and
+  // the 250ms post-slot-release beat. Either can land after shutdown closed the database, and a throw out
+  // of a timer callback is an uncatchable process crash, not a skipped sweep — this suite died exactly
+  // that way. Prove the sweep no-ops on a closed DB rather than reading from it.
+  let sweptAfterClose = "threw";
+  try {
+    bootInternals.resumeCapParked();
+    sweptAfterClose = "returned";
+  } catch (e) {
+    sweptAfterClose = String(e);
+  }
+  check("a capacity sweep landing after shutdown no-ops instead of crashing the process", sweptAfterClose === "returned", sweptAfterClose);
   rmSync(bootRoot, { recursive: true, force: true });
 
   // A CLI that emits zero startup events is not retried on that same backend: one watchdog interval is
@@ -775,7 +801,7 @@ try {
   check("startup cooldown is the exact next viable time", exactNext === exactCooldownReset, `expected=${exactCooldownReset} actual=${exactNext}`);
   const cooldownMessage = internals.capParkMessage(startupWedge.id, "implementor");
   check("capacity text names startup health instead of claiming usage exhaustion", cooldownMessage.includes("startup health cooldown") && !cooldownMessage.includes("all compatible capacity is currently capped"), cooldownMessage);
-  check("capacity text quotes the actual cooldown reset", cooldownMessage.includes(new Date(exactCooldownReset).toLocaleString()), cooldownMessage);
+  check("capacity text gives a compact cooldown wait", cooldownMessage.includes("Next compatible capacity: in 5m"), cooldownMessage);
   internals.roleCapacityOptions = realCooldownRoleOptions;
   internals.codexPoolSnapshot = realCooldownPoolSnapshot;
   db.kvSet("provider_startup_cooldown_codex_until", "0");
