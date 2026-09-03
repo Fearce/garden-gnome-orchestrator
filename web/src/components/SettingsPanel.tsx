@@ -105,14 +105,25 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     }));
   };
 
+  // Opening focus and focus restore belong to the dialog's LIFETIME, so they run once per open. Keyed on
+  // `onClose` — a fresh arrow on every App render — they re-ran whenever an unrelated top-bar scalar
+  // changed (a run starting, a task arriving) and yanked focus into the search box, so the owner's next
+  // keystrokes went to search instead of the field they were editing.
   useEffect(() => {
     const dialog = dialogRef.current;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const focusFirstControl = () => {
+    const frame = window.requestAnimationFrame(() => {
       const first = dialog ? settingsFocusableControls(dialog)[0] : undefined;
       (first ?? dialog)?.focus({ preventScroll: true });
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
     };
-    const frame = window.requestAnimationFrame(focusFirstControl);
+  }, []);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
         const search = [desktopSearchRef.current, mobileSearchRef.current]
@@ -154,11 +165,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       }
     };
     document.addEventListener("keydown", onKey);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      document.removeEventListener("keydown", onKey);
-      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
-    };
+    return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
   return (

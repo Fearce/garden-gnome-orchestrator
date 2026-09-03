@@ -188,6 +188,22 @@ async function verifyDesktop(browser, dataDir) {
     check("Escape clears an active search without closing Settings", await page.locator(SETTINGS).isVisible() && (await desktopSearch.inputValue()) === "");
     await page.click('[data-settings-category="general"]');
 
+    // The dialog opens focus into search on purpose, but that must happen ONCE per open. `App` re-renders
+    // whenever a top-bar scalar moves (a run starting, a task arriving), and while the opening-focus effect
+    // was keyed on the `onClose` arrow it re-ran on each of those and dragged focus out of whatever the
+    // owner was editing — so their next keystrokes silently went into the search box.
+    const nameInput = page.locator('.settings-row:has-text("Director name") input').first();
+    await nameInput.click();
+    await nameInput.fill("Gizm");
+    await page.evaluate(() => document.querySelector('[aria-label="Toggle director chat panel"]').click());
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const focusedLabel = await page.evaluate(() => document.activeElement?.getAttribute("aria-label") || "");
+    check("an unrelated re-render does not drag focus into settings search", focusedLabel !== "Search settings", focusedLabel);
+    await page.keyboard.type("o");
+    check("keystrokes after a re-render still reach the edited setting", (await nameInput.inputValue()) === "Gizmo", await nameInput.inputValue());
+    await nameInput.fill("");
+    await page.evaluate(() => document.querySelector('[aria-label="Toggle director chat panel"]').click());
+
     check("the Agent communication group renders", (await page.locator(GROUP).count()) === 1);
     check("a fresh installation defaults concise communication ON", (await toggleState(page)) === "true", await toggleState(page));
 
