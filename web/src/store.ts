@@ -526,8 +526,74 @@ const pendingThreadActions: Array<{
   resolve: (ok: boolean) => void;
 }> = [];
 
-const OUTBOUND_CONFIRM_MS = 15_000;
+// A browser may report its socket as OPEN after an intermediary has already dropped the
+// connection. The watchdog intentionally needs time to prove that condition and reconnect, so
+// don't label a write undelivered before its idempotent receipt has had a chance to replay.
+const OUTBOUND_CONFIRM_MS = 60_000;
 const outboundTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// Keep the exact wire command beside its optimistic bubble. Every command stored here has a
+// clientId, so replaying it after a reconnect is safe: the server returns the original receipt
+// instead of performing the owner action twice.
+const outboundCommands = new Map<string, ClientCommand>();
+const OUTBOUND_OUTBOX_KEY = "orch-outbound-outbox-v1";
+
+type PersistedOutbound = {
+  message: OutboundMessage;
+  command: ClientCommand;
+};
+
+// Only persist text-only owner commands. This covers Director, Supervisor, and Office messages —
+// the writes an operator most needs to survive a reload — while deliberately not putting dropped
+// image/file attachment bytes into localStorage.
+function canPersistOutbound(message: OutboundMessage, command: ClientCommand): boolean {
+  if (message.surface === "supervisor" || message.surface === "office") return true;
+  return message.surface === "director" &&
+    (command.type === "prompt.new" || command.type === "prompt.direct") &&
+    !command.images?.length;
+}
+
+function storedOutbound(): PersistedOutbound[] {
+  try {
+    const raw = localStorage.getItem(OUTBOUND_OUTBOX_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is PersistedOutbound => {
+      if (!entry || typeof entry !== "object") return false;
+      const { message, command } = entry as Partial<PersistedOutbound>;
+      return !!message && !!command && typeof message.id === "string" && message.status === "sending" &&
+        typeof command === "object" && "clientId" in command && command.clientId === message.id;
+    });
+  } catch {
+    return [];
+  }
+}
+
+function persistOutbound(message: OutboundMessage, command: ClientCommand): void {
+  if (!canPersistOutbound(message, command)) return;
+  try {
+    const entries = storedOutbound().filter((entry) => entry.message.id !== message.id);
+    entries.push({ message, command });
+    localStorage.setItem(OUTBOUND_OUTBOX_KEY, JSON.stringify(entries));
+  } catch {
+    // Storage is an extra durability layer; the in-memory outbox still retries in private mode.
+  }
+}
+
+function forgetPersistedOutbound(id: string): void {
+  try {
+    const entries = storedOutbound().filter((entry) => entry.message.id !== id);
+    if (entries.length) localStorage.setItem(OUTBOUND_OUTBOX_KEY, JSON.stringify(entries));
+    else localStorage.removeItem(OUTBOUND_OUTBOX_KEY);
+  } catch {
+    /* private mode or a full storage quota */
+  }
+}
+
+function restorePersistedOutbound(): OutboundMessage[] {
+  const restored = storedOutbound();
+  for (const { message, command } of restored) outboundCommands.set(message.id, command);
+  return restored.map(({ message }) => message);
+}
 
 function newOutboundId(): string {
   // randomUUID is secure-context-only in several mobile browsers, while the console deliberately
@@ -548,18 +614,24 @@ function clearOutboundTimer(id: string): void {
   outboundTimers.delete(id);
 }
 
-function addOutbound(message: OutboundMessage): void {
-  useStore.setState((s) => ({ outboundMessages: [...s.outboundMessages, message] }));
+function scheduleOutboundConfirmation(id: string): void {
+  clearOutboundTimer(id);
   outboundTimers.set(
-    message.id,
+    id,
     setTimeout(() => {
-      failOutbound(message.id, "No server confirmation arrived. Check the connection, then resend if needed.");
+      failOutbound(id, "No server receipt arrived after reconnecting. The message was not delivered; resend it when the console is online.");
     }, OUTBOUND_CONFIRM_MS),
   );
 }
 
+function addOutbound(message: OutboundMessage): void {
+  useStore.setState((s) => ({ outboundMessages: [...s.outboundMessages, message] }));
+}
+
 function failOutbound(id: string, error: string): void {
   clearOutboundTimer(id);
+  outboundCommands.delete(id);
+  forgetPersistedOutbound(id);
   useStore.setState((s) => ({
     outboundMessages: s.outboundMessages.map((message) =>
       message.id === id ? { ...message, status: "failed", error } : message,
@@ -569,20 +641,42 @@ function failOutbound(id: string, error: string): void {
 
 function acknowledgeOutbound(ids: Iterable<string>): Set<string> {
   const received = new Set(ids);
-  for (const id of received) clearOutboundTimer(id);
+  for (const id of received) {
+    clearOutboundTimer(id);
+    outboundCommands.delete(id);
+    forgetPersistedOutbound(id);
+  }
   return received;
 }
 
 function sendOutbound(message: OutboundMessage, command: ClientCommand): boolean {
   addOutbound(message);
+  outboundCommands.set(message.id, command);
+  persistOutbound(message, command);
   const sent = sendCommand(command);
-  if (!sent) failOutbound(message.id, "Not delivered — the console is reconnecting.");
-  return sent;
+  // A closed/half-closed socket means the browser has no way to know whether a write reached the
+  // server. Keep the idempotent command queued and let onopen replay it; marking it failed here was
+  // the actual message-loss path behind the red "Not delivered" bubble.
+  if (sent) scheduleOutboundConfirmation(message.id);
+  else if (!socket || socket.readyState === WebSocket.CLOSED) connect();
+  return true;
 }
 
-function failSendingOutbound(): void {
+function replaySendingOutbound(): void {
+  for (const message of useStore.getState().outboundMessages) {
+    if (message.status !== "sending") continue;
+    const command = outboundCommands.get(message.id);
+    if (!command) {
+      failOutbound(message.id, "The console lost this unconfirmed message before it could be replayed. Resend it when the console is online.");
+      continue;
+    }
+    if (sendCommand(command)) scheduleOutboundConfirmation(message.id);
+  }
+}
+
+function failSendingOutbound(error: string): void {
   const pending = useStore.getState().outboundMessages.filter((message) => message.status === "sending");
-  for (const message of pending) failOutbound(message.id, "Connection lost before the server confirmed receipt.");
+  for (const message of pending) failOutbound(message.id, error);
 }
 
 // Keep the proxied WS tunnel alive and self-heal missed events. A reverse proxy
@@ -610,8 +704,12 @@ function clearTimers(): void {
  *  chatroom's per-room loading flag) roll back when the socket was closed and the send was dropped. */
 function sendCommand(cmd: ClientCommand): boolean {
   if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(cmd));
-    return true;
+    try {
+      socket.send(JSON.stringify(cmd));
+      return true;
+    } catch {
+      return false;
+    }
   }
   return false;
 }
@@ -686,7 +784,9 @@ export const useStore = create<State>((set) => ({
   directorDraft: "",
   directorBusy: false,
   directorStatus: null,
-  outboundMessages: [],
+  // Text-only owner messages survive a reload until their durable server receipt arrives. Their
+  // idempotent commands were restored into outboundCommands before this state is created.
+  outboundMessages: restorePersistedOutbound(),
   directorSearch: null,
   threadFeeds: {},
   threadDrafts: {},
@@ -1783,6 +1883,10 @@ export function connect(): void {
   ws.onopen = () => {
     useStore.setState({ connected: true });
     lastRecvAt = Date.now();
+    // Ask for the authoritative snapshot first: it may already contain the receipt from a message
+    // that reached the server just before the old tunnel died. Then replay anything still missing.
+    sendCommand({ type: "snapshot.request" });
+    replaySendingOutbound();
     heartbeat = setInterval(() => sendCommand({ type: "snapshot.request" }), HEARTBEAT_MS);
     watchdog = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN && Date.now() - lastRecvAt > STALE_MS) ws.close();
@@ -1791,9 +1895,9 @@ export function connect(): void {
   ws.onclose = (e) => {
     clearTimers();
     failPendingThreadActions();
-    failSendingOutbound();
     useStore.setState({ connected: false });
     if (e.code === 4401) {
+      failSendingOutbound("Your session expired before the server confirmed this message. Sign in, then resend it.");
       useStore.setState({ authRequired: true, authed: false });
       return; // auth lost — show login instead of reconnect-looping
     }
