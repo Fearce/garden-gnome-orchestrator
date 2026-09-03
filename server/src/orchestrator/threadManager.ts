@@ -3037,7 +3037,7 @@ export class ThreadManager implements OrchestratorApi {
     if (this.db.getThread(thread.id)?.modelRequest) return undefined;
     const stage = this.db.getThreadStageOutputs(thread.id);
     const policy = stage.routeDecision?.modelPolicy;
-    const saved = stage.modelPick;
+    let saved = stage.modelPick;
     const savedComplies = !saved || modelMatchesPolicy(saved, policy);
     if (saved && !savedComplies) {
       // Policy v2 can be applied to a paused/restart-interrupted legacy episode. Preserve its run and
@@ -3057,12 +3057,25 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // legacy pick that the freshly-upgraded route just proved unsafe. Clearing that pick restores the
     // configured implementor model (Opus 5 by default) without paying for a selector call.
     if (!this.settings().autoModelSelection) return undefined;
-    if (saved && savedComplies) return saved; // a valid episode pick remains sticky
+    let selectionDemand: CapacityDemand | undefined;
+    let selectionRoster: ModelCandidate[] | undefined;
+    const demandForSelection = (): CapacityDemand => selectionDemand ??= this.capacityDemand(thread, "implementor", thread.effortOverride ?? plan?.effort);
+    const rosterForSelection = (): ModelCandidate[] => selectionRoster ??= this.implementorModelRoster(demandForSelection());
+    if (saved && savedComplies) {
+      if (policy?.tier !== "flagship") return saved; // a valid adaptive episode pick remains sticky
+      const exactReady = rosterForSelection().some((candidate) =>
+        candidate.provider === saved?.provider && normalizeModelId(candidate.model) === normalizeModelId(saved.model),
+      );
+      if (exactReady) return saved; // a valid flagship episode pick remains sticky while it still has runway
+      this.hub.log("warn", `Auto-selected ${saved.model} for ${thread.id.slice(0, 8)} no longer has safe flagship runway — selecting from the current approved roster.`);
+      this.db.updateThreadStageOutputs(thread.id, { modelPick: undefined });
+      saved = undefined;
+    }
     if (saved === null && policy?.tier !== "flagship") return undefined; // ordinary failed judgement stays latched
     if (saved === null) this.db.updateThreadStageOutputs(thread.id, { modelPick: undefined });
     await this.liveBench.prepareForSelection();
-    const demand = this.capacityDemand(thread, "implementor", thread.effortOverride ?? plan?.effort);
-    const candidates = this.implementorModelRoster(demand);
+    const demand = demandForSelection();
+    const candidates = rosterForSelection();
     // An empty roster means no backend is dispatchable/has safe runway for this workload RIGHT NOW — a
     // transient capacity state the cap-park protocol is about to wait out, not a selection attempt that
     // failed. Latching `null` below would silently disable auto-selection for the rest of the episode,
@@ -3203,6 +3216,45 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (!exactReady) {
         const thread = this.db.getThread(threadId);
         this.db.updateThreadStageOutputs(threadId, { modelPick: undefined });
+        const policySet = applyImplementorModelPolicy(roster, policy);
+        const replacement = policySet.eligible[0];
+        if (replacement) {
+          const nextPick: ModelPick = {
+            provider: replacement.provider,
+            model: replacement.model,
+            effort: defaultCandidateEffort(replacement),
+            reason: policySet.mode === "preferred"
+              ? `Previous ${pick.model} route no longer had safe runway; Opus 5 is available.`
+              : `Previous ${pick.model} route no longer had safe runway; using approved flagship fallback ${replacement.model}.`,
+          };
+          this.db.updateThreadStageOutputs(threadId, { modelPick: nextPick });
+          if (thread) {
+            this.db.recordModelSelection({
+              threadId,
+              workspace: normalizeWorkspace(thread.workspace),
+              title: thread.title,
+              provider: nextPick.provider,
+              model: nextPick.model,
+              effort: nextPick.effort,
+              reason: nextPick.reason,
+            });
+            this.postFinding({
+              threadId,
+              fromRole: "director",
+              summary: `Flagship route switched to ${nextPick.model} at ${nextPick.effort} effort`,
+              detail: [
+                nextPick.reason,
+                `Capacity target: ${demandSummary(demand)}.`,
+                replacement.capacity,
+                `Eligible models considered: ${policySet.eligible.map((candidate) => candidate.model).join(", ")}.`,
+                policySet.excluded.length ? `Excluded by the ${policy.tier} policy: ${policySet.excluded.map((candidate) => candidate.model).join(", ")}.` : undefined,
+              ].filter(Boolean).join("\n\n"),
+              severity: "info",
+            });
+          }
+          this.hub.log("info", `Flagship route for ${threadId.slice(0, 8)} switched from ${pick.model} to ${nextPick.model} after the saved pick lost runway.`);
+          return nextPick.provider;
+        }
         if (thread) this.blockFlagshipModelPolicy(thread, demand, roster, policy);
         return null;
       }

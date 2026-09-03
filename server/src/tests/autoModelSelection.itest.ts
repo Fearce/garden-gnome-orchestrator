@@ -179,6 +179,7 @@ function makeHarness(beforeManager?: (db: InstanceType<typeof Db>) => void): Har
 const HAIKU = "claude-haiku-4-5-20251001";
 const SONNET_5 = "claude-sonnet-5";
 const OPUS_5 = "claude-opus-5";
+const SOL_56 = "gpt-5.6-sol";
 const COMPLEX_DATA_BRIEF = `Investigate why stale business records remain visible to users and implement a durable end-to-end fix.
 
 Trace the full lifecycle across ingestion sources, stored status timestamps, refresh jobs, query filters,
@@ -468,6 +469,28 @@ async function main(): Promise<void> {
       check("the task visibly waits in review", parked.state === "review" && /no policy-approved flagship fallback/i.test(parked.error ?? ""), JSON.stringify({ state: parked.state, error: parked.error }));
       check("the wait names Opus and says Sonnet was not started", h.db.listFindings(id).some((finding) => /opus-5 unavailable/i.test(finding.summary) && /No weaker model was started/.test(finding.detail ?? "")), JSON.stringify(h.db.listFindings(id)));
       check("capacity blocking spends no selector turn", h.calls() === 0, String(h.calls()));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest C5a — a stale approved pick that loses runway falls forward to current Opus");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ autoModelSelection: true });
+      const id = seedComplex(h);
+      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "codex", model: SOL_56, effort: "max", reason: "previously had enough runway" } });
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(OPUS_5), policyCandidate(SONNET_5)];
+      const pick = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick;
+      check("auto-selection replaces the stale Codex flagship pick with Opus 5", pick?.model === OPUS_5 && h.db.getThreadStageOutputs(id).modelPick?.model === OPUS_5, JSON.stringify(pick));
+
+      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "codex", model: SOL_56, effort: "max", reason: "previously had enough runway" } });
+      const demand = h.internals.capacityDemand(thread(h, id), "implementor", "max");
+      const routed = h.internals.routeForPick(id, "claude", demand);
+      const stage = h.db.getThreadStageOutputs(id);
+      check("the hard gate also falls forward instead of parking", routed === "claude" && stage.modelPick?.model === OPUS_5, JSON.stringify({ routed, pick: stage.modelPick }));
+      check("the owner is not told Opus is unavailable while it is in the roster", !/not dispatchable/i.test(thread(h, id).error ?? ""), thread(h, id).error ?? "");
     } finally {
       h.dispose();
     }
