@@ -43,6 +43,7 @@ async function openSettings(browser) {
   await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
   await page.click('[aria-label="Open settings"]');
   await page.waitForSelector('[role="dialog"][aria-label="Settings"]', { timeout: 20_000 });
+  await page.click('[data-settings-category="voice-alerts"]');
   return page;
 }
 

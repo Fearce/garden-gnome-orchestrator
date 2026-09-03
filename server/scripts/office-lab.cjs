@@ -149,6 +149,7 @@ async function openOfficeSettings(browser) {
   await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
   await page.click('[aria-label="Open settings"]');
   await page.waitForSelector('[role="dialog"][aria-label="Settings"]', { timeout: 20_000 });
+  await page.click('[data-settings-category="office"]');
   return page;
 }
 
@@ -287,6 +288,7 @@ async function main() {
       // Leaving must forget the token — otherwise "Leave" is cosmetic.
       await page.click('[aria-label="Open settings"]');
       await page.waitForSelector('[role="dialog"][aria-label="Settings"]', { timeout: 20_000 });
+      await page.click('[data-settings-category="office"]');
       await page.click('.office-joined button:has-text("Leave")');
       const after = await waitForKv(dataDir, "online_office_token", "");
       check("leaving forgets the device token", after === "", String(after));

@@ -159,6 +159,14 @@ async function verifyDesktop(browser, dataDir) {
     const page = await context.newPage();
     await openSettings(page, { login: true });
 
+    const categories = await page.locator(".settings-nav-item").allInnerTexts();
+    check("the desktop rail organizes settings into eight categories", categories.length === 8, categories.join(" | "));
+    check("General is the focused default category", (await page.locator('.settings-nav-item[aria-current="page"]').innerText()) === "General");
+    check("only one settings page is visible at a time", (await page.locator(".settings-category-panel:visible").count()) === 1);
+    await page.click('[data-settings-category="pipeline"]');
+    check("a rail category opens its matching page", (await page.locator("#settings-page-title").innerText()) === "Pipeline");
+    await page.click('[data-settings-category="general"]');
+
     check("the Agent communication group renders", (await page.locator(GROUP).count()) === 1);
     check("a fresh installation defaults concise communication ON", (await toggleState(page)) === "true", await toggleState(page));
 
@@ -213,6 +221,11 @@ async function verifyMobile(browser, dataDir) {
       hoverNone: matchMedia("(hover: none)").matches,
     }));
     check("the phone pass really uses touch media", media.coarse && media.hoverNone, JSON.stringify(media));
+    check("the category rail collapses on a phone", !(await page.locator(".settings-sidebar").isVisible()));
+    check("the phone exposes the compact category picker", await page.locator('.settings-mobile-nav select[aria-label="Settings category"]').isVisible());
+    await page.selectOption('.settings-mobile-nav select[aria-label="Settings category"]', "interface");
+    check("the phone picker opens its matching page", (await page.locator("#settings-page-title").innerText()) === "Interface");
+    await page.selectOption('.settings-mobile-nav select[aria-label="Settings category"]', "general");
     check("the phone receives the persisted OFF state", (await toggleState(page)) === "false", await toggleState(page));
 
     const layout = await page.evaluate(inspectMobileLayout);

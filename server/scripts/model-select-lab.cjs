@@ -66,6 +66,7 @@ async function openSettings(browser) {
   await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
   await page.click('[aria-label="Open settings"]');
   await page.waitForSelector('[role="dialog"][aria-label="Settings"]', { timeout: 20_000 });
+  await page.click('[data-settings-category="pipeline"]');
   return page;
 }
 
@@ -123,9 +124,9 @@ async function main() {
       const board = await readBoard(page);
       check("the scoreboard renders both graded models", board?.length === 2, JSON.stringify(board));
       const haiku = board?.find((r) => r[0].includes("haiku"));
-      check("its numbers are the server's", haiku?.join("|") === "claude-haiku-4-5-20251001|1|88|100%|2|$0.42", haiku?.join("|"));
+      check("its numbers are the server's", haiku?.join("|") === "claude-haiku-4-5-20251001|1|88|100%|2|$0.42|—", haiku?.join("|"));
       const glm = board?.find((r) => r[0] === "glm-4.6");
-      check("a handed-back task shows as not accepted", glm?.join("|") === "glm-4.6|1|40|0%|3|$1.50", glm?.join("|"));
+      check("a handed-back task shows as not accepted", glm?.join("|") === "glm-4.6|1|40|0%|3|$1.50|—", glm?.join("|"));
 
       // The round-trip: click, then wait for the SERVER to own it before believing anything.
       await page.click(TOGGLE);

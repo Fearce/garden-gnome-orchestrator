@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_EFFORTS, ZAI_SUB_ID, codexEffortsForModel, grokEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type ZaiEffort } from "../types.js";
@@ -7,8 +7,30 @@ import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { FreeProviders } from "./FreeProviders.js";
 
-/** The gear-icon panel: everything that isn't a per-task agent toggle (those live in the topbar).
- *  A light popover anchored under the topbar with a click-anywhere-outside backdrop to dismiss. */
+type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "voice-alerts" | "office" | "interface";
+
+interface SettingsCategory {
+  id: SettingsCategoryId;
+  section: "Orchestrator" | "Providers" | "Workspace";
+  label: string;
+  description: string;
+}
+
+const SETTINGS_CATEGORIES = [
+  { id: "general", section: "Orchestrator", label: "General", description: "Set the director's identity and how agents communicate with you." },
+  { id: "pipeline", section: "Orchestrator", label: "Pipeline", description: "Control task execution, reviews, concurrency, and supervision." },
+  { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced." },
+  { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits." },
+  { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles." },
+  { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications." },
+  { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles." },
+  { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed." },
+] as const satisfies readonly SettingsCategory[];
+
+const SETTINGS_SECTIONS: readonly SettingsCategory["section"][] = ["Orchestrator", "Providers", "Workspace"];
+
+/** The gear-icon settings dialog. Categories keep the growing collection approachable while every
+ *  control remains mounted, preserving in-progress credential and text drafts as the owner moves around. */
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
@@ -18,6 +40,14 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setVerbosity = useStore((s) => s.setVerbosity);
   const taskDragAndDrop = useStore((s) => s.taskDragAndDrop);
   const setTaskDragAndDrop = useStore((s) => s.setTaskDragAndDrop);
+  const [activeCategoryId, setActiveCategoryId] = useState<SettingsCategoryId>("general");
+  const contentRef = useRef<HTMLDivElement>(null);
+  const activeCategory = SETTINGS_CATEGORIES.find((category) => category.id === activeCategoryId) ?? SETTINGS_CATEGORIES[0];
+
+  const chooseCategory = (id: SettingsCategoryId) => {
+    setActiveCategoryId(id);
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -29,247 +59,353 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="settings-scrim" onClick={onClose}>
-      <div className="settings-pop" role="dialog" aria-label="Settings" onClick={(e) => e.stopPropagation()}>
-        <div className="settings-head">
-          <h3>Settings</h3>
-          <button className="settings-x" aria-label="Close settings" onClick={onClose}>
-            ✕
-          </button>
-        </div>
+      <div
+        className="settings-pop"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        aria-labelledby="settings-page-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <aside className="settings-sidebar" aria-label="Settings categories">
+          <div className="settings-sidebar-title">
+            <span className="settings-sidebar-mark" aria-hidden="true">G</span>
+            <span>Settings</span>
+          </div>
+          <nav className="settings-nav">
+            {SETTINGS_SECTIONS.map((section) => (
+              <div className="settings-nav-section" key={section}>
+                <div className="settings-nav-section-label">{section}</div>
+                {SETTINGS_CATEGORIES.filter((category) => category.section === section).map((category) => (
+                  <button
+                    key={category.id}
+                    type="button"
+                    className={"settings-nav-item" + (category.id === activeCategoryId ? " active" : "")}
+                    data-settings-category={category.id}
+                    aria-controls={`settings-category-${category.id}`}
+                    aria-current={category.id === activeCategoryId ? "page" : undefined}
+                    onClick={() => chooseCategory(category.id)}
+                  >
+                    <SettingsCategoryIcon category={category.id} />
+                    <span>{category.label}</span>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </nav>
+        </aside>
 
-        <Group label="Agent communication">
-          <ToggleRow
-            label="Keep agent messages concise"
-            hint="On (default): every agent leads with the answer, uses short concrete sentences and plain language, and removes filler, repeated points, process narration, and avoidable jargon. Applies to Director chat, findings, handoffs, QA/review/supervisor messages, office chat, and task-status explanations."
-            on={settings.conciseAgentCommunication}
-            onChange={(v) => setSettings({ conciseAgentCommunication: v })}
-          />
-          <p className="settings-note tight">
-            Wording only. Agents still implement, investigate, test, and preserve blockers, errors, exact commands/IDs, safety caveats, and evidence in full.
-          </p>
-        </Group>
+        <section className="settings-main">
+          <div className="settings-head">
+            <div className="settings-head-copy">
+              <div className="settings-head-kicker">Settings</div>
+              <h3 id="settings-page-title">{activeCategory.label}</h3>
+              <p>{activeCategory.description}</p>
+            </div>
+            <button className="settings-x" aria-label="Close settings" onClick={onClose}>
+              ✕
+            </button>
+          </div>
 
-        <Group label="Pipeline">
-          <ToggleRow
-            label="Auto-push"
-            hint="On: completed tasks commit AND push. Off: implementor commits locally only — you push manually."
-            on={settings.autoPush}
-            onChange={(v) => setSettings({ autoPush: v })}
-          />
-          <NumberRow
-            label="Max QA rounds"
-            hint="How many implementor↔QA fix-rounds before a task settles to review."
-            value={settings.maxQaRounds}
-            min={1}
-            max={12}
-            onChange={(v) => setSettings({ maxQaRounds: v })}
-          />
-          <NumberRow
-            label="Auto-review fix rounds"
-            hint="When “Auto-review & mark done” hands a task back, how many times the implementor is sent in to fix the reviewer's issues before the task lands on you. The reviewer re-checks its work each round and still makes the final call. 0 = hand it straight back."
-            value={settings.maxReviewFixRounds}
-            min={0}
-            max={3}
-            onChange={(v) => setSettings({ maxReviewFixRounds: v })}
-          />
-          <ToggleRow
-            label="Different-provider QA"
-            hint="On: QA is reviewed by a DIFFERENT enabled provider than the one that implemented the task — so, e.g., GPT (Codex) reviews Claude's work and vice-versa — for an independent cross-provider check. Needs a second backend enabled (Codex/Grok/z.ai); with only one provider it quietly falls back to normal QA. Off by default."
-            on={settings.differentProviderQa}
-            onChange={(v) => setSettings({ differentProviderQa: v })}
-          />
-          <ToggleRow
-            label="QA also applies fixes"
-            hint="On: QA fixes issues directly instead of sending them back to the implementor. Every QA run that changes files gets another QA review until one makes no further code changes. For true provider alternation, also enable Different-provider QA with another backend ready; otherwise the verifier starts a fresh same-provider session. Off keeps the existing implementor↔QA handoff."
-            on={settings.qaAppliesFixes}
-            onChange={(v) => setSettings({ qaAppliesFixes: v })}
-          />
-          <NumberRow
-            label="Max concurrent tasks"
-            hint="Pipelines allowed to run at once. Dispatches beyond this wait in a queued lane and start as slots free."
-            value={settings.maxConcurrent}
-            min={1}
-            max={20}
-            onChange={(v) => setSettings({ maxConcurrent: v })}
-          />
-          <NumberRow
-            label="Max concurrent tasks per repo"
-            hint="How many tasks may run at once in a single repo. 0 = unlimited (only the global cap applies). Set to 1 to serialize a repo: a second task for the same repo waits until the first fully finishes, while tasks in other repos keep running."
-            value={settings.maxConcurrentPerRepo}
-            min={0}
-            max={20}
-            onChange={(v) => setSettings({ maxConcurrentPerRepo: v })}
-          />
-          <ToggleRow
-            label="Self-improve after tasks"
-            hint="On: once a task is accepted (QA pass, or a clean finish with QA off), the implementor runs one bonus round — 'what tools/skills/memories would have made this easier? Build them.' — before the task settles to done. Off by default; the extra round costs extra tokens."
-            on={settings.selfImproveEnabled}
-            onChange={(v) => setSettings({ selfImproveEnabled: v })}
-          />
-          <ToggleRow
-            label="Token safety limit"
-            hint="On: when live token usage reaches the threshold below, every running task is stopped automatically to protect your remaining allowance. Off by default."
-            on={settings.tokenLimitEnabled}
-            onChange={(v) => setSettings({ tokenLimitEnabled: v })}
-          />
-          {settings.tokenLimitEnabled && (
-            <NumberRow
-              label="Stop at usage %"
-              hint="The token-usage threshold that trips the safety stop. Tracks the same live burn as the account meters; refreshes on the ~10-min usage ping, so it can lag a fast burn by minutes."
-              value={settings.tokenLimitPercent}
-              min={50}
-              max={99}
-              onChange={(v) => setSettings({ tokenLimitPercent: v })}
-            />
-          )}
-          <ToggleRow
-            label="Auto-resume on token reset"
-            hint="On: when usage crosses the threshold below, schedule a wakeup at the window's reset that resumes any paused or cap-parked tasks — so work picks back up on its own after the window frees, even if you're away. Off by default."
-            on={settings.autoResumeOnTokenReset}
-            onChange={(v) => setSettings({ autoResumeOnTokenReset: v })}
-          />
-          {settings.autoResumeOnTokenReset && (
-            <NumberRow
-              label="Resume threshold %"
-              hint="Usage level at which the reset-timed resume is armed. When live burn crosses this, a wakeup is scheduled for the soonest window reset to continue frozen work."
-              value={settings.autoResumeThresholdPercent}
-              min={50}
-              max={95}
-              onChange={(v) => setSettings({ autoResumeThresholdPercent: v })}
-            />
-          )}
-          <ToggleRow
-            label="Fast usage polling"
-            hint="On: refresh the account usage meters every ~30s so the % and reset countdown track Claude's own UI within ~1-2%, instead of lagging up to 10 minutes behind a live burn. Costs a tiny extra Haiku ping per account. Off by default."
-            on={settings.fastUsagePolling}
-            onChange={(v) => setSettings({ fastUsagePolling: v })}
-          />
-          <ToggleRow
-            label="Spread usage"
-            hint="On: every dispatch targets the provider with the lowest weekly usage — across all enabled platforms (Claude subscriptions, Codex, Grok) and, within Claude, across your subs — so burn evens out everywhere. Off (default): burn the provider/sub whose weekly window resets soonest first, holding the others in reserve."
-            on={settings.spreadUsage}
-            onChange={(v) => setSettings({ spreadUsage: v })}
-          />
-        </Group>
+          <label className="settings-mobile-nav">
+            <span>Category</span>
+            <select
+              aria-label="Settings category"
+              value={activeCategoryId}
+              onChange={(event) => chooseCategory(event.target.value as SettingsCategoryId)}
+            >
+              {SETTINGS_SECTIONS.map((section) => (
+                <optgroup key={section} label={section}>
+                  {SETTINGS_CATEGORIES.filter((category) => category.section === section).map((category) => (
+                    <option key={category.id} value={category.id}>{category.label}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
 
-        <Group label="Auto model selection">
-          <ToggleRow
-            label="Auto-select the implementor model"
-            hint="Off (default): the implementor runs on the model configured for its subscription, at the planner's effort. On: a smart judgement picks the director once (sticky until its provider caps), and the director picks each implementor's model + effort from every backend available right now. Both use a daily cached LiveBench category/effort prior; local outcomes and live availability remain stronger signals. Implementor picks are scored for the next decision."
-            on={settings.autoModelSelection}
-            onChange={(v) => setSettings({ autoModelSelection: v })}
-          />
-          <ModelScoreboard enabled={settings.autoModelSelection} />
-        </Group>
+          <div className="settings-content" ref={contentRef}>
+            <SettingsCategoryPanel id="general" active={activeCategoryId === "general"}>
+              <Group label="Director">
+                <TextRow
+                  label="Director name"
+                  hint="What your director is called across the console and office chat, whichever provider/model is currently running it."
+                  value={settings.directorName}
+                  placeholder="ChangeNameInSettings"
+                  maxLength={40}
+                  onChange={(v) => setSettings({ directorName: v })}
+                />
+              </Group>
+              <Group label="Agent communication">
+                <ToggleRow
+                  label="Keep agent messages concise"
+                  hint="On (default): every agent leads with the answer, uses short concrete sentences and plain language, and removes filler, repeated points, process narration, and avoidable jargon. Applies to Director chat, findings, handoffs, QA/review/supervisor messages, office chat, and task-status explanations."
+                  on={settings.conciseAgentCommunication}
+                  onChange={(v) => setSettings({ conciseAgentCommunication: v })}
+                />
+                <p className="settings-note tight">
+                  Wording only. Agents still implement, investigate, test, and preserve blockers, errors, exact commands/IDs, safety caveats, and evidence in full.
+                </p>
+              </Group>
+            </SettingsCategoryPanel>
 
-        <Group label="Director Supervisor">
-          <ToggleRow
-            label="Watch active tasks"
-            hint="Off (default): no background work at all. On: a lightweight watchdog checks active tasks — event-driven on state changes plus an adaptive-backoff sweep — and spends a cheap bounded agent judgement only on a new failure, a real stall/anomaly, or review/failed work that has been forgotten. It may append a comment, post an urgent correction, resume a stalled task the same way the Resume button does, or flag it for you — never cancel, retry, or touch anything you cancelled. Bounded by a per-task cooldown and a daily check-in budget. See the Supervisor tab for its live state and audit trail."
-            on={settings.directorSupervisorEnabled}
-            onChange={(v) => setSettings({ directorSupervisorEnabled: v })}
-          />
-          <p className="settings-note tight">
-            A normal review handoff may be delegated to Auto-review, which verifies the workspace and can mark it done only on an accepted reviewer verdict. The supervisor never directly accepts work.
-          </p>
-        </Group>
+            <SettingsCategoryPanel id="pipeline" active={activeCategoryId === "pipeline"}>
+              <Group label="Pipeline">
+                <ToggleRow
+                  label="Auto-push"
+                  hint="On: completed tasks commit AND push. Off: implementor commits locally only — you push manually."
+                  on={settings.autoPush}
+                  onChange={(v) => setSettings({ autoPush: v })}
+                />
+                <NumberRow
+                  label="Max QA rounds"
+                  hint="How many implementor↔QA fix-rounds before a task settles to review."
+                  value={settings.maxQaRounds}
+                  min={1}
+                  max={12}
+                  onChange={(v) => setSettings({ maxQaRounds: v })}
+                />
+                <NumberRow
+                  label="Auto-review fix rounds"
+                  hint="When “Auto-review & mark done” hands a task back, how many times the implementor is sent in to fix the reviewer's issues before the task lands on you. The reviewer re-checks its work each round and still makes the final call. 0 = hand it straight back."
+                  value={settings.maxReviewFixRounds}
+                  min={0}
+                  max={3}
+                  onChange={(v) => setSettings({ maxReviewFixRounds: v })}
+                />
+                <ToggleRow
+                  label="Different-provider QA"
+                  hint="On: QA is reviewed by a DIFFERENT enabled provider than the one that implemented the task — so, e.g., GPT (Codex) reviews Claude's work and vice-versa — for an independent cross-provider check. Needs a second backend enabled (Codex/Grok/z.ai); with only one provider it quietly falls back to normal QA. Off by default."
+                  on={settings.differentProviderQa}
+                  onChange={(v) => setSettings({ differentProviderQa: v })}
+                />
+                <ToggleRow
+                  label="QA also applies fixes"
+                  hint="On: QA fixes issues directly instead of sending them back to the implementor. Every QA run that changes files gets another QA review until one makes no further code changes. For true provider alternation, also enable Different-provider QA with another backend ready; otherwise the verifier starts a fresh same-provider session. Off keeps the existing implementor↔QA handoff."
+                  on={settings.qaAppliesFixes}
+                  onChange={(v) => setSettings({ qaAppliesFixes: v })}
+                />
+                <NumberRow
+                  label="Max concurrent tasks"
+                  hint="Pipelines allowed to run at once. Dispatches beyond this wait in a queued lane and start as slots free."
+                  value={settings.maxConcurrent}
+                  min={1}
+                  max={20}
+                  onChange={(v) => setSettings({ maxConcurrent: v })}
+                />
+                <NumberRow
+                  label="Max concurrent tasks per repo"
+                  hint="How many tasks may run at once in a single repo. 0 = unlimited (only the global cap applies). Set to 1 to serialize a repo: a second task for the same repo waits until the first fully finishes, while tasks in other repos keep running."
+                  value={settings.maxConcurrentPerRepo}
+                  min={0}
+                  max={20}
+                  onChange={(v) => setSettings({ maxConcurrentPerRepo: v })}
+                />
+                <ToggleRow
+                  label="Self-improve after tasks"
+                  hint="On: once a task is accepted (QA pass, or a clean finish with QA off), the implementor runs one bonus round — 'what tools/skills/memories would have made this easier? Build them.' — before the task settles to done. Off by default; the extra round costs extra tokens."
+                  on={settings.selfImproveEnabled}
+                  onChange={(v) => setSettings({ selfImproveEnabled: v })}
+                />
+              </Group>
+              <Group label="Auto model selection">
+                <ToggleRow
+                  label="Auto-select the implementor model"
+                  hint="Off (default): the implementor runs on the model configured for its subscription, at the planner's effort. On: a smart judgement picks the director once (sticky until its provider caps), and the director picks each implementor's model + effort from every backend available right now. Both use a daily cached LiveBench category/effort prior; local outcomes and live availability remain stronger signals. Implementor picks are scored for the next decision."
+                  on={settings.autoModelSelection}
+                  onChange={(v) => setSettings({ autoModelSelection: v })}
+                />
+                <ModelScoreboard enabled={settings.autoModelSelection} />
+              </Group>
+              <Group label="Director Supervisor">
+                <ToggleRow
+                  label="Watch active tasks"
+                  hint="Off (default): no background work at all. On: a lightweight watchdog checks active tasks — event-driven on state changes plus an adaptive-backoff sweep — and spends a cheap bounded agent judgement only on a new failure, a real stall/anomaly, or review/failed work that has been forgotten. It may append a comment, post an urgent correction, resume a stalled task the same way the Resume button does, or flag it for you — never cancel, retry, or touch anything you cancelled. Bounded by a per-task cooldown and a daily check-in budget. See the Supervisor tab for its live state and audit trail."
+                  on={settings.directorSupervisorEnabled}
+                  onChange={(v) => setSettings({ directorSupervisorEnabled: v })}
+                />
+                <p className="settings-note tight">
+                  A normal review handoff may be delegated to Auto-review, which verifies the workspace and can mark it done only on an accepted reviewer verdict. The supervisor never directly accepts work.
+                </p>
+              </Group>
+              <p className="settings-note settings-page-note">
+                Agent toggles (planner · researcher · QA) live in the top bar. ON makes a stage available, not mandatory — the pipeline still chooses the smallest route each task needs. Turn a toggle OFF to hard-disable that stage for every task.
+              </p>
+            </SettingsCategoryPanel>
 
-        <Group label="Director">
-          <TextRow
-            label="Director name"
-            hint="What your director is called across the console and office chat, whichever provider/model is currently running it."
-            value={settings.directorName}
-            placeholder="ChangeNameInSettings"
-            maxLength={40}
-            onChange={(v) => setSettings({ directorName: v })}
-          />
-        </Group>
+            <SettingsCategoryPanel id="usage" active={activeCategoryId === "usage"}>
+              <Group label="Usage safeguards">
+                <ToggleRow
+                  label="Token safety limit"
+                  hint="On: when live token usage reaches the threshold below, every running task is stopped automatically to protect your remaining allowance. Off by default."
+                  on={settings.tokenLimitEnabled}
+                  onChange={(v) => setSettings({ tokenLimitEnabled: v })}
+                />
+                {settings.tokenLimitEnabled && (
+                  <NumberRow
+                    label="Stop at usage %"
+                    hint="The token-usage threshold that trips the safety stop. Tracks the same live burn as the account meters; refreshes on the ~10-min usage ping, so it can lag a fast burn by minutes."
+                    value={settings.tokenLimitPercent}
+                    min={50}
+                    max={99}
+                    onChange={(v) => setSettings({ tokenLimitPercent: v })}
+                  />
+                )}
+                <ToggleRow
+                  label="Auto-resume on token reset"
+                  hint="On: when usage crosses the threshold below, schedule a wakeup at the window's reset that resumes any paused or cap-parked tasks — so work picks back up on its own after the window frees, even if you're away. Off by default."
+                  on={settings.autoResumeOnTokenReset}
+                  onChange={(v) => setSettings({ autoResumeOnTokenReset: v })}
+                />
+                {settings.autoResumeOnTokenReset && (
+                  <NumberRow
+                    label="Resume threshold %"
+                    hint="Usage level at which the reset-timed resume is armed. When live burn crosses this, a wakeup is scheduled for the soonest window reset to continue frozen work."
+                    value={settings.autoResumeThresholdPercent}
+                    min={50}
+                    max={95}
+                    onChange={(v) => setSettings({ autoResumeThresholdPercent: v })}
+                  />
+                )}
+              </Group>
+              <Group label="Usage routing">
+                <ToggleRow
+                  label="Fast usage polling"
+                  hint="On: refresh the account usage meters every ~30s so the % and reset countdown track Claude's own UI within ~1-2%, instead of lagging up to 10 minutes behind a live burn. Costs a tiny extra Haiku ping per account. Off by default."
+                  on={settings.fastUsagePolling}
+                  onChange={(v) => setSettings({ fastUsagePolling: v })}
+                />
+                <ToggleRow
+                  label="Spread usage"
+                  hint="On: every dispatch targets the provider with the lowest weekly usage — across all enabled platforms (Claude subscriptions, Codex, Grok) and, within Claude, across your subs — so burn evens out everywhere. Off (default): burn the provider/sub whose weekly window resets soonest first, holding the others in reserve."
+                  on={settings.spreadUsage}
+                  onChange={(v) => setSettings({ spreadUsage: v })}
+                />
+              </Group>
+            </SettingsCategoryPanel>
 
-        <Group label="Voice mode">
-          <VoiceSection />
-        </Group>
+            <SettingsCategoryPanel id="subscriptions" active={activeCategoryId === "subscriptions"}>
+              <Group label="Subscriptions">
+                <SubscriptionsSection />
+              </Group>
+            </SettingsCategoryPanel>
 
-        <Group label="Phone notifications">
-          <PhoneNotificationsSection />
-        </Group>
+            <SettingsCategoryPanel id="free-ai" active={activeCategoryId === "free-ai"}>
+              <Group label="Free AI connections">
+                <FreeProviders />
+              </Group>
+            </SettingsCategoryPanel>
 
-        <Group label="Online office">
-          <OnlineOfficeSection />
-        </Group>
+            <SettingsCategoryPanel id="voice-alerts" active={activeCategoryId === "voice-alerts"}>
+              <Group label="Voice mode">
+                <VoiceSection />
+              </Group>
+              <Group label="Phone notifications">
+                <PhoneNotificationsSection />
+              </Group>
+            </SettingsCategoryPanel>
 
-        <Group label="Subscriptions">
-          <SubscriptionsSection />
-        </Group>
+            <SettingsCategoryPanel id="office" active={activeCategoryId === "office"}>
+              <Group label="Online office">
+                <OnlineOfficeSection />
+              </Group>
+            </SettingsCategoryPanel>
 
-        <Group label="Free AI connections">
-          <FreeProviders />
-        </Group>
-
-        <Group label="Composer">
-          <ToggleRow
-            label="Show model & effort pickers"
-            hint="Off (default): the director composer stays compact. On: show the quick implementor model dropdowns (Claude/Codex) and, in skip-director mode, the effort dropdowns."
-            on={settings.showComposerPickers}
-            onChange={(v) => setSettings({ showComposerPickers: v })}
-          />
-          <ToggleRow
-            label="Name skipped tasks with Haiku"
-            hint="When the director is skipped, mint a concise task title with one cheap Haiku call instead of using the raw first line. Off: keep the verbatim first line and spend zero extra tokens."
-            on={settings.skipDirectorRetitle}
-            onChange={(v) => setSettings({ skipDirectorRetitle: v })}
-          />
-          <NumberRow
-            label="Recent repo chips"
-            hint="How many recent-repo shortcuts show under the composer. The list and the skip-director toggles persist server-side, so they survive a reload on any surface."
-            value={settings.maxRecentRepos}
-            min={1}
-            max={20}
-            onChange={(v) => setSettings({ maxRecentRepos: v })}
-          />
-        </Group>
-
-        <Group label="Board">
-          <ToggleRow
-            label="Show completed tasks"
-            hint="Off: done & cancelled tasks are hidden from the board (still in the DB / Closed list)."
-            on={showCompleted}
-            onChange={setShowCompleted}
-          />
-          <SegmentRow
-            label="Task output"
-            hint="Compact: cards show only their state. Full: cards show the agent's latest streaming line."
-            value={verbosity}
-            options={[
-              { value: "compact", label: "Compact" },
-              { value: "full", label: "Full" },
-            ]}
-            onChange={setVerbosity}
-          />
-          <ToggleRow
-            label="Drag to reorder"
-            hint="On: a grip appears on each card — drag to arrange the board by hand. Suspends the automatic most-recent-first ordering and remembers your order."
-            on={taskDragAndDrop}
-            onChange={setTaskDragAndDrop}
-          />
-          <ToggleRow
-            label="Show agent model"
-            hint={'On: agent labels in the task feed name the model they ran on — "QA (Tor, Opus 4.8 High)". Off: just the agent name.'}
-            on={settings.showAgentModel}
-            onChange={(v) => setSettings({ showAgentModel: v })}
-          />
-        </Group>
-
-        <p className="settings-note">
-          Agent toggles (planner · researcher · QA) live in the top bar. ON makes a stage available, not
-          mandatory — the pipeline still routes each task to the smallest route it actually needs
-          (implementor-only for a narrow, low-risk change; QA without planning for contained explicit
-          verification; planning + QA for anything broader or riskier),
-          and explains the pick in the task's own history. Turn a toggle OFF to hard-disable that stage
-          for every task regardless of what routing would pick.
-        </p>
+            <SettingsCategoryPanel id="interface" active={activeCategoryId === "interface"}>
+              <Group label="Composer">
+                <ToggleRow
+                  label="Show model & effort pickers"
+                  hint="Off (default): the director composer stays compact. On: show the quick implementor model dropdowns (Claude/Codex) and, in skip-director mode, the effort dropdowns."
+                  on={settings.showComposerPickers}
+                  onChange={(v) => setSettings({ showComposerPickers: v })}
+                />
+                <ToggleRow
+                  label="Name skipped tasks with Haiku"
+                  hint="When the director is skipped, mint a concise task title with one cheap Haiku call instead of using the raw first line. Off: keep the verbatim first line and spend zero extra tokens."
+                  on={settings.skipDirectorRetitle}
+                  onChange={(v) => setSettings({ skipDirectorRetitle: v })}
+                />
+                <NumberRow
+                  label="Recent repo chips"
+                  hint="How many recent-repo shortcuts show under the composer. The list and the skip-director toggles persist server-side, so they survive a reload on any surface."
+                  value={settings.maxRecentRepos}
+                  min={1}
+                  max={20}
+                  onChange={(v) => setSettings({ maxRecentRepos: v })}
+                />
+              </Group>
+              <Group label="Board">
+                <ToggleRow
+                  label="Show completed tasks"
+                  hint="Off: done & cancelled tasks are hidden from the board (still in the DB / Closed list)."
+                  on={showCompleted}
+                  onChange={setShowCompleted}
+                />
+                <SegmentRow
+                  label="Task output"
+                  hint="Compact: cards show only their state. Full: cards show the agent's latest streaming line."
+                  value={verbosity}
+                  options={[
+                    { value: "compact", label: "Compact" },
+                    { value: "full", label: "Full" },
+                  ]}
+                  onChange={setVerbosity}
+                />
+                <ToggleRow
+                  label="Drag to reorder"
+                  hint="On: a grip appears on each card — drag to arrange the board by hand. Suspends the automatic most-recent-first ordering and remembers your order."
+                  on={taskDragAndDrop}
+                  onChange={setTaskDragAndDrop}
+                />
+                <ToggleRow
+                  label="Show agent model"
+                  hint={'On: agent labels in the task feed name the model they ran on — "QA (Tor, Opus 4.8 High)". Off: just the agent name.'}
+                  on={settings.showAgentModel}
+                  onChange={(v) => setSettings({ showAgentModel: v })}
+                />
+              </Group>
+            </SettingsCategoryPanel>
+          </div>
+        </section>
       </div>
     </div>
   );
+}
+
+function SettingsCategoryPanel({ id, active, children }: { id: SettingsCategoryId; active: boolean; children: ReactNode }) {
+  return (
+    <div
+      className="settings-category-panel"
+      id={`settings-category-${id}`}
+      data-settings-panel={id}
+      hidden={!active}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SettingsCategoryIcon({ category }: { category: SettingsCategoryId }) {
+  const common = {
+    width: 18,
+    height: 18,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  if (category === "general") return <svg {...common}><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5" /><circle cx="16" cy="6" r="2" /><circle cx="8" cy="12" r="2" /><circle cx="13" cy="18" r="2" /></svg>;
+  if (category === "pipeline") return <svg {...common}><circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="18" cy="18" r="2" /><path d="M8 6h8M18 8v8M6 8v7a3 3 0 0 0 3 3h7" /></svg>;
+  if (category === "usage") return <svg {...common}><path d="M4.9 19a9 9 0 1 1 14.2 0" /><path d="m12 13 4-4" /><circle cx="12" cy="13" r="1.5" /></svg>;
+  if (category === "subscriptions") return <svg {...common}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18M7 15h4" /></svg>;
+  if (category === "free-ai") return <svg {...common}><path d="m12 3 1.2 4.2L17 9l-3.8 1.8L12 15l-1.2-4.2L7 9l3.8-1.8L12 3Z" /><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" /><path d="M5 14v6M2 17h6" /></svg>;
+  if (category === "voice-alerts") return <svg {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>;
+  if (category === "office") return <svg {...common}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" /></svg>;
+  return <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M9 10h12" /></svg>;
 }
 
 /**
