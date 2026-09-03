@@ -906,10 +906,8 @@ export class AccountManager {
     const capacity = demand
       ? preferCapacity(candidates, (candidate) => accountCapacityWindows(candidate, now), demand, now)
       : undefined;
-    // A substantial in-flight task should leave Claude entirely (or park) when every remaining sub is
-    // forecast to cap too. Returning the least-risky one here would consume another doomed turn before
-    // ThreadManager gets a chance to use a viable provider pool.
-    if (demand?.substantial && capacity?.allKnownAtRisk) return null;
+    // Forecasts rank subscriptions but never block failover. A real provider rejection is the
+    // authority; the caller then continues on the next account with its saved session.
     const safety = weeklySafetyPool(capacity?.candidates ?? candidates);
     const pool = safety.candidates;
     // Same order select() uses: soonest-resetting reserve by default, or lowest weekly usage when

@@ -1287,6 +1287,7 @@ export class ThreadManager implements OrchestratorApi {
     // to a ready CLI when Claude is still capped (see the Claude→CLI handoff in runRole). Older parks
     // that still carry CAP_PARK_QA_MARK in their error text are therefore unblocked by CLI headroom too.
     for (const thread of this.capParkedThreads()) {
+      this.compactCapParkMessage(thread);
       if (!this.settleManualDeployment(thread.id)) continue;
       this.capParked.delete(thread.id);
       this.capResumeNotifiedAt.delete(thread.id);
@@ -2740,8 +2741,8 @@ export class ThreadManager implements OrchestratorApi {
     } else {
       const route = this.resolveImplementorProvider(demand);
       if (route.error || !route.provider) return { error: route.error ?? "No authenticated coding provider is available." };
-      if (route.allCandidatesCapped || route.allKnownInsufficient) {
-        return { error: "No enabled coding provider currently has enough safe capacity for this Co-worker turn. Try again after capacity resets." };
+      if (route.allCandidatesCapped) {
+        return { error: "Every enabled coding provider is currently usage-capped. Try again after a provider resets." };
       }
       provider = route.provider;
     }
@@ -2992,14 +2993,11 @@ export class ThreadManager implements OrchestratorApi {
       add("zai", models, () => underCap(ZAI_EFFORTS, this.zaiEffort()), () => routedZai);
     }
     const capacity = preferCapacity(entries, (entry) => candidateCapacityWindows(entry.candidate), demand);
-    if (demand.substantial && capacity.allKnownAtRisk) return [];
-    const hasKnownViable = entries.some((entry) => assessCapacity(candidateCapacityWindows(entry.candidate), demand).status === "viable");
-    // Unknown is still a real dispatchable pool (notably API-key Codex and a provider before its first
-    // free meter read). Keep it visible to the smart selector with an explicit warning; only known-risk
-    // models are removed when a viable option exists.
-    const selected = hasKnownViable
-      ? entries.filter((entry) => assessCapacity(candidateCapacityWindows(entry.candidate), demand).status !== "at-risk")
-      : capacity.candidates;
+    // Usage forecasts rank model pools but never suppress one that has not actually capped.
+    const selected = [
+      ...capacity.candidates,
+      ...entries.filter((entry) => !capacity.candidates.includes(entry)),
+    ];
     return selected.map((entry) => {
       const benchmark = this.liveBench.note(entry.model);
       return {
@@ -3278,9 +3276,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     if (pick.provider === routed) return routed;
     const pickedCandidate = this.readyRoleCandidates("implementor", demand).find((candidate) => candidate.provider === pick.provider);
-    const pickedCapacity = pickedCandidate ? assessCapacity(candidateCapacityWindows(pickedCandidate), demand) : undefined;
-    if (!pickedCandidate || (demand.substantial && pickedCapacity?.status === "at-risk")) {
-      const why = !pickedCandidate ? "can't take the task now" : "no longer has enough safe quota runway";
+    if (!pickedCandidate) {
+      const why = "can't take the task now";
       this.hub.log("warn", `Auto-selected ${providerLabel(pick.provider)} for ${threadId.slice(0, 8)} ${why} — routing to ${providerLabel(routed)} on its own model.`);
       return routed;
     }
@@ -4555,10 +4552,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return options;
   }
 
-  private roleCapacityReady(option: RoleCapacityOption, demand: CapacityDemand, now = Date.now()): boolean {
-    if (!option.hasHeadroom) return false;
-    const status = assessCapacity(option.windows, demand, now).status;
-    return !demand.substantial || status !== "at-risk";
+  private roleCapacityReady(option: RoleCapacityOption, _demand: CapacityDemand, _now = Date.now()): boolean {
+    // Actual headroom is the only admission gate. Forecasts choose the first route, then real caps
+    // trigger the normal saved-session failover chain.
+    return option.hasHeadroom;
   }
 
   /** One internally consistent capacity view for routing, supervisor wakeups, and owner-facing text.
@@ -4606,8 +4603,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (exclude !== "grok" && !unavailable.has("grok") && serves("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate(demand));
     if (exclude !== "zai" && !unavailable.has("zai") && serves("zai") && this.zaiImplementorReady()) cands.push(this.zaiProviderCandidate(demand));
     if (!cands.length) return undefined;
-    const capacity = demand ? preferCapacity(cands, candidateCapacityWindows, demand) : undefined;
-    if (demand?.substantial && capacity?.allKnownAtRisk) return undefined;
     return this.preferredImplementorProvider(cands, demand);
   }
 
@@ -4747,7 +4742,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     thread = this.ensureThreadModelRequest(this.db.getThread(thread.id) ?? thread);
     const demand = this.capacityDemand(thread, "implementor", opts?.effort);
     if (thread.modelRequest) return this.gateRequestedModel(thread, demand);
-    const { provider, error, allCandidatesCapped, allKnownInsufficient, candidates = [] } = this.resolveImplementorProvider(demand);
+    const { provider, error, allCandidatesCapped, candidates = [] } = this.resolveImplementorProvider(demand);
     if (!provider) {
       this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
       this.setState(thread.id, "failed", error);
@@ -4757,7 +4752,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // is already usage-capped. Preserve the ordinary routing fallback for owner-triggered auto-review
     // fix rounds (which retain their existing human-review contract), but put resumable pipeline work
     // straight into the durable cap-park protocol and let its reset wake choose the first free backend.
-    if ((allCandidatesCapped || (allKnownInsufficient && demand.substantial)) && opts?.capParkOnExhaustion) {
+    if (allCandidatesCapped && opts?.capParkOnExhaustion) {
       this.parkForExhaustedProviders(thread.id, "implementor");
       // `settleReview` consumes the cap marker synchronously and supplies the durable auto-resume
       // message, so this fallback reason is intentionally only for a non-cap caller/race.
@@ -5230,15 +5225,23 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * a known-doomed reviewer dispatch, but leave a precise finding so the owner knows when to click again. */
   private noteManualCapacityWait(thread: Thread, role: "reviewer", demand: CapacityDemand, now = Date.now()): string {
     const { options, ready, nextAt: next } = this.roleCapacitySnapshot(role, demand, now);
-    const when = ready.length
+    const capacity = preferCapacity(options, (option) => option.windows, demand, now);
+    const nextSafe = capacity.allKnownAtRisk
+      ? options
+        .map((option) => nextViableAt(option.windows, demand, now))
+        .filter((at): at is number => at != null && at > now)
+        .sort((a, b) => a - b)[0]
+      : next;
+    const readyNow = ready.length > 0 && !capacity.allKnownAtRisk;
+    const when = readyNow
       ? `${ready.map((option) => option.label).join(", ")} has viable reviewer capacity now; retry Auto-review.`
-      : next != null
-        ? `The next viable reviewer pool is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
+      : nextSafe != null
+        ? `The next viable reviewer pool is expected ${formatUntil(nextSafe, now)} (${new Date(nextSafe).toLocaleString()}).`
         : "No reliable reviewer reset time is available yet; live meters are still polled.";
     const checked = options.length
       ? options.map((option) => describeRoutingCapacity(option, demand, now)).join("; ")
       : "No enabled, authenticated reviewer provider is available.";
-    const why = ready.length
+    const why = readyNow
       ? "Auto-review's prior provider became unavailable before the turn started."
       : `Auto-review did not start because no compatible pool has safe runway for ${demandSummary(demand)}.`;
     const detail = `${why} ${when} Capacity checked: ${checked} The task remains in review.`;
@@ -5275,13 +5278,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       hardReady.length > 0 &&
       hardReady.every((option) => assessCapacity(option.windows, demand, now).status === "at-risk");
     const when = ready.length
-      ? ` ${ready.map((option) => option.label).join(", ")} has viable capacity now; recovery will start as soon as a pipeline slot is available.`
+      ? ` ${ready[0]!.label} is ready; it will restart when a pipeline slot opens.`
       : next != null
-        ? ` Next viable capacity is expected ${formatUntil(next, now)} (${new Date(next).toLocaleString()}).`
-        : " No reliable reset time is available yet; live meters are still polled.";
+        ? ` Next compatible capacity: ${formatUntil(next, now)}. It will retry automatically.`
+        : " It will retry automatically when a compatible pool is ready.";
     const stage = need === "qa" ? `QA ${CAP_PARK_QA_MARK}` : `${need} (${need} stage)`;
     const reason = error
-      ? `${stage} cannot use its strict requested model: ${error}`
+      ? `${stage} cannot use its strict requested model`
       : ready.length
       ? `${stage} is waiting to recover after its prior provider capped`
       : startupCooling.length
@@ -5289,13 +5292,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       : runwayBlocked
         ? `no compatible pool has enough safe runway for ${demandSummary(demand)} during ${stage}`
         : `all compatible capacity is currently capped for ${stage}`;
-    const status = options.length
-      ? ` Capacity checked: ${options.map((option) => describeRoutingCapacity(option, demand, now)).join("; ")}.`
-      : " No enabled, authenticated provider can serve this stage.";
     const recovery = thread?.modelRequest
       ? ` It will resume automatically only when the exact requested model ${thread.modelRequest.model ?? thread.modelRequest.requested} becomes viable; no fallback model is allowed.`
       : " It will resume automatically when a compatible pool becomes viable (no manual Resume needed).";
-    return `${CAP_PARK_PREFIX} — ${reason}.${when}${recovery}${status}`;
+    return `${CAP_PARK_PREFIX} — ${reason}.${when}${recovery}`;
+  }
+
+  /** Replace legacy capacity dumps in already-parked cards without churning their status every sweep. */
+  private compactCapParkMessage(thread: Thread): void {
+    if ((thread.error?.length ?? 0) <= 500) return;
+    const compact = this.capParkMessage(thread.id, this.capParkStage(thread));
+    const updated = this.db.updateThread(thread.id, { error: compact });
+    if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
   }
 
   /** An event the OWNER personally cares about: a task finished, needs their input, or failed. Goes to
