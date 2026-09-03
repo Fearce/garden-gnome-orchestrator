@@ -31,7 +31,14 @@ missing one typechecks fine but silently drops the value at that layer:
 5. `web/src/types.ts` — mirror the field on the web `OrchestratorSettings`.
 6. `web/src/store.ts` `DEFAULT_SETTINGS` + `web/src/components/SettingsPanel.tsx`
    — default (must match the server's) and a `ToggleRow`/`NumberRow`/`TextRow`
-   in the right `Group`.
+   in the right `Group`. The panel is CATEGORIZED: every `Group` lives inside a
+   `<SettingsCategoryPanel id="…">` (`general` · `pipeline` · `usage` ·
+   `subscriptions` · `free-ai` · `voice-alerts` · `office` · `interface`), so
+   pick the category first, then the `Group` inside it. A `Group` placed outside
+   a category panel renders on EVERY page — it typechecks and looks fine on the
+   page you tested. A brand-new category also needs its `SETTINGS_CATEGORIES`
+   entry (id + section + label + description) and an icon arm in
+   `SettingsCategoryIcon`, or the rail cannot reach it.
 
 Conventions that bite:
 - Settings are read LIVE at use time (`this.settings().x`), never snapshotted at

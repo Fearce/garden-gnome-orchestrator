@@ -21,6 +21,12 @@
 //     races the write. Poll the instance's own kv row read-only (`waitForPersisted`, model-select-lab).
 //   • Selectors: gear `[aria-label="Open settings"]` → `[role="dialog"][aria-label="Settings"]`; Git
 //     console `[aria-label="Open Git"]` → `.gc-window`; a task row `.card`; the top bar `.topbar`.
+//   • **Settings is CATEGORIZED — opening the dialog is not enough.** Only the active category's page is
+//     visible (the others carry `hidden`), and it opens on General. A control on any other page is in
+//     the DOM but never visible, so `waitForSelector`/`click` times out and reads as a broken selector.
+//     Click its category first: `[data-settings-category="<id>"]` — `general` · `pipeline` · `usage` ·
+//     `subscriptions` · `free-ai` · `voice-alerts` · `office` · `interface`. Below 900px the rail is
+//     replaced by `.settings-mobile-nav select[aria-label="Settings category"]` (`selectOption`).
 //   • **Close an overlay the way the app closes it — Escape is not universal.** The office panel
 //     (`.office-panel`, opened from the top-bar strip) has NO key handler: only its `.office-scrim` or
 //     `.close-x` closes it, and that scrim covers the whole app. So an `Escape` that works on the
