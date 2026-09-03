@@ -7,7 +7,7 @@ import type { EventHub } from "../events.js";
 import type { ResetStagger } from "../accounts/resetStagger.js";
 import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
-import { classifyRateWindows, latestTurnFiveHourReset, noteCodexPing, noteCodexWake, readCodexUsageForSnapshot, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
+import { classifyRateWindows, noteCodexPing, noteCodexWake, readCodexUsageForSnapshot, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 import { GENERAL_LIMIT_ID, normalizeLimitName, type CodexPool } from "./codexPools.js";
 
 /**
@@ -318,14 +318,14 @@ export function startCodexUsageMonitor(
   };
 
   // The backend does not REPORT a 5h window whose usage is tiny: a wake turn's own token_count comes
-  // back primary=weekly, secondary=null (verified live on a plus plan). So "no visible 5h reset" must
-  // NOT read as idle right after a turn — without this, every wake would look like it did nothing and
-  // the loop would re-fire a real turn each cycle. Presume a window from the newest REAL turn's own
-  // snapshot (rollout evidence, either home — survives restarts and covers implementor/operator turns
-  // too): the snapshot's 5h reset when the backend reported one, else turn + 5h — the latest possible
-  // reset of the window that turn started or rode.
+  // back primary=weekly, secondary=null (verified live on a plus plan). Do not synchronously scan
+  // rollout archives to infer that reset here: this monitor runs on the server's event loop and a
+  // large archive makes the entire dashboard unresponsive. A recently cached snapshot is sufficient
+  // to preserve a known phase; when no phase is known we leave Codex out of stagger placement rather
+  // than spending an unnecessary wake turn.
   const presumedReset = (now: number): number | null => {
-    return latestTurnFiveHourReset(now)?.reset ?? null;
+    const reset = readCodexUsageForSnapshot()?.fiveHourReset;
+    return reset != null && reset > now ? reset : null;
   };
 
   // Codex participates in the reset stagger only while it's configured; its phase is the merged 5h
@@ -375,6 +375,9 @@ export function startCodexUsageMonitor(
       }
       return;
     }
+    // The app-server can omit an active, tiny 5h window. Without cached turn evidence, treating that
+    // as idle would burn a wake turn just to discover it. Wait for a future live/capacity read instead.
+    if (live.fiveHourReset == null) return;
     if (wakeAt != null && wakeAt > now) return; // already planned; others are spacing around it
     if ((live.sevenDay ?? 0) >= WAKE_WEEKLY_GUARD) return;
     if (now - lastWakeFailAt < WAKE_FAIL_BACKOFF_MS) return;

@@ -294,15 +294,7 @@ function latestRollupUsage(home: string): CodexUsageDTO | null {
   rolloutScanCount++;
   const sessions = join(home, "sessions");
   if (!existsSync(sessions)) return null;
-  let files: string[];
-  try {
-    files = readdirSync(sessions, { recursive: true })
-      .map((p) => String(p))
-      .filter((p) => /rollout-.*\.jsonl$/.test(p))
-      .map((p) => join(sessions, p));
-  } catch {
-    return null;
-  }
+  const files = recentRolloutFiles(sessions, USAGE_SCAN_FILES);
   if (!files.length) return null;
   // Parse recent rollouts newest-first and return the first that carries a rate_limits snapshot. The
   // window is deliberately generous: once the plan hits its 5h/weekly cap, every subsequent turn dies
@@ -311,15 +303,57 @@ function latestRollupUsage(home: string): CodexUsageDTO | null {
   // then made readCodexUsage return null — the top-bar chip's meters + reset countdown vanished exactly
   // when the cap made them most useful. A wider scan keeps surfacing the last real reading (empty rollouts
   // are tiny, so the extra reads are cheap and only happen while recent files lack a snapshot).
-  const recent = files
-    .map((f) => ({ f, m: safeMtime(f) }))
-    .sort((a, b) => b.m - a.m)
-    .slice(0, USAGE_SCAN_FILES);
-  for (const { f } of recent) {
+  for (const f of files) {
     const snap = parseRollout(f);
     if (snap) return snap;
   }
   return null;
+}
+
+/**
+ * Find the newest rollout files without recursively enumerating the whole Codex archive. A long-lived
+ * `~/.codex/sessions` can contain hundreds of thousands of old files; `readdirSync({ recursive: true })`
+ * made even a single capacity read monopolize Node for minutes. Codex's date-partitioned layout lets us
+ * walk newest year/month/day directories only, stopping as soon as the reader's bounded file budget is
+ * filled. Direct files cover legacy/test layouts too.
+ */
+function recentRolloutFiles(sessions: string, limit: number): string[] {
+  const out: string[] = [];
+  const addFiles = (dir: string): void => {
+    if (out.length >= limit) return;
+    try {
+      const files = readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && /rollout-.*\.jsonl$/.test(entry.name))
+        .map((entry) => join(dir, entry.name))
+        .sort((a, b) => safeMtime(b) - safeMtime(a));
+      out.push(...files.slice(0, limit - out.length));
+    } catch {
+      /* an in-flight CLI cleanup can remove a date directory between reads */
+    }
+  };
+  const childDirs = (dir: string): string[] => {
+    try {
+      return readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort((a, b) => b.localeCompare(a));
+    } catch {
+      return [];
+    }
+  };
+
+  addFiles(sessions);
+  for (const year of childDirs(sessions)) {
+    const yearDir = join(sessions, year);
+    for (const month of childDirs(yearDir)) {
+      const monthDir = join(yearDir, month);
+      for (const day of childDirs(monthDir)) {
+        addFiles(join(monthDir, day));
+        if (out.length >= limit) return out;
+      }
+    }
+  }
+  return out;
 }
 
 function clearReadCache(): void {
