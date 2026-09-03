@@ -78,6 +78,15 @@ async function waitForPersisted(dataDir, expected, timeoutMs = 15_000) {
   return actual;
 }
 
+async function waitForUiCheck(waiter) {
+  try {
+    await waiter();
+    return { passed: true, detail: "" };
+  } catch (error) {
+    return { passed: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 async function authenticate(page) {
   const response = await page.request.post(`${BASE}/api/login`, {
     data: { password: authPassword() },
@@ -179,9 +188,18 @@ async function verifyDesktop(browser, dataDir) {
     await desktopSearch.fill("discord");
     await discordResult.click();
     check("a result opens the setting's category", (await page.locator("#settings-page-title").innerText()) === "Voice & alerts");
-    const discordToggle = page.locator('[role="switch"][aria-label="Post to Discord"]');
-    check("a result focuses its exact control", await discordToggle.evaluate((control) => document.activeElement === control));
-    check("a result briefly highlights its exact row", await page.locator('.settings-row.settings-search-target:has([aria-label="Post to Discord"])').isVisible());
+    const discordToggleSelector = '[role="switch"][aria-label="Post to Discord"]';
+    const focused = await waitForUiCheck(() => page.waitForFunction(
+      (selector) => document.activeElement === document.querySelector(selector),
+      discordToggleSelector,
+      { timeout: 5_000 },
+    ));
+    check("a result focuses its exact control", focused.passed, focused.detail);
+    const highlighted = await waitForUiCheck(() => page.waitForSelector(
+      '.settings-row.settings-search-target:has([aria-label="Post to Discord"])',
+      { timeout: 3_000, state: "visible" },
+    ));
+    check("a result briefly highlights its exact row", highlighted.passed, highlighted.detail);
     await desktopSearch.fill("definitely-not-a-setting");
     check("an unmatched keyword gets a clear empty state", await page.locator(".settings-search-empty").isVisible());
     await desktopSearch.press("Escape");
