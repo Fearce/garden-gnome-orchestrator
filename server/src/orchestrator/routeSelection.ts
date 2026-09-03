@@ -42,13 +42,19 @@ interface Signal {
 const RISK_SIGNALS: Signal[] = [
   {
     name: "security/auth",
-    re: /\b(?:security|vulnerab(?:le|ility)|exploit|xss|csrf|sql injection|auth(?:entication|orization)?|login|logout|session|oauth|jwt|2fa|mfa|credential|secret|password|encrypt|decrypt|permission|access[- ]control|privileg(?:e|ed|es|ing)?)\b/i,
+    // Anchored at BOTH ends so "authoritative"/"author" no longer read as auth work — but every term
+    // therefore has to spell its own inflections. Real briefs say "users cannot authenticate",
+    // "credentials", "permissions", "sessions expire"; a trailing \b on a bare stem silently drops all
+    // of them, and a missed security signal is the expensive direction of this classifier.
+    re: /\b(?:security|vulnerab(?:le|les|ility|ilities)|exploit(?:s|ed|ing|able)?|xss|csrf|sql injection|auth(?:\b|n\b|z\b|entic\w*|oris\w*|oriz\w*)|logins?|logouts?|sessions?|oauth|jwt|2fa|mfa|credentials?|secrets?|passwords?|encrypt(?:s|ed|ing|ion)?|decrypt(?:s|ed|ing|ion)?|permissions?|access[- ]control|privileg(?:e|ed|es|ing)?)\b/i,
     flagship: true,
   },
   { name: "money/finance", re: /\b(?:payment|billing|invoice|financial|real[- ]money|trading|wallet|refund|checkout|pricing)\b/i, flagship: true },
   {
     name: "data migration/backfill",
-    re: /\b(?:migrat(?:e|ion)|schema change|database|backfill|drop table|delete (?:all|every)|truncate|destructive|irreversib(?:le|ly)?|force[- ]push|reset --hard|rm -rf)\b/i,
+    // Same inflection rule as security/auth: "run the migrations" and "backfilling rows" are the plain
+    // wording of exactly the class this policy exists to catch, so the stems spell their own forms.
+    re: /\b(?:migrat(?:e|es|ed|ing|ion|ions)|schema change|databases?|backfill(?:s|ed|ing)?|drop table|delete (?:all|every)|truncat(?:e|es|ed|ing|ion)|destructive|irreversib(?:le|ly)?|force[- ]push|reset --hard|rm -rf)\b/i,
     flagship: true,
   },
   {

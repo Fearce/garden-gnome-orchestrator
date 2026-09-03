@@ -106,6 +106,16 @@ const PARK_CLASSES = [
     action: "yours to call: Mark done, Auto-review, or send it back with a note",
   },
   {
+    // threadManager's blockFlagshipModelPolicy. A task-route flagship floor that cannot be satisfied
+    // parks WITHOUT the cap marker on purpose: model ACCESS/settings can change as well as quota, so
+    // the cap supervisor must not own it. It is still a normal, actionable park — not drifted wording.
+    key: "flagshipWait",
+    human: true,
+    title: "waiting for a flagship implementor — no approved model is dispatchable",
+    match: (err) => err.includes("requires a flagship implementor"),
+    action: "restore Opus 5 (or another approved flagship) capacity/access, then click Resume — probe:accounts shows the ladder",
+  },
+  {
     key: "unknown",
     human: true,
     title: "unrecognized park text — classification may have drifted",

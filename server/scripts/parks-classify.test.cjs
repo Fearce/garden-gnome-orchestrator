@@ -95,6 +95,27 @@ assert.equal(
   "an in-place reader escalation is not a parked task needing a human nudge",
 );
 
+// --- the flagship-policy wait (blockFlagshipModelPolicy) ---------------------------------------------
+// This park deliberately carries NO cap marker (model access, not just quota, can be what is missing),
+// so it must classify on its own wording or the sweep reports a real, actionable park as drifted text.
+assert.equal(
+  cls(
+    [
+      "This task's persisted route requires a flagship implementor (data migration/backfill).",
+      "claude-opus-5 is not dispatchable with the required runway, and no policy-approved flagship fallback is currently safe.",
+      "Safe but ineligible workhorse/economy candidates: claude-sonnet-5. No weaker model was started.",
+      "Capacity target: substantial implementor work. Restore claude-opus-5 capacity/access or another approved flagship, then click Resume; routing will re-check from the saved task state.",
+    ].join(String.fromCharCode(10, 10)),
+  ),
+  "flagshipWait",
+  "a flagship-policy wait is a normal park class, not unrecognized wording",
+);
+assert.equal(
+  cls("needs your review. ⏳ Auto-resume pending — every backend is usage-capped; no policy-approved flagship fallback is safe either."),
+  "capWait",
+  "a genuine cap park keeps capWait, so the cap supervisor still owns it",
+);
+
 // --- unknown is a signal, not a dumping ground -------------------------------------------------------
 assert.equal(cls(""), "unknown", "an empty park message classifies rather than throwing");
 assert.equal(cls(null), "unknown", "a NULL error column (the schema allows it) classifies rather than throwing");
@@ -256,6 +277,10 @@ const LITERALS = [
   "Auto-review was interrupted by a server restart",
   "Auto-review was fixing the issues it found",
   "cut off again each time",
+  // The flagship-policy wait. `blockFlagshipModelPolicy` passes settleReview a BUILT string, so the
+  // reverse-door scan below (which only reads inline literals) cannot see it — this forward check is
+  // the only thing tying that park class to the wording threadManager actually writes.
+  "requires a flagship implementor",
   // The `failed`-state messages. The promise is the one that must not drift: it is written by one process
   // and read back by the next boot's revival scan, so a reword there is a cross-process contract break.
   "auto-resuming…",

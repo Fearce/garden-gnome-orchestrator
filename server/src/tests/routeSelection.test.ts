@@ -132,6 +132,42 @@ backfill, preserve auditability, and add realistic regressions for open, closed,
   check("a short bounded investigation keeps adaptive model choice", d.scope === "broad" && d.modelPolicy?.tier === "adaptive", JSON.stringify(d));
 }
 
+// Anchoring the risk stems at BOTH ends is what stopped "authoritative" reading as auth work — and it
+// silently dropped every inflected form at the same time. Owners write "users cannot authenticate" and
+// "run the migrations", not "authentication" and "a migration", so pin the forms in both directions:
+// a missed security or migration signal loses the flagship floor AND the planner/QA route at once.
+console.log("\nRisk stems must match their real inflections without re-matching lookalike words");
+for (const phrase of [
+  "Users cannot authenticate after the last release.",
+  "Only authorized accounts should reach this route.",
+  "Rotate the leaked credentials.",
+  "Permissions are wrong for shared folders.",
+  "Sessions expire far too early.",
+  "Stored passwords must be re-hashed.",
+  "Payloads are no longer encrypted at rest.",
+  "Two vulnerabilities were reported in the parser.",
+]) {
+  const d = route(phrase);
+  check(`"${phrase}" is security/auth risk`, d.signals.includes("security/auth"), JSON.stringify(d.signals));
+  check(`"${phrase}" requires a flagship implementor`, d.modelPolicy?.tier === "flagship", JSON.stringify(d.modelPolicy));
+}
+for (const phrase of [
+  "Run the migrations against the reporting replica.",
+  "Backfilling rows for the new column.",
+  "The databases disagree about the latest row.",
+]) {
+  const d = route(phrase);
+  check(`"${phrase}" is data migration/backfill risk`, d.signals.includes("data migration/backfill"), JSON.stringify(d.signals));
+}
+for (const phrase of [
+  "Show the author of each commit in the history list.",
+  "Cite an authoritative source next to every figure.",
+  "Rename the authority column to issuer.",
+]) {
+  const d = route(phrase);
+  check(`"${phrase}" is not misread as security/auth`, !d.signals.includes("security/auth"), JSON.stringify(d.signals));
+}
+
 // ---- structural signals, independent of keywords --------------------------------------------------
 console.log("\nStructural signals (file count, compound requests, effort, timed window)");
 {
