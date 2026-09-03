@@ -70,6 +70,28 @@ check("an unpinged sub reports no reading", snapshot.accounts.acct1?.usageAt ===
 check("an unpinged sub has no utilization", snapshot.accounts.acct1?.fiveHour === null);
 check("cadence rides along so a consumer can size its staleness bound", snapshot.pingIntervalMs > 0);
 
+// A dashboard can open before AccountManager.start() begins its asynchronous boot pings. It must show
+// the last known readings during that short gap rather than flashing both Claude cards as "—" after
+// every server restart.
+const persistedUsage = {
+  fiveHour: 31,
+  sevenDay: 42,
+  fiveHourReset: Date.now() + 60 * 60_000,
+  sevenDayReset: Date.now() + 24 * 60 * 60_000,
+  usageAt: Date.now() - 5_000,
+  holdUntil: null,
+  extWakeAt: null,
+  modelLimits: {},
+  rateLimited: false,
+  rateLimitWindow: null,
+  rateLimitResetAt: null,
+};
+const hydratedManager = new AccountManager([secondary], new EventHub(), 600_000, {
+  persist: { load: () => persistedUsage, save: () => undefined },
+});
+const hydrated = hydratedManager.dto()[0];
+check("a restart hydrates persisted meters before async boot pings", hydrated?.fiveHour === 31 && hydrated.sevenDay === 42);
+
 console.log("account-usage: reset-aware hard headroom and stale routing evidence");
 const rolloverManager = new AccountManager([{ id: "rollover", label: "rollover", token: "" }], new EventHub());
 const rolloverState = (rolloverManager as any).states.get("rollover");

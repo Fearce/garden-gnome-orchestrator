@@ -345,13 +345,24 @@ export class AccountManager {
       });
       this.stagger?.register(a.id, () => this.phase(a.id));
     }
-    // ThreadManager reconciles interrupted work before the async boot usage probes begin. Restore just
-    // the durable cap latches synchronously so that short auto-resume delay cannot select a subscription
-    // which a prior process already learned was quota-capped.
+    // The first WebSocket hello can arrive before the async boot pings begin. Hydrate the full last-known
+    // account readings synchronously so a restart never replaces working Claude meters with "—" while
+    // the tiny live probes are still in flight. The boot ping below remains authoritative and refreshes
+    // these values immediately after startup.
     const now = Date.now();
     for (const a of accounts) {
       const persisted = this.persist?.load(a.id) ?? null;
-      if (persisted) this.restorePersistedCap(this.states.get(a.id)!, persisted, now);
+      if (!persisted) continue;
+      const st = this.states.get(a.id)!;
+      st.fiveHour = persisted.fiveHour;
+      st.sevenDay = persisted.sevenDay;
+      st.fiveHourReset = persisted.fiveHourReset;
+      st.sevenDayReset = persisted.sevenDayReset;
+      st.usageAt = persisted.usageAt;
+      st.extWakeAt = persisted.extWakeAt ?? null;
+      st.modelLimits = new Map(Object.entries(persisted.modelLimits ?? {}).filter(([, reset]) => reset > now));
+      st.updatedAt = now;
+      this.restorePersistedCap(st, persisted, now);
     }
   }
 

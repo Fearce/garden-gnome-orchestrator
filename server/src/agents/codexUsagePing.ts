@@ -7,7 +7,7 @@ import type { EventHub } from "../events.js";
 import type { ResetStagger } from "../accounts/resetStagger.js";
 import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
-import { classifyRateWindows, latestTurnFiveHourReset, noteCodexPing, noteCodexWake, readCodexUsage, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
+import { classifyRateWindows, latestTurnFiveHourReset, noteCodexPing, noteCodexWake, readCodexUsageForSnapshot, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 import { GENERAL_LIMIT_ID, normalizeLimitName, type CodexPool } from "./codexPools.js";
 
 /**
@@ -29,7 +29,7 @@ const PING_TIMEOUT_MS = 30_000;
 // Same cadence as the Claude account pings by default; each ping spawns a short-lived codex process.
 const CODEX_PING_MS = Number(process.env.CODEX_PING_MS) > 0 ? Number(process.env.CODEX_PING_MS) : 600_000;
 const RESET_BUFFER_MS = 5_000; // re-read shortly after a window reset so the meter flips without waiting a full interval
-const ROLLOUT_POLL_MS = 30_000; // the cheap rollout-file poll (fresh mid-run data) + change broadcast
+const ROLLOUT_POLL_MS = 30_000; // refresh the already-known meter state + change broadcast
 
 // ---- the cheap wake turn ----
 // gpt-5.5 is the cheapest model a ChatGPT-plan login can run: the mini/codex-mini ids 400 with "not
@@ -304,7 +304,11 @@ export function startCodexUsageMonitor(
   let registered = false;
 
   const push = (): void => {
-    const usage = readCodexUsage();
+    // This runs at boot and every 30 seconds. It must never recursively walk both Codex session
+    // homes: on a large ~/.codex that synchronous scan monopolises Node's event loop, delaying the
+    // dashboard hello and the Claude-account pings that populate the subscription strip. Capacity
+    // routing remains the fresh-scan consumer; the monitor only publishes known/cached telemetry.
+    const usage = readCodexUsageForSnapshot();
     const sig = JSON.stringify(usage);
     if (sig !== lastSig) {
       lastSig = sig;
@@ -333,7 +337,7 @@ export function startCodexUsageMonitor(
       opts.stagger.register("codex", () => {
         const now = Date.now();
         if (wakeAt != null && wakeAt > now) return wakeAt;
-        const reset = readCodexUsage()?.fiveHourReset;
+        const reset = readCodexUsageForSnapshot()?.fiveHourReset;
         if (reset != null && reset > now) return reset;
         return presumedReset(now);
       });
