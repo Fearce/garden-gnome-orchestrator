@@ -38,6 +38,8 @@ export interface SelectionContext {
   brief: string;
   /** The planner's own words about this task — its summary, steps (with files) and risks. */
   planText?: string;
+  /** Deterministic task-route capability floor. When present, it outranks cheapest-capable/history. */
+  policyText?: string;
   candidates: ModelCandidate[];
   efforts: Effort[];
   repoStats: ModelStat[]; // how auto-picked tasks scored in THIS repo
@@ -112,7 +114,7 @@ export function buildSelectionPrompt(ctx: SelectionContext): string {
   return [
     "You are choosing which AI coding model will IMPLEMENT one task in an autonomous pipeline, and how hard it should think.",
     "",
-    "Pick the CHEAPEST option you are confident can finish this job unattended. Cost means BOTH dollars and subscription/token-window burn: a $0 subscription run can still waste scarce allowance. Both mistakes are real: too weak and the work bounces through QA fix-rounds or lands on a human, which costs far more than the stronger model would have; too strong or too-high effort and limited tokens are spent on work a smaller/shallower choice would have nailed. Judge the work in front of you — its size, how many files and systems it spans, how much of it is mechanical versus genuinely uncertain.",
+    "Honor any mandatory task route policy first. Within the eligible roster, pick the CHEAPEST option you are confident can finish this job unattended. Cost means BOTH dollars and subscription/token-window burn: a $0 subscription run can still waste scarce allowance. Both mistakes are real: too weak and the work bounces through QA fix-rounds or lands on a human, which costs far more than the stronger model would have; too strong or too-high effort and limited tokens are spent on work a smaller/shallower choice would have nailed. Judge the work in front of you — its size, how many files and systems it spans, how much of it is mechanical versus genuinely uncertain.",
     "Live capacity is a hard operational constraint, not a benchmark: prefer a pool with enough stated runway for the whole task. Do not put substantial work on an at-risk pool when a viable pool is listed. A reset inside the expected task duration is already accounted for in the runway note.",
     "Candidate notes may include a daily cached LiveBench score. Treat it as a secondary capability prior: exact-model evidence is stronger than an explicitly labelled older-family prior; this orchestrator's own task outcomes are more relevant to autonomous reliability. Use category scores that fit THIS task, and use benchmarked effort variants to choose the smallest reasoning effort that preserves quality.",
     "",
@@ -122,6 +124,7 @@ export function buildSelectionPrompt(ctx: SelectionContext): string {
     "",
     clip(ctx.brief, BRIEF_CHARS),
     ...(ctx.planText ? ["", "## What the planner found after reading this repository", "", clip(ctx.planText, PLAN_CHARS)] : []),
+    ...(ctx.policyText ? ["", "## Mandatory task route policy", "", ctx.policyText] : []),
     "",
     "## Models that can be dispatched right now (nothing else is available)",
     roster,

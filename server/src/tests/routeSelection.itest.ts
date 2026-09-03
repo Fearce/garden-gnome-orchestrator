@@ -267,6 +267,36 @@ async function main(): Promise<void> {
     }
   }
 
+  // ---- 6. Legacy decisions upgrade in place without replaying planner/QA -----------------------------
+  console.log("\n6. A pre-policy route gains truthful model evidence on resume");
+  {
+    const h = makeHarness();
+    try {
+      h.manager.setSettings({ autoModelSelection: true });
+      const brief = `Investigate why stale business records remain visible to users and implement a durable end-to-end fix.
+
+Trace ingestion sources, stored status timestamps, refresh jobs, query filters, caches, and user-facing results.
+Handle existing data and future updates with a safe migration or backfill, then add broad regression coverage.`;
+      const legacy = h.db.createThread({ title: "Repair stale production records", workspace: process.cwd(), rawPrompt: brief, brief });
+      h.db.updateThreadStageOutputs(legacy.id, {
+        routeDecision: {
+          usePlanner: true,
+          useQa: true,
+          scope: "broad",
+          reason: "broad or risk-bearing work (security/auth; data/destructive; open-ended/ambiguous) — keeping planning and QA",
+          signals: ["security/auth", "data/destructive", "open-ended/ambiguous"],
+        },
+      });
+      const decision = h.manager.resolveRoute(h.db.getThread(legacy.id), h.manager.settings());
+      check("legacy planner/QA execution stays sticky", decision.usePlanner === true && decision.useQa === true && decision.scope === "broad", JSON.stringify(decision));
+      check("legacy task gains the flagship Opus 5 floor", decision.policyVersion === 2 && decision.modelPolicy?.tier === "flagship" && decision.modelPolicy.preferredModel === "claude-opus-5", JSON.stringify(decision));
+      check("the stale authoritative/auth false-positive is removed", !decision.signals.includes("security/auth"), JSON.stringify(decision.signals));
+      check("the owner receives one actionable route update", h.db.listMessages(legacy.id).some((message: { content: string }) => /Route updated/i.test(message.content) && /flagship implementor required/i.test(message.content) && /claude-opus-5/i.test(message.content)), JSON.stringify(h.db.listMessages(legacy.id)));
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);
   if (failed > 0) {
     console.log("Failures:\n" + failures.map((f) => `  - ${f}`).join("\n"));

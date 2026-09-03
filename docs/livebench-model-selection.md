@@ -1,9 +1,11 @@
 # LiveBench as an auto-selection signal
 
-**Verdict: adopt it as a daily cached capability prior, not as the routing authority.** LiveBench is
+**Verdict: adopt it as a daily cached capability prior, not as the routing authority or capability floor.** LiveBench is
 especially useful before this orchestrator has enough graded tasks of its own, and its category breakdown
-can distinguish coding, agentic coding, reasoning, and data-analysis work. It remains subordinate to live
-subscription headroom, provider/tool compatibility, and this orchestrator's own accepted-task grades.
+can distinguish coding, agentic coding, reasoning, and data-analysis work. It remains subordinate to the
+deterministic task-risk policy, live subscription headroom, and provider/tool compatibility. Local accepted-task
+grades are stronger than the benchmark only *within* the model tier that policy permits: a Sonnet success
+record cannot downgrade a flagship production-data task below Opus 5 or another reviewed flagship fallback.
 
 ## Why this shape
 
@@ -38,4 +40,8 @@ implementor that causes extra rounds is not cheap in practice. The aggregate gra
 
 Future picks receive both per-repository and global model history, plus model-by-effort history. They are
 explicitly told that `$0` on a subscription is not zero cost when it burned a scarce token window, and to
-choose the lowest-cost model and effort that is still likely to finish unattended.
+choose the lowest-cost model and effort that is still likely to finish unattended **inside the route's
+eligible capability set**. For an adaptive task that can include Haiku/Sonnet/workhorse models. For a
+flagship task, available Opus 5 is selected first; if it is unavailable, only an explicitly approved
+flagship fallback can run and the task history says so. No eligible flagship means a visible wait, not a
+benchmark- or history-driven silent downgrade.

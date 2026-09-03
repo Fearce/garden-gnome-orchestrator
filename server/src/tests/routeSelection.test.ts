@@ -39,6 +39,7 @@ console.log("\nNarrow, contained changes → implementor only");
   check("typo fix skips the planner", d.usePlanner === false);
   check("typo fix skips QA", d.useQa === false);
   check("reason names a signal", d.reason.length > 0 && d.signals.length > 0);
+  check("simple work keeps adaptive cheaper-model routing", d.modelPolicy?.tier === "adaptive", JSON.stringify(d.modelPolicy));
 }
 {
   const d = route("Rename the `getUserData` function in src/utils.ts to `fetchUserProfile`.");
@@ -108,6 +109,29 @@ console.log("\nBroad or risk-bearing work → keep planning + QA");
   check("figure-out/design wording routes broad", d.scope === "broad", JSON.stringify(d));
 }
 
+// Regression class for the real long-closed-place incident: production data quality across ingestion,
+// refresh, storage, caches, API/UI eligibility and an existing-data migration. This is intentionally a
+// representative class, not a task-id exception or one magic title phrase.
+{
+  const d = route(`Investigate why stale business records remain visible to users and implement a durable end-to-end fix.
+
+Trace the full lifecycle across ingestion sources, stored status timestamps, refresh jobs, query filters,
+ranking, caches, and user-facing results. Handle existing data and future updates with a safe migration or
+backfill, preserve auditability, and add realistic regressions for open, closed, temporary, and unknown states.`);
+  check("cross-cutting production-data work routes broad", d.scope === "broad", JSON.stringify(d));
+  check("cross-cutting production-data work requires a flagship", d.modelPolicy?.tier === "flagship", JSON.stringify(d.modelPolicy));
+  check("Opus 5 is the persisted first choice", d.modelPolicy?.preferredModel === "claude-opus-5", JSON.stringify(d.modelPolicy));
+  check("data-lifecycle evidence is explicit", d.modelPolicy?.signals.includes("production data lifecycle") === true, JSON.stringify(d.modelPolicy));
+  check("migration/backfill evidence is explicit", d.modelPolicy?.signals.includes("data migration/backfill") === true, JSON.stringify(d.modelPolicy));
+  check("authoritative/auditability prose is not misreported as auth risk", !d.signals.includes("security/auth"), JSON.stringify(d.signals));
+  check("structural evidence is persisted for capacity routing", (d.evidence?.wordCount ?? 0) > 50 && (d.evidence?.compoundCount ?? 0) >= 1, JSON.stringify(d.evidence));
+}
+
+{
+  const d = route("Investigate why this one selector returns the wrong label.");
+  check("a short bounded investigation keeps adaptive model choice", d.scope === "broad" && d.modelPolicy?.tier === "adaptive", JSON.stringify(d));
+}
+
 // ---- structural signals, independent of keywords --------------------------------------------------
 console.log("\nStructural signals (file count, compound requests, effort, timed window)");
 {
@@ -121,16 +145,19 @@ console.log("\nStructural signals (file count, compound requests, effort, timed 
 {
   const d = route("Small cleanup in one file.", { effortOverride: "max" });
   check("operator-pinned heavy effort routes broad even on a short brief", d.scope === "broad", JSON.stringify(d));
+  check("heavy effort is a non-wording flagship signal", d.modelPolicy?.tier === "flagship" && d.modelPolicy.signals.includes("operator pinned max effort"), JSON.stringify(d.modelPolicy));
 }
 {
   const d = route("Keep working on polishing the UI.", { timedHours: 8 });
   check("a multi-hour timed window routes broad", d.scope === "broad", JSON.stringify(d));
+  check("timed work is a non-wording flagship signal", d.modelPolicy?.tier === "flagship" && d.modelPolicy.signals.includes("multi-hour work window"), JSON.stringify(d.modelPolicy));
 }
 {
   const d = route("Improve things.", { shotgun: true });
   check("a shotgun (multi-agent) dispatch always routes broad", d.scope === "broad", JSON.stringify(d));
   check("shotgun keeps planner", d.usePlanner === true);
   check("shotgun keeps QA", d.useQa === true);
+  check("multi-agent implementation requires a flagship", d.modelPolicy?.tier === "flagship", JSON.stringify(d.modelPolicy));
 }
 
 // ---- the conservative default: unclear cases keep the full route ----------------------------------

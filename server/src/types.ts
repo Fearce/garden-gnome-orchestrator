@@ -508,6 +508,29 @@ export interface ReaderOutput {
  *  "broad" (planner + QA). */
 export type RouteScope = "narrow" | "standard" | "broad";
 
+/** The implementor capability floor attached to a task-aware route. `adaptive` leaves the existing
+ * cheapest-capable selector in charge. `flagship` prevents outcome history or capacity balancing from
+ * silently downgrading risk-bearing work below the policy-approved flagship set. */
+export type ImplementorModelTier = "adaptive" | "flagship";
+
+export interface ImplementorModelPolicy {
+  tier: ImplementorModelTier;
+  /** First choice when it is dispatchable with task-sized runway. This is a preference, not an owner pin:
+   * a named policy-approved flagship fallback may run when the preferred model is unavailable. */
+  preferredModel?: string;
+  reason: string;
+  signals: string[];
+}
+
+/** Reproducible non-semantic evidence behind the route. These counts also feed capacity reservation, so
+ * a long multi-part brief without a planner still reserves more than a one-line edit. */
+export interface RouteEvidence {
+  wordCount: number;
+  fileCount: number;
+  compoundCount: number;
+  riskCount: number;
+}
+
 /**
  * Task-aware pipeline route: whether THIS task benefits from the planner and/or QA, independent of
  * whether those roles are enabled (enabled = available; forcing them on every task regardless of size is
@@ -521,6 +544,10 @@ export interface RouteDecision {
   scope: RouteScope;
   reason: string; // one-line, owner-facing explanation
   signals: string[]; // the matched signal names behind `reason`, for the console/audit trail
+  /** Added in route policy v2. Optional only so persisted pre-v2 decisions can be upgraded safely. */
+  modelPolicy?: ImplementorModelPolicy;
+  evidence?: RouteEvidence;
+  policyVersion?: number;
 }
 
 /** The auto-review verdict — the owner's own accept/hand-back decision, delegated to one agent. It is

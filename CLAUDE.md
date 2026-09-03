@@ -21,7 +21,7 @@ curl -s -b /tmp/cj.txt http://127.0.0.1:4317/api/threads
 
 A director's console for running Claude Code agents: a provider-neutral **director** enriches a
 prompt, dispatches into a pipeline that self-assembles the smallest capable route — a planner and/or
-researcher when the work benefits, always an Opus 5 **implementor** worker you can inject into
+researcher when the work benefits, then a capability-routed **implementor** worker you can inject into
 mid-work. Node/Fastify API (`server/`) + React/Vite console (`web/`), single origin.
 
 **Task-aware route selection (planner/QA are AVAILABLE, not mandatory).** The `plannerEnabled`/
@@ -30,8 +30,11 @@ mid-work. Node/Fastify API (`server/`) + React/Vite console (`web/`), single ori
 a few structural signals, no model call) decides per task whether it benefits, ANDed with the
 setting at each gate. Narrow/contained/low-risk (typo, single-file rename, version bump) runs the
 implementor alone; broad, risk-bearing (security/auth, money, data/migrations, prod/infra), or
-itself ambiguous ("investigate why…") keeps both — bias conservative when unsure. Sticky per episode
-(`stage_outputs.routeDecision`) and announced in the task's own feed ("🧭 Route selected — …"). OFF
+itself ambiguous ("investigate why…") keeps both — bias conservative when unsure. The same persisted
+decision carries an `adaptive` or `flagship` implementor floor; substantial/risk-sensitive work prefers
+Opus 5, with only reviewed flagship fallbacks and a visible wait when none is safe. Strict owner pins still
+win exactly. Sticky per episode except for a one-time legacy-policy upgrade
+(`stage_outputs.routeDecision`) and announced in the task's own feed ("🧭 Route selected/updated — …"). OFF
 remains the only true "never". Gates: `test:route-selection`, `test:route-pipeline`. ARCHITECTURE.md §5.
 
 **Read lane (`dispatch_read`).** A pure read-only lookup ("read HANDOFF.md and report it", "which
@@ -324,8 +327,19 @@ operational constraint; known-at-risk models are removed when a viable option ex
 provider is checked again immediately before dispatch. Exact LiveBench rows are distinguished from
 explicitly labelled older same-family priors; local outcomes and role/tool fit outrank the benchmark. The reply is validated against that roster and
 the PROVIDER comes from the matched entry, never the reply, so a hallucinated id can't reach a spawn; two
-unusable replies fall back to normal routing (a dispatch is never blocked). The pick persists in
-`stage_outputs.modelPick` (a resume must land on the same backend — session ids are provider-specific),
+unusable replies fall back to normal routing for adaptive tasks.
+
+The persisted task route supplies a deterministic capability floor before that judgement. `adaptive`
+routes retain the cheapest-capable behavior above. `flagship` routes cover substantial ambiguous work and
+high-risk production/data-quality/ingestion/migration/backfill/cross-cutting or sensitive user-facing work;
+they choose `claude-opus-5` first whenever it has task-sized runway. Only reviewed flagship families may
+be considered as a documented fallback. When none is safe, the task waits visibly in review and names the
+missing model/capacity instead of silently falling through to a workhorse. Strict owner model pins bypass
+automatic selection unchanged. Pre-policy saved routes are upgraded in place: planner/QA progress and old
+run history remain, but a non-compliant model pick/session is superseded and the owner gets a `Route updated`
+message with the evidence.
+
+The pick persists in `stage_outputs.modelPick` (a resume must land on the same backend and model — session ids are provider-specific),
 overrides usage routing while that backend is ready, and supplies a model only to the backend it named.
 Effort precedence: `effortOverride` > pick > planner. Retry re-selects (the blob is nulled).
 

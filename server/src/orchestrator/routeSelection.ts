@@ -8,7 +8,10 @@
 // ambiguous task costs quality with nobody watching. So the "narrow" (implementor-only) tier is reached
 // only when the task is confidently small — everything else, including genuine ambiguity, keeps both.
 
-import type { Effort, RouteDecision, RouteScope } from "../types.js";
+import type { Effort, ImplementorModelPolicy, RouteDecision, RouteEvidence, RouteScope } from "../types.js";
+import { DEFAULT_FLAGSHIP_MODEL } from "./modelRoutingPolicy.js";
+
+export const ROUTE_POLICY_VERSION = 2;
 
 export interface RouteInput {
   title: string;
@@ -30,6 +33,8 @@ export interface RouteInput {
 interface Signal {
   name: string;
   re: RegExp;
+  /** This risk is costly enough that automatic selection must not choose a workhorse/economy tier. */
+  flagship?: boolean;
 }
 
 // Each hit alone is enough to keep (or restore) the full pipeline, however short or confident the brief
@@ -37,17 +42,35 @@ interface Signal {
 const RISK_SIGNALS: Signal[] = [
   {
     name: "security/auth",
-    re: /\b(security|vulnerab(?:le|ility)|exploit|xss|csrf|sql injection|auth(?:entication|orization)?|login|logout|session|oauth|jwt|2fa|mfa|credential|secret|password|encrypt|decrypt|permission|access[- ]control|privileg)/i,
+    re: /\b(?:security|vulnerab(?:le|ility)|exploit|xss|csrf|sql injection|auth(?:entication|orization)?|login|logout|session|oauth|jwt|2fa|mfa|credential|secret|password|encrypt|decrypt|permission|access[- ]control|privileg(?:e|ed|es|ing)?)\b/i,
+    flagship: true,
   },
-  { name: "money/finance", re: /\b(payment|billing|invoice|financial|real[- ]money|trading|wallet|refund|checkout|pricing)\b/i },
+  { name: "money/finance", re: /\b(?:payment|billing|invoice|financial|real[- ]money|trading|wallet|refund|checkout|pricing)\b/i, flagship: true },
   {
-    name: "data/destructive",
-    re: /\b(migrat(?:e|ion)|schema change|database|backfill|drop table|delete (?:all|every)|truncate|destructive|irreversib|force[- ]push|reset --hard|rm -rf)\b/i,
+    name: "data migration/backfill",
+    re: /\b(?:migrat(?:e|ion)|schema change|database|backfill|drop table|delete (?:all|every)|truncate|destructive|irreversib(?:le|ly)?|force[- ]push|reset --hard|rm -rf)\b/i,
+    flagship: true,
   },
-  { name: "production/infra", re: /\b(production\b|\bprod\b|deploy(?:ment)?|infra(?:structure)?|ci\/cd|pipeline config|release process)\b/i },
+  {
+    name: "production data lifecycle",
+    re: /\b(?:data quality|stale (?:data|record|records|status)|ingest(?:ion|ed|ing)|data import|import (?:source|feed|job|pipeline|records|data)|refresh (?:job|worker|schedule|pipeline|cadence|data)|crawl(?:er|ing)? (?:job|worker|schedule|pipeline|data|source|refresh)|sync (?:job|worker|pipeline|records|data)|cache invalidation|source of truth|existing data|future updates)\b/i,
+    flagship: true,
+  },
+  { name: "production/infra", re: /\b(?:production|prod|deploy(?:ment)?|infra(?:structure)?|ci\/cd|pipeline config|release process)\b/i, flagship: true },
+  {
+    name: "sensitive user-facing behavior",
+    re: /\b(?:sensitive user[- ]facing|sensitive customer[- ]facing|safety[- ]critical|privacy[- ]sensitive|personal data|moderation policy)\b/i,
+    flagship: true,
+  },
+  {
+    name: "cross-cutting lifecycle/regression",
+    re: /\b(?:cross[- ]cutting|end[- ]to[- ]end|full lifecycle|broad regressions?|regressions? across|multiple (?:systems|services)|across (?:the )?(?:api|backend) and (?:the )?(?:ui|frontend))\b/i,
+    flagship: true,
+  },
   {
     name: "broad scope",
     re: /\b(across the (?:codebase|repo|project)|entire (?:codebase|repo|project|system)|every file|all files|system[- ]wide|whole (?:codebase|repo|application)|rewrite|redesign|re-?architect|major refactor)\b/i,
+    flagship: true,
   },
   { name: "new design surface", re: /\b(new (?:feature|integration|service|endpoint|api|system)|design decision|architecture|introduce (?:a|an) new)\b/i },
   {
@@ -90,12 +113,72 @@ function countFileMentions(text: string): number {
 function countCompoundMarkers(text: string): number {
   const bullets = text.match(/^\s*(?:[-*]|\d+[.)])\s+\S/gm) ?? [];
   const connectors = text.match(/\b(?:also|additionally|as well as|and then|furthermore)\b/gi) ?? [];
-  return bullets.length + connectors.length;
+  // Multi-paragraph briefs often encode separate investigation, implementation and verification
+  // requirements without bullets. Count their boundaries as structural evidence rather than relying
+  // only on vocabulary; a one-paragraph simple request still contributes zero.
+  const paragraphs = text.split(/\n\s*\n/).filter((part) => part.trim()).length;
+  return bullets.length + connectors.length + Math.max(0, paragraphs - 1);
 }
 
 function countWords(text: string): number {
   const t = text.trim();
   return t ? t.split(/\s+/).length : 0;
+}
+
+function implementorModelPolicy(
+  riskHits: string[],
+  structural: string[],
+  evidence: RouteEvidence,
+): ImplementorModelPolicy {
+  const direct = RISK_SIGNALS
+    .filter((signal) => signal.flagship && riskHits.includes(signal.name))
+    .map((signal) => signal.name);
+  const scale: string[] = [];
+  if (evidence.wordCount >= 120 && evidence.compoundCount >= 2) {
+    scale.push(`long multi-part brief (${evidence.wordCount} words)`);
+  }
+  if (evidence.fileCount >= 4 && evidence.compoundCount >= 2) {
+    scale.push(`multi-file compound change (${evidence.fileCount} files)`);
+  }
+  if (riskHits.length >= 2 && evidence.wordCount >= 60) {
+    scale.push(`multiple risk dimensions (${riskHits.length})`);
+  }
+  for (const signal of structural) {
+    if (/multi-agent|multi-hour|operator pinned (?:xhigh|max|ultra)/i.test(signal)) scale.push(signal);
+  }
+  // Ambiguity alone can describe a small diagnostic. It becomes flagship work only when the brief also
+  // carries real scale evidence; this keeps a short, bounded investigation eligible for cheaper routing.
+  if (riskHits.includes("open-ended/ambiguous") && (evidence.compoundCount >= 2 || evidence.wordCount >= 80)) {
+    scale.push("open-ended investigation at substantial scope");
+  }
+  const signals = [...new Set([...direct, ...scale])];
+  if (signals.length > 0) {
+    return {
+      tier: "flagship",
+      preferredModel: DEFAULT_FLAGSHIP_MODEL,
+      reason: "risk and scale require a flagship implementor; Opus 5 is the first automatic choice",
+      signals,
+    };
+  }
+  return {
+    tier: "adaptive",
+    reason: "bounded or ordinary work may use the cheapest model likely to finish unattended",
+    signals: [],
+  };
+}
+
+function completeDecision(
+  decision: Omit<RouteDecision, "modelPolicy" | "evidence" | "policyVersion">,
+  riskHits: string[],
+  structural: string[],
+  evidence: RouteEvidence,
+): RouteDecision {
+  return {
+    ...decision,
+    modelPolicy: implementorModelPolicy(riskHits, structural, evidence),
+    evidence,
+    policyVersion: ROUTE_POLICY_VERSION,
+  };
 }
 
 // Too little text to be confident either way (an empty/near-empty brief) must never read as confidently
@@ -134,19 +217,26 @@ export function selectRoute(input: RouteInput): RouteDecision {
   const evidenceText = escalationText ? `${text}\n${escalationText}` : text;
 
   if (input.shotgun) {
-    return {
+    const evidence: RouteEvidence = {
+      wordCount: countWords(text),
+      fileCount: countFileMentions(evidenceText),
+      compoundCount: countCompoundMarkers(evidenceText),
+      riskCount: matches(evidenceText, RISK_SIGNALS).length,
+    };
+    return completeDecision({
       usePlanner: true,
       useQa: true,
       scope: "broad",
       reason: "multiple agents requested — decomposing the work and reviewing the combined result both matter",
       signals: ["multi-agent split"],
-    };
+    }, matches(evidenceText, RISK_SIGNALS), ["multi-agent split"], evidence);
   }
 
   const riskHits = matches(evidenceText, RISK_SIGNALS);
   const fileCount = countFileMentions(evidenceText);
   const compoundCount = countCompoundMarkers(evidenceText);
   const wordCount = countWords(text);
+  const evidence: RouteEvidence = { wordCount, fileCount, compoundCount, riskCount: riskHits.length };
 
   const structural: string[] = [];
   if (fileCount >= 4) structural.push(`touches ${fileCount}+ files`);
@@ -156,13 +246,13 @@ export function selectRoute(input: RouteInput): RouteDecision {
 
   if (riskHits.length > 0 || structural.length > 0) {
     const signals = [...riskHits, ...structural];
-    return {
+    return completeDecision({
       usePlanner: true,
       useQa: true,
       scope: "broad" as RouteScope,
       reason: `broad or risk-bearing work (${signals.join("; ")}) — keeping planning and QA`,
       signals,
-    };
+    }, riskHits, structural, evidence);
   }
 
   const narrowHits = matches(text, NARROW_SIGNALS);
@@ -175,29 +265,29 @@ export function selectRoute(input: RouteInput): RouteDecision {
         ...narrowHits,
         ...verificationHits,
       ];
-      return {
+      return completeDecision({
         usePlanner: false,
         useQa: true,
         scope: "standard" as RouteScope,
         reason: `contained change with an explicit verification need (${signals.join("; ")}) — implementor + QA, no planning needed`,
         signals,
-      };
+      }, riskHits, structural, evidence);
     }
     const signals = [`short, single-scope brief (${wordCount} words${fileCount ? `, ${fileCount} file ref(s)` : ""})`, ...narrowHits];
-    return {
+    return completeDecision({
       usePlanner: false,
       useQa: false,
       scope: "narrow" as RouteScope,
       reason: `narrow, contained change (${signals.join("; ")}) — implementor runs alone, no planning or QA needed`,
       signals,
-    };
+    }, riskHits, structural, evidence);
   }
 
-  return {
+  return completeDecision({
     usePlanner: true,
     useQa: true,
     scope: "standard" as RouteScope,
     reason: "no clear narrow-scope signal — keeping planning and QA (the safe default when it's not obviously contained)",
     signals: [],
-  };
+  }, riskHits, structural, evidence);
 }

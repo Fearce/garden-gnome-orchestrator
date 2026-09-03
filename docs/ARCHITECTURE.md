@@ -121,7 +121,11 @@ active-auth live catalog (or the complete curated cold-start catalog), without a
 carries its exact supported effort set after the operator's configured cap. Each candidate also carries
 the live capacity of the exact account/general/dedicated pool it would spend;
 known-at-risk models are omitted when a viable pool exists, and a persisted pick is revalidated against
-the same workload reserve immediately before launch.
+the same workload reserve immediately before launch. The deterministic task route is a capability floor:
+substantial ambiguous or risk-bearing production/data/migration/cross-cutting work requires a flagship
+implementor, prefers `claude-opus-5`, and lets outcome history judge only policy-approved flagship fallbacks.
+If none has task-sized runway, the card waits in `review` with the exact reason; it never silently runs a
+workhorse. A strict owner model pin remains an exact task-local exception.
 Every auto-selected task is graded when it settles so the next pick reads real outcomes rather than
 priors (CLAUDE.md § "Auto model selection"). Precedence is then
 `effort_override` > the pick > the planner.
@@ -206,9 +210,12 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   anything broader, riskier (security/auth, money, data/migrations, production/infra), or itself
   ambiguous ("investigate why…", "figure out the best way to…") selects both — the classifier
   biases conservative on anything not confidently narrow, mirroring the read lane's own
-  "misrouting to the cheap path is the unsafe direction" rule. The pick is persisted
-  (`stage_outputs.routeDecision`, sticky across resume — never reclassified mid-episode) and
-  announced as a system message in the task's own feed ("🧭 Route selected — …"), so it's visible
+  "misrouting to the cheap path is the unsafe direction" rule. That decision also persists an
+  implementor capability floor: `adaptive` keeps cheapest-capable selection, while substantial/risky
+  work is `flagship`, prefers Opus 5, and permits only reviewed flagship fallbacks. If capacity cannot
+  satisfy that floor, the task waits visibly; an exact owner model pin remains authoritative. The pick is
+  persisted (`stage_outputs.routeDecision`, sticky across resume except for a one-time upgrade of legacy
+  decisions) and announced as a system message in the task's own feed ("🧭 Route selected/updated — …"), so it's visible
   as a deliberate choice, not a silent omission. When the planner DOES run, its structured output
   declares `nextAgent` (a `PLAN_SCHEMA` required field): `"researcher"` when the task needs
   external info, else `"implementor"`. The researcher (when invoked) gathers **external-only**

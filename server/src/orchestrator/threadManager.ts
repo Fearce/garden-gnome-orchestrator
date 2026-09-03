@@ -70,6 +70,11 @@ import { OperatorNotes } from "./notes.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
 import { buildSelectionPrompt, defaultCandidateEffort, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
+import {
+  DEFAULT_FLAGSHIP_MODEL,
+  applyImplementorModelPolicy,
+  modelMatchesPolicy,
+} from "./modelRoutingPolicy.js";
 import { providerIntent } from "./providerIntent.js";
 import { detectModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
 import { LiveBenchScores } from "./liveBenchScores.js";
@@ -87,7 +92,7 @@ import {
   type CapacityWindow,
 } from "./capacityRouting.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
-import { selectRoute } from "./routeSelection.js";
+import { ROUTE_POLICY_VERSION, selectRoute } from "./routeSelection.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
@@ -1908,13 +1913,18 @@ export class ThreadManager implements OrchestratorApi {
 
   /** One shared workload estimate for account, provider, model-pool, and reset-wait decisions. */
   private capacityDemand(thread: Thread, role: Role, effort?: Effort): CapacityDemand {
-    const plan = this.db.getThreadStageOutputs(thread.id).plan ?? undefined;
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    const plan = stage.plan ?? undefined;
     const files = new Set(plan?.steps.flatMap((step) => step.files ?? []) ?? []);
+    const routeEvidence = stage.routeDecision?.evidence;
     return demandForRole(role, {
       effort: role === "implementor" ? (effort ?? thread.effortOverride ?? plan?.effort) : undefined,
-      stepCount: plan?.steps.length,
-      fileCount: files.size,
-      riskCount: plan?.risks.length,
+      // A disabled/failed planner used to erase all size evidence here. Preserve the stronger of the
+      // planner's repo read and the deterministic dispatch profile so risky multi-part briefs reserve
+      // substantial runway before any implementor starts.
+      stepCount: Math.max(plan?.steps.length ?? 0, routeEvidence?.compoundCount ?? 0),
+      fileCount: Math.max(files.size, routeEvidence?.fileCount ?? 0),
+      riskCount: Math.max(plan?.risks.length ?? 0, routeEvidence?.riskCount ?? 0),
       durationMs: thread.durationMs,
       deadlineAt: thread.deadlineAt,
     });
@@ -2990,21 +3000,66 @@ export class ThreadManager implements OrchestratorApi {
     return EFFORTS.filter((effort) => candidates.some((candidate) => candidate.efforts.includes(effort)));
   }
 
+  /** A flagship route may wait, but it may not quietly fall through to a workhorse model. This is a
+   * human-visible policy wait rather than a generic quota park: model access/settings can change as
+   * well as quota, so the owner gets the exact candidates and an explicit Resume step. */
+  private blockFlagshipModelPolicy(
+    thread: Thread,
+    demand: CapacityDemand,
+    candidates: ModelCandidate[],
+    policy: NonNullable<RouteDecision["modelPolicy"]>,
+  ): void {
+    const preferred = policy.preferredModel ?? DEFAULT_FLAGSHIP_MODEL;
+    const available = candidates.length ? candidates.map((candidate) => candidate.model).join(", ") : "none";
+    const detail = [
+      `This task's persisted route requires a flagship implementor (${policy.signals.join("; ") || policy.reason}).`,
+      `${preferred} is not dispatchable with the required runway, and no policy-approved flagship fallback is currently safe.`,
+      `Safe but ineligible workhorse/economy candidates: ${available}. No weaker model was started.`,
+      `Capacity target: ${demandSummary(demand)}. Restore ${preferred} capacity/access or another approved flagship, then click Resume; routing will re-check from the saved task state.`,
+    ].join("\n\n");
+    const summary = `Waiting for a flagship implementor — ${preferred} unavailable`;
+    if (!this.db.listFindings(thread.id).some((finding) => finding.summary === summary && finding.detail === detail)) {
+      this.postFinding({ threadId: thread.id, fromRole: "director", summary, detail, severity: "warning" });
+    }
+    this.settleReview(thread.id, detail);
+  }
+
   /**
    * Choose the implementor model + effort for one task. Runs once per episode, just before the implementor
    * stage, and persists the pick on the thread's stage outputs — a resume must land on the SAME backend
    * (session ids are provider-specific), and the grade written at settle has to name what was chosen.
-   * Returns undefined when the setting is off or no usable pick came back, leaving normal usage-based
-   * routing and the planner's effort in charge; a dispatch is never blocked by this.
+   * Returns undefined when the setting is off or an adaptive judgement has no usable answer, leaving
+   * normal usage routing in charge. Returns null only for a visible flagship-policy wait.
    */
-  private async autoSelectModel(thread: Thread, plan?: PlanOutput): Promise<ModelPick | undefined> {
+  private async autoSelectModel(thread: Thread, plan?: PlanOutput): Promise<ModelPick | null | undefined> {
     // A task-local owner pin is not a candidate for automatic judgement. It remains exact across every
     // resume/cap cycle and must never be overwritten by a cheaper/stronger model recommendation.
     if (this.db.getThread(thread.id)?.modelRequest) return undefined;
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    const policy = stage.routeDecision?.modelPolicy;
+    const saved = stage.modelPick;
+    const savedComplies = !saved || modelMatchesPolicy(saved, policy);
+    if (saved && !savedComplies) {
+      // Policy v2 can be applied to a paused/restart-interrupted legacy episode. Preserve its run and
+      // transcript as evidence, but do not resume a workhorse session into recognized flagship work.
+      this.db.updateThreadStageOutputs(thread.id, { modelPick: undefined });
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "director",
+        summary: `Superseded automatic ${saved.model} route — flagship capability is required`,
+        detail: `Root cause: the pre-v2 broad/risk route controlled planner and QA stages but did not constrain the automatic model roster, so the cheapest-capable judge could still choose a workhorse from local outcomes and quota. The prior pick was ${saved.model} at ${saved.effort}: ${saved.reason || "no reason recorded"}.
+
+That pick does not satisfy the task's persisted flagship policy (${policy?.signals.join("; ") || policy?.reason}). Its run history remains intact; the next run will start fresh on a compliant model rather than silently resuming the weaker session.`,
+        severity: "warning",
+      });
+    }
+    // Switching automatic selection off is authoritative for new decisions, but it must not preserve a
+    // legacy pick that the freshly-upgraded route just proved unsafe. Clearing that pick restores the
+    // configured implementor model (Opus 5 by default) without paying for a selector call.
     if (!this.settings().autoModelSelection) return undefined;
-    const saved = this.db.getThreadStageOutputs(thread.id).modelPick;
-    if (saved) return saved; // already picked for this episode (a resume) — never re-decide mid-task
-    if (saved === null) return undefined; // an earlier attempt already failed; don't pay for it twice
+    if (saved && savedComplies) return saved; // a valid episode pick remains sticky
+    if (saved === null && policy?.tier !== "flagship") return undefined; // ordinary failed judgement stays latched
+    if (saved === null) this.db.updateThreadStageOutputs(thread.id, { modelPick: undefined });
     await this.liveBench.prepareForSelection();
     const demand = this.capacityDemand(thread, "implementor", thread.effortOverride ?? plan?.effort);
     const candidates = this.implementorModelRoster(demand);
@@ -3012,28 +3067,42 @@ export class ThreadManager implements OrchestratorApi {
     // transient capacity state the cap-park protocol is about to wait out, not a selection attempt that
     // failed. Latching `null` below would silently disable auto-selection for the rest of the episode,
     // so the task would come back from its capacity park on the configured default model instead.
-    if (!candidates.length) {
+    if (!candidates.length && policy?.tier !== "flagship") {
       this.hub.log("warn", `Auto model selection found no dispatchable model with safe runway for ${thread.id.slice(0, 8)} — using the configured model; it will re-select if this task resumes with capacity.`);
       return undefined;
     }
+    const policySet = applyImplementorModelPolicy(candidates, policy);
+    if (policySet.mode === "blocked") {
+      this.blockFlagshipModelPolicy(thread, demand, candidates, policy!);
+      return null;
+    }
+    const eligible = policySet.eligible;
     const workspace = normalizeWorkspace(thread.workspace);
     const selection = {
       title: thread.title,
       workspace: thread.workspace,
       brief: thread.brief,
       planText: planDigest(plan),
-      candidates,
-      efforts: this.selectableEfforts(candidates),
+      policyText: policy?.tier === "flagship"
+        ? `${policy.reason}. Evidence: ${policy.signals.join("; ")}. Workhorse/economy models are not eligible.`
+        : undefined,
+      candidates: eligible,
+      efforts: this.selectableEfforts(eligible),
       repoStats: this.db.modelStats(workspace),
       globalStats: this.db.modelStats(),
       repoEffortStats: this.db.modelEffortStats(workspace),
       globalEffortStats: this.db.modelEffortStats(),
     };
     let pick: ModelPick | null = null;
-    if (candidates.length === 1) {
-      const only = candidates[0]!;
-      pick = { provider: only.provider, model: only.model, effort: defaultCandidateEffort(only), reason: "only dispatchable model" };
-    } else if (candidates.length > 1) {
+    if (eligible.length === 1) {
+      const only = eligible[0]!;
+      const reason = policySet.mode === "preferred"
+        ? "Flagship route policy: Opus 5 is available and is the required first choice."
+        : policySet.mode === "fallback"
+          ? `Opus 5 unavailable; ${only.model} is a policy-approved flagship fallback.`
+          : "only dispatchable model";
+      pick = { provider: only.provider, model: only.model, effort: defaultCandidateEffort(only), reason };
+    } else if (eligible.length > 1) {
       const schema = {
         type: "object", additionalProperties: false, required: ["model", "effort", "reason"],
         properties: {
@@ -3049,6 +3118,20 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.log("warn", `Auto model selection failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
       return null;
     });
+    if (!pick && policy?.tier === "flagship" && eligible[0]) {
+      const fallback = eligible[0];
+      pick = {
+        provider: fallback.provider,
+        model: fallback.model,
+        effort: defaultCandidateEffort(fallback),
+        reason: `Opus 5 unavailable; ${fallback.model} is the first policy-approved flagship fallback.`,
+      };
+    } else if (pick && policySet.mode === "fallback") {
+      pick = {
+        ...pick,
+        reason: `Opus 5 unavailable; approved flagship fallback. ${pick.reason || "Selected from the safe flagship roster."}`.slice(0, 200),
+      };
+    }
     this.db.updateThreadStageOutputs(thread.id, { modelPick: pick ?? null });
     if (!pick) {
       this.hub.log("warn", `Auto model selection produced no usable pick for ${thread.id.slice(0, 8)} — using the configured model and the planner's effort.`);
@@ -3067,12 +3150,20 @@ export class ThreadManager implements OrchestratorApi {
     this.postFinding({
       threadId: thread.id,
       fromRole: "director",
-      summary: `Auto-selected ${pick.model} at ${pick.effort} effort for this task`,
+      summary: `${policy?.tier === "flagship" ? "Flagship route selected" : "Auto-selected"} ${pick.model} at ${pick.effort} effort for this task`,
       detail: [
         pick.reason,
+        policy?.tier === "flagship"
+          ? `Policy evidence: ${policy.signals.join("; ")}. Historical grades may rank approved flagships, but cannot downgrade this task to a workhorse model.`
+          : undefined,
         `Capacity target: ${demandSummary(demand)}.`,
-        candidates.find((candidate) => candidate.provider === pick.provider && candidate.model === pick.model)?.capacity,
-        `Considered: ${candidates.map((c) => c.model).join(", ")}.`,
+        eligible.find((candidate) => candidate.provider === pick.provider && candidate.model === pick.model)?.capacity,
+        `Eligible models considered: ${eligible.map((candidate) => candidate.model).join(", ")}.`,
+        policySet.excluded.length
+          ? policySet.mode === "preferred"
+            ? `Not considered because the preferred ${policy?.preferredModel ?? DEFAULT_FLAGSHIP_MODEL} was available: ${policySet.excluded.map((candidate) => candidate.model).join(", ")}.`
+            : `Excluded by the ${policy?.tier} policy: ${policySet.excluded.map((candidate) => candidate.model).join(", ")}.`
+          : undefined,
         this.liveBench.note(pick.model) ? `Benchmark evidence used: ${this.liveBench.note(pick.model)}.` : undefined,
       ].filter(Boolean).join("\n\n"),
       severity: "info",
@@ -3098,11 +3189,25 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Which backend an auto-picked task routes to. The pick owns the decision — that IS the feature — but
-   *  only while its backend can still take the work with the reserve used for final dispatch. A pool that
-   *  capped or lost safe runway since selection falls back to current usage-aware routing. */
-  private routeForPick(threadId: string, routed: ImplementorProvider, demand: CapacityDemand): ImplementorProvider {
+   *  only while its backend can still take the work with the reserve used for final dispatch. Adaptive
+   *  work can fall back to current usage routing; a flagship pick that loses runway waits visibly. */
+  private routeForPick(threadId: string, routed: ImplementorProvider, demand: CapacityDemand): ImplementorProvider | null {
     const pick = this.db.getThreadStageOutputs(threadId).modelPick;
-    if (!pick || pick.provider === routed) return routed;
+    if (!pick) return routed;
+    const policy = this.db.getThreadStageOutputs(threadId).routeDecision?.modelPolicy;
+    if (policy?.tier === "flagship") {
+      const roster = this.implementorModelRoster(demand);
+      const exactReady = roster.some((candidate) =>
+        candidate.provider === pick.provider && normalizeModelId(candidate.model) === normalizeModelId(pick.model),
+      );
+      if (!exactReady) {
+        const thread = this.db.getThread(threadId);
+        this.db.updateThreadStageOutputs(threadId, { modelPick: undefined });
+        if (thread) this.blockFlagshipModelPolicy(thread, demand, roster, policy);
+        return null;
+      }
+    }
+    if (pick.provider === routed) return routed;
     const pickedCandidate = this.readyRoleCandidates("implementor", demand).find((candidate) => candidate.provider === pick.provider);
     const pickedCapacity = pickedCandidate ? assessCapacity(candidateCapacityWindows(pickedCandidate), demand) : undefined;
     if (!pickedCandidate || (demand.substantial && pickedCapacity?.status === "at-risk")) {
@@ -4591,6 +4696,7 @@ export class ThreadManager implements OrchestratorApi {
       return null;
     }
     const routed = this.routeForPick(thread.id, provider, demand);
+    if (!routed) return null;
     const intent = providerIntent([thread.title, thread.rawPrompt, thread.brief].filter(Boolean).join("\n"));
     let chosen = routed;
     if (intent.preferred && this.providerReady(intent.preferred) && !intent.excluded.has(intent.preferred)) {
@@ -5433,7 +5539,10 @@ export class ThreadManager implements OrchestratorApi {
       // Pick the implementor model only when implementation will actually run. A capped or
       // restart-interrupted QA retry has durable completed implementation, so an extra model-selection
       // call would waste a provider turn and could itself derail the handoff.
-      if (saved.qaCapRetryRound == null && saved.qaInterruptedRetryRound == null && saved.qaFixHandoff == null) await this.autoSelectModel(thread, plan);
+      if (saved.qaCapRetryRound == null && saved.qaInterruptedRetryRound == null && saved.qaFixHandoff == null) {
+        const modelSelection = await this.autoSelectModel(thread, plan);
+        if (modelSelection === null) return; // visible flagship-policy wait; never fall through to a weaker configured model
+      }
       if (this.cancelled(threadId)) return;
       await this.runImplementorQa(thread, kickoff, this.implementorEffort(threadId, plan?.effort), this.latestImplementorSession(threadId), note, {
         qaEnabled,
@@ -5464,34 +5573,41 @@ export class ThreadManager implements OrchestratorApi {
    *  preserved in readerEscalation so our appended handoff prose cannot falsely broaden a narrow edit.
    */
   private resolveRoute(thread: Thread, settings: OrchestratorSettings): RouteDecision {
-    const existing = this.db.getThreadStageOutputs(thread.id).routeDecision;
-    if (existing) return existing;
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    const existing = stage.routeDecision;
     // Keep reader evidence through a manual Retry too. A retry clears its route decision, but the
     // reader's conclusion is still part of the same user task and must not be mistaken for broad work
     // merely because its handoff prose was appended to the brief.
-    const readerEscalation = this.db.getThreadStageOutputs(thread.id).readerEscalation;
-    if (readerEscalation) {
-      const decision = selectRoute({
-        title: thread.title,
-        brief: readerEscalation.originalBrief ?? thread.brief,
-        shotgun: (thread.agentCount ?? 1) > 1,
-        timedHours: thread.durationMs ? thread.durationMs / 3_600_000 : undefined,
-        effortOverride: thread.effortOverride,
-        readerEscalation,
-      });
-      this.db.updateThreadStageOutputs(thread.id, { routeDecision: decision });
-      this.announceRoute(thread.id, decision, settings);
-      return decision;
-    }
-    const decision = selectRoute({
+    const readerEscalation = stage.readerEscalation;
+    const classified = selectRoute({
       title: thread.title,
-      brief: thread.brief,
+      brief: readerEscalation?.originalBrief ?? thread.brief,
       shotgun: (thread.agentCount ?? 1) > 1,
       timedHours: thread.durationMs ? thread.durationMs / 3_600_000 : undefined,
       effortOverride: thread.effortOverride,
+      readerEscalation: readerEscalation ?? undefined,
     });
+
+    if (existing?.policyVersion === ROUTE_POLICY_VERSION && existing.modelPolicy && existing.evidence) return existing;
+
+    // Pre-v2 decisions stay sticky for planner/QA execution, but gain the new model floor and structural
+    // evidence. When the refreshed classifier agrees on those stages, refresh its reason/signals too;
+    // this removes stale false positives (for example "authoritative" once matching bare "auth").
+    const sameStages = !!existing &&
+      existing.usePlanner === classified.usePlanner &&
+      existing.useQa === classified.useQa &&
+      existing.scope === classified.scope;
+    const decision: RouteDecision = existing
+      ? {
+          ...existing,
+          ...(sameStages ? { reason: classified.reason, signals: classified.signals } : {}),
+          modelPolicy: classified.modelPolicy,
+          evidence: classified.evidence,
+          policyVersion: ROUTE_POLICY_VERSION,
+        }
+      : classified;
     this.db.updateThreadStageOutputs(thread.id, { routeDecision: decision });
-    this.announceRoute(thread.id, decision, settings);
+    this.announceRoute(thread.id, decision, settings, !!existing);
     return decision;
   }
 
@@ -5499,18 +5615,26 @@ export class ThreadManager implements OrchestratorApi {
    *  note) so it's visible to the owner as a deliberate choice, not a silent omission — separately
    *  naming the route's own verdict and whatever the operator's global toggles further restrict, since
    *  the two can diverge (route wants QA, but QA is globally disabled). */
-  private announceRoute(threadId: string, decision: RouteDecision, settings: OrchestratorSettings): void {
+  private announceRoute(threadId: string, decision: RouteDecision, settings: OrchestratorSettings, updated = false): void {
     const planner = !settings.plannerEnabled
       ? "no planning (disabled in settings)"
       : decision.usePlanner
         ? "planning"
         : "no planning (routed straight to the implementor)";
     const qa = !settings.qaEnabled ? "no QA (disabled in settings)" : decision.useQa ? "QA" : "no QA (implementor output is final)";
+    const request = this.db.getThread(threadId)?.modelRequest;
+    const modelRoute = request
+      ? `strict owner model pin ${request.model ?? request.requested}; automatic routing cannot substitute`
+      : !settings.autoModelSelection
+        ? "automatic model selection disabled; the configured implementor model remains authoritative"
+        : decision.modelPolicy?.tier === "flagship"
+          ? `flagship implementor required; ${decision.modelPolicy.preferredModel ?? DEFAULT_FLAGSHIP_MODEL} first, otherwise only a policy-approved flagship fallback`
+          : "adaptive cheapest-capable implementor selection";
     const m = this.db.addMessage({
       threadId,
       role: "director",
       kind: "system",
-      content: `🧭 Route selected — ${planner}, ${qa}. ${decision.reason}`,
+      content: `🧭 Route ${updated ? "updated" : "selected"} — ${planner}, ${qa}. Model routing: ${modelRoute}. ${decision.reason}`,
     });
     this.hub.publish({ type: "thread.message", threadId, message: m });
   }
@@ -6791,12 +6915,16 @@ export class ThreadManager implements OrchestratorApi {
       resumeSession = undefined;
     }
     const requestedModel = this.db.getThread(thread.id)?.modelRequest?.model;
+    const selectedModel = requestedModel ?? this.db.getThreadStageOutputs(thread.id).modelPick?.model;
     const priorModel = this.db
       .listRuns(thread.id)
       .filter((candidate) => candidate.role === "implementor")
       .sort((a, b) => b.startedAt - a.startedAt)[0]?.model;
-    if (resumeSession && requestedModel && priorModel && normalizeModelId(priorModel) !== normalizeModelId(requestedModel)) {
-      this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)}: prior session used ${priorModel}, but the task is strictly pinned to ${requestedModel} — starting a fresh requested-model session.`);
+    if (resumeSession && selectedModel && priorModel && normalizeModelId(priorModel) !== normalizeModelId(selectedModel)) {
+      const why = requestedModel
+        ? `the task is strictly pinned to ${selectedModel}`
+        : `the current route policy selected ${selectedModel}`;
+      this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)}: prior session used ${priorModel}, but ${why} — starting a fresh selected-model session.`);
       resumeSession = undefined;
     }
     if (!resumeSession) {
@@ -9902,6 +10030,20 @@ export class ThreadManager implements OrchestratorApi {
       this.codexResumeWedged.delete(thread.id); // a fresh dispatch's first session may resume fine
       this.recoverReleasedCapacity();
     };
+    // A paused task takes this implementor-only path instead of runPipeline. Resolve/upgrade its route
+    // and validate the sticky model pick here too, otherwise a pre-policy Sonnet session would bypass
+    // the new flagship floor precisely when the owner clicks Resume.
+    thread = this.ensureThreadModelRequest(this.db.getThread(thread.id) ?? thread);
+    const routeSettings = this.settings();
+    this.resolveRoute(thread, routeSettings);
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    const modelSelection = await this.autoSelectModel(thread, stage.plan ?? undefined);
+    if (modelSelection === null) {
+      this.resuming.delete(thread.id);
+      this.pendingResumeMsgs.delete(thread.id);
+      releaseSlot();
+      return;
+    }
     // Same hard routing gate as the pipeline: a manual resume / cold inject must also respect the
     // subscription toggles. A blocked routing parks the task (failed, set by the gate) and stops here.
     if (!this.gateImplementorProvider(thread)) {

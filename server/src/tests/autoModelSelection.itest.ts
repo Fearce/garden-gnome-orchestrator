@@ -28,12 +28,14 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
+import type { ModelCandidate } from "../orchestrator/modelSelector.js";
 import type { Effort, ImplementorProvider, ModelPick, Thread } from "../types.js";
 
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
+const { selectRoute } = await import("../orchestrator/routeSelection.js");
 
 let passed = 0;
 let failed = 0;
@@ -156,8 +158,14 @@ function makeHarness(beforeManager?: (db: InstanceType<typeof Db>) => void): Har
       calls = 0;
     },
     seed() {
-      const t = db.createThread({ title: "add a dark-mode toggle", workspace, rawPrompt: "add a dark mode toggle please" });
-      db.updateThreadStageOutputs(t.id, { kickoff: "KICKOFF: mock", planDone: true, approved: true });
+      const brief = "add a dark mode toggle please";
+      const t = db.createThread({ title: "add a dark-mode toggle", workspace, rawPrompt: brief, brief });
+      db.updateThreadStageOutputs(t.id, {
+        kickoff: "KICKOFF: mock",
+        planDone: true,
+        approved: true,
+        routeDecision: selectRoute({ title: t.title, brief }),
+      });
       return t.id;
     },
     dispose() {
@@ -169,8 +177,40 @@ function makeHarness(beforeManager?: (db: InstanceType<typeof Db>) => void): Har
 }
 
 const HAIKU = "claude-haiku-4-5-20251001";
+const SONNET_5 = "claude-sonnet-5";
+const OPUS_5 = "claude-opus-5";
+const COMPLEX_DATA_BRIEF = `Investigate why stale business records remain visible to users and implement a durable end-to-end fix.
+
+Trace the full lifecycle across ingestion sources, stored status timestamps, refresh jobs, query filters,
+ranking, caches, and user-facing results. Handle existing data and future updates with a safe migration or
+backfill, preserve auditability, and add realistic regressions for open, closed, temporary, and unknown states.`;
 const pickReply = (model: string, effort = "low"): string => `{"model":"${model}","effort":"${effort}","reason":"small, well-scoped edit"}`;
 const thread = (h: Harness, id: string): Thread => h.db.getThread(id)!;
+
+function seedComplex(h: Harness, modelRequest?: Thread["modelRequest"]): string {
+  const t = h.db.createThread({
+    title: "Repair stale production records",
+    workspace: h.workspace,
+    rawPrompt: COMPLEX_DATA_BRIEF,
+    brief: COMPLEX_DATA_BRIEF,
+    modelRequest,
+  });
+  h.db.updateThreadStageOutputs(t.id, {
+    kickoff: "KICKOFF: mock",
+    planDone: true,
+    approved: true,
+    routeDecision: selectRoute({ title: t.title, brief: COMPLEX_DATA_BRIEF }),
+  });
+  return t.id;
+}
+
+const policyCandidate = (model: string): ModelCandidate => ({
+  provider: "claude",
+  model,
+  efforts: model === OPUS_5 ? ["high", "xhigh", "max"] : ["low", "medium", "high", "max"],
+  note: model === OPUS_5 ? "flagship" : "workhorse",
+  capacity: "Claude test pool: enough runway for substantial implementation",
+});
 
 async function main(): Promise<void> {
   console.log("\n=== auto model selection — pipeline wiring (real machinery) ===\n");
@@ -357,6 +397,147 @@ async function main(): Promise<void> {
       h.reply(pickReply(HAIKU));
       const resumed = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick | undefined;
       check("the capacity-resumed task still auto-selects", resumed?.model === HAIKU, JSON.stringify(resumed));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- C3-C7: deterministic capability floor and migration behavior ----------------------------------
+  console.log("\nTest C3 — complex production-data work deterministically gets Opus 5");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ autoModelSelection: true });
+      const id = seedComplex(h);
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(SONNET_5), policyCandidate(OPUS_5)];
+      // Even a judge that would have repeated the historical Sonnet choice is not consulted: the
+      // deterministic capability floor reduces the eligible roster to available Opus 5 first.
+      h.reply(pickReply(SONNET_5, "high"));
+      const pick = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick;
+      check("the persisted pick is Opus 5", pick?.model === OPUS_5 && h.db.getThreadStageOutputs(id).modelPick?.model === OPUS_5, JSON.stringify(pick));
+      check("local outcome history cannot downgrade the flagship floor", h.calls() === 0, String(h.calls()));
+      check("the owner sees the flagship decision", h.db.listFindings(id).some((finding) => /flagship route selected/i.test(finding.summary) && finding.summary.includes(OPUS_5)), JSON.stringify(h.db.listFindings(id)));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest C4 — a legacy Sonnet episode is superseded without deleting its run history");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ autoModelSelection: true });
+      const id = seedComplex(h);
+      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: SONNET_5, effort: "xhigh", reason: "cheapest capable from local outcomes" } });
+      const oldRun = h.db.createRun({ threadId: id, role: "implementor", model: SONNET_5, effort: "xhigh" });
+      h.db.updateRun(oldRun.id, { state: "error", error: "interrupted for safe routing repair", sessionId: "legacy-sonnet-session", endedAt: Date.now() });
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(OPUS_5), policyCandidate(SONNET_5)];
+      const pick = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick;
+      check("the incompatible saved pick is replaced with Opus 5", pick?.model === OPUS_5, JSON.stringify(pick));
+      check("the historical Sonnet run remains auditable", h.db.listRuns(id).some((run) => run.id === oldRun.id && run.model === SONNET_5), JSON.stringify(h.db.listRuns(id)));
+      check("the supersession is explained in task history", h.db.listFindings(id).some((finding) => /superseded automatic/i.test(finding.summary) && finding.summary.includes(SONNET_5)), JSON.stringify(h.db.listFindings(id)));
+      h.internals.implementorProvider.set(id, "claude");
+      const realStartImplementor = h.internals.startImplementor.bind(h.mgr);
+      let resumedWith: string | undefined | null = "not called";
+      h.internals.startImplementor = (_thread: Thread, _kickoff: string, opts?: { resume?: string }) => {
+        resumedWith = opts?.resume ?? null;
+        return { run: {}, runId: "fresh-opus-run", accountId: "acct-a" };
+      };
+      await h.internals.startResumedImplementor(thread(h, id), "FULL ORIGINAL BRIEF", "legacy-sonnet-session", {
+        effort: "xhigh",
+        resumeNudge: "Continue on the corrected route.",
+        qaFollows: true,
+      });
+      h.internals.startImplementor = realStartImplementor;
+      check("the Opus relaunch starts fresh instead of resuming a Sonnet session", resumedWith === null, String(resumedWith));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest C5 — constrained capacity waits visibly instead of using Sonnet");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ autoModelSelection: true });
+      const id = seedComplex(h);
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(SONNET_5)];
+      const pick = await h.internals.autoSelectModel(thread(h, id));
+      const parked = thread(h, id);
+      check("no weaker model is returned or persisted", pick === null && h.db.getThreadStageOutputs(id).modelPick == null, JSON.stringify(h.db.getThreadStageOutputs(id).modelPick));
+      check("the task visibly waits in review", parked.state === "review" && /no policy-approved flagship fallback/i.test(parked.error ?? ""), JSON.stringify({ state: parked.state, error: parked.error }));
+      check("the wait names Opus and says Sonnet was not started", h.db.listFindings(id).some((finding) => /opus-5 unavailable/i.test(finding.summary) && /No weaker model was started/.test(finding.detail ?? "")), JSON.stringify(h.db.listFindings(id)));
+      check("capacity blocking spends no selector turn", h.calls() === 0, String(h.calls()));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest C5b — the paused-task resume path applies the route upgrade before its routing gate");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ autoModelSelection: true });
+      const id = seedComplex(h);
+      h.db.updateThreadStageOutputs(id, {
+        routeDecision: {
+          usePlanner: true,
+          useQa: true,
+          scope: "broad",
+          reason: "legacy broad route",
+          signals: ["open-ended/ambiguous"],
+        },
+        modelPick: { provider: "claude", model: SONNET_5, effort: "xhigh", reason: "legacy automatic pick" },
+      });
+      const oldRun = h.db.createRun({ threadId: id, role: "implementor", model: SONNET_5, effort: "xhigh" });
+      h.db.updateRun(oldRun.id, { state: "error", sessionId: "legacy-paused-session", endedAt: Date.now() });
+      h.internals.setState(id, "implementing");
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(OPUS_5), policyCandidate(SONNET_5)];
+      let modelSeenByGate: string | undefined;
+      h.internals.gateImplementorProvider = (): "claude" => {
+        modelSeenByGate = h.db.getThreadStageOutputs(id).modelPick?.model;
+        h.internals.implementorProvider.set(id, "claude");
+        return "claude";
+      };
+      h.internals.startResumedImplementor = async (): Promise<{ run: object; runId: string; accountId: string }> => ({ run: {}, runId: "fresh-opus-run", accountId: "acct-a" });
+      h.internals.awaitImplementorCompletion = async (): Promise<{ type: "result"; subtype: "success"; isError: false }> => ({ type: "result", subtype: "success", isError: false });
+      h.internals.verifyManualDeploymentAtBoundary = (): { attempted: false; done: false } => ({ attempted: false, done: false });
+      h.internals.stopLive = async (): Promise<void> => {};
+      await h.internals.resumeImplementorOnly(thread(h, id));
+      const upgraded = h.db.getThreadStageOutputs(id);
+      check("paused resume upgrades the persisted legacy route", upgraded.routeDecision?.policyVersion === 2 && upgraded.routeDecision.modelPolicy?.tier === "flagship", JSON.stringify(upgraded.routeDecision));
+      check("paused resume replaces Sonnet before the hard routing gate", modelSeenByGate === OPUS_5 && upgraded.modelPick?.model === OPUS_5, JSON.stringify({ modelSeenByGate, pick: upgraded.modelPick }));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest C6 — an exact owner pin remains authoritative on flagship-class work");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ autoModelSelection: true });
+      const id = seedComplex(h, { requested: "Sonnet 5", provider: "claude", model: SONNET_5, strict: true });
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(OPUS_5), policyCandidate(SONNET_5)];
+      const pick = await h.internals.autoSelectModel(thread(h, id));
+      check("automatic policy does not overwrite a strict owner pin", pick === undefined && h.db.getThreadStageOutputs(id).modelPick === undefined, JSON.stringify(pick));
+      check("the pinned model is what runtime resolution returns", h.internals.pickedModel(id, "claude") === SONNET_5, String(h.internals.pickedModel(id, "claude")));
+      check("strict pins spend no automatic-selector turn", h.calls() === 0, String(h.calls()));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest C7 — disabling automatic selection cannot preserve an unsafe legacy pick");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedComplex(h);
+      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: SONNET_5, effort: "xhigh", reason: "legacy automatic pick" } });
+      const pick = await h.internals.autoSelectModel(thread(h, id));
+      check("the disabled selector does not make a new pick", pick === undefined && h.calls() === 0, JSON.stringify(pick));
+      check("the incompatible legacy pick is still cleared", h.db.getThreadStageOutputs(id).modelPick === undefined, JSON.stringify(h.db.getThreadStageOutputs(id).modelPick));
+      check("the owner still sees why the legacy pick was removed", h.db.listFindings(id).some((finding) => /superseded automatic/i.test(finding.summary)), JSON.stringify(h.db.listFindings(id)));
     } finally {
       h.dispose();
     }

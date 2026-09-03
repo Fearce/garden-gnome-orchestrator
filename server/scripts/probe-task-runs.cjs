@@ -10,6 +10,8 @@
 //
 // What it shows:
 //   • the active-task hard deadline in local + UTC time, with its countdown and current enforcement state.
+//   • the persisted task route, deterministic model capability floor/evidence, automatic pick, and any
+//     exact owner pin — enough to tell policy from capacity fallback and the model that really ran.
 //   • the thread's state/error, then every agent_run in order (role · model · account · state · cost ·
 //     turns · duration · error) — the run trail CLAUDE.md's "Debugging a failed task" section names.
 //   • one control-flow timeline joining runs, findings (including capacity reservations), owner/supervisor
@@ -100,6 +102,7 @@ if (!thread) {
   process.exit(1);
 }
 const modelRequest = parsePersistedModelRequest(thread.model_request);
+const stage = parseStageOutputs(thread.stage_outputs);
 
 section(`db: ${dbPath}`);
 section("thread");
@@ -121,6 +124,28 @@ console.log({
 if (showPrompt) {
   section("saved routing prompt");
   console.log(thread.raw_prompt || thread.brief || "(no saved prompt)");
+}
+
+section("persisted route and model choice");
+if (!stage.routeDecision) {
+  console.log("  No task-aware route decision is persisted for this task.");
+} else {
+  const route = stage.routeDecision;
+  console.log({
+    scope: route.scope,
+    planner: route.usePlanner,
+    qa: route.useQa,
+    reason: route.reason,
+    signals: route.signals,
+    policyVersion: route.policyVersion ?? "legacy",
+    modelTier: route.modelPolicy?.tier ?? "not recorded",
+    preferredModel: route.modelPolicy?.preferredModel ?? null,
+    modelPolicyReason: route.modelPolicy?.reason ?? null,
+    modelPolicySignals: route.modelPolicy?.signals ?? [],
+    evidence: route.evidence ?? null,
+    automaticPick: stage.modelPick ?? null,
+    strictOwnerPin: modelRequest,
+  });
 }
 
 section("durable auto-review episode");
@@ -333,7 +358,6 @@ section("QA-loop check");
   const interrupted = qa.filter((r) => r.state === "interrupted").length;
   const errored = qa.filter((r) => r.state === "error").length;
   // The loop enforces its budget against these durable counters, not against the run rows.
-  const stage = parseStageOutputs(thread.stage_outputs);
   console.log({
     maxQaRoundsSetting: cap,
     qaAppliesFixes: appliesFixes,

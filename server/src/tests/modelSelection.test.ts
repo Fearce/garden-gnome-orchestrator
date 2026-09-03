@@ -21,7 +21,8 @@ import { WAKE_MODEL } from "../agents/codexUsagePing.js";
 import { claudeTokenUsage } from "../agents/runner.js";
 import { codexTokenUsage } from "../agents/codexRunner.js";
 import { providerIntent } from "../orchestrator/providerIntent.js";
-import type { AgentRun, Effort } from "../types.js";
+import { applyImplementorModelPolicy, isPolicyApprovedFlagship } from "../orchestrator/modelRoutingPolicy.js";
+import type { AgentRun, Effort, ImplementorModelPolicy } from "../types.js";
 
 let passed = 0;
 let failed = 0;
@@ -52,6 +53,12 @@ const CANDIDATES: ModelCandidate[] = [
 ];
 const EFFORTS: Effort[] = ["low", "medium", "high", "max", "ultra"];
 const CTX = { candidates: CANDIDATES, efforts: EFFORTS };
+const FLAGSHIP_POLICY: ImplementorModelPolicy = {
+  tier: "flagship",
+  preferredModel: "claude-opus-5",
+  reason: "risk and scale require a flagship implementor",
+  signals: ["production data lifecycle"],
+};
 
 // These are the exact persisted briefs from the two tasks whose provider-intent gate failed before
 // either could start. Keep the full prose: the regression is the interaction between a routing
@@ -80,6 +87,25 @@ Use the active branch, inspect established decisions before architectural change
 } as const;
 
 console.log("\n=== auto model selection — reply validation ===\n");
+
+console.log("Flagship capability floor");
+{
+  const roster: ModelCandidate[] = [
+    { provider: "claude", model: "claude-sonnet-5", efforts: ["high"], note: "workhorse" },
+    { provider: "claude", model: "claude-opus-5", efforts: ["high", "xhigh"], note: "preferred" },
+    { provider: "codex", model: "gpt-5.6-sol", efforts: ["high", "xhigh"], note: "approved fallback" },
+  ];
+  const preferred = applyImplementorModelPolicy(roster, FLAGSHIP_POLICY);
+  check("available Opus 5 is the sole eligible first choice", preferred.mode === "preferred" && preferred.eligible.length === 1 && preferred.eligible[0]?.model === "claude-opus-5", JSON.stringify(preferred));
+  check("Sonnet cannot compete with Opus on local outcome history", preferred.excluded.some((candidate) => candidate.model === "claude-sonnet-5"), JSON.stringify(preferred));
+
+  const fallback = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model !== "claude-opus-5"), FLAGSHIP_POLICY);
+  check("an unavailable Opus leaves only reviewed flagship fallbacks", fallback.mode === "fallback" && fallback.eligible.length === 1 && fallback.eligible[0]?.model === "gpt-5.6-sol", JSON.stringify(fallback));
+
+  const blocked = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model === "claude-sonnet-5"), FLAGSHIP_POLICY);
+  check("a workhorse-only roster blocks instead of silently downgrading", blocked.mode === "blocked" && blocked.eligible.length === 0, JSON.stringify(blocked));
+  check("the approved families exclude cheaper model tiers", isPolicyApprovedFlagship({ provider: "claude", model: "claude-fable-5" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-terra" }) && !isPolicyApprovedFlagship({ provider: "zai", model: "glm-5.3" }));
+}
 
 {
   const explicit = providerIntent("Kevin explicitly requires this recovery to run on GPT, not Grok. Do not route it to Grok.");
