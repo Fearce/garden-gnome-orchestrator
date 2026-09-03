@@ -1284,6 +1284,7 @@ export class ThreadManager implements OrchestratorApi {
       if (!this.settleManualDeployment(thread.id)) continue;
       this.capParked.delete(thread.id);
       this.capResumeNotifiedAt.delete(thread.id);
+      this.capResumeAttemptedAt.delete(thread.id);
     }
     let slots = this.settings().maxConcurrent - this.activePipelines.size;
     if (slots <= 0) {
@@ -1304,6 +1305,8 @@ export class ThreadManager implements OrchestratorApi {
       // Keep the marker durable for a crash between that update and resumeThread, but never double-spawn
       // it while this process still owns the slot.
       if (this.activePipelines.has(t.id) || this.resuming.has(t.id)) continue;
+      const now = Date.now();
+      if (now - (this.capResumeAttemptedAt.get(t.id) ?? 0) < CAP_RESUME_ATTEMPT_COOLDOWN_MS) continue;
       // Honor the per-repo cap too (the global cap is the `slots` gate above). resumeThread reserves the
       // slot synchronously, so activeCountForRepo already counts tasks resumed earlier in THIS pass — a
       // repo at its cap is left parked for a later supervisor tick rather than reviving two at once.
@@ -1317,6 +1320,7 @@ export class ThreadManager implements OrchestratorApi {
       // Enter the resume-aware failed path without losing the durable cap marker. If this process dies
       // before resumeThread gets CPU, the next boot's supervisor still knows the task is auto-resumable.
       if (t.state === "review") this.db.updateThread(t.id, { state: "failed", error: t.error });
+      this.capResumeAttemptedAt.set(t.id, now);
       const id = t.id;
       void this.resumeThread(id).catch((e) => this.hub.log("error", `Cap auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
     }
@@ -1330,7 +1334,6 @@ export class ThreadManager implements OrchestratorApi {
    * layered UNDER the immediate HARD_LIMIT=98 failover, not a hard realtime cutoff. Latched so it fires
    * once per crossing and re-arms only after utilization falls back below the threshold (so the owner can
    * re-dispatch the cancelled tasks without them being instantly stopped again on the next ping).
-      this.capResumeAttemptedAt.delete(thread.id);
    */
   private enforceTokenSafetyLimit(): void {
     const { tokenLimitEnabled, tokenLimitPercent } = this.settings();
@@ -1351,8 +1354,6 @@ export class ThreadManager implements OrchestratorApi {
   private async stopAllForTokenLimit(util: number, threshold: number): Promise<void> {
     // De-dupe across both sources; cancelThread mutates activePipelines/dispatchQueue as it stops each.
     const targets = [...new Set([...this.activePipelines, ...this.dispatchQueue])];
-      const now = Date.now();
-      if (now - (this.capResumeAttemptedAt.get(t.id) ?? 0) < CAP_RESUME_ATTEMPT_COOLDOWN_MS) continue;
     const pct = Math.round(util);
     this.hub.log("warn", `Token safety limit reached (${pct}% ≥ ${threshold}%) — stopping ${targets.length} task(s).`);
     for (const id of targets) {
@@ -1367,7 +1368,6 @@ export class ThreadManager implements OrchestratorApi {
     this.notifyExternal(`🛑 ${title} — ${message}`);
   }
 
-      this.capResumeAttemptedAt.set(t.id, now);
   /**
    * Token-reset auto-resume (opt-in, off by default). When live utilization crosses the operator
    * threshold, work is about to freeze on the cap — so arm a wakeup timed to the soonest window reset
