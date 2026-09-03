@@ -643,6 +643,10 @@ const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
 // A server restart during an on-demand auto-review: the task was PARKED before the reviewer started, so
 // there is nothing to resume — put it straight back where it came from rather than through the generic
 // 'failed' + manual-Resume path (which would re-enter the implementor pipeline on already-finished work).
+// A stale/contradictory provider reading can briefly make a just-re-parked task look runnable. Do not
+// let releaseSlot immediately relaunch it in a tight loop; the normal cap supervisor and reset wake
+// still retry promptly once the telemetry has a chance to converge.
+const CAP_RESUME_ATTEMPT_COOLDOWN_MS = 30_000;
 const REVIEW_INTERRUPTED_MSG =
   "Auto-review was interrupted by a server restart and is parked for your review. It will not relaunch automatically; click “Auto-review & mark done” only if you want a fresh manual pass.";
 // Same restart, but it landed during the fix round the auto-review had started: the implementor's work so
@@ -892,6 +896,10 @@ export class ThreadManager implements OrchestratorApi {
   // a stale or unavailable leaderboard simply leaves local outcome history + the judging agent in charge.
   private readonly liveBench: LiveBenchScores;
   // Posts the owner's phone notifications (task done / needs you / failed) to their Discord channel.
+  /** Last automatic capacity-resume launch per task; bounds a false-headroom re-cap loop. */
+  private readonly capResumeAttemptedAt = new Map<string, number>();
+  /** Coalesces slot-release recovery so several finishing pipelines never synchronously rescan every task. */
+  private capResumeQueued = false;
   private readonly discord: DiscordNotifier;
   // The Director Supervisor watchdog (off by default) — see orchestrator/supervisor.ts. Standalone over a
   // narrow SupervisorHost view of this manager, so its logic never entangles with the pipeline internals.
@@ -1302,7 +1310,6 @@ export class ThreadManager implements OrchestratorApi {
       if (this.repoAtCapacity(t.workspace)) continue;
       slots--;
       this.hub.log("info", `${ready[0]!.label} has viable runway — auto-resuming capacity-parked "${t.title.slice(0, 48)}".`);
-      const now = Date.now();
       if (now - (this.capResumeNotifiedAt.get(t.id) ?? 0) > CAP_RESUME_NOTIFY_COOLDOWN_MS) {
         this.capResumeNotifiedAt.set(t.id, now);
         this.notifyExternal(`↪ ${ready[0]!.label} has viable quota runway — auto-resuming "${t.title}".`);
@@ -1323,6 +1330,7 @@ export class ThreadManager implements OrchestratorApi {
    * layered UNDER the immediate HARD_LIMIT=98 failover, not a hard realtime cutoff. Latched so it fires
    * once per crossing and re-arms only after utilization falls back below the threshold (so the owner can
    * re-dispatch the cancelled tasks without them being instantly stopped again on the next ping).
+      this.capResumeAttemptedAt.delete(thread.id);
    */
   private enforceTokenSafetyLimit(): void {
     const { tokenLimitEnabled, tokenLimitPercent } = this.settings();
@@ -1343,6 +1351,8 @@ export class ThreadManager implements OrchestratorApi {
   private async stopAllForTokenLimit(util: number, threshold: number): Promise<void> {
     // De-dupe across both sources; cancelThread mutates activePipelines/dispatchQueue as it stops each.
     const targets = [...new Set([...this.activePipelines, ...this.dispatchQueue])];
+      const now = Date.now();
+      if (now - (this.capResumeAttemptedAt.get(t.id) ?? 0) < CAP_RESUME_ATTEMPT_COOLDOWN_MS) continue;
     const pct = Math.round(util);
     this.hub.log("warn", `Token safety limit reached (${pct}% ≥ ${threshold}%) — stopping ${targets.length} task(s).`);
     for (const id of targets) {
@@ -1357,6 +1367,7 @@ export class ThreadManager implements OrchestratorApi {
     this.notifyExternal(`🛑 ${title} — ${message}`);
   }
 
+      this.capResumeAttemptedAt.set(t.id, now);
   /**
    * Token-reset auto-resume (opt-in, off by default). When live utilization crosses the operator
    * threshold, work is about to freeze on the cap — so arm a wakeup timed to the soonest window reset
@@ -4992,7 +5003,16 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * periodic supervisor sweep. FIFO queued work gets first claim; the cap supervisor fills what remains. */
   private recoverReleasedCapacity(): void {
     this.pumpQueue();
-    this.resumeCapParked();
+    if (this.capResumeQueued) return;
+    this.capResumeQueued = true;
+    // Let the current pipeline finish unwinding before one bounded capacity sweep. Besides avoiding
+    // redundant full-board reads when several runs settle together, this breaks release→resume→release
+    // feedback when a provider's cached headroom is briefly inconsistent with its next run.
+    const timer = setTimeout(() => {
+      this.capResumeQueued = false;
+      this.resumeCapParked();
+    }, 250);
+    timer.unref?.();
   }
 
   private dropFromQueue(threadId: string): void {
