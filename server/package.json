@@ -102,6 +102,7 @@
     "test:auto-review": "tsx src/tests/autoReview.itest.ts",
     "test:manual-deployment": "tsx src/tests/manualDeployment.test.ts && tsx src/tests/manualDeployment.itest.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/manual-deployment-ui.test.tsx",
     "test:manual-deployment-probe": "node scripts/manual-deployment-probe.test.cjs",
+    "test:implementation-memos": "tsx src/tests/implementationMemos.itest.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/implementation-memos-ui.test.tsx",
     "test:model-select": "tsx src/tests/modelSelection.test.ts",
     "test:model-catalog": "tsx src/tests/modelCatalog.test.ts",
     "test:model-catalog-health": "node scripts/model-catalog-health.test.cjs",

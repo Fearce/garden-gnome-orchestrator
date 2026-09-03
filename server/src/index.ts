@@ -272,6 +272,22 @@ async function main(): Promise<void> {
       return req.query.refresh !== undefined ? await refreshStatus(true) : getStatus();
     });
 
+    // Durable implementor handoffs are fetched independently of the chronological task feed so QA,
+    // reviewer, and Supervisor traffic can never bury the owner's completion memo. The WebSocket
+    // history carries the same rows for the live console; this route is the direct/auditable API view.
+    app.get<{ Params: { id: string } }>("/api/threads/:id/implementation-memos", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      if (!db.getThread(req.params.id)) return reply.code(404).send({ error: "not found" });
+      reply.header("cache-control", "private, no-store");
+      const memos = db.listImplementationMemos(req.params.id);
+      return {
+        threadId: req.params.id,
+        current: memos.at(-1) ?? null,
+        latestUseful: memos.findLast((memo) => memo.outcome === "completed" && !!memo.report) ?? null,
+        memos,
+      };
+    });
+
     // Apply the update: `git pull --ff-only` + rebuild, and restart the process when server code
     // changed. ALWAYS user-initiated (a badge click) — never automatic. Auth-gated; the action runs
     // shell commands against this server's own checkout, so it must never be reachable unauthenticated.

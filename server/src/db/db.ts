@@ -34,6 +34,11 @@ import type {
   FileAttachment,
   Finding,
   FindingKind,
+  ImplementationMemo,
+  ImplementationMemoDeliverable,
+  ImplementationMemoHandoff,
+  ImplementationMemoOutcome,
+  ImplementationMemoSource,
   ImplementorProvider,
   Message,
   ModelGrade,
@@ -259,6 +264,47 @@ function rowToFinding(r: Row): Finding {
     severity: r.severity as Severity,
     routed: Boolean(r.routed),
     createdAt: r.created_at as number,
+  };
+}
+
+function parseMemoDeliverables(raw: unknown): Omit<ImplementationMemoDeliverable, "available">[] {
+  if (typeof raw !== "string" || !raw) return [];
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const v = item as Partial<ImplementationMemoDeliverable>;
+      if (typeof v.findingId !== "string" || typeof v.label !== "string" || typeof v.path !== "string") return [];
+      return [{ findingId: v.findingId, label: v.label, path: v.path, description: typeof v.description === "string" ? v.description : null }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function rowToImplementationMemo(r: Row, availableFindingIds: ReadonlySet<string>): ImplementationMemo {
+  return {
+    id: r.id as string,
+    threadId: r.thread_id as string,
+    runId: r.run_id as string,
+    workRevision: r.work_revision as string,
+    revision: r.revision as number,
+    outcome: r.outcome as ImplementationMemoOutcome,
+    handoff: r.handoff as ImplementationMemoHandoff,
+    source: (r.source as ImplementationMemoSource | null) ?? "run",
+    report: (r.report as string | null) ?? null,
+    diagnostic: (r.diagnostic as string | null) ?? null,
+    model: r.model as string,
+    account: (r.account as string | null) ?? null,
+    deliverables: parseMemoDeliverables(r.deliverables).map((item) => ({
+      ...item,
+      available: availableFindingIds.has(item.findingId),
+    })),
+    startedAt: r.started_at as number,
+    completedAt: r.completed_at as number,
+    createdAt: r.created_at as number,
+    updatedAt: r.updated_at as number,
   };
 }
 
@@ -634,6 +680,7 @@ export class Db {
     this.dedupeAttachmentBlobs();
     this.backfillAutoReviewEpisodes();
     this.repairAutoReviewBackfillFreshWork();
+    this.backfillImplementationMemos();
   }
 
   /** One-time repair for tasks created before durable reviewer ownership existed. A historical reviewer
@@ -1796,8 +1843,8 @@ export class Db {
    *  implementor session a resume would otherwise reuse), findings, feed messages and questions,
    *  and clear every saved stage output except reader escalation evidence + the error — preserving
    *  the original user context that lets a retry choose its route correctly. The office chat_messages are
-   *  intentionally left (a durable cross-task record, no thread FK). Transactional so the wipe is
-   *  all-or-nothing. */
+   *  intentionally left (a durable cross-task record, no thread FK), as are implementation_memos (the
+   *  prior work-revision audit). Transactional so the wipe is all-or-nothing. */
   resetThreadForRetry(id: string): void {
     this.raw.transaction((tid: string) => {
       const preservedReaderEscalation = this.getThreadStageOutputs(tid).readerEscalation;
@@ -1988,6 +2035,347 @@ export class Db {
     return rows.map(rowToFinding);
   }
 
+  // ---- implementor completion memos ----
+
+  /** Owner-facing deliverables emitted by one run. Merge these into the memo snapshot by semantic
+   * identity, not finding id, so a retried/late CLI bridge line cannot display the same file twice. */
+  private implementationMemoDeliverables(
+    threadId: string,
+    runId: string,
+    prior: Omit<ImplementationMemoDeliverable, "available">[] = [],
+  ): Omit<ImplementationMemoDeliverable, "available">[] {
+    const current = this.listFindings(threadId)
+      .filter((finding) => finding.kind === "deliverable" && finding.fromRunId === runId && finding.path)
+      .map((finding) => ({
+        findingId: finding.id,
+        label: finding.label?.trim() || finding.summary,
+        path: finding.path!,
+        description: finding.detail ?? null,
+      }));
+    const byFile = new Map<string, Omit<ImplementationMemoDeliverable, "available">>();
+    for (const item of [...prior, ...current]) {
+      const key = `${item.path.trim().toLowerCase()}\u0000${item.label.trim().toLowerCase()}`;
+      byFile.set(key, item);
+    }
+    return [...byFile.values()];
+  }
+
+  /** Insert/update one run's memo atomically. `(thread_id, run_id)` is the idempotency key: duplicate
+   * result delivery, stop/onEnd races, and restart reconciliation all converge on one revision. */
+  upsertImplementationMemo(input: {
+    threadId: string;
+    runId: string;
+    outcome: ImplementationMemoOutcome;
+    handoff: ImplementationMemoHandoff;
+    report?: string | null;
+    diagnostic?: string | null;
+    model: string;
+    account?: string | null;
+    startedAt: number;
+    completedAt: number;
+  }): ImplementationMemo {
+    return this.raw.transaction(() => {
+      const existing = this.raw
+        .prepare("SELECT * FROM implementation_memos WHERE thread_id=? AND run_id=?")
+        .get(input.threadId, input.runId) as Row | undefined;
+      const report = input.report?.trim() || null;
+      const diagnostic = input.diagnostic?.trim() || null;
+      if (existing) {
+        // `updatedAt` is the client-side conflict clock for history/live races. Date.now() can repeat
+        // inside one millisecond, so make it strictly monotonic for every mutation of this memo.
+        const at = Math.max(now(), Number(existing.updated_at) + 1);
+        // Re-read terminal evidence on every observation. A later authoritative interruption (notably a
+        // hard deadline racing a success-shaped transport event) must be allowed to correct an optimistic
+        // row; ordinary duplicate/onEnd delivery derives `completed` again from the run's durable state.
+        const outcome = input.outcome;
+        const existingHandoff = existing.handoff as ImplementationMemoHandoff;
+        const handoff = input.handoff === "pending" && existingHandoff !== "pending" ? existingHandoff : input.handoff;
+        const deliverables = this.implementationMemoDeliverables(
+          input.threadId,
+          input.runId,
+          parseMemoDeliverables(existing.deliverables),
+        );
+        this.raw
+          .prepare(
+            `UPDATE implementation_memos
+                SET outcome=@outcome, handoff=@handoff, report=@report, diagnostic=@diagnostic,
+                    model=@model, account=@account, deliverables=@deliverables,
+                    completed_at=@completedAt, updated_at=@updatedAt
+              WHERE id=@id`,
+          )
+          .run({
+            id: existing.id,
+            outcome,
+            handoff,
+            report: report ?? existing.report ?? null,
+            // A late, real conclusion upgrades an earlier interrupted/no-conclusion observation. Do not
+            // leave the stale warning attached to a row that now truthfully represents completion.
+            diagnostic: outcome === "completed" ? null : diagnostic ?? existing.diagnostic ?? null,
+            model: input.model,
+            account: input.account ?? null,
+            deliverables: JSON.stringify(deliverables),
+            completedAt: Math.max(Number(existing.completed_at), input.completedAt),
+            updatedAt: at,
+          });
+        return this.getImplementationMemo(existing.id as string)!;
+      }
+
+      const nextRevision = Number(
+        (this.raw.prepare("SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM implementation_memos WHERE thread_id=?").get(input.threadId) as Row).revision,
+      );
+      const at = now();
+      const id = newId();
+      const deliverables = this.implementationMemoDeliverables(input.threadId, input.runId);
+      this.raw
+        .prepare(
+          `INSERT INTO implementation_memos
+             (id, thread_id, run_id, work_revision, revision, outcome, handoff, report, diagnostic,
+              model, account, deliverables, started_at, completed_at, created_at, updated_at)
+           VALUES
+             (@id, @threadId, @runId, @workRevision, @revision, @outcome, @handoff, @report, @diagnostic,
+              @model, @account, @deliverables, @startedAt, @completedAt, @createdAt, @updatedAt)`,
+        )
+        .run({
+          id,
+          threadId: input.threadId,
+          runId: input.runId,
+          workRevision: `implementation:${nextRevision}`,
+          revision: nextRevision,
+          outcome: input.outcome,
+          handoff: input.handoff,
+          report,
+          diagnostic,
+          model: input.model,
+          account: input.account ?? null,
+          deliverables: JSON.stringify(deliverables),
+          startedAt: input.startedAt,
+          completedAt: input.completedAt,
+          createdAt: at,
+          updatedAt: at,
+        });
+      return this.getImplementationMemo(id)!;
+    })();
+  }
+
+  getImplementationMemo(id: string): ImplementationMemo | null {
+    const row = this.raw.prepare("SELECT * FROM implementation_memos WHERE id=?").get(id) as Row | undefined;
+    if (!row) return null;
+    const available = new Set(
+      (this.raw.prepare("SELECT id FROM findings WHERE thread_id=?").all(row.thread_id) as Row[]).map((finding) => finding.id as string),
+    );
+    return rowToImplementationMemo(row, available);
+  }
+
+  implementationMemoForRun(runId: string): ImplementationMemo | null {
+    const row = this.raw.prepare("SELECT * FROM implementation_memos WHERE run_id=? ORDER BY created_at DESC LIMIT 1").get(runId) as Row | undefined;
+    return row ? this.getImplementationMemo(row.id as string) : null;
+  }
+
+  listImplementationMemos(threadId: string): ImplementationMemo[] {
+    const rows = this.raw
+      .prepare("SELECT * FROM implementation_memos WHERE thread_id=? ORDER BY revision ASC")
+      .all(threadId) as Row[];
+    const available = new Set(
+      (this.raw.prepare("SELECT id FROM findings WHERE thread_id=?").all(threadId) as Row[]).map((finding) => finding.id as string),
+    );
+    return rows.map((row) => rowToImplementationMemo(row, available));
+  }
+
+  /** Refresh a memo after a deliverable bridge/tool write that arrived after the terminal result. */
+  refreshImplementationMemoDeliverables(runId: string): ImplementationMemo | null {
+    const row = this.raw.prepare("SELECT * FROM implementation_memos WHERE run_id=? ORDER BY created_at DESC LIMIT 1").get(runId) as Row | undefined;
+    if (!row) return null;
+    const deliverables = this.implementationMemoDeliverables(
+      row.thread_id as string,
+      runId,
+      parseMemoDeliverables(row.deliverables),
+    );
+    const updatedAt = Math.max(now(), Number(row.updated_at) + 1);
+    this.raw.prepare("UPDATE implementation_memos SET deliverables=?, updated_at=? WHERE id=?").run(JSON.stringify(deliverables), updatedAt, row.id);
+    return this.getImplementationMemo(row.id as string);
+  }
+
+  /** The system line `selfImprovementRound` writes just before it relaunches the implementor. It is the
+   * only durable trace that a later implementor run was the post-acceptance reflection round rather than
+   * another work revision, since the `selfImproving` stage marker is cleared in a `finally`. */
+  private static readonly SELF_IMPROVE_MARKER_LIKE = "%self-improvement round before settling to done.%";
+
+  /** Derive the handoff of the LAST implementor run of a task from the task's own durable state. Only
+   * states that unambiguously say where that work went are named; anything mid-flight or cancelled stays
+   * `pending`, which truthfully reads as "boundary pending" rather than inventing an outcome. */
+  private static backfilledHandoff(threadState: string): ImplementationMemoHandoff {
+    switch (threadState) {
+      case "done":
+        return "done";
+      case "qa":
+        return "qa";
+      case "reviewing":
+        return "reviewer";
+      case "review":
+      case "failed":
+        return "review";
+      default:
+        return "pending";
+    }
+  }
+
+  /** Classify a historical run from its durable row alone. There is no provider envelope to consult, so
+   * this never infers success from anything but a `done` run that left actual prose behind. The wording
+   * says where the evidence came from, so a reconstructed row is never mistaken for an observed one. */
+  private static backfilledEvidence(
+    state: string,
+    error: string | null,
+    report: string | null,
+  ): { outcome: ImplementationMemoOutcome; diagnostic: string | null } {
+    if (state === "interrupted") {
+      return {
+        outcome: "interrupted",
+        diagnostic:
+          error?.trim() ||
+          `Reconstructed from run history: the implementor run was interrupted before${report ? " a confirmed completion" : " producing a conclusion"}.`,
+      };
+    }
+    if (state === "error") {
+      return {
+        outcome: "failed",
+        diagnostic: error?.trim() || "Reconstructed from run history: the implementor run failed without a recorded diagnostic.",
+      };
+    }
+    if (!report) {
+      return {
+        outcome: "no_conclusion",
+        diagnostic: "Reconstructed from run history: this run recorded no durable completion report, so no successful work conclusion was inferred.",
+      };
+    }
+    return { outcome: "completed", diagnostic: null };
+  }
+
+  /** One-time import of the work that predates durable memos. Without it every task already on the board
+   * shows no memo at all, which is exactly the auditability gap the feature exists to close. Reconstructed
+   * rows are marked `source='backfill'` and never claim more than the run row proves: the report is that
+   * run's own last durable prose, and only the newest run of a task takes a handoff from task state.
+   * Live/starting runs are deliberately skipped — boot reconciliation marks those interrupted a moment
+   * later and records their memos through the normal path, which owns the terminal evidence. */
+  private backfillImplementationMemos(): void {
+    if (this.kvGet("implementation_memo_backfill_v1")) return;
+    this.raw.transaction(() => {
+      const reflectionFrom = new Map<string, number>();
+      for (const row of this.raw
+        .prepare(
+          `SELECT thread_id, MIN(created_at) AS at FROM messages
+            WHERE kind='system' AND role='implementor' AND content LIKE ? GROUP BY thread_id`,
+        )
+        .all(Db.SELF_IMPROVE_MARKER_LIKE) as Row[]) {
+        reflectionFrom.set(String(row.thread_id), Number(row.at));
+      }
+
+      const threadState = new Map<string, string>();
+      for (const row of this.raw.prepare("SELECT id, state FROM threads").all() as Row[]) {
+        threadState.set(String(row.id), String(row.state));
+      }
+
+      const deliverablesByRun = new Map<string, Omit<ImplementationMemoDeliverable, "available">[]>();
+      for (const row of this.raw
+        .prepare(
+          `SELECT id, from_run_id, summary, detail, path, label FROM findings
+            WHERE kind='deliverable' AND from_run_id IS NOT NULL AND path IS NOT NULL
+            ORDER BY created_at ASC, rowid ASC`,
+        )
+        .all() as Row[]) {
+        const runId = String(row.from_run_id);
+        const list = deliverablesByRun.get(runId) ?? [];
+        list.push({
+          findingId: String(row.id),
+          label: (row.label as string | null)?.trim() || String(row.summary),
+          path: String(row.path),
+          description: (row.detail as string | null) ?? null,
+        });
+        deliverablesByRun.set(runId, list);
+      }
+
+      // Ordered by task then time, so the per-task revision counter is simply the position in this list
+      // and the last row of each task group is the one whose handoff the task state describes.
+      const runs = this.raw
+        .prepare(
+          `SELECT id, thread_id, state, error, model, account, started_at, ended_at FROM agent_runs
+            WHERE role='implementor' AND state IN ('done','error','interrupted')
+            ORDER BY thread_id ASC, started_at ASC, rowid ASC`,
+        )
+        .all() as Row[];
+
+      const lastText = this.raw.prepare(
+        "SELECT content FROM messages WHERE run_id=? AND kind='text' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      );
+      const insert = this.raw.prepare(
+        `INSERT OR IGNORE INTO implementation_memos
+           (id, thread_id, run_id, work_revision, revision, outcome, handoff, source, report, diagnostic,
+            model, account, deliverables, started_at, completed_at, created_at, updated_at)
+         VALUES
+           (@id, @threadId, @runId, @workRevision, @revision, @outcome, @handoff, 'backfill', @report, @diagnostic,
+            @model, @account, @deliverables, @startedAt, @completedAt, @createdAt, @updatedAt)`,
+      );
+
+      const lastRunOfThread = new Map<string, string>();
+      for (const run of runs) lastRunOfThread.set(String(run.thread_id), String(run.id));
+      // A reflection marker means this task's TRAILING implementor run was the post-acceptance bonus
+      // round: feed noise, not another work revision. Excluding the final run is the precise half of the
+      // test; the timestamp additionally catches a reflection round a turn ceiling split across runs.
+      // Timestamps alone are not enough — a run and the marker can share a millisecond, and that would
+      // silently drop real work.
+      const isReflectionRound = (run: Row): boolean => {
+        const markerAt = reflectionFrom.get(String(run.thread_id));
+        if (markerAt === undefined) return false;
+        return lastRunOfThread.get(String(run.thread_id)) === String(run.id) || Number(run.started_at) > markerAt;
+      };
+      const importable = runs.filter((run) => !isReflectionRound(run));
+      // The last row a task imports is its accepted work, so that is the row the task state describes.
+      const lastImported = new Map<string, string>();
+      for (const run of importable) lastImported.set(String(run.thread_id), String(run.id));
+
+      const at = now();
+      const revisions = new Map<string, number>();
+      for (const run of importable) {
+        const threadId = String(run.thread_id);
+        const runId = String(run.id);
+        const report = ((lastText.get(runId) as Row | undefined)?.content as string | undefined)?.trim() || null;
+        const evidence = Db.backfilledEvidence(String(run.state), (run.error as string | null) ?? null, report);
+        const revision = (revisions.get(threadId) ?? 0) + 1;
+        revisions.set(threadId, revision);
+        insert.run({
+          id: newId(),
+          threadId,
+          runId,
+          workRevision: `implementation:${revision}`,
+          revision,
+          outcome: evidence.outcome,
+          handoff: lastImported.get(threadId) === runId ? Db.backfilledHandoff(threadState.get(threadId) ?? "") : "resumed",
+          report,
+          diagnostic: evidence.diagnostic,
+          model: String(run.model),
+          account: (run.account as string | null) ?? null,
+          deliverables: JSON.stringify(deliverablesByRun.get(runId) ?? []),
+          startedAt: Number(run.started_at),
+          completedAt: Number(run.ended_at ?? run.started_at),
+          createdAt: at,
+          updatedAt: at,
+        });
+      }
+      this.kvSet("implementation_memo_backfill_v1", String(at));
+    })();
+  }
+
+  /** A new implementor run means the previous run's pending terminal record was resumed. Only pending
+   * rows move: an already-recorded QA/reviewer/done handoff keeps its historical meaning. */
+  markPendingImplementationMemoResumed(threadId: string): ImplementationMemo | null {
+    const row = this.raw
+      .prepare("SELECT id, updated_at FROM implementation_memos WHERE thread_id=? AND handoff='pending' ORDER BY revision DESC LIMIT 1")
+      .get(threadId) as Row | undefined;
+    if (!row) return null;
+    const updatedAt = Math.max(now(), Number(row.updated_at) + 1);
+    this.raw.prepare("UPDATE implementation_memos SET handoff='resumed', updated_at=? WHERE id=?").run(updatedAt, row.id);
+    return this.getImplementationMemo(row.id as string);
+  }
+
   // ---- questions ----
   addQuestion(input: {
     threadId: string | null;
@@ -2067,6 +2455,15 @@ export class Db {
     return (
       this.raw.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC").all(threadId) as Row[]
     ).map(rowToMessage);
+  }
+
+  /** Last durable prose emitted by one exact run. CLI backends put their final answer in a text event
+   * instead of the result envelope, so a thread-wide lookup would risk stealing an older run's report. */
+  lastTextMessageForRun(runId: string): Message | null {
+    const row = this.raw
+      .prepare("SELECT * FROM messages WHERE run_id = ? AND kind = 'text' ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(runId) as Row | undefined;
+    return row ? rowToMessage(row) : null;
   }
 
   /** How many messages a role has PRODUCED for a thread since `since` (inclusive). `system` rows are

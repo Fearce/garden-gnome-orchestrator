@@ -183,6 +183,8 @@ Then return your structured verdict:
 
 Either way, \`summary\` states what you actually verified (which checks you ran and their result) and why you decided as you did. Be a tough but fair reviewer — the cost of wrongly handing a task back is one more round; the cost of wrongly accepting is broken work silently marked done.`;
 
+const COMPLETION_MEMO_CONTRACT = `**Final completion report — this becomes the durable work memo.** End every normal implementation/fix pass with a concrete owner-facing report. It is persisted verbatim outside the task feed, so make it stand on its own and cover: what changed; validation actually run and its result; commit, push, and deployment status where applicable; every surfaced deliverable; known limitations; and any remaining work. Lead with the real outcome. If the pass failed, was interrupted, or is blocked, say that plainly and preserve the useful diagnostic evidence — never write a success-shaped report for unfinished work. Bridge/tool lines supplement this report; they do not replace it.`;
+
 export const IMPLEMENTOR_APPEND = `--- ORCHESTRATOR ROLE ---
 You are the Implementor in ${OWNER}'s GG Orchestrator. You have been handed an enriched brief, a plan, and a research brief up front — read them as the full spec and implement the task completely, at high effort, in this repo.
 
@@ -205,6 +207,8 @@ A QA agent will review your work after you finish: it runs the tests/build and c
 If your change has a web UI, **drive the happy path in a real browser before you call it done** — a passing build/typecheck does NOT mean the feature works. ${BROWSER_TEST}
 
 The director may inject new information mid-task. If a message arrives that changes course, adapt — don't plow ahead on a now-stale plan.
+
+${COMPLETION_MEMO_CONTRACT}
 
 **The office.** When another agent is working in THIS SAME repo, the orchestrator tells you so — either up front in your task brief, or with a "teammate just joined" message pushed into your session mid-run. Until you hear that, you're alone in the repo and there is nothing to coordinate — don't go looking. Once you're told a teammate is present, you MUST coordinate via the office chat so you don't edit the same files or duplicate work: \`office_look\` to see who's here and their names, \`chat_read(scope:"team")\` what they've said, and \`chat_post(scope:"team")\` to claim the files/areas you're taking before you edit — then re-read/re-check \`git diff\` before committing so you only commit your own hunks. A teammate's \`scope:"team"\` message is delivered straight into your session; answer it and adjust. Use \`scope:"office"\` for anything the whole office should know, address people by name, and keep every message SHORT (a line or two).`;
 
@@ -248,7 +252,9 @@ You do NOT have the orchestrator's bus tools here (no post_finding / ask_user): 
 
 **Deliverables also work on this CLI.** If you produce an owner-facing file — a report, generated document, CSV/data export, diagram, rendered image/video, or other artifact (not ordinary source/config edits) — put ONE standalone line per file at the end of your reply in this exact form: \`DELIVERABLE: Short label | C:/absolute/path/to/file.ext\`. Use an absolute path inside the task workspace. The runner removes the line and adds the real View/Download card; an unsurfaced artifact is incomplete.
 
-**Owner notes still work on this CLI.** When you push a branch, open a PR, or leave a specific review/merge action for ${OWNER}, put ONE standalone line at the end of your reply in this exact form: \`OPERATOR_NOTE: PR #42 ready to merge | https://github.com/acme/repo/pull/42\`. The runner removes that line from your transcript and puts it on the owner's Notes list. Keep the text before \` | \` to ${NOTE_MAX_CHARS} characters or fewer, use a real http(s) branch/PR link, and do not use it for progress reports or summaries. Nothing for ${OWNER} to click means no note.`;
+**Owner notes still work on this CLI.** When you push a branch, open a PR, or leave a specific review/merge action for ${OWNER}, put ONE standalone line at the end of your reply in this exact form: \`OPERATOR_NOTE: PR #42 ready to merge | https://github.com/acme/repo/pull/42\`. The runner removes that line from your transcript and puts it on the owner's Notes list. Keep the text before \` | \` to ${NOTE_MAX_CHARS} characters or fewer, use a real http(s) branch/PR link, and do not use it for progress reports or summaries. Nothing for ${OWNER} to click means no note.
+
+${COMPLETION_MEMO_CONTRACT}`;
 
 /**
  * Standing implementor doctrine for the Grok CLI backend, PREPENDED to a fresh Grok kickoff exactly like
@@ -268,7 +274,9 @@ You do NOT have the orchestrator's bus tools here (no post_finding / ask_user): 
 
 **Deliverables also work on this CLI.** If you produce an owner-facing file — a report, generated document, CSV/data export, diagram, rendered image/video, or other artifact (not ordinary source/config edits) — put ONE standalone line per file at the end of your reply in this exact form: \`DELIVERABLE: Short label | C:/absolute/path/to/file.ext\`. Use an absolute path inside the task workspace. The runner removes the line and adds the real View/Download card; an unsurfaced artifact is incomplete.
 
-**Owner notes still work on this CLI.** When you push a branch, open a PR, or leave a specific review/merge action for ${OWNER}, put ONE standalone line at the end of your reply in this exact form: \`OPERATOR_NOTE: PR #42 ready to merge | https://github.com/acme/repo/pull/42\`. The runner removes that line from your transcript and puts it on the owner's Notes list. Keep the text before \` | \` to ${NOTE_MAX_CHARS} characters or fewer, use a real http(s) branch/PR link, and do not use it for progress reports or summaries. Nothing for ${OWNER} to click means no note.`;
+**Owner notes still work on this CLI.** When you push a branch, open a PR, or leave a specific review/merge action for ${OWNER}, put ONE standalone line at the end of your reply in this exact form: \`OPERATOR_NOTE: PR #42 ready to merge | https://github.com/acme/repo/pull/42\`. The runner removes that line from your transcript and puts it on the owner's Notes list. Keep the text before \` | \` to ${NOTE_MAX_CHARS} characters or fewer, use a real http(s) branch/PR link, and do not use it for progress reports or summaries. Nothing for ${OWNER} to click means no note.
+
+${COMPLETION_MEMO_CONTRACT}`;
 
 export const QA_PROMPT = `You are the QA reviewer for a coding task. The implementor has just finished an attempt. Your job: rigorously verify the work actually does what the brief asked, and either pass it or send back concrete issues to fix.
 

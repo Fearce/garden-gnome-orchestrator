@@ -89,6 +89,37 @@ CREATE TABLE IF NOT EXISTS findings (
   created_at  INTEGER NOT NULL
 );
 
+-- The implementor's final owner-facing report used to exist only as one chronological feed message,
+-- where QA/reviewer/Supervisor traffic buried it. Keep one idempotent row per implementor run instead.
+-- run_id deliberately has no FK: Retry removes agent_runs/messages, but prior work-revision memos remain
+-- auditable until the owning task itself is permanently deleted.
+CREATE TABLE IF NOT EXISTS implementation_memos (
+  id            TEXT PRIMARY KEY,
+  thread_id     TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  run_id        TEXT NOT NULL,
+  work_revision TEXT NOT NULL,
+  revision      INTEGER NOT NULL,
+  outcome       TEXT NOT NULL,
+  handoff       TEXT NOT NULL DEFAULT 'pending',
+  report        TEXT,
+  diagnostic    TEXT,
+  model         TEXT NOT NULL,
+  account       TEXT,
+  deliverables  TEXT NOT NULL DEFAULT '[]',
+  -- 'run' was observed as the run ended; 'backfill' was reconstructed at deploy time from the durable
+  -- run row, so its handoff boundary is derived from task state rather than seen at the boundary itself.
+  source        TEXT NOT NULL DEFAULT 'run',
+  started_at    INTEGER NOT NULL,
+  completed_at  INTEGER NOT NULL,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  UNIQUE(thread_id, run_id),
+  UNIQUE(thread_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS idx_implementation_memos_thread_revision
+  ON implementation_memos(thread_id, revision);
+
 CREATE TABLE IF NOT EXISTS questions (
   id           TEXT PRIMARY KEY,
   thread_id    TEXT,
@@ -404,6 +435,9 @@ CREATE INDEX IF NOT EXISTS idx_runs_thread     ON agent_runs(thread_id);
 CREATE INDEX IF NOT EXISTS idx_grades_model    ON model_grades(graded_model);
 CREATE INDEX IF NOT EXISTS idx_findings_thread ON findings(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
+-- lastTextMessageForRun runs at every implementor run end (and once per run during the memo backfill).
+-- Without this it is a full scan of the whole message history for a single row.
+CREATE INDEX IF NOT EXISTS idx_messages_run ON messages(run_id);
 CREATE INDEX IF NOT EXISTS idx_questions_thread ON questions(thread_id);
 CREATE INDEX IF NOT EXISTS idx_chat_room       ON chat_messages(room, created_at);
 CREATE INDEX IF NOT EXISTS idx_notes_thread    ON operator_notes(thread_id);

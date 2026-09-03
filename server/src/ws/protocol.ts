@@ -24,6 +24,7 @@ import type {
   DirectorMessage,
   DirectorStatus,
   Finding,
+  ImplementationMemo,
   Message,
   ModelStat,
   OperatorNote,
@@ -151,7 +152,8 @@ export type ServerEvent =
   | { type: "thread.reset"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: Thread["state"]; error?: string; message?: string; result: ThreadActionResult }
-  | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
+  | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; implementationMemos: ImplementationMemo[]; brief: string }
+  | { type: "thread.memo"; threadId: string; memo: ImplementationMemo }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
   | { type: "agent.text"; threadId: string; runId: string; role: Role; text: string; messageId: string }

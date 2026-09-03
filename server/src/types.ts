@@ -277,6 +277,52 @@ export interface Finding {
   createdAt: number;
 }
 
+/** The terminal disposition of one implementor run. `completed` requires an actual owner-facing
+ * conclusion; a success-shaped provider envelope with no conclusion is recorded separately so the
+ * console never invents a successful work memo from transport state alone. */
+export type ImplementationMemoOutcome = "completed" | "failed" | "interrupted" | "no_conclusion";
+
+/** Where the run's work went after it ended. `pending` is a truthful short-lived/default state when
+ * the run ended before the pipeline could durably cross its next boundary. */
+export type ImplementationMemoHandoff = "pending" | "qa" | "reviewer" | "review" | "done" | "resumed";
+
+/** How the memo came to exist. `run` was captured as the run itself ended. `backfill` was reconstructed
+ * once from durable run history for work that predates the feature, so its report is the run's last
+ * durable prose and its `handoff` is derived from task state rather than observed at the boundary. */
+export type ImplementationMemoSource = "run" | "backfill";
+
+/** Deliverables are snapshotted into the memo so a from-scratch retry cannot erase the audit trail.
+ * `available` is derived when read: false means the original finding/file card was later removed. */
+export interface ImplementationMemoDeliverable {
+  findingId: string;
+  label: string;
+  path: string;
+  description?: string | null;
+  available: boolean;
+}
+
+/** Durable owner-facing record of one implementor work revision. The report is the implementor's
+ * actual final completion reply, not a generated summary; diagnostics preserve non-success outcomes. */
+export interface ImplementationMemo {
+  id: string;
+  threadId: string;
+  runId: string;
+  workRevision: string;
+  revision: number;
+  outcome: ImplementationMemoOutcome;
+  handoff: ImplementationMemoHandoff;
+  source: ImplementationMemoSource;
+  report?: string | null;
+  diagnostic?: string | null;
+  model: string;
+  account?: string | null;
+  deliverables: ImplementationMemoDeliverable[];
+  startedAt: number;
+  completedAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export type MessageKind = "text" | "tool" | "result" | "system" | "thinking";
 
 // ---- The office: cross-agent chat rooms ----

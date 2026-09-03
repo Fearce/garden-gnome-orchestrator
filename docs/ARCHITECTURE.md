@@ -501,6 +501,10 @@ on disk (resumable by `session_id`). Tables: `threads`, `agent_runs`,
 and the Co-work lane's own `cowork_sessions` / `cowork_turns` / `cowork_messages`
 (§5) — deliberately separate from `threads`, so a conversation is never a task. The three message
 tables hold lightweight attachment refs; the shared `attachments` table deduplicates their bytes.
+`implementation_memos` holds the owner-facing implementor completion report — one idempotent row per
+implementor run (`UNIQUE(thread_id, run_id)`) with a monotonic per-task `revision`, so QA/reviewer/
+Supervisor feed traffic can never bury it. `run_id` deliberately carries no FK: a Retry deletes the runs
+and feed rows but every prior work revision stays auditable (CLAUDE.md § "Implementor work memos").
 `threads.stage_outputs` (JSON, nullable) holds the per-stage outputs that make a
 task resumable (§5) — kept off the WS wire (it can be multi-KB) and read only by
 the resume path, not folded into the `Thread` DTO. Schema inlined in
@@ -516,6 +520,8 @@ a single discriminated union (`zod`-validated). Highlights:
   row, e.g. a director inject echoed live), `thread.history`, `run.upsert`,
   `agent.delta` / `agent.text` / `agent.tool` / `agent.tool_result`, `finding`,
   `question.ask` / `question.resolved`, `plan.ready` / `approval.mode`,
+  `thread.memo` (one durable implementor work memo; `thread.history` carries the
+  task's full set),
   `thread.changes`, `director.delta` / `director.message` / `director.tool` /
   `director.busy`, `log`.
 - C→S: `prompt.new`, `question.answer`, `thread.inject`, `thread.interrupt`,

@@ -11,6 +11,7 @@ import { columnDragMax, useColumnResize } from "./useColumnResize.js";
 import { Markdown } from "./Markdown.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
+import { ImplementationMemos } from "./ImplementationMemos.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -439,6 +440,7 @@ export function ThreadDetail() {
   const threads = useStore((s) => s.threads);
   const runs = useStore((s) => s.runs);
   const feeds = useStore((s) => s.threadFeeds);
+  const implementationMemos = useStore((s) => s.implementationMemos);
   const drafts = useStore((s) => s.threadDrafts);
   const thinkingDrafts = useStore((s) => s.thinkingDrafts);
   const outbound = useStore((s) => s.outboundMessages);
@@ -480,6 +482,7 @@ export function ThreadDetail() {
 
   const thread = id ? threads[id] : undefined;
   const persistedFeed = id ? feeds[id] ?? [] : [];
+  const taskMemos = id ? implementationMemos[id] ?? [] : [];
   const feed = useMemo(() => {
     if (!id) return persistedFeed;
     const sending: FeedItem[] = outbound
@@ -877,6 +880,7 @@ export function ThreadDetail() {
           </>
         )}
       </div>
+      <ImplementationMemos memos={taskMemos} />
       <ManualDeploymentHandoff deployment={thread.state === "done" ? thread.manualDeployment : null} />
       {thread.state === "awaiting_approval" && (
         <div className="approval">

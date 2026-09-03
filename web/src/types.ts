@@ -236,6 +236,40 @@ export interface Finding {
   createdAt: number;
 }
 
+export type ImplementationMemoOutcome = "completed" | "failed" | "interrupted" | "no_conclusion";
+export type ImplementationMemoHandoff = "pending" | "qa" | "reviewer" | "review" | "done" | "resumed";
+export type ImplementationMemoSource = "run" | "backfill";
+
+export interface ImplementationMemoDeliverable {
+  findingId: string;
+  label: string;
+  path: string;
+  description?: string | null;
+  available: boolean;
+}
+
+/** One immutable work revision's implementor report. Later terminal/bridge observations update the
+ * same id; a later implementation pass receives a new revision and leaves this row auditable. */
+export interface ImplementationMemo {
+  id: string;
+  threadId: string;
+  runId: string;
+  workRevision: string;
+  revision: number;
+  outcome: ImplementationMemoOutcome;
+  handoff: ImplementationMemoHandoff;
+  source: ImplementationMemoSource;
+  report?: string | null;
+  diagnostic?: string | null;
+  model: string;
+  account?: string | null;
+  deliverables: ImplementationMemoDeliverable[];
+  startedAt: number;
+  completedAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface FileAttachment {
   name: string;
   mediaType: string;
@@ -958,7 +992,9 @@ export type ServerEvent =
   | { type: "thread.reset"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: ThreadState; error?: string; message?: string; result: ThreadActionResult }
-  | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; brief: string }
+  // Optional only for rolling compatibility with a console bundle loaded just before the server restart.
+  | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; implementationMemos?: ImplementationMemo[]; brief: string }
+  | { type: "thread.memo"; threadId: string; memo: ImplementationMemo }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
   | { type: "agent.text"; threadId: string; runId: string; role: Role; text: string; messageId: string }

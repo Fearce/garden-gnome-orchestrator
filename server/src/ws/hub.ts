@@ -230,6 +230,7 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
         // finished before write-time formatting still open clean in the feed.
         messages: humanizeFeedMessages(ctx.db.listMessages(cmd.threadId)),
         findings: ctx.db.listFindings(cmd.threadId),
+        implementationMemos: ctx.db.listImplementationMemos(cmd.threadId),
         brief: thread?.brief ?? "",
       });
       break;

@@ -141,6 +141,9 @@ import type {
   Finding,
   GrokEffort,
   ImageAttachment,
+  ImplementationMemo,
+  ImplementationMemoHandoff,
+  ImplementationMemoOutcome,
   ImplementorProvider,
   ManualDeployment,
   ManualDeploymentClaim,
@@ -267,6 +270,50 @@ import type {
   RosterEntry,
   ThreadActionResult,
 } from "./api.js";
+
+/** Convert provider/run evidence into the owner-facing memo disposition. This deliberately requires
+ * durable prose before calling a success-shaped envelope `completed`: CLI processes can exit zero with
+ * no final answer, and presenting that as a successful completion memo would be worse than no memo. */
+export function implementationMemoEvidence(
+  run: { state: AgentRunState; error?: string | null },
+  res: ResultEvent | undefined,
+  lastText: string | undefined,
+): { outcome: ImplementationMemoOutcome; report: string | null; diagnostic: string | null } {
+  const report = res?.result?.trim() || lastText?.trim() || null;
+  if (run.state === "interrupted" || res?.aborted) {
+    const reason = run.error?.trim() || (res?.terminalReason ? `Provider terminal reason: ${res.terminalReason}.` : null);
+    return {
+      outcome: "interrupted",
+      report,
+      diagnostic: reason ?? `The implementor run was interrupted before${report ? " a confirmed completion" : " producing a conclusion"}.`,
+    };
+  }
+  if (run.state === "error" || res?.isError) {
+    return {
+      outcome: "failed",
+      report,
+      diagnostic: run.error?.trim() || (res ? runErrorText(res) : "The implementor run failed without a provider diagnostic."),
+    };
+  }
+  // A missing provider result is never proof of completion. Most often it means an end/stop race,
+  // usage-cap park, or transport teardown. Preserve any partial prose, but wait for a real successful
+  // result (or a terminal run state recorded from one) before presenting it as completed work.
+  if (!res && run.state !== "done") {
+    return {
+      outcome: "no_conclusion",
+      report,
+      diagnostic: "The implementor run ended without a confirmed provider result. Partial output was preserved, but no successful work conclusion was inferred.",
+    };
+  }
+  if (!report) {
+    return {
+      outcome: "no_conclusion",
+      report: null,
+      diagnostic: "The implementor run ended without a durable completion report. No successful work conclusion was inferred from the provider envelope.",
+    };
+  }
+  return { outcome: "completed", report, diagnostic: null };
+}
 
 interface LiveImplementor {
   run: AgentRunLike;
@@ -1651,6 +1698,9 @@ export class ThreadManager implements OrchestratorApi {
           endedAt: run.endedAt ?? stoppedAt,
         });
         this.emitRun(runId);
+        if (run.role === "implementor" && !acceptedBonusRound) {
+          this.recordImplementationMemo(runId, undefined, "review");
+        }
       }
     } finally {
       this.reviewing.delete(threadId);
@@ -1709,6 +1759,7 @@ export class ThreadManager implements OrchestratorApi {
     const tally = { runs: 0, resumed: 0, revived: 0, gaveUp: 0, reParked: 0, handedBack: 0, settled: 0, requeued: 0 };
     for (const r of this.db.listActiveRuns()) {
       this.db.updateRun(r.id, { state: "interrupted", endedAt: r.endedAt ?? at });
+      if (r.role === "implementor") this.recordImplementationMemo(r.id, undefined);
       tally.runs++;
     }
     // Safety net for the missed-cleanup path: a run left in a live state but already ended (endedAt set)
@@ -1718,6 +1769,7 @@ export class ThreadManager implements OrchestratorApi {
     // invariant that an ended run is terminal; keep its real end time.
     for (const r of this.db.listEndedButLiveStateRuns()) {
       this.db.updateRun(r.id, { state: "interrupted" });
+      if (r.role === "implementor") this.recordImplementationMemo(r.id, undefined);
     }
     // A reviewer claim is durable even though its process is not. Consume every orphan token BEFORE the
     // generic in-flight scan so `implementing` fix rounds and `awaiting_user` reviewer questions cannot be
@@ -6774,6 +6826,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Synchronous last gate before any provider process is constructed. It complements the timer:
     // an OS-delayed alarm still cannot let a new paid turn cross an already-elapsed hard deadline.
     if (this.cancelled(thread.id)) throw new Error("Task execution is stopped by its hard deadline.");
+    // A terminal run can be observed just before its continuation is materialized (turn ceiling,
+    // failover, restart auto-resume). Mark only that pending row as resumed; completed handoffs retain
+    // their historical meaning, and post-task self-improvement never creates a work revision.
+    if (!this.db.getThreadStageOutputs(thread.id).selfImproving) this.markPendingImplementationMemoResumed(thread.id);
     this.invalidateManualDeploymentForNewWork(thread.id, "an implementor turn started or resumed");
     this.setState(thread.id, "implementing");
     // Claude uses the planner's per-task effort (with the xhigh gate applied). Codex has its own
@@ -8184,9 +8240,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         this.latestRunIdOf(thread.id, "implementor"),
       );
       if (deployment.attempted) {
+        this.recordLatestImplementationMemo(thread.id, res, deployment.done ? "done" : "review");
         if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
         return true;
       }
+      this.recordLatestImplementationMemo(thread.id, res, "done");
       this.postFinding({
         threadId: thread.id,
         fromRole: "implementor",
@@ -8196,6 +8254,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // "End the task" is terminal. Do not start the optional post-completion self-improvement turn.
       this.setState(thread.id, "done");
     } else {
+      this.recordLatestImplementationMemo(thread.id, res, "review");
       this.settleReview(
         thread.id,
         this.implementorParkReason(res, "could not finish cleanly. QA was disabled by the owner, so this needs your review."),
@@ -8363,14 +8422,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           this.latestRunIdOf(thread.id, "implementor"),
         );
         if (deployment.attempted) {
+          this.recordLatestImplementationMemo(thread.id, res, deployment.done ? "done" : "review");
           if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
           return;
         }
+        this.recordLatestImplementationMemo(thread.id, res, "done");
         this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Implementor finished — QA review is disabled, accepted as done.", severity: "info" });
         await this.runSelfImprovement(thread, effort, kickoff);
         if (this.cancelled(thread.id)) return;
         this.setState(thread.id, "done");
       } else {
+        this.recordLatestImplementationMemo(thread.id, res, "review");
         this.settleReview(thread.id, this.implementorParkReason(res, "needs your review (QA is disabled for this task)."));
       }
       return;
@@ -8389,9 +8451,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (this.cancelled(thread.id)) return;
       if (this.settleOwnerQaBypass(thread, res)) return;
       if (!res || res.isError) {
+        this.recordLatestImplementationMemo(thread.id, res, "review");
         this.settleReview(thread.id, this.implementorParkReason(res, "needs your review."));
         return;
       }
+      this.recordLatestImplementationMemo(thread.id, res, "qa");
       this.setState(thread.id, "qa");
       // Spend the round from the DURABLE budget BEFORE running QA, so a QA run killed by a restart still
       // counts — otherwise a bouncing server could relaunch the same round's fresh QA pass indefinitely.
@@ -8425,6 +8489,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         if (this.settleOwnerQaBypass(thread, superseded.result)) return;
         if (!superseded.result || superseded.result.isError) {
           if (!this.cancelled(thread.id) && this.db.getThread(thread.id)?.state === "implementing") {
+            this.recordLatestImplementationMemo(thread.id, superseded.result, "review");
             this.settleReview(thread.id, this.implementorParkReason(superseded.result, "needs your review after the QA interrupt."));
           }
           return;
@@ -10811,6 +10876,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         .listOpen(thread.id, "reviewer", claimToken)
         .filter((row) => row.implementorRunId === start.runId && row.status === "delivered_implementor");
       if (!res || res.isError) {
+        this.recordImplementationMemo(start.runId, res, "review");
         // Never leave the auto-resume marker on: `resumeCapParked` hands a CAP_PARK task to runPipeline,
         // which would finish this task through the QA loop and could mark it done — a verdict the reviewer
         // never gave, on a lane whose whole contract is that only its acceptance settles the task. So a cap
@@ -10842,6 +10908,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         for (const row of failed) this.reviewInjectionFeed(thread.id, `✕ ${reviewInjectionLabel(row.id)} was delivered to the fix implementor but that run did not complete: ${why}`);
         return false;
       }
+      this.recordImplementationMemo(start.runId, res, "reviewer");
       const implemented = this.reviewInjections.markImplemented(
         deliveredOwnerRows.map((row) => row.id),
         "The implementor completed; the auto-reviewer must now acknowledge the resulting action and re-check it.",
@@ -11238,9 +11305,62 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   // ---- findings + routing ----
 
+  /** Persist and broadcast the memo for one exact implementor run. All provider backends converge here;
+   * the database's `(thread_id, run_id)` key makes result/onEnd/restart races idempotent. */
+  private recordImplementationMemo(
+    runId: string,
+    res: ResultEvent | undefined,
+    handoff: ImplementationMemoHandoff = "pending",
+  ): ImplementationMemo | null {
+    const run = this.db.getRun(runId);
+    if (!run || run.role !== "implementor") return null;
+    const existing = this.db.implementationMemoForRun(runId);
+    // The opt-in self-improvement pass happens after the implementation was already accepted and is
+    // intentionally feed noise, not another work revision. An existing row means this is the onEnd race
+    // for the real implementation that was stopped just after the self-improvement marker was armed.
+    if (this.db.getThreadStageOutputs(run.threadId).selfImproving && !existing) return null;
+    const evidence = implementationMemoEvidence(run, res, this.db.lastTextMessageForRun(runId)?.content);
+    const memo = this.db.upsertImplementationMemo({
+      threadId: run.threadId,
+      runId,
+      outcome: evidence.outcome,
+      handoff,
+      report: evidence.report,
+      diagnostic: evidence.diagnostic,
+      model: run.model,
+      account: run.account,
+      startedAt: run.startedAt,
+      completedAt: run.endedAt ?? Date.now(),
+    });
+    this.hub.publish({ type: "thread.memo", threadId: run.threadId, memo });
+    return memo;
+  }
+
+  /** Update the current run at an explicit pipeline boundary. This is separate from terminal capture:
+   * onEnd proves how a process ended; the caller alone knows whether its work went to QA/reviewer/done. */
+  private recordLatestImplementationMemo(
+    threadId: string,
+    res: ResultEvent | undefined,
+    handoff: ImplementationMemoHandoff,
+  ): ImplementationMemo | null {
+    const runId = this.latestRunIdOf(threadId, "implementor");
+    return runId ? this.recordImplementationMemo(runId, res, handoff) : null;
+  }
+
+  private markPendingImplementationMemoResumed(threadId: string): void {
+    const memo = this.db.markPendingImplementationMemoResumed(threadId);
+    if (memo) this.hub.publish({ type: "thread.memo", threadId, memo });
+  }
+
   postFinding(input: PostFindingInput): Finding {
     const finding = this.db.addFinding(input);
     this.hub.publish({ type: "finding", finding });
+    // CLI bridge output can land after the terminal result callback. Refresh the already-created memo
+    // in place so the pinned view converges without a duplicate revision or a page reload.
+    if (finding.kind === "deliverable" && finding.fromRunId) {
+      const memo = this.db.refreshImplementationMemoDeliverables(finding.fromRunId);
+      if (memo) this.hub.publish({ type: "thread.memo", threadId: finding.threadId, memo });
+    }
     this.route(finding);
     return finding;
   }
@@ -12230,6 +12350,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       sessionId: agent.sessionId ?? run.sessionId ?? null,
     });
     this.emitRun(runId);
+    if (run.role === "implementor") this.recordImplementationMemo(runId, res);
   }
 
   /** Stop the live implementor for a thread, if any. Closing its session ends the run, whose

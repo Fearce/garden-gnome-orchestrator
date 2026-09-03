@@ -501,6 +501,41 @@ is then NOT found by a repo-relative path. **Pass an ABSOLUTE path** (the contai
 to the workspace) — or save the file at the workspace root. Verify before handing off: the file must sit at
 `join(workspace, path)` (or be absolute and inside the workspace).
 
+## Implementor work memos (the pinned completion report)
+The implementor's final report used to exist only as one chronological feed message, so QA, reviewer,
+Supervisor and self-improvement traffic buried it and the owner had to scroll up hunting for what
+actually shipped. `implementation_memos` makes it durable instead: **one idempotent row per implementor
+run**, keyed `(thread_id, run_id)`, allocated a monotonic per-task `revision`. The console pins the
+memo directly under the task detail header, above the feed (`web/src/components/ImplementationMemos.tsx`),
+with an Open action into a revision-history modal; every earlier revision stays auditable, including
+across `resetThreadForRetry` (memos are preserved like `chat_messages`).
+
+Capture is at `finalizeRun` plus the explicit pipeline boundaries, so **every backend converges on the
+same writer** — Claude, Codex, Grok and z.ai alike — and the CLI text bridges' late `DELIVERABLE:` lines
+refresh the existing row rather than creating a second one. `(thread_id, run_id)` is what makes duplicate
+result delivery, a stop/onEnd race and restart reconciliation idempotent; `updated_at` is strictly
+monotonic so a late history response cannot overwrite a newer live event on reconnect.
+
+**It never invents a success.** `implementationMemoEvidence` records `completed` only for a run that left
+real prose behind: a success-shaped envelope with no conclusion is `no_conclusion`, an abort/interruption
+is `interrupted` (even when the transport looked successful), and an error is `failed` with its
+diagnostic preserved. The post-acceptance self-improvement round is deliberately excluded — it is feed
+noise, not another work revision. A `handoff` of `pending`/`qa`/`reviewer`/`review`/`done`/`resumed`
+says where the work went.
+
+Work that predates the feature is imported once by `backfillImplementationMemos` (kv
+`implementation_memo_backfill_v1`) from durable `agent_runs` + each run's own last text message. Those
+rows carry `source='backfill'` and the UI says so, because their `handoff` is derived from task state
+rather than observed at the boundary; a reflection round is detected via the system marker
+`selfImprovementRound` writes and never imported. Rehearsed against a live snapshot (2026-09-03): 2.7s
+in the `Db` constructor, 2377 memos over 775 tasks, every pre-existing table unchanged, reopen a 3ms
+no-op. `lastTextMessageForRun` runs on every implementor run end, so `idx_messages_run` is required —
+without it that is a full scan of the whole message history.
+
+API: `GET /api/threads/:id/implementation-memos` → `{ current, latestUseful, memos }` (auth-gated). The
+live console gets the same rows on `thread.history` and one `thread.memo` event per write.
+Gate: `test:implementation-memos` (server lifecycle + SSR UI markup).
+
 ## Search (the rail's box — it searches TASKS, not just the director)
 It answers "which task was I doing X in?", so it spans each task's **whole conversation**, not only title
 + brief. That scope IS the feature: searching `director_messages` alone returned nothing for "milkshake"

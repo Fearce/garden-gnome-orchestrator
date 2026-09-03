@@ -25,6 +25,7 @@ import type {
   GitStatus,
   GitFileDiff,
   ImageAttachment,
+  ImplementationMemo,
   RepoActionResult,
   RepoCommitDetail,
   RepoOp,
@@ -46,6 +47,7 @@ import type {
 } from "./types.js";
 import { agentKey, GENERAL_ROOM } from "./types.js";
 import { notify } from "./lib/notify.js";
+import { mergeImplementationMemos } from "./implementationMemos.js";
 
 interface ThreadDraft {
   runId: string;
@@ -129,6 +131,7 @@ interface State {
   selectedCoworkId: string | null;
   coworkCreating: boolean;
   coworkActionError: string | null;
+  implementationMemos: Record<string, ImplementationMemo[]>;
   approvalMode: boolean;
   // Server-authoritative pipeline settings (broadcast over WS); the panel edits these via setSettings.
   settings: OrchestratorSettings;
@@ -798,6 +801,7 @@ export const useStore = create<State>((set) => ({
   selectedCoworkId: null,
   coworkCreating: false,
   coworkActionError: null,
+  implementationMemos: {},
   approvalMode: false,
   settings: DEFAULT_SETTINGS,
   codexTest: null,
@@ -1558,6 +1562,7 @@ function applyEvent(ev: ServerEvent): void {
         return {
           threads: drop(s.threads),
           threadFeeds: drop(s.threadFeeds),
+          implementationMemos: drop(s.implementationMemos),
           threadDrafts: drop(s.threadDrafts),
           thinkingDrafts: drop(s.thinkingDrafts),
           pendingPlans: drop(s.pendingPlans),
@@ -1573,6 +1578,8 @@ function applyEvent(ev: ServerEvent): void {
       });
       break;
     case "thread.reset":
+      // Keep implementationMemos here: Retry clears the transient run/feed rows, but each prior work
+      // revision remains part of the audit trail and the new implementor pass appends another revision.
       // A cancelled task was restarted from scratch server-side: its prior runs/findings/feed were
       // deleted. Prune that stale slice so the fresh pipeline's events repopulate cleanly — but KEEP
       // the thread row (its state updates via thread.upsert) and the selection (mirrors thread.removed
@@ -1658,11 +1665,23 @@ function applyEvent(ev: ServerEvent): void {
         const merged = capFeed([...dbItems, ...liveOnly].sort((a, b) => a.at - b.at));
         return {
           threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged },
+          implementationMemos: {
+            ...s.implementationMemos,
+            [ev.threadId]: mergeImplementationMemos(s.implementationMemos[ev.threadId] ?? [], ev.implementationMemos ?? []),
+          },
           outboundMessages: s.outboundMessages.filter((message) => !receivedTaskIds.has(message.id)),
         };
       });
       break;
     }
+    case "thread.memo":
+      useStore.setState((s) => ({
+        implementationMemos: {
+          ...s.implementationMemos,
+          [ev.threadId]: mergeImplementationMemos(s.implementationMemos[ev.threadId] ?? [], [ev.memo]),
+        },
+      }));
+      break;
     case "thread.message": {
       // A server-originated thread message (e.g. a director inject) — show it in the feed live.
       // messageToFeed + the id-keyed dedup in pushFeed keep it from doubling on a later history merge.

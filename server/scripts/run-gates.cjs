@@ -104,6 +104,7 @@ const GATES = [
   "test:auto-review",
   "test:manual-deployment",
   "test:manual-deployment-probe",
+  "test:implementation-memos",
   "test:model-select",
   "test:model-catalog",
   "test:model-catalog-health",
