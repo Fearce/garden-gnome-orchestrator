@@ -26,6 +26,7 @@ const {
   noteCodexPing,
   noteCodexWake,
   readCodexUsage,
+  readCodexUsageForSnapshot,
 } = await import("../agents/codexUsage.js");
 
 let passed = 0;
@@ -119,9 +120,19 @@ try {
     }],
   });
   const afterPingScanCount = __codexUsageTestHooks.rolloutScanCount();
+  const snapshotUsage = readCodexUsageForSnapshot();
+  check(
+    "dashboard snapshot uses the live ping without scanning rollouts",
+    snapshotUsage?.fiveHour === 4 && __codexUsageTestHooks.rolloutScanCount() === afterPingScanCount,
+    JSON.stringify(snapshotUsage),
+  );
   const live = readCodexUsage();
   check("live pings invalidate and replace a cached rollout reading", live?.fiveHour === 4 && live.pools?.length === 1, JSON.stringify(live));
-  check("the live-ping persist read is cached for the next caller", __codexUsageTestHooks.rolloutScanCount() === afterPingScanCount);
+  check(
+    "capacity reads still refresh from both rollout homes after a ping",
+    __codexUsageTestHooks.rolloutScanCount() === afterPingScanCount + 2,
+    `${__codexUsageTestHooks.rolloutScanCount()} vs ${afterPingScanCount}`,
+  );
 
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS" : "FAIL"} - ${passed} passed, ${failed} failed ===`);
   if (failures.length) {

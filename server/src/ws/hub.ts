@@ -11,7 +11,7 @@ import type { Scheduler } from "../orchestrator/scheduler.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
 import type { OnlineOffice } from "../office/onlineOffice.js";
 import type { CoworkManager } from "../orchestrator/cowork.js";
-import { readCodexUsage } from "../agents/codexUsage.js";
+import { readCodexUsageForSnapshot } from "../agents/codexUsage.js";
 import { readGrokUsage } from "../agents/grokUsage.js";
 import { readZaiUsage } from "../agents/zaiUsage.js";
 import { formatStructuredRoleFeed } from "../agents/structuredText.js";
@@ -69,14 +69,12 @@ function sendCoworkAction(socket: WebSocket, action: string, result: ReturnType<
   });
 }
 
-// Bound the connect/snapshot frame so it can't grow without limit as months of history pile up.
-// Generous caps (newest-first): invisible for any realistic current state, but a hard ceiling on the
-// per-reconnect cost. Per-thread history is fetched lazily via thread.history, so this only trims the
-// long tail of cross-thread runs/findings and old director chat.
-const SNAPSHOT_RUNS = 2000;
-const SNAPSHOT_FINDINGS = 1000;
-const SNAPSHOT_DIRECTOR_MSGS = 600;
-const SNAPSHOT_CHAT = 500;
+// The board only needs current context to become interactive. Per-thread history is fetched lazily,
+// so keeping the connect frame small avoids a multi-megabyte JSON serialize/transfer every reconnect.
+const SNAPSHOT_RUNS = 300;
+const SNAPSHOT_FINDINGS = 250;
+const SNAPSHOT_DIRECTOR_MSGS = 150;
+const SNAPSHOT_CHAT = 150;
 
 function buildHello(ctx: WsContext): ServerEvent {
   return {
@@ -88,7 +86,8 @@ function buildHello(ctx: WsContext): ServerEvent {
     director: ctx.db.listDirectorMessages(SNAPSHOT_DIRECTOR_MSGS),
     directorStatus: ctx.director.status(),
     accounts: ctx.accounts.dto(),
-    codexUsage: readCodexUsage(),
+    // Never block the first usable board state on a recursive scan of ~/.codex/sessions.
+    codexUsage: readCodexUsageForSnapshot(),
     grokUsage: ctx.manager.settings().grokEnabled || readGrokUsage().signedIn ? readGrokUsage() : null,
     zaiUsage: ctx.manager.settings().zaiEnabled || readZaiUsage().configured ? readZaiUsage() : null,
     approvalMode: ctx.manager.approvalMode(),

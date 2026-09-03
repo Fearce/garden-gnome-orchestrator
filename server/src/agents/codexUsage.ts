@@ -121,22 +121,75 @@ export function liveCodexUsage(): CodexUsageDTO | null {
 export function noteCodexPing(usage: CodexUsageDTO): void {
   livePing = usage;
   clearReadCache();
-  persistCache();
+  // A probe must never turn into a recursive rollout scan just to update its on-disk cache.
+  // The live result is already the freshest reading the probe has, and keeping this write cheap
+  // matters because a dashboard connection may arrive at the same time.
+  persistCache(usage);
 }
 
 const CACHE_FILE = (): string => join(config.dataDir, "codex-usage-cache.json");
+let persistedCache = loadPersistedCache();
 
 /** Mirror the freshest MERGED reading to disk, the way z.ai and Grok already do. Codex's usage lives in
  *  `CODEX_HOME` rollout files plus this in-memory ping, so a read-only offline reader — the nightly
  *  failover-ladder probe — has no way to see its windows and would count an exhausted Codex as a live
  *  rung. Best-effort: nothing on the live path reads it back. */
-function persistCache(): void {
-  const u = readCodexUsage();
+function persistCache(usage: CodexUsageDTO): void {
+  const u = cloneUsage(usage);
   if (!u) return;
   try {
     writeFileSync(CACHE_FILE(), JSON.stringify(u), "utf8");
+    persistedCache = u;
   } catch {
     /* best-effort */
+  }
+}
+
+/**
+ * Return telemetry that is already in memory or in the tiny persisted cache, without walking either
+ * Codex session tree. This is deliberately for presentation snapshots only: capacity routing keeps
+ * using `readCodexUsage()` so it can make its decisions from a fresh rollout scan.
+ *
+ * A slow or very large `~/.codex/sessions` must never hold the WebSocket hello frame hostage. The
+ * dashboard can receive a subsequent live `codex.usage` event when the monitor refreshes the meters.
+ */
+export function readCodexUsageForSnapshot(): CodexUsageDTO | null {
+  const now = Date.now();
+  const candidates = [
+    liveCodexUsage(),
+    readCache?.value ?? null,
+    persistedCache,
+  ].filter((usage): usage is CodexUsageDTO => usage != null);
+  if (!candidates.length) return null;
+  const freshest = candidates.reduce((best, usage) => usage.updatedAt > best.updatedAt ? usage : best);
+  const wakeAt = plannedWakeAt != null && plannedWakeAt > now ? plannedWakeAt : null;
+  const pools = codexPools() ?? freshest.pools;
+  return {
+    ...cloneUsage(freshest)!,
+    wakeAt,
+    ...(pools?.length ? { pools } : {}),
+  };
+}
+
+function loadPersistedCache(): CodexUsageDTO | null {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(CACHE_FILE(), "utf8"));
+    if (!raw || typeof raw !== "object") return null;
+    const value = raw as Partial<CodexUsageDTO>;
+    if (typeof value.updatedAt !== "number" || !Number.isFinite(value.updatedAt)) return null;
+    return {
+      fiveHour: typeof value.fiveHour === "number" ? value.fiveHour : null,
+      sevenDay: typeof value.sevenDay === "number" ? value.sevenDay : null,
+      fiveHourReset: typeof value.fiveHourReset === "number" ? value.fiveHourReset : null,
+      fiveHourResetEstimated: value.fiveHourResetEstimated === true || undefined,
+      sevenDayReset: typeof value.sevenDayReset === "number" ? value.sevenDayReset : null,
+      planType: typeof value.planType === "string" ? value.planType : null,
+      updatedAt: value.updatedAt,
+      wakeAt: typeof value.wakeAt === "number" ? value.wakeAt : null,
+      pools: Array.isArray(value.pools) ? value.pools.map((pool) => ({ ...pool })) : undefined,
+    };
+  } catch {
+    return null;
   }
 }
 
