@@ -283,7 +283,15 @@ Read the run trail to tell causes apart:
   way), a QA round re-runs the review fresh once (durable `qaSilentRetries`, since re-waking the same
   session is what already failed), and the auto-reviewer starts its review over (in-process, sharing
   `MAX_REVIEW_RECOVERIES` with its cutoff continuations). Every empty run is stamped with this text, so a
-  `done` row with 0 turns is never left to look like a finish. A 5h/weekly cap auto-switches account and
+  `done` row with 0 turns is never left to look like a finish. **Its CAUSE is a teardown race, and the only
+  cure is `AgentRun.stop()` awaiting the child's real exit** — the recovery above is expensive (a fresh
+  session re-inspects everything, which is the "starting again and again" the owner asked to stop), and it
+  fired on 29% of turn-ceiling continuations. `Query.close()` is fire-and-forget and the message stream ends
+  the instant it is called, so waiting on that stream is NOT waiting for the `claude` child; the next
+  `--resume` then loads a session the old process still holds and exits with just `system:init`. Tear down
+  through `Query.return()`/asyncDispose, which run `performCleanup()` -> a bounded await on
+  `Transport.waitForExit` (the SDK documents exactly this on `waitForExit`). Gate: `test:runner-stop-drain`;
+  reproduce with `npm run probe:sdk-resume --prefix server` (real quota). A 5h/weekly cap auto-switches account and
   resumes the SDK session; `runner.ts` flags the cap from a `rate_limit_event`, an assistant
   `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
   another sub with headroom. A cap on a **Fable** model is first classified (`classifyCap`: fresh Haiku

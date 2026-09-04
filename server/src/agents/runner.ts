@@ -368,25 +368,65 @@ export class AgentRun implements AgentRunLike {
     this.input.close();
   }
 
-  /** Hard stop: interrupt, close input, tear down the child process, and — the fix for a warm resume
-   *  reliably coming back empty right after this — wait for that teardown to actually finish before
-   *  returning. `q.close()` only SIGNALS the CLI subprocess to die; it does not wait for it to exit and
-   *  release the session transcript file. A caller that immediately `--resume`s the same session (the
-   *  turn-ceiling continuation path) used to race that exit: the old process could still be mid-teardown
-   *  when the new one tried to load the same session, and came back with just `system:init` and 0 turns —
-   *  read as a silent run, which then discarded the perfectly good warm resume for an expensive fresh
-   *  restart. Bounded so a wedged subprocess can't hang the whole pipeline on a stop that never completes. */
+  /** Hard stop: interrupt, close input, tear down the child process — and wait for that child to ACTUALLY
+   *  exit before returning, because the very next thing a caller does is `--resume` the same session.
+   *
+   *  This is the fix for the warm resume that reliably came back empty (0 turns, $0) right after a
+   *  turn-ceiling cutoff, which then threw the perfectly good warm session away for a full fresh restart
+   *  that re-inspects everything — the owner-visible "starting again and again" token burn.
+   *
+   *  The signal matters, and the first attempt at this used the wrong one. `Query.close()` is
+   *  fire-and-forget: it sends the kill signal and returns. Waiting for `consume()`'s "end" event does NOT
+   *  fix that, because "end" fires as soon as close() tears down the MESSAGE STREAM — while the `claude`
+   *  child is still draining the stdin EOF and still holding the session transcript. The SDK says so in
+   *  its own type docs for `Transport.waitForExit`: "Query.performCleanup() awaits it (bounded) so
+   *  .return() / asyncDispose don't resolve while the child is still draining the stdin EOF that close()
+   *  just sent." So go through `.return()` (Query extends AsyncGenerator, and it runs performCleanup
+   *  first), never bare `close()`.
+   *
+   *  Disposal runs even when the query already `finished`: consume()'s loop ending means the message
+   *  stream closed, not that the process exited — and that run's session is exactly the one about to be
+   *  resumed. Everything stays bounded by STOP_DRAIN_TIMEOUT_MS so a wedged child can't hang the
+   *  pipeline on a stop that never completes. */
   async stop(): Promise<void> {
     await this.interrupt();
     this.input.close();
-    if (this.finished) return;
-    const drained = new Promise<void>((resolve) => this.onEnd(resolve));
-    try {
-      this.q?.close();
-    } catch {
-      /* already closed */
+    const q = this.q;
+    // No query was ever created (constructed, then abandoned before start() — e.g. Co-work's
+    // "the session changed before its agent could start" path). `consume()` never ran, so nothing
+    // will ever emit "end" and the drain below would burn the WHOLE timeout before resolving. There
+    // is no subprocess holding a session here, so there is nothing to wait for.
+    if (!q) return;
+    const drained = this.finished ? Promise.resolve() : new Promise<void>((resolve) => this.onEnd(resolve));
+    const disposed = (async () => {
+      try {
+        // performCleanup() -> transport.close() + a bounded await on the child's real exit.
+        await q.return(undefined);
+      } catch {
+        // A transport that rejects on disposal still has to be told to die.
+        try {
+          q.close();
+        } catch {
+          /* already closed */
+        }
+      }
+    })();
+    let timer: NodeJS.Timeout | undefined;
+    const bound = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), STOP_DRAIN_TIMEOUT_MS);
+    });
+    const outcome = await Promise.race([Promise.all([drained, disposed]).then(() => "drained" as const), bound]);
+    if (timer) clearTimeout(timer);
+    // Hitting the bound means the child did not confirm its exit in time, so the session this run holds may
+    // still be locked when the caller resumes it. Say so: without this the only symptom is the empty resume
+    // itself, arriving minutes later with nothing pointing back here. If it fires on EVERY stop rather than
+    // occasionally, the disposal path is blocking (not the child), and STOP_DRAIN_TIMEOUT_MS is a per-stop tax.
+    if (outcome === "timeout") {
+      logCrash(
+        "agentRun.stopDrainTimeout",
+        `stop() gave up waiting for the CLI child to exit after ${STOP_DRAIN_TIMEOUT_MS}ms (session ${this.sessionId ?? "unknown"}); a resume of this session may come back empty`,
+      );
     }
-    await Promise.race([drained, new Promise<void>((resolve) => setTimeout(resolve, STOP_DRAIN_TIMEOUT_MS))]);
   }
 
   /** Resolves on the next result event (or run end). For one-shot agents. */

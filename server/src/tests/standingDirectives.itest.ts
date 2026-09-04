@@ -556,6 +556,56 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test 10: the reviewer's two RESUMED forms carry the directive too. Test 5 covers only its FRESH ---
+  // kickoff. The reviewer is the one autonomous path that can mark a task `done`, and both resumed forms
+  // are reached long after that first kickoff: the continue form after a turn-ceiling cutoff, and the
+  // recheck form after a whole implementor fix round — a window in which the owner can inject a directive
+  // this warm session would otherwise never see. QA's continue/recheck kickoffs already carried it; the
+  // reviewer's did not, so the acceptance gate could sign off work that violates the newest instruction.
+  console.log(`\nTest 10 — the reviewer's resumed (continue + recheck) kickoffs carry the standing directive`);
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      await h.mgr.injectThread(id, BRANCH_DIRECTIVE, "queue"); // no live agent — durable record only
+      const thread = h.db.getThread(id)!;
+      const captured: string[] = [];
+      const verdict = { type: "result", subtype: "success", isError: false, structuredOutput: { accept: true, issues: [] } };
+      const turnCeiling = { type: "result", subtype: "error_max_turns", isError: true };
+      h.internals.resumableReviewSession = () => ({ sessionId: "prior-review-session", provider: "claude" });
+      h.internals.markIfEmpty = () => false; // the cut-off run left real progress — not a silent run
+
+      // (a) the continue form: first run stops at the turn ceiling, the recovery wakes the SAME session.
+      let call = 0;
+      h.internals.runReviewer = async (_t: Thread, kickoff: unknown) => {
+        captured.push(sendText(kickoff) || String(kickoff));
+        return call++ === 0 ? turnCeiling : verdict;
+      };
+      await h.internals.reviewToVerdict(thread, "FRESH REVIEW KICKOFF");
+      check(
+        "the reviewer's turn-ceiling continue kickoff carries the standing directive",
+        !!captured[1]?.includes(BRANCH_DIRECTIVE),
+        captured[1],
+      );
+
+      // (b) the recheck form: re-reviewing after an implementor fix round, warm-resumed.
+      captured.length = 0;
+      h.internals.runReviewer = async (_t: Thread, kickoff: unknown) => {
+        captured.push(sendText(kickoff) || String(kickoff));
+        return verdict;
+      };
+      await h.internals.reviewRecheck(thread, { accept: false, issues: [{ description: "fix the guard" }] });
+      check(
+        "the reviewer's post-fix recheck kickoff carries the standing directive",
+        !!captured[0]?.includes(BRANCH_DIRECTIVE),
+        captured[0],
+      );
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS ✅" : "FAIL ❌"} — ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {
     console.log("Failures:");

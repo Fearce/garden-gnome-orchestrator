@@ -11016,7 +11016,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private reviewRecheck(thread: Thread, out: ReviewerOutput): Promise<ResultEvent | undefined> {
     const prior = this.resumableReviewSession(thread.id);
     if (!prior) return this.reviewToVerdict(thread, this.freshReviewKickoff(thread));
-    return this.reviewToVerdict(thread, reviewerRecheckKickoff(out), prior);
+    return this.reviewToVerdict(thread, reviewerRecheckKickoff(out, this.db.getThreadStageOutputs(thread.id).standingDirectives), prior);
   }
 
   /** The reviewer's own last session, but only while the backend that produced it can still take the run.
@@ -11059,7 +11059,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const prior = empty ? undefined : this.resumableReviewSession(thread.id);
       this.noteReviewRecovery(thread.id, { empty, resuming: !!prior, spent });
       attemptFrom = Date.now();
-      res = prior ? await this.runReviewer(thread, reviewerContinueKickoff(), prior) : await startOver();
+      res = prior
+        ? await this.runReviewer(thread, reviewerContinueKickoff(this.db.getThreadStageOutputs(thread.id).standingDirectives), prior)
+        : await startOver();
       empty = this.markIfEmpty(thread.id, attemptFrom, res);
     }
     return this.drainLateReviewerInjections(thread, res);
@@ -13013,13 +13015,20 @@ function reviewerKickoff(
 
 /** The RESUMED form for an auto-reviewer the turn ceiling cut off before it decided. Its session already
  * holds the brief, the park reason and everything it read, so all it needs is to know it wasn't finished. */
-function reviewerContinueKickoff(): string {
-  return [
+function reviewerContinueKickoff(standingDirectives?: string[]): string {
+  const lines = [
     "You stopped at a per-session turn limit, not because your review was finished — nothing has touched the repo since you stopped.",
     "Continue exactly where you left off: finish the checks you still had outstanding, then return your structured verdict.",
     "Work efficiently; you have a fresh turn budget but not an unlimited one, so prioritise what decides accept-or-hand-back.",
     `Remember: \`accept: true\` marks the task DONE. If you can't finish verifying it, hand it back with what you did and didn't check rather than accepting on a guess.`,
-  ].join("\n");
+  ];
+  // Re-stated even though this resumes the reviewer's OWN session, which already read them in its first
+  // kickoff — the same insurance the QA continue/recheck kickoffs carry against provider-side context
+  // compaction quietly dropping an earlier turn. The reviewer is an acceptance gate: it must never sign
+  // off work that violates an owner directive it can no longer see.
+  const directives = renderStandingDirectives(standingDirectives);
+  if (directives) lines.push("", directives);
+  return lines.join("\n");
 }
 
 /**
@@ -13075,15 +13084,22 @@ function reviewFixMessage(out: ReviewerOutput, reviewerName: string): string {
 /** The RESUMED form for a reviewer re-checking after the implementor fixed what it asked for. Its session
  * still holds the brief, the diff it read and its own issue list, so all it needs is the fact that the tree
  * has changed underneath it — and a reminder that the verdict is still its call, not a rubber stamp. */
-function reviewerRecheckKickoff(out: ReviewerOutput): string {
-  return [
+function reviewerRecheckKickoff(out: ReviewerOutput, standingDirectives?: string[]): string {
+  const lines = [
     `The implementor has been through the issues you raised and reports it addressed them. The working tree has CHANGED since you read it — re-read the files and re-run the checks that matter; nothing you saw before can be assumed to still hold.`,
     "",
     "The issues you handed it back for were:",
     formatReviewIssues(out),
     "",
     "Verify each one is genuinely resolved (and that the fixes broke nothing else), then return your structured verdict. `accept: true` marks the task DONE — only if you would sign it off yourself now. If something is still outstanding, hand it back with what remains; do not accept a partial fix to close the loop.",
-  ].join("\n");
+  ];
+  // An implementor fix round ran between the reviewer's first pass and this one, so the owner may have
+  // injected a directive in the meantime that this resumed session would otherwise never see. It is the
+  // gate that marks the task DONE, so its verdict is re-checked against every owner instruction — not
+  // only the ones that existed when the review started.
+  const directives = renderStandingDirectives(standingDirectives);
+  if (directives) lines.push("", directives);
+  return lines.join("\n");
 }
 
 /** The reviewer's issue list, rendered for the finding's detail. Empty string when it raised none (an
