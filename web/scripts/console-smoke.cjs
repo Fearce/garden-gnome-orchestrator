@@ -30,23 +30,10 @@ const path = require("path");
 const IGNORABLE_REQUEST = /favicon|\/@vite\/|hot-update/i;
 const SMALL_TASK_POLICY_LABEL = "Use free pool for small tasks only";
 
-function loadChromium() {
-  const candidates = [process.env.PLAYWRIGHT_PATH, "playwright", "playwright-core"].filter(Boolean);
-  for (const mod of candidates) {
-    try {
-      return require(mod).chromium;
-    } catch {
-      /* try next */
-    }
-  }
-  // NODE_PATH is unset in agent shells, so a bare require misses a global install — resolve it.
-  try {
-    const root = require("child_process").execSync("npm root -g", { windowsHide: true }).toString().trim();
-    return require(path.join(root, "playwright")).chromium;
-  } catch {
-    throw new Error("Playwright not found. Install it (`npm i -g playwright`) or set PLAYWRIGHT_PATH to its module dir.");
-  }
-}
+// NODE_PATH is unset in agent shells, so a bare require misses a global install. The resolver is
+// shared with the labs (server/scripts/findPlaywright.cjs) because this probe and lab-harness once
+// carried hand-copied versions of it that drifted, and a lookup miss here reads as a dead console.
+const { loadChromium } = require("../../server/scripts/findPlaywright.cjs");
 
 function resolvePassword() {
   if (process.env.ORCH_PASSWORD) return process.env.ORCH_PASSWORD;

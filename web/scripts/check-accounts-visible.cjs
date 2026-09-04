@@ -20,24 +20,9 @@
 const fs = require("fs");
 const path = require("path");
 
-function loadChromium() {
-  const candidates = [process.env.PLAYWRIGHT_PATH, "playwright", "playwright-core"].filter(Boolean);
-  for (const mod of candidates) {
-    try {
-      return require(mod).chromium;
-    } catch {
-      /* try next */
-    }
-  }
-  try {
-    const root = require("child_process").execSync("npm root -g", { windowsHide: true }).toString().trim();
-    return require(path.join(root, "playwright")).chromium;
-  } catch {
-    throw new Error(
-      "Playwright not found. Install it (`npm i -g playwright`) or set PLAYWRIGHT_PATH to its module dir.",
-    );
-  }
-}
+// Shared with the labs and console-smoke (server/scripts/findPlaywright.cjs): this was a third
+// hand-copy of the same lookup, and all three missed the same root.
+const { loadChromium } = require("../../server/scripts/findPlaywright.cjs");
 
 function resolvePassword() {
   if (process.env.ORCH_PASSWORD) return process.env.ORCH_PASSWORD;

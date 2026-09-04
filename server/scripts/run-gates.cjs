@@ -137,6 +137,7 @@ const GATES = [
   "test:ceiling-economics",
   "test:role-ceilings",
   "test:pdf-parse",
+  "test:readme-claims",
   "test:db-size",
   "test:gate-registration",
   "test:quality-sweep",

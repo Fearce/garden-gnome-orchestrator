@@ -66,18 +66,9 @@ const path = require("node:path");
 
 const SERVER_ROOT = path.resolve(__dirname, "..");
 
-/** The globally-installed Playwright, found without NODE_PATH. */
-function loadChromium() {
-  for (const mod of [process.env.PLAYWRIGHT_PATH, "playwright", "playwright-core"].filter(Boolean)) {
-    try {
-      return require(mod).chromium;
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  const root = execFileSync("npm", ["root", "-g"], { shell: true, windowsHide: true }).toString().trim();
-  return require(path.join(root, "playwright")).chromium;
-}
+/** The globally-installed Playwright, found without NODE_PATH. Shared with the web/ probes, so the
+ *  search order can never drift between them again (see `findPlaywright.cjs` for why it bit). */
+const { loadChromium } = require("./findPlaywright.cjs");
 
 /** The real console password, so a lab can log its browser in. The throwaway instance inherits
  *  `server/.env`, so this is the password it will actually accept. */

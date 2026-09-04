@@ -127,6 +127,7 @@
     "test:attachment-dedupe": "tsx src/tests/attachmentDedupe.test.ts",
     "test:image-limit": "tsx src/tests/imageLimit.test.ts",
     "test:pdf-parse": "tsx src/tests/pdfParse.test.ts",
+    "test:readme-claims": "tsx src/tests/readmeClaims.test.ts",
     "test:stale-gnomes": "tsx src/tests/staleGnomeCleanup.itest.ts",
     "test:git": "tsx src/tests/gitService.itest.ts",
     "test:repo-ops": "tsx src/tests/repoOps.itest.ts",
