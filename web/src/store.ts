@@ -48,6 +48,7 @@ import type {
 } from "./types.js";
 import { agentKey, GENERAL_ROOM, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
 import { notify } from "./lib/notify.js";
+import { applyTheme, DEFAULT_THEME, isThemeId, type ThemeId } from "./lib/theme.js";
 import { mergeImplementationMemos } from "./implementationMemos.js";
 
 interface ThreadDraft {
@@ -157,6 +158,9 @@ interface State {
   taskSort: TaskSort;
   // When on, the board stops auto-sorting by recency and honors the manual drag order in `taskOrder`.
   taskDragAndDrop: boolean;
+  // Which look the console wears (Settings → Appearance). "classic" is the original console and puts
+  // NO attribute on <html>, so choosing it can't change a single existing rule — see lib/theme.ts.
+  theme: ThemeId;
   // The manual board order (active thread ids, front-to-back). Only consulted while taskDragAndDrop is
   // on; persisted under `orch-task-order` so a reorder survives reloads. Stale/new ids are reconciled
   // against the live thread set at render time, so this list is allowed to drift out of sync.
@@ -284,6 +288,7 @@ interface State {
   setVerbosity: (v: Verbosity) => void;
   setTaskSort: (v: TaskSort) => void;
   setTaskDragAndDrop: (v: boolean) => void;
+  setTheme: (v: ThemeId) => void;
   setTaskOrder: (ids: string[]) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
   loadChanges: (threadId: string) => void;
@@ -390,8 +395,11 @@ interface ViewSettings {
   // Which comparator the board sorts by. Fully authoritative when drag-and-drop is off; when it's on, its
   // primary key still groups the board live while manual drag orders cards within an equal-rank group.
   taskSort: TaskSort;
+  // The console's look. Read at boot by the inline script in index.html too, which paints the theme
+  // before the bundle runs — keep the stored key and shape in step with it.
+  theme: ThemeId;
 }
-const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc" };
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME };
 const loadViewSettings = (): ViewSettings => {
   try {
     const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
@@ -402,12 +410,18 @@ const loadViewSettings = (): ViewSettings => {
       verbosity: v.verbosity === "compact" || v.verbosity === "full" ? v.verbosity : VIEW_DEFAULTS.verbosity,
       taskDragAndDrop: typeof v.taskDragAndDrop === "boolean" ? v.taskDragAndDrop : VIEW_DEFAULTS.taskDragAndDrop,
       taskSort: isTaskSort(v.taskSort) ? v.taskSort : VIEW_DEFAULTS.taskSort,
+      theme: isThemeId(v.theme) ? v.theme : VIEW_DEFAULTS.theme,
     };
   } catch {
     return VIEW_DEFAULTS;
   }
 };
 const saveViewSettings = (v: ViewSettings): void => lsSet(VIEW_SETTINGS_KEY, JSON.stringify(v));
+/** Every view setting shares one localStorage record, so each setter has to write the OTHER four back
+ *  untouched. Spelling them out per setter is what loses a field the moment a fifth one is added, so
+ *  the patch is merged against live state here instead. */
+const persistView = (s: ViewSettings, patch: Partial<ViewSettings>): void =>
+  saveViewSettings({ showCompleted: s.showCompleted, verbosity: s.verbosity, taskSort: s.taskSort, taskDragAndDrop: s.taskDragAndDrop, theme: s.theme, ...patch });
 
 // The manual board order persists on its own key (it's a list, not a flag, and churns far more often
 // than the view toggles). A bad/old payload degrades to "no manual order" — the board then renders by
@@ -829,6 +843,7 @@ export const useStore = create<State>((set) => ({
   verbosity: loadViewSettings().verbosity,
   taskSort: loadViewSettings().taskSort,
   taskDragAndDrop: loadViewSettings().taskDragAndDrop,
+  theme: loadViewSettings().theme,
   taskOrder: loadTaskOrder(),
   pendingPlans: {},
   threadChanges: {},
@@ -1025,23 +1040,30 @@ export const useStore = create<State>((set) => ({
   },
   setShowCompleted: (v) =>
     set((s) => {
-      saveViewSettings({ showCompleted: v, verbosity: s.verbosity, taskSort: s.taskSort, taskDragAndDrop: s.taskDragAndDrop });
+      persistView(s, { showCompleted: v });
       return { showCompleted: v };
     }),
   setVerbosity: (v) =>
     set((s) => {
-      saveViewSettings({ showCompleted: s.showCompleted, verbosity: v, taskSort: s.taskSort, taskDragAndDrop: s.taskDragAndDrop });
+      persistView(s, { verbosity: v });
       return { verbosity: v };
     }),
   setTaskSort: (v) =>
     set((s) => {
-      saveViewSettings({ showCompleted: s.showCompleted, verbosity: s.verbosity, taskSort: v, taskDragAndDrop: s.taskDragAndDrop });
+      persistView(s, { taskSort: v });
       return { taskSort: v };
     }),
   setTaskDragAndDrop: (v) =>
     set((s) => {
-      saveViewSettings({ showCompleted: s.showCompleted, verbosity: s.verbosity, taskSort: s.taskSort, taskDragAndDrop: v });
+      persistView(s, { taskDragAndDrop: v });
       return { taskDragAndDrop: v };
+    }),
+  setTheme: (v) =>
+    set((s) => {
+      persistView(s, { theme: v });
+      // Animated, because this one is the owner watching the console change under their own click.
+      applyTheme(v, true);
+      return { theme: v };
     }),
   setTaskOrder: (ids) => {
     saveTaskOrder(ids);

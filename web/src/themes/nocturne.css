@@ -1,0 +1,377 @@
+/* ============================================================================
+   Nocturne — the console's second look (Settings → Appearance).
+
+   EVERY rule in this file is scoped to `[data-theme="nocturne"]` (or to the
+   `[data-theme-preview]` thumbnails the Appearance picker renders). That is not
+   a style preference: Classic is `styles.css` with NO attribute on <html>, so
+   scoping is the whole mechanism by which choosing Classic guarantees an
+   untouched console. `test:themes` fails the suite on an unscoped rule, and on
+   a @keyframes name that could collide with one in styles.css — hence the
+   `nocturne-` prefix on every animation declared here.
+
+   The design, so a later edit knows what it is protecting:
+     · Classic is warm — amber on cool slate. Nocturne inverts that. The base
+       drops to a near-black midnight blue and the accent becomes pale, cold
+       light, which leaves saturated colour to mean STATE and nothing else.
+       Role hues are deliberately unchanged: a director is violet in both
+       themes, and that continuity is worth more than a fresh palette.
+     · Titles that name a thing — a task, a panel, a dialog — switch to
+       Instrument Serif (already loaded for Classic's accents). Everything
+       measured stays in JetBrains Mono. That split is the theme's voice.
+     · Geometry softens (larger radii, more air) and surfaces gain a lit top
+       edge instead of a flat fill, so depth comes from light, not from borders.
+     · Motion is only where something arrives or leaves: the detail panel, a
+       dialog, a menu. Nothing in the feed animates — it streams.
+   ============================================================================ */
+
+/* ---- tokens ----------------------------------------------------------------
+   Also applied to the Appearance picker's Nocturne thumbnail, so the preview is
+   the real palette rather than a hand-copied swatch that can drift. */
+:root[data-theme="nocturne"],
+[data-theme-preview="nocturne"] {
+  --bg: oklch(0.132 0.013 250);
+  --bg-1: oklch(0.171 0.015 250);
+  --bg-2: oklch(0.211 0.017 250);
+  --bg-3: oklch(0.256 0.019 250);
+  --line: oklch(0.35 0.02 250 / 0.5);
+  --line-strong: oklch(0.47 0.025 250 / 0.78);
+
+  --text: oklch(0.968 0.005 250);
+  --text-dim: oklch(0.78 0.011 250);
+  --text-faint: oklch(0.605 0.014 250);
+
+  /* Pale cyan rather than a saturated one: the accent carries buttons, focus and
+     brand, and at this chroma it never competes with a role hue or a state. */
+  --accent: oklch(0.9 0.06 210);
+  --accent-press: oklch(0.83 0.07 210);
+
+  --r-sm: 7px;
+  --r-md: 12px;
+  --r-lg: 18px;
+  --shadow-1: 0 1px 2px oklch(0 0 0 / 0.5);
+  --shadow-2: 0 26px 64px -14px oklch(0 0 0 / 0.66);
+
+  /* The lit top edge every raised surface below shares. */
+  --nocturne-lip: inset 0 1px 0 oklch(1 0 0 / 0.045);
+}
+
+/* The Classic thumbnail has to keep showing Classic while Nocturne is active, and Classic's tokens
+   live on `:root` — which this theme has overwritten by then. Restating the handful the thumbnail
+   draws with keeps `styles.css` untouched, which is the point of the whole file. */
+[data-theme="nocturne"] [data-theme-preview="classic"] {
+  --bg: oklch(0.165 0.012 264);
+  --bg-1: oklch(0.198 0.014 264);
+  --bg-2: oklch(0.232 0.015 264);
+  --line: oklch(0.34 0.02 264 / 0.6);
+  --text: oklch(0.95 0.008 264);
+  --text-dim: oklch(0.74 0.013 264);
+  --text-faint: oklch(0.56 0.014 264);
+  --accent: oklch(0.83 0.16 78);
+  --r-sm: 6px;
+  --r-lg: 14px;
+}
+
+/* The Appearance tile advertises the type change too — the wordmark is the one place a serif is
+   legible at thumbnail size. */
+[data-theme-preview="nocturne"] .theme-preview-mark {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 12px;
+}
+[data-theme-preview="nocturne"] .theme-preview-card {
+  box-shadow: var(--nocturne-lip);
+}
+
+/* ---- shell ---------------------------------------------------------------- */
+
+/* A single cold pool of light behind the board. It sits on .workbench rather than .board because the
+   board scrolls: painted there it would travel with the cards. */
+[data-theme="nocturne"] .workbench {
+  background:
+    radial-gradient(120% 62% at 50% -8%, oklch(0.26 0.035 232 / 0.4), transparent 62%),
+    var(--bg);
+}
+
+[data-theme="nocturne"] .topbar {
+  min-height: 58px;
+  background: linear-gradient(to bottom, var(--bg-2), var(--bg));
+  box-shadow: 0 14px 34px -30px oklch(0 0 0 / 0.9);
+}
+/* A hairline of the accent under the bar, fading out before it reaches the right edge — a lit rim
+   rather than a border. */
+[data-theme="nocturne"] .topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, color-mix(in oklch, var(--accent) 40%, transparent), transparent 58%);
+}
+
+[data-theme="nocturne"] .rail,
+[data-theme="nocturne"] .detail {
+  background: linear-gradient(to bottom, var(--bg-1), color-mix(in oklch, var(--bg) 62%, var(--bg-1)));
+}
+
+/* ---- typography ------------------------------------------------------------
+   Serif for the names of things; mono keeps every measurement. */
+[data-theme="nocturne"] .rail-head h2,
+[data-theme="nocturne"] .board-head h2 {
+  font-family: var(--font-serif);
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: 0.004em;
+  text-transform: none;
+  color: var(--text);
+}
+/* The board's view switcher is a heading (the active view) sitting beside plain buttons, and the two
+   only read as one control while they share a face. Restyle the buttons with the heading or the row
+   comes out as one serif word followed by four mono ones. */
+[data-theme="nocturne"] .board-tab {
+  font-family: var(--font-serif);
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: 0.004em;
+  text-transform: none;
+}
+[data-theme="nocturne"] .board-tab:hover { color: var(--text-dim); }
+[data-theme="nocturne"] .wordmark .sub {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  padding-bottom: 3px;
+}
+[data-theme="nocturne"] .card .title {
+  font-family: var(--font-serif);
+  font-size: 18.5px;
+  font-weight: 400;
+  letter-spacing: 0.004em;
+  line-height: 1.24;
+}
+/* The task title is click-to-rename, so the input has to match the heading it replaces — otherwise
+   the panel jumps a font and a size the moment the owner clicks it. */
+[data-theme="nocturne"] .detail-head h2,
+[data-theme="nocturne"] .title-edit {
+  font-family: var(--font-serif);
+  font-size: 21px;
+  font-weight: 400;
+  letter-spacing: 0.004em;
+}
+[data-theme="nocturne"] .settings-head h3,
+[data-theme="nocturne"] .modal .m-head h3 {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+[data-theme="nocturne"] .settings-head h3 { font-size: 26px; }
+[data-theme="nocturne"] .modal .m-head h3 { font-size: 19px; }
+
+/* Classic shrinks these headings on a phone. Every rule above out-specifies those media blocks (an
+   attribute selector beats a bare class), so the theme has to restate the compact sizes or a tablet
+   gets a serif tab row that wraps and a settings title that eats the dialog head. */
+@media (max-width: 899.98px) {
+  [data-theme="nocturne"] .settings-head h3 { font-size: 18px; }
+  [data-theme="nocturne"] .board-head h2,
+  [data-theme="nocturne"] .board-tab { font-size: 13.5px; letter-spacing: 0.01em; }
+  [data-theme="nocturne"] .detail-head h2,
+  [data-theme="nocturne"] .title-edit { font-size: 18px; }
+  [data-theme="nocturne"] .card .title { font-size: 16.5px; }
+}
+
+/* ---- cards ----------------------------------------------------------------- */
+[data-theme="nocturne"] .card {
+  padding: 15px 16px 15px 18px;
+  box-shadow: var(--nocturne-lip);
+  transition:
+    transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1),
+    box-shadow 0.24s cubic-bezier(0.2, 0.9, 0.25, 1),
+    border-color 0.16s,
+    background 0.16s;
+}
+/* The state rail fades out down the card instead of running its full height as a solid bar: it reads
+   as light spilling from the top edge, which is where the state badge is. */
+[data-theme="nocturne"] .card::before {
+  width: 2px;
+  background: linear-gradient(
+    180deg,
+    var(--state-color, var(--text-faint)),
+    color-mix(in oklch, var(--state-color, var(--text-faint)) 10%, transparent)
+  );
+}
+[data-theme="nocturne"] .card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in oklch, var(--state-color, var(--accent)) 40%, var(--line-strong));
+  box-shadow: var(--nocturne-lip), 0 16px 36px -20px oklch(0 0 0 / 0.95);
+}
+/* A card being dragged is already under a transform from the drag library, and the lift fights it. */
+[data-theme="nocturne"] .card.dragging:hover,
+[data-theme="nocturne"] .card-drag-overlay .card:hover {
+  transform: none;
+}
+[data-theme="nocturne"] .card.sel {
+  box-shadow:
+    0 0 0 1px var(--state-color, var(--accent)),
+    var(--nocturne-lip),
+    0 22px 46px -26px color-mix(in oklch, var(--state-color, var(--accent)) 78%, transparent);
+}
+/* The live dot gains an expanding ring — the same "something is happening here" signal, read from
+   further away across a wall-mounted board. */
+[data-theme="nocturne"] .card .live-dot::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 1px solid var(--ok);
+  animation: nocturne-ring 1.7s ease-out infinite;
+}
+
+[data-theme="nocturne"] .closed-card,
+[data-theme="nocturne"] .sub-card,
+[data-theme="nocturne"] .free-provider-card {
+  box-shadow: var(--nocturne-lip);
+}
+
+/* ---- feed ------------------------------------------------------------------
+   Classic sets each entry as bare text behind a role-coloured rule. Nocturne
+   gives it a faint tinted bed, so a long transcript reads as a column of rows
+   rather than one wall of prose. */
+[data-theme="nocturne"] .fi .body {
+  padding: 6px 11px 6px 12px;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: color-mix(in oklch, var(--role, var(--line-strong)) 5%, transparent);
+}
+[data-theme="nocturne"] .fi.finding .body {
+  background: color-mix(in oklch, var(--sev, var(--warn)) 7%, transparent);
+}
+/* Tool calls, results, thinking and system lines keep a bare bed. They are the bulk of a transcript,
+   so tinting them too would leave the agent's own prose with nothing to stand out against. */
+[data-theme="nocturne"] .fi.system .body,
+[data-theme="nocturne"] .fi.thinking .body,
+[data-theme="nocturne"] .fi.tool .body,
+[data-theme="nocturne"] .fi.tool_result .body {
+  background: transparent;
+}
+
+/* ---- controls ---------------------------------------------------------------
+   Classic hard-codes its amber focus ring in nine places rather than deriving it
+   from --accent, so retinting the accent is not enough — each has to be met. */
+[data-theme="nocturne"] .composer textarea:focus,
+[data-theme="nocturne"] .office-field .text-input:focus,
+[data-theme="nocturne"] .settings-row .text-input:focus,
+[data-theme="nocturne"] .model-input:focus,
+[data-theme="nocturne"] .key-input:focus-within,
+[data-theme="nocturne"] .free-provider-fields input:focus,
+[data-theme="nocturne"] .free-provider-model select:focus,
+[data-theme="nocturne"] .model-select:focus,
+[data-theme="nocturne"] .slider-range:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 22%, transparent);
+}
+/* Dark ink on the pale accent, matched to the theme's blue rather than Classic's amber. */
+[data-theme="nocturne"] .btn.primary,
+[data-theme="nocturne"] .sched-switch input:checked + .sched-switch-track .sched-switch-thumb {
+  color: oklch(0.17 0.028 250);
+}
+[data-theme="nocturne"] .sched-switch input:checked + .sched-switch-track .sched-switch-thumb {
+  background: oklch(0.17 0.028 250);
+}
+[data-theme="nocturne"] .btn {
+  border-radius: var(--r-sm);
+  transition: background 0.16s, border-color 0.16s, box-shadow 0.16s, transform 0.09s;
+}
+[data-theme="nocturne"] .btn.primary:hover {
+  box-shadow: 0 6px 18px -10px color-mix(in oklch, var(--accent) 80%, transparent);
+}
+/* The active settings page is marked by a lit edge, not only a fill — the sidebar is long enough that
+   a tinted row alone gets lost while scrolling. */
+[data-theme="nocturne"] .settings-nav-item {
+  position: relative;
+}
+[data-theme="nocturne"] .settings-nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* ---- overlays --------------------------------------------------------------- */
+[data-theme="nocturne"] .scrim,
+[data-theme="nocturne"] .settings-scrim {
+  background: oklch(0.06 0.01 250 / 0.62);
+  backdrop-filter: blur(6px);
+}
+[data-theme="nocturne"] .modal,
+[data-theme="nocturne"] .settings-pop,
+[data-theme="nocturne"] .office-panel,
+[data-theme="nocturne"] .gc-window {
+  box-shadow: var(--nocturne-lip), var(--shadow-2);
+}
+
+/* ---- motion -----------------------------------------------------------------
+   Only on arrival: a panel, a dialog, a menu. The feed and the board never move
+   on their own — cards re-sort on live data and would flicker. */
+[data-theme="nocturne"] .detail {
+  animation: nocturne-slide-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+[data-theme="nocturne"] .scrim,
+[data-theme="nocturne"] .settings-scrim {
+  animation: nocturne-fade 0.18s ease both;
+}
+[data-theme="nocturne"] .modal,
+[data-theme="nocturne"] .settings-pop,
+[data-theme="nocturne"] .gc-window {
+  animation: nocturne-rise 0.26s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+[data-theme="nocturne"] .ws-menu,
+[data-theme="nocturne"] .sort-list,
+[data-theme="nocturne"] .office-panel {
+  animation: nocturne-drop 0.15s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+@keyframes nocturne-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes nocturne-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes nocturne-drop {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes nocturne-slide-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
+/* Bounded at 2× because the card clips its own overflow: a wider ring is cut off at the right edge. */
+@keyframes nocturne-ring {
+  0% { opacity: 0.65; transform: scale(1); }
+  70%, 100% { opacity: 0; transform: scale(2); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="nocturne"] .detail,
+  [data-theme="nocturne"] .scrim,
+  [data-theme="nocturne"] .settings-scrim,
+  [data-theme="nocturne"] .modal,
+  [data-theme="nocturne"] .settings-pop,
+  [data-theme="nocturne"] .gc-window,
+  [data-theme="nocturne"] .ws-menu,
+  [data-theme="nocturne"] .sort-list,
+  [data-theme="nocturne"] .office-panel,
+  [data-theme="nocturne"] .card .live-dot::after {
+    animation: none;
+  }
+  [data-theme="nocturne"] .card:hover {
+    transform: none;
+  }
+}

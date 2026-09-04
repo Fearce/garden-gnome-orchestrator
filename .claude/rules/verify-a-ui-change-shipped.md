@@ -37,7 +37,9 @@ workbench's columns, with the rail/detail widths replayed from a BIGGER monitor,
 and both drag handles) and `panel-scroll-lab.cjs` (the detail panel on the OTHER axis: a 500-entry
 transcript under a work memo and deliverables, at five viewports x both header states, asserting the
 scrollport is usable, the composer stays pinned, nothing travels sideways, and no clipping shell in
-the console is taller than its own box). Never against live prod.
+the console is taller than its own box) and `appearance-lab.cjs` (the theme picker + the computed-style
+diff that is the only proof Classic came back untouched — `getComputedStyle` returns the ANIMATED
+value, so a snapshot taken mid-transition reads as drift). Never against live prod.
 **Read `lab-harness.cjs`'s header first** — selectors, `has-text` vs `text-is`, touch context, clipboard
 permissions and CSS load order are all in there; instance mechanics are in project memory
 `browser-test-throwaway-instance`.

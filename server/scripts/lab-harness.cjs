@@ -25,7 +25,7 @@
 //     visible (the others carry `hidden`), and it opens on General. A control on any other page is in
 //     the DOM but never visible, so `waitForSelector`/`click` times out and reads as a broken selector.
 //     Click its category first: `[data-settings-category="<id>"]` — `general` · `pipeline` · `usage` ·
-//     `subscriptions` · `free-ai` · `voice-alerts` · `office` · `interface`. Below 900px the rail is
+//     `subscriptions` · `free-ai` · `voice-alerts` · `office` · `appearance` · `interface`. Below 900px the rail is
 //     replaced by `.settings-mobile-nav select[aria-label="Settings category"]` (`selectOption`).
 //   • **Close an overlay the way the app closes it — Escape is not universal.** The office panel
 //     (`.office-panel`, opened from the top-bar strip) has NO key handler: only its `.office-scrim` or

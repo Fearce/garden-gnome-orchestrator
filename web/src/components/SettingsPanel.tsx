@@ -6,8 +6,9 @@ import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/mod
 import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { FreeProviders } from "./FreeProviders.js";
+import { ThemePicker } from "./ThemePicker.js";
 
-type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "voice-alerts" | "office" | "interface";
+type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "voice-alerts" | "office" | "appearance" | "interface";
 
 interface SettingsCategory {
   id: SettingsCategoryId;
@@ -25,6 +26,7 @@ const SETTINGS_CATEGORIES = [
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
   { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
   { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles.", keywords: "relay collaboration coworkers team machine url password presence chatroom" },
+  { id: "appearance", section: "Workspace", label: "Appearance", description: "Choose how the console looks on this browser.", keywords: "theme themes look dark colours colors palette classic nocturne skin style font typography animation" },
   { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed.", keywords: "composer board completed drag reorder output model picker recent repositories ui" },
 ] as const satisfies readonly SettingsCategory[];
 
@@ -59,6 +61,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setVerbosity = useStore((s) => s.setVerbosity);
   const taskDragAndDrop = useStore((s) => s.taskDragAndDrop);
   const setTaskDragAndDrop = useStore((s) => s.setTaskDragAndDrop);
+  const theme = useStore((s) => s.theme);
+  const setTheme = useStore((s) => s.setTheme);
   const [activeCategoryId, setActiveCategoryId] = useState<SettingsCategoryId>("general");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SettingsSearchResult[]>([]);
@@ -448,6 +452,16 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               </Group>
             </SettingsCategoryPanel>
 
+            <SettingsCategoryPanel id="appearance" active={!isSearching && activeCategoryId === "appearance"}>
+              <Group label="Theme">
+                <ThemePicker value={theme} onChange={setTheme} />
+                <div className="settings-note tight">
+                  The theme is stored in this browser, so each screen you open the console on — desktop,
+                  tablet, phone — keeps its own. Nothing about how tasks run changes.
+                </div>
+              </Group>
+            </SettingsCategoryPanel>
+
             <SettingsCategoryPanel id="interface" active={!isSearching && activeCategoryId === "interface"}>
               <Group label="Composer">
                 <ToggleRow
@@ -760,6 +774,7 @@ function SettingsCategoryIcon({ category }: { category: SettingsCategoryId }) {
   if (category === "free-ai") return <svg {...common}><path d="m12 3 1.2 4.2L17 9l-3.8 1.8L12 15l-1.2-4.2L7 9l3.8-1.8L12 3Z" /><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" /><path d="M5 14v6M2 17h6" /></svg>;
   if (category === "voice-alerts") return <svg {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>;
   if (category === "office") return <svg {...common}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" /></svg>;
+  if (category === "appearance") return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none" /></svg>;
   return <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M9 10h12" /></svg>;
 }
 

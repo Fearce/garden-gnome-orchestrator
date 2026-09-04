@@ -551,6 +551,14 @@ findings); a thread opens to a detail view with the inject/interrupt controls.
 Design: intentional type + OKLCH palette, mission-control density — no AI-slop
 defaults (see root CLAUDE.md doctrine).
 
+**Themes** (Settings → Appearance) are a per-browser choice between *Classic*
+— `styles.css` itself, with no attribute on `<html>` — and *Nocturne*, whose
+every rule is scoped behind `[data-theme="nocturne"]` in `web/src/themes/`.
+That scoping is the guarantee: a theme is additive, so Classic cannot change.
+`web/src/lib/theme.ts` is the registry (ids, copy, `applyTheme`); an inline
+script in `index.html` paints the choice before first paint. Gate `test:themes`,
+browser `appearance-lab`; adding one: `.claude/rules/add-a-theme.md`.
+
 ## 10. Multi-subscription load balancing (`server/src/accounts/`)
 
 Dispatch is capacity-aware at three levels: Claude subscription, provider, and exact model pool.

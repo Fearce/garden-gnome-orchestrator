@@ -664,6 +664,20 @@ since a settling burst fired in parallel earns a 429 each. Token + channel are w
 `DISCORD_BOT_TOKEN`/`DISCORD_CHANNEL_ID`; only `discordTokenPresent`/`last4` are broadcast, and **Send
 test** is the one way to prove token + channel + post permission at once. Gate: `test:discord-notify`.
 
+## Appearance themes (Settings → Appearance, per browser)
+The console ships two looks. **Classic is `web/src/styles.css` with NO attribute on `<html>`** — that
+is not a convention, it is the whole guarantee: an owner who never opted in cannot be reached by a
+theme, because every themed rule is scoped behind `[data-theme="<id>"]`. **Nocturne** is the second:
+near-black midnight ink under a pale cyan accent, Instrument Serif on the things that NAME something
+(task/panel/dialog titles) with mono still carrying every measurement, softer geometry, a lit top edge
+instead of a flat fill, tinted feed rows, and motion only where a surface arrives — panel, dialog,
+menu — never in the feed or on the board. Role and state hues are unchanged across both. The pick
+lives in the browser (the shared `director_settings` record, so each screen keeps its own), is painted
+by an inline script in `index.html` BEFORE the bundle runs — JS alone flashes Classic on every load —
+and changes nothing about how tasks run. Gate `test:themes` (scoping, keyframe collisions, the
+pre-paint list, hard-coded-accent leaks, the picker); browser `npm run appearance-lab --prefix server`,
+which diffs Classic's computed style across a switch-away-and-back. Third theme: `add-a-theme.md`.
+
 ## Before investigating "should we adopt / replace X?"
 Read **`docs/DECISIONS.md`** — the closed-questions register: one row per settled question with its
 headline verdict, plus what's genuinely still open. Adding a backend, swapping the harness, and
