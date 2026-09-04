@@ -150,7 +150,7 @@ console.log("\nD. legacy duplicates are compacted on open");
   db.addDirectorMessage({ role: "user", kind: "text", content: "again", attachments: ref(dupB) });
   db.addMessage({ threadId: t, role: "user", kind: "text", content: "other picture", attachments: ref(distinct) });
   check("legacy state built: 5 blob rows", countBlobs(db) === 5, `${countBlobs(db)} rows`);
-  check("…referenced by id, not by content", db.listMessages(t)[0]?.attachments?.[0]?.id === dupA);
+  check("…referenced by id, not by content", db.listMessages(t).find((m) => m.id === msg.id)?.attachments?.[0]?.id === dupA);
 
   // A DB that predates the fix has no compaction flag; clearing it makes the reopen replay the migration.
   db.raw.prepare("DELETE FROM kv WHERE key = 'attachment_dedupe_v1'").run();
