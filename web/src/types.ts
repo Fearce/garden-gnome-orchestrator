@@ -340,7 +340,9 @@ export interface Message {
 
 // ---- the office: cross-agent chat ----
 
-export type ChatScope = "general" | "project";
+/** Mirrors ChatScope in server/src/types.ts. "directors" is the cross-machine room the humans running
+ *  these consoles talk in — it belongs to no repository and no agent reads it. */
+export type ChatScope = "general" | "project" | "directors";
 
 /** A keyset cursor into a room's history — fetch the page just older than this (createdAt, id).
  *  Mirrors ChatCursor in server/src/types.ts. */
@@ -428,6 +430,9 @@ export function isCollaborationRoom(r: Pick<ChatRoomSummary, "threadIds" | "remo
 }
 
 export const GENERAL_ROOM = "general";
+
+/** The cross-machine directors' room — the people, not their agents. Same key the relay routes it under. */
+export const DIRECTORS_ROOM = "directors";
 
 /** Normalize a workspace path to a stable room/grouping key — mirrors the server's normalizeWorkspace
  *  so the office UI groups exactly the same gnomes the server forms project rooms for. */
@@ -924,7 +929,19 @@ export interface OnlineOfficeDTO {
   error: string | null;
   connectedAt: number | null;
   remoteAgents: RelayPresentAgent[];
+  directors: RelayDirector[]; // the humans at the OTHER consoles, agents running or not
   sharedRepos: SharedRepo[]; // repos this machine and at least one other are both working right now
+}
+
+/** A human at another console in the online office — one per connected machine that has declared a
+ *  director. Unlike a remote agent this does not depend on anything running over there, which is the
+ *  point: the directors' room is most useful when nobody has started anything yet. */
+export interface RelayDirector {
+  instanceId: string;
+  instanceName: string;
+  name: string;
+  agents: number;
+  since: number;
 }
 
 /** A repository whose work is split across machines. `workspaces` are the LOCAL checkouts that resolve to

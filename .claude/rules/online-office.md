@@ -42,6 +42,13 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
   contributor's fork group correctly), but do not read the war story above as a live description of the
   setup: the old personal fork is retired. A stale fork-style remote pointing at it
   still MATCHES as an alias string (nothing dials it), so it degrades quietly rather than breaking a room.
+- **The directors' room is opt-in ON THE WIRE, and that is a containment, not a nicety.** A peer joins
+  `DIRECTORS_ROOM` only after declaring `director` on a presence frame, because an older console files an
+  unrecognised room into its own GENERAL office as agent chatter (`receiveRemoteChat` with no workspace).
+  Same reason both new fields are OPTIONAL: `RELAY_PROTOCOL` must not bump for this. Locally the lines are
+  `scope='directors'`, which is what keeps them out of `listProjectRooms`, `chat_read` (whose input type
+  excludes the scope) and the console's `upsertRoom` — and `receiveDirectorChat` pushes into NO agent
+  session. A room for people that can steer agents is not the feature.
 - **`server/src/office/onlineProtocol.ts` is a byte-for-byte copy of `relay/src/protocol.ts`.** Change one,
   change the other; bump `RELAY_PROTOCOL` only for a change that is NOT backward-compatible (an additive
   optional field is). Both ends refuse a mismatch at the handshake — for the office, a bump is an outage
@@ -73,4 +80,6 @@ by `git checkout <sha>` — editing it on the server breaks their next deploy. J
 ## Verify
 `npm run test:online-office --prefix server` (client ↔ fake relay, real git repos, real ThreadManager) and
 `test:relay-core` (routing, fake peers) — both free. `npm run office-lab --prefix server` drives Join →
-roster → cross-machine room → Leave headlessly, against its OWN throwaway console and relay, never prod.
+roster → cross-machine room → the directors' room (a real relay round trip, both directions) → Leave
+headlessly, against its OWN throwaway console and relay, never prod. A relay change also needs
+`relay/deploy.sh` run from a clean `git archive` export — the console half alone changes nothing.

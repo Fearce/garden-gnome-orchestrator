@@ -15,7 +15,7 @@ export interface OfficeContext {
 
 /** Map the agent-facing scope word to the internal ChatScope. "team" is the per-repo project room
  *  agents share when 2+ work the same workspace; "office" is the general room everyone is in. */
-function toScope(word: "office" | "team"): ChatScope {
+function toScope(word: "office" | "team"): Exclude<ChatScope, "directors"> {
   return word === "team" ? "project" : "general";
 }
 

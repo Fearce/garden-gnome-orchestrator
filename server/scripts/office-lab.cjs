@@ -67,7 +67,8 @@ async function bootRelay(dataDir) {
 }
 
 /** A second orchestrator, faked: join over HTTP, connect, and advertise one agent. This is the OTHER
- *  machine — the thing the whole feature exists to make visible. */
+ *  machine — the thing the whole feature exists to make visible. Everything the relay sends it is kept
+ *  in `ws.inbox`, which is how we prove a line typed in the console actually left this machine. */
 async function joinAsPeer(name, agent) {
   const res = await fetch(`${RELAY}/api/join`, {
     method: "POST",
@@ -80,8 +81,37 @@ async function joinAsPeer(name, agent) {
     ws.on("open", resolve);
     ws.on("error", reject);
   });
+  ws.inbox = [];
+  ws.on("message", (raw) => {
+    try {
+      ws.inbox.push(JSON.parse(String(raw)));
+    } catch {
+      /* not a frame we care about */
+    }
+  });
+  ws.agent = agent;
   ws.send(JSON.stringify({ t: "presence", agents: [agent] }));
   return ws;
+}
+
+/** Wait for a frame the fake machine receives — the far end of the round trip. */
+async function waitForPeerFrame(peer, match, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const hit = peer.inbox.find(match);
+    if (hit) return hit;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return null;
+}
+
+/** What the console persisted for the directors' room. The DOM can render a line the server never
+ *  stored, and this room's whole value is that it is still there tomorrow. */
+function readDirectorsRoom(dataDir) {
+  const db = new Database(path.join(dataDir, "orchestrator.sqlite"), { readonly: true });
+  const rows = db.prepare("SELECT room, scope, role, body, sender_name, remote_instance FROM chat_messages WHERE room = 'directors' ORDER BY created_at ASC").all();
+  db.close();
+  return rows;
 }
 
 /** Seed a project room holding a conversation that came from ANOTHER machine, with no local task having
@@ -213,6 +243,41 @@ async function main() {
       await page.waitForSelector(".office-remote", { timeout: 20_000 });
       check("the top-bar strip shows a remote-machine cluster", (await page.locator(".office-remote").count()) === 1);
       check("…tagged with the machine's name", (await page.locator(".office-remote-tag").innerText()) === "Mikkel's laptop");
+
+      // ---- the directors' room: the people, across machines ----------------------------------------
+      // Declaring a director is what puts a machine in the room, so the section appears only once
+      // somebody else is actually at a console.
+      peer.send(JSON.stringify({ t: "presence", agents: [peer.agent], director: { name: "Mikkel" } }));
+      await page.waitForSelector(".office-online", { timeout: 20_000 });
+      check("the top bar grows an Online Office section once another director is on", (await page.locator(".office-online").count()) === 1);
+      check("…labelled for what it is", (await page.locator(".office-online-tag").innerText()) === "Online Office");
+      const peopleTitle = (await page.locator(".office-online").getAttribute("title")) ?? "";
+      check("…naming the person and their machine", peopleTitle.includes("Mikkel on Mikkel's laptop"), peopleTitle);
+
+      peer.send(JSON.stringify({ t: "chat", room: "directors", body: "I'm deploying the relay in 5 — hold off pushing", senderName: "Mikkel", role: "director" }));
+      await page.click(".office-online");
+      await page.waitForSelector(".office-panel", { timeout: 20_000 });
+      check("…and clicking it opens the Directors room", (await page.locator(".office-tab.directors.on").count()) === 1);
+      await page.waitForSelector(".office-msgs .office-msg", { timeout: 20_000 });
+      const directorsText = await page.locator(".office-msgs").innerText();
+      check("the other director's line arrives", directorsText.includes("hold off pushing"), directorsText);
+      check("…attributed to them and their machine", (await page.locator(".office-msg-role").first().innerText()).includes("Mikkel @ Mikkel's laptop"));
+
+      // …and the reply goes back out over the relay. A local bubble proves nothing about the far end.
+      await page.fill(".office-panel .office-composer textarea", "understood — nothing from me until you say go");
+      await page.click('.office-panel .office-composer button:has-text("Send")');
+      const delivered = await waitForPeerFrame(peer, (f) => f.t === "chat" && f.msg.room === "directors" && f.msg.body.includes("nothing from me"));
+      check("a reply typed here reaches the other machine", !!delivered, JSON.stringify(peer.inbox.filter((f) => f.t === "chat").map((f) => f.msg.room)));
+      check("…as the director, in the directors' room", delivered?.msg.role === "director" && !delivered?.msg.repoLabel, JSON.stringify(delivered?.msg));
+
+      const persisted = readDirectorsRoom(dataDir);
+      check("both sides of the conversation are persisted", persisted.length === 2, JSON.stringify(persisted));
+      check("…scoped so no repository rollup or agent read can claim them", persisted.every((r) => r.scope === "directors" && r.role === "director"), JSON.stringify(persisted));
+      const peopleShot = path.join(dataDir, "directors-room.png");
+      await page.screenshot({ path: peopleShot });
+      console.log(`  screenshot: ${peopleShot}`);
+      await page.click(".office-panel .close-x");
+      await page.waitForSelector(".office-panel", { state: "detached", timeout: 10_000 });
 
       const shot = path.join(dataDir, "online-office.png");
       await page.screenshot({ path: shot });

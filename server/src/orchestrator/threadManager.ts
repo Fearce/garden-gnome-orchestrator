@@ -166,7 +166,7 @@ import type {
   Thread,
   ZaiEffort,
 } from "../types.js";
-import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
+import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, DIRECTORS_ROOM, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
 import type { LocalAgentSnapshot, OnlineOffice } from "../office/onlineOffice.js";
 import { OFFICE_ROOM as ONLINE_OFFICE_ROOM } from "../office/onlineProtocol.js";
 import type { RelayChat, RelayPresentAgent } from "../office/onlineProtocol.js";
@@ -11841,16 +11841,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const workspace = workspaces[0] ?? null;
     const project = msg.room !== ONLINE_OFFICE_ROOM && !!workspace;
     const senderName = `${msg.senderName} @ ${msg.instanceName}`;
-    // Dedup on the relay's own message id: `history` replays a room's backlog on every (re)entry — a
-    // reconnect after a dropped socket, and equally the first connect after a restart — so without this
-    // the room's whole backlog would be re-persisted and re-delivered.
-    const seen = this.seenRemoteChat();
-    if (seen.has(msg.id)) return;
-    seen.add(msg.id);
-    if (seen.size > REMOTE_CHAT_SEEN_MAX) {
-      for (const id of [...seen].slice(0, Math.floor(REMOTE_CHAT_SEEN_MAX / 2))) seen.delete(id);
-    }
-    this.db.kvSet(REMOTE_CHAT_SEEN_KV, JSON.stringify([...seen]));
+    if (this.alreadyDeliveredRemoteChat(msg.id)) return;
     const stored = this.db.addChatMessage({
       room: project ? repoRoom(workspace!) : GENERAL_ROOM,
       scope: project ? "project" : "general",
@@ -11866,6 +11857,44 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.hub.publish({ type: "chat.message", message: stored });
     if (!project) return;
     this.pushToRepo(workspace!, (cli) => remoteChatPush(msg, senderName, cli));
+  }
+
+  /**
+   * A line from another HUMAN in the cross-machine directors' room. It is persisted like any other
+   * office message so the console can page its history, and it stops there: the directors' room is the
+   * people talking to each other, so nothing here is pushed into an agent's session or read by one.
+   */
+  receiveDirectorChat(msg: RelayChat): void {
+    if (this.alreadyDeliveredRemoteChat(msg.id)) return;
+    const stored = this.db.addChatMessage({
+      room: DIRECTORS_ROOM,
+      scope: "directors",
+      workspace: null,
+      threadId: null,
+      runId: null,
+      role: "director",
+      kind: "chat",
+      body: msg.body,
+      senderName: `${msg.senderName} @ ${msg.instanceName}`,
+      remoteInstance: msg.instanceName,
+    });
+    this.hub.publish({ type: "chat.message", message: stored });
+  }
+
+  /** Whether this relay message has already been taken, and record it if not. Dedup is on the relay's
+   *  own message id: `history` replays a room's backlog on every (re)entry — a reconnect after a dropped
+   *  socket, and equally the first connect after a restart — so without this the room's whole backlog
+   *  would be re-persisted and re-delivered. Durable, because the first connect after a bounce is the
+   *  case an in-memory set is empty for. */
+  private alreadyDeliveredRemoteChat(id: string): boolean {
+    const seen = this.seenRemoteChat();
+    if (seen.has(id)) return true;
+    seen.add(id);
+    if (seen.size > REMOTE_CHAT_SEEN_MAX) {
+      for (const old of [...seen].slice(0, Math.floor(REMOTE_CHAT_SEEN_MAX / 2))) seen.delete(old);
+    }
+    this.db.kvSet(REMOTE_CHAT_SEEN_KV, JSON.stringify([...seen]));
+    return false;
   }
 
   /** The remote-chat dedup set, hydrated from kv on first use (Set iteration is insertion order, so the
@@ -12093,6 +12122,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   directorChatPost(room: string, body: string, messageId?: string): ChatMessage {
     const text = body.trim();
     if (!text) throw new Error("empty director message");
+    if (room === DIRECTORS_ROOM) return this.postToDirectorsRoom(text, messageId);
     const general = room === GENERAL_ROOM;
     const workspace = general ? null : this.workspaceForRoom(room);
     const who = this.directorName();
@@ -12138,6 +12168,29 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       pinged++;
     }
     this.hub.log("info", `Director posted to ${general ? "the office" : `team ${workspace}`} — pinged ${pinged} live agent(s).`);
+    return m;
+  }
+
+  /** The owner's own line to the other humans in the office: persisted locally, relayed to the other
+   *  machines, and pushed at NO agent — a directive to the agents is what the office and repo rooms are
+   *  for, and quietly steering every live implementor from a conversation between people would be a
+   *  surprise nobody asked for. */
+  private postToDirectorsRoom(text: string, messageId?: string): ChatMessage {
+    const who = this.directorName();
+    const m = this.db.addChatMessage({
+      id: messageId,
+      room: DIRECTORS_ROOM,
+      scope: "directors",
+      workspace: null,
+      threadId: null,
+      runId: null,
+      role: "director",
+      kind: "chat",
+      body: text,
+      senderName: who,
+    });
+    this.hub.publish({ type: "chat.message", message: m });
+    this.online?.postDirectorChat({ body: m.body, senderName: who });
     return m;
   }
 

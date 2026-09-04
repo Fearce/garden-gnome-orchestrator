@@ -1,5 +1,5 @@
-import { CHAT_MAX_CHARS, CHAT_MAX_CHUNKS, OFFICE_ROOM, PRESENCE_MAX_AGENTS, RELAY_PROTOCOL, relayRepoRoom } from "./protocol.js";
-import type { ClientFrame, RelayAgent, RelayChat, RelayPresentAgent, ServerFrame } from "./protocol.js";
+import { CHAT_MAX_CHARS, CHAT_MAX_CHUNKS, DIRECTORS_ROOM, OFFICE_ROOM, PRESENCE_MAX_AGENTS, RELAY_PROTOCOL, relayRepoRoom } from "./protocol.js";
+import type { ClientFrame, RelayAgent, RelayChat, RelayDirector, RelayPresentAgent, ServerFrame } from "./protocol.js";
 
 /** One live connection, as the routing core sees it. The transport (a real WebSocket, or a fake in the
  *  test) is behind `send` so every routing decision in this file is testable without a socket. */
@@ -40,7 +40,10 @@ export class MemoryHistory implements RoomHistory {
 interface PeerState {
   peer: RelayPeer;
   agents: RelayAgent[];
-  rooms: Set<string>; // office + one per repo this instance has an agent in
+  rooms: Set<string>; // office + one per repo this instance has an agent in (+ directors, once declared)
+  /** The human at that console, once the instance has declared one. Null is what keeps a pre-directors
+   *  client out of the room rather than merely quiet in it. */
+  director: { name: string } | null;
   since: number;
 }
 
@@ -141,7 +144,7 @@ export class RelayCore {
         this.clearPendingChat(st.peer.instanceId);
       }
     }
-    this.peers.set(peer.connId, { peer, agents: [], rooms: new Set([OFFICE_ROOM]), since: this.now() });
+    this.peers.set(peer.connId, { peer, agents: [], rooms: new Set([OFFICE_ROOM]), director: null, since: this.now() });
     peer.send({
       t: "welcome",
       protocol: RELAY_PROTOCOL,
@@ -149,6 +152,7 @@ export class RelayCore {
       instanceName: peer.instanceName,
       presence: this.rosterFor(peer.instanceId),
       recent: this.othersOnly(this.history.recent(OFFICE_ROOM), peer.instanceId),
+      directors: this.directorsFor(peer.instanceId),
     });
     this.broadcastPresence();
   }
@@ -171,7 +175,7 @@ export class RelayCore {
         st.peer.send({ t: "pong" });
         return null;
       case "presence":
-        this.applyPresence(st, Array.isArray(frame.agents) ? frame.agents : []);
+        this.applyPresence(st, frame);
         return null;
       case "chat":
         return this.applyChat(st, frame);
@@ -180,10 +184,12 @@ export class RelayCore {
     }
   }
 
-  /** Replace an instance's reported agents. Rebuilds its room set: entering a repo room replays that
-   *  room's backlog to it alone, so a fresh agent starts with what its remote teammates already said. */
-  private applyPresence(st: PeerState, agents: RelayAgent[]): void {
-    const clean = agents
+  /** Replace an instance's reported agents (and the human at its console). Rebuilds its room set:
+   *  entering a room replays that room's backlog to it alone, so a fresh agent starts with what its
+   *  remote teammates already said — and a console entering the directors' room reads what the other
+   *  people said while it was away, over the same path. */
+  private applyPresence(st: PeerState, frame: Extract<ClientFrame, { t: "presence" }>): void {
+    const clean = (Array.isArray(frame.agents) ? frame.agents : [])
       .slice(0, PRESENCE_MAX_AGENTS)
       .map((a) => ({
         key: clip(a.key, 200),
@@ -196,10 +202,15 @@ export class RelayCore {
       }))
       .filter((a) => a.key && a.repoKey);
 
+    // A console that names its director is a console whose human wants to be in the room with the other
+    // humans — whether or not that machine has any agent working, which is exactly when the directors'
+    // room is most useful (nothing running, two people deciding what to run).
+    const director = frame.director ? { name: clip(frame.director.name, 40) || "director" } : null;
+    const rooms = new Set<string>([OFFICE_ROOM]);
+    if (director) rooms.add(DIRECTORS_ROOM);
     // An instance is in a room per identity its checkouts answer to, not just per `repoKey`: the side
     // that knows a fork and its upstream are one repository joins BOTH rooms, which is what lets it hear
     // the other side at all. The other side needs to know nothing.
-    const rooms = new Set<string>([OFFICE_ROOM]);
     for (const a of clean) {
       for (const key of [a.repoKey, ...a.repoAliases]) {
         const room = relayRepoRoom(key);
@@ -207,9 +218,10 @@ export class RelayCore {
       }
     }
     const entered = [...rooms].filter((r) => !st.rooms.has(r));
-    const changed = JSON.stringify(st.agents) !== JSON.stringify(clean);
+    const changed = JSON.stringify(st.agents) !== JSON.stringify(clean) || JSON.stringify(st.director) !== JSON.stringify(director);
     st.agents = clean;
     st.rooms = rooms;
+    st.director = director;
     for (const room of entered) {
       const messages = this.othersOnly(this.history.recent(room), st.peer.instanceId);
       if (messages.length) st.peer.send({ t: "history", room, messages });
@@ -219,7 +231,8 @@ export class RelayCore {
 
   private applyChat(st: PeerState, frame: ChatFrame): string | null {
     const room = clip(frame.room, 220);
-    if (room !== OFFICE_ROOM && !REPO_ROOM_RE.test(room)) return `bad room "${room}"`;
+    if (room === DIRECTORS_ROOM && !st.director) return "declare a director before posting to the directors' room";
+    if (room !== OFFICE_ROOM && room !== DIRECTORS_ROOM && !REPO_ROOM_RE.test(room)) return `bad room "${room}"`;
     const accepted = this.acceptChatBody(st, frame, room);
     if (typeof accepted === "string") return accepted;
     if (!accepted) return null; // a valid chunked message that is not complete yet
@@ -235,8 +248,8 @@ export class RelayCore {
       at: this.now(),
     };
     // The rooms this one line belongs to: the sender's own, plus any it declared as the same repository.
-    // The general office never fans out — it is one room by definition.
-    const group = accepted.room === OFFICE_ROOM ? [accepted.room] : [accepted.room, ...accepted.rooms];
+    // The general office and the directors' room never fan out — each is one room by definition.
+    const group = accepted.rooms.length ? [accepted.room, ...accepted.rooms] : [accepted.room];
     // Filed under every room in the group, so a peer that only knows the OTHER name still gets the
     // backlog when it enters. The copies share one id, which is what the receiver's durable dedup keys on.
     for (const r of group) this.history.push(r, { ...msg, room: r });
@@ -260,7 +273,7 @@ export class RelayCore {
     const hasChunkMeta = meta.some((v) => v !== undefined);
     const clean = {
       room,
-      rooms: room === OFFICE_ROOM ? [] : cleanRooms(frame.rooms, room),
+      rooms: room === OFFICE_ROOM || room === DIRECTORS_ROOM ? [] : cleanRooms(frame.rooms, room),
       senderName: clip(frame.senderName, 40) || "agent",
       role: clip(frame.role, 24) || "implementor",
       repoLabel: clip(frame.repoLabel, 120) || null,
@@ -349,6 +362,29 @@ export class RelayCore {
     return messages.filter((m) => m.instanceId !== instanceId);
   }
 
+  /** The humans at the connected consoles — one per instance that has declared a director. This is the
+   *  directors' room's roster, and unlike `roster()` it does not depend on anybody having agents running. */
+  directors(): RelayDirector[] {
+    const out: RelayDirector[] = [];
+    for (const st of this.peers.values()) {
+      if (!st.director) continue;
+      out.push({
+        instanceId: st.peer.instanceId,
+        instanceName: st.peer.instanceName,
+        name: st.director.name,
+        agents: st.agents.length,
+        since: st.since,
+      });
+    }
+    return out;
+  }
+
+  /** The same list as ONE instance must see it: everyone but itself, for the same reason `rosterFor`
+   *  exists — a console already knows its own director, and an echo would draw the owner as a peer. */
+  directorsFor(instanceId: string): RelayDirector[] {
+    return this.directors().filter((d) => d.instanceId !== instanceId);
+  }
+
   /** The connected instances, for the status page and `/api/health`. */
   online(): { instanceId: string; instanceName: string; agents: number; repos: string[]; since: number }[] {
     return [...this.peers.values()].map((st) => ({
@@ -416,7 +452,11 @@ export class RelayCore {
   private broadcastPresence(): void {
     const all = this.roster();
     for (const st of this.peers.values()) {
-      st.peer.send({ t: "presence", agents: all.filter((a) => a.instanceId !== st.peer.instanceId) });
+      st.peer.send({
+        t: "presence",
+        agents: all.filter((a) => a.instanceId !== st.peer.instanceId),
+        directors: this.directorsFor(st.peer.instanceId),
+      });
     }
   }
 }

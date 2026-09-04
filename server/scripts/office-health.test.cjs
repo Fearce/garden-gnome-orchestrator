@@ -21,7 +21,7 @@
 // Run: node scripts/office-health.test.cjs
 
 const assert = require("node:assert/strict");
-const { SELF_ECHO_FIX, classifyOfficeRows, parseUnlinked, relaySummary, senderMachine, verdictFor } = require("./probe-office.cjs");
+const { SELF_ECHO_FIX, classifyOfficeRows, directorsRoomSummary, parseUnlinked, relaySummary, senderMachine, verdictFor } = require("./probe-office.cjs");
 
 const SELF = "Kevin";
 const FIX_AT = Date.parse("2026-08-25T08:30:00Z");
@@ -154,6 +154,38 @@ assert.ok(!("at" in SELF_ECHO_FIX), "a hardcoded timestamp is what made this che
   assert.equal(relaySummary({ instancesOnline: 0, agentsOnline: 0, sharedRepos: 0 }), "0 instances online, 0 agents, 0 shared repos", "zero is a real answer and must survive");
   assert.equal(relaySummary({}), "reachable, but reporting no counts", "a relay that answers with nothing says so in words");
   assert.ok(!relaySummary({ instancesOnline: 2, agentsOnline: 7, sharedRepos: 1 }).includes("undefined"), "the exact regression");
+}
+
+// --- 8. the directors' room: a room for humans is allowed to be quiet ------------------------
+//     It reports, it never judges. The one case worth a printed line is a room only THIS machine has
+//     ever spoken in, because membership is opt-in — that reads identically to an office whose other
+//     consoles run a build predating the room, and no other check can see it.
+{
+  const rows = [];
+  const db = { prepare: () => ({ all: () => rows }) };
+  assert.deepEqual(
+    directorsRoomSummary(db, "Kevin's tower"),
+    { lines: 0, mine: 0, machines: [], lastAt: 0, soloSoFar: false },
+    "an empty room is empty, not a fault",
+  );
+
+  rows.push({ remote_instance: null, created_at: 10 }, { remote_instance: null, created_at: 20 });
+  const solo = directorsRoomSummary(db, "Kevin's tower");
+  assert.deepEqual([solo.lines, solo.mine, solo.machines.length, solo.lastAt], [2, 2, 0, 20]);
+  assert.equal(solo.soloSoFar, true, "talking to nobody is the one thing worth saying out loud");
+
+  rows.push({ remote_instance: "Mikkel's laptop", created_at: 30 }, { remote_instance: "Mikkel's laptop", created_at: 40 });
+  const two = directorsRoomSummary(db, "Kevin's tower");
+  assert.deepEqual(two.machines, ["Mikkel's laptop"], "each other machine counted once");
+  assert.equal(two.mine, 2, "…and our own lines stay ours");
+  assert.equal(two.soloSoFar, false);
+
+  rows.push({ remote_instance: "Kevin's tower", created_at: 50 });
+  assert.deepEqual(
+    directorsRoomSummary(db, "Kevin's tower").machines,
+    ["Mikkel's laptop"],
+    "a row stamped with THIS machine is never counted as company — the same rule as everywhere else here",
+  );
 }
 
 console.log("office health: all assertions passed");

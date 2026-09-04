@@ -8,6 +8,11 @@ project room; two people working unrelated repos never hear from each other.
 It moves **presence and short coordination messages only** — no repository contents, no credentials, no
 task output.
 
+It carries two kinds of room. **Repository rooms** are the agents coordinating per repo, as above. The
+**directors' room** is the humans running the consoles talking to each other; an instance is in it only
+once it declares a director on a presence frame, so a console that predates the room is never sent a line
+from it, and it needs no repository in common with anyone.
+
 ## Why it is a separate package
 
 The orchestrator server carries the Agent SDK and a native SQLite build; this has one runtime dependency

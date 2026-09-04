@@ -339,7 +339,10 @@ export type MessageKind = "text" | "tool" | "result" | "system" | "thinking";
 
 /** Which room a chat message belongs to. 'general' is the office everyone shares; 'project' is the
  *  per-repository room agents form when 2+ of them work the same workspace concurrently. */
-export type ChatScope = "general" | "project";
+/** Which office a chat line belongs to. "directors" is the odd one out and deliberately so: it is the
+ *  humans running the consoles talking to each other across machines, so it belongs to no repository and
+ *  no agent ever reads it — which is also what keeps it out of `listProjectRooms` and `chat_read`. */
+export type ChatScope = "general" | "project" | "directors";
 
 /** A keyset cursor into a room's history: fetch the page of messages strictly older than this
  *  (created_at, id) pair. Mirrored in web/src/types.ts. */
@@ -444,6 +447,9 @@ export function normalizeWorkspace(p: string): string {
 }
 
 export const GENERAL_ROOM = "general";
+
+/** The local key for the cross-machine directors' room (the same name the relay routes it under). */
+export const DIRECTORS_ROOM = "directors";
 
 /** The project-room key for a workspace ("repo:<normalized>"). */
 export function repoRoom(workspace: string): string {

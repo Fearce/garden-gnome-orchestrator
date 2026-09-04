@@ -1120,6 +1120,26 @@ button { font-family: inherit; cursor: pointer; }
   max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* The people, not their agents: the other directors currently at a console somewhere else. Dashed keeps
+   the strip's one visual rule — dashed means it crossed the internet — while the director violet and
+   full opacity say these are humans who are HERE, unlike the dimmed remote-agent cluster. */
+.office-online {
+  position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  height: 40px; padding: 0 9px 0 6px; border-radius: 100px;
+  border: 1px dashed color-mix(in oklch, var(--role-director) 55%, var(--line));
+  background: color-mix(in oklch, var(--role-director) 8%, var(--bg-2));
+}
+.office-online:hover { background: color-mix(in oklch, var(--role-director) 15%, var(--bg-2)); }
+.office-online-gnomes { display: inline-flex; }
+.office-online-gnomes > .gnome { margin-left: -9px; } /* overlap, so a group of people reads as a group */
+.office-online-gnomes > .gnome:first-child { margin-left: 0; }
+.office-online-tag {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.03em; color: var(--role-director);
+  max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Its tab in the chat panel carries the same violet so the pill and the room read as one surface. */
+.office-tab.directors:not(.on) { color: color-mix(in oklch, var(--role-director) 78%, var(--text-dim)); }
+
 /* auto model selection — the scoreboard under its toggle */
 .ams-board { margin: 2px 16px 8px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
 .ams-row {
@@ -3143,7 +3163,7 @@ button.note-from:hover { color: var(--text-dim); }
   .card-chatroom { width: var(--tap-sm); height: var(--tap-sm); }
   /* Only renders while 2+ agents share a repo, so it is absent from most measurements — a second
      agent joining mid-session is what finally surfaced it at 40px. */
-  .office-huddle { height: var(--tap); }
+  .office-huddle, .office-online { height: var(--tap); }
   /* (.changes-chip is sized in gitChanges.css — that file loads AFTER this one, so a rule for it
      here would be one stylesheet edit away from silently losing the source-order tie.) */
   /* The trailing thread-id chip is a desktop reference that ellipsises to nothing in a 480px sheet

@@ -12,6 +12,15 @@ export const RELAY_PROTOCOL = 1;
 /** The room every joined instance is in: the cross-machine equivalent of the local general office. */
 export const OFFICE_ROOM = "office";
 
+/** The people's room: the humans running these consoles talking to each other, not their agents.
+ *
+ *  Membership is OPT-IN and that is load-bearing — an instance is in it only once it has declared a
+ *  `director` on a presence frame. A console that predates this feature files an unrecognised room into
+ *  its own general office as agent chatter, so it must never be sent a line from here. Opt-in is also
+ *  what keeps this additive: no PROTOCOL bump, and therefore no office-wide outage while machines
+ *  redeploy one at a time. */
+export const DIRECTORS_ROOM = "directors";
+
 /** The room key for one repository IDENTITY (not a local path — see repoIdentity.ts). */
 export function relayRepoRoom(repoKey: string): string {
   return `repo:${repoKey}`;
@@ -34,6 +43,18 @@ export interface RelayAgent {
    *  is exactly today's behaviour, so no PROTOCOL bump (a bump disconnects every peer until it
    *  redeploys — for this feature that would break the very office it repairs). */
   repoAliases?: string[];
+}
+
+/** A human at one of these consoles, as everyone else sees them. One per connected instance that has
+ *  declared a director — the roster the directors' room is a conversation between. `agents` is how many
+ *  workers that machine has going right now, which is the one piece of context worth showing beside a
+ *  name in a room that is deliberately not about any particular repository. */
+export interface RelayDirector {
+  instanceId: string;
+  instanceName: string;
+  name: string; // the director persona's own name on that machine
+  agents: number;
+  since: number; // when that instance connected
 }
 
 /** An agent as seen by everyone else: the reporter's own presence entry, stamped with who reported it. */
@@ -64,7 +85,9 @@ export const PRESENCE_MAX_AGENTS = 64;
 export const ROOM_HISTORY = 60;
 
 export type ClientFrame =
-  | { t: "presence"; agents: RelayAgent[] }
+  /** `director` — when present — both names the human at this console and opts the instance into the
+   *  directors' room. Optional, so a client that predates the room simply never enters it. */
+  | { t: "presence"; agents: RelayAgent[]; director?: { name: string } }
   /** `room` is the sender's own room and stays the addressing unit. `rooms` — when present — is every
    *  room the line belongs to (the sender's whole identity group), so one post reaches a fork's room as
    *  well as the upstream's. The relay still delivers ONE message with ONE id, stamped per receiver with
@@ -84,9 +107,20 @@ export type ClientFrame =
     }
   | { t: "ping" };
 
+/** `directors` rides along on the two frames that already carry a roster rather than becoming a frame of
+ *  its own: an optional field is ignored by an older console, whereas an unknown frame type is one more
+ *  thing every peer has to have redeployed before the office works again. */
 export type ServerFrame =
-  | { t: "welcome"; protocol: number; instanceId: string; instanceName: string; presence: RelayPresentAgent[]; recent: RelayChat[] }
-  | { t: "presence"; agents: RelayPresentAgent[] }
+  | {
+      t: "welcome";
+      protocol: number;
+      instanceId: string;
+      instanceName: string;
+      presence: RelayPresentAgent[];
+      recent: RelayChat[];
+      directors?: RelayDirector[];
+    }
+  | { t: "presence"; agents: RelayPresentAgent[]; directors?: RelayDirector[] }
   /** The recent backlog of a room this instance has just entered (its first agent in that repo). */
   | { t: "history"; room: string; messages: RelayChat[] }
   | { t: "chat"; msg: RelayChat }

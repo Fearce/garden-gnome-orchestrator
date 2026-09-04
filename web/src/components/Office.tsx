@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
-import type { ChatMessage, ChatRoomSummary, RelayPresentAgent, Role, SharedRepo } from "../types.js";
-import { agentName, CHAT_PAGE_SIZE, GENERAL_ROOM, isCollaborationRoom, normalizeWorkspace, repoRoom, ROLES } from "../types.js";
+import type { ChatMessage, ChatRoomSummary, RelayDirector, RelayPresentAgent, Role, SharedRepo } from "../types.js";
+import { agentName, CHAT_PAGE_SIZE, DIRECTORS_ROOM, GENERAL_ROOM, isCollaborationRoom, normalizeWorkspace, repoRoom, ROLES } from "../types.js";
 import { clock, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
@@ -92,6 +92,16 @@ function huddleTitle(g: Group, nameOf: (w: Worker) => string): string {
     `They have their own checkout — their commits reach you at the remote, not in your working tree.\n` +
     `Click to open the shared chatroom.`
   );
+}
+
+/** The hover text for the Online Office cluster: who else is at a console right now, on which machine,
+ *  and whether they have anything running. That last part is the honest read of "are they around" — a
+ *  director with no agents is between tasks, not away. */
+function onlineOfficeTitle(directors: RelayDirector[]): string {
+  const who = directors
+    .map((d) => `${d.name} on ${d.instanceName} — ${d.agents ? `${d.agents} agent${d.agents === 1 ? "" : "s"} working` : "nothing running"}`)
+    .join("\n");
+  return `Online Office — the other directors are in:\n${who}\nClick to open the directors' chatroom.`;
 }
 
 /** Hover text for a project-room tab: the repo, and who is in it — naming the other machines, since
@@ -201,14 +211,14 @@ export function Office() {
     return [...byInstance.values()];
   }, [onlineOffice.remoteAgents, groups]);
 
-  // Latest message per run and per project room, for the floating bubbles.
+  // Latest message per run and per room, for the floating bubbles.
   const { byRun, byRoom } = useMemo(() => {
     const byRun = new Map<string, ChatMessage>();
     const byRoom = new Map<string, ChatMessage>();
     for (const m of chat) {
       if (m.kind !== "chat") continue;
       if (m.runId) byRun.set(m.runId, m);
-      if (m.scope === "project") byRoom.set(m.room, m);
+      if (m.scope === "project" || m.scope === "directors") byRoom.set(m.room, m);
     }
     return { byRun, byRoom };
   }, [chat]);
@@ -232,6 +242,24 @@ export function Office() {
         >
           <Pacer role="director" active={directorBusy} />
         </button>
+        {/* The other people. It appears only when someone else is actually at a console — an empty
+            "Online Office" pill would just be furniture, and this bar is where the account chips live. */}
+        {onlineOffice.state === "online" && onlineOffice.directors.length > 0 ? (
+          <button
+            className="office-online"
+            onClick={() => openOffice(DIRECTORS_ROOM)}
+            data-office-room={DIRECTORS_ROOM}
+            title={onlineOfficeTitle(onlineOffice.directors)}
+          >
+            <span className="office-online-gnomes">
+              {onlineOffice.directors.slice(0, 4).map((d) => (
+                <Gnome key={d.instanceId} role="director" size={20} />
+              ))}
+            </span>
+            <span className="office-online-tag">Online Office</span>
+            {bubbleFor(byRoom.get(DIRECTORS_ROOM)) ? <span className="office-bubble team">{bubbleFor(byRoom.get(DIRECTORS_ROOM))}</span> : null}
+          </button>
+        ) : null}
         {liveCount > 0
           ? groups.map((g) =>
             g.room ? (
@@ -306,6 +334,7 @@ function OfficePanel() {
   const chat = useStore((s) => s.chat);
   const roomHistory = useStore((s) => s.roomHistory);
   const roomHasMore = useStore((s) => s.roomHasMore);
+  const onlineOffice = useStore((s) => s.onlineOffice);
   const roomLoading = useStore((s) => s.roomLoading);
   const loadMoreRoom = useStore((s) => s.loadMoreRoom);
   const threads = useStore((s) => s.threads);
@@ -329,7 +358,7 @@ function OfficePanel() {
       .map((message) => ({
         id: message.id,
         room: officeRoom,
-        scope: officeRoom === GENERAL_ROOM ? "general" : "project",
+        scope: officeRoom === GENERAL_ROOM ? "general" : officeRoom === DIRECTORS_ROOM ? "directors" : "project",
         role: "director",
         kind: "chat",
         body: message.content,
@@ -386,19 +415,27 @@ function OfficePanel() {
     if (el.scrollTop < 80 && hasMore && !loading) loadMoreRoom(officeRoom);
   };
 
+  // The two rooms that belong to no repository: the local general office, and the cross-machine
+  // directors' room. Neither may fall into the project-room paths below, which would invent a repo tab
+  // out of the room key.
+  const directorsOpen = officeRoom === DIRECTORS_ROOM;
+  const repolessRoom = officeRoom === GENERAL_ROOM || directorsOpen;
+  // The Directors tab stays available while this machine is in the office even when nobody else is on
+  // right now — the conversation persists, and reading it back is half of what it is for.
+  const showDirectorsTab = onlineOffice.joined || directorsOpen;
   // The normal room strip stays limited to real collaborations. A direct click on a lone worker is
   // the one exception: keep that selected repository visible as a contextual tab even when it has no
   // collaboration history yet, so the panel never opens with only an inactive "Office" tab.
-  const openedProjectRoom = officeRoom === GENERAL_ROOM
+  const openedProjectRoom = repolessRoom
     ? undefined
     : rooms.find((room) => room.room === officeRoom);
   const openedWorkspace = openedProjectRoom?.workspace ?? Object.values(threads)
     .find((thread) => repoRoom(thread.workspace) === officeRoom)?.workspace;
-  const directProjectRoom = officeRoom !== GENERAL_ROOM && (!openedProjectRoom || !isCollaborationRoom(openedProjectRoom));
+  const directProjectRoom = !repolessRoom && (!openedProjectRoom || !isCollaborationRoom(openedProjectRoom));
   const projectRooms: Array<{ room: ChatRoomSummary; direct: boolean }> = rooms
     .filter(isCollaborationRoom)
     .map((room) => ({ room, direct: false }));
-  if (officeRoom !== GENERAL_ROOM && !projectRooms.some(({ room }) => room.room === officeRoom)) {
+  if (!repolessRoom && !projectRooms.some(({ room }) => room.room === officeRoom)) {
     projectRooms.unshift({
       room: openedProjectRoom ?? {
         room: officeRoom,
@@ -428,6 +465,15 @@ function OfficePanel() {
             <button className={"office-tab" + (officeRoom === GENERAL_ROOM ? " on" : "")} onClick={() => open(GENERAL_ROOM)}>
               Office
             </button>
+            {showDirectorsTab ? (
+              <button
+                className={"office-tab directors" + (directorsOpen ? " on" : "")}
+                onClick={() => open(DIRECTORS_ROOM)}
+                title="The directors' room — you and whoever else is running an orchestrator right now. Agents never see it."
+              >
+                Directors <span className="office-tab-n">{onlineOffice.directors.length + 1}</span>
+              </button>
+            ) : null}
             {projectRooms.map(({ room: r, direct }) => (
               <button
                 key={r.room}
@@ -446,7 +492,9 @@ function OfficePanel() {
           </button>
         </div>
         <div className="office-panel-sub">
-          {officeRoom === GENERAL_ROOM
+          {directorsOpen
+            ? "The directors' room — the people running these consoles, across machines. No agent reads this one."
+            : officeRoom === GENERAL_ROOM
             ? "The general office — every active agent can talk here."
             : directProjectRoom
               ? "This agent's project chat — messages go only to live agents in this repository."
@@ -460,7 +508,15 @@ function OfficePanel() {
         <div className="office-msgs" ref={bodyRef} onScroll={onScroll}>
           {messages.length === 0 ? (
             <div className="office-empty">
-              No messages yet{officeRoom === GENERAL_ROOM ? "" : directProjectRoom ? " — send this agent a note" : " — they just grouped up"}.
+              No messages yet
+              {directorsOpen
+                ? " — say hello to whoever else is at a console"
+                : officeRoom === GENERAL_ROOM
+                  ? ""
+                  : directProjectRoom
+                    ? " — send this agent a note"
+                    : " — they just grouped up"}
+              .
             </div>
           ) : (
             messages.map((m) => (
@@ -484,7 +540,9 @@ function OfficePanel() {
           <textarea
             value={draft}
             placeholder={
-              officeRoom === GENERAL_ROOM
+              directorsOpen
+                ? "Message the other directors… (Enter to send)"
+                : officeRoom === GENERAL_ROOM
                 ? "Message the whole office as director… (Enter to send)"
                 : directProjectRoom
                   ? "Message this project's agent as director… (Enter to send)"

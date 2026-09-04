@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { MemoryHistory, RelayCore } from "./core.js";
 import type { RelayPeer } from "./core.js";
-import { CHAT_MAX_CHARS, OFFICE_ROOM, ROOM_HISTORY, relayRepoRoom } from "./protocol.js";
+import { CHAT_MAX_CHARS, DIRECTORS_ROOM, OFFICE_ROOM, ROOM_HISTORY, relayRepoRoom } from "./protocol.js";
 import type { RelayAgent, ServerFrame } from "./protocol.js";
 
 /** A connected instance that records everything the core sends it. */
@@ -451,6 +451,154 @@ function forkPair(opts: { withAlias: boolean }) {
   assert.equal(got.length, 1);
   assert.equal(got[0]!.t === "chat" && got[0]!.msg.room, relayRepoRoom("github.com/fearce/card-marker"));
   assert.equal(core.sharedRepos().length, 1);
+}
+
+// ---- the directors' room: the humans, and only the ones who asked to be in it ----------------------
+
+// Declaring a director is what joins the room, and it does not depend on having any agent working —
+// two people deciding what to start is exactly when the room earns its keep.
+{
+  const core = newCore();
+  const kevin = fakePeer("i-kevin", "Kevin's tower");
+  const mikkel = fakePeer("i-mikkel", "Mikkel's laptop");
+  core.attach(kevin);
+  core.attach(mikkel);
+  core.onFrame(kevin.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
+  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "Mikkel" } });
+  kevin.drain();
+  mikkel.drain();
+
+  assert.equal(core.onFrame(kevin.connId, { t: "chat", room: DIRECTORS_ROOM, body: "deploying in 5", senderName: "Kevin", role: "director" }), null);
+  const got = chats(mikkel.drain());
+  assert.equal(got.length, 1, "the other director hears it");
+  assert.equal(got[0]!.t === "chat" && got[0]!.msg.room, DIRECTORS_ROOM);
+  assert.equal(got[0]!.t === "chat" && got[0]!.msg.senderName, "Kevin");
+  assert.deepEqual(chats(kevin.drain()), [], "and it never echoes back to the sender");
+
+  const roster = core.directorsFor("i-kevin");
+  assert.deepEqual(
+    roster.map((d) => [d.name, d.instanceName, d.agents]),
+    [["Mikkel", "Mikkel's laptop", 0]],
+    "the roster is everyone BUT you, agents or no agents",
+  );
+  assert.equal(core.directors().length, 2, "…while the whole-office view holds both");
+}
+
+// The opt-in is a containment, not a nicety: a console that predates the room files an unrecognised
+// room into its own general office as agent chatter, so it must never be sent a line from here.
+{
+  const core = newCore();
+  const kevin = fakePeer("i-kevin");
+  const legacy = fakePeer("i-legacy");
+  core.attach(kevin);
+  core.attach(legacy);
+  core.onFrame(kevin.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
+  core.onFrame(legacy.connId, { t: "presence", agents: [agent()] }); // no director — an older client
+  kevin.drain();
+  legacy.drain();
+
+  core.onFrame(kevin.connId, { t: "chat", room: DIRECTORS_ROOM, body: "just us", senderName: "Kevin", role: "director" });
+  assert.deepEqual(chats(legacy.drain()), [], "a client that never declared a director hears nothing");
+  assert.equal(
+    core.onFrame(legacy.connId, { t: "chat", room: DIRECTORS_ROOM, body: "let me in", senderName: "Sif", role: "implementor" }),
+    "declare a director before posting to the directors' room",
+    "…and cannot post into it either",
+  );
+  assert.deepEqual(chats(kevin.drain()), [], "so nothing reached the room");
+  assert.deepEqual(core.directorsFor("i-kevin"), [], "…and it is not listed as a person in the office");
+}
+
+// Entering the room replays its backlog — minus your own lines, which you already have. This is the
+// same path a repo room uses, which is why the feature needed no new frame type.
+{
+  const core = newCore();
+  const kevin = fakePeer("i-kevin");
+  const mikkel = fakePeer("i-mikkel");
+  core.attach(kevin);
+  core.attach(mikkel);
+  core.onFrame(kevin.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
+  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "Mikkel" } });
+  core.onFrame(kevin.connId, { t: "chat", room: DIRECTORS_ROOM, body: "morning", senderName: "Kevin", role: "director" });
+  core.onFrame(mikkel.connId, { t: "chat", room: DIRECTORS_ROOM, body: "morning back", senderName: "Mikkel", role: "director" });
+
+  const back = fakePeer("i-kevin", "Kevin's tower"); // Kevin reconnects after a bounce
+  back.connId = "conn-kevin-2";
+  core.attach(back);
+  back.drain();
+  core.onFrame(back.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
+  const replay = back.drain().filter((f) => f.t === "history");
+  assert.equal(replay.length, 1, "the room he just entered is replayed");
+  assert.equal(replay[0]!.t === "history" && replay[0]!.room, DIRECTORS_ROOM);
+  const bodies = replay[0]!.t === "history" ? replay[0]!.messages.map((m) => m.body) : [];
+  assert.deepEqual(bodies, ["morning back"], "his own line is not replayed back at him");
+}
+
+// The room belongs to no repository: a directors' line never fans out into a repo room, and a repo
+// line never reaches the directors' room.
+{
+  const core = newCore();
+  const kevin = fakePeer("i-kevin");
+  const mikkel = fakePeer("i-mikkel");
+  core.attach(kevin);
+  core.attach(mikkel);
+  core.onFrame(kevin.connId, { t: "presence", agents: [agent()], director: { name: "Kevin" } });
+  core.onFrame(mikkel.connId, { t: "presence", agents: [agent()], director: { name: "Mikkel" } });
+  kevin.drain();
+  mikkel.drain();
+
+  core.onFrame(kevin.connId, {
+    t: "chat",
+    room: DIRECTORS_ROOM,
+    rooms: [relayRepoRoom("github.com/fearce/card-marker")], // a client trying to fan it into a repo room
+    body: "between us",
+    senderName: "Kevin",
+    role: "director",
+  });
+  const seen = chats(mikkel.drain());
+  assert.equal(seen.length, 1, "delivered exactly once");
+  assert.equal(seen[0]!.t === "chat" && seen[0]!.msg.room, DIRECTORS_ROOM, "…and only ever as the directors' room");
+
+  core.onFrame(kevin.connId, { t: "chat", room: relayRepoRoom("github.com/fearce/card-marker"), body: "claiming parser.ts", senderName: "Rune", role: "implementor" });
+  const repoLine = chats(mikkel.drain());
+  assert.equal(repoLine.length, 1);
+  assert.equal(repoLine[0]!.t === "chat" && repoLine[0]!.msg.room, relayRepoRoom("github.com/fearce/card-marker"), "repo traffic stays in the repo room");
+}
+
+// A rename reaches the other consoles: the roster is what the strip draws people from, so a director
+// whose name changed must not sit there under the old one until something else moves.
+{
+  const core = newCore();
+  const kevin = fakePeer("i-kevin");
+  const mikkel = fakePeer("i-mikkel");
+  core.attach(kevin);
+  core.attach(mikkel);
+  core.onFrame(kevin.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
+  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "Mikkel" } });
+  kevin.drain();
+  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "Mikkel the Deployer" } });
+  const broadcast = presences(kevin.drain()).at(-1);
+  assert.ok(broadcast && broadcast.t === "presence");
+  assert.deepEqual((broadcast.directors ?? []).map((d) => d.name), ["Mikkel the Deployer"]);
+  // A name longer than the wire cap is clipped, never trusted at length.
+  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "M".repeat(200) } });
+  assert.equal(core.directorsFor("i-kevin")[0]!.name.length, 40, "the declared name is bounded");
+}
+
+// Leaving takes the person out of the room: a disconnect must update everyone else's roster, or the
+// strip keeps drawing somebody who went home.
+{
+  const core = newCore();
+  const kevin = fakePeer("i-kevin");
+  const mikkel = fakePeer("i-mikkel");
+  core.attach(kevin);
+  core.attach(mikkel);
+  core.onFrame(kevin.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
+  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "Mikkel" } });
+  kevin.drain();
+  core.detach(mikkel.connId);
+  const after = presences(kevin.drain()).at(-1);
+  assert.ok(after && after.t === "presence");
+  assert.deepEqual(after.directors ?? [], [], "the departed director is gone from the roster");
 }
 
 console.log("relay core: all assertions passed");

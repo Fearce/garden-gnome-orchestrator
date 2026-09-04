@@ -7,6 +7,9 @@
  *  2. The client half really talks to a relay: it exchanges a join code for a device token, advertises
  *     the agents this instance has working (with their repo identity resolved), receives remote chat and
  *     remote presence, and treats a 401 as "re-join", not as something to retry forever.
+ *  4. The directors' room is the humans, not the agents: an instance opts into it by naming its
+ *     director, a line there is persisted as a directors-scoped message and reaches NO agent, and the
+ *     room stays out of the surfaces agents and the project-room rollup read.
  *  3. ThreadManager treats a remote agent as a repo peer: the office switches ON for a task that is alone
  *     in its checkout but shares the repository with someone else's machine, a remote line is persisted
  *     into the local project room exactly once however often the relay replays it, and it is pushed into
@@ -42,8 +45,8 @@ const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { OnlineOffice, normalizeRelayUrl, splitOfficeChatBody } = await import("../office/onlineOffice.js");
 const { forgetRepoIdentity, normalizeRemote, remoteLabel, repoIdentity, repoLeaf } = await import("../office/repoIdentity.js");
-const { OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } = await import("../office/onlineProtocol.js");
-const { GENERAL_ROOM, isCollaborationRoom, repoRoom } = await import("../types.js");
+const { DIRECTORS_ROOM: RELAY_DIRECTORS_ROOM, OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } = await import("../office/onlineProtocol.js");
+const { DIRECTORS_ROOM, GENERAL_ROOM, isCollaborationRoom, repoRoom } = await import("../types.js");
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
 let passed = 0;
@@ -349,6 +352,7 @@ async function main(): Promise<void> {
     const workspace = await makeRepo(mkdtempSync(join(dir, "repo-")), "git@github.com:Fearce/card-marker.git");
     const chats: { msg: RelayChat; workspaces: string[] }[] = [];
     const joins: { repoLabel: string; workspaces: string[]; joiners: RelayPresentAgent[] }[] = [];
+    const directorLines: RelayChat[] = [];
     forgetRepoIdentity();
 
     const office: OnlineOfficeType = new OnlineOffice({
@@ -356,6 +360,8 @@ async function main(): Promise<void> {
       hub,
       roster: () => [{ key: "t1::implementor", name: "Rune", role: "implementor", title: "Fix the parser", workspace }],
       onRemoteChat: (msg, workspaces) => chats.push({ msg, workspaces }),
+      onDirectorChat: (msg) => directorLines.push(msg),
+      directorName: () => "Kevin",
       onRemoteJoin: (repoLabel, workspaces, joiners) => joins.push({ repoLabel, workspaces, joiners }),
     });
     try {
@@ -375,6 +381,9 @@ async function main(): Promise<void> {
       const agents = relay.presence().at(-1)!.agents;
       check("…with this instance's live agent", agents.length === 1 && agents[0]!.name === "Rune", JSON.stringify(agents));
       check("…keyed on the repo IDENTITY, not the local path", agents[0]!.repoKey === "github.com/fearce/card-marker", agents[0]?.repoKey);
+      // Naming the director IS the opt-in: it is what puts this console in the room with the other
+      // humans, and a client that never sends it must never be handed a line from there.
+      check("…and the presence frame names the human at this console", relay.presence().at(-1)!.director?.name === "Kevin", JSON.stringify(relay.presence().at(-1)!.director));
 
       // A remote agent appears in the same repository → the caller is told, and it becomes a peer.
       relay.push({ t: "presence", agents: [remoteAgent()] });
@@ -400,6 +409,18 @@ async function main(): Promise<void> {
       check("…and is not announced as someone joining", joins.length === 1, `joins=${joins.length}`);
       check("…while the genuine remote agent is still there", office.remotePeers(workspace).length === 1);
 
+      // The other people in the office: a roster that does not depend on anyone having agents running.
+      relay.push({
+        t: "presence",
+        agents: [remoteAgent()],
+        directors: [
+          { instanceId: "inst-mikkel", instanceName: "Mikkel's laptop", name: "Mikkel", agents: 1, since: Date.now() },
+          { instanceId: "inst-local", instanceName: "Local tower", name: "Kevin", agents: 1, since: Date.now() },
+        ],
+      });
+      check("the other directors reach the console", await until(() => office.status().directors.length === 1), JSON.stringify(office.status().directors));
+      check("…and an echo of OUR OWN director is refused, not drawn as company", office.status().directors[0]?.instanceId === "inst-mikkel", JSON.stringify(office.status().directors));
+
       relay.push({
         t: "chat",
         msg: { id: "self-1", room: relayRepoRoom("github.com/fearce/card-marker"), body: "I'll take parser.ts", senderName: "Rune", role: "implementor", instanceId: "inst-local", instanceName: "Local tower", repoLabel: "Fearce/card-marker", at: Date.now() },
@@ -416,12 +437,32 @@ async function main(): Promise<void> {
       check("a remote line is delivered", await until(() => chats.length === 1));
       check("…resolved to the local checkout of that repo", chats[0]?.workspaces[0] === workspace, JSON.stringify(chats[0]?.workspaces));
 
+      // A directors' line is people-to-people: it must reach the directors' sink and NEVER the agent
+      // path, which would resolve it to a workspace and push it into a live implementor's session.
+      relay.push({
+        t: "chat",
+        msg: { id: "d1", room: RELAY_DIRECTORS_ROOM, body: "beers after this deploy?", senderName: "Mikkel", role: "director", instanceId: "inst-mikkel", instanceName: "Mikkel's laptop", repoLabel: null, at: Date.now() },
+      });
+      check("a directors' line is delivered to the directors' sink", await until(() => directorLines.length === 1), JSON.stringify(directorLines));
+      check("…and never through the agent-chat path", chats.length === 1, JSON.stringify(chats.map((c) => c.msg.id)));
+      relay.push({
+        t: "chat",
+        msg: { id: "d-self", room: RELAY_DIRECTORS_ROOM, body: "our own line back", senderName: "Kevin", role: "director", instanceId: "inst-local", instanceName: "Local tower", repoLabel: null, at: Date.now() },
+      });
+      await sleep(120);
+      check("…and our own directors' line is not re-imported as somebody else's", directorLines.length === 1, JSON.stringify(directorLines.map((m) => m.id)));
+
       // A local post goes out to the relay, keyed on the same room.
       office.postChat({ workspace, body: "I'll take parser.ts", senderName: "Rune", role: "implementor" });
       check("a local team post reaches the relay", await until(() => relay.chats().length === 1));
       check("…in the repo's room", relay.chats()[0]?.room === room, relay.chats()[0]?.room);
       office.postChat({ workspace: null, body: "morning", senderName: "Rune", role: "implementor" });
       check("…and an office-wide post goes to the office room", await until(() => relay.chats().some((c) => c.room === OFFICE_ROOM)));
+
+      office.postDirectorChat({ body: "deploying the relay in 5", senderName: "Kevin" });
+      check("a director's post reaches the relay", await until(() => relay.chats().some((c) => c.room === RELAY_DIRECTORS_ROOM)));
+      const directorFrame = relay.chats().find((c) => c.room === RELAY_DIRECTORS_ROOM)!;
+      check("…as the director, carrying no repository", directorFrame.role === "director" && !directorFrame.repoLabel && !directorFrame.rooms, JSON.stringify(directorFrame));
 
       // A GPT Sol-sized multiline post crosses the relay bound as ordered, lossless chunks. The real
       // relay gate verifies those frames are reassembled before any peer/history row sees them.
@@ -477,6 +518,8 @@ async function main(): Promise<void> {
       hub,
       roster: () => [{ key: "t1::implementor", name: "Wren", role: "implementor", title: "Office health", workspace }],
       onRemoteChat: (msg, workspaces) => chats.push({ msg, workspaces }),
+      onDirectorChat: () => {},
+      directorName: () => "Kevin",
       onRemoteJoin: (repoLabel, workspaces, joiners) => joins.push({ repoLabel, workspaces, joiners }),
     });
     try {
@@ -554,7 +597,15 @@ async function main(): Promise<void> {
     const dir = mkdtempSync(join(tmpdir(), "online-office-401-"));
     const db = new Db(join(dir, "orchestrator.sqlite"));
     const hub = new EventHub();
-    const office: OnlineOfficeType = new OnlineOffice({ db, hub, roster: () => [], onRemoteChat: () => {}, onRemoteJoin: () => {} });
+    const office: OnlineOfficeType = new OnlineOffice({
+      db,
+      hub,
+      roster: () => [],
+      onRemoteChat: () => {},
+      onDirectorChat: () => {},
+      directorName: () => "Kevin",
+      onRemoteJoin: () => {},
+    });
     try {
       office.start();
       const ok = await office.join({ url, code: JOIN_CODE, instanceName: "Kevin's tower" });
@@ -730,6 +781,56 @@ async function main(): Promise<void> {
       again.raw.close();
     } finally {
       rmTemp(dir);
+    }
+  }
+
+  // -- Test H: the directors' room reaches people, and only people ----------------------------------
+  console.log("\nTest H — the directors' room is the humans: persisted, deduped, and read by no agent");
+  {
+    const h = makeManagerHarness();
+    const WS = "C:/repos/card-marker";
+    try {
+      const t = h.thread("Fix the marker parser", WS);
+      h.seedLive(t.id);
+      const relayed: string[] = [];
+      h.mgr.attachOnlineOffice({
+        remotePeers: () => [],
+        status: () => ({ remoteAgents: [] }),
+        postChat: () => {},
+        postDirectorChat: (input: { body: string }) => relayed.push(input.body),
+        refreshPresence: () => {},
+      } as unknown as OnlineOfficeType);
+
+      const msg: RelayChat = {
+        id: "d-remote-1", room: RELAY_DIRECTORS_ROOM, body: "I'm taking tonight's deploy", senderName: "Mikkel", role: "director",
+        instanceId: "inst-mikkel", instanceName: "Mikkel's laptop", repoLabel: null, at: Date.now(),
+      };
+      h.mgr.receiveDirectorChat(msg);
+      const room = h.db.listRoomMessages(DIRECTORS_ROOM, 50);
+      check("another director's line is persisted in the directors' room", room.length === 1 && room[0]?.body === msg.body, JSON.stringify(room));
+      check("…scoped so no repository rollup can claim it", room[0]?.scope === "directors" && room[0]?.workspace === null, JSON.stringify(room[0]));
+      check("…attributed to the person AND their machine", room[0]?.senderName === "Mikkel @ Mikkel's laptop", room[0]?.senderName ?? "");
+      check("…and pushed into NO agent session", h.sent.length === 0, JSON.stringify(h.sent));
+
+      // The relay replays a room's backlog on every entry, including the first connect after a bounce.
+      h.mgr.receiveDirectorChat(msg);
+      check("a replayed directors' line is not persisted twice", h.db.listRoomMessages(DIRECTORS_ROOM, 50).length === 1);
+      const revived = h.restart();
+      revived.receiveDirectorChat(msg);
+      check("…nor after a restart, when the in-memory guard is empty", h.db.listRoomMessages(DIRECTORS_ROOM, 50).length === 1);
+
+      // The owner's own line: persisted, relayed to the other machines, and steering nobody.
+      const mine = h.mgr.directorChatPost(DIRECTORS_ROOM, "on it — I'll bounce the relay");
+      check("the owner's own line lands in the same room", mine.room === DIRECTORS_ROOM && mine.scope === "directors", JSON.stringify(mine));
+      check("…goes out to the other machines", relayed.includes("on it — I'll bounce the relay"), JSON.stringify(relayed));
+      check("…and steers no live implementor", h.sent.length === 0, JSON.stringify(h.sent));
+
+      // The containment that makes the room safe to talk in: agents cannot read it, and it is not a
+      // project room, so it never appears in the chatroom rollup or in a task's own chat surfaces.
+      check("an agent's chat_read cannot see it", h.mgr.chatRead({ threadId: t.id }).every((m) => m.room !== DIRECTORS_ROOM));
+      check("…and the project-room rollup does not list it", h.db.listProjectRooms().every((r) => r.room !== DIRECTORS_ROOM), JSON.stringify(h.db.listProjectRooms().map((r) => r.room)));
+    } finally {
+      h.dispose();
     }
   }
 

@@ -492,6 +492,18 @@ device revoked ⇒ the console says so and local pipelines run as before. Gates 
 `test:relay-core`, browser `npm run office-lab --prefix server`; traps in `.claude/rules/online-office.md`;
 credentials in `server/data/online-office-credentials.txt` (gitignored).
 
+**The directors' room — the people, not their agents.** The same relay carries one room for the humans
+running the consoles (`DIRECTORS_ROOM`): the top bar grows an **Online Office** gnome cluster the moment
+another director is on, clicking it opens that room as a tab beside Office, and a line there crosses
+machines without touching any pipeline — it is stored `scope='directors'`, so no project rollup, no
+`chat_read`, and no agent session ever sees it. Membership is **opt-in on the wire**: an instance joins by
+naming its director on its presence frame, which is what keeps a console that predates the room from being
+sent a line it would file into its own general office as agent chatter. Both additions are optional wire
+fields (`director` out, `directors` back on `welcome`/`presence`), so `RELAY_PROTOCOL` did NOT bump — a
+bump is an office-wide outage until every machine redeploys. **Both halves must be deployed**: a machine on
+an older build is simply not in the room, and `probe:office` prints the one symptom (a room only this
+machine has ever spoken in).
+
 ## Deliverables (agent-produced files)
 A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the
 right panel. It's a `findings` row with `kind='deliverable'`, a `path` (absolute or workspace-relative)

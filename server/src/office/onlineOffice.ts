@@ -2,8 +2,8 @@ import { WebSocket } from "ws";
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
-import { CHAT_MAX_CHARS, CHAT_MAX_CHUNKS, OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } from "./onlineProtocol.js";
-import type { ClientFrame, JoinResponse, RelayAgent, RelayChat, RelayPresentAgent, ServerFrame } from "./onlineProtocol.js";
+import { CHAT_MAX_CHARS, CHAT_MAX_CHUNKS, DIRECTORS_ROOM, OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } from "./onlineProtocol.js";
+import type { ClientFrame, JoinResponse, RelayAgent, RelayChat, RelayDirector, RelayPresentAgent, ServerFrame } from "./onlineProtocol.js";
 import { identitiesMatch, identityKeys, repoIdentity, repoLeaf, type RepoIdentity } from "./repoIdentity.js";
 
 /** How the console sees the online office. The token is never part of this — only whether one is held. */
@@ -17,6 +17,8 @@ export interface OnlineOfficeDTO {
   connectedAt: number | null;
   /** Agents on OTHER machines, as last reported by the relay. */
   remoteAgents: RelayPresentAgent[];
+  /** The humans at the OTHER consoles in the office — who is around to talk to, agents or no agents. */
+  directors: RelayDirector[];
   /** Repositories this instance and at least one other machine are both working right now. */
   sharedRepos: SharedRepo[];
 }
@@ -46,6 +48,10 @@ export interface OnlineOfficeDeps {
   roster: () => LocalAgentSnapshot[];
   /** A coordination line from another machine, already scoped to a room. */
   onRemoteChat: (msg: RelayChat, workspaces: string[]) => void;
+  /** A line another HUMAN wrote in the directors' room. Never an agent, and never routed to one. */
+  onDirectorChat: (msg: RelayChat) => void;
+  /** What the director at this console is called — the name the other people in the office see. */
+  directorName: () => string;
   /** The remote roster changed: agents that appeared in a repo THIS instance is also working. */
   onRemoteJoin: (repoLabel: string, workspaces: string[], joiners: RelayPresentAgent[]) => void;
 }
@@ -87,7 +93,7 @@ export function splitOfficeChatBody(body: string, maxChars = CHAT_MAX_CHARS): st
  * This instance's half of the Online Office: one authenticated WebSocket to the relay, over which it
  * advertises the agents it has working and receives everyone else's.
  *
- * Standalone by design — it depends on `Db`, `EventHub` and three callbacks, never on ThreadManager, so
+ * Standalone by design — it depends on `Db`, `EventHub` and a handful of callbacks, never on ThreadManager, so
  * the pipeline stays untouched and a concurrent edit to threadManager can't collide with it (the same
  * shape as `orchestrator/notes.ts` and `orchestrator/scheduler.ts`).
  *
@@ -100,6 +106,7 @@ export class OnlineOffice {
   private error: string | null = null;
   private connectedAt: number | null = null;
   private remote: RelayPresentAgent[] = [];
+  private directors: RelayDirector[] = [];
   private lastPresence = "";
   private lastLookalikes = "";
   private reconnectDelay = RECONNECT_MIN_MS;
@@ -181,6 +188,7 @@ export class OnlineOffice {
     this.deps.db.kvSet(KV.token, "");
     this.deps.db.kvSet(KV.instanceId, "");
     this.remote = [];
+    this.directors = [];
     this.closeSocket();
     this.setState("off", null);
     this.deps.hub.log("info", "Online office: left.");
@@ -192,6 +200,7 @@ export class OnlineOffice {
     if (on && this.token()) this.connect();
     else {
       this.remote = [];
+      this.directors = [];
       this.closeSocket();
       this.setState("off", null);
     }
@@ -218,6 +227,7 @@ export class OnlineOffice {
       error: this.error,
       connectedAt: this.connectedAt,
       remoteAgents: this.remote,
+      directors: this.directors,
       sharedRepos: this.sharedReposNow(),
     };
   }
@@ -256,7 +266,35 @@ export class OnlineOffice {
       });
   }
 
+  /** Publish one director's line to the other humans in the office. Same fire-and-forget contract as
+   *  `postChat`: this console's own copy is already persisted, so the relay must never fail a post. */
+  postDirectorChat(input: { body: string; senderName: string }): void {
+    if (this.state !== "online") return;
+    const copy = { ...input };
+    this.chatQueue = this.chatQueue
+      .then(() => this.sendChat({ room: DIRECTORS_ROOM, repoLabel: null, body: copy.body, senderName: copy.senderName, role: "director" }))
+      .catch((e: unknown) => {
+        const message = e instanceof Error ? e.message : String(e);
+        this.deps.hub.log("warn", `Online office: could not relay a director's message — ${message}`);
+      });
+  }
+
   private async postChatNow(input: { workspace: string | null; body: string; senderName: string; role: string }): Promise<void> {
+    const repo = await this.resolveIdentity(input.workspace);
+    const inRepo = !!input.workspace && !!repo;
+    this.sendChat({
+      room: inRepo ? relayRepoRoom(repo!.key) : OFFICE_ROOM,
+      rooms: inRepo ? identityKeys(repo!).map(relayRepoRoom) : undefined,
+      repoLabel: inRepo ? repo!.label : null,
+      body: input.body,
+      senderName: input.senderName,
+      role: input.role,
+    });
+  }
+
+  /** Chunk one logical message to the relay's per-frame bound and send it. Every post goes through here,
+   *  so the chunking contract (one id, bounded pieces, nothing silently clipped) has a single owner. */
+  private sendChat(input: { room: string; rooms?: string[]; repoLabel: string | null; body: string; senderName: string; role: string }): void {
     const body = input.body.trim();
     if (!body) return;
     const chunks = splitOfficeChatBody(body);
@@ -264,19 +302,15 @@ export class OnlineOffice {
       throw new Error(`message needs ${chunks.length} chunks; relay safety limit is ${CHAT_MAX_CHUNKS}`);
     }
     const id = chunks.length > 1 ? randomUUID() : undefined;
-    const repo = await this.resolveIdentity(input.workspace);
-    const room = input.workspace && repo ? relayRepoRoom(repo.key) : OFFICE_ROOM;
-    const rooms = input.workspace && repo ? identityKeys(repo).map(relayRepoRoom) : undefined;
-    const repoLabel = input.workspace && repo ? repo.label : null;
     chunks.forEach((chunk, chunkIndex) => {
       this.send({
         t: "chat",
-        room,
-        ...(rooms ? { rooms } : {}),
+        room: input.room,
+        ...(input.rooms ? { rooms: input.rooms } : {}),
         body: chunk,
         senderName: input.senderName,
         role: input.role,
-        repoLabel,
+        repoLabel: input.repoLabel,
         ...(id ? { messageId: id, chunkIndex, chunkCount: chunks.length } : {}),
       });
     });
@@ -349,9 +383,11 @@ export class OnlineOffice {
         // The relay is the authority on which instance this connection is; a token re-issued under a new
         // id would otherwise leave the self-filter below matching nothing.
         if (frame.instanceId) this.deps.db.kvSet(KV.instanceId, frame.instanceId);
+        this.applyDirectors(frame.directors);
         this.applyPresence(frame.presence);
         return;
       case "presence":
+        this.applyDirectors(frame.directors);
         this.applyPresence(frame.agents);
         return;
       case "history":
@@ -372,6 +408,9 @@ export class OnlineOffice {
 
   private deliverChat(msg: RelayChat): void {
     if (this.isSelf(msg.instanceId)) return;
+    // The directors' room belongs to no repository, so it resolves to no workspace — and a line the
+    // humans wrote to each other is never pushed into an agent's session.
+    if (msg.room === DIRECTORS_ROOM) return this.deps.onDirectorChat(msg);
     const mine = this.deps.roster().map((a) => a.workspace);
     const workspaces = [...new Set(this.workspacesForRoom(msg.room, mine))];
     this.deps.onRemoteChat(msg, workspaces);
@@ -385,6 +424,17 @@ export class OnlineOffice {
   private isSelf(instanceId: string): boolean {
     const mine = this.deps.db.kvGet(KV.instanceId) ?? "";
     return !!mine && instanceId === mine;
+  }
+
+  /** Fold in the other consoles' humans. Self-filtered for the same reason the agent roster is: the
+   *  relay already withholds an instance's own entry, but an echo would draw the owner as their own
+   *  coworker and make a console look like it has company when nobody else is there. */
+  private applyDirectors(directors: RelayDirector[] | undefined): void {
+    if (!directors) return;
+    const next = directors.filter((d) => !this.isSelf(d.instanceId));
+    if (JSON.stringify(next) === JSON.stringify(this.directors)) return;
+    this.directors = next;
+    this.broadcast();
   }
 
   /** Fold a new remote roster in, and tell the caller about agents that just appeared in a repo THIS
@@ -477,10 +527,13 @@ export class OnlineOffice {
     }
     // Every local identity is warm by now (the loop above awaited them), which is what this needs.
     this.recordLookalikes();
-    const fingerprint = JSON.stringify(agents);
+    // Naming the director is also what puts this console in the directors' room, so it rides on every
+    // presence frame — including the one an instance with no agents at all sends.
+    const director = { name: this.deps.directorName() };
+    const fingerprint = JSON.stringify({ agents, director });
     if (fingerprint === this.lastPresence) return;
     this.lastPresence = fingerprint;
-    this.send({ t: "presence", agents });
+    this.send({ t: "presence", agents, director });
   }
 
   private send(frame: ClientFrame): void {

@@ -450,6 +450,7 @@ const OFFLINE_OFFICE: OnlineOfficeDTO = {
   error: null,
   connectedAt: null,
   remoteAgents: [],
+  directors: [],
   sharedRepos: [],
 };
 

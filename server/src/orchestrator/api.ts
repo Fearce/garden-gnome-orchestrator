@@ -71,7 +71,9 @@ export interface ChatPostInput {
 
 export interface ChatReadInput {
   threadId: string;
-  scope?: ChatScope | "all";
+  /** "directors" is deliberately not readable here: that room is the humans talking across machines,
+   *  and an agent has no business in it (the office MCP tool's own enum stops at office/team/all). */
+  scope?: Exclude<ChatScope, "directors"> | "all";
   limit?: number;
 }
 

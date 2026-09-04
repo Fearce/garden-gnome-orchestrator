@@ -179,6 +179,27 @@ function crossMachineRooms(db, selfName, isCollaborationRoom) {
     .sort((a, b) => b.lastAt - a.lastAt);
 }
 
+/**
+ * The directors' room — the people's half of the office, which no other section can see: it is not a
+ * project room, so the rollup and reachability checks above skip it by construction.
+ *
+ * Informational, never a failure: a quiet room is the normal state of a room for humans. The one line
+ * worth printing is `soloSoFar` — a room only THIS machine has ever spoken in. Membership is opt-in
+ * (an instance joins by declaring a director), so that is exactly what talking into a room the other
+ * console never joined looks like from here, and there is no other symptom.
+ */
+function directorsRoomSummary(db, selfName) {
+  const rows = db.prepare("SELECT remote_instance, created_at FROM chat_messages WHERE room = 'directors'").all();
+  const machines = [...new Set(rows.map((r) => r.remote_instance).filter((n) => n && n !== selfName))];
+  return {
+    lines: rows.length,
+    mine: rows.filter((r) => !r.remote_instance).length,
+    machines,
+    lastAt: rows.reduce((a, r) => Math.max(a, r.created_at), 0),
+    soloSoFar: rows.length > 0 && machines.length === 0,
+  };
+}
+
 /** The relay's PUBLIC health endpoint — no admin key, so this works from any checkout. Unreachable is a
  *  note, never a failure: the whole feature is designed to degrade soft when the relay is down. */
 async function relayHealth(url) {
@@ -299,6 +320,22 @@ async function main() {
     console.log("    genuinely unrelated repos that share a name, this is correct and nothing needs doing.");
   }
 
+  console.log("\n=== directors' room (the people, not their agents) ===");
+  const people = directorsRoomSummary(db, cfg.name);
+  if (!people.lines) {
+    console.log("  empty — nobody has said anything here yet. Normal; it is a room for humans.");
+  } else {
+    console.log(
+      `  ${people.lines} line(s) · ${people.mine} from here · ` +
+        `${people.machines.length} other machine(s)${people.machines.length ? ` (${people.machines.join(", ")})` : ""} · last ${ago(people.lastAt)}`,
+    );
+    if (people.soloSoFar) {
+      console.log("  ↳ only this machine has ever spoken here. Membership is opt-in (a console joins by");
+      console.log("    declaring its director), so this is also what an office whose other machines run a");
+      console.log("    build predating the room looks like — check their version before assuming silence.");
+    }
+  }
+
   const verdict = verdictFor({ echo, rooms });
   console.log("\n=== verdict ===");
   if (verdict.ok) console.log("  ✓ the online office is two-way: nothing is echoing back, every cross-machine room is reachable");
@@ -307,7 +344,7 @@ async function main() {
   process.exit(verdict.ok ? 0 : 1);
 }
 
-module.exports = { SELF_ECHO_FIX, classifyOfficeRows, parseUnlinked, relaySummary, senderMachine, verdictFor };
+module.exports = { SELF_ECHO_FIX, classifyOfficeRows, directorsRoomSummary, parseUnlinked, relaySummary, senderMachine, verdictFor };
 
 if (require.main === module) {
   main().catch((e) => {
