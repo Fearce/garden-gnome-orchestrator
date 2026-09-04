@@ -25,7 +25,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { loadChromium, authPassword, requireBuild, boot, killInstance } = require("./lab-harness.cjs");
+const { loadChromium, authPassword, requireBuild, boot, killInstance, shotDir } = require("./lab-harness.cjs");
 
 const PORT = 4327;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -134,7 +134,7 @@ async function main() {
     await boot({ dataDir, port: PORT, env: ACCOUNT_ENV });
 
     const browser = await loadChromium().launch();
-    const shot = path.join(dataDir, "strip.png");
+    const shot = path.join(shotDir(dataDir), "strip.png");
     try {
       for (const width of args.widths) {
         const page = await browser.newPage({ viewport: { width, height: 800 } });

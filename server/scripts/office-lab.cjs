@@ -18,7 +18,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const Database = require("better-sqlite3");
 const WebSocket = require("ws");
-const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
 
 const PORT = 4347;
 const RELAY_PORT = 4359; // NOT 4349: the console's own HTTPS listener is PORT+2, and a collision there makes the join hit TLS with a plain HTTP request
@@ -191,6 +191,7 @@ async function main() {
   const keep = process.argv.includes("--keep");
   console.log(`office-lab — console ${BASE}, relay ${RELAY} (data ${dataDir})`);
 
+  const shots = shotDir(dataDir);
   let relayProc = null;
   let peer = null;
   try {
@@ -273,13 +274,13 @@ async function main() {
       const persisted = readDirectorsRoom(dataDir);
       check("both sides of the conversation are persisted", persisted.length === 2, JSON.stringify(persisted));
       check("…scoped so no repository rollup or agent read can claim them", persisted.every((r) => r.scope === "directors" && r.role === "director"), JSON.stringify(persisted));
-      const peopleShot = path.join(dataDir, "directors-room.png");
+      const peopleShot = path.join(shots, "directors-room.png");
       await page.screenshot({ path: peopleShot });
       console.log(`  screenshot: ${peopleShot}`);
       await page.click(".office-panel .close-x");
       await page.waitForSelector(".office-panel", { state: "detached", timeout: 10_000 });
 
-      const shot = path.join(dataDir, "online-office.png");
+      const shot = path.join(shots, "online-office.png");
       await page.screenshot({ path: shot });
       console.log(`  screenshot: ${shot}`);
 
@@ -342,7 +343,7 @@ async function main() {
       await page.waitForSelector('[data-message-id="lab-long-sol"]', { timeout: 20_000 });
       check("reload/reconnect keeps exactly one copy of the long message", (await page.locator('[data-message-id="lab-long-sol"]').count()) === 1);
 
-      const roomShot = path.join(dataDir, "cross-machine-room.png");
+      const roomShot = path.join(shots, "cross-machine-room.png");
       await page.screenshot({ path: roomShot });
       console.log(`  screenshot: ${roomShot}`);
       // The office panel has no Escape handler — its scrim covers the whole app, so it must be closed

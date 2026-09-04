@@ -11,6 +11,8 @@ at that layer:
    table needs NO `migrate()` entry (`exec(SCHEMA)` runs every boot); only ADDING a
    column to an existing table needs an `ALTER` line in `migrate()`.
 2. `server/src/types.ts` — the domain interface (mirrored byte-for-byte in `web/src/types.ts`).
+   Write that claim as a comment naming the other file: `test:mirror-drift` enforces every such
+   claim, so the copy stops being a promise and starts being a gate.
 3. `server/src/db/db.ts` — a `rowToX` mapper + `create/get/list/update/delete` methods.
    Build a dynamic `UPDATE` from a FIXED whitelist `map` (never user keys) with `@named`
    params; coerce booleans to `0/1` on both insert and update.

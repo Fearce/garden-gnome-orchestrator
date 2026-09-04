@@ -19,7 +19,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
 
 const PORT = 4347;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -129,7 +129,7 @@ async function main() {
       await page.click(TOGGLE);
       check("turning it on persists", (await waitForPersisted(dataDir, "setting_discord_notify", "1")) === "1");
 
-      const shot = path.join(dataDir, "phone-notifications.png");
+      const shot = path.join(shotDir(dataDir), "phone-notifications.png");
       await page.locator(GROUP).screenshot({ path: shot });
       console.log(`  screenshot: ${shot}`);
       await page.close();

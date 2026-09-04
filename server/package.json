@@ -83,6 +83,7 @@
     "test:online-office": "tsx src/tests/onlineOffice.itest.ts",
     "test:relay-core": "tsx ../relay/src/core.test.ts",
     "test:relay-access": "tsx ../relay/src/access.test.ts",
+    "test:mirror-drift": "node scripts/mirror-drift.test.cjs",
     "test:zai-usage": "tsx src/tests/zaiUsage.test.ts",
     "test:codex-pools": "tsx src/tests/codexPools.test.ts",
     "task-mode-lab": "node scripts/task-mode-lab.cjs",

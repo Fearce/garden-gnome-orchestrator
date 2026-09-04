@@ -15,7 +15,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
 
 const PORT = 4337;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -134,7 +134,7 @@ async function main() {
       const stored = await waitForPersisted(dataDir, "setting_auto_model_selection");
       check("the click reaches the server and is persisted", stored === "1", String(stored));
 
-      const shot = path.join(dataDir, "auto-model-selection.png");
+      const shot = path.join(shotDir(dataDir), "auto-model-selection.png");
       await page.locator('[role="dialog"][aria-label="Settings"]').screenshot({ path: shot });
       console.log(`  screenshot: ${shot}`);
       await page.close();

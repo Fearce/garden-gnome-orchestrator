@@ -8,7 +8,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
 
 const PORT = 4381;
 const check = createChecks();
@@ -123,8 +123,8 @@ async function openTask(page, title) {
     check("the task did NOT flip to review on the click", !/review/i.test(badge), badge);
     check("...it visibly returned toward implementation", /implementing/i.test(badge), badge);
 
-    await page.screenshot({ path: path.join(dataDir, "qa-inject-row.png") });
-    console.log(`\nscreenshot: ${path.join(dataDir, "qa-inject-row.png")}`);
+    await page.screenshot({ path: path.join(shotDir(dataDir), "qa-inject-row.png") });
+    console.log(`\nscreenshot: ${path.join(shotDir(dataDir), "qa-inject-row.png")}`);
     await browser.close();
     code = check.summary();
   } finally {

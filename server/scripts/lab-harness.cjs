@@ -47,6 +47,10 @@
 //     `gitChanges.css` / `gitConsole.css` / `diff.css` land later in the bundle and win ties.
 //   • Don't wrap a lab in `timeout` — it SIGTERMs the whole npm child tree, so `--keep`'s instance dies
 //     with it. Give the Bash call a long timeout, or background it and poll the port.
+//   • Screenshots go through `shotDir(dataDir)`, so `-- --shots <dir>` lands them somewhere that still
+//     exists after the run. A lab deletes its temp DATA_DIR on the way out, which takes the evidence
+//     with it — and an implementor now has to SURFACE that evidence as a deliverable, so without the
+//     flag the only way to keep a picture is a second full run with `--keep` plus a manual port kill.
 //   • `boot()` takes TWO ports: `port` and the HTTPS listener at `port + 2`. A lab that stands up a
 //     COMPANION service (office-lab's relay) must avoid both. Landing on `port + 2` does not fail
 //     loudly — the console's TLS socket answers the companion's plain-HTTP request, and the only clue
@@ -158,4 +162,18 @@ function createChecks() {
   return check;
 }
 
-module.exports = { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks };
+/**
+ * Where this run's screenshots belong: `--shots <dir>` when the caller wants to keep them, else the
+ * lab's own temp DATA_DIR (deleted on exit, which is the right default for a gate nobody is watching).
+ * The directory is created here so a lab never has to care which of the two it got.
+ */
+function shotDir(dataDir) {
+  // Both spellings: `layout-lab` already took `--shot <dir>`, and one of the two is what the next agent
+  // will type. Guessing wrong would silently drop the screenshots back into the temp dir it deletes.
+  const at = Math.max(process.argv.indexOf("--shots"), process.argv.indexOf("--shot"));
+  const chosen = at >= 0 && process.argv[at + 1] ? path.resolve(process.argv[at + 1]) : dataDir;
+  fs.mkdirSync(chosen, { recursive: true });
+  return chosen;
+}
+
+module.exports = { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir };

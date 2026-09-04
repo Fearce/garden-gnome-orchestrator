@@ -50,8 +50,9 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
   excludes the scope) and the console's `upsertRoom` — and `receiveDirectorChat` pushes into NO agent
   session. A room for people that can steer agents is not the feature.
 - **`server/src/office/onlineProtocol.ts` is a byte-for-byte copy of `relay/src/protocol.ts`.** Change one,
-  change the other; bump `RELAY_PROTOCOL` only for a change that is NOT backward-compatible (an additive
-  optional field is). Both ends refuse a mismatch at the handshake — for the office, a bump is an outage
+  change the other — `test:mirror-drift` fails the suite if you don't, along with every other declaration
+  either side claims to mirror; bump `RELAY_PROTOCOL` only for a change that is NOT backward-compatible (an
+  additive optional field is). Both ends refuse a mismatch at the handshake — for the office, a bump is an outage
   until every machine redeploys, which is why the fork fix above added optional fields instead.
 - **`repoIdentity` is async (it shells out to git); the office gate is sync.** `remotePeers` answers from a
   cache and warms a miss in the background — a git read must never block `officeNote`. A presence change

@@ -79,6 +79,7 @@ const GATES = [
   "test:online-office",
   "test:relay-core",
   "test:relay-access",
+  "test:mirror-drift",
   "test:zai-usage",
   "test:codex-pools",
   "test:active-deadlines",

@@ -8,7 +8,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
 
 const PORT = 4383;
 const check = createChecks();
@@ -113,7 +113,7 @@ async function openNotes(page) {
     check("the owner's own note lands at the top", list[0].body === "review the deploy before Friday", list[0].body);
     check("...as a clickable link", list[0].href === "https://example.com/deploys/9", list[0].href);
     check("the composer clears after adding", (await page.inputValue(".note-compose-body")) === "" && (await page.inputValue(".note-compose-url")) === "");
-    await page.screenshot({ path: path.join(dataDir, "notes.png") });
+    await page.screenshot({ path: path.join(shotDir(dataDir), "notes.png") });
 
     // ---- the tick is how the owner clears a note: it must round-trip, not just vanish locally ----
     await page.click('.notes-list .note-row:has-text("PR #412") .note-done');
@@ -147,8 +147,8 @@ async function openNotes(page) {
 
     check("no console errors", errors.length === 0, errors.join(" | "));
 
-    await page.screenshot({ path: path.join(dataDir, "notes-empty.png") });
-    console.log(`\nscreenshots: ${path.join(dataDir, "notes.png")} (populated) + notes-empty.png`);
+    await page.screenshot({ path: path.join(shotDir(dataDir), "notes-empty.png") });
+    console.log(`\nscreenshots: ${path.join(shotDir(dataDir), "notes.png")} (populated) + notes-empty.png`);
     await browser.close();
     code = check.summary();
   } finally {
