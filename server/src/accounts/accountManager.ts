@@ -97,6 +97,28 @@ const MIN_RESET_DELAY_MS = 1_000;
 // Structured providers occasionally omit a reset timestamp. Keep those account caps bounded too: a
 // missing timestamp must delay routing, not turn into a permanent manual-review wait after a restart.
 const ACCOUNT_CAP_FALLBACK_MS = 5 * 60 * 60 * 1000;
+/**
+ * A cap with no window type came from the CLI's plain "You've hit your session limit · resets 12:50pm"
+ * text, so it is scoped to the 5h session window and cannot legitimately outlast one. That matters
+ * because such a hold is preserved through every usage ping (capHold) — a session cap is invisible to
+ * the unified headers — so a misread reset freezes a subscription the headers report as free.
+ * A fresh rejection is still held, just bounded to the session cadence.
+ */
+function sessionScopedCapReset(window: string | null, resetAt: number | null, now: number): number | null {
+  if (resetAt == null) return null;
+  if (window != null) return resetAt;
+  return Math.min(resetAt, now + ACCOUNT_CAP_FALLBACK_MS);
+}
+
+/**
+ * Whether a persisted cap may be re-held across a restart. A window-less cap outlasting the session
+ * window describes a window that cannot exist, so it is corrupt evidence rather than a longer hold:
+ * drop it and let the boot ping's headers decide, instead of clamping it into hours of false freeze.
+ */
+function persistedCapIsCredible(window: string | null, resetAt: number | null, now: number): boolean {
+  if (resetAt == null || resetAt <= now) return false;
+  return window != null || resetAt <= now + ACCOUNT_CAP_FALLBACK_MS;
+}
 // ---- 5h window-start staggering ----
 // Any /v1/messages request — including our own usage pings — STARTS a new 5h window when none is
 // running, so pinging every account right at its reset keeps all subscriptions phase-locked: they
@@ -369,7 +391,9 @@ export class AccountManager {
   private restorePersistedCap(st: AccountState, persisted: PersistedAccountUsage, now: number): void {
     // Snapshot versions before cap persistence lack these optional fields and naturally restore as
     // clear. A future reset is the durable provider hold; an expired/unknown legacy value is not.
-    const heldCap = persisted.rateLimited === true && persisted.rateLimitResetAt != null && persisted.rateLimitResetAt > now;
+    const heldCap =
+      persisted.rateLimited === true &&
+      persistedCapIsCredible(persisted.rateLimitWindow ?? null, persisted.rateLimitResetAt ?? null, now);
     st.rateLimited = heldCap;
     st.rateLimitWindow = heldCap ? persisted.rateLimitWindow ?? null : null;
     st.rateLimitResetAt = heldCap ? persisted.rateLimitResetAt! : null;
@@ -754,7 +778,8 @@ export class AccountManager {
     if (info.status === "rejected") {
       st.rateLimited = true;
       st.rateLimitWindow = info.rateLimitType ?? null;
-      st.rateLimitResetAt = info.resetsAt != null && info.resetsAt > now ? info.resetsAt : now + ACCOUNT_CAP_FALLBACK_MS;
+      const stated = info.resetsAt != null && info.resetsAt > now ? info.resetsAt : now + ACCOUNT_CAP_FALLBACK_MS;
+      st.rateLimitResetAt = sessionScopedCapReset(st.rateLimitWindow, stated, now);
     } else if (st.rateLimited && (st.rateLimitWindow == null || st.rateLimitWindow === info.rateLimitType)) {
       st.rateLimited = false;
       st.rateLimitWindow = null;

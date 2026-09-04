@@ -50,18 +50,29 @@ function usageLimitNoticeAt(date: Date): string {
   return `You've hit your usage limit. Try again at ${month} ${day}${suffix}, ${date.getFullYear()} ${hour}:${minute} ${meridiem}.`;
 }
 
-function bootFixtureManager(fixtureDb: any, fixtureRoot: string): any {
+function bootFixtureManager(fixtureDb: any, fixtureRoot: string, fixtureAccounts?: StubAccounts): any {
   const originalScheduleAutoResume = (ThreadManager.prototype as any).scheduleAutoResume;
   (ThreadManager.prototype as any).scheduleAutoResume = () => {};
   try {
-    return new ThreadManager(fixtureDb, new EventHub(), new FileMemoryService(join(fixtureRoot, "memory")), new StubAccounts() as unknown as AccountManager);
+    return new ThreadManager(fixtureDb, new EventHub(), new FileMemoryService(join(fixtureRoot, "memory")), (fixtureAccounts ?? new StubAccounts()) as unknown as AccountManager);
   } finally {
     (ThreadManager.prototype as any).scheduleAutoResume = originalScheduleAutoResume;
   }
 }
 
+/** The CLI's session-limit notice, whose reset is a bare wall clock with no date. */
+function sessionLimitNoticeAt(date: Date): string {
+  const hour24 = date.getHours();
+  const hour = hour24 % 12 || 12;
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `You've hit your session limit · resets ${hour}:${minute}${hour24 >= 12 ? "pm" : "am"} (Europe/Copenhagen)`;
+}
+
 class StubAccounts {
   headroom = true;
+  capUpdates: Array<{ id: string; resetsAt?: number }> = [];
+  dto(): Array<{ id: string; label: string }> { return [{ id: "claude-a", label: "Claude A" }]; }
+  updateFromRateLimit(id: string, info: { resetsAt?: number }): void { this.capUpdates.push({ id, resetsAt: info.resetsAt }); }
   onUsageRefresh(_cb: () => void): void {}
   effectiveUtilization(): number | null { return null; }
   soonestResetAt(): number | null { return null; }
@@ -1190,6 +1201,48 @@ try {
   check("an expired Codex reset does not become a fresh fallback cooldown on boot", expiredInternals.codexCapUntil === undefined, String(expiredInternals.codexCapUntil));
   expiredDb.raw.close();
   rmSync(expiredRoot, { recursive: true, force: true });
+
+  // Regression (2026-09-04): a session-limit notice states a bare clock ("resets 12:50pm"), which means
+  // the next 12:50 AFTER the run that reported it. Boot re-read that text against `now`, so once 12:50
+  // had passed the clock rolled to the following day and re-latched a subscription whose window had
+  // actually reopened — a free account frozen ~24h with every task parked on "every account is capped".
+  const rolledClockRoot = mkdtempSync(join(tmpdir(), "provider-fallback-rolled-clock-"));
+  const rolledClockWorkspace = join(rolledClockRoot, "workspace");
+  mkdirSync(rolledClockWorkspace, { recursive: true });
+  const rolledClockDb = new Db(join(rolledClockRoot, "orchestrator.sqlite"));
+  const rolledClockNow = Date.now();
+  const lapsedClockText = sessionLimitNoticeAt(new Date(rolledClockNow - 30 * 60_000));
+  check(
+    "a lapsed session clock still rolls to tomorrow when parsed against now",
+    parseUsageLimitResetAt(lapsedClockText, rolledClockNow)! > rolledClockNow + 23 * 60 * 60_000,
+    String(parseUsageLimitResetAt(lapsedClockText, rolledClockNow)),
+  );
+  const claudeLapsedThread = rolledClockDb.createThread({ title: "Lapsed Claude session clock", workspace: rolledClockWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(rolledClockDb, claudeLapsedThread, "Claude A", "error", lapsedClockText, true, rolledClockNow - 90 * 60_000);
+  const codexLapsedThread = rolledClockDb.createThread({ title: "Lapsed Codex session clock", workspace: rolledClockWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(rolledClockDb, codexLapsedThread, "codex:gpt-5.6-terra", "error", lapsedClockText, true, rolledClockNow - 90 * 60_000);
+  const rolledClockAccounts = new StubAccounts();
+  const rolledClockInternals = bootFixtureManager(rolledClockDb, rolledClockRoot, rolledClockAccounts);
+  check("a lapsed session clock does not re-latch a Claude subscription on boot", rolledClockAccounts.capUpdates.length === 0, JSON.stringify(rolledClockAccounts.capUpdates));
+  check("a lapsed session clock does not re-latch a CLI backend on boot", rolledClockInternals.codexCapUntil === undefined, String(rolledClockInternals.codexCapUntil));
+  rolledClockDb.raw.close();
+  rmSync(rolledClockRoot, { recursive: true, force: true });
+
+  // The same clock while it is still ahead is a real hold — restored at the run's own occurrence.
+  const liveClockRoot = mkdtempSync(join(tmpdir(), "provider-fallback-live-clock-"));
+  const liveClockWorkspace = join(liveClockRoot, "workspace");
+  mkdirSync(liveClockWorkspace, { recursive: true });
+  const liveClockDb = new Db(join(liveClockRoot, "orchestrator.sqlite"));
+  const liveClockNow = Date.now();
+  const liveClockRunEndedAt = liveClockNow - 30 * 60_000;
+  const liveClockText = sessionLimitNoticeAt(new Date(liveClockNow + 90 * 60_000));
+  const liveClockReset = parseUsageLimitResetAt(liveClockText, liveClockRunEndedAt);
+  const liveClockThread = liveClockDb.createThread({ title: "Live Codex session clock", workspace: liveClockWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(liveClockDb, liveClockThread, "codex:gpt-5.6-terra", "error", liveClockText, true, liveClockRunEndedAt);
+  const liveClockInternals = bootFixtureManager(liveClockDb, liveClockRoot);
+  check("a still-future session clock is restored at the occurrence its run stated", liveClockInternals.codexCapUntil === liveClockReset, `${liveClockInternals.codexCapUntil} vs ${liveClockReset}`);
+  liveClockDb.raw.close();
+  rmSync(liveClockRoot, { recursive: true, force: true });
 
   // Regression: this exact persisted-latch + fresh-ping state used to recurse between
   // codexCapActive and codexProviderCandidate until Node exhausted the stack during boot.

@@ -1063,7 +1063,7 @@ export class ThreadManager implements OrchestratorApi {
         .sort((a, b) => b.startedAt - a.startedAt)[0];
       if (!latestQa || (latestQa.capFlagged !== true && !providerErrorLooksRateLimited(latestQa.error ?? ""))) continue;
 
-      this.latchLegacyProviderCap(latestQa.account ?? null, latestQa.error ?? "");
+      this.latchLegacyProviderCap(latestQa.account ?? null, latestQa.error ?? "", latestQa.endedAt ?? undefined);
       const round = Math.max(1, stage.qaRoundsUsed ?? 0);
       this.db.updateThreadStageOutputs(thread.id, { qaCapRetryRound: round });
       this.db.updateThread(thread.id, { state: "review", error: this.capParkMessage(thread.id, "qa") });
@@ -1090,7 +1090,8 @@ export class ThreadManager implements OrchestratorApi {
       account: string;
       error?: string;
       reset?: number;
-      explicitResetExpired: boolean;
+      /** The stated reset has already elapsed — evidence the window reopened, never a fresh hold. */
+      resetExpired: boolean;
       capped: boolean;
       endedAt: number;
       startedAt: number;
@@ -1120,18 +1121,23 @@ export class ThreadManager implements OrchestratorApi {
         // they say nothing about whether the provider's quota reopened.
         if (!capped && run.state !== "done") continue;
         const error = run.error ?? undefined;
+        // Anchor the parse to the RUN, not to boot. A bare clock ("resets 12:50pm") means the next
+        // 12:50 after that run — re-read at boot once 12:50 had passed, it rolls to the following day
+        // and re-latches an account whose window has actually reopened (a free subscription frozen ~24h).
+        const reset = capped && error ? parseUsageLimitResetAt(error, run.endedAt) : undefined;
         const outcome: RecordedOutcome = {
           account: run.account,
           error,
-          reset: capped && error ? parseUsageLimitResetAt(error, now) : undefined,
-          explicitResetExpired: capped && error ? usageLimitResetWasExplicitlyElapsed(error, now) : false,
+          reset,
+          resetExpired:
+            reset != null ? reset <= now : capped && error ? usageLimitResetWasExplicitlyElapsed(error, now) : false,
           capped,
           endedAt: run.endedAt,
           startedAt: run.startedAt,
         };
         const key = outcomeKey(outcome.account);
         rememberNewer(latestByAccount, key, outcome);
-        if (outcome.capped && outcome.reset != null) rememberNewer(latestFutureReset, key, outcome);
+        if (outcome.capped && outcome.reset != null && !outcome.resetExpired) rememberNewer(latestFutureReset, key, outcome);
         if (!outcome.capped) rememberNewer(latestCleanSuccess, key, outcome);
       }
     }
@@ -1161,8 +1167,8 @@ export class ThreadManager implements OrchestratorApi {
       if (!managedKey(key)) {
         // Claude's AccountManager owns its own persisted per-subscription cap state. Preserve the
         // existing boot repair for a provider-stated future reset without synthesizing a new fallback.
-        if (outcome.capped && outcome.error && outcome.reset != null) {
-          this.latchLegacyProviderCap(outcome.account, outcome.error);
+        if (outcome.capped && outcome.error && outcome.reset != null && !outcome.resetExpired) {
+          this.latchLegacyProviderCap(outcome.account, outcome.error, outcome.endedAt);
           restored++;
         }
         continue;
@@ -1179,7 +1185,7 @@ export class ThreadManager implements OrchestratorApi {
         // A newer bare capacity rejection renews a short fallback hold, but note*Cap deliberately
         // preserves a longer existing provider reset. An expired historical date is neither evidence
         // to clear the current latch nor a reason to create a new cooldown.
-        if (!outcome.explicitResetExpired && outcome.error) this.latchLegacyProviderCap(outcome.account, outcome.error);
+        if (!outcome.resetExpired && outcome.error) this.latchLegacyProviderCap(outcome.account, outcome.error, outcome.endedAt);
         continue;
       }
 
@@ -1188,16 +1194,16 @@ export class ThreadManager implements OrchestratorApi {
       const selected =
         !outcome.capped
           ? undefined
-          : outcome.reset != null
+          : outcome.reset != null && !outcome.resetExpired
             ? outcome
             : statedStillAuthoritative
               ? stated
-              : outcome.explicitResetExpired
+              : outcome.resetExpired
                 ? undefined
                 : outcome;
       clearManagedCap(key);
       if (!selected) continue;
-      this.latchLegacyProviderCap(selected.account, selected.error ?? "");
+      this.latchLegacyProviderCap(selected.account, selected.error ?? "", selected.endedAt);
       if (selected.reset != null) restored++;
     }
     if (restored) {
@@ -1208,8 +1214,11 @@ export class ThreadManager implements OrchestratorApi {
   /** A legacy failed row will never re-emit the runner's rate_limit event, so restore its provider
    * latch before scheduling recovery. This prevents an old Codex "try again at Sep 2" record from
    * immediately selecting Codex again on the first direct QA retry. */
-  private latchLegacyProviderCap(accountLabel: string | null, error: string): void {
-    const reset = parseUsageLimitResetAt(error);
+  private latchLegacyProviderCap(accountLabel: string | null, error: string, recordedAt?: number): void {
+    // `recordedAt` anchors a bare reset clock to the run that reported it. Without it a clock that has
+    // since passed parses as the NEXT day's occurrence, turning a lapsed cap into a ~24h latch.
+    const reset = parseUsageLimitResetAt(error, recordedAt ?? Date.now());
+    if (reset != null && reset <= Date.now()) return; // the stated window has already reopened
     const info: RateLimitInfo = {
       status: "rejected",
       resetsAt: reset,

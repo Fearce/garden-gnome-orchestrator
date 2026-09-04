@@ -19,12 +19,12 @@ const { AccountManager } = await import("../accounts/accountManager.js");
 const { EventHub } = await import("../events.js");
 
 let failures = 0;
-function check(name: string, cond: boolean): void {
+function check(name: string, cond: boolean, detail?: string): void {
   if (cond) {
     console.log(`  ✓ ${name}`);
   } else {
     failures++;
-    console.error(`  ✗ ${name}`);
+    console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`);
   }
 }
 
@@ -146,6 +146,34 @@ check("an allowed signal clears the persisted cap", capSnapshots.get(capAccount.
 const afterClear = new AccountManager([capAccount], new EventHub(), 600_000, { persist: capPersist });
 await (afterClear as any).bootPing();
 check("a cleared cap stays clear across restart", !afterClear.isRateLimited(capAccount.id) && afterClear.hasHeadroom());
+
+// A cap with no window type came from the CLI's plain session-limit text, so it is scoped to the 5h
+// session window. Such a hold is preserved through every usage ping (it is invisible to the unified
+// headers), so a reset misread as ~24h out freezes a subscription the headers report as free.
+const sessionAccount = { id: "session-acct", label: "session", token: "" };
+const overlongReset = Date.now() + 23 * 60 * 60_000;
+const sessionManager = new AccountManager([sessionAccount], new EventHub(), 600_000, { persist: capPersist });
+sessionManager.updateFromRateLimit(sessionAccount.id, { status: "rejected", resetsAt: overlongReset });
+check(
+  "a window-less session cap is clamped to the session cadence",
+  (capSnapshots.get(sessionAccount.id)?.rateLimitResetAt ?? 0) <= Date.now() + 5 * 60 * 60_000,
+  String(capSnapshots.get(sessionAccount.id)?.rateLimitResetAt),
+);
+capSnapshots.set(sessionAccount.id, { ...capSnapshots.get(sessionAccount.id), rateLimited: true, rateLimitWindow: null, rateLimitResetAt: overlongReset });
+const afterOverlong = new AccountManager([sessionAccount], new EventHub(), 600_000, { persist: capPersist });
+check(
+  "a persisted session cap outlasting its own window is dropped, not re-held for a day",
+  !afterOverlong.isRateLimited(sessionAccount.id) && afterOverlong.hasHeadroom(),
+  String(afterOverlong.dto()[0]?.resetsAt),
+);
+capSnapshots.set(sessionAccount.id, { ...capSnapshots.get(sessionAccount.id), rateLimited: true, rateLimitWindow: null, rateLimitResetAt: Date.now() + 60 * 60_000 });
+const afterCredible = new AccountManager([sessionAccount], new EventHub(), 600_000, { persist: capPersist });
+check("a session cap inside its own window is still re-held across a restart", afterCredible.isRateLimited(sessionAccount.id));
+const weeklyAccount = { id: "weekly-acct", label: "weekly", token: "" };
+const weeklyReset = Date.now() + 3 * 24 * 60 * 60_000;
+const weeklyManager = new AccountManager([weeklyAccount], new EventHub(), 600_000, { persist: capPersist });
+weeklyManager.updateFromRateLimit(weeklyAccount.id, { status: "rejected", rateLimitType: "seven_day", resetsAt: weeklyReset });
+check("a real weekly cap keeps its full provider reset", weeklyManager.dto()[0]?.resetsAt === weeklyReset, String(weeklyManager.dto()[0]?.resetsAt));
 
 // A 429 response should include a reset header, but a proxy can strip it. The rejection must still
 // survive a deploy; otherwise the selector starts a parked task straight back on the same account.
