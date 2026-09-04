@@ -892,161 +892,172 @@ export function ThreadDetail() {
           </>
         )}
       </div>
-      <ImplementationMemos memos={taskMemos} />
-      <ManualDeploymentHandoff deployment={thread.state === "done" ? thread.manualDeployment : null} />
-      {thread.state === "awaiting_approval" && (
-        <div className="approval">
-          <div className="approval-head">⏸ Plan ready — approve to build, or reject with feedback</div>
-          <pre className="approval-plan">{pendingPlan ?? "(plan not captured — see the planner output in the feed)"}</pre>
-          {rejecting ? (
-            <div className="approval-reject">
-              <textarea
-                value={feedback}
-                placeholder="What should change? (sent back as the rejection reason)"
-                onChange={(e) => setFeedback(e.target.value)}
-              />
+      {/* One scrollport for everything between the header and the inject bar. The memo, the deployment
+          handoff, the filter chips and the deliverables used to be non-scrolling siblings of a panel
+          that is `overflow: hidden`, so they took their height off the transcript and, once it ran
+          out, off the inject bar (see `.detail-body` in styles.css). The scroll ref moves here with
+          them: the follow-the-live-agent stick, the load-older anchor and the filter jump all measure
+          whatever actually scrolls. */}
+      <div className="detail-body" ref={scrollRef} onScroll={onFeedScroll}>
+        <ImplementationMemos memos={taskMemos} />
+        <ManualDeploymentHandoff deployment={thread.state === "done" ? thread.manualDeployment : null} />
+        {thread.state === "awaiting_approval" && (
+          <div className="approval">
+            <div className="approval-head">⏸ Plan ready — approve to build, or reject with feedback</div>
+            <pre className="approval-plan">{pendingPlan ?? "(plan not captured — see the planner output in the feed)"}</pre>
+            {rejecting ? (
+              <div className="approval-reject">
+                <textarea
+                  value={feedback}
+                  placeholder="What should change? (sent back as the rejection reason)"
+                  onChange={(e) => setFeedback(e.target.value)}
+                />
+                <div className="row">
+                  <button
+                    className="btn danger sm"
+                    onClick={() => {
+                      approve(id, false, feedback.trim() || undefined);
+                      setRejecting(false);
+                      setFeedback("");
+                    }}
+                  >
+                    Reject plan
+                  </button>
+                  <button className="btn ghost sm" onClick={() => setRejecting(false)}>
+                    Back
+                  </button>
+                </div>
+              </div>
+            ) : (
               <div className="row">
-                <button
-                  className="btn danger sm"
-                  onClick={() => {
-                    approve(id, false, feedback.trim() || undefined);
-                    setRejecting(false);
-                    setFeedback("");
-                  }}
-                >
-                  Reject plan
+                <button className="btn primary sm" onClick={() => approve(id, true)}>
+                  ✓ Approve &amp; build
                 </button>
-                <button className="btn ghost sm" onClick={() => setRejecting(false)}>
-                  Back
+                <button className="btn ghost sm" onClick={() => setRejecting(true)}>
+                  Reject…
                 </button>
               </div>
+            )}
+          </div>
+        )}
+
+        <Deliverables items={deliverables} />
+        {/* Task-level chrome first, then the agent filter, then the transcript it filters. The order is
+            load-bearing now that the filter row is sticky inside .detail-body: anything rendered after
+            it scrolls UNDER it and is then covered rather than reachable. The deliverables strip used
+            to sit below the chips, which put its file actions under exactly that overlap. */}
+        {feedItems.length > 0 && (
+          <div className="feed-filter">
+            <button className={"fchip" + (roleFilter === "all" ? " on" : "")} onClick={() => setRoleFilter("all")}>
+              all <span className="n">{feedItems.length}</span>
+            </button>
+            {activeRoles.map((role) => {
+              const roleRuns = threadRuns.filter((r) => r.role === role);
+              const r = latestRunOf(threadRuns, role);
+              return (
+                <button
+                  key={role}
+                  className={"fchip" + (roleFilter === role ? " on" : "")}
+                  style={{ "--role": roleColor(role) } as CSSProperties}
+                  onClick={() => setRoleFilter(role)}
+                >
+                  <Gnome role={role} size={15} />
+                  <span className="fchip-label">
+                    <RoleLabel role={role} name={nameFor(role)} model={modelFor(role)} />
+                  </span>
+                  <span className="n">{counts[role] ?? 0}</span>
+                  {r ? <RoleElapsed className="fchip-time" runs={roleRuns} /> : null}
+                </button>
+              );
+            })}
+            <button
+              className={"fchip tools-toggle" + (showTools ? "" : " off")}
+              onClick={() => setShowTools(!showTools)}
+              title={showTools ? "Hide tools & reasoning — show just the prose/findings" : "Show tools & reasoning"}
+            >
+              ⛏ tools
+            </button>
+          </div>
+        )}
+
+        <div className="feed">
+          {visible.length === 0 && !draft && !(showTools && thinkingDraft) && (
+            <div className="faint" style={{ fontSize: 13 }}>
+              {feedItems.length === 0
+                ? "Planner and researcher are warming up. Their findings and the implementor's work will stream here."
+                : roleFilter === "all"
+                  ? "Nothing to show."
+                  : `No ${roleFilter} output${showTools ? "" : " (tools & reasoning hidden)"} yet.`}
             </div>
-          ) : (
-            <div className="row">
-              <button className="btn primary sm" onClick={() => approve(id, true)}>
-                ✓ Approve &amp; build
-              </button>
-              <button className="btn ghost sm" onClick={() => setRejecting(true)}>
-                Reject…
-              </button>
+          )}
+          {hiddenAbove > 0 && (
+            <button
+              onClick={() => {
+                const el = scrollRef.current;
+                if (el) growAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+                setRenderCount((c) => c + RENDER_WINDOW);
+              }}
+              style={{
+                alignSelf: "center",
+                margin: "2px 0 8px",
+                padding: "5px 12px",
+                background: "transparent",
+                border: "1px solid var(--line)",
+                borderRadius: 100,
+                color: "var(--text-dim)",
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+                cursor: "pointer",
+              }}
+            >
+              ↑ {hiddenAbove} earlier {hiddenAbove === 1 ? "entry" : "entries"} — scroll up or click to load
+            </button>
+          )}
+          {hiddenAbove === 0 && historyHasMore && (
+            <button
+              onClick={loadEarlierHistory}
+              disabled={historyLoading}
+              style={{
+                alignSelf: "center",
+                margin: "2px 0 8px",
+                padding: "5px 12px",
+                background: "transparent",
+                border: "1px solid var(--line)",
+                borderRadius: 100,
+                color: "var(--text-dim)",
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+                cursor: historyLoading ? "wait" : "pointer",
+              }}
+            >
+              {historyLoading ? "Loading earlier history…" : "↑ Load earlier history"}
+            </button>
+          )}
+          {windowed.map((f) => (
+            <FeedRow key={feedKey(f)} item={f} nameFor={nameFor} modelFor={modelFor} />
+          ))}
+          {showTools && thinkingDraft && (roleFilter === "all" || thinkingDraft.role === roleFilter) && (
+            <div className="fi thinking draft" style={roleVar(thinkingDraft.role)}>
+              <div className="head">
+                <span className="role-tag dim">
+                  <RoleLabel role={thinkingDraft.role} name={nameFor(thinkingDraft.role)} model={modelFor(thinkingDraft.role)} />
+                </span>
+              </div>
+              <Markdown className="body" text={"💭 " + thinkingDraft.text} />
+            </div>
+          )}
+          {draft && (roleFilter === "all" || draft.role === roleFilter) && (
+            <div className="fi draft" style={roleVar(draft.role)}>
+              <div className="head">
+                <Gnome role={draft.role} size={30} />
+                <span className="role-tag" style={{ color: roleColor(draft.role) }}>
+                  <RoleLabel role={draft.role} name={nameFor(draft.role)} model={modelFor(draft.role)} />
+                </span>
+              </div>
+              <Markdown className="body" text={draft.text} />
             </div>
           )}
         </div>
-      )}
-
-      {feedItems.length > 0 && (
-        <div className="feed-filter">
-          <button className={"fchip" + (roleFilter === "all" ? " on" : "")} onClick={() => setRoleFilter("all")}>
-            all <span className="n">{feedItems.length}</span>
-          </button>
-          {activeRoles.map((role) => {
-            const roleRuns = threadRuns.filter((r) => r.role === role);
-            const r = latestRunOf(threadRuns, role);
-            return (
-              <button
-                key={role}
-                className={"fchip" + (roleFilter === role ? " on" : "")}
-                style={{ "--role": roleColor(role) } as CSSProperties}
-                onClick={() => setRoleFilter(role)}
-              >
-                <Gnome role={role} size={15} />
-                <span className="fchip-label">
-                  <RoleLabel role={role} name={nameFor(role)} model={modelFor(role)} />
-                </span>
-                <span className="n">{counts[role] ?? 0}</span>
-                {r ? <RoleElapsed className="fchip-time" runs={roleRuns} /> : null}
-              </button>
-            );
-          })}
-          <button
-            className={"fchip tools-toggle" + (showTools ? "" : " off")}
-            onClick={() => setShowTools(!showTools)}
-            title={showTools ? "Hide tools & reasoning — show just the prose/findings" : "Show tools & reasoning"}
-          >
-            ⛏ tools
-          </button>
-        </div>
-      )}
-
-      <Deliverables items={deliverables} />
-
-      <div className="feed" ref={scrollRef} onScroll={onFeedScroll}>
-        {visible.length === 0 && !draft && !(showTools && thinkingDraft) && (
-          <div className="faint" style={{ fontSize: 13 }}>
-            {feedItems.length === 0
-              ? "Planner and researcher are warming up. Their findings and the implementor's work will stream here."
-              : roleFilter === "all"
-                ? "Nothing to show."
-                : `No ${roleFilter} output${showTools ? "" : " (tools & reasoning hidden)"} yet.`}
-          </div>
-        )}
-        {hiddenAbove > 0 && (
-          <button
-            onClick={() => {
-              const el = scrollRef.current;
-              if (el) growAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
-              setRenderCount((c) => c + RENDER_WINDOW);
-            }}
-            style={{
-              alignSelf: "center",
-              margin: "2px 0 8px",
-              padding: "5px 12px",
-              background: "transparent",
-              border: "1px solid var(--line)",
-              borderRadius: 100,
-              color: "var(--text-dim)",
-              fontSize: 11,
-              fontFamily: "var(--font-mono)",
-              cursor: "pointer",
-            }}
-          >
-            ↑ {hiddenAbove} earlier {hiddenAbove === 1 ? "entry" : "entries"} — scroll up or click to load
-          </button>
-        )}
-        {hiddenAbove === 0 && historyHasMore && (
-          <button
-            onClick={loadEarlierHistory}
-            disabled={historyLoading}
-            style={{
-              alignSelf: "center",
-              margin: "2px 0 8px",
-              padding: "5px 12px",
-              background: "transparent",
-              border: "1px solid var(--line)",
-              borderRadius: 100,
-              color: "var(--text-dim)",
-              fontSize: 11,
-              fontFamily: "var(--font-mono)",
-              cursor: historyLoading ? "wait" : "pointer",
-            }}
-          >
-            {historyLoading ? "Loading earlier history…" : "↑ Load earlier history"}
-          </button>
-        )}
-        {windowed.map((f) => (
-          <FeedRow key={feedKey(f)} item={f} nameFor={nameFor} modelFor={modelFor} />
-        ))}
-        {showTools && thinkingDraft && (roleFilter === "all" || thinkingDraft.role === roleFilter) && (
-          <div className="fi thinking draft" style={roleVar(thinkingDraft.role)}>
-            <div className="head">
-              <span className="role-tag dim">
-                <RoleLabel role={thinkingDraft.role} name={nameFor(thinkingDraft.role)} model={modelFor(thinkingDraft.role)} />
-              </span>
-            </div>
-            <Markdown className="body" text={"💭 " + thinkingDraft.text} />
-          </div>
-        )}
-        {draft && (roleFilter === "all" || draft.role === roleFilter) && (
-          <div className="fi draft" style={roleVar(draft.role)}>
-            <div className="head">
-              <Gnome role={draft.role} size={30} />
-              <span className="role-tag" style={{ color: roleColor(draft.role) }}>
-                <RoleLabel role={draft.role} name={nameFor(draft.role)} model={modelFor(draft.role)} />
-              </span>
-            </div>
-            <Markdown className="body" text={draft.text} />
-          </div>
-        )}
       </div>
 
       {!composerExpanded ? (

@@ -17,6 +17,7 @@
     "git-lab": "node scripts/git-console-lab.cjs",
     "inject-lab": "node scripts/inject-lab.cjs",
     "layout-lab": "node scripts/layout-lab.cjs",
+    "panel-scroll-lab": "node scripts/panel-scroll-lab.cjs",
     "model-lab": "node scripts/model-select-lab.cjs",
     "deploy": "node scripts/deploy.cjs",
     "notes-lab": "node scripts/notes-lab.cjs",

@@ -62,9 +62,29 @@ body {
 
 button { font-family: inherit; cursor: pointer; }
 ::selection { background: var(--accent); color: var(--bg); }
+
+/* Scrollbars, themed once for the whole console. Two things made them read as light native chrome on
+   a dark app. The page never declared its scheme, so every part a stylesheet does not paint (the
+   TRACK, the corner, a form control's inner bar) came back in the light default; and the ::-webkit-
+   rules below only ever painted the thumb, over exactly that light track. `color-scheme` fixes the
+   unpainted parts, and the standard `scrollbar-color`/`scrollbar-width` pair themes the rest.
+   Chromium 121+ honours that pair and ignores the ::-webkit- pseudos when it does; the pseudos stay
+   for older engines, where a transparent track plus a padding-box thumb border gives the same inset
+   look. An element that wants its bar HIDDEN (an intentional side-scroll strip with a fade
+   affordance, e.g. .detail-controls) opts out with `scrollbar-width: none`, never by re-theming.
+
+   The pair is declared in two places, and that asymmetry is measured rather than stylistic:
+   `scrollbar-color` inherits, `scrollbar-width` does NOT (Chromium 151 computes `auto` on a child of
+   a `thin` root), so a width declared on the root alone themes nothing below it. Universal is what
+   makes it hold for scrollers added later; the property is inert on anything that doesn't scroll,
+   and an opt-out class still outranks `*`. */
+:root { color-scheme: dark; scrollbar-color: var(--bg-3) transparent; }
+* { scrollbar-width: thin; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 8px; border: 2px solid var(--bg); }
-::-webkit-scrollbar-thumb:hover { background: var(--line-strong); }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--line-strong); background-clip: padding-box; }
 
 @supports (height: 100dvh) {
   html, body, #root { height: 100dvh; }
@@ -1716,7 +1736,26 @@ button { font-family: inherit; cursor: pointer; }
 .pip .pip-time { opacity: 0.75; font-variant-numeric: tabular-nums; }
 .feed-filter .fchip .fchip-time { font-size: 9px; opacity: 0.6; font-variant-numeric: tabular-nums; }
 
-/* ---- detail panel ---- */
+/* ---- detail panel ----
+
+   The panel is three flex rows: a header that stays put, ONE scrollport (.detail-body) holding
+   everything the owner reads, and the inject bar pinned to the floor. That split is the fix for "I
+   can't scroll, this is unusable", and the shape of the bug is worth keeping written down, because
+   nothing about it looks wrong in a rule.
+
+   The transcript used to be the only scroller, with the work memo, the filter chips and the
+   deliverables strip as non-scrolling siblings above it. `.detail` is `overflow: hidden`, so that
+   chrome could not push anything into a scrollbar: it took the height it wanted, the transcript got
+   the remainder, and once the remainder went to zero the inject bar was simply sheared off the
+   bottom of the panel. Measured on a seeded 500-entry task: a 28px transcript and an inject bar
+   23px outside the panel at 900x900, 205px outside at 1440x620. Not a narrow-window bug, though
+   that is where it was reported. A pinned memo is enough on its own, and every feature that pins
+   one more thing above the feed makes it worse.
+
+   So the invariant is: exactly one element between the header and the inject bar owns the scroll,
+   and the header yields to it rather than the other way round. `.detail-body`'s `min-height` is
+   what makes that true whatever the chrome does, since a flex item with a `0` basis cannot shrink
+   and so cannot be squeezed below it. Gate: `npm run panel-scroll-lab --prefix server`. */
 .detail { position: relative; border-left: 1px solid var(--line); background: var(--bg-1); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 /* touch-action:none, mirroring .dl-resize: without it the browser claims a finger drag on the handle
    as a scroll and the pointermove stream never reaches the resize. */
@@ -1727,7 +1766,26 @@ button { font-family: inherit; cursor: pointer; }
 .rail-resize { left: auto; right: -3px; }
 .rail-resize::after { left: auto; right: 2px; }
 body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
-.detail-head { padding: 13px 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px; }
+/* `flex: 0 1 auto` + `min-height: 0`: the header is the row that gives ground. At its natural size it
+   is laid out first and the body takes the rest; when the panel is too short for both (a short window,
+   or an expanded header carrying a deadline editor and two rows of controls), the header shrinks and
+   scrolls INSIDE ITSELF instead of pushing the body to zero. `overflow-x` is hidden rather than auto
+   because the two rows that legitimately travel sideways here, .detail-controls and .feed-filter,
+   each scroll on their own. */
+.detail-head {
+  padding: 13px 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px;
+  flex: 0 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto;
+}
+/* The panel's one scrollport: work memo, approval, filter chips, deliverables and the transcript all
+   scroll together, so a pinned card costs reading room only while it is on screen. `flex: 1 1 0` with
+   a `min-height` floor is the load-bearing pair: the `0` basis gives it a scaled shrink factor of
+   zero, so flexbox cannot take the floor back to satisfy the header, and the floor is what stops the
+   chrome starving the transcript to a sliver. Two `.fi` rows plus their gap is the smallest thing
+   still worth calling a transcript. */
+.detail-body {
+  flex: 1 1 0; min-height: 168px; display: flex; flex-direction: column;
+  overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
+}
 .manual-deployment-handoff {
   margin: 12px 16px 0; padding: 11px 12px; border-radius: var(--r-sm);
   border: 1px solid color-mix(in oklch, var(--ok) 38%, var(--line));
@@ -1880,7 +1938,22 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   cursor: not-allowed; opacity: 0.85;
 }
 
-.feed-filter { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+/* Sticky inside .detail-body: the memo and the deliverables scroll away above it, and the agent
+   filter has to stay reachable while they do, or picking an agent means scrolling back to the top of
+   a 500-entry task. Opaque background for the same reason, since rows now pass underneath it. */
+.feed-filter {
+  display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap;
+  position: sticky; top: 0; z-index: 2; background: var(--bg-1); flex: 0 0 auto;
+}
+/* The two chrome strips that travel SIDEWAYS by design: the narrow bands below make each a nowrap
+   scrolling row rather than let it stack onto a second and third line. A native horizontal scrollbar
+   is the wrong affordance for them twice over. It eats 10-15px of vertical room in the one place the
+   panel has none to give, and it is the pale bar that was reported sitting across the top of the
+   transcript, since a bar under the chips reads as belonging to the feed below it. The right-edge
+   fade each strip carries says "more this way" without costing a row. Opting a strip out of the
+   themed bar is what `scrollbar-width: none` is for here; never re-theme one locally. */
+.detail-controls, .feed-filter { scrollbar-width: none; }
+.detail-controls::-webkit-scrollbar, .feed-filter::-webkit-scrollbar { width: 0; height: 0; }
 .feed-filter .fchip {
   font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase;
   /* Fixed height + border-box so every chip lines up regardless of whether it carries a gnome
@@ -1900,8 +1973,16 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .feed-filter .fchip-label { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; }
 .feed-filter .tools-toggle { margin-left: auto; }
 .feed-filter .tools-toggle.off { opacity: 0.5; text-decoration: line-through; }
-.feed { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
-.fi { display: flex; flex-direction: column; gap: 3px; }
+/* Content of .detail-body, not a scroller of its own: `flex: 1 0 auto` keeps it at its content height
+   (the body scrolls it) while still growing to fill the panel when a task has only a few entries, so
+   the empty-state line sits under the filter rather than floating in the middle. */
+.feed { flex: 1 0 auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+/* min-width: 0 on the row AND its parts. A flex item's automatic minimum size is its content's
+   min-content width, so one 200-char command line or an unbroken URL in an agent's output would
+   otherwise widen the column and hand the transcript a sideways scrollbar. The wide things agents
+   emit (fenced code, tables) each scroll inside their own box instead. */
+.fi { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.fi > * { min-width: 0; }
 .fi .head { display: flex; align-items: center; gap: 8px; }
 .fi .role-tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; }
 .role-name {
@@ -1948,7 +2029,14 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .md .md-hr { border: none; border-top: 1px solid var(--line); margin: 3px 0; }
 .md .md-code { font-family: var(--font-mono); font-size: 0.88em; padding: 1px 4px; border-radius: 4px; background: color-mix(in oklch, var(--text) 10%, transparent); }
 .md .md-pre { margin: 0; padding: 9px 11px; border-radius: var(--r-md); background: var(--bg-1, var(--bg)); border: 1px solid var(--line); overflow-x: auto; }
-.md .md-pre code { font-family: var(--font-mono); font-size: 11.5px; white-space: pre; color: var(--text); }
+/* Fenced code WRAPS rather than scrolling sideways. `white-space: pre` plus the block's own
+   `overflow-x: auto` was the right call for an editor and the wrong one for a transcript: the panel is
+   ~290px wide beside a rail at 900px, agents routinely emit 150-char command lines, and the result was
+   a line you could only read by dragging a scrollbar that the dark theme all but hides. `pre-wrap`
+   keeps the indentation that makes code readable and moves the overflow onto the axis the panel
+   already scrolls; `anywhere` covers the unbreakable token (a long path or URL) that wrapping alone
+   cannot fold. The `overflow-x: auto` above stays as the backstop for whatever neither handles. */
+.md .md-pre code { font-family: var(--font-mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
 .md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .md .md-table { border-collapse: collapse; font-size: 12px; display: block; overflow-x: auto; max-width: 100%; }
 .md .md-table th, .md .md-table td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; vertical-align: top; }
@@ -1956,7 +2044,8 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .md .md-table td { color: var(--text-dim); }
 .md .md-table tbody tr:nth-child(even) td { background: color-mix(in oklch, var(--text) 3%, transparent); }
 
-.inject-bar { border-top: 1px solid var(--line); padding: 11px 12px; display: flex; flex-direction: column; gap: 8px; }
+/* The panel's floor: never shrinks, never scrolls out of the panel. */
+.inject-bar { border-top: 1px solid var(--line); padding: 11px 12px; display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; }
 .inject-bar textarea { width: 100%; resize: none; min-height: 50px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 11px; font-family: var(--font-sans); font-size: 13px; }
 .inject-bar textarea:focus { outline: none; border-color: var(--accent); }
 .inject-bar .row { display: flex; gap: 7px; }
@@ -2381,12 +2470,12 @@ body.dl-resizing { user-select: none; }
   .inject-bar .row .btn.sm { padding: 0 10px; }
   .inject-bar .row .inject-row-spacer, .inject-bar .row .inject-id { display: none; }
 
-  /* Sticky header so the close control stays reachable while the feed scrolls,
-     and clears the notch / browser chrome via the safe-area inset. */
-  .detail-head {
-    position: sticky; top: 0; z-index: 1; background: var(--bg-1);
-    padding-top: calc(13px + env(safe-area-inset-top));
-  }
+  /* Clears the notch / browser chrome via the safe-area inset. The header used to be `position:
+     sticky` here as well, to keep the close control reachable while the feed scrolled. That was
+     already inert (its only scrolling ancestor would have been `.detail`, which is `overflow:
+     hidden`), and it is now actively wrong: the header is a flex row that never scrolls, and
+     `.detail-body` below it owns the scroll. */
+  .detail-head { padding-top: calc(13px + env(safe-area-inset-top)); }
   .detail-head .top {
     position: relative; display: block; padding-right: 96px; /* strip for the two corner buttons */
   }
@@ -2414,8 +2503,13 @@ body.dl-resizing { user-select: none; }
   .lanes { grid-template-columns: 1fr; }
   .card .title { overflow-wrap: anywhere; }
 
-  /* feed filter scrolls sideways instead of stacking into 2–3 rows */
-  .feed-filter { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* feed filter scrolls sideways instead of stacking into 2–3 rows, with the same faded edge
+     .detail-controls uses in place of a scrollbar. */
+  .feed-filter {
+    flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
   .feed-filter .fchip { flex: 0 0 auto; min-height: 34px; padding: 7px 11px; font-size: 11px; }
   .feed-filter .tools-toggle { margin-left: 4px; }
 
@@ -2972,9 +3066,17 @@ button.note-from:hover { color: var(--text-dim); }
   }
   .detail-controls > * { flex: 0 0 auto; }
   /* Same treatment the compact band already gives it: eight role chips wrap onto a second row and
-     cost another 45px of feed. Scroll them sideways instead. */
-  .feed-filter { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+     cost another 45px of feed. Scroll them sideways instead, faded at the edge like .detail-controls
+     above rather than under a scrollbar. The tools chip drops its `margin-left: auto` for the same
+     reason the compact band drops it: pinned to the right edge it would sit under the fade at every
+     width whose chips fit. */
+  .feed-filter {
+    flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
   .feed-filter .fchip { flex: 0 0 auto; }
+  .feed-filter .tools-toggle { margin-left: 4px; }
   /* The burn strip is a reference row here, not the focus — the same trim the compact band makes. */
   .acct { padding: 3px 8px; gap: 2px; }
 

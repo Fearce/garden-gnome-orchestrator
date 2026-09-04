@@ -529,10 +529,15 @@ to the workspace) — or save the file at the workspace root. Verify before hand
 The implementor's final report used to exist only as one chronological feed message, so QA, reviewer,
 Supervisor and self-improvement traffic buried it and the owner had to scroll up hunting for what
 actually shipped. `implementation_memos` makes it durable instead: **one idempotent row per implementor
-run**, keyed `(thread_id, run_id)`, allocated a monotonic per-task `revision`. The console pins the
-memo directly under the task detail header, above the feed (`web/src/components/ImplementationMemos.tsx`),
-with an Open action into a revision-history modal; every earlier revision stays auditable, including
-across `resetThreadForRetry` (memos are preserved like `chat_messages`).
+run**, keyed `(thread_id, run_id)`, allocated a monotonic per-task `revision`. The console renders the
+memo first in the task detail panel, above the deliverables, the agent filter and the feed
+(`web/src/components/ImplementationMemos.tsx`), with an Open action into a revision-history modal; every
+earlier revision stays auditable, including across `resetThreadForRetry` (memos are preserved like
+`chat_messages`). It sits INSIDE the panel's one scrollport (`.detail-body`) rather than pinned above
+it: pinned, it held ~150px of the panel open forever, and stacked with the filter chips and the
+deliverables strip that starved the transcript to a sliver and pushed the inject bar off the bottom of
+the panel entirely. The agent filter is what stays pinned (sticky), because it is one row, not a card.
+Gate: `npm run panel-scroll-lab --prefix server`.
 
 Capture is at `finalizeRun` plus the explicit pipeline boundaries, so **every backend converges on the
 same writer** — Claude, Codex, Grok and z.ai alike — and the CLI text bridges' late `DELIVERABLE:` lines
