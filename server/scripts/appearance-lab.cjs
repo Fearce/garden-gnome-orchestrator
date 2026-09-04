@@ -186,6 +186,17 @@ async function main() {
       // theme is a per-browser preference in localStorage — so the reload check below would open a
       // blank profile and read Classic back, which looks exactly like a setting that never persisted.
       const context = await browser.newContext({ viewport: { width: 1500, height: 950 } });
+      // The console must be self-sufficient: its typefaces are bundled (@fontsource), so nothing
+      // owes a request to a CDN. Every request the pages make is collected and asserted same-origin
+      // at the end — an offline LAN console silently falling back to Georgia is invisible otherwise.
+      const foreign = [];
+      context.on("request", (r) => {
+        const url = r.url();
+        if (/^https?:/i.test(url)) {
+          const { host } = new URL(url);
+          if (host !== `127.0.0.1:${PORT}`) foreign.push(url);
+        }
+      });
       const page = await openConsole(context);
 
       check("a fresh console is Classic, with no attribute on <html>", (await activeTheme(page)) === null, String(await activeTheme(page)));
@@ -199,6 +210,16 @@ async function main() {
       await openAppearance(page);
       check("the Appearance page renders the picker", (await page.locator(".theme-picker").count()) === 1);
       check("it offers exactly the two themes", (await page.locator(".theme-option").count()) === 2);
+
+      // With the picker open, Classic is active but the Nocturne tile still renders its serif
+      // wordmark, so every family the console names has live text to load for. `document.fonts`
+      // status is the only proof the FACE arrived — a computed font-family just echoes the stack,
+      // which reads as success while an unloaded face quietly falls through to Georgia.
+      await page.evaluate(() => document.fonts.ready);
+      const loadedFaces = await page.evaluate(() => [...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family));
+      for (const family of ["Inter Tight", "JetBrains Mono", "Instrument Serif"]) {
+        check(`the bundled "${family}" face actually loaded (no silent fallback)`, loadedFaces.includes(family), loadedFaces.join(", "));
+      }
       check(
         "Classic is marked as the active one",
         (await page.getAttribute('.theme-option[data-theme-option="classic"]', "aria-checked")) === "true",
@@ -312,6 +333,12 @@ async function main() {
       check(`Classic comes back EXACTLY as it was (${SNAPSHOT.length} surfaces, property for property)`, drift.length === 0, drift.join("; "));
       await reloaded.screenshot({ path: path.join(shots, "console-classic-restored.png") });
       await reloaded.close();
+
+      check(
+        `every request stayed on this origin (typefaces bundled, no font CDN)`,
+        foreign.length === 0,
+        foreign.slice(0, 5).join(", "),
+      );
 
       console.log(`  screenshots: ${shots}`);
     } finally {

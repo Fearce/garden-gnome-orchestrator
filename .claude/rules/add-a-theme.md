@@ -26,7 +26,11 @@ cannot be reached by one. Never make Classic conditional — no `:root:not([data
 3. `web/src/main.tsx` — `import "./themes/<id>.css";` (scoped, so importing costs Classic nothing).
 4. `web/index.html` — add the id to the pre-paint script's list, or the theme flashes Classic
    on **every** load: the bundle runs after first paint, so JS alone is always too late.
-5. Nothing else. The store persists it in the shared `director_settings` record via
+5. **A typeface the console doesn't already bundle** → import its `@fontsource/<family>` faces in
+   `web/src/main.tsx` — never a font-CDN `<link>`: the console is LAN/offline-first, and an
+   unreachable CDN drops the theme's identity to the next stack face (Georgia), which looks like
+   a working theme. `test:themes` reads your `--font-*` tokens and fails until the import exists.
+6. Nothing else. The store persists it in the shared `director_settings` record via
    `persistView`, and `SettingsPanel` renders whatever `THEMES` holds.
 
 ## Rules that bit

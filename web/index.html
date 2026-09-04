@@ -12,12 +12,9 @@
     />
     <title>GG Orchestrator</title>
     <link rel="icon" type="image/png" href="gnome-mark.png" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
+    <!-- The typefaces come from the bundle (web/src/main.tsx imports the @fontsource faces), not a
+         font CDN: this console is served on the LAN and must render its full identity offline.
+         `test:themes` fails if an external font link reappears here. -->
     <!-- Paint the chosen theme BEFORE the stylesheet does. The bundle runs after first paint, so
          applying the theme from JS alone flashes the Classic palette on every load. Reads the same
          `director_settings` record web/src/store.ts writes; the id list mirrors THEMES in

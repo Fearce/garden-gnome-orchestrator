@@ -17,7 +17,9 @@
  *   · a Classic rule that hard-codes the amber accent instead of reading --accent, which then stays
  *     amber on a theme that never chose it (the leak runs the other way: Classic into the theme).
  *
- * It also renders the picker, because a theme nobody can select is not shipped.
+ * It also renders the picker, because a theme nobody can select is not shipped, and checks the
+ * typefaces ship in the bundle, because a theme whose identity is its typeface must survive the
+ * network being gone.
  */
 
 import assert from "node:assert/strict";
@@ -245,6 +247,43 @@ for (const theme of nonDefault) {
     [],
     `src/themes/${theme.id}.css never answers these rules, which hard-code Classic's amber instead of ` +
       `reading --accent — they would stay amber on ${theme.name}`,
+  );
+}
+
+/* ---- 7. the typefaces ship in the bundle, not from a font CDN ----------------------------------- */
+
+// The console is served on the LAN and used offline, so a font CDN is a dependency on Google's
+// uptime AND a phone-home on every load — and when it fails, the theme's identity falls through to
+// the next face in the stack (Georgia), which looks like a working theme. The faces are @fontsource
+// imports in main.tsx; this is what stops a `<link>` to fonts.googleapis.com from coming back.
+assert.ok(
+  !/<link[^>]+href=["']https?:\/\//i.test(html),
+  "index.html links an off-origin resource — the typefaces ship in the bundle (@fontsource imports in " +
+    "main.tsx); the console must render its full identity offline",
+);
+for (const rel of ["src/styles.css", ...nonDefault.map((t) => `src/themes/${t.id}.css`)]) {
+  assert.ok(
+    !/url\(\s*["']?https?:\/\//i.test(read(rel)),
+    `${rel} references a remote resource by URL — bundle it instead (the console must render offline)`,
+  );
+}
+
+// And the bundle actually carries every family the tokens name: the first quoted family of each
+// --font-* token maps to its @fontsource package, so a theme that names a new typeface fails here
+// until its faces are imported in main.tsx.
+const entry = read("src/main.tsx");
+const families = new Set<string>();
+for (const css of [classic, ...nonDefault.map((t) => read(`src/themes/${t.id}.css`))]) {
+  for (const m of css.matchAll(/--font-[a-z-]+:\s*"([^"]+)"/g)) families.add(m[1]!);
+}
+for (const family of families) {
+  const pkg = family.toLowerCase().replace(/\s+/g, "-");
+  // Match a real import statement, not a bare substring: the file's comments name the packages too,
+  // so `includes()` is satisfiable by a comment — the false-negative direction a gate must not open.
+  assert.ok(
+    new RegExp(`^\\s*import\\s+["']@fontsource/${pkg}/`, "m").test(entry),
+    `main.tsx never imports @fontsource/${pkg}/ — "${family}" would fall through to the next face in ` +
+      "the stack, which looks like a working theme until the network is gone",
   );
 }
 
