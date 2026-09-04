@@ -745,8 +745,10 @@ export class Db {
     this.raw.exec(`
       DROP INDEX IF EXISTS idx_findings_thread;
       DROP INDEX IF EXISTS idx_findings_thread_created;
+      DROP INDEX IF EXISTS idx_findings_thread_created_id;
       DROP INDEX IF EXISTS idx_messages_thread;
       DROP INDEX IF EXISTS idx_messages_thread_created;
+      DROP INDEX IF EXISTS idx_messages_thread_created_id;
       DROP INDEX IF EXISTS idx_threads_state;
       DROP INDEX IF EXISTS idx_runs_thread;
       DROP INDEX IF EXISTS idx_runs_state;
@@ -2557,28 +2559,50 @@ export class Db {
     return m;
   }
 
+  /** Ties on `created_at` break on rowid — INSERT order — never on the random-UUID `id`, so a burst of
+   * messages the agent wrote inside one millisecond still reads back in the order it produced them.
+   * `idx_messages_thread_time` supplies that order directly (SQLite appends rowid to every index key). */
   listMessages(threadId: string): Message[] {
     return (
-      this.raw.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC, id ASC").all(threadId) as Row[]
+      this.raw.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC").all(threadId) as Row[]
     ).map(rowToMessage);
   }
 
   /** The newest page of one task's feed, or the page immediately before `before`, always returned
-   * chronologically. The extra probe row makes pagination exact without an expensive COUNT(*). */
+   * chronologically. The extra probe row makes pagination exact without an expensive COUNT(*).
+   *
+   * The wire cursor names a message by `id` because that is what the console has; the keyset itself
+   * runs on that row's rowid so paging and display share ONE order (insert order — see listMessages).
+   * Resolving id -> rowid is a covering lookup on the `id` primary key, not a scan. */
   listMessagePage(threadId: string, limit: number, before?: MessageCursor): { messages: Message[]; hasMore: boolean } {
     const probe = limit + 1;
-    const rows = before
-      ? (this.raw
-          .prepare(
-            `SELECT * FROM messages
-             WHERE thread_id = @threadId
-               AND (created_at < @createdAt OR (created_at = @createdAt AND id < @id))
-             ORDER BY created_at DESC, id DESC LIMIT @probe`,
-          )
-          .all({ threadId, createdAt: before.createdAt, id: before.id, probe }) as Row[])
-      : (this.raw
-          .prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
-          .all(threadId, probe) as Row[]);
+    const cursorSeq = before
+      ? ((this.raw.prepare("SELECT rowid AS seq FROM messages WHERE id = ?").get(before.id) as Row | undefined)?.seq as
+          | number
+          | undefined)
+      : undefined;
+    let rows: Row[];
+    if (!before) {
+      rows = this.raw
+        .prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?")
+        .all(threadId, probe) as Row[];
+    } else if (typeof cursorSeq === "number") {
+      rows = this.raw
+        .prepare(
+          `SELECT * FROM messages
+           WHERE thread_id = @threadId
+             AND (created_at < @createdAt OR (created_at = @createdAt AND rowid < @seq))
+           ORDER BY created_at DESC, rowid DESC LIMIT @probe`,
+        )
+        .all({ threadId, createdAt: before.createdAt, seq: cursorSeq, probe }) as Row[];
+    } else {
+      // The cursor row no longer exists (a retry reset this task's feed under an open console). Fall
+      // back to its timestamp INCLUSIVELY: re-showing that millisecond costs a dedupe in the client's
+      // id-keyed merge, whereas an exclusive `<` would silently drop its same-millisecond siblings.
+      rows = this.raw
+        .prepare("SELECT * FROM messages WHERE thread_id = ? AND created_at <= ? ORDER BY created_at DESC, rowid DESC LIMIT ?")
+        .all(threadId, before.createdAt, probe) as Row[];
+    }
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
     return { messages: page.reverse().map(rowToMessage), hasMore };

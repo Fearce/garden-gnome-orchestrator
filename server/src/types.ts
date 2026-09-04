@@ -348,8 +348,9 @@ export interface ChatCursor {
   id: string;
 }
 
-/** Stable keyset cursor for a task's chronological message feed. `id` makes messages written in the
- * same millisecond deterministic, so expanding history never skips or duplicates an entry. */
+/** Stable keyset cursor for a task's chronological message feed: the oldest entry already shown.
+ * `id` names that row; the server resolves it to the row's insert position, so expanding history
+ * never skips or duplicates an entry even when several messages share one millisecond. */
 export interface MessageCursor {
   createdAt: number;
   id: string;

@@ -72,10 +72,65 @@ try {
   assert.deepEqual(oldest.messages.map((message) => message.id), ["m-a"], "last page returns the remaining oldest entry");
   assert.equal(oldest.hasMore, false, "last page stops cleanly");
 
-  const plan = db.raw
-    .prepare("EXPLAIN QUERY PLAN SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
-    .all(thread.id, 400) as Array<{ detail: string }>;
-  assert.ok(plan.some((row) => row.detail.includes("idx_messages_thread_created_id")), `message page did not use its index: ${JSON.stringify(plan)}`);
+  // Messages written inside one millisecond must read back in the order they were WRITTEN. The feed
+  // renders a tool call and its result as separate rows, so an id-keyed tie-break (random UUIDs) puts
+  // the result above the call it came from. `w-*` are inserted deliberately against UUID order.
+  const sameMs = db.createThread({ title: "Same millisecond", workspace: dir, rawPrompt: "p", brief: "b" });
+  const written = ["w-c", "w-a", "w-b"] as const; // insert order, which is NOT ascending id order
+  for (const id of written) insert.run({ id, threadId: sameMs.id, content: id, createdAt: 5_000 });
+  assert.deepEqual(
+    db.listMessages(sameMs.id).map((message) => message.id),
+    [...written],
+    "same-millisecond messages read back in write order, not random-UUID order",
+  );
+  assert.deepEqual(
+    db.listMessagePage(sameMs.id, 400).messages.map((message) => message.id),
+    [...written],
+    "the feed page keeps that write order too",
+  );
+  // …and paging through them stays exact: the cursor is a message id, resolved server-side to its
+  // insert position, so a same-millisecond group splits across pages without overlap or loss.
+  const msNewest = db.listMessagePage(sameMs.id, 2);
+  assert.deepEqual(msNewest.messages.map((m) => m.id), ["w-a", "w-b"], "newest page of one millisecond");
+  assert.equal(msNewest.hasMore, true, "the split group advertises its remainder");
+  const msOlder = db.listMessagePage(sameMs.id, 2, { createdAt: 5_000, id: msNewest.messages[0]!.id });
+  assert.deepEqual(msOlder.messages.map((m) => m.id), ["w-c"], "rowid keyset resumes inside the same millisecond");
+  assert.equal(msOlder.hasMore, false, "…and then stops");
+  // A cursor whose row is gone (a retry reset the feed under an open console) must not silently drop
+  // that millisecond's other rows; re-showing them is deduped by the client's id-keyed merge.
+  const msMissing = db.listMessagePage(sameMs.id, 400, { createdAt: 5_000, id: "deleted-row" });
+  assert.deepEqual(msMissing.messages.map((m) => m.id), [...written], "a vanished cursor re-shows its millisecond");
+
+  for (const [label, sql] of [
+    ["descending page", "SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 400"],
+    ["ascending read", "SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC"],
+    [
+      "keyset page",
+      "SELECT * FROM messages WHERE thread_id = ? AND (created_at < 9 OR (created_at = 9 AND rowid < 9)) ORDER BY created_at DESC, rowid DESC LIMIT 400",
+    ],
+  ] as const) {
+    const plan = db.raw.prepare("EXPLAIN QUERY PLAN " + sql).all(thread.id) as Array<{ detail: string }>;
+    const detail = plan.map((row) => row.detail).join(" | ");
+    assert.ok(detail.includes("idx_messages_thread_time"), `${label} did not use its index: ${detail}`);
+    // The whole point of the composite is that the index already yields the needed order.
+    assert.ok(!/TEMP B-TREE/.test(detail), `${label} still sorts by hand: ${detail}`);
+  }
+  const findingsPlan = (
+    db.raw.prepare("EXPLAIN QUERY PLAN SELECT * FROM findings WHERE thread_id = ? ORDER BY created_at ASC").all(thread.id) as Array<{
+      detail: string;
+    }>
+  )
+    .map((row) => row.detail)
+    .join(" | ");
+  assert.ok(findingsPlan.includes("idx_findings_thread_time"), `findings read did not use its index: ${findingsPlan}`);
+  assert.ok(!/TEMP B-TREE/.test(findingsPlan), `findings read still sorts by hand: ${findingsPlan}`);
+
+  // The superseded indexes must be gone, not merely unused — they are the largest objects in the DB
+  // after the tables themselves, and a rebuilt one silently reintroduces the id ordering above.
+  const retired = db.raw
+    .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name IN ('idx_messages_thread_created_id','idx_findings_thread_created_id','idx_messages_thread','idx_findings_thread')")
+    .all() as Array<{ name: string }>;
+  assert.deepEqual(retired, [], `superseded indexes were not retired: ${JSON.stringify(retired)}`);
 
   console.log("Performance paths OK — board summary is slim and task history keyset-pages through its composite index.");
 } finally {

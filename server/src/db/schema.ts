@@ -437,10 +437,15 @@ CREATE INDEX IF NOT EXISTS idx_grades_model    ON model_grades(graded_model);
 -- these always carry (better-sqlite3 EXPLAIN QUERY PLAN confirmed "USE TEMP B-TREE FOR ORDER BY" on
 -- the old single-column index). Measured on the live 800-task/508k-message DB: 1.05s cold / ~40ms warm
 -- for the busiest task's ~9k messages, dropping to under 1ms with the composite below, since the index
--- itself now returns rows already in the needed order. The id tie-break supports exact keyset pagination.
+-- itself now returns rows already in the needed order.
+-- Two columns, NOT three: SQLite appends the rowid to every index key, so these are physically
+-- (thread_id, created_at, rowid) and satisfy ORDER BY created_at, rowid in both directions with no
+-- temp B-tree. That matters because rowid IS insert order — a third id column would instead make
+-- random-UUID order authoritative for rows written in the same millisecond, which reorders a tool
+-- call after its own result in the feed. listMessagePage keysets on rowid for the same reason.
 -- Db.migrate retires redundant legacy indexes; SCHEMA never rebuilds a large index at restart.
-CREATE INDEX IF NOT EXISTS idx_findings_thread_created_id ON findings(thread_id, created_at, id);
-CREATE INDEX IF NOT EXISTS idx_messages_thread_created_id ON messages(thread_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_findings_thread_time ON findings(thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_thread_time ON messages(thread_id, created_at);
 -- lastTextMessageForRun runs at every implementor run end (and once per run during the memo backfill).
 -- Without this it is a full scan of the whole message history for a single row.
 CREATE INDEX IF NOT EXISTS idx_messages_run ON messages(run_id);
