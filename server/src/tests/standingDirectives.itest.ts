@@ -433,6 +433,54 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test 7c: a resumed QA verifier can be older than a new owner directive ---------------------------
+  console.log(`\nTest 7c — a resumed QA recheck still carries a later standing directive`);
+  {
+    const h = makeHarness();
+    const oldProjectsDir = process.env.CLAUDE_PROJECTS_DIR;
+    try {
+      const projectsDir = join(h.dir, "claude-projects-qa");
+      const projectDir = join(projectsDir, "workspace");
+      mkdirSync(projectDir, { recursive: true });
+      process.env.CLAUDE_PROJECTS_DIR = projectsDir;
+
+      const id = seedTask(h);
+      const priorQaSession = "prior-qa-session";
+      writeFileSync(join(projectDir, `${priorQaSession}.jsonl`), "");
+      h.db.updateRun(h.db.createRun({ threadId: id, role: "qa", model: "claude-opus-5", account: "acct-a" }).id, {
+        sessionId: priorQaSession,
+      });
+
+      await h.mgr.injectThread(id, BRANCH_DIRECTIVE, "queue");
+
+      const calls: { role: string; text: string; resume?: string }[] = [];
+      h.internals.runRole = async (_thread: Thread, role: string, kickoff: unknown, _makeCfg: unknown, resume?: string): Promise<unknown> => {
+        calls.push({ role, text: sendText(kickoff), resume });
+        return {
+          type: "result",
+          subtype: "success",
+          isError: false,
+          structuredOutput: { pass: true, summary: "ok", changed: false },
+        };
+      };
+
+      await h.internals.runQA(h.db.getThread(id)!, {
+        round: 2,
+        applyFixes: true,
+        autoPush: true,
+        priorFixSummary: "previous QA changed the tree",
+      });
+
+      check("the QA recheck resumed the prior QA session", calls[0]?.resume === priorQaSession, JSON.stringify(calls));
+      check("the resumed QA recheck carries the standing directive", !!calls[0]?.text.includes(BRANCH_DIRECTIVE), calls[0]?.text);
+      await settle();
+    } finally {
+      if (oldProjectsDir == null) delete process.env.CLAUDE_PROJECTS_DIR;
+      else process.env.CLAUDE_PROJECTS_DIR = oldProjectsDir;
+      h.dispose();
+    }
+  }
+
   // -- Test 8: a Retry re-runs the ORIGINAL brief, so the owner's corrections to that brief must survive --
   // resetThreadForRetry wipes stage_outputs; it already excepted the reader-escalation evidence as
   // "original user context". A standing directive is the same class of context - dropping it puts the

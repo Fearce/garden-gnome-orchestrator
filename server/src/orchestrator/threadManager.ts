@@ -12709,15 +12709,16 @@ function qaKickoff(thread: Thread, plan?: PlanOutput, unsurfacedArtifacts: strin
  *  prior diff, and the test output, so this is just a short re-check nudge — no re-statement. The
  *  deliverables check is repeated (with the freshly-recomputed unsurfaced list) because a fix-round
  *  is exactly where a forgotten deliverable gets emitted — or still doesn't. */
-function qaRecheckKickoff(unsurfacedArtifacts: string[] = []): string {
-  return [
+function qaRecheckKickoff(unsurfacedArtifacts: string[] = [], standingDirectives?: string[]): string {
+  const lines = [
     "The implementor reports it has addressed the issues you raised. Re-verify:",
     "- Re-run `git diff` to see the NEW state and re-run the project's build/typecheck/tests.",
     "- Confirm each issue you raised is actually resolved, and watch for any regression the fix introduced.",
     "Then return your updated structured verdict (pass + remaining issues). Pass only if you'd ship it.",
-    "",
-    deliverablesCheckBlock(unsurfacedArtifacts),
-  ].join("\n");
+  ];
+  const directives = renderStandingDirectives(standingDirectives);
+  if (directives) lines.push("", directives);
+  return [...lines, "", deliverablesCheckBlock(unsurfacedArtifacts)].join("\n");
 }
 
 /** The RESUMED form for a reviewer the turn ceiling cut off mid-verification. It is not a re-check —
@@ -12725,7 +12726,7 @@ function qaRecheckKickoff(unsurfacedArtifacts: string[] = []): string {
  * finished. In QA-fixes mode it must also be told that its OWN pre-cutoff edits still count as changes:
  * a `changed: false` there would accept the reviewer's edits with no independent pass, which is exactly
  * what the fixes mode forbids. */
-function qaContinueKickoff(unsurfacedArtifacts: string[] = [], applyFixes = false): string {
+function qaContinueKickoff(unsurfacedArtifacts: string[] = [], applyFixes = false, standingDirectives?: string[]): string {
   const lines = [
     "You stopped at a per-session turn limit, not because your review was finished — nothing else has touched the repo since you stopped.",
     "Continue exactly where you left off: finish the checks you still had outstanding, then return your structured verdict (pass + issues).",
@@ -12736,6 +12737,8 @@ function qaContinueKickoff(unsurfacedArtifacts: string[] = [], applyFixes = fals
       "If you modified any task file at any point in this review — including before you were cut off — you must still report `changed: true`. Your own edits are the one thing that HAS changed, and they need an independent QA pass before the task can be accepted.",
     );
   }
+  const directives = renderStandingDirectives(standingDirectives);
+  if (directives) lines.push("", directives);
   return [...lines, "", deliverablesCheckBlock(unsurfacedArtifacts)].join("\n");
 }
 
@@ -12750,8 +12753,10 @@ function qaRoundKickoff(
       ? qaFixFreshKickoff(thread, o.plan, o.opts.priorFixSummary, o.unsurfaced, o.standingDirectives)
       : qaKickoff(thread, o.plan, o.unsurfaced, o.standingDirectives);
   }
-  if (o.opts.continuation) return qaContinueKickoff(o.unsurfaced, o.opts.applyFixes);
-  return o.opts.priorFixSummary ? qaFixRecheckKickoff(o.opts.priorFixSummary, o.unsurfaced) : qaRecheckKickoff(o.unsurfaced);
+  if (o.opts.continuation) return qaContinueKickoff(o.unsurfaced, o.opts.applyFixes, o.standingDirectives);
+  return o.opts.priorFixSummary
+    ? qaFixRecheckKickoff(o.opts.priorFixSummary, o.unsurfaced, o.standingDirectives)
+    : qaRecheckKickoff(o.unsurfaced, o.standingDirectives);
 }
 
 /** Handoff between two editing-QA passes. Unlike qaRecheckKickoff, no implementor was relaunched:
@@ -12770,8 +12775,11 @@ function qaFixHandoffBlock(previousSummary: string): string[] {
 
 /** The RESUMED form: the session already holds the brief, the plan and the prior diff, so it only
  * needs the handoff itself. */
-function qaFixRecheckKickoff(previousSummary: string, unsurfacedArtifacts: string[] = []): string {
-  return [...qaFixHandoffBlock(previousSummary), "", deliverablesCheckBlock(unsurfacedArtifacts)].join("\n");
+function qaFixRecheckKickoff(previousSummary: string, unsurfacedArtifacts: string[] = [], standingDirectives?: string[]): string {
+  const lines = qaFixHandoffBlock(previousSummary);
+  const directives = renderStandingDirectives(standingDirectives);
+  if (directives) lines.push("", directives);
+  return [...lines, "", deliverablesCheckBlock(unsurfacedArtifacts)].join("\n");
 }
 
 /** The FRESH form. A verifier pass is a fresh session on almost every route — a different provider
