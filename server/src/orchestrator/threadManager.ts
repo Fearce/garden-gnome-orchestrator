@@ -6386,7 +6386,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   private async runPlanner(thread: Thread): Promise<PlanOutput | undefined> {
-    const res = await this.runRole(thread, "planner", this.kickoffContent(thread.id, this.withOfficeNote(thread, "planner", thread.brief)), ({ token, resume, runId }) => {
+    // The planner can run (or re-run, after a cap park or restart) AFTER the owner has already
+    // injected a standing directive — it must see the same directive the implementor is guaranteed
+    // later, or it can hand the implementor a plan that quietly contradicts an owner correction.
+    const directives = this.standingDirectivesBlock(thread.id);
+    const plannerKickoffText = directives ? `${thread.brief}\n\n${directives}` : thread.brief;
+    const res = await this.runRole(thread, "planner", this.kickoffContent(thread.id, this.withOfficeNote(thread, "planner", plannerKickoffText)), ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "planner", getRunId: () => runId });
       const office = createOfficeServer(this, { threadId: thread.id, role: "planner", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
       const cfg = plannerConfig(thread.workspace, { bus, office }, this.communicationPolicyOptions());
@@ -6398,7 +6403,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   private async runResearcher(thread: Thread, plan: PlanOutput | undefined): Promise<ResearchOutput | undefined> {
-    const res = await this.runRole(thread, "researcher", this.kickoffContent(thread.id, this.withOfficeNote(thread, "researcher", researcherKickoff(thread, plan))), ({ token, resume, runId }) => {
+    const standingDirectives = this.db.getThreadStageOutputs(thread.id).standingDirectives;
+    const res = await this.runRole(
+      thread,
+      "researcher",
+      this.kickoffContent(thread.id, this.withOfficeNote(thread, "researcher", researcherKickoff(thread, plan, standingDirectives))),
+      ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "researcher", getRunId: () => runId });
       const memory = createMemoryServer(this.memory);
       const office = createOfficeServer(this, { threadId: thread.id, role: "researcher", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
@@ -6481,7 +6491,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const res = await this.runRole(
       thread,
       "reader",
-      this.kickoffContent(thread.id, this.withOfficeNote(thread, "reader", readerKickoff(thread, directorNote))),
+      this.kickoffContent(
+        thread.id,
+        this.withOfficeNote(thread, "reader", readerKickoff(thread, directorNote, this.db.getThreadStageOutputs(thread.id).standingDirectives)),
+      ),
       ({ token, resume, runId }) => {
         const bus = createBusServer(this, { threadId: thread.id, role: "reader", getRunId: () => runId });
         const office = createOfficeServer(this, { threadId: thread.id, role: "reader", workspace: thread.workspace, title: thread.title, getRunId: () => runId });
@@ -12698,8 +12711,10 @@ function composeKickoff(
 
 /** The researcher's kickoff. Planner-first means the researcher is handed the plan and told to
  *  resolve its open questions with EXTERNAL sources only — it must not re-read the codebase. */
-function researcherKickoff(thread: Thread, plan: PlanOutput | undefined): string {
+function researcherKickoff(thread: Thread, plan: PlanOutput | undefined, standingDirectives?: string[]): string {
   const parts: string[] = [`# Research request for task: ${thread.title}`, "", "## Brief", thread.brief, ""];
+  const directives = renderStandingDirectives(standingDirectives);
+  if (directives) parts.push(directives, "");
   if (plan) {
     parts.push(
       "## The planner read the codebase and flagged that this task needs EXTERNAL information before it can be built",
@@ -12721,7 +12736,7 @@ function researcherKickoff(thread: Thread, plan: PlanOutput | undefined): string
 /** The reader lane's kickoff: the question to answer, plus the two rules that keep the lane honest —
  *  post the answer as a finding, and escalate rather than half-answer. The full read-only doctrine lives
  *  in READER_PROMPT (the system prompt); this is just the task hand-off. */
-function readerKickoff(thread: Thread, directorNote?: string): string {
+function readerKickoff(thread: Thread, directorNote?: string, standingDirectives?: string[]): string {
   const parts: string[] = [
     `# Read task: ${thread.title}`,
     "",
@@ -12732,6 +12747,8 @@ function readerKickoff(thread: Thread, directorNote?: string): string {
     "",
     "Do NOT half-answer. If answering actually requires editing files, running a build/tests, verification you can't do read-only, or a broad multi-file investigation beyond a lookup, STOP: call `post_finding` (severity `warning`) explaining \"needs full pipeline because …\", and return structured output with `escalated: true` and a one-line `reason`. Otherwise, once you've posted the answer, return `answered: true`.",
   ];
+  const directives = renderStandingDirectives(standingDirectives);
+  if (directives) parts.push("", directives);
   if (directorNote) parts.push("", "## Note from the director", directorNote);
   return parts.join("\n");
 }

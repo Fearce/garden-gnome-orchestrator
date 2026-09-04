@@ -76,9 +76,9 @@ a manual Resume, a restart — rebuilt its kickoff from that snapshot and never 
 silently dropped, which is exactly the "the agents forgot what I told them" report.
 `injectThread` now durably appends every owner injection to `stage_outputs.standingDirectives` (verbatim,
 oldest first, most recent 25, exact-repeat deduped), and `renderStandingDirectives` puts the whole list
-into **every** kickoff-composing path: the fresh implementor start, the cold `composeResumeKickoff`
-reseed, the CLI resume continuation, the warm full-session nudge, and QA's and the reviewer's own
-kickoffs — so the gate that ships the task can catch a violated directive. Two rules: **a directive is
+into **every** kickoff-composing path: every implementor resume shape, QA/reviewer (incl. resumed/recheck
+forms), and planner/researcher/reader — a planner or reader can re-run after the directive lands, and
+must not hand back a plan that quietly contradicts it. Two rules: **a directive is
 only as durable as the narrowest path that omits it**, so a new kickoff builder must render it too; and
 it is rendered VERBATIM, never folded into the Haiku-compressed prior-session handoff, which is lossy.
 The list also survives a from-scratch **Retry** (`resetThreadForRetry` preserves it beside the reader

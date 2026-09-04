@@ -510,6 +510,52 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test 9: the planner, researcher and reader kickoffs must ALSO carry a standing directive, not ------
+  // just the implementor/QA/reviewer paths above. The planner can run (or re-run, after a cap park or a
+  // restart) after an owner injection already landed — recordStandingDirective fires regardless of thread
+  // state — and the reader/researcher can be re-entered the same way. Only the implementor is guaranteed
+  // to actually execute a "put this on its own branch" instruction, but a plan or research brief that
+  // silently contradicts it is still a real defect this task's own bug report would recognize.
+  console.log(`\nTest 9 — planner, researcher and reader kickoffs also carry the standing directive`);
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "implementing" });
+      const impl = new FakeRun();
+      h.internals.live.set(id, { run: impl, runId: "run-1", accountId: "acct-a" });
+      await h.mgr.injectThread(id, BRANCH_DIRECTIVE, "append");
+      h.internals.live.delete(id);
+
+      const captured: { role: string; kickoff: string }[] = [];
+      h.internals.runRole = async (_t: Thread, role: string, kickoff: unknown) => {
+        captured.push({ role, kickoff: sendText(kickoff) || String(kickoff) });
+        if (role === "planner") {
+          return { type: "result", subtype: "success", isError: false, structuredOutput: { summary: "plan", steps: [], risks: [], openQuestions: [], nextAgent: "implementor" } };
+        }
+        if (role === "researcher") {
+          return { type: "result", subtype: "success", isError: false, structuredOutput: { facts: [], sources: [] } };
+        }
+        return { type: "result", subtype: "success", isError: false, structuredOutput: { answered: true, escalated: false } };
+      };
+
+      const thread = h.db.getThread(id)!;
+      await h.internals.runPlanner(thread);
+      await h.internals.runResearcher(thread, { summary: "plan", steps: [], risks: [], openQuestions: ["needs external info"], nextAgent: "researcher" });
+      await h.internals.runReader(thread);
+
+      const planner = captured.find((c) => c.role === "planner");
+      const researcher = captured.find((c) => c.role === "researcher");
+      const reader = captured.find((c) => c.role === "reader");
+      check("the planner kickoff carries the standing directive", !!planner?.kickoff.includes(BRANCH_DIRECTIVE), planner?.kickoff);
+      check("the researcher kickoff carries the standing directive", !!researcher?.kickoff.includes(BRANCH_DIRECTIVE), researcher?.kickoff);
+      check("the reader kickoff carries the standing directive", !!reader?.kickoff.includes(BRANCH_DIRECTIVE), reader?.kickoff);
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS ✅" : "FAIL ❌"} — ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {
     console.log("Failures:");
