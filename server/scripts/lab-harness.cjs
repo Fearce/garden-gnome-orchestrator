@@ -51,6 +51,10 @@
 //     exists after the run. A lab deletes its temp DATA_DIR on the way out, which takes the evidence
 //     with it — and an implementor now has to SURFACE that evidence as a deliverable, so without the
 //     flag the only way to keep a picture is a second full run with `--keep` plus a manual port kill.
+//     Point it INSIDE `data/` (`-- --shots data/<lab>-shots`): a deliverable has to outlive the run, so
+//     the pictures stay on disk forever, and `server/data/` is the one place already gitignored. Any
+//     other path leaves them untracked in a checkout several agents share — permanent `git status`
+//     noise that the nightly sweep reports as dirty and that lands in the gate-provenance stamp.
 //   • `boot()` takes TWO ports: `port` and the HTTPS listener at `port + 2`. A lab that stands up a
 //     COMPANION service (office-lab's relay) must avoid both. Landing on `port + 2` does not fail
 //     loudly — the console's TLS socket answers the companion's plain-HTTP request, and the only clue
