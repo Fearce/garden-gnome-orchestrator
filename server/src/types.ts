@@ -853,6 +853,15 @@ export interface StageOutputs {
   // run is a property of ONE review too: a round whose retry WORKED still spent the lifetime count, so a
   // later round's first empty run was denied the retry and parked the task although no single review had
   // ever come back empty twice. Every value it holds is also inside qaSilentRetries, never on top of it.
+  // Durable owner directives (orchestrator/threadManager.ts injectThread): the verbatim text of every
+  // owner injection accepted during this task's life, oldest first, capped to the most recent 25. `kickoff`
+  // above is a frozen, one-time snapshot (composed before the implementor first started) and is never
+  // rewritten by a later injection, so a mid-task instruction ("put this on a separate branch") reached
+  // only the live session it was sent to — a LATER fresh/cold-resumed session (a reviewer fix round, a cap
+  // failover, a restart) rebuilt its kickoff from that same frozen snapshot and never saw it. This list is
+  // the fix: every kickoff-composing path renders it verbatim (never Haiku-summarized, unlike the
+  // compressed prior-session handoff) so a standing owner instruction cannot silently drop across a resume.
+  standingDirectives?: string[];
 }
 
 /**

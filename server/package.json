@@ -95,6 +95,7 @@
     "test:qa-budget": "tsx src/tests/qaRoundBudget.itest.ts",
     "test:qa-budget-scope": "node scripts/qa-budget-scope.test.cjs",
     "test:inject-qa": "tsx src/tests/injectDuringQa.itest.ts",
+    "test:standing-directives": "tsx src/tests/standingDirectives.itest.ts",
     "test:chat-steering": "tsx src/tests/chatSteering.itest.ts",
     "test:cowork": "tsx src/tests/cowork.itest.ts",
     "test:cowork-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/cowork-ui.test.tsx",

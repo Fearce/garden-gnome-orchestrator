@@ -6592,7 +6592,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // deliverables check starts from a concrete list instead of the model's memory. Recomputed each
     // round — a fix-round that emits a forgotten deliverable drops it from the next round's hint.
     const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
-    const baseKickoff = qaRoundKickoff(thread, { resume: !!resume, opts, plan, unsurfaced });
+    const standingDirectives = this.db.getThreadStageOutputs(thread.id).standingDirectives;
+    const baseKickoff = qaRoundKickoff(thread, { resume: !!resume, opts, plan, unsurfaced, standingDirectives });
     const kickoff = opts.applyFixes ? `${baseKickoff}\n\n${qaFixCommitPolicy(opts.autoPush !== false)}` : baseKickoff;
     // Stamped BEFORE the run starts, so the silent-run check below can't count a message this attempt
     // emitted between spawning and the result coming back as belonging to an earlier attempt.
@@ -7047,6 +7048,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // here with it still set. Reading fresh means no in-memory flag to leak or mis-fire on a later resume.
     const restartNote = this.db.getThread(thread.id)?.error?.startsWith(RESTART_ERROR_PREFIX) ? RESTART_RESUME_NOTE : undefined;
     if (restartNote) this.hub.log("info", `Resume on ${thread.id.slice(0, 8)} carries the restart-already-completed notice (won't restart again).`);
+    // Every branch below carries this: a standing owner directive must reach a fresh/cold-resumed session
+    // (this function's whole reason to exist per its own doc comment) exactly as reliably as a warm one
+    // that never lost it. See recordStandingDirective/standingDirectivesBlock for why this can't rely on
+    // opts.directorNote (only the LATEST resume's note) or the compressed handoff (lossy, one prior session).
+    const directives = this.standingDirectivesBlock(thread.id);
     // The resolved backend can differ from the one that produced this session id if the provider was
     // toggled across a restart (implementorProvider is in-memory, re-derived from CURRENT settings here).
     // A session id is provider-specific, so feeding a Codex thread id to a Claude resume (or vice versa)
@@ -7070,7 +7076,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       resumeSession = undefined;
     }
     if (!resumeSession) {
-      const extras = [restartNote, opts.directorNote].filter(Boolean);
+      const extras = [restartNote, directives, opts.directorNote].filter(Boolean);
       const text = extras.length ? `${baseKickoff}\n\n${extras.join("\n\n")}` : baseKickoff;
       return this.startImplementor(thread, text, { effort: opts.effort, account: opts.account, images: opts.images });
     }
@@ -7083,6 +7089,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const label = providerLabel(resolvedProvider);
       const parts = [
         restartNote,
+        directives,
         opts.resumeNudge,
         opts.directorNote && opts.directorNote !== opts.resumeNudge && opts.directorNote,
       ].filter(Boolean);
@@ -7125,8 +7132,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // restartNote first: it's CONTEXT about what just happened, not a task, so the actionable nudge /
       // director instruction stays the freshest (last) thing the model reads — matching the cold seed,
       // where composeResumeKickoff also pushes the restart note ahead of the director note.
+      // Standing directives are included even on a WARM resume (the same live SDK session, in theory
+      // still holding everything it was ever told) as insurance against provider-side context compaction
+      // silently dropping an earlier turn — cheap redundancy against a failure mode this file can't see.
       const parts = [
         restartNote,
+        directives,
         opts.resumeNudge,
         opts.directorNote && opts.directorNote !== opts.resumeNudge && opts.directorNote,
       ].filter(Boolean);
@@ -8181,6 +8192,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       "---",
       "## ⏪ Resuming — you already worked on this task in an earlier session",
     ];
+    // Rendered verbatim, ahead of the (possibly lossy) compressed handoff below — a standing directive
+    // must survive this reseed even if the Haiku summary of the prior session didn't happen to retain it.
+    const directives = this.standingDirectivesBlock(thread.id);
+    if (directives) {
+      parts.push(directives, "");
+    }
     if (opts?.restartNote) {
       parts.push(opts.restartNote, "");
     }
@@ -9455,6 +9472,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (thread && !qaBypassRequested) {
       this.invalidateManualDeploymentForNewWork(threadId, "the owner added new task instructions");
     }
+    // Record this as a STANDING directive before routing to any state-specific branch below, so it is
+    // captured regardless of which one actually delivers it (live/QA/reviewer/self-improvement/buffered/
+    // cold-resume all return early past this point). See recordStandingDirective's own comment for why.
+    if (thread && !qaBypassRequested && message.trim()) this.recordStandingDirective(threadId, message.trim());
     // Auto-retitle the lane to reflect the LATEST directive — the user runs several tasks at once and
     // loses track when a lane's scope drifts from its original title. Fire-and-forget (void): the
     // model call must never block, slow, or throw into the inject path. Covers every inject branch
@@ -9934,6 +9955,33 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const q = this.directorNotes.get(threadId) ?? [];
     q.push(note);
     this.directorNotes.set(threadId, q);
+  }
+
+  /** Durably record an owner injection as a STANDING directive for the rest of this task's life —
+   *  the fix for a whole class of "I told it to X and a later session forgot" reports. Everything else
+   *  that carries an injected instruction forward (`this.directorNotes`, a live `sendCommunication`, the
+   *  Haiku-compressed prior-session handoff in `composeResumeKickoff`) is either in-memory, delivered to
+   *  one already-live session, or lossy-summarized — none of them is guaranteed to reach a LATER
+   *  fresh/cold-resumed session (a reviewer fix round via `runReviewFixRound`, a cap failover, a manual
+   *  Resume, a restart). This list is durable in `stage_outputs`, rendered verbatim (never summarized) by
+   *  `standingDirectivesBlock`, and read by every kickoff-composing path. Capped to the most recent 25 —
+   *  a standing constraint, not a transcript — and skips an exact repeat of the last entry so the owner
+   *  re-sending the same steering note (a common reaction to being ignored) doesn't pad the list. */
+  private recordStandingDirective(threadId: string, message: string): void {
+    const existing = this.db.getThreadStageOutputs(threadId).standingDirectives ?? [];
+    if (existing[existing.length - 1] === message) return;
+    this.db.updateThreadStageOutputs(threadId, { standingDirectives: [...existing, message].slice(-25) });
+  }
+
+  /** Render every standing owner directive recorded so far for this task, verbatim and in order, or
+   *  `undefined` when none exist yet. Every kickoff-composing path (a fresh implementor start, a cold
+   *  resume seed, a CLI resume's continuation, a warm full-session resume nudge, QA's and the
+   *  reviewer's own kickoffs) should include this — a directive is only as durable as the narrowest
+   *  path that omits it. Thin wrapper over the free `renderStandingDirectives` so the free kickoff
+   *  functions (qaKickoff/reviewerKickoff et al., which take the array, not a threadId) share the exact
+   *  same rendering rather than a second copy drifting out of sync. */
+  private standingDirectivesBlock(threadId: string): string | undefined {
+    return renderStandingDirectives(this.db.getThreadStageOutputs(threadId).standingDirectives);
   }
 
   /** Deliver to a now-live implementor any director notes buffered while it was still materializing
@@ -10762,8 +10810,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  left no session to resume. */
   private freshReviewKickoff(thread: Thread): string | unknown[] {
     const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
-    const plan = this.db.getThreadStageOutputs(thread.id).plan ?? undefined;
-    const kickoff = reviewerKickoff(thread, plan, unsurfaced, this.settings().maxReviewFixRounds);
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    const kickoff = reviewerKickoff(thread, stage.plan ?? undefined, unsurfaced, this.settings().maxReviewFixRounds, stage.standingDirectives);
     return this.kickoffContent(thread.id, this.withOfficeNote(thread, "reviewer", kickoff));
   }
 
@@ -12482,6 +12530,24 @@ function formatResearch(research: ResearchOutput): string {
   return parts.join("\n");
 }
 
+/** Render every standing owner directive (`StageOutputs.standingDirectives`) verbatim and in order, or
+ *  `undefined` when there are none. Pure so every kickoff builder — implementor (via
+ *  ThreadManager.standingDirectivesBlock) as well as the free QA/reviewer kickoff functions below, which
+ *  only ever see the array, not a threadId — renders the exact same text instead of two copies drifting
+ *  apart. See ThreadManager.recordStandingDirective for why this list exists at all. */
+function renderStandingDirectives(directives?: string[] | null): string | undefined {
+  if (!directives?.length) return undefined;
+  return [
+    "## Owner instructions given during this task (persist across resumes — do not let these silently drop)",
+    "These were sent directly by the owner at some point in this task's history, to whichever session was " +
+      "running at the time. They remain in force for the REST of this task — including in a brand-new or " +
+      "resumed session that never itself received them — unless a later message here explicitly supersedes " +
+      "one. Before committing, pushing, switching/creating a branch, or declaring the task finished, re-check " +
+      "your current plan (and, for QA/review, your verdict) against every line below.",
+    ...directives.map((d, i) => `${i + 1}. ${d}`),
+  ].join("\n");
+}
+
 function composeKickoff(
   thread: Thread,
   plan: PlanOutput | undefined,
@@ -12590,7 +12656,7 @@ function readerKickoff(thread: Thread, directorNote?: string): string {
   return parts.join("\n");
 }
 
-function qaKickoff(thread: Thread, plan?: PlanOutput, unsurfacedArtifacts: string[] = []): string {
+function qaKickoff(thread: Thread, plan?: PlanOutput, unsurfacedArtifacts: string[] = [], standingDirectives?: string[]): string {
   const parts: string[] = [
     `# QA review for task: ${thread.title}`,
     "",
@@ -12607,6 +12673,11 @@ function qaKickoff(thread: Thread, plan?: PlanOutput, unsurfacedArtifacts: strin
     if (files.length) hint.push(`Files the plan expected to touch: ${files.join(", ")}`);
     if (hint.length) parts.push("", "## Scope hint (verify against the ACTUAL git diff, not just this)", ...hint);
   }
+  // A standing owner directive (e.g. "keep this on a separate branch") is exactly the kind of thing a
+  // fix-round implementor can silently drop across a resume — QA/review is the independent check that
+  // can catch a violation before the task ships, so it must see the same durable list the implementor does.
+  const directives = renderStandingDirectives(standingDirectives);
+  if (directives) parts.push("", directives);
   parts.push(
     "",
     "Verify the work in this repo: inspect the changes (git diff), run the project's build/typecheck/tests, and check correctness and completeness against the brief. Then return your structured verdict (pass + issues). Pass only if you'd actually ship it.",
@@ -12654,12 +12725,12 @@ function qaContinueKickoff(unsurfacedArtifacts: string[] = [], applyFixes = fals
  * read, so it gets only the reason it was woken; a fresh one gets the full review brief. */
 function qaRoundKickoff(
   thread: Thread,
-  o: { resume: boolean; opts: QaRoundOpts; plan?: PlanOutput; unsurfaced: string[] },
+  o: { resume: boolean; opts: QaRoundOpts; plan?: PlanOutput; unsurfaced: string[]; standingDirectives?: string[] },
 ): string {
   if (!o.resume) {
     return o.opts.priorFixSummary
-      ? qaFixFreshKickoff(thread, o.plan, o.opts.priorFixSummary, o.unsurfaced)
-      : qaKickoff(thread, o.plan, o.unsurfaced);
+      ? qaFixFreshKickoff(thread, o.plan, o.opts.priorFixSummary, o.unsurfaced, o.standingDirectives)
+      : qaKickoff(thread, o.plan, o.unsurfaced, o.standingDirectives);
   }
   if (o.opts.continuation) return qaContinueKickoff(o.unsurfaced, o.opts.applyFixes);
   return o.opts.priorFixSummary ? qaFixRecheckKickoff(o.opts.priorFixSummary, o.unsurfaced) : qaRecheckKickoff(o.unsurfaced);
@@ -12689,8 +12760,16 @@ function qaFixRecheckKickoff(previousSummary: string, unsurfacedArtifacts: strin
  * cannot resume the editor's session, and a same-provider verifier is deliberately forced fresh — so
  * it holds none of the task context. Without the full brief/plan kickoff it would review the diff
  * blind and could not judge completeness against the brief at all. */
-export function qaFixFreshKickoff(thread: Thread, plan: PlanOutput | undefined, previousSummary: string, unsurfacedArtifacts: string[] = []): string {
-  return [qaKickoff(thread, plan, unsurfacedArtifacts), "", "## Prior QA fix handoff", ...qaFixHandoffBlock(previousSummary)].join("\n");
+export function qaFixFreshKickoff(
+  thread: Thread,
+  plan: PlanOutput | undefined,
+  previousSummary: string,
+  unsurfacedArtifacts: string[] = [],
+  standingDirectives?: string[],
+): string {
+  return [qaKickoff(thread, plan, unsurfacedArtifacts, standingDirectives), "", "## Prior QA fix handoff", ...qaFixHandoffBlock(previousSummary)].join(
+    "\n",
+  );
 }
 
 /** Editing QA runs are responsible for preserving their own fixes. This task-specific handoff is what
@@ -12774,7 +12853,13 @@ function qaSupersedeResumeNudge(messages: string[]): string {
  *  (the thing the owner would have opened it to look at), and the two rules that make the lane worth
  *  using — ask the owner rather than guess, and hand back rather than wave through. The full reviewer
  *  doctrine lives in REVIEWER_PROMPT; this is the per-task hand-off. */
-function reviewerKickoff(thread: Thread, plan: PlanOutput | undefined, unsurfacedArtifacts: string[], fixRounds: number): string {
+function reviewerKickoff(
+  thread: Thread,
+  plan: PlanOutput | undefined,
+  unsurfacedArtifacts: string[],
+  fixRounds: number,
+  standingDirectives?: string[],
+): string {
   const parts: string[] = [
     `# Review request for task: ${thread.title}`,
     "",
@@ -12786,6 +12871,10 @@ function reviewerKickoff(thread: Thread, plan: PlanOutput | undefined, unsurface
     "## Why it parked for review",
     thread.error?.trim() || "(no reason recorded — treat it as a plain hand-off and judge the work on its merits)",
   ];
+  const directives = renderStandingDirectives(standingDirectives);
+  // A violated standing directive (a mixed branch, a re-enabled push, a re-touched forbidden path) is
+  // exactly the kind of defect the reviewer exists to catch — accept only if the diff also honors these.
+  if (directives) parts.push("", directives);
   if (plan) {
     const files = [...new Set((plan.steps ?? []).flatMap((s) => s.files ?? []))];
     const hint: string[] = [];
