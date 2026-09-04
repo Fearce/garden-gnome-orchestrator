@@ -53,6 +53,7 @@
     "test:compiled-diff": "node scripts/compiled-diff.test.cjs",
     "test:tree-owner": "node scripts/tree-owner.test.cjs",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",
+    "test:runner-stop-drain": "tsx src/tests/runnerStopDrain.test.ts",
     "test:injection": "tsx src/tests/injection.test.ts",
     "test:auto-title": "tsx src/tests/autoTitle.test.ts",
     "test:voice-announce": "tsx src/tests/voiceAnnounce.test.ts",

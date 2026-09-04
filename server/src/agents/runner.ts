@@ -198,6 +198,14 @@ export function buildEnv(opts: { oauthToken?: string; baseUrl?: string; authToke
 // zero. If it ever climbs this high the consumer has stalled (the run effectively ended); drop the oldest
 // so a stuck iterator can't accumulate an unbounded object graph and drift the process toward OOM.
 const MAX_INPUT_QUEUE = 1000;
+// `Query.close()` is documented as forcefully ending the query and its CLI subprocess, but its type is
+// `close(): void` — it does not itself wait for that subprocess to actually exit and release the session
+// transcript file (only the SDK's own `.return()`/asyncDispose path bound-awaits that, via the internal
+// `performCleanup()` -> `waitForExit()`). `stop()` below waits for `consume()`'s "end" event instead, which
+// only fires once the query's async-generator loop truly finishes — but bound it, in case the underlying
+// process is wedged and never emits a final message, so a stop() call can never hang the whole pipeline.
+// Overridable so a test can prove the bound fires without a real 10s wait.
+const STOP_DRAIN_TIMEOUT_MS = Number(process.env.STOP_DRAIN_TIMEOUT_MS ?? 10_000);
 
 class InputQueue implements AsyncIterable<SDKUserMessage> {
   private buffer: SDKUserMessage[] = [];
@@ -360,15 +368,25 @@ export class AgentRun implements AgentRunLike {
     this.input.close();
   }
 
-  /** Hard stop: interrupt, close input, tear down the child process. */
+  /** Hard stop: interrupt, close input, tear down the child process, and — the fix for a warm resume
+   *  reliably coming back empty right after this — wait for that teardown to actually finish before
+   *  returning. `q.close()` only SIGNALS the CLI subprocess to die; it does not wait for it to exit and
+   *  release the session transcript file. A caller that immediately `--resume`s the same session (the
+   *  turn-ceiling continuation path) used to race that exit: the old process could still be mid-teardown
+   *  when the new one tried to load the same session, and came back with just `system:init` and 0 turns —
+   *  read as a silent run, which then discarded the perfectly good warm resume for an expensive fresh
+   *  restart. Bounded so a wedged subprocess can't hang the whole pipeline on a stop that never completes. */
   async stop(): Promise<void> {
     await this.interrupt();
     this.input.close();
+    if (this.finished) return;
+    const drained = new Promise<void>((resolve) => this.onEnd(resolve));
     try {
       this.q?.close();
     } catch {
       /* already closed */
     }
+    await Promise.race([drained, new Promise<void>((resolve) => setTimeout(resolve, STOP_DRAIN_TIMEOUT_MS))]);
   }
 
   /** Resolves on the next result event (or run end). For one-shot agents. */

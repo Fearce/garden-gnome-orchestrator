@@ -48,6 +48,7 @@ const GATES = [
   "test:compiled-diff",
   "test:tree-owner",
   "test:api-errors",
+  "test:runner-stop-drain",
   "test:injection",
   "test:auto-title",
   "test:voice-announce",
