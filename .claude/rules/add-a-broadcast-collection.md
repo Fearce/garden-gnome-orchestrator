@@ -40,6 +40,8 @@ Conventions that bite:
   millisecond, so a timestamp sort leaves ties that the random uuid `id` then breaks
   arbitrarily — and any cap/eviction that walks "oldest first" drops the wrong row.
   `operator_notes` allocates `(SELECT IFNULL(MAX(seq),0)+1 …)` in the insert statement itself.
+  A PAGED feed (not a small broadcast collection) has a cheaper fix that needs no new column —
+  see `hot-path-query-performance.md` for tie-breaking on SQLite's implicit `rowid` instead.
 - Director MCP tools that touch the collection need the tool NAME registered in
   `agents/toolNames.ts` AND added to `DIRECTOR_TOOLS` (the allowedTools list) — a tool
   the SDK can call but isn't allowlisted silently no-ops.

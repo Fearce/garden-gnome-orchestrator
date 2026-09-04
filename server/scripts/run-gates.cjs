@@ -139,6 +139,7 @@ const GATES = [
   "test:pdf-parse",
   "test:readme-claims",
   "test:db-size",
+  "test:hot-paths",
   "test:gate-registration",
   "test:quality-sweep",
   "test:gates-driver",
