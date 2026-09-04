@@ -164,9 +164,15 @@ export interface Thread {
   updatedAt: number;
 }
 
-/** The board-card projection sent in the initial WebSocket snapshot. The enriched brief and raw owner
- * prompt are task-detail content, so they are fetched only after the owner opens that task. */
-export type ThreadSummary = Omit<Thread, "brief" | "rawPrompt">;
+/** The board-card projection sent in the initial WebSocket snapshot. The full enriched brief and the
+ * raw owner prompt are task-detail content, fetched only after the owner opens that task — but the
+ * card's activity strip falls back to the brief's first line for any task that isn't streaming, so a
+ * short preview travels with the summary. Dropping the full brief saves ~80% of those bytes while
+ * keeping the board's subtitles. */
+export type ThreadSummary = Omit<Thread, "brief" | "rawPrompt"> & { briefPreview: string };
+
+/** How much of the brief the board card can show — one truncated line, never the whole brief. */
+export const BRIEF_PREVIEW_CHARS = 200;
 
 /**
  * A recurring dispatch: a prompt run against a target repo on a cron schedule. Each fire creates a
@@ -348,6 +354,11 @@ export interface MessageCursor {
   createdAt: number;
   id: string;
 }
+
+/** How many task-feed messages one `thread.history` page holds. The console mirrors this so its
+ *  feed retention cap can grow by exactly one page each time the owner asks for older history —
+ *  otherwise the newly fetched page is trimmed straight back off and the button does nothing. */
+export const THREAD_HISTORY_PAGE_SIZE = 400;
 
 /** How many chat messages one history page holds — the initial chatroom open and each scroll-up
  *  load fetch this many, instead of the whole (potentially months-long) room at once. */

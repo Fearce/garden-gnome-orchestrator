@@ -30,6 +30,21 @@ try {
   assert.equal("rawPrompt" in summary, false, "board summary omits the raw prompt");
   assert.equal("brief" in summary, false, "board summary omits the enriched brief");
   assert.equal(summary.title, thread.title, "board summary keeps card data");
+  // The board card's activity strip falls back to the brief's first line whenever a task isn't
+  // streaming, which is most cards on a reconnect. Dropping the brief without this preview blanked
+  // every one of them to "-", so the summary must still carry a clipped first line.
+  assert.equal(typeof summary.briefPreview, "string", "board summary carries a brief preview");
+  assert.ok((summary.briefPreview as string).startsWith("enriched brief"), "preview is the brief's own text");
+  assert.ok((summary.briefPreview as string).length <= 200, "preview is clipped, not the whole brief");
+
+  const multiline = db.createThread({
+    title: "Multi-line brief",
+    workspace: dir,
+    rawPrompt: "p",
+    brief: ["first line of the brief", "second line that must not reach the card"].join("\n"),
+  });
+  const multiSummary = db.listThreadSummaries().find((item) => item.id === multiline.id);
+  assert.equal(multiSummary?.briefPreview, "first line of the brief", "preview stops at the first line");
 
   const insert = db.raw.prepare(
     `INSERT INTO messages(id, thread_id, role, kind, content, attachments, created_at)

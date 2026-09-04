@@ -17,7 +17,7 @@ import { readZaiUsage } from "../agents/zaiUsage.js";
 import { formatStructuredRoleFeed } from "../agents/structuredText.js";
 import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./protocol.js";
 import { isAuthed } from "../auth.js";
-import { CHAT_PAGE_SIZE } from "../types.js";
+import { CHAT_PAGE_SIZE, THREAD_HISTORY_PAGE_SIZE } from "../types.js";
 import type { Message } from "../types.js";
 
 /** Owner-facing rewrite for CLI structured-role walls (Grok multi-turn QA especially). Idempotent
@@ -75,7 +75,7 @@ const SNAPSHOT_RUNS = 300;
 const SNAPSHOT_FINDINGS = 250;
 const SNAPSHOT_DIRECTOR_MSGS = 150;
 const SNAPSHOT_CHAT = 150;
-const THREAD_HISTORY_PAGE = 400;
+const THREAD_HISTORY_PAGE = THREAD_HISTORY_PAGE_SIZE;
 
 function buildHello(ctx: WsContext): ServerEvent {
   return {

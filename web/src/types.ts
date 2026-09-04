@@ -114,6 +114,9 @@ export interface Thread {
   workspace: string;
   /** Loaded with task history, not the board hello snapshot. */
   brief?: string;
+  /** First line of the brief, clipped — the board snapshot carries this instead of the full brief so a
+   * card that isn't streaming still has its activity line. Absent on full-Thread upserts. */
+  briefPreview?: string;
   /** Internal task context; omitted from the board hello snapshot. */
   rawPrompt?: string;
   error?: string | null;
@@ -352,6 +355,10 @@ export interface MessageCursor {
   createdAt: number;
   id: string;
 }
+
+/** Task-feed messages per `thread.history` page — mirrors THREAD_HISTORY_PAGE_SIZE in
+ *  server/src/types.ts. The feed retention cap grows by exactly this much per page the owner loads. */
+export const THREAD_HISTORY_PAGE_SIZE = 400;
 
 /** Messages per history page — mirrors CHAT_PAGE_SIZE in server/src/types.ts. Bounds the pre-load
  *  placeholder slice so the initial view already matches the first fetched page (no shrink flash). */

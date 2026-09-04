@@ -46,7 +46,7 @@ import type {
   TaskSearchHit,
   Thread,
 } from "./types.js";
-import { agentKey, GENERAL_ROOM } from "./types.js";
+import { agentKey, GENERAL_ROOM, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
 import { notify } from "./lib/notify.js";
 import { mergeImplementationMemos } from "./implementationMemos.js";
 
@@ -126,6 +126,9 @@ interface State {
   threadHistoryCursors: Record<string, MessageCursor>;
   threadHistoryHasMore: Record<string, boolean>;
   threadHistoryLoading: Record<string, boolean>;
+  // How many EXTRA older pages the owner has loaded for a task. Raises that task's feed retention caps
+  // so the fetched page survives the merge instead of being trimmed straight back off.
+  threadHistoryPages: Record<string, number>;
   threadDrafts: Record<string, ThreadDraft | undefined>;
   // Live reasoning stream (agent.thinking deltas) awaiting its durable agent.reasoning commit — kept
   // separate from threadDrafts (the response-text draft) so reasoning and answer stream independently.
@@ -804,6 +807,7 @@ export const useStore = create<State>((set) => ({
   threadHistoryCursors: {},
   threadHistoryHasMore: {},
   threadHistoryLoading: {},
+  threadHistoryPages: {},
   threadDrafts: {},
   thinkingDrafts: {},
   selectedThreadId: null,
@@ -1204,8 +1208,16 @@ function olderMessageCursor(current: MessageCursor | undefined, next: MessageCur
 
 /** Enforce the per-run and absolute feed caps on an already-chronological list. Used by both
  *  the live append path and the thread.history merge so a long-running thread re-fetched on
- *  reconnect (listMessages has no SQL LIMIT) can't balloon the feed past the render backstop. */
-function capFeed(items: FeedItem[]): FeedItem[] {
+ *  reconnect can't balloon the feed past the render backstop.
+ *
+ *  `olderPages` is how many extra history pages the OWNER has explicitly loaded for this task, and
+ *  it raises both caps by exactly that much. Without it the caps silently discard the page that was
+ *  just fetched (they drop each bucket's OLDEST overflow, which is precisely the older page), so
+ *  "Load earlier history" appeared to do nothing while the cursor kept consuming real history. */
+function capFeed(items: FeedItem[], olderPages = 0): FeedItem[] {
+  const grow = Math.max(0, olderPages) * THREAD_HISTORY_PAGE_SIZE;
+  const perRunCap = PER_RUN_CAP + grow;
+  const hardCap = FEED_HARD_CAP + grow;
   const totals = new Map<string, number>();
   for (const f of items) {
     const b = feedBucket(f);
@@ -1218,10 +1230,10 @@ function capFeed(items: FeedItem[]): FeedItem[] {
     const total = totals.get(b)!;
     const idxInBucket = seen.get(b) ?? 0;
     seen.set(b, idxInBucket + 1);
-    if (total > PER_RUN_CAP && idxInBucket < total - PER_RUN_CAP) continue; // drop this bucket's oldest overflow
+    if (total > perRunCap && idxInBucket < total - perRunCap) continue; // drop this bucket's oldest overflow
     kept.push(f);
   }
-  return kept.length > FEED_HARD_CAP ? kept.slice(kept.length - FEED_HARD_CAP) : kept;
+  return kept.length > hardCap ? kept.slice(kept.length - hardCap) : kept;
 }
 
 function pushFeed(threadId: string, item: FeedItem, receivedOutboundId?: string): void {
@@ -1232,7 +1244,10 @@ function pushFeed(threadId: string, item: FeedItem, receivedOutboundId?: string)
       ? s.outboundMessages.filter((message) => message.id !== receivedOutboundId)
       : s.outboundMessages;
     if (id && existing.some((f) => feedMessageId(f) === id)) return receivedOutboundId ? { outboundMessages } : {}; // history already merged this row
-    return { threadFeeds: { ...s.threadFeeds, [threadId]: capFeed([...existing, item]) }, outboundMessages };
+    return {
+      threadFeeds: { ...s.threadFeeds, [threadId]: capFeed([...existing, item], s.threadHistoryPages[threadId] ?? 0) },
+      outboundMessages,
+    };
   });
 }
 
@@ -1600,6 +1615,7 @@ function applyEvent(ev: ServerEvent): void {
           threadHistoryCursors: drop(s.threadHistoryCursors),
           threadHistoryHasMore: drop(s.threadHistoryHasMore),
           threadHistoryLoading: drop(s.threadHistoryLoading),
+          threadHistoryPages: drop(s.threadHistoryPages),
           implementationMemos: drop(s.implementationMemos),
           threadDrafts: drop(s.threadDrafts),
           thinkingDrafts: drop(s.thinkingDrafts),
@@ -1640,6 +1656,7 @@ function applyEvent(ev: ServerEvent): void {
           threadHistoryCursors: drop(s.threadHistoryCursors),
           threadHistoryHasMore: drop(s.threadHistoryHasMore),
           threadHistoryLoading: drop(s.threadHistoryLoading),
+          threadHistoryPages: drop(s.threadHistoryPages),
           threadDrafts: drop(s.threadDrafts),
           thinkingDrafts: drop(s.thinkingDrafts),
           pendingPlans: drop(s.pendingPlans),
@@ -1705,13 +1722,17 @@ function applyEvent(ev: ServerEvent): void {
           return true;
         });
 
-        const merged = capFeed([...dbItems, ...liveOnly].sort((a, b) => a.at - b.at));
+        // An explicit older-history request buys one more page of retention; a reconnect replay of the
+        // newest page keeps whatever the owner had already expanded to.
+        const olderPages = (s.threadHistoryPages[ev.threadId] ?? 0) + (ev.before && ev.messages.length ? 1 : 0);
+        const merged = capFeed([...dbItems, ...liveOnly].sort((a, b) => a.at - b.at), olderPages);
         const first = ev.messages[0];
         const cursor = first ? olderMessageCursor(s.threadHistoryCursors[ev.threadId], { createdAt: first.createdAt, id: first.id }) : s.threadHistoryCursors[ev.threadId];
         const replayedNewestPage = !ev.before && !!first && !!cursor &&
           (cursor.createdAt < first.createdAt || (cursor.createdAt === first.createdAt && cursor.id < first.id));
         return {
           threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged },
+          threadHistoryPages: { ...s.threadHistoryPages, [ev.threadId]: olderPages },
           ...(cursor ? { threadHistoryCursors: { ...s.threadHistoryCursors, [ev.threadId]: cursor } } : {}),
           threadHistoryHasMore: {
             ...s.threadHistoryHasMore,
