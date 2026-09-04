@@ -38,6 +38,13 @@ Conventions that bite:
 - Live vs durable: `agent.delta` (live, no id, accumulates a draft) → `agent.text`
   (durable, carries the DB `messageId`). Your durable event MUST carry `messageId`
   or history-merge can't dedup it against the live push.
+- **The task feed is PAGINATED.** `thread.history` returns the newest
+  `THREAD_HISTORY_PAGE_SIZE` messages plus a keyset cursor; older pages arrive on
+  request. So a new kind must survive a *partial* history merge, and any retention
+  cap you touch (`capFeed`) has to GROW by one page per page the owner loads —
+  its per-run cap drops each bucket's OLDEST overflow, which is exactly the page
+  just fetched, so "Load earlier history" silently did nothing while the cursor ate
+  real history (`04154de`). Gate: `test:performance-paths`.
 
 Verify: `npm run typecheck && npm run build`, then a throwaway-instance browser
 test that **SEEDS a message of the new kind and RELOADS** (recipe: project memory
