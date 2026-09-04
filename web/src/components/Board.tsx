@@ -602,7 +602,7 @@ const Card = memo(function Card({
   // Full shows the agent's latest streaming line; compact drops it so the card is just title + pips + state.
   // Multi-line Grok QA feeds (checklist + Pass/Fail) collapse to the verdict or first tick so the card
   // doesn't paste a wall of bullets into the activity strip.
-  const activityRaw = verbosity === "full" ? draftText || lastText || thread.brief.split("\n")[0] || "—" : null;
+  const activityRaw = verbosity === "full" ? draftText || lastText || thread.brief?.split("\n")[0] || "—" : null;
   const activity = activityRaw == null ? null : activityPreview(activityRaw);
 
   const live = threadRunning(thread.state);

@@ -41,6 +41,7 @@ import type {
   ImplementationMemoSource,
   ImplementorProvider,
   Message,
+  MessageCursor,
   ModelGrade,
   ModelOutcome,
   ModelRequest,
@@ -66,6 +67,7 @@ import type {
   TaskSearchHit,
   Thread,
   ThreadLane,
+  ThreadSummary,
   ThreadState,
   TokenUsage,
 } from "../types.js";
@@ -97,7 +99,10 @@ function rowToTokenUsage(r: Row): TokenUsage | null {
   };
 }
 
-function rowToThread(r: Row): Thread {
+/** Shared field mapping for both thread-row shapes below. `manualDeploymentRaw` is already the
+ *  unparsed `stage_outputs.manualDeployment` sub-value (or undefined) — never the whole blob, so
+ *  neither caller pays to parse routing/plan/QA history it isn't going to use. */
+function rowToThreadFields(r: Row, manualDeploymentRaw: unknown): Thread {
   return {
     id: r.id as string,
     title: r.title as string,
@@ -127,11 +132,56 @@ function rowToThread(r: Row): Thread {
     agentCount: (r.agent_count as number | null) ?? null,
     parentId: (r.parent_id as string | null) ?? null,
     assignment: parseAssignment(r.assignment),
-    manualDeployment: manualDeploymentSummary(parseStageOutputs(r.stage_outputs).manualDeployment),
+    manualDeployment: manualDeploymentSummary(manualDeploymentRaw),
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
   };
 }
+
+/** A `SELECT *`-shaped row (single-row reads: `getThread`, post-write re-fetches) — cheap enough at
+ *  one row that parsing the whole stage_outputs blob for its manualDeployment sub-field is fine. */
+function rowToThread(r: Row): Thread {
+  return rowToThreadFields(r, parseStageOutputs(r.stage_outputs).manualDeployment);
+}
+
+/** A `THREAD_LISTING_SQL`-shaped row (bulk listings: `listThreads`, `listThreadsByStates`). The query
+ *  never selects the raw `stage_outputs` column — only `json_extract(stage_outputs, '$.manualDeployment')`
+ *  as `manual_deployment_raw` — so SQLite (fast C code) does the sub-field extraction instead of pulling
+ *  the whole blob (routing decisions, plan output, QA round history — up to ~1.7KB/row, 1.4MB across 800
+ *  tasks) across the SQLite/JS boundary just to JSON.parse it in V8 and throw away everything but one
+ *  field. Measured on the live DB: ~7ms warm the old way, ~2ms this way, for the SAME listing. */
+function rowToThreadFromListing(r: Row): Thread {
+  const raw = r.manual_deployment_raw;
+  let manualDeploymentRaw: unknown;
+  if (typeof raw === "string") {
+    try {
+      manualDeploymentRaw = JSON.parse(raw);
+    } catch {
+      manualDeploymentRaw = undefined;
+    }
+  }
+  return rowToThreadFields(r, manualDeploymentRaw);
+}
+
+/** The board only needs task-card fields. Keep the task's often-long prompt and enriched brief out of
+ * the hello/reconnect snapshot; opening a task fetches its brief with the rest of its history. */
+function rowToThreadSummaryFromListing(r: Row): ThreadSummary {
+  const { brief: _brief, rawPrompt: _rawPrompt, ...summary } = rowToThreadFromListing(r);
+  return summary;
+}
+
+/** Every `threads` column the DTO needs, MINUS the heavy `stage_outputs` blob — that column is
+ *  represented only by its extracted `manual_deployment_raw` sub-field (see `rowToThreadFromListing`).
+ *  Shared by every bulk listing query so they stay in sync with `rowToThreadFields`. */
+const THREAD_LISTING_COLUMNS = `id, title, state, workspace, brief, raw_prompt, error, effort_override,
+  model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
+  active_deadline_at, agent_count, parent_id, assignment, created_at, updated_at,
+  json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
+
+const THREAD_SUMMARY_COLUMNS = `id, title, state, workspace, error, effort_override,
+  model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
+  active_deadline_at, agent_count, parent_id, assignment, created_at, updated_at,
+  json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
 
 function parseModelRequest(raw: unknown): ModelRequest | null {
   if (typeof raw !== "string" || !raw) return null;
@@ -677,10 +727,25 @@ export class Db {
     this.raw.exec("CREATE INDEX IF NOT EXISTS idx_attachments_content ON attachments(sha256, name, media_type)");
     this.backfillDirectorThreadLinks();
     this.backfillRemoteChatInstances();
+    this.retireSupersededIndexes();
     this.dedupeAttachmentBlobs();
     this.backfillAutoReviewEpisodes();
     this.repairAutoReviewBackfillFreshWork();
     this.backfillImplementationMemos();
+  }
+
+  /** The current composite indexes are created idempotently by SCHEMA before this runs. Remove only
+   * their older, redundant predecessors so a normal restart never rebuilds a large messages index. */
+  private retireSupersededIndexes(): void {
+    this.raw.exec(`
+      DROP INDEX IF EXISTS idx_findings_thread;
+      DROP INDEX IF EXISTS idx_findings_thread_created;
+      DROP INDEX IF EXISTS idx_messages_thread;
+      DROP INDEX IF EXISTS idx_messages_thread_created;
+      DROP INDEX IF EXISTS idx_threads_state;
+      DROP INDEX IF EXISTS idx_runs_thread;
+      DROP INDEX IF EXISTS idx_runs_state;
+    `);
   }
 
   /** One-time repair for tasks created before durable reviewer ownership existed. A historical reviewer
@@ -1442,7 +1507,30 @@ export class Db {
   }
 
   listThreads(): Thread[] {
-    return (this.raw.prepare("SELECT * FROM threads ORDER BY created_at DESC").all() as Row[]).map(rowToThread);
+    return (
+      this.raw.prepare(`SELECT ${THREAD_LISTING_COLUMNS} FROM threads ORDER BY created_at DESC`).all() as Row[]
+    ).map(rowToThreadFromListing);
+  }
+
+  /** Lightweight board snapshot. In particular, this does not pull the per-task brief/raw prompt over
+   * the SQLite and WebSocket boundaries 800 times just to paint cards that never render either field. */
+  listThreadSummaries(): ThreadSummary[] {
+    return (
+      this.raw.prepare(`SELECT ${THREAD_SUMMARY_COLUMNS} FROM threads ORDER BY created_at DESC`).all() as Row[]
+    ).map(rowToThreadSummaryFromListing);
+  }
+
+  /** Same DTO as `listThreads`, filtered server-side to a small set of states via the `threads(state)`
+   *  index — for pollers that only care about a handful of tasks (e.g. the cap-park sweep) so they never
+   *  pay to hydrate + JSON-parse every task on the board just to filter almost all of them back out in JS. */
+  listThreadsByStates(states: readonly ThreadState[]): Thread[] {
+    if (!states.length) return [];
+    const holes = states.map(() => "?").join(",");
+    return (
+      this.raw
+        .prepare(`SELECT ${THREAD_LISTING_COLUMNS} FROM threads WHERE state IN (${holes}) ORDER BY created_at DESC`)
+        .all(...states) as Row[]
+    ).map(rowToThreadFromListing);
   }
 
   /** How many tasks sit in any of these states. A count, so a caller that only wants the number never
@@ -2466,8 +2554,29 @@ export class Db {
 
   listMessages(threadId: string): Message[] {
     return (
-      this.raw.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC").all(threadId) as Row[]
+      this.raw.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC, id ASC").all(threadId) as Row[]
     ).map(rowToMessage);
+  }
+
+  /** The newest page of one task's feed, or the page immediately before `before`, always returned
+   * chronologically. The extra probe row makes pagination exact without an expensive COUNT(*). */
+  listMessagePage(threadId: string, limit: number, before?: MessageCursor): { messages: Message[]; hasMore: boolean } {
+    const probe = limit + 1;
+    const rows = before
+      ? (this.raw
+          .prepare(
+            `SELECT * FROM messages
+             WHERE thread_id = @threadId
+               AND (created_at < @createdAt OR (created_at = @createdAt AND id < @id))
+             ORDER BY created_at DESC, id DESC LIMIT @probe`,
+          )
+          .all({ threadId, createdAt: before.createdAt, id: before.id, probe }) as Row[])
+      : (this.raw
+          .prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+          .all(threadId, probe) as Row[]);
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    return { messages: page.reverse().map(rowToMessage), hasMore };
   }
 
   /** Last durable prose emitted by one exact run. CLI backends put their final answer in a text event

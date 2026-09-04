@@ -26,6 +26,7 @@ import type {
   Finding,
   ImplementationMemo,
   Message,
+  MessageCursor,
   ModelStat,
   OperatorNote,
   OrchestratorSettings,
@@ -35,6 +36,7 @@ import type {
   SupervisorSnapshot,
   TaskSearchHit,
   Thread,
+  ThreadSummary,
 } from "../types.js";
 
 // ---- Server -> Client events (outbound; not validated) ----
@@ -67,7 +69,7 @@ export type { ZaiUsageDTO } from "../agents/zaiUsage.js";
 export type ServerEvent =
   | {
       type: "hello";
-      threads: Thread[];
+      threads: ThreadSummary[];
       runs: AgentRun[];
       findings: Finding[];
       questions: Question[];
@@ -152,7 +154,16 @@ export type ServerEvent =
   | { type: "thread.reset"; threadId: string }
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: Thread["state"]; error?: string; message?: string; result: ThreadActionResult }
-  | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; implementationMemos: ImplementationMemo[]; brief: string }
+  | {
+      type: "thread.history";
+      threadId: string;
+      messages: Message[];
+      findings: Finding[];
+      implementationMemos: ImplementationMemo[];
+      brief: string;
+      hasMoreMessages: boolean;
+      before?: MessageCursor;
+    }
   | { type: "thread.memo"; threadId: string; memo: ImplementationMemo }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
@@ -268,7 +279,11 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("thread.close"), threadId: z.string() }),
   z.object({ type: z.literal("thread.restore"), threadId: z.string() }),
   z.object({ type: z.literal("thread.dismiss"), threadId: z.string() }),
-  z.object({ type: z.literal("thread.history"), threadId: z.string() }),
+  z.object({
+    type: z.literal("thread.history"),
+    threadId: z.string(),
+    before: z.object({ createdAt: z.number(), id: z.string().min(1).max(100) }).optional(),
+  }),
   z.object({ type: z.literal("thread.approve"), threadId: z.string(), approved: z.boolean(), feedback: z.string().optional() }),
   z.object({ type: z.literal("approval.set"), on: z.boolean() }),
   z.object({

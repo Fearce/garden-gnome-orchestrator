@@ -643,6 +643,10 @@ const CAP_PARK_QA_MARK = "(QA stage)";
 // Don't re-ping the external webhook about auto-resuming the SAME task more often than this — a task
 // that keeps re-capping every interval would otherwise flood the channel. The in-app log isn't throttled.
 const CAP_RESUME_NOTIFY_COOLDOWN_MS = 30 * 60_000;
+// A stale/contradictory provider reading can briefly make a just-re-parked task look runnable. Do not
+// let releaseSlot immediately relaunch it in a tight loop; the normal cap supervisor and reset wake
+// still retry promptly once the telemetry has a chance to converge.
+const CAP_RESUME_ATTEMPT_COOLDOWN_MS = 30_000;
 // Fire the token-reset auto-resume a touch AFTER the window's reset epoch — the reset time is an
 // estimate and can be slightly fuzzy, so a small grace avoids waking straight into an instant re-cap.
 const TOKEN_RESUME_BUFFER_MS = 60_000;
@@ -690,10 +694,6 @@ const IN_FLIGHT: ReadonlySet<Thread["state"]> = new Set([
 // A server restart during an on-demand auto-review: the task was PARKED before the reviewer started, so
 // there is nothing to resume — put it straight back where it came from rather than through the generic
 // 'failed' + manual-Resume path (which would re-enter the implementor pipeline on already-finished work).
-// A stale/contradictory provider reading can briefly make a just-re-parked task look runnable. Do not
-// let releaseSlot immediately relaunch it in a tight loop; the normal cap supervisor and reset wake
-// still retry promptly once the telemetry has a chance to converge.
-const CAP_RESUME_ATTEMPT_COOLDOWN_MS = 30_000;
 const REVIEW_INTERRUPTED_MSG =
   "Auto-review was interrupted by a server restart and is parked for your review. It will not relaunch automatically; click “Auto-review & mark done” only if you want a fresh manual pass.";
 // Same restart, but it landed during the fix round the auto-review had started: the implementor's work so
@@ -896,6 +896,10 @@ export class ThreadManager implements OrchestratorApi {
   // Last time we externally announced auto-resuming a given thread — throttles the webhook ping so a
   // task stuck in a re-cap loop doesn't spam the channel each interval (see CAP_RESUME_NOTIFY_COOLDOWN_MS).
   private readonly capResumeNotifiedAt = new Map<string, number>();
+  /** Last automatic capacity-resume launch per task; bounds a false-headroom re-cap loop. */
+  private readonly capResumeAttemptedAt = new Map<string, number>();
+  /** Coalesces slot-release recovery so several finishing pipelines never synchronously rescan every task. */
+  private capResumeQueued = false;
   private capSupervisor: NodeJS.Timeout | undefined;
   // The interval supervisor is a safety net. This one-shot wakes at the earliest provider/account reset
   // we actually know, so provider exhaustion does not wait for a human (or for the next coarse poll).
@@ -943,10 +947,6 @@ export class ThreadManager implements OrchestratorApi {
   // a stale or unavailable leaderboard simply leaves local outcome history + the judging agent in charge.
   private readonly liveBench: LiveBenchScores;
   // Posts the owner's phone notifications (task done / needs you / failed) to their Discord channel.
-  /** Last automatic capacity-resume launch per task; bounds a false-headroom re-cap loop. */
-  private readonly capResumeAttemptedAt = new Map<string, number>();
-  /** Coalesces slot-release recovery so several finishing pipelines never synchronously rescan every task. */
-  private capResumeQueued = false;
   private readonly discord: DiscordNotifier;
   // The Director Supervisor watchdog (off by default) — see orchestrator/supervisor.ts. Standalone over a
   // narrow SupervisorHost view of this manager, so its logic never entangles with the pipeline internals.
@@ -1261,14 +1261,12 @@ export class ThreadManager implements OrchestratorApi {
    * reset-timed wake work across a server restart. Keep this predicate in one place so a normal review
    * is never resurrected by a quota timer. */
   private capParkedThreads(): Thread[] {
+    // State-filtered at the DB layer (indexed): this polls every CAP_RETRY_MS (2 min by default) plus
+    // every account usage refresh, so hydrating and JSON-parsing all ~800 tasks just to filter almost
+    // all of them back out in JS was pure waste on every tick.
     return this.db
-      .listThreads()
-      .filter(
-        (t) =>
-          (t.state === "review" || t.state === "failed") &&
-          (t.error ?? "").startsWith(CAP_PARK_PREFIX) &&
-          !this.cancelled(t.id),
-      );
+      .listThreadsByStates(["review", "failed"])
+      .filter((t) => (t.error ?? "").startsWith(CAP_PARK_PREFIX) && !this.cancelled(t.id));
   }
 
   private capParkStage(thread: Thread): CapParkStage {
@@ -4655,6 +4653,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (exclude !== "grok" && !unavailable.has("grok") && serves("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate(demand));
     if (exclude !== "zai" && !unavailable.has("zai") && serves("zai") && this.zaiImplementorReady()) cands.push(this.zaiProviderCandidate(demand));
     if (!cands.length) return undefined;
+    if (demand) {
+      const capacity = preferCapacity(cands, candidateCapacityWindows, demand);
+      return this.preferredImplementorProvider(capacity.candidates, demand);
+    }
     return this.preferredImplementorProvider(cands, demand);
   }
 
@@ -4775,14 +4777,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const allCandidatesCapped = candidates.length > 0 && candidates.every((candidate) => !candidate.hasHeadroom);
     const ready = candidates.filter((candidate) => candidate.hasHeadroom);
     const capacity = preferCapacity(ready, candidateCapacityWindows, demand);
-    const allKnownInsufficient = ready.length > 0 && capacity.allKnownAtRisk;
     const provider = this.preferredImplementorProvider(candidates, demand);
     if (candidates.length > 1) {
       const now = Date.now();
       const parts = candidates.map((candidate) => describeProviderCapacity(candidate, demand, now));
       this.hub.log("info", `Implementor provider: ${provider} for ${demandSummary(demand)} (${parts.join("; ")}).`);
     }
-    return { provider, allCandidatesCapped, allKnownInsufficient, candidates };
+    return { provider, allCandidatesCapped, allKnownInsufficient: false, candidates };
   }
 
   /** Hard routing gate, run once at the start of a thread's implementor stage: resolve + remember the
@@ -6045,11 +6046,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // planner/reader/researcher spend an independent Codex model pool while it is fresh, instead of
       // hiding that allowance until Claude has already capped.
       const routed = this.preferredRoleProvider(role, demand);
-      if (routed.allKnownAtRisk && demand.substantial) {
-        if (role === "reviewer") this.noteManualCapacityWait(thread, role, demand);
-        else this.parkForExhaustedProviders(thread.id, role);
-        return undefined;
-      }
       if (routed.provider) {
         provider = routed.provider;
         if (provider !== "claude") resume = undefined;
@@ -6767,7 +6763,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const demand = this.capacityDemand(thread, "qa");
     const candidates = this.readyRoleCandidates("qa", demand).filter((candidate) => candidate.provider !== impProvider);
     const capacity = preferCapacity(candidates, candidateCapacityWindows, demand);
-    if (!capacity.candidates.length || capacity.allKnownAtRisk) return undefined;
+    if (!capacity.candidates.length) return undefined;
     return this.preferredImplementorProvider(capacity.candidates, demand);
   }
 
@@ -6778,7 +6774,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const demand = this.capacityDemand(thread, "qa");
     const candidates = this.readyRoleCandidates("qa", demand).filter((candidate) => candidate.provider !== excluded);
     const capacity = preferCapacity(candidates, candidateCapacityWindows, demand);
-    if (!capacity.candidates.length || capacity.allKnownAtRisk) return undefined;
+    if (!capacity.candidates.length) return undefined;
     return this.preferredImplementorProvider(capacity.candidates, demand);
   }
 

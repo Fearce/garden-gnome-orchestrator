@@ -452,12 +452,15 @@ export function ThreadDetail() {
   const markDone = useStore((s) => s.markDone);
   const autoReview = useStore((s) => s.autoReview);
   const select = useStore((s) => s.select);
+  const loadOlderThreadHistory = useStore((s) => s.loadOlderThreadHistory);
   const approve = useStore((s) => s.approve);
   const loadChanges = useStore((s) => s.loadChanges);
   const openOffice = useStore((s) => s.openOffice);
   const nameOverrides = useStore((s) => s.nameOverrides);
   const directorName = useStore((s) => s.settings.directorName);
   const showAgentModel = useStore((s) => s.settings.showAgentModel);
+  const historyHasMore = useStore((s) => (id ? s.threadHistoryHasMore[id] ?? false : false));
+  const historyLoading = useStore((s) => (id ? s.threadHistoryLoading[id] ?? false : false));
   // The project chatroom for THIS task's repo, if one exists (≥2 participants ever collaborated here —
   // possibly in a PAST task, since the room persists). Repo-keyed so a fresh task on a repo with
   // prior history also gets the button to read the old chatter; invisible on repos that never collaborated.
@@ -604,7 +607,7 @@ export function ThreadDetail() {
       el.scrollTop = el.scrollHeight - a.height + a.top;
       growAnchorRef.current = null;
     }
-  }, [renderCount]);
+  }, [renderCount, visible.length]);
 
   // Stick to the bottom only when already near it, so reading an earlier agent
   // isn't yanked down when a live agent appends below.
@@ -714,7 +717,16 @@ export function ThreadDetail() {
     if (el.scrollTop < 240 && hiddenAbove > 0 && !growAnchorRef.current) {
       growAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
       setRenderCount((c) => c + RENDER_WINDOW);
+    } else if (el.scrollTop < 240 && hiddenAbove === 0 && historyHasMore && !historyLoading && !growAnchorRef.current) {
+      growAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+      if (!loadOlderThreadHistory(id)) growAnchorRef.current = null;
     }
+  };
+
+  const loadEarlierHistory = () => {
+    const el = scrollRef.current;
+    if (el) growAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+    if (!loadOlderThreadHistory(id)) growAnchorRef.current = null;
   };
 
   const startResize = useColumnResize(
@@ -989,6 +1001,26 @@ export function ThreadDetail() {
             }}
           >
             ↑ {hiddenAbove} earlier {hiddenAbove === 1 ? "entry" : "entries"} — scroll up or click to load
+          </button>
+        )}
+        {hiddenAbove === 0 && historyHasMore && (
+          <button
+            onClick={loadEarlierHistory}
+            disabled={historyLoading}
+            style={{
+              alignSelf: "center",
+              margin: "2px 0 8px",
+              padding: "5px 12px",
+              background: "transparent",
+              border: "1px solid var(--line)",
+              borderRadius: 100,
+              color: "var(--text-dim)",
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+              cursor: historyLoading ? "wait" : "pointer",
+            }}
+          >
+            {historyLoading ? "Loading earlier history…" : "↑ Load earlier history"}
           </button>
         )}
         {windowed.map((f) => (

@@ -1,18 +1,21 @@
-import { useState, useEffect, type CSSProperties } from "react";
+import { lazy, Suspense, useState, useEffect, type CSSProperties } from "react";
 import { useStore, login } from "./store.js";
 import { notifyEnabled, setNotifyEnabled } from "./lib/notify.js";
 import { Director } from "./components/Director.js";
 import { Board } from "./components/Board.js";
-import { ThreadDetail } from "./components/ThreadDetail.js";
 import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
 import { Office } from "./components/Office.js";
-import { SettingsPanel } from "./components/SettingsPanel.js";
-import { GitConsole } from "./components/GitConsole.js";
 import { NoticeBanner } from "./components/NoticeBanner.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
 import ggLogo from "./assets/gg-logo.png";
+
+// These panels are both opt-in and code-heavy (full transcript renderer, repository console, provider
+// settings). Keeping them out of the first board paint makes reconnects responsive on a busy install.
+const ThreadDetail = lazy(() => import("./components/ThreadDetail.js").then(({ ThreadDetail: component }) => ({ default: component })));
+const SettingsPanel = lazy(() => import("./components/SettingsPanel.js").then(({ SettingsPanel: component }) => ({ default: component })));
+const GitConsole = lazy(() => import("./components/GitConsole.js").then(({ GitConsole: component }) => ({ default: component })));
 
 type MobilePane = "director" | "board";
 
@@ -71,13 +74,13 @@ export function App() {
       >
         <Director />
         <Board />
-        {selected ? <ThreadDetail key={selected} /> : null}
+        {selected ? <Suspense fallback={<aside className="detail"><div className="faint" style={{ padding: 18 }}>Opening task…</div></aside>}><ThreadDetail key={selected} /></Suspense> : null}
       </div>
       <MobileNav pane={mobilePane} setPane={setMobilePane} />
       <QuestionModal />
       <NoticeBanner />
-      {settingsOpen ? <SettingsPanel onClose={() => setSettingsOpen(false)} /> : null}
-      {gitOpen ? <GitConsole onClose={() => setGitOpen(false)} /> : null}
+      {settingsOpen ? <Suspense fallback={null}><SettingsPanel onClose={() => setSettingsOpen(false)} /></Suspense> : null}
+      {gitOpen ? <Suspense fallback={null}><GitConsole onClose={() => setGitOpen(false)} /></Suspense> : null}
     </div>
   );
 }

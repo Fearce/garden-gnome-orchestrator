@@ -154,9 +154,8 @@ internals.codexProviderCandidate = originalCodexProviderCandidate;
 internals.dedicatedPoolReadyFor = originalDedicatedPoolReadyFor;
 internals.codexCapActive = originalCodexCapActive;
 
-// Initial dispatch and cap recovery already wait when every visible pool is forecast to expire
-// mid-task. The failover seam must apply the same reserve or a first provider cap can bypass both
-// guards and launch a second known-doomed substantial turn.
+// Forecasts rank the failover pool but never block it. A provider's actual rejection is the signal
+// that advances the chain; a remaining subscription should be used before it is declared exhausted.
 const originalClaudeProviderCandidate = internals.claudeProviderCandidate;
 const originalCodexImplementorReady = internals.codexImplementorReady;
 const originalGrokReadyForRunway = internals.grokImplementorReady;
@@ -182,8 +181,8 @@ internals.codexProviderCandidate = () => risky("codex", 80);
 internals.grokImplementorReady = () => false;
 internals.zaiImplementorReady = () => false;
 check(
-  "substantial failover waits when every fallback is known at risk",
-  internals.nextReadyImplementor("zai", new Set(), "implementor", substantialDemand) === undefined,
+  "substantial failover uses the least-risky subscription before a real cap",
+  internals.nextReadyImplementor("zai", new Set(), "implementor", substantialDemand) === "codex",
 );
 internals.codexProviderCandidate = () => risky("codex", 67);
 check(

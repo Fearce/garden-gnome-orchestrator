@@ -75,11 +75,12 @@ const SNAPSHOT_RUNS = 300;
 const SNAPSHOT_FINDINGS = 250;
 const SNAPSHOT_DIRECTOR_MSGS = 150;
 const SNAPSHOT_CHAT = 150;
+const THREAD_HISTORY_PAGE = 400;
 
 function buildHello(ctx: WsContext): ServerEvent {
   return {
     type: "hello",
-    threads: ctx.db.listThreads(),
+    threads: ctx.db.listThreadSummaries(),
     runs: ctx.db.listAllRuns(SNAPSHOT_RUNS),
     findings: ctx.db.listFindings(undefined, SNAPSHOT_FINDINGS),
     questions: ctx.db.listOpenQuestions(),
@@ -223,15 +224,18 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
       break;
     case "thread.history": {
       const thread = ctx.db.getThread(cmd.threadId);
+      const page = ctx.db.listMessagePage(cmd.threadId, THREAD_HISTORY_PAGE, cmd.before);
       send(socket, {
         type: "thread.history",
         threadId: cmd.threadId,
         // Humanize raw Grok/Codex structured JSON walls at the display boundary so tasks that
         // finished before write-time formatting still open clean in the feed.
-        messages: humanizeFeedMessages(ctx.db.listMessages(cmd.threadId)),
+        messages: humanizeFeedMessages(page.messages),
         findings: ctx.db.listFindings(cmd.threadId),
         implementationMemos: ctx.db.listImplementationMemos(cmd.threadId),
         brief: thread?.brief ?? "",
+        hasMoreMessages: page.hasMore,
+        before: cmd.before,
       });
       break;
     }

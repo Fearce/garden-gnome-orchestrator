@@ -32,6 +32,7 @@ import type {
   RepoRef,
   RepoState,
   Message,
+  MessageCursor,
   ModelStat,
   OnlineOfficeDTO,
   OperatorNote,
@@ -120,6 +121,11 @@ interface State {
   // Null when the search box is empty/closed; `searching` gates the spinner between request and reply.
   directorSearch: { query: string; results: DirectorMessage[]; tasks: TaskSearchHit[]; searching: boolean } | null;
   threadFeeds: Record<string, FeedItem[]>;
+  // Task history is fetched newest-first in bounded pages. The cursor tracks the oldest durable message
+  // already merged for each task; live feed entries never move it backward.
+  threadHistoryCursors: Record<string, MessageCursor>;
+  threadHistoryHasMore: Record<string, boolean>;
+  threadHistoryLoading: Record<string, boolean>;
   threadDrafts: Record<string, ThreadDraft | undefined>;
   // Live reasoning stream (agent.thinking deltas) awaiting its durable agent.reasoning commit — kept
   // separate from threadDrafts (the response-text draft) so reasoning and answer stream independently.
@@ -229,6 +235,9 @@ interface State {
   modelStats: ModelStat[];
 
   select: (id: string | null) => void;
+  // Fetch the next older page of the selected task's durable feed. A no-op while a page is in flight or
+  // once the server has said there is no earlier history.
+  loadOlderThreadHistory: (threadId: string) => boolean;
   selectCowork: (id: string | null) => void;
   createCowork: (input: { name?: string; workspace: string; provider?: CoworkSession["requestedProvider"]; model?: string | null }) => boolean;
   sendCowork: (sessionId: string, text: string, mode?: "turn" | CoworkSteeringMode, attachments?: FileAttachment[]) => boolean;
@@ -792,6 +801,9 @@ export const useStore = create<State>((set) => ({
   outboundMessages: restorePersistedOutbound(),
   directorSearch: null,
   threadFeeds: {},
+  threadHistoryCursors: {},
+  threadHistoryHasMore: {},
+  threadHistoryLoading: {},
   threadDrafts: {},
   thinkingDrafts: {},
   selectedThreadId: null,
@@ -849,8 +861,21 @@ export const useStore = create<State>((set) => ({
   boardView: "tasks",
 
   select: (id) => {
-    set({ selectedThreadId: id });
-    if (id) sendCommand({ type: "thread.history", threadId: id });
+    const sent = id ? sendCommand({ type: "thread.history", threadId: id }) : false;
+    set((s) => ({
+      selectedThreadId: id,
+      ...(id && sent ? { threadHistoryLoading: { ...s.threadHistoryLoading, [id]: true } } : {}),
+    }));
+  },
+  loadOlderThreadHistory: (threadId) => {
+    const s = useStore.getState();
+    if (s.threadHistoryLoading[threadId] || s.threadHistoryHasMore[threadId] === false) return false;
+    const before = s.threadHistoryCursors[threadId];
+    // No first page yet: select()'s initial request is responsible for it.
+    if (!before) return false;
+    const sent = sendCommand({ type: "thread.history", threadId, before });
+    if (sent) set({ threadHistoryLoading: { ...s.threadHistoryLoading, [threadId]: true } });
+    return sent;
   },
   selectCowork: (id) => {
     set({ selectedCoworkId: id, coworkActionError: null });
@@ -1169,6 +1194,14 @@ export function feedMessageId(f: FeedItem): string | undefined {
   return undefined;
 }
 
+/** Keep the oldest durable cursor after a reconnect replays the newest page over already-paginated
+ * history. UUID order is the stable tie-break when messages share one millisecond. */
+function olderMessageCursor(current: MessageCursor | undefined, next: MessageCursor): MessageCursor {
+  if (!current) return next;
+  if (next.createdAt < current.createdAt || (next.createdAt === current.createdAt && next.id < current.id)) return next;
+  return current;
+}
+
 /** Enforce the per-run and absolute feed caps on an already-chronological list. Used by both
  *  the live append path and the thread.history merge so a long-running thread re-fetched on
  *  reconnect (listMessages has no SQL LIMIT) can't balloon the feed past the render backstop. */
@@ -1305,7 +1338,9 @@ function applyEvent(ev: ServerEvent): void {
       // pre-disconnect items but missed anything that streamed while we were gone — re-fetch
       // the open thread's history; the id-keyed merge fills the gap without dropping live items.
       const selected = useStore.getState().selectedThreadId;
-      if (selected) sendCommand({ type: "thread.history", threadId: selected });
+      if (selected && sendCommand({ type: "thread.history", threadId: selected })) {
+        useStore.setState((s) => ({ threadHistoryLoading: { ...s.threadHistoryLoading, [selected]: true } }));
+      }
       const selectedCowork = useStore.getState().selectedCoworkId;
       if (selectedCowork && coworkSessions[selectedCowork]) sendCommand({ type: "cowork.history", sessionId: selectedCowork });
       break;
@@ -1562,6 +1597,9 @@ function applyEvent(ev: ServerEvent): void {
         return {
           threads: drop(s.threads),
           threadFeeds: drop(s.threadFeeds),
+          threadHistoryCursors: drop(s.threadHistoryCursors),
+          threadHistoryHasMore: drop(s.threadHistoryHasMore),
+          threadHistoryLoading: drop(s.threadHistoryLoading),
           implementationMemos: drop(s.implementationMemos),
           threadDrafts: drop(s.threadDrafts),
           thinkingDrafts: drop(s.thinkingDrafts),
@@ -1599,6 +1637,9 @@ function applyEvent(ev: ServerEvent): void {
           findings: s.findings.filter((f) => f.threadId !== ev.threadId),
           questions: s.questions.filter((q) => q.threadId !== ev.threadId),
           threadFeeds: drop(s.threadFeeds),
+          threadHistoryCursors: drop(s.threadHistoryCursors),
+          threadHistoryHasMore: drop(s.threadHistoryHasMore),
+          threadHistoryLoading: drop(s.threadHistoryLoading),
           threadDrafts: drop(s.threadDrafts),
           thinkingDrafts: drop(s.thinkingDrafts),
           pendingPlans: drop(s.pendingPlans),
@@ -1610,7 +1651,9 @@ function applyEvent(ev: ServerEvent): void {
       });
       // If this task is open, re-pull its (now-empty) history so the director-brief row that anchors
       // the feed reappears immediately — the fresh pipeline's live events then stream in beneath it.
-      if (useStore.getState().selectedThreadId === ev.threadId) sendCommand({ type: "thread.history", threadId: ev.threadId });
+      if (useStore.getState().selectedThreadId === ev.threadId && sendCommand({ type: "thread.history", threadId: ev.threadId })) {
+        useStore.setState((s) => ({ threadHistoryLoading: { ...s.threadHistoryLoading, [ev.threadId]: true } }));
+      }
       break;
     case "thread.history": {
       // Merge the authoritative DB history with whatever streamed live, keyed by stable id —
@@ -1663,8 +1706,18 @@ function applyEvent(ev: ServerEvent): void {
         });
 
         const merged = capFeed([...dbItems, ...liveOnly].sort((a, b) => a.at - b.at));
+        const first = ev.messages[0];
+        const cursor = first ? olderMessageCursor(s.threadHistoryCursors[ev.threadId], { createdAt: first.createdAt, id: first.id }) : s.threadHistoryCursors[ev.threadId];
+        const replayedNewestPage = !ev.before && !!first && !!cursor &&
+          (cursor.createdAt < first.createdAt || (cursor.createdAt === first.createdAt && cursor.id < first.id));
         return {
           threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged },
+          ...(cursor ? { threadHistoryCursors: { ...s.threadHistoryCursors, [ev.threadId]: cursor } } : {}),
+          threadHistoryHasMore: {
+            ...s.threadHistoryHasMore,
+            [ev.threadId]: replayedNewestPage ? s.threadHistoryHasMore[ev.threadId] ?? false : ev.hasMoreMessages ?? false,
+          },
+          threadHistoryLoading: { ...s.threadHistoryLoading, [ev.threadId]: false },
           implementationMemos: {
             ...s.implementationMemos,
             [ev.threadId]: mergeImplementationMemos(s.implementationMemos[ev.threadId] ?? [], ev.implementationMemos ?? []),

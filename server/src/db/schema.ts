@@ -431,16 +431,37 @@ CREATE TABLE IF NOT EXISTS cowork_messages (
   updated_at  INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_runs_thread     ON agent_runs(thread_id);
 CREATE INDEX IF NOT EXISTS idx_grades_model    ON model_grades(graded_model);
-CREATE INDEX IF NOT EXISTS idx_findings_thread ON findings(thread_id);
-CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
+-- thread_id alone left every listFindings(threadId)/listMessages(threadId) — opening a task's own
+-- detail panel — pay a full index scan PLUS a separate temp-B-tree sort for the ORDER BY created_at
+-- these always carry (better-sqlite3 EXPLAIN QUERY PLAN confirmed "USE TEMP B-TREE FOR ORDER BY" on
+-- the old single-column index). Measured on the live 800-task/508k-message DB: 1.05s cold / ~40ms warm
+-- for the busiest task's ~9k messages, dropping to under 1ms with the composite below, since the index
+-- itself now returns rows already in the needed order. The id tie-break supports exact keyset pagination.
+-- Db.migrate retires redundant legacy indexes; SCHEMA never rebuilds a large index at restart.
+CREATE INDEX IF NOT EXISTS idx_findings_thread_created_id ON findings(thread_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_messages_thread_created_id ON messages(thread_id, created_at, id);
 -- lastTextMessageForRun runs at every implementor run end (and once per run during the memo backfill).
 -- Without this it is a full scan of the whole message history for a single row.
 CREATE INDEX IF NOT EXISTS idx_messages_run ON messages(run_id);
 CREATE INDEX IF NOT EXISTS idx_questions_thread ON questions(thread_id);
 CREATE INDEX IF NOT EXISTS idx_chat_room       ON chat_messages(room, created_at);
+-- listRecentChat (the hello/reconnect snapshot's live-feed slice) has no room filter, so it can't use
+-- idx_chat_room above; without this it's a full-table scan + sort on every connect.
+CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_notes_thread    ON operator_notes(thread_id);
+-- threads had NO index at all: listThreads()'s ORDER BY created_at DESC (every hello/reconnect) and the
+-- state-filtered scans (cap-park sweep, IN_FLIGHT reconcile, queued-task pump) were full table scans.
+CREATE INDEX IF NOT EXISTS idx_threads_created ON threads(created_at);
+CREATE INDEX IF NOT EXISTS idx_threads_state_created ON threads(state, created_at);
+-- listAllRuns(limit) (the hello snapshot) and listActiveRuns() both filter/sort on these with no index.
+CREATE INDEX IF NOT EXISTS idx_runs_started    ON agent_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_runs_thread_started ON agent_runs(thread_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_runs_live       ON agent_runs(state, ended_at, started_at);
+-- listFindings(undefined, limit) (the cross-thread hello slice) sorts the whole table with no index.
+CREATE INDEX IF NOT EXISTS idx_findings_created ON findings(created_at);
+-- listDirectorMessages(limit) and the connect snapshot both sort the whole table with no index.
+CREATE INDEX IF NOT EXISTS idx_director_messages_created ON director_messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_supervisor_events_thread  ON supervisor_events(thread_id);
 CREATE INDEX IF NOT EXISTS idx_supervisor_events_created ON supervisor_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_supervisor_chat_created   ON supervisor_chat_turns(created_at);

@@ -112,8 +112,10 @@ export interface Thread {
   title: string;
   state: ThreadState;
   workspace: string;
-  brief: string;
-  rawPrompt: string;
+  /** Loaded with task history, not the board hello snapshot. */
+  brief?: string;
+  /** Internal task context; omitted from the board hello snapshot. */
+  rawPrompt?: string;
   error?: string | null;
   /** Strict owner-requested implementor model. `model` is the canonical runtime id; null means the
    * request could not be resolved and the task is blocked rather than silently downgraded. */
@@ -340,6 +342,13 @@ export type ChatScope = "general" | "project";
 /** A keyset cursor into a room's history — fetch the page just older than this (createdAt, id).
  *  Mirrors ChatCursor in server/src/types.ts. */
 export interface ChatCursor {
+  createdAt: number;
+  id: string;
+}
+
+/** Mirrors MessageCursor in server/src/types.ts. The oldest loaded task message is this cursor when
+ * the detail panel asks for the next older page. */
+export interface MessageCursor {
   createdAt: number;
   id: string;
 }
@@ -993,7 +1002,16 @@ export type ServerEvent =
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: ThreadState; error?: string; message?: string; result: ThreadActionResult }
   // Optional only for rolling compatibility with a console bundle loaded just before the server restart.
-  | { type: "thread.history"; threadId: string; messages: Message[]; findings: Finding[]; implementationMemos?: ImplementationMemo[]; brief: string }
+  | {
+      type: "thread.history";
+      threadId: string;
+      messages: Message[];
+      findings: Finding[];
+      implementationMemos?: ImplementationMemo[];
+      brief: string;
+      hasMoreMessages?: boolean;
+      before?: MessageCursor;
+    }
   | { type: "thread.memo"; threadId: string; memo: ImplementationMemo }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
@@ -1044,7 +1062,7 @@ export type ClientCommand =
   | { type: "thread.close"; threadId: string }
   | { type: "thread.restore"; threadId: string }
   | { type: "thread.dismiss"; threadId: string }
-  | { type: "thread.history"; threadId: string }
+  | { type: "thread.history"; threadId: string; before?: MessageCursor }
   | { type: "thread.approve"; threadId: string; approved: boolean; feedback?: string }
   | { type: "approval.set"; on: boolean }
   | { type: "settings.set"; settings: SettingsPatch }

@@ -164,6 +164,10 @@ export interface Thread {
   updatedAt: number;
 }
 
+/** The board-card projection sent in the initial WebSocket snapshot. The enriched brief and raw owner
+ * prompt are task-detail content, so they are fetched only after the owner opens that task. */
+export type ThreadSummary = Omit<Thread, "brief" | "rawPrompt">;
+
 /**
  * A recurring dispatch: a prompt run against a target repo on a cron schedule. Each fire creates a
  * normal task (Thread) via the standard pipeline — so it uses whichever providers/models are active,
@@ -334,6 +338,13 @@ export type ChatScope = "general" | "project";
 /** A keyset cursor into a room's history: fetch the page of messages strictly older than this
  *  (created_at, id) pair. Mirrored in web/src/types.ts. */
 export interface ChatCursor {
+  createdAt: number;
+  id: string;
+}
+
+/** Stable keyset cursor for a task's chronological message feed. `id` makes messages written in the
+ * same millisecond deterministic, so expanding history never skips or duplicates an entry. */
+export interface MessageCursor {
   createdAt: number;
   id: string;
 }
