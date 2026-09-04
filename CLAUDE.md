@@ -68,6 +68,30 @@ and the inject/resume gates key on the episode (not the state) so nothing spawns
 the window where the fix run has ended but the state hasn't flipped back. So `done` has three
 sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
 
+## Standing owner directives (an injection outlives the session it was sent to)
+An owner instruction injected mid-task ("put this on a separate branch") used to reach ONLY the session
+live at that moment. `stage_outputs.kickoff` is a frozen snapshot composed before the implementor first
+started and is never rewritten, so every LATER fresh/cold session — a reviewer fix round, a cap failover,
+a manual Resume, a restart — rebuilt its kickoff from that snapshot and never saw the instruction. It
+silently dropped, which is exactly the "the agents forgot what I told them" report.
+`injectThread` now durably appends every owner injection to `stage_outputs.standingDirectives` (verbatim,
+oldest first, most recent 25, exact-repeat deduped), and `renderStandingDirectives` puts the whole list
+into **every** kickoff-composing path: the fresh implementor start, the cold `composeResumeKickoff`
+reseed, the CLI resume continuation, the warm full-session nudge, and QA's and the reviewer's own
+kickoffs — so the gate that ships the task can catch a violated directive. Two rules: **a directive is
+only as durable as the narrowest path that omits it**, so a new kickoff builder must render it too; and
+it is rendered VERBATIM, never folded into the Haiku-compressed prior-session handoff, which is lossy.
+The list also survives a from-scratch **Retry** (`resetThreadForRetry` preserves it beside the reader
+escalation): a retry re-runs the ORIGINAL brief, and these are the owner's corrections TO that brief, so
+wiping them puts the retry straight back into the reported failure.
+**Only OWNER text is recorded.** The non-owner callers that reuse the same injection machinery pass
+`standing: false` — a routed `critical` finding (another agent, or another task via `notify_thread`) and
+an autonomous Supervisor correction are transient steering for the agent that is live right now, and the
+rendered block states outright that every line came from the owner. They pass `retitle: false` for the
+same reason (neither is a change of objective; both used to rename the owner's card to the finding /
+stall-nudge text). Supervisor CHAT relays the owner's own words, so it retitles nothing but IS recorded.
+Gate: `test:standing-directives`.
+
 ## Co-work (the interactive lane — a conversation, not a task)
 The **Co-work** tab is pair development: an owner prompt claims one short **Co-worker** work slice
 (`coworkerRunOptions`/`COWORKER_PROMPT`) that completes one useful increment, verifies proportionately,

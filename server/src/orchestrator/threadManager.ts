@@ -5402,7 +5402,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!reachable) {
       return { ok: false, state: thread.state, error: "No live agent remains to receive the correction." };
     }
-    return this.injectThread(threadId, message, "interrupt");
+    // Neither a standing owner directive nor a new objective: this is the watchdog's own model-generated
+    // correction, aimed at the live agent it just checked (the guard above refuses to send one when
+    // nothing is live). `retitle: false` matches injectSupervisorInstruction — steering must not rename
+    // the owner's lane; without it a stall nudge relabelled the card "You appear stalled - report your
+    // current status."
+    return this.injectThread(threadId, message, "interrupt", undefined, { standing: false, retitle: false });
   }
 
   /** An authenticated Supervisor-chat instruction uses the ordinary task injection machinery but is
@@ -9465,7 +9470,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     message: string,
     mode: "append" | "interrupt" | "queue",
     images?: ImageAttachment[],
-    options: { retitle?: boolean; recipient?: "implementor" | "qa" | "reviewer" } = {},
+    options: { retitle?: boolean; recipient?: "implementor" | "qa" | "reviewer"; standing?: boolean } = {},
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     const qaBypassRequested = thread ? this.armOwnerQaBypass(threadId, message) : false;
@@ -9475,7 +9480,16 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Record this as a STANDING directive before routing to any state-specific branch below, so it is
     // captured regardless of which one actually delivers it (live/QA/reviewer/self-improvement/buffered/
     // cold-resume all return early past this point). See recordStandingDirective's own comment for why.
-    if (thread && !qaBypassRequested && message.trim()) this.recordStandingDirective(threadId, message.trim());
+    // `standing: false` is for the NON-owner callers that reuse this same injection machinery — a routed
+    // critical finding (another agent, or another task via notify_thread) and an autonomous Supervisor
+    // correction. Those are transient agent-to-agent steering aimed at the session that is live right
+    // now, not owner policy for the rest of the task, and the rendered block states outright that every
+    // line came from the owner — so recording one there would both pin stale noise into every later
+    // kickoff and attribute an agent's words to the owner. Supervisor CHAT (owner words relayed through
+    // injectSupervisorInstruction) is the opposite case and is deliberately still recorded.
+    if (thread && !qaBypassRequested && options.standing !== false && message.trim()) {
+      this.recordStandingDirective(threadId, message.trim());
+    }
     // Auto-retitle the lane to reflect the LATEST directive — the user runs several tasks at once and
     // loses track when a lane's scope drifts from its original title. Fire-and-forget (void): the
     // model call must never block, slow, or throw into the inject path. Covers every inject branch
@@ -11734,7 +11748,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!live) return;
     if (finding.fromRunId && finding.fromRunId === live.runId) return; // not its own
     if (finding.severity === "critical") {
-      void this.injectThread(finding.threadId, `${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`, "interrupt");
+      // `standing: false` — a critical finding is another AGENT's urgent note to the implementor that is
+      // live right now (this method returns early when none is), including a cross-task notify_thread.
+      // It is not owner policy, so it must not be pinned into every later kickoff as an owner directive.
+      // `retitle: false` for the same reason: it is not a change of objective, and letting it through
+      // renamed the owner's task card to the finding text ("The login test is failing right now").
+      void this.injectThread(finding.threadId, `${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`, "interrupt", undefined, {
+        standing: false,
+        retitle: false,
+      });
       this.db.markFindingRouted(finding.id);
     } else if (finding.severity === "warning") {
       this.sendCommunication(

@@ -347,6 +347,121 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test 7: a NON-owner injection must not become an "owner instruction" ----------------------------
+  // route() reuses injectThread to hand a critical finding to the live implementor, and the supervisor
+  // watchdog reuses it for its own correction. Both are transient agent-to-agent steering aimed at the
+  // session that is live right now; the rendered block asserts every line came from the owner, so
+  // recording one would pin stale agent noise into every later kickoff under a false attribution.
+  console.log("\nTest 7 — a routed critical finding / supervisor correction is NOT recorded as an owner directive");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "implementing" });
+      const impl = new FakeRun();
+      h.internals.live.set(id, { run: impl, runId: "run-1", accountId: "acct-a" });
+
+      // A real agent-posted critical finding on this task — postFinding calls route(), which injects it.
+      h.mgr.postFinding({
+        threadId: id,
+        fromRole: "qa",
+        fromRunId: "some-other-run",
+        summary: "The login test is failing right now",
+        severity: "critical",
+      });
+      await settle();
+      check(
+        "the critical finding still reached the live implementor",
+        impl.sends.some((s) => s.text.includes("login test is failing")),
+        JSON.stringify(impl.sends),
+      );
+      check(
+        "but it was NOT recorded as a standing owner directive",
+        !(h.db.getThreadStageOutputs(id).standingDirectives ?? []).some((d) => d.includes("login test is failing")),
+        JSON.stringify(h.db.getThreadStageOutputs(id).standingDirectives),
+      );
+
+      // The autonomous Supervisor correction takes the same non-standing route...
+      await h.mgr.injectSupervisorCorrection(id, "You appear stalled — report your current status.");
+      // ...while Supervisor CHAT relays the OWNER's own words and must still persist.
+      await h.mgr.injectSupervisorInstruction(id, BRANCH_DIRECTIVE, "append");
+      const directives = h.db.getThreadStageOutputs(id).standingDirectives ?? [];
+      check(
+        "the autonomous supervisor correction was not recorded either",
+        !directives.some((d) => d.includes("report your current status")),
+        JSON.stringify(directives),
+      );
+      check(
+        "an owner instruction relayed through supervisor chat IS still recorded",
+        directives.some((d) => d.includes(BRANCH_DIRECTIVE)),
+        JSON.stringify(directives),
+      );
+      // Same boundary, second symptom: neither non-owner path is a change of objective, so neither may
+      // rename the owner's lane. Both used to, relabelling the card with the finding / stall nudge text.
+      check(
+        "neither non-owner injection renamed the owner's task card",
+        h.db.getThread(id)?.title === "mock standing-directives task",
+        h.db.getThread(id)?.title,
+      );
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test 7b: QA's kickoff renders the block too — QA is the gate that ships the task, so it is the
+  // independent check that can catch a violated directive (a mixed branch) before the work lands.
+  console.log(`\nTest 7b — the QA kickoff carries the standing directive as well`);
+  {
+    const { qaFixFreshKickoff } = await import("../orchestrator/threadManager.js");
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      await h.mgr.injectThread(id, BRANCH_DIRECTIVE, "queue");
+      const thread = h.db.getThread(id)!;
+      const directives = h.db.getThreadStageOutputs(id).standingDirectives;
+      const kickoff = qaFixFreshKickoff(thread, undefined, "prior fix summary", [], directives);
+      check("the QA kickoff carries the standing directive", kickoff.includes(BRANCH_DIRECTIVE), kickoff);
+      check(
+        "…under the owner-instruction heading QA is told to check the work against",
+        kickoff.includes("Owner instructions given during this task"),
+        kickoff,
+      );
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test 8: a Retry re-runs the ORIGINAL brief, so the owner's corrections to that brief must survive --
+  // resetThreadForRetry wipes stage_outputs; it already excepted the reader-escalation evidence as
+  // "original user context". A standing directive is the same class of context - dropping it puts the
+  // retry straight back into the reported failure ("I told it to branch and it forgot").
+  console.log(`\nTest 8 — a from-scratch Retry preserves the standing directives (and the reader escalation)`);
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThreadStageOutputs(id, {
+        readerEscalation: { originalBrief: "the original brief", reason: "needs an edit", answer: "the reader read it" },
+      });
+      h.db.updateThread(id, { state: "implementing" });
+      const impl = new FakeRun();
+      h.internals.live.set(id, { run: impl, runId: "run-1", accountId: "acct-a" });
+      await h.mgr.injectThread(id, BRANCH_DIRECTIVE, "append");
+      h.internals.live.delete(id);
+
+      h.db.resetThreadForRetry(id);
+      const stage = h.db.getThreadStageOutputs(id);
+      check("the standing directive survived the retry wipe", (stage.standingDirectives ?? []).includes(BRANCH_DIRECTIVE), JSON.stringify(stage));
+      check("the reader escalation evidence still survives too", stage.readerEscalation?.originalBrief === "the original brief", JSON.stringify(stage));
+      check("the rest of the stage outputs were still wiped", stage.kickoff == null && stage.planDone !== true, JSON.stringify(stage));
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS ✅" : "FAIL ❌"} — ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {
     console.log("Failures:");
