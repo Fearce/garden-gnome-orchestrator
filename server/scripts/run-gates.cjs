@@ -47,6 +47,7 @@ const GATES = [
   "test:probe-text",
   "test:deploy-plan",
   "test:restart-drain",
+  "test:restart-health",
   "test:compiled-diff",
   "test:tree-owner",
   "test:api-errors",

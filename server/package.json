@@ -54,6 +54,7 @@
     "test:probe-text": "tsx src/tests/probeText.test.ts",
     "test:deploy-plan": "node scripts/deploy-plan.test.cjs",
     "test:restart-drain": "tsx src/tests/restartDrain.itest.ts",
+    "test:restart-health": "node scripts/restart-coordinator-health.test.cjs",
     "test:compiled-diff": "node scripts/compiled-diff.test.cjs",
     "test:tree-owner": "node scripts/tree-owner.test.cjs",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",

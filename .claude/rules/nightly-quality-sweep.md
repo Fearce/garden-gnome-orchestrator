@@ -16,9 +16,11 @@ individual steps print their own `=== verdict ===` headers (step 3 does, at ~40s
 mid-sweep and you read a half-finished log.
 
 ## 1. `npm run health --prefix server`
-(`nightly-health.cjs`) — hits `/api/health`, checks `:4317` vs `dist` **and `dist` vs HEAD**, greps live
-reliability symbols, lists dirty git paths, summarizes SQLite parks/caps/stuck runs, and scans `crash.log`
-for real faults vs benign memory high-water notes. Exit 1 = hard fail; a dirty tree alone does **not** fail.
+(`nightly-health.cjs`) — hits `/api/health`, reports the restart coordinator as idle/draining/retrying,
+checks `:4317` vs `dist` **and `dist` vs HEAD**, greps live reliability symbols, lists dirty git paths,
+summarizes SQLite parks/caps/stuck runs, and scans `crash.log` for real faults vs benign memory high-water
+notes. Exit 1 = hard fail; a dirty tree alone does **not** fail. A missing/malformed coordinator or refused
+restart is a note: the service may still run, but the next planned deploy is not proven safe.
 **Both build checks compare CONTENT** (a commit + `git diff` over `server/src`, tests excluded); mtimes
 cry wolf. `dist` vs HEAD (`.build-info.json`) can be stale while process-vs-dist agrees — the Stop button
 sat a day unbuilt that way (2026-07-29). Process-vs-dist reads the build the RUNNING process reports

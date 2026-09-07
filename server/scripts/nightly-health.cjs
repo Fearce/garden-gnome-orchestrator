@@ -7,6 +7,7 @@
 //
 // What a resume-after-orchestrator-bounce agent needs in one command:
 //   • /api/health up?
+//   • restart coordinator reachable, and is it idle / draining / retrying?
 //   • is the running process on the code in dist? Compared by BUILD COMMIT — the
 //     process reports which build it loaded (`build` on /api/health) — and, when
 //     that differs from dist, by whether any server/src content actually changed
@@ -32,6 +33,7 @@ const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
 const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, isDeadEndLine } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
 const { inspectAccountUsage } = require("./account-usage-health.cjs");
+const { inspectRestartCoordinator } = require("./restart-coordinator-health.cjs");
 
 const args = process.argv.slice(2);
 function flag(name) {
@@ -200,17 +202,16 @@ function processVsDist(runningBuild) {
  * that bypass tree-kills every live agent — the exact interruption the coordinator exists to prevent, and
  * the reflex `deploy.cjs`/AGENTS.md warn against. So ask the coordinator before advising.
  *
- * Returns its status only while a restart is genuinely pending; null when nothing is staged or the
- * coordinator cannot be read (an unreachable coordinator must never silence a real stale build).
+ * Returns the public status response, or an error string. Callers must never treat an unreadable
+ * coordinator as proof that no restart is staged.
  */
-async function pendingCoordinatedRestart() {
+async function readRestartCoordinator() {
   try {
     const res = await fetch(`${BASE}/api/deploy/status`, { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) return null;
-    const status = await res.json();
-    return status && status.pending ? status : null;
-  } catch {
-    return null;
+    if (!res.ok) return { status: null, error: `HTTP ${res.status}` };
+    return { status: await res.json(), error: null };
+  } catch (error) {
+    return { status: null, error: error && error.message ? error.message : String(error) };
   }
 }
 
@@ -291,6 +292,17 @@ async function main() {
     /* version is optional */
   }
 
+  let restartStatus = null;
+  const restartRead = await readRestartCoordinator();
+  if (!restartRead.status) {
+    warn(`restart coordinator status unavailable: ${restartRead.error}`);
+  } else {
+    const reading = inspectRestartCoordinator(restartRead.status);
+    if (reading.valid) restartStatus = restartRead.status;
+    if (reading.level === "warn") warn(reading.message);
+    else ok(reading.message);
+  }
+
   // ---- 2) Listener PID + start vs dist mtime ----
   section("process vs dist");
   const pid = winListener(4317);
@@ -311,7 +323,14 @@ async function main() {
       if (vsDist.state === "stale") {
         // A coordinated bounce is already owed for this dist. Report it as the finished state `deploy
         // --verify` reports (it exits 0 here), not as "go restart it by hand" — see above.
-        const staged = await pendingCoordinatedRestart();
+        // Re-read only when the first snapshot had no pending restart: a deploy may have staged one
+        // while this probe was comparing the process and dist.
+        let staged = restartStatus && restartStatus.pending ? restartStatus : null;
+        if (!staged) {
+          const latest = await readRestartCoordinator();
+          const reading = latest.status ? inspectRestartCoordinator(latest.status) : null;
+          if (reading?.valid && latest.status.pending) staged = latest.status;
+        }
         const failures = staged && staged.pending ? staged.pending.failures || 0 : 0;
         if (staged && failures === 0) {
           ok(
