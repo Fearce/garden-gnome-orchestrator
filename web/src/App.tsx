@@ -10,6 +10,7 @@ import { NoticeBanner } from "./components/NoticeBanner.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
 import ggLogo from "./assets/gg-logo.png";
+import type { BoardView } from "./types.js";
 
 // These panels are both opt-in and code-heavy (full transcript renderer, repository console, provider
 // settings). Keeping them out of the first board paint makes reconnects responsive on a busy install.
@@ -260,7 +261,7 @@ function ApprovalToggle() {
 function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePane) => void }) {
   const boardView = useStore((s) => s.boardView);
   const setBoardView = useStore((s) => s.setBoardView);
-  const openBoardView = (view: "tasks" | "cowork" | "supervisor") => {
+  const openBoardView = (view: BoardView) => {
     setBoardView(view);
     setPane("board");
   };
@@ -302,17 +303,13 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
         </svg>
         Co-work
       </button>
-      <button
-        className={"mnav-btn" + (pane === "board" && boardView === "supervisor" ? " on" : "")}
-        aria-current={pane === "board" && boardView === "supervisor" ? "page" : undefined}
-        onClick={() => openBoardView("supervisor")}
-      >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M20 13c0 5-3.5 7.5-7.7 9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2.2 0 4.7-1.2 6.3-2.7a1 1 0 0 1 1.4 0C14.3 3.8 16.8 5 19 5a1 1 0 0 1 1 1z" />
-          <path d="M9 12l2 2 4-4" />
-        </svg>
-        Supervisor
-      </button>
+      <label className={"mnav-btn mnav-area" + (pane === "board" && !["tasks", "cowork"].includes(boardView) ? " on" : "")}>
+        <span>All areas</span>
+        <select aria-label="All areas" value={pane === "director" ? "" : boardView} onChange={e => openBoardView(e.target.value as BoardView)}>
+          <option value="" disabled>Choose…</option>
+          <option value="tasks">Tasks</option><option value="cowork">Co-work</option><option value="ide">IDE</option><option value="notes">Notes</option><option value="schedules">Scheduled Tasks</option><option value="supervisor">Supervisor</option>
+        </select>
+      </label>
     </nav>
   );
 }

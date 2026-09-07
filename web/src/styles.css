@@ -3866,3 +3866,20 @@ html.theme-transition * {
 @media (max-width: 899.98px) {
   .theme-picker { grid-template-columns: minmax(0, 1fr); padding-left: 16px; padding-right: 16px; }
 }
+
+/* Area navigation adapts to the board's actual width, including an open task detail. */
+.board { container-type: inline-size; }
+.board-area-select { display: none; }
+.board-tabs { flex-wrap: wrap; row-gap: 8px; }
+.mnav-area { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 3px; }
+.mnav-area select { width: 100%; max-width: 110px; min-width: 0; background: var(--bg-1); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-sm); font: 11px var(--font-sans); padding: 4px; }
+@container (max-width: 760px) {
+  .board-head .board-tabs { display: none; }
+  .board-head .board-area-select { display: flex; align-items: center; gap: 10px; min-width: 0; width: 100%; color: var(--text-dim); font-size: 12px; }
+  .board-area-select select { flex: 1; min-width: 0; min-height: 38px; padding: 6px 10px; background: var(--bg-1); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-sm); font: inherit; }
+}
+@media (max-width: 899.98px) {
+  .board-head .board-tabs { display: none; }
+  .board-head .board-area-select { display: flex; align-items: center; gap: 10px; width: 100%; color: var(--text-dim); font-size: 12px; }
+  .board-area-select select { flex: 1; min-width: 0; min-height: 38px; padding: 6px 10px; background: var(--bg-1); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-sm); font: inherit; }
+}

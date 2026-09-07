@@ -93,6 +93,9 @@ export interface RepoState {
   isCommitOnly: boolean;
   pushState: PushState;
   files: GitFile[];
+  staged?: string[];
+  unstaged?: string[];
+  operation?: "merge" | "rebase" | null;
   commits: GitCommit[];
   /** Epoch ms of the last successful fetch (FETCH_HEAD's mtime), or null if never fetched. */
   lastFetchAt: number | null;
@@ -129,11 +132,14 @@ export type RepoOp =
   | { action: "checkout"; branch: string; create: boolean; from?: string }
   | { action: "deleteBranch"; branch: string; force: boolean }
   | { action: "commit"; summary: string; description: string; paths: string[] }
+  | { action: "stage" | "unstage"; paths: string[] }
+  | { action: "commitStaged"; summary: string; description: string }
+  | { action: "continueOperation" | "abortOperation" }
   | { action: "discard"; paths: string[] };
 
 /** The actions that rewrite the working tree or move HEAD — the ones that would break an agent working
  *  in the repo. `orchestrator/repoConsole.ts` gates exactly this set behind the live-agent check. */
-export const TREE_MUTATING_ACTIONS: ReadonlySet<RepoOp["action"]> = new Set(["checkout", "pull", "discard"]);
+export const TREE_MUTATING_ACTIONS: ReadonlySet<RepoOp["action"]> = new Set(["checkout", "pull", "discard", "continueOperation", "abortOperation"]);
 
 // ---- validation (the trust boundary for operator-supplied strings) ----------------------------------
 
@@ -265,12 +271,15 @@ export async function getRepoState(path: string): Promise<RepoState> {
   }
 
   const status = await getGitStatus(root);
-  const [branches, remoteBranches, remotes, commits, fetchedAt] = await Promise.all([
+  const [branches, remoteBranches, remotes, commits, fetchedAt, staged, unstaged, operation] = await Promise.all([
     collectBranches(root, status.branch),
     collectRemoteBranches(root),
     collectRemotes(root),
     collectRepoLog(root, status.pushRef ?? status.upstreamRef),
     lastFetchAt(root),
+    stagedPaths(root),
+    unstagedPaths(root),
+    pendingOperation(root),
   ]);
 
   return {
@@ -290,6 +299,9 @@ export async function getRepoState(path: string): Promise<RepoState> {
     isCommitOnly: status.isCommitOnly,
     pushState: status.pushState,
     files: status.files,
+    staged,
+    unstaged,
+    operation,
     commits,
     lastFetchAt: fetchedAt,
     // `origin` is what the owner means by "the repo" when it exists; fall back to the first remote.
@@ -451,13 +463,54 @@ export async function runRepoAction(path: string, op: RepoOp): Promise<RepoActio
       case "checkout": return await doCheckout(root, op.branch, op.create, op.from);
       case "deleteBranch": return await doDeleteBranch(root, op.branch, op.force);
       case "commit": return await doCommit(root, op.summary, op.description, op.paths);
+      case "stage": return await changeIndex(root, op.paths, true);
+      case "unstage": return await changeIndex(root, op.paths, false);
+      case "commitStaged": {
+        if (!op.summary.trim()) return fail("A commit needs a summary.");
+        if (!(await stagedPaths(root)).length) return fail("Stage changes before committing.");
+        return resultOf(await runGit(root, ["commit", "-m", op.summary.trim(), ...(op.description.trim() ? ["-m", op.description.trim()] : [])], NET_TIMEOUT_MS), "Committed staged changes.");
+      }
       case "discard": return await doDiscard(root, op.paths);
+      case "continueOperation":
+      case "abortOperation": {
+        const operation = await pendingOperation(root);
+        if (!operation) return fail("No merge or rebase is in progress. Refresh the repository.");
+        const args = op.action === "abortOperation" ? [operation, "--abort"] : operation === "merge" ? ["commit", "--no-edit"] : ["-c", "core.editor=true", "rebase", "--continue"];
+        return resultOf(await runGit(root, args, NET_TIMEOUT_MS), `${operation} ${op.action === "abortOperation" ? "aborted" : "continued"}.`);
+      }
       default: return fail("Unknown action.");
     }
   } finally {
     // Every action above can move HEAD or the working tree, so the read layer's caches are stale now.
     bustGitCaches();
   }
+}
+
+async function stagedPaths(root: string): Promise<string[]> {
+  const result = await runGit(root, ["diff", "--cached", "--name-only", "--no-renames", "-z"]);
+  return result.code === 0 ? result.stdout.split("\0").filter(Boolean) : [];
+}
+
+async function pendingOperation(root: string): Promise<"merge" | "rebase" | null> {
+  const dir = okOut(await runGit(root, ["rev-parse", "--absolute-git-dir"]));
+  if (!dir) return null;
+  const exists = (name: string) => { try { statSync(resolve(dir, name)); return true; } catch { return false; } };
+  return exists("rebase-merge") || exists("rebase-apply") ? "rebase" : exists("MERGE_HEAD") ? "merge" : null;
+}
+
+async function unstagedPaths(root: string): Promise<string[]> {
+  const [tracked, untracked] = await Promise.all([
+    runGit(root, ["diff", "--name-only", "--no-renames", "-z"]),
+    runGit(root, ["ls-files", "--others", "--exclude-standard", "-z"]),
+  ]);
+  return [...new Set((tracked.stdout + untracked.stdout).split("\0").filter(Boolean))];
+}
+
+async function changeIndex(root: string, paths: string[], stage: boolean): Promise<RepoActionResult> {
+  if (!paths.length || paths.length > 2000 || paths.some(p => !validRepoPath(p) || p.split(/[\\/]/).some(s => s.toLowerCase() === ".git"))) return fail("Select valid repository files.");
+  const hasHead = (await runGit(root, ["rev-parse", "--verify", "HEAD"])).code === 0;
+  const args = stage ? ["add", "-A"] : hasHead ? ["restore", "--staged"] : ["rm", "--cached", "-f"];
+  return resultOf(await runGit(root, ["--literal-pathspecs", ...args, "--", ...paths], TREE_TIMEOUT_MS), stage ? "Staged selected changes." : "Unstaged selected changes.");
 }
 
 async function doFetch(root: string, prune: boolean): Promise<RepoActionResult> {

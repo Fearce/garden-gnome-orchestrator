@@ -31,6 +31,8 @@ import { refreshStatus, getStatus, applyUpdate, startUpdatePoll } from "./update
 import { registerWs } from "./ws/hub.js";
 import { FreeProviderService } from "./freeProviders/service.js";
 import { registerFreeProviderRoutes } from "./freeProviders/routes.js";
+import { IdeService } from "./ide/service.js";
+import { registerIdeRoutes } from "./ide/routes.js";
 import { randomUUID } from "node:crypto";
 import {
   isAuthed,
@@ -139,6 +141,7 @@ async function main(): Promise<void> {
   // own checkout (resolved from server/, so it holds in dev and in the built dist alike) even before any
   // task has been dispatched.
   const repos = new RepoConsole(db, config.serverRoot);
+  const ide = new IdeService(db, dirname(config.serverRoot));
   // How often an AGENT may bounce this server. Deploying tree-kills the console and every live agent,
   // and with several tasks running — each finishing its own patch — that was landing every few minutes.
   // Standalone over (db, hub) like notes/scheduler: it reads the board through one count and owns the
@@ -249,6 +252,7 @@ async function main(): Promise<void> {
     await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
     registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos, onlineOffice, cowork });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
+    registerIdeRoutes(app, ide, isAuthed);
 
     // `build` is which dist THIS process loaded, read once at boot — the fact that turns "is the live
     // server running current code?" into a comparison instead of an inference from mtimes.

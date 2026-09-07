@@ -83,6 +83,7 @@ export interface RepoActionDTO extends RepoActionResult {
 export class RepoConsole {
   private discoveryCache: { at: number; roots: string[] } | null = null;
   private discoveryInFlight: Promise<string[]> | null = null;
+  private stateReads = new Map<string, Promise<RepoState>>();
 
   constructor(
     private readonly db: Db,
@@ -187,7 +188,14 @@ export class RepoConsole {
   /** Full console state for one repo, plus the tasks currently working in it (which is what makes the
    *  destructive buttons explain themselves before you click). */
   async state(path: string): Promise<RepoStateDTO> {
-    const state = await getRepoState(path);
+    // Visible snapshots live in the client. Refreshes stay fresh, but concurrent consoles
+    // share one Git sweep. Live-agent authorization is intentionally never cached.
+    let pending = this.stateReads.get(path);
+    if (!pending) {
+      pending = getRepoState(path).finally(() => { if (this.stateReads.get(path) === pending) this.stateReads.delete(path); });
+      this.stateReads.set(path, pending);
+    }
+    const state = await pending;
     return { ...state, busy: state.isRepo ? await this.busyTasks(state.path) : [] };
   }
 
@@ -208,12 +216,13 @@ export class RepoConsole {
    *  operator explicitly overrode it. The refusal names the tasks — a bare "busy" would just get
    *  force-clicked. */
   async action(path: string, op: RepoOp, force: boolean): Promise<RepoActionDTO> {
+    this.stateReads.delete(path);
     if (TREE_MUTATING_ACTIONS.has(op.action) && !force) {
       const root = await resolveRepoRoot(path);
       const busy = root ? await this.busyTasks(root) : [];
       if (busy.length > 0) return { ok: false, blocked: true, message: busyMessage(op.action, busy) };
     }
-    const result = await runRepoAction(path, op);
+    const result = await runRepoAction(path, op).finally(() => this.stateReads.delete(path));
     return { ...result, blocked: false };
   }
 
@@ -253,6 +262,8 @@ const ACTION_VERB: Record<string, string> = {
   checkout: "Switching branches",
   pull: "Pulling",
   discard: "Discarding changes",
+  continueOperation: "Continuing the merge or rebase",
+  abortOperation: "Aborting the merge or rebase",
 };
 
 function busyMessage(action: RepoOp["action"], busy: RepoBusyTask[]): string {

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes } from "react";
+import { lazy, Suspense, memo, useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   DndContext,
@@ -26,6 +26,7 @@ import { SupervisorPanel } from "./SupervisorPanel.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { CoWork } from "./CoWork.js";
 import { ManualDeploymentBadge } from "./ManualDeploymentStatus.js";
+const Ide = lazy(() => import("./ide/Ide.js").then(m => ({ default: m.Ide })));
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -118,6 +119,8 @@ export function Board() {
   const dndEnabled = useStore((s) => s.taskDragAndDrop);
   const taskSort = useStore((s) => s.taskSort);
   const taskOrder = useStore((s) => s.taskOrder);
+  const [ideOpened, setIdeOpened] = useState(false);
+  useEffect(() => { if (boardView === "ide") setIdeOpened(true); }, [boardView]);
   const setTaskOrder = useStore((s) => s.setTaskOrder);
   const setTaskSort = useStore((s) => s.setTaskSort);
   const all = Object.values(threads);
@@ -230,7 +233,8 @@ export function Board() {
           </div>
         ) : null}
       </div>
-      {boardView === "schedules" ? (
+      {(ideOpened || boardView === "ide") && <div className="ide-mount" hidden={boardView !== "ide"}><Suspense fallback={<p>Opening IDE…</p>}><Ide /></Suspense></div>}
+      {boardView === "ide" ? null : boardView === "schedules" ? (
         <ScheduledTasks />
       ) : boardView === "cowork" ? (
         <CoWork />
@@ -287,13 +291,14 @@ function BoardTabs() {
   const setBoardView = useStore((s) => s.setBoardView);
   const counts = {
     tasks: null,
+    ide: null,
     cowork: useStore((s) => Object.keys(s.coworkSessions).length),
     notes: useStore((s) => s.notes.length),
     schedules: useStore((s) => s.schedules.length),
     supervisor: useStore((s) => (s.supervisor.enabled ? s.supervisor.watching : null)),
   };
   return (
-    <div className="board-tabs">
+    <><label className="board-area-select">Area<select aria-label="Board area" value={boardView} onChange={e => setBoardView(e.target.value as BoardView)}>{BOARD_TABS.map(tab => <option value={tab.view} key={tab.view}>{tab.label}{counts[tab.view] ? ` (${counts[tab.view]})` : ""}</option>)}</select></label><div className="board-tabs" aria-label="Board areas">
       {BOARD_TABS.map((tab) =>
         boardView === tab.view ? (
           <h2 key={tab.view}>{tab.label}</h2>
@@ -304,13 +309,14 @@ function BoardTabs() {
           </button>
         ),
       )}
-    </div>
+    </div></>
   );
 }
 
 const BOARD_TABS: { view: BoardView; label: string; title: string }[] = [
   { view: "tasks", label: "Tasks", title: "Back to the task board" },
   { view: "cowork", label: "Co-work", title: "Human-led coding sessions with persistent context" },
+  { view: "ide", label: "IDE", title: "Edit workspace files and manage Git" },
   { view: "notes", label: "Notes", title: "Branches, PRs and reminders waiting on you" },
   { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },
   { view: "supervisor", label: "Supervisor", title: "The Director Supervisor watchdog: its state, budget and recent checks/actions" },

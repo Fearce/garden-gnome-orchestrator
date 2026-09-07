@@ -423,6 +423,11 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         paths: z.array(z.string().min(1).max(4096)).min(1).max(2000),
       }),
       z.object({ action: z.literal("discard"), paths: z.array(z.string().min(1).max(4096)).min(1).max(2000) }),
+      z.object({ action: z.literal("stage"), paths: z.array(z.string().min(1).max(4096)).min(1).max(2000) }),
+      z.object({ action: z.literal("unstage"), paths: z.array(z.string().min(1).max(4096)).min(1).max(2000) }),
+      z.object({ action: z.literal("commitStaged"), summary: z.string().min(1).max(500), description: z.string().max(10000).default("") }),
+      z.object({ action: z.literal("continueOperation") }),
+      z.object({ action: z.literal("abortOperation") }),
     ]),
   }),
   // Stop the director's current turn when it's spinning (busy but neither replying nor dispatching).

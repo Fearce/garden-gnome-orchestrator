@@ -91,6 +91,7 @@ const PANEL_ROOT = {
   notes: ".notes-view",
   schedules: ".sched-view",
   supervisor: ".supervisor-view",
+  ide: ".ide",
 };
 
 const ACCOUNT_ENV = { ACCOUNT_1_ID: "acct1", ACCOUNT_1_LABEL: "personal", ACCOUNT_2_ID: "acct2", ACCOUNT_2_LABEL: "secondary" };
@@ -167,6 +168,11 @@ function collectEntryPoints({ view, label }) {
   };
 
   const out = [];
+  for (const label of ["Board area", "All areas"]) {
+    const selector = `select[aria-label="${label}"]`;
+    const el = document.querySelector(selector);
+    if (el && [...el.options].some(o => o.value === view)) out.push({ route: "area selector", ...probe(el, "", 0), selector });
+  }
   const nav = document.querySelector(".mobile-nav");
   if (nav) {
     [...nav.children].forEach((el, i) => {
@@ -201,7 +207,7 @@ async function resetToBoard(page) {
   // Server-authoritative surfaces render neutral defaults until the WS hello lands; `.accounts .acct`
   // is hello-only, so it is the signal that the page is really ready to measure.
   await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
-  await page.waitForSelector(".board-tabs", { timeout: 20_000 });
+  await page.waitForSelector(".board-tabs", { timeout: 20_000, state: "attached" });
   await page.waitForTimeout(250);
 }
 
@@ -249,8 +255,11 @@ async function drivePass(page, width, views, tabs) {
       continue;
     }
 
-    await page.tap(usable.selector);
-    await page.waitForTimeout(300);
+    if (usable.route === "area selector") await page.selectOption(usable.selector, view);
+    else await page.tap(usable.selector);
+    // Lazy areas may still be downloading on their first visit. Wait for the actual
+    // visible panel; the heading and hit-test checks below still verify navigation.
+    await page.waitForSelector(PANEL_ROOT[view], { state: "visible", timeout: 5000 }).catch(() => {});
     const landed = await page.evaluate(
       ({ root }) => ({
         heading: (document.querySelector(".board-tabs h2")?.textContent || "").trim(),

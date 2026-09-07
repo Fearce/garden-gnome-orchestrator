@@ -161,7 +161,7 @@ export interface ScheduledTask {
 }
 
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
-export type BoardView = "tasks" | "cowork" | "notes" | "schedules" | "supervisor";
+export type BoardView = "tasks" | "cowork" | "notes" | "schedules" | "supervisor" | "ide";
 
 /** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
 export const NOTE_MAX_CHARS = 255;
@@ -873,6 +873,9 @@ export interface RepoState {
    *  isn't a recognizable web host. */
   webUrl: string | null;
   busy: RepoBusyTask[];
+  staged?: string[];
+  unstaged?: string[];
+  operation?: "merge" | "rebase" | null;
 }
 
 export interface RepoCommitDetail {
@@ -902,6 +905,9 @@ export type RepoOp =
   | { action: "checkout"; branch: string; create?: boolean; from?: string }
   | { action: "deleteBranch"; branch: string; force?: boolean }
   | { action: "commit"; summary: string; description?: string; paths: string[] }
+  | { action: "stage" | "unstage"; paths: string[] }
+  | { action: "commitStaged"; summary: string; description?: string }
+  | { action: "continueOperation" | "abortOperation" }
   | { action: "discard"; paths: string[] };
 
 // ---- The Online Office (cross-machine coordination) ----

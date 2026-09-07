@@ -1601,6 +1601,7 @@ function applyEvent(ev: ServerEvent): void {
       }));
       break;
     case "repo.result":
+      window.dispatchEvent(new Event("ggo:repo-changed"));
       useStore.setState((s) => {
         if (!ev.result.ok) return { repoBusy: false, repoResult: { ...ev.result, action: ev.action, at: Date.now() } };
         // The repo moved, so the per-task Changes surfaces that read the same repo are stale too. The
@@ -2013,6 +2014,7 @@ export function connect(): void {
     failPendingThreadActions();
     useStore.setState({ connected: false });
     if (e.code === 4401) {
+      window.dispatchEvent(new Event("ggo:auth-lost"));
       failSendingOutbound("Your session expired before the server confirmed this message. Sign in, then resend it.");
       useStore.setState({ authRequired: true, authed: false });
       return; // auth lost — show login instead of reconnect-looping

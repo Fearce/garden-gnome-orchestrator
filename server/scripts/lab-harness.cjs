@@ -101,8 +101,8 @@ function requireBuild() {
 /** Boot a throwaway instance on `port` against `dataDir`, resolving once it answers `/api/me`.
  *  Account tokens are overridden with a bogus value (see the header); `env` adds anything else the
  *  lab needs. Its log lands in `<dataDir>/lab.log` — read it when a boot times out. */
-async function boot({ dataDir, port, env = {} }) {
-  const child = spawn(process.execPath, [path.join(SERVER_ROOT, "dist", "index.js")], {
+async function boot({ dataDir, port, env = {}, entry = process.env.GGO_LAB_ENTRY || path.join(SERVER_ROOT, "dist", "index.js") }) {
+  const child = spawn(process.execPath, [entry], {
     cwd: SERVER_ROOT,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,

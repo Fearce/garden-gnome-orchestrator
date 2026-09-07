@@ -5,6 +5,7 @@ import { ago } from "../lib/format.js";
 import { FolderPicker } from "./FolderPicker.js";
 import { Diff } from "./Diff.js";
 import "./gitConsole.css";
+import { ideApi, cachedIde, invalidateIde } from "./ide/api.js";
 
 /**
  * The Git console — the whole GitHub Desktop surface, in the orchestrator. Repo picker, branch menu
@@ -21,6 +22,76 @@ import "./gitConsole.css";
  */
 
 const LAST_REPO_KEY = "orch-git-console-repo";
+
+/** The IDE uses the same repository commands and guardrails as the standalone console. */
+export function GitWorkspace({ workspace, path, onOpenFile, hasDrafts, visible = true }: { visible?: boolean; workspace: string; path: string; onOpenFile: (path: string) => void; hasDrafts: boolean }) {
+  const state = useStore(s => s.repoStates[path]);
+  const connected = useStore(s => s.connected);
+  const busy = useStore(s => s.repoBusy);
+  const result = useStore(s => s.repoResult);
+  const action = useStore(s => s.repoAction);
+  const refresh = useStore(s => s.loadRepoState);
+  const [history, setHistory] = useState(false);
+  const [selected, setSelected] = useState<{ path: string; staged: boolean } | null>(null);
+  const [summary, setSummary] = useState("");
+  const [description, setDescription] = useState("");
+  const submitted = useRef(false);
+  useEffect(() => {
+    if (!visible) return;
+    refresh(path);
+    const focus = () => refresh(path); window.addEventListener("focus", focus);
+    const timer = setInterval(() => { if (!document.hidden && !useStore.getState().repoBusy) refresh(path); }, 15000);
+    return () => { clearInterval(timer); window.removeEventListener("focus", focus); };
+  }, [path, refresh, connected, visible]);
+  useEffect(() => {
+    if (!busy && result && submitted.current) { if (result.ok) { setSummary(""); setDescription(""); } submitted.current = false; }
+  }, [busy, result]);
+  if (!state) return <div className="gc-empty">Reading repository…</div>;
+  if (!state.isRepo) return <div className="gc-empty">{state.error ?? "Not a Git repository."}</div>;
+  const staged = state.staged ?? [];
+  const unstaged = state.unstaged ?? [];
+  const conflicted = state.files.filter(f => f.status === "conflicted");
+  const disabled = busy || !connected;
+  const fileGroup = (label: string, paths: string[], isStaged: boolean) => <section className="ide-index-group">
+    <div className="ide-index-head"><b>{label} <span>{paths.length}</span></b><button disabled={disabled || !paths.length} onClick={() => action(path, { action: isStaged ? "unstage" : "stage", paths })}>{isStaged ? "Unstage all" : "Stage all"}</button></div>
+    {!paths.length && <p className="gc-none">{isStaged ? "No staged changes." : "No unstaged changes."}</p>}
+    {paths.map(file => <div className={"ide-index-file" + (selected?.path === file && selected.staged === isStaged ? " selected" : "")} key={file}>
+      <button title={file} onClick={() => setSelected({ path: file, staged: isStaged })}>{conflicted.some(f => f.path === file) ? "! " : ""}{file}</button>
+      <button aria-label={`${isStaged ? "Unstage" : "Stage"} ${file}`} title={isStaged ? "Unstage file" : "Stage file"} disabled={disabled} onClick={() => action(path, { action: isStaged ? "unstage" : "stage", paths: [file] })}>{isStaged ? "−" : "+"}</button>
+    </div>)}
+  </section>;
+  return <div className="ide-source-control">
+    <div className="gc-topbar"><fieldset disabled={!connected || hasDrafts} className="ide-sync-guard"><BranchPicker state={state} /><SyncActions state={state} /></fieldset><button className="gc-btn" disabled={disabled} onClick={() => { invalidateIde(workspace); refresh(path); }}>Refresh</button></div>
+    <div className="ide-remote-state"><span>{state.detached ? "Detached HEAD" : state.branch} · {state.upstreamRef ? `Pull: ${state.upstreamRef}` : "No upstream"} · {state.pushRef ? `Push: ${state.pushRef}` : "Unpublished"} · ↑{state.ahead} ↓{state.behind}</span>{state.remotes.map(r => <span key={r.name} title={r.url}>{r.name}: {r.url}</span>)}</div>
+    {hasDrafts && <div className="ide-notice">Unsaved editor drafts are not part of Git. Save them before syncing or committing. Reload open files after switching branches.</div>}
+    {!connected && <div className="ide-error" role="alert">Connection lost. Git actions are disabled until GGO reconnects.</div>}
+    {!!conflicted.length && <div className="ide-error" role="alert">{conflicted.length} conflicted file(s). Open each file, resolve the conflict markers, save, then stage it. Git will refuse a commit while unresolved index entries remain.</div>}
+    {state.operation && <div className="ide-operation"><span>{state.operation === "rebase" ? "Rebase" : "Merge"} in progress</span><button disabled={disabled || hasDrafts || !!conflicted.length} onClick={() => action(path, { action: "continueOperation" })}>Continue {state.operation}</button><button disabled={disabled || hasDrafts} onClick={() => { if (window.confirm(`Abort this ${state.operation}? Git will restore the pre-operation state and discard conflict-resolution edits.`)) action(path, { action: "abortOperation" }); }}>Abort {state.operation}</button></div>}
+    {!!state.busy.length && <div className="ide-notice">Agents are working here: {state.busy.map(t => t.title).join(", ")}. GGO checks before changing their working tree.</div>}
+    <ActivityLine state={state} />
+    <div className="gc-tabs" role="tablist" aria-label="Source control view"><button className="gc-tab" role="tab" aria-selected={!history} onClick={() => setHistory(false)}>Changes</button><button className="gc-tab" role="tab" aria-selected={history} onClick={() => setHistory(true)}>History</button></div>
+    {history ? <HistoryPane state={state} /> : <div className="ide-index-layout">
+      <div className="ide-index-list"><div className="ide-index-scroll">{fileGroup("Changes", unstaged, false)}{fileGroup("Staged changes", staged, true)}</div>
+        <div className="gc-commit"><input className="gc-commit-summary" aria-label="Commit summary" placeholder="Summary (required)" maxLength={500} value={summary} onChange={e => setSummary(e.target.value)} /><textarea className="gc-commit-body" aria-label="Commit description" placeholder="Description" maxLength={10000} value={description} onChange={e => setDescription(e.target.value)} /><button className="gc-btn primary wide" disabled={disabled || hasDrafts || !staged.length || !summary.trim() || !!conflicted.length} onClick={() => {
+          if (!window.confirm(`Commit all ${staged.length} staged files on ${state.branch ?? "detached HEAD"}?\n\nThe index is shared with agents and other Git clients. Review the staged diff before continuing.\n\n${summary.trim()}`)) return;
+          submitted.current = true; action(path, { action: "commitStaged", summary, description });
+        }}>Commit {staged.length} staged files</button></div>
+      </div>
+      <div className="ide-index-diff">{selected ? <><div className="ide-breadcrumb"><span>{selected.path} · {selected.staged ? "Staged vs HEAD" : "Working tree vs index"}</span><button onClick={() => onOpenFile(selected.path)}>Open in editor</button></div><IndexDiff key={`${selected.path}:${selected.staged}`} workspace={workspace} selected={selected} state={state} /></> : <div className="ide-welcome"><h3>Review your changes</h3><p>Select a file to inspect its diff, then stage the changes you want to commit.</p></div>}</div>
+    </div>}
+  </div>;
+}
+
+function IndexDiff({ workspace, selected, state }: { workspace: string; selected: { path: string; staged: boolean }; state: RepoState }) {
+  const [diff, setDiff] = useState<{ patch: string; truncated: boolean; binary: boolean } | null>(() => cachedIde("git-diff", { workspace, path: selected.path, staged: String(selected.staged) }) ?? null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const abort = new AbortController(); setError("");
+    ideApi<NonNullable<typeof diff>>("git-diff", { workspace, path: selected.path, staged: String(selected.staged) }, undefined, abort.signal, true).then(setDiff).catch(e => { if (e.name !== "AbortError") setError(e.message); });
+    return () => abort.abort();
+  }, [workspace, selected.path, selected.staged, state]);
+  return <div className="gc-diff-scroll">{error ? <p role="alert" className="ide-error">{error}</p> : diff ? diff.binary ? <p className="gc-none">Binary file — no textual diff.</p> : <Diff patch={diff.patch} truncated={diff.truncated} /> : <p className="gc-none">Loading diff…</p>}</div>;
+}
 
 export function GitConsole({ onClose }: { onClose: () => void }) {
   const repos = useStore((s) => s.repos);
@@ -369,10 +440,7 @@ function BranchRow({
           aria-label={`Delete branch ${branch.name}`}
           title={`Delete ${branch.name}`}
           onClick={() => {
-            const force = window.confirm(
-              `Delete the branch “${branch.name}”?\n\nOK deletes it even if it isn't merged (git branch -D) — that discards its commits. Cancel to leave it alone.`,
-            );
-            if (force) onDelete(true);
+            if (window.confirm(`Delete the merged branch “${branch.name}”? Git will refuse if it still has unmerged commits.`)) onDelete(false);
           }}
         >
           <TrashIcon />
@@ -473,7 +541,7 @@ function SyncActions({ state }: { state: RepoState }) {
                 ? `Push ${state.ahead} commit${state.ahead === 1 ? "" : "s"} to ${state.pushRef}`
                 : `Nothing to push — ${state.pushRef} is up to date`
           }
-          onClick={() => repoAction(state.path, { action: "push", setUpstream: !published })}
+          onClick={() => { if (window.confirm(`${published ? "Push" : "Publish"} ${state.branch} to ${state.pushRef ?? state.remotes[0]?.name ?? "origin"}?`)) repoAction(state.path, { action: "push", setUpstream: !published }); }}
         >
           <PushIcon /> {published ? "Push" : "Publish"}
           {state.ahead > 0 ? <span className="gc-btn-count">{state.ahead}</span> : null}
