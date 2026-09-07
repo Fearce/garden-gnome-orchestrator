@@ -16,6 +16,13 @@
 //     (settings, accounts, any broadcast collection) renders NEUTRAL DEFAULTS until that frame lands, so
 //     a check that opens on `.topbar` reads a toggle as "off" and a list as empty on a busy box — which
 //     is indistinguishable from the feature being broken. `.accounts .acct` is hello-only ⇒ the signal.
+//   • Lazy views: wait for their VISIBLE panel, not a fixed delay after the navigation click.
+//     Retained panels may still exist under `hidden`; DOM presence alone doesn't prove navigation.
+//   • A diff's `.diff` shell also wraps "Loading diff…". For a fixture with known changes, wait for
+//     `.diff-line.add` / `.diff-line.del` before assertions or screenshots. After push/fetch, wait for
+//     the refreshed ahead/behind state too; an action result can arrive before the new repo snapshot.
+//   • Cache checks need evidence of reuse: count API reads and verify the same editor/panel instance
+//     survives tool switches. A quick second click alone doesn't establish that caching worked.
 //   • Never believe an optimistic control: a settings switch flips its own `aria-checked` before the
 //     round-trip (`store.setSettings`), so re-reading it proves nothing and reloading straight after
 //     races the write. Poll the instance's own kv row read-only (`waitForPersisted`, model-select-lab).
@@ -40,9 +47,15 @@
 //     case-insensitively, never against the `stateLabel` string.
 //   • Clipboard in headless chromium needs context `permissions:["clipboard-read","clipboard-write"]`
 //     AND a `writeText` stub (`window.__copied = t`) — `readText()` alone can be gated.
-//   • A touch change needs `tablet-lab` and ONLY `tablet-lab`: `hasTouch`/`isMobile` are `newContext()`
+//   • A touch change needs a TOUCH context (`tablet-lab`, `phone-lab`, or `ide-lab`): `hasTouch`/`isMobile` are `newContext()`
 //     options, not viewport ones, and they are what make Chromium report `pointer: coarse` /
-//     `hover: none`. Every other lab runs a FINE pointer and is blind to `styles.css`'s touch blocks.
+//     `hover: none`. A viewport resize alone keeps a FINE pointer and misses touch-specific rules.
+//   • Test uncommitted server work in an isolated output directory, without replacing live dist:
+//     from server/, `npx tsc -p tsconfig.json --outDir .ide-lab-dist`, then set GGO_LAB_ENTRY to
+//     `.ide-lab-dist/index.js` for the lab process. Both requireBuild() and boot() honor that entry;
+//     an explicit entry argument overrides the environment. ide-lab compiles its own isolated build.
+//     Build web separately with `npm run build --prefix web` from the repo root. An isolated lab
+//     proves behavior, not deployment; verify the live revision separately after committing.
 //   • Assert `getComputedStyle`, never the CSS rule you wrote: `main.tsx` loads `styles.css` FIRST, so
 //     `gitChanges.css` / `gitConsole.css` / `diff.css` land later in the bundle and win ties.
 //   • Don't wrap a lab in `timeout` — it SIGTERMs the whole npm child tree, so `--keep`'s instance dies
@@ -88,11 +101,16 @@ function authPassword() {
   return line ? line.slice("AUTH_PASSWORD=".length).trim() : "";
 }
 
-/** A lab drives the BUILT bundle, not the sources — fail loudly rather than testing a stale one. */
-function requireBuild() {
-  for (const rel of ["dist/index.js", "../web/dist/index.html"]) {
-    if (!fs.existsSync(path.resolve(SERVER_ROOT, rel))) {
-      console.error(`missing ${rel} — run \`npm run build\` at the repo root first.`);
+/** Resolve relative entries from the same cwd used by the child process. */
+function labEntry(entry = process.env.GGO_LAB_ENTRY || "dist/index.js") {
+  return path.resolve(SERVER_ROOT, entry);
+}
+
+/** Validate the bundle the lab will actually boot, including isolated server builds. */
+function requireBuild(entry) {
+  for (const file of [labEntry(entry), path.resolve(SERVER_ROOT, "../web/dist/index.html")]) {
+    if (!fs.existsSync(file)) {
+      console.error(`missing ${file} — compile the selected server entry and build web before running the lab.`);
       process.exit(2);
     }
   }
@@ -101,8 +119,8 @@ function requireBuild() {
 /** Boot a throwaway instance on `port` against `dataDir`, resolving once it answers `/api/me`.
  *  Account tokens are overridden with a bogus value (see the header); `env` adds anything else the
  *  lab needs. Its log lands in `<dataDir>/lab.log` — read it when a boot times out. */
-async function boot({ dataDir, port, env = {}, entry = process.env.GGO_LAB_ENTRY || path.join(SERVER_ROOT, "dist", "index.js") }) {
-  const child = spawn(process.execPath, [entry], {
+async function boot({ dataDir, port, env = {}, entry }) {
+  const child = spawn(process.execPath, [labEntry(entry)], {
     cwd: SERVER_ROOT,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,

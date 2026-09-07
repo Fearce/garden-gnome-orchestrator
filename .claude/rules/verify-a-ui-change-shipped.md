@@ -15,8 +15,10 @@ paths:
 A green build/typecheck does NOT prove the feature works — but you usually don't need a browser either.
 Climb this ladder, stopping once you have enough:
 
-1. **Deploy freshness** — `npm run health --prefix server`: its "process vs dist" block confirms the :4317
-   PID started AT/AFTER the dist mtime. If stale, deploy via the atomic hub restart before verifying.
+1. **Deploy freshness** — `npm run health --prefix server` compares the running artifact with dist and
+   committed HEAD. Before committing, a match says nothing about uncommitted source edits. After committing,
+   `npm run deploy --prefix server -- --verify` checks the live revision; an isolated lab is not deployment.
+   Follow the repository deploy procedure and any current restart instruction; never bypass a held restart.
 2. **Shipped string** — grep the bundle `index.html` actually references, never `assets/*.js` (dist keeps
    old hashed bundles, so a glob can hit a stale one), from the REPO ROOT (`web/dist` doesn't exist
    relative to `server/`): `S=$(curl -s :4317/ | grep -o 'assets/index-[^"]*\.js'); grep -c "<label>"

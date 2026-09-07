@@ -137,6 +137,7 @@
     "test:repo-ops": "tsx src/tests/repoOps.itest.ts",
     "test:supervisor": "node scripts/supervise.itest.cjs",
     "test:gate-registration": "node scripts/gate-registration.test.cjs",
+    "test:lab-harness": "node scripts/lab-harness.test.cjs",
     "test:quality-sweep": "node ../scripts/quality-sweep.test.cjs",
     "test:gates-driver": "node scripts/run-gates.test.cjs",
     "test:gates-provenance": "node scripts/gates-provenance.test.cjs",

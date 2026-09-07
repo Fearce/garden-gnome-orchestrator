@@ -144,6 +144,7 @@ const GATES = [
   "test:db-size",
   "test:hot-paths",
   "test:gate-registration",
+  "test:lab-harness",
   "test:quality-sweep",
   "test:gates-driver",
   "test:gates-provenance",
