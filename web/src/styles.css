@@ -3248,6 +3248,7 @@ button.note-from:hover { color: var(--text-dim); }
   .inject-bar textarea,
   .approval-reject textarea,
   .login-body input,
+  .fp-filter,
   .modal textarea,
   .rail-search-input,
   .sched-field input[type="text"],
