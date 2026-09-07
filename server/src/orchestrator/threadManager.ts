@@ -9022,15 +9022,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       .listOpen(thread.id, "qa", null)
       .filter((row) => row.mode === "interrupt");
     const resumeMsg = qaSupersedeResumeNudge(messages);
-    const detail = messages.length ? messages.join("\n\n") : "No additional instruction was supplied; the owner stopped QA and returned the task to implementation.";
     this.capParked.delete(thread.id);
-    this.postFinding({
-      threadId: thread.id,
-      fromRole: "qa",
-      summary: "QA was interrupted by the owner - returning to the implementor",
-      detail,
-      severity: "note",
-    });
     if (!this.routeQaSupersedeImplementor(thread, effort)) {
       // The shared gate either wrote a durable capacity park or a concrete settings/auth failure. Keep
       // qaSuperseded intact so an automatic capacity resume delivers the owner's instruction exactly once.
@@ -9267,6 +9259,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     mode: "append" | "interrupt",
     instruction: string,
     attachments?: AttachmentRef[],
+    suppressFeed?: boolean,
   ): ReviewInjection {
     const row = this.reviewInjections.create({
       threadId,
@@ -9276,18 +9269,22 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       instruction,
       attachmentIds: attachmentIdsFromRefs(attachments),
     });
-    this.reviewInjectionFeed(
-      threadId,
-      `[accepted] ${reviewInjectionLabel(row.id)} entered the active ${lane === "qa" ? "QA" : "auto-review"} lane (${mode}); recipient delivery is pending. ${instruction}${attachments?.length ? ` [+${attachments.length} image(s)]` : ""}`,
-      attachments,
-    );
+    if (!suppressFeed) {
+      this.reviewInjectionFeed(
+        threadId,
+        `[accepted] ${reviewInjectionLabel(row.id)} entered the active ${lane === "qa" ? "QA" : "auto-review"} lane (${mode}); recipient delivery is pending. ${instruction}${attachments?.length ? ` [+${attachments.length} image(s)]` : ""}`,
+        attachments,
+      );
+    }
     return row;
   }
 
-  private queueReviewInjectionsForImplementor(rows: ReviewInjection[], reason: string): ReviewInjection[] {
+  private queueReviewInjectionsForImplementor(rows: ReviewInjection[], reason: string, suppressFeed?: boolean): ReviewInjection[] {
     const queued = this.reviewInjections.queueForImplementor(rows.map((row) => row.id), reason);
-    for (const row of queued) {
-      this.reviewInjectionFeed(row.threadId, `[queued] ${reviewInjectionLabel(row.id)} is queued for the implementor: ${reason}`);
+    if (!suppressFeed) {
+      for (const row of queued) {
+        this.reviewInjectionFeed(row.threadId, `[queued] ${reviewInjectionLabel(row.id)} is queued for the implementor: ${reason}`);
+      }
     }
     return queued;
   }
@@ -9627,10 +9624,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (!qa && inFixHandoff) {
         const refs = injectRefs();
         this.appendQaFixHandoffInstruction(threadId, message, refs);
-        const row = this.acceptReviewInjection(threadId, "qa", mode, message, refs);
+        const row = this.acceptReviewInjection(threadId, "qa", mode, message, refs, mode === "interrupt");
         this.queueReviewInjectionsForImplementor(
           [row],
           "QA had already handed back; the instruction joined the active implementor resume.",
+          mode === "interrupt",
         );
         return {
           ok: true,
@@ -9644,10 +9642,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         if (!qa) {
           if (qaBypassRequested) {
             const refs = injectRefs();
-            const reviewRow = this.acceptReviewInjection(threadId, "qa", "interrupt", message, refs);
+            const reviewRow = this.acceptReviewInjection(threadId, "qa", "interrupt", message, refs, true);
             this.queueReviewInjectionsForImplementor(
               [reviewRow],
               "The owner bypassed QA during a runner transition; the in-flight verdict is superseded and this instruction returns to implementation.",
+              true,
             );
             // The handle can disappear briefly during provider failover. Persist the supersede instruction
             // anyway so the loop ignores that review result and resumes implementation exactly once.
@@ -9675,10 +9674,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         }
         this.hub.log("info", "[INJECT] QA in progress - superseding QA and returning to the implementor");
         const refs = injectRefs();
-        const reviewRow = this.acceptReviewInjection(threadId, "qa", "interrupt", message, refs);
+        const reviewRow = this.acceptReviewInjection(threadId, "qa", "interrupt", message, refs, true);
         this.queueReviewInjectionsForImplementor(
           [reviewRow],
           "The owner stopped QA and returned this instruction to implementation; the stale QA verdict is superseded.",
+          true,
         );
         this.rememberQaSupersede(threadId, message, refs);
         const stopped = await this.stopQaForImplementor(threadId, qa);
@@ -9762,12 +9762,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const reviewer = this.liveReviewer.get(threadId);
       const impl = this.live.get(threadId);
       const blocks = images?.length ? images.map(toImageBlock) : [];
-      const row = this.acceptReviewInjection(threadId, "reviewer", mode, message, injectRefs());
+      const row = this.acceptReviewInjection(threadId, "reviewer", mode, message, injectRefs(), mode === "interrupt");
 
       if (mode === "interrupt") {
         const queued = this.queueReviewInjectionsForImplementor(
           [row],
           "The owner explicitly superseded Auto-review; its verdict will be discarded and this instruction returns the task to implementation.",
+          true,
         );
         if (impl) {
           this.sendCommunication(impl.run, contentWithImages(acknowledgedInjection(message), blocks), { priority: "now" });
