@@ -199,7 +199,16 @@ function parseModelRequest(raw: unknown): ModelRequest | null {
       (value.model !== null && typeof value.model !== "string") ||
       value.strict !== true
     ) return null;
-    return { requested: value.requested, provider: value.provider ?? null, model: value.model ?? null, strict: true };
+    const selectedAt = typeof value.selectedAt === "number" && Number.isSafeInteger(value.selectedAt) && value.selectedAt > 0
+      ? value.selectedAt
+      : undefined;
+    return {
+      requested: value.requested,
+      provider: value.provider ?? null,
+      model: value.model ?? null,
+      strict: true,
+      ...(selectedAt != null ? { selectedAt } : {}),
+    };
   } catch {
     return null;
   }

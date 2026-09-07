@@ -26,6 +26,7 @@ import type {
   GitFileDiff,
   ImageAttachment,
   ImplementationMemo,
+  ImplementorProvider,
   RepoActionResult,
   RepoCommitDetail,
   RepoOp,
@@ -273,6 +274,7 @@ interface State {
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
   setDeadline: (threadId: string, deadlineAt: number | null) => Promise<boolean>;
+  setTaskModel: (threadId: string, provider: ImplementorProvider | null, model: string | null) => Promise<boolean>;
   cancel: (threadId: string) => void;
   retry: (threadId: string) => void;
   rename: (threadId: string, title: string) => void;
@@ -1006,6 +1008,10 @@ export const useStore = create<State>((set) => ({
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
   setDeadline: (threadId, deadlineAt) =>
     sendThreadActionCommand({ type: "thread.deadline", threadId, deadlineAt }, "deadline", threadId),
+  setTaskModel: (threadId, provider, model) => {
+    const clientId = newOutboundId();
+    return sendThreadActionCommand({ type: "thread.model", threadId, provider, model, clientId }, "model", threadId);
+  },
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
   retry: (threadId) => sendCommand({ type: "thread.retry", threadId }),
   rename: (threadId, title) => sendCommand({ type: "thread.rename", threadId, title }),

@@ -1075,6 +1075,9 @@ export interface ModelRequest {
   provider: ImplementorProvider | null;
   model: string | null;
   strict: true;
+  /** Present when the owner changed the pin from the task detail control. Older implementor runs are
+   * intentionally not compared with a pin that did not exist when those runs started. */
+  selectedAt?: number;
 }
 
 /** The backend/model the long-lived director is actually using right now. Unlike the configured model

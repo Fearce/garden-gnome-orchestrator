@@ -265,6 +265,15 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // Absolute epoch milliseconds, or null to clear. ThreadManager applies the live-state and practical
   // horizon checks using its own clock; finite/safe-integer validation belongs at this trust boundary.
   z.object({ type: z.literal("thread.deadline"), threadId: z.string(), deadlineAt: z.number().int().safe().finite().nullable() }),
+  // Per-task implementor routing. Both null means Auto; otherwise the pair is exact and server-validated
+  // against the provider/model catalog before it becomes a durable strict pin.
+  z.object({
+    type: z.literal("thread.model"),
+    threadId: z.string(),
+    provider: z.enum(["claude", "codex", "grok", "zai"]).nullable(),
+    model: z.string().trim().min(1).max(100).nullable(),
+    clientId: z.string().uuid().optional(),
+  }),
   z.object({ type: z.literal("thread.cancel"), threadId: z.string() }),
   // Restart a cancelled task from the very beginning — wipes the prior attempt and re-runs the whole
   // pipeline from the brief the director first dispatched (see ThreadManager.retryThread).

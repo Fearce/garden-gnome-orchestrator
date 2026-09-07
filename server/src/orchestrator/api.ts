@@ -1,7 +1,7 @@
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
-import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, Thread, ThreadLane } from "../types.js";
+import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, Thread, ThreadLane } from "../types.js";
 
 export interface DispatchInput {
   title: string;
@@ -151,6 +151,8 @@ export interface OrchestratorApi {
   resumeThread(threadId: string, message?: string, operatorInitiated?: boolean): Promise<ThreadActionResult>;
   /** Appoint, edit, or clear an absolute hard stop on a non-terminal task. */
   setActiveDeadline(threadId: string, deadlineAt: number | null): Promise<ThreadActionResult>;
+  /** Pin one exact implementor provider/model for this task, or clear the pin back to automatic routing. */
+  setThreadModel(threadId: string, provider: ImplementorProvider | null, model: string | null): Promise<ThreadActionResult>;
   cancelThread(threadId: string): Promise<ThreadActionResult>;
   retryThread(threadId: string): Promise<ThreadActionResult>;
   /** Delegate the owner's final review of a task parked in `review` to the auto-reviewer. The unattended

@@ -1719,6 +1719,48 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--pin); text-transform: uppercase; letter-spacing: 0.06em; font-size: 9px; font-weight: 700;
 }
 
+/* Per-task provider/model pin. The trigger belongs beside Attach in the detail composer's action row:
+   a compact chip at rest, with the full decision and strict-fallback warning kept in an upward popover. */
+.task-model-picker { position: relative; z-index: 3; flex: 0 0 auto; }
+.task-model-trigger {
+  position: relative; width: 30px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: transparent; color: var(--text-dim);
+}
+.task-model-trigger:hover, .task-model-trigger[aria-expanded="true"] { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); background: color-mix(in oklch, var(--accent) 8%, transparent); }
+.task-model-trigger:focus-visible { outline: 2px solid color-mix(in oklch, var(--accent) 60%, transparent); outline-offset: 2px; }
+.task-model-trigger.pinned { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 45%, var(--line)); background: color-mix(in oklch, var(--warn) 9%, transparent); }
+.task-model-dot {
+  position: absolute; right: 3px; bottom: 3px; width: 4px; height: 4px; border-radius: 50%; background: var(--text-faint);
+}
+.task-model-trigger.pinned .task-model-dot { background: var(--warn); box-shadow: 0 0 0 2px color-mix(in oklch, var(--warn) 15%, transparent); }
+.task-model-popover {
+  position: absolute; z-index: 12; left: 0; bottom: calc(100% + 9px); width: min(310px, calc(100vw - 32px));
+  padding: 11px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--bg-2);
+  box-shadow: 0 14px 36px oklch(0 0 0 / 0.4); color: var(--text); font-size: 12px;
+}
+.task-model-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.task-model-head > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.task-model-head strong { font-size: 13px; }
+.task-model-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font: 10px var(--font-mono); }
+.task-model-head > button {
+  flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--text-faint); font-size: 17px; line-height: 1;
+}
+.task-model-head > button:hover { color: var(--text); background: var(--bg-3); }
+.task-model-fields { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 8px; }
+.task-model-fields label { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.task-model-fields label > span { color: var(--text-faint); font: 9px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.task-model-fields select {
+  min-width: 0; width: 100%; height: 32px; padding: 0 26px 0 8px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--text); font: 11px var(--font-mono);
+}
+.task-model-fields select:focus { outline: none; border-color: var(--accent); }
+.task-model-fields select:disabled { opacity: 0.55; cursor: not-allowed; }
+.task-model-warning { margin: 9px 1px 0; color: var(--text-faint); font-size: 10.5px; line-height: 1.4; }
+.task-model-warning.active, .task-model-error { color: var(--warn); }
+.task-model-error { margin-top: 7px; font-size: 10.5px; line-height: 1.35; }
+.task-model-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin-top: 10px; }
+
 .pip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
 /* A small role-status dot stands in for the role: it inherits the pip's colour (faint for a
    done/idle role, the role hue when active), and the active one breathes gently with a soft ring —
@@ -2504,6 +2546,12 @@ body.dl-resizing { user-select: none; }
   .inject-bar .row { flex-wrap: nowrap; gap: 6px; }
   .inject-bar .row .btn.sm { padding: 0 10px; }
   .inject-bar .row .inject-row-spacer, .inject-bar .row .inject-id { display: none; }
+  /* Keep the new model control out of the already-tight one-line action row. It shares the top-right
+     textarea chrome with the compose close button while retaining a full touch target. */
+  .inject-bar textarea { padding-right: calc(var(--tap) * 2 + 14px); }
+  .inject-bar .task-model-picker { position: absolute; top: 11px; right: calc(12px + var(--tap) + 4px); }
+  .task-model-trigger { width: var(--tap); height: var(--tap); background: color-mix(in oklch, var(--bg-2) 88%, transparent); }
+  .task-model-popover { left: auto; right: calc(-1 * (var(--tap) + 4px)); width: min(310px, calc(100vw - 24px)); }
 
   /* Clears the notch / browser chrome via the safe-area inset. The header used to be `position:
      sticky` here as well, to keep the close control reachable while the feed scrolled. That was

@@ -682,6 +682,8 @@ export interface ModelRequest {
   provider: ImplementorProvider | null;
   model: string | null;
   strict: true;
+  /** Present when the owner changed the pin from the task detail control. */
+  selectedAt?: number;
 }
 
 /** Auto model selection's scoreboard row: how one model has actually performed on auto-picked tasks.
@@ -1084,6 +1086,7 @@ export type ClientCommand =
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
   | { type: "thread.deadline"; threadId: string; deadlineAt: number | null }
+  | { type: "thread.model"; threadId: string; provider: ImplementorProvider | null; model: string | null; clientId?: string }
   | { type: "thread.cancel"; threadId: string }
   | { type: "thread.retry"; threadId: string }
   | { type: "thread.rename"; threadId: string; title: string }

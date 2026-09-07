@@ -24,6 +24,7 @@ const { FileMemoryService } = await import("../memory/memory.js");
 const { DIRECTOR_CLI_SCHEMA, executeDirectorCliAction } = await import("../orchestrator/directorCliBridge.js");
 const { detectModelRequest, resolveModelRequest } = await import("../orchestrator/modelRequest.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
+const { clientCommandSchema } = await import("../ws/protocol.js");
 
 const SPARK = "gpt-5.3-codex-spark";
 const SOL = "gpt-5.6-sol";
@@ -158,6 +159,40 @@ async function main(): Promise<void> {
   internals.askDirectorJson = async (): Promise<null> => { selectorCalls++; return null; };
   const pinnedPick = await internals.autoSelectModel(db.getThread(dispatchedId)!);
   check("automatic model selection cannot overwrite a strict pin", pinnedPick === undefined && selectorCalls === 0);
+
+  console.log("\n3b — the task-detail model control persists only exact, safe routing changes");
+  const selectable = db.createThread({ title: "Retarget from the task footer", workspace, rawPrompt: "", brief: "Continue." });
+  db.updateThreadStageOutputs(selectable.id, { modelPick: { provider: "codex", model: SOL, effort: "max", reason: "old automatic pick" } });
+  const selected = await mgr.setThreadModel(selectable.id, "codex", SPARK);
+  const selectedThread = db.getThread(selectable.id)!;
+  check(
+    "an exact provider/model pair becomes a durable owner pin",
+    selected.ok && selectedThread.modelRequest?.provider === "codex" && selectedThread.modelRequest.model === SPARK && Number.isFinite(selectedThread.modelRequest.selectedAt),
+    JSON.stringify(selectedThread.modelRequest),
+  );
+  check("retargeting removes the stale automatic pick", db.getThreadStageOutputs(selectable.id).modelPick === undefined);
+  check("the task feed records the exact no-fallback choice", db.listMessages(selectable.id).some((message) => message.content.includes(`Codex · ${SPARK}`) && message.content.includes("No fallback")));
+
+  const unknown = await mgr.setThreadModel(selectable.id, "codex", "gpt-not-in-this-catalog");
+  check("an unknown provider/model pair is rejected without changing the pin", !unknown.ok && db.getThread(selectable.id)?.modelRequest?.model === SPARK, unknown.error);
+  const halfPair = await mgr.setThreadModel(selectable.id, "codex", null);
+  check("a half-specified provider/model pair is rejected", !halfPair.ok && db.getThread(selectable.id)?.modelRequest?.model === SPARK, halfPair.error);
+
+  db.updateThread(selectable.id, { state: "implementing" });
+  const liveChange = await mgr.setThreadModel(selectable.id, "claude", "claude-opus-5");
+  check("a running implementor cannot acquire a request/runtime mismatch", !liveChange.ok && db.getThread(selectable.id)?.modelRequest?.model === SPARK, liveChange.error);
+  db.updateThread(selectable.id, { state: "paused" });
+  const auto = await mgr.setThreadModel(selectable.id, null, null);
+  check("a parked task can return to automatic routing", auto.ok && db.getThread(selectable.id)?.modelRequest == null);
+
+  const readOnly = db.createThread({ title: "Reader", workspace, rawPrompt: "", brief: "Report it.", lane: "read" });
+  const readPin = await mgr.setThreadModel(readOnly.id, "codex", SPARK);
+  check("a read-only lane refuses an irrelevant implementor pin", !readPin.ok && db.getThread(readOnly.id)?.modelRequest == null, readPin.error);
+
+  const wirePin = clientCommandSchema.safeParse({ type: "thread.model", threadId: selectable.id, provider: "codex", model: SPARK });
+  const wireAuto = clientCommandSchema.safeParse({ type: "thread.model", threadId: selectable.id, provider: null, model: null });
+  const wireBadProvider = clientCommandSchema.safeParse({ type: "thread.model", threadId: selectable.id, provider: "other", model: SPARK });
+  check("the authenticated WS protocol carries exact and Auto model selections", wirePin.success && wireAuto.success && !wireBadProvider.success);
 
   console.log("\n4 — exact capacity gate, runtime row, resume, and cap recovery never substitute Sol");
   const realRequestedModelCapacitySnapshot = internals.requestedModelCapacitySnapshot.bind(mgr);

@@ -2453,24 +2453,17 @@ export class ThreadManager implements OrchestratorApi {
       out.push({ provider, model: model.trim(), labels: labels.filter((label): label is string => !!label?.trim()) });
     };
 
-    const claudeLive = this.modelCatalog.claudeModels();
-    for (const model of claudeLive) add("claude", model);
-    for (const account of config.accounts) add("claude", this.modelFor(account.id, "implementor"));
-    add("claude", this.modelFor(DEFAULT_SUB_ID, "implementor"));
-
-    const codexLive = chatgptLoginAvailable()
-      ? this.modelCatalog.codexCliModels().map((entry) => entry.id)
-      : this.modelCatalog.codexModels();
-    for (const model of codexLive) add("codex", model);
-    add("codex", this.codexModel());
+    // Match the model ids published to the console's pickers. The pickable lists prefer live
+    // catalogs and retain curated/configured cold-start choices, so an option shown to the owner can
+    // always be resolved back into the same canonical provider/model pair here.
+    for (const model of this.pickableClaudeModels()) add("claude", model);
+    for (const model of this.pickableCodexModels()) add("codex", model);
     for (const pool of dedicatedPools(this.codexPoolSnapshot() ?? [])) {
       add("codex", pool.modelSlug, [pool.limitName]);
     }
 
-    for (const model of this.modelCatalog.grokModels()) add("grok", model);
-    add("grok", this.grokModel());
-    for (const model of this.modelCatalog.zaiModels()) add("zai", model);
-    add("zai", this.zaiModel());
+    for (const model of this.pickableGrokModels()) add("grok", model);
+    for (const model of this.pickableZaiModels()) add("zai", model);
     return out;
   }
 
@@ -2516,6 +2509,83 @@ export class ThreadManager implements OrchestratorApi {
       detail: `Requested: ${request.requested}. Resolved: ${exact}. This task will wait or fail visibly if that exact model is unavailable; automatic routing and failover may not substitute another model.`,
       severity: request.model ? "info" : "warning",
     });
+  }
+
+  /** Authenticated task-detail control: pin one exact provider/model for the next implementor start,
+   * or clear the pin back to automatic routing. A running implementor cannot change its executable's
+   * model safely; make the owner interrupt first instead of creating a request/runtime mismatch. */
+  async setThreadModel(
+    threadId: string,
+    provider: ImplementorProvider | null,
+    model: string | null,
+  ): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (thread.lane === "read") {
+      return { ok: false, state: thread.state, error: "Read-only tasks have no implementor model to select." };
+    }
+    if ((provider == null) !== (model == null)) {
+      return { ok: false, state: thread.state, error: "Choose both a provider and model, or choose Auto routing." };
+    }
+
+    let request: ModelRequest | null = null;
+    if (provider && model) {
+      const wanted = normalizeModelId(model);
+      const candidate = this.modelRequestCandidates().find(
+        (item) => item.provider === provider && normalizeModelId(item.model) === wanted,
+      );
+      if (!candidate) {
+        return {
+          ok: false,
+          state: thread.state,
+          error: `${providerLabel(provider)} model "${model}" is not in this installation's current model catalog. Refresh the provider login/catalog and choose an available model.`,
+        };
+      }
+      request = {
+        requested: candidate.model,
+        provider,
+        model: candidate.model,
+        strict: true,
+        selectedAt: Date.now(),
+      };
+    }
+
+    const current = thread.modelRequest;
+    const unchanged = current?.provider === request?.provider && current?.model === request?.model && (!!current === !!request);
+    if (unchanged) return { ok: true, state: thread.state, message: request ? "That exact task model is already pinned." : "This task already uses Auto routing." };
+
+    if (thread.state === "implementing" || this.live.has(threadId) || this.resuming.has(threadId)) {
+      return {
+        ok: false,
+        state: thread.state,
+        error: "Interrupt the running implementor before changing its model. Its current provider process cannot switch models safely mid-run.",
+      };
+    }
+
+    let updated = this.db.setModelRequest(threadId, request);
+    if (!updated) return { ok: false, error: "No such task." };
+    // A prior automatic choice belongs to the old routing decision. Strict routing ignores it, but
+    // clearing it prevents a later return to Auto from reviving a stale model instead of re-selecting.
+    this.db.updateThreadStageOutputs(threadId, { modelPick: undefined });
+    this.implementorProvider.delete(threadId);
+
+    // A capacity-park message is both UI copy and the supervisor's durable wake marker. Retarget an
+    // implementor park in place so it immediately names/checks the new exact pool (or all pools for
+    // Auto) while preserving automatic recovery.
+    if ((thread.error ?? "").startsWith(CAP_PARK_PREFIX) && this.capParkStage(thread) === "implementor") {
+      const refreshed = this.db.updateThread(threadId, { error: this.capParkMessage(threadId, "implementor") });
+      if (refreshed) updated = refreshed;
+      this.armCapResumeWake();
+    }
+
+    this.hub.publish({ type: "thread.upsert", thread: updated });
+    const content = request
+      ? `◆ Task implementor pinned to ${providerLabel(request.provider!)} · ${request.model}. No fallback model is allowed. This takes effect on the next implementor start.`
+      : "◆ Task implementor returned to Auto routing. The next implementor start will choose from the available providers and models.";
+    const message = this.db.addMessage({ threadId, role: "director", kind: "system", content });
+    this.hub.publish({ type: "thread.message", threadId, message });
+    this.hub.log("info", `${content} [${threadId.slice(0, 8)}]`);
+    return { ok: true, state: updated.state, message: content };
   }
 
   /** Every model the Codex runner's active auth can actually use. ChatGPT auth uses the CLI's own live

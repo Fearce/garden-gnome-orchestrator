@@ -192,6 +192,15 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
     case "thread.deadline":
       sendThreadAction(socket, cmd.threadId, "deadline", await ctx.manager.setActiveDeadline(cmd.threadId, cmd.deadlineAt));
       break;
+    case "thread.model":
+      sendThreadAction(
+        socket,
+        cmd.threadId,
+        "model",
+        await ctx.manager.setThreadModel(cmd.threadId, cmd.provider, cmd.model),
+        cmd.clientId,
+      );
+      break;
     case "thread.cancel":
       sendThreadAction(socket, cmd.threadId, "cancel", await ctx.manager.cancelThread(cmd.threadId));
       break;

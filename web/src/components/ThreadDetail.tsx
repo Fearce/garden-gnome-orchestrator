@@ -10,6 +10,7 @@ import { Deliverables } from "./Deliverables.js";
 import { columnDragMax, useColumnResize } from "./useColumnResize.js";
 import { Markdown } from "./Markdown.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
+import { TaskModelPicker } from "./TaskModelPicker.js";
 import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
 import { ImplementationMemos } from "./ImplementationMemos.js";
 
@@ -782,7 +783,7 @@ export function ThreadDetail() {
             </button>
           </div>
         </div>
-        <ModelRequestStatus request={thread.modelRequest} actualModel={impl?.model} compact={headCollapsed} />
+        <ModelRequestStatus request={thread.modelRequest} actualModel={impl?.model} actualStartedAt={impl?.startedAt} compact={headCollapsed} />
         {!headCollapsed && (
           <>
             <div className="meta">
@@ -1110,6 +1111,10 @@ export function ThreadDetail() {
         <ComposerThumbs images={att.images} onRemove={att.remove} />
         <div className="row">
           <AttachButton onPick={att.addFiles} />
+          <TaskModelPicker
+            thread={thread}
+            active={isLive || threadRuns.some((run) => run.role === "implementor" && runActive(run.state))}
+          />
           <button
             className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("queue")}

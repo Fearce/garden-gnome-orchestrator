@@ -715,7 +715,7 @@ const Card = memo(function Card({
             </span>
           ) : null}
           <ManualDeploymentBadge deployment={thread.state === "done" ? thread.manualDeployment : null} />
-          <ModelRequestStatus request={thread.modelRequest} actualModel={impl?.model} compact />
+          <ModelRequestStatus request={thread.modelRequest} actualModel={impl?.model} actualStartedAt={impl?.startedAt} compact />
           {thread.deadlineAt ? (
             <span className={"timed-badge" + (thread.deadlineAt <= Date.now() ? " over" : "")}>
               <Countdown deadlineAt={thread.deadlineAt} />

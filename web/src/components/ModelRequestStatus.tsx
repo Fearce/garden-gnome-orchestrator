@@ -5,7 +5,12 @@ function normalized(model: string | null | undefined): string {
   return (model ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-export function requestedModelMatches(request: ModelRequest, actualModel?: string | null): boolean | null {
+export function requestedModelMatches(
+  request: ModelRequest,
+  actualModel?: string | null,
+  actualStartedAt?: number | null,
+): boolean | null {
+  if (request.selectedAt != null && actualStartedAt != null && actualStartedAt < request.selectedAt) return null;
   if (!request.model || !actualModel) return null;
   return normalized(request.model) === normalized(actualModel);
 }
@@ -13,16 +18,19 @@ export function requestedModelMatches(request: ModelRequest, actualModel?: strin
 export function ModelRequestStatus({
   request,
   actualModel,
+  actualStartedAt,
   compact = false,
 }: {
   request?: ModelRequest | null;
   actualModel?: string | null;
+  actualStartedAt?: number | null;
   compact?: boolean;
 }) {
   if (!request) return null;
   const requested = modelLabel(request.model) || request.requested;
-  const actual = actualModel ? modelLabel(actualModel) : null;
-  const matches = requestedModelMatches(request, actualModel);
+  const predatesPin = request.selectedAt != null && actualStartedAt != null && actualStartedAt < request.selectedAt;
+  const actual = actualModel && !predatesPin ? modelLabel(actualModel) : null;
+  const matches = requestedModelMatches(request, actualModel, actualStartedAt);
   const state = matches === false ? " mismatch" : request.model ? " pinned" : " unresolved";
   const compactLabel = matches === false && actual
     ? `Mismatch · ${requested} ≠ ${actual}`
@@ -35,14 +43,14 @@ export function ModelRequestStatus({
 
   if (compact) {
     return (
-      <span className={`model-pin-badge${state}`} title={title} data-requested-model={request.model ?? request.requested} data-actual-model={actualModel ?? ""}>
+      <span className={`model-pin-badge${state}`} title={title} data-requested-model={request.model ?? request.requested} data-actual-model={predatesPin ? "" : actualModel ?? ""}>
         {compactLabel}
       </span>
     );
   }
 
   return (
-    <div className={`model-request-status${state}`} title={title} data-requested-model={request.model ?? request.requested} data-actual-model={actualModel ?? ""}>
+    <div className={`model-request-status${state}`} title={title} data-requested-model={request.model ?? request.requested} data-actual-model={predatesPin ? "" : actualModel ?? ""}>
       <span className="model-request-key">Requested model</span>
       <span className="model-request-value">{requested}</span>
       <span className="model-request-sep">·</span>
