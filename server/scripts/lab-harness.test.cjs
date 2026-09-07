@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { SERVER_ROOT, requireBuild } = require("./lab-harness.cjs");
+const { SERVER_ROOT, requireBuild, boxBounds } = require("./lab-harness.cjs");
 
 const original = { exists: fs.existsSync, exit: process.exit, error: console.error, entry: process.env.GGO_LAB_ENTRY };
 const production = path.join(SERVER_ROOT, "dist", "index.js");
@@ -10,6 +10,14 @@ const explicit = path.join(SERVER_ROOT, "data", "custom-lab", "index.js");
 const web = path.resolve(SERVER_ROOT, "../web/dist/index.html");
 let files = new Set(), errors = [];
 try {
+  assert.deepEqual(
+    boxBounds({ x: 12.5, y: 8, width: 30, height: 44 }),
+    { left: 12.5, top: 8, right: 42.5, bottom: 52, width: 30, height: 44 },
+    "Playwright boxes gain explicit right/bottom edges",
+  );
+  assert.equal(boxBounds(null), null, "a missing element remains an explicit failed geometry input");
+  assert.equal(boxBounds({ x: 0, y: 0, width: Number.NaN, height: 1 }), null, "non-finite geometry is rejected");
+
   fs.existsSync = file => files.has(file);
   process.exit = code => { throw new Error(`exit ${code}`); };
   console.error = text => errors.push(text);

@@ -58,6 +58,9 @@
 //     proves behavior, not deployment; verify the live revision separately after committing.
 //   • Assert `getComputedStyle`, never the CSS rule you wrote: `main.tsx` loads `styles.css` FIRST, so
 //     `gitChanges.css` / `gitConsole.css` / `diff.css` land later in the bundle and win ties.
+//   • Playwright's `locator.boundingBox()` returns `{x,y,width,height}`, NOT a DOMRect. `right` and
+//     `bottom` are undefined, so a correct layout fails a naive bounds assertion. Use `boxBounds()`
+//     below (or return `getBoundingClientRect()` fields from `page.evaluate`) before comparing edges.
 //   • Don't wrap a lab in `timeout` — it SIGTERMs the whole npm child tree, so `--keep`'s instance dies
 //     with it. Give the Bash call a long timeout, or background it and poll the port.
 //   • Screenshots go through `shotDir(dataDir)`, so `-- --shots <dir>` lands them somewhere that still
@@ -184,6 +187,21 @@ function createChecks() {
   return check;
 }
 
+/** Convert Playwright's `{x,y,width,height}` bounding box into named viewport edges. Returning null
+ * for a missing/non-finite box lets a geometry check fail through `createChecks` with useful detail
+ * instead of accidentally passing arithmetic over `undefined`. */
+function boxBounds(box) {
+  if (!box || ![box.x, box.y, box.width, box.height].every(Number.isFinite)) return null;
+  return {
+    left: box.x,
+    top: box.y,
+    right: box.x + box.width,
+    bottom: box.y + box.height,
+    width: box.width,
+    height: box.height,
+  };
+}
+
 /**
  * Where this run's screenshots belong: `--shots <dir>` when the caller wants to keep them, else the
  * lab's own temp DATA_DIR (deleted on exit, which is the right default for a gate nobody is watching).
@@ -198,4 +216,4 @@ function shotDir(dataDir) {
   return chosen;
 }
 
-module.exports = { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir };
+module.exports = { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, boxBounds, shotDir };

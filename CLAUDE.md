@@ -395,6 +395,8 @@ the next prompt and a read-only scoreboard under the toggle. Gates: `test:model-
 and `test:auto-model` (pick→run, effort precedence, routing, grading). `npm run probe:model-picks --prefix
 server [-- <limit> --repo <sub>]` answers "what did it choose, and was that a good call?"; `npm run
 model-lab --prefix server` drives the Settings surface headlessly (own instance, never prod). The
+per-task exact provider/model control has its own persisted desktop + phone pass at `npm run
+task-model-lab --prefix server` (including Auto and the running-task guard). The
 LiveBench release CSV/category map is persisted in kv and refreshed every 24h; fetch failures retain the
 last good snapshot and never block dispatch. Gate: `test:livebench`.
 
