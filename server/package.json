@@ -153,6 +153,7 @@
     "probe:office-chat": "node scripts/probe-office-chat.cjs",
     "probe:auto-review": "node scripts/probe-auto-review.cjs",
     "probe:manual-deployment": "node scripts/probe-manual-deployment.cjs",
+    "verify:deployment": "node scripts/verify-deployment.cjs",
     "probe:cowork": "node scripts/probe-cowork.cjs",
     "probe:task-runs": "node scripts/probe-task-runs.cjs",
     "probe:model-pin": "node scripts/probe-model-pin.cjs",
