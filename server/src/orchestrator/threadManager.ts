@@ -9389,6 +9389,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       `${lane === "qa" ? "QA" : "Auto-review"} finished before delivery; the instruction is retained for implementation instead of being sent to a dead reviewer.`,
       mode === "interrupt",
     );
+    // Same reason as the QA fix-handoff branch: interrupt hides the lifecycle lines, so keep exactly one
+    // that records the instruction and owns the saved attachments.
+    if (mode === "interrupt") {
+      this.reviewInjectionFeed(
+        thread.id,
+        `↪ interrupt requested (${lane === "qa" ? "QA" : "Auto-review"} had already finished; returning to the implementor): ${instruction}${attachments?.length ? ` [+${attachments.length} image(s)]` : ""}`,
+        attachments,
+      );
+    }
     const impl = this.live.get(thread.id);
     if (impl) {
       this.sendCommunication(
@@ -9648,6 +9657,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           "QA had already handed back; the instruction joined the active implementor resume.",
           mode === "interrupt",
         );
+        // Interrupt suppresses the [accepted]/[queued] lifecycle lines (feed spam the owner asked to
+        // stop), so this branch must still post the ONE line that carries the instruction and its
+        // images. Suppressing to ZERO would make the injection invisible after reload and leave the
+        // attachments injectRefs() just saved referenced by no message.
+        if (mode === "interrupt") {
+          this.reviewInjectionFeed(
+            threadId,
+            `↪ interrupt requested (QA already handed back; joining the active implementor resume): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+            refs,
+          );
+        }
         return {
           ok: true,
           state: qaState,
@@ -9783,6 +9803,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const row = this.acceptReviewInjection(threadId, "reviewer", mode, message, injectRefs(), mode === "interrupt");
 
       if (mode === "interrupt") {
+        // One concise line, matching the QA interrupt convention. The lifecycle lines stay suppressed;
+        // this is what keeps the owner's instruction and images in the feed.
+        this.reviewInjectionFeed(
+          threadId,
+          `↪ interrupt requested (Auto-review is stopping; returning to the implementor): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+          injectRefs(),
+        );
         const queued = this.queueReviewInjectionsForImplementor(
           [row],
           "The owner explicitly superseded Auto-review; its verdict will be discarded and this instruction returns the task to implementation.",

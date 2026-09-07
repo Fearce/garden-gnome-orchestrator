@@ -353,6 +353,14 @@ async function main(): Promise<void> {
       check("the note is persisted for the active implementor resume", (h.db.getThreadStageOutputs(id).qaFixHandoff?.messages ?? []).some((m) => m.includes("addon options")), JSON.stringify(h.db.getThreadStageOutputs(id).qaFixHandoff));
       check("the old in-memory note buffer was not used", !(h.internals.directorNotes.get(id) ?? []).some((m: string) => m.includes("addon options")), JSON.stringify(h.internals.directorNotes.get(id)));
       check("the note is not queued as a later follow-up", !(h.internals.queuedForImplementor.get(id) ?? []).some((m: string) => m.includes("addon options")), JSON.stringify(h.internals.queuedForImplementor.get(id)));
+      // Concise means ONE visible line, never zero: this branch suppresses every [accepted]/[queued]
+      // lifecycle line, so it must post the single line that carries the owner's instruction — without
+      // it the injection is invisible after reload.
+      const cFeed = h.db.listMessages(id).map((m) => m.content);
+      const cInterrupt = cFeed.filter((c) => c.includes("interrupt requested"));
+      check("the QA-fix-handoff interrupt posts exactly one concise instruction line", cInterrupt.length === 1, JSON.stringify(cFeed));
+      check("that one line carries the owner instruction", !!cInterrupt[0]?.includes("addon options"), JSON.stringify(cInterrupt[0] ?? null));
+      check("the QA-fix-handoff interrupt omits routine review-injection lifecycle spam", !cFeed.some((c) => /\[(accepted|queued|delivered|handled)\]|✓ RI-/.test(c)), JSON.stringify(cFeed));
       await settle();
     } finally {
       h.dispose();
@@ -504,6 +512,11 @@ async function main(): Promise<void> {
       check("the durable lifecycle records the implementor outcome", row.status === "handled" && row.implementorRunId === "stub-implementor-run", JSON.stringify(row));
       const feed = h.db.listMessages(id).map((m) => m.content);
       check("the Auto-review interrupt feed omits routine review-injection lifecycle spam", !feed.some((c) => /\[(accepted|queued|delivered|handled)\]|✓ RI-/.test(c)), JSON.stringify(feed));
+      // Concise means ONE line, never zero: suppressing every lifecycle line without posting the
+      // instruction made the owner's injection invisible after reload and orphaned its attachment.
+      const arInterrupt = h.db.listMessages(id).filter((m) => m.content.includes("interrupt requested"));
+      check("the Auto-review interrupt posts exactly one concise instruction line", arInterrupt.length === 1, JSON.stringify(feed));
+      check("that one line carries the owner instruction and its image", !!arInterrupt[0]?.content.includes("branch conflicts") && arInterrupt[0]?.attachments?.length === 1, JSON.stringify(arInterrupt[0] ?? null));
     } finally {
       h.dispose();
     }
@@ -537,6 +550,19 @@ async function main(): Promise<void> {
       );
       const parkedRow = h.internals.reviewInjections.listThread(parkedId)[0] as { status: string; reviewerRunId: string | null; implementorRunId: string | null };
       check("a just-finished reviewer queues the instruction without inventing a live run", queued.ok && queued.state === "review" && parkedRow.status === "queued_implementor" && parkedRow.reviewerRunId == null && parkedRow.implementorRunId == null, JSON.stringify({ queued, parkedRow }));
+
+      // Interrupt through the same race: every lifecycle line is suppressed there, so the branch owes the
+      // owner exactly ONE line carrying the instruction and the attachment it just saved. Zero lines would
+      // lose the injection on reload and orphan the image.
+      const raceId = seedTask(h);
+      h.db.updateThread(raceId, { state: "review", error: "review just settled" });
+      const raced = await h.mgr.injectThread(raceId, "rebase onto master before pushing", "interrupt", [IMG], { recipient: "reviewer" });
+      check("a reviewer-race interrupt returns the task to implementation", raced.ok && raced.state === "implementing", JSON.stringify(raced));
+      const raceFeed = h.db.listMessages(raceId);
+      const raceLines = raceFeed.filter((m) => m.content.includes("interrupt requested"));
+      check("the reviewer-race interrupt posts exactly one concise instruction line", raceLines.length === 1, JSON.stringify(raceFeed.map((m) => m.content)));
+      check("that one line carries the owner instruction and its image", !!raceLines[0]?.content.includes("rebase onto master") && raceLines[0]?.attachments?.length === 1, JSON.stringify(raceLines[0] ?? null));
+      check("the reviewer-race interrupt omits routine review-injection lifecycle spam", !raceFeed.some((m) => /\[(accepted|queued|delivered|handled)\]|✓ RI-/.test(m.content)), JSON.stringify(raceFeed.map((m) => m.content)));
     } finally {
       await settle();
       h.dispose();
