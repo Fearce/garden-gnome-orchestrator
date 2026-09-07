@@ -1,4 +1,5 @@
 import { apiUrl } from "./base.js";
+import { coordinatedRestartPending } from "./restartStatus.js";
 import { useStore } from "../store.js";
 
 // Self-update: a deploy rebuilds the bundle (new content-hashed JS filename) and restarts the
@@ -36,11 +37,12 @@ export function startVersionWatch(): void {
         restartDraining?: boolean;
         restartPending?: boolean;
       };
+      if (!web || web === loaded) return;
       // A server+web update replaces web/dist before its planned process bounce. Do not reload the new
       // client against the old in-memory API while a coordinated restart is still pending. Older servers
-      // only expose restartDraining, so keep that as the rolling-upgrade fallback.
-      if (restartPending ?? restartDraining) return;
-      if (!web || web === loaded) return;
+      // only expose restartDraining; servers from the drain release window expose the pending row through
+      // /api/deploy/status, so check that before switching bundles.
+      if ((restartPending ?? restartDraining) || (restartPending === undefined && await coordinatedRestartPending())) return;
       // A newer build is live. Surface the quiet top-bar badge regardless of focus so an active
       // operator can refresh on their own terms…
       useStore.getState().setUpdateReady(true);
