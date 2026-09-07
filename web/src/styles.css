@@ -2580,6 +2580,7 @@ body.dl-resizing { user-select: none; }
   .inject-bar textarea,
   .approval-reject textarea,
   .login-body input,
+  .fp-filter,
   .modal textarea { font-size: 16px; }
 
   /* tap-friendly small buttons — 44px min target, centered content */
