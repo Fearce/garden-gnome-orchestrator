@@ -132,6 +132,42 @@ async function drive(page, work, keep) {
   await page.waitForSelector('.gc-pick-value:text-is("claude-orchestrator")', { timeout: 15_000 });
   check("an explicit pick overrides the auto-pick", true);
 
+  console.log("\nBROWSE — the folder picker modal is searchable");
+  await page.click('[aria-label="Choose a repository"]');
+  await page.click('.gc-menu-action:has-text("Browse")');
+  await page.waitForSelector(".modal.folder-picker .fp-row", { timeout: 10_000 });
+  check(
+    "the folder picker opens with the filter focused",
+    await page.evaluate(() => document.activeElement?.classList.contains("fp-filter")),
+  );
+  await page.fill(".modal.folder-picker .fp-filter", "relay");
+  await page.waitForFunction(
+    () => {
+      const rows = Array.from(document.querySelectorAll(".modal.folder-picker .fp-row:not(.up) .nm")).map((e) => e.textContent);
+      return rows.length === 1 && rows[0] === "relay";
+    },
+    null,
+    { timeout: 10_000 },
+  );
+  const filteredFolders = await page.$$eval(".modal.folder-picker .fp-row:not(.up) .nm", (els) => els.map((e) => e.textContent));
+  check("typing narrows the folder list", JSON.stringify(filteredFolders) === JSON.stringify(["relay"]), filteredFolders.join(","));
+  check("a non-empty search hides the Up row", !(await page.isVisible(".modal.folder-picker .fp-row.up")));
+  await page.click('.modal.folder-picker .fp-row:has(.nm:text-is("relay"))');
+  await page.waitForFunction(
+    () => {
+      const crumb = document.querySelector(".modal.folder-picker .fp-crumb")?.textContent?.toLowerCase() || "";
+      return crumb.endsWith("\\relay") || crumb.endsWith("/relay");
+    },
+    null,
+    { timeout: 10_000 },
+  );
+  check("choosing a filtered folder navigates into it", true);
+  check("navigating clears the filter", (await page.inputValue(".modal.folder-picker .fp-filter")) === "");
+  await page.fill(".modal.folder-picker .fp-filter", "   ");
+  check("a whitespace-only filter still leaves Up available", await page.isVisible(".modal.folder-picker .fp-row.up"));
+  await page.click(".modal.folder-picker .m-foot .btn.ghost");
+  await page.waitForSelector(".modal.folder-picker", { state: "detached", timeout: 5_000 });
+
   console.log("\nPICK — the repository picker (populated by discovery, not by typing paths)");
   await page.click('[aria-label="Choose a repository"]');
   await page.waitForSelector(".gc-menu-row");

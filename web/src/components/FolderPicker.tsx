@@ -63,13 +63,14 @@ export function FolderPicker({
         <div className="m-body">
           <input
             className="fp-filter"
+            aria-label="Filter folders"
             placeholder={`Filter ${data?.dirs.length ?? 0} folders`}
             value={filter}
             autoFocus
             onChange={(e) => setFilter(e.target.value)}
           />
           <div className="fp-list">
-            {!filter && data?.parent !== null && data?.parent !== undefined && (
+            {!q && data?.parent !== null && data?.parent !== undefined && (
               <button className="fp-row up" onClick={() => setPath(data.parent!)}>
                 <FolderIcon up />
                 <span className="nm">..</span>
