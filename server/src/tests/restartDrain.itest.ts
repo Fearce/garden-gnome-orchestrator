@@ -195,6 +195,7 @@ async function main(): Promise<void> {
   retryNow();
   check("the third refused attempt ran", await waitFor(() => attempts === 3));
   check("fresh work is released during repeated-refusal backoff", !refusing.isDraining() && !refusing.status().draining && refusalReleases === 1);
+  check("the pending restart remains visible while admission is released", refusing.hasPendingRestart() && refusing.status().pending !== null);
   retryNow();
   check("a due retry closes admission and can later complete", refusing.isDraining() && await waitFor(() => attempts === 4));
   refusing.stop();

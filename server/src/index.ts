@@ -264,7 +264,11 @@ async function main(): Promise<void> {
     // The current built-bundle hash, so an open client can detect a deploy and reload itself.
     app.get("/api/version", async (_req, reply) => {
       reply.header("cache-control", "no-store");
-      return { web: webBundleVersion(), restartDraining: restartCoordinator.isDraining() };
+      return {
+        web: webBundleVersion(),
+        restartDraining: restartCoordinator.isDraining(),
+        restartPending: restartCoordinator.hasPendingRestart(),
+      };
     });
 
     // How far the checkout is behind its git upstream — drives the quiet top-bar "update available"

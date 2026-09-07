@@ -155,7 +155,7 @@ function distVsHead() {
       detail:
         `dist was built from ${short}, and ${files.length} server/src file(s) have changed in HEAD since ` +
         `(${files.slice(0, 3).join(", ")}${files.length > 3 ? ", …" : ""}) — that committed change is NOT live, ` +
-        "however fresh the process looks. Run `npm run build`, then the atomic hub restart.",
+        "however fresh the process looks. Run `npm run deploy --prefix server`; it builds HEAD and routes the bounce through the restart coordinator.",
     };
   }
   if (stamp.dirty) {
@@ -196,9 +196,9 @@ function processVsDist(runningBuild) {
  * A staged build the restart coordinator is already holding is NOT an operator action item.
  *
  * `classifyProcessBuild` only compares the running build to `dist`, so a drain-waiting deploy looks
- * identical to a forgotten one and its advice ends "Issue the atomic hub restart". That hand restart
- * bypasses the drain and tree-kills every live agent — the exact interruption the coordinator exists to
- * prevent, and the reflex `deploy.cjs`/AGENTS.md warn against. So ask the coordinator before advising.
+ * identical to a forgotten one. A stale-build warning must not send an operator around the coordinator:
+ * that bypass tree-kills every live agent — the exact interruption the coordinator exists to prevent, and
+ * the reflex `deploy.cjs`/AGENTS.md warn against. So ask the coordinator before advising.
  *
  * Returns its status only while a restart is genuinely pending; null when nothing is staged or the
  * coordinator cannot be read (an unreachable coordinator must never silence a real stale build).
@@ -322,11 +322,11 @@ async function main() {
         } else if (staged) {
           // Pending but the restart mechanism keeps refusing — that IS an operator action item.
           warn(
-            `${vsDist.detail.replace(/\.?\s*Issue the atomic hub restart\.?$/, "")} — the restart coordinator has ` +
+            `${vsDist.detail} — the restart coordinator has ` +
               `staged it but ${failures} restart attempt(s) were REFUSED (${staged.pendingLabel}); the listener is ` +
               `probably elevated, see CLAUDE.md`,
           );
-        } else warn(vsDist.detail);
+        } else warn(`${vsDist.detail}. Run \`npm run deploy --prefix server\`; it routes the bounce through the restart coordinator.`);
       } else if (vsDist.state === "dirty-build" || vsDist.state === "unknown") warn(`process vs dist: ${vsDist.detail}`);
       else if (vsDist.state === "current") ok(`process vs dist: ${vsDist.detail}`);
       else if (startMs && distMs > startMs + 2000) {

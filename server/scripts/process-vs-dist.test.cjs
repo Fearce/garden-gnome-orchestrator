@@ -34,7 +34,7 @@ const build = (commit, extra = {}) => ({ commit, at: 1_700_000_000_000, dirty: f
   });
   assert.equal(v.state, "stale");
   assert.match(v.detail, /NOT live/);
-  assert.match(v.detail, /atomic hub restart/, "the warning has to say what to do about it");
+  assert.doesNotMatch(v.detail, /hub restart/, "the stale-build classifier must not advise bypassing the coordinator");
   assert.match(v.detail, /threadManager\.ts/, "name the drifted files so the reader can judge urgency");
 }
 {

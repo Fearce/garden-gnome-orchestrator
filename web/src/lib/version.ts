@@ -31,11 +31,15 @@ export function startVersionWatch(): void {
     try {
       const res = await fetch(apiUrl("/api/version"), { cache: "no-store" });
       if (!res.ok) return;
-      const { web, restartDraining } = (await res.json()) as { web?: string | null; restartDraining?: boolean };
+      const { web, restartDraining, restartPending } = (await res.json()) as {
+        web?: string | null;
+        restartDraining?: boolean;
+        restartPending?: boolean;
+      };
       // A server+web update replaces web/dist before its planned process bounce. Do not reload the new
-      // client against the old in-memory API while agents drain; the first poll after the new process is
-      // live sees restartDraining=false and performs the normal hash-based reload.
-      if (restartDraining) return;
+      // client against the old in-memory API while a coordinated restart is still pending. Older servers
+      // only expose restartDraining, so keep that as the rolling-upgrade fallback.
+      if (restartPending ?? restartDraining) return;
       if (!web || web === loaded) return;
       // A newer build is live. Surface the quiet top-bar badge regardless of focus so an active
       // operator can refresh on their own terms…

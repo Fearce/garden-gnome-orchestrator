@@ -57,8 +57,9 @@ existing agents stays live. When active work reaches zero, the
 coordinator fires immediately — there is no time-based escape hatch and no hourly restart limit.
 The pending build list lives in kv so several staged builds ride the same restart and a failed hub call
 can retry without losing them. A pending restart whose build some other bounce already loaded is
-dropped at boot and queued work is released. `/api/version` also exposes the drain latch so open tabs do
-not reload a newly rebuilt web client against the old in-memory server API. Direct script-hub calls
+dropped at boot and queued work is released. `/api/version` exposes both the admission latch and whether
+any restart remains pending, so open tabs do not reload a newly rebuilt web client against the old
+in-memory server API. Direct script-hub calls
 remain an emergency recovery path when :4317 is down; they bypass coordination and can interrupt work.
 The compatibility routes remain
 `POST /api/deploy/restart` + `GET /api/deploy/status` (with `/gate` as a rolling-upgrade alias),

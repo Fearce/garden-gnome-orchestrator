@@ -201,6 +201,21 @@ export class RestartCoordinator {
     }
   }
 
+  /**
+   * True while any coordinated restart is owed, even if the admission latch has temporarily reopened
+   * between repeated refused attempts. UI clients use this to avoid loading a staged web bundle against
+   * the old in-memory server API before the pending bounce has landed.
+   */
+  hasPendingRestart(): boolean {
+    if (this.firing) return true;
+    try {
+      return this.pending() !== null;
+    } catch {
+      // Losing the coordination read must never become permission for a client to switch bundles.
+      return true;
+    }
+  }
+
   /** Release paths call this to avoid waiting for the fallback poll interval. */
   workChanged(): void {
     if (!this.isDraining() || this.firing) return;

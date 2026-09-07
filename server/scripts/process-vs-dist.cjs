@@ -57,7 +57,7 @@ function classifyProcessBuild({ running, dist, changedFiles }) {
         detail:
           `the process is running build ${runShort} but dist holds ${distShort}, and ${changedFiles.length} ` +
           `server/src file(s) differ between them (${shown}${changedFiles.length > 3 ? ", …" : ""}) — that built ` +
-          "change is NOT live. Issue the atomic hub restart",
+          "change is NOT live",
       };
     }
   }
