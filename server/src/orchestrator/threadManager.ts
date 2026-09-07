@@ -8781,7 +8781,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // their persisted text/images to this run, so this exact run id is now a truthful delivery claim.
       const deliveredQaRows = this.reviewInjections.pendingImplementor(thread.id, "qa", null);
       if (deliveredQaRows.length) {
-        this.markReviewImplementorDelivered(deliveredQaRows, start.runId);
+        this.markReviewImplementorDelivered(deliveredQaRows, start.runId, (row) => row.mode === "interrupt");
         const remaining = (this.queuedForImplementor.get(thread.id) ?? []).filter(
           (message) => !deliveredQaRows.some((row) => row.instruction === message),
         );
@@ -8797,7 +8797,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             deliveredQaRows.map((row) => row.id),
             "The QA fix implementor completed the current owner instruction.",
           );
-          for (const row of handled) this.reviewInjectionFeed(thread.id, `[handled] ${reviewInjectionLabel(row.id)} completed in QA fix run ${start.runId.slice(0, 8)}.`);
+          for (const row of handled) {
+            if (row.mode !== "interrupt") {
+              this.reviewInjectionFeed(thread.id, `[handled] ${reviewInjectionLabel(row.id)} completed in QA fix run ${start.runId.slice(0, 8)}.`);
+            }
+          }
         } else {
           const failed = this.reviewInjections.fail(
             deliveredQaRows.map((row) => row.id),
@@ -8844,7 +8848,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         { effort, resumeNudge: msg, directorNote: msg, qaFollows, images: this.reviewInjectionImages(durableRows) },
       );
       if (!start) break; // cancelled while compressing the prior session
-      if (durableRows.length) this.markReviewImplementorDelivered(durableRows, start.runId);
+      if (durableRows.length) this.markReviewImplementorDelivered(durableRows, start.runId, (row) => row.mode === "interrupt");
       this.flushDirectorNotes(thread.id, start.run);
       res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, msg, qaFollows);
       if (durableRows.length) {
@@ -8853,7 +8857,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             durableRows.map((row) => row.id),
             "The queued implementor completed the durable owner instruction.",
           );
-          for (const row of handled) this.reviewInjectionFeed(thread.id, `✓ ${reviewInjectionLabel(row.id)} handled by queued implementor run ${start.runId.slice(0, 8)}.`);
+          for (const row of handled) {
+            if (row.mode !== "interrupt") {
+              this.reviewInjectionFeed(thread.id, `✓ ${reviewInjectionLabel(row.id)} handled by queued implementor run ${start.runId.slice(0, 8)}.`);
+            }
+          }
         } else {
           const failed = this.reviewInjections.fail(
             durableRows.map((row) => row.id),
@@ -9063,7 +9071,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       }
       return { handled: true };
     }
-    if (reviewRows.length) this.markReviewImplementorDelivered(reviewRows, start.runId);
+    if (reviewRows.length) this.markReviewImplementorDelivered(reviewRows, start.runId, true);
     this.clearQaSupersede(thread.id, round);
     this.flushDirectorNotes(thread.id, start.run);
     const buffered = this.pendingResumeMsgs.get(thread.id);
@@ -9079,7 +9087,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           reviewRows.map((row) => row.id),
           "The implementor completed the owner instruction that superseded QA.",
         );
-        for (const row of handled) this.reviewInjectionFeed(thread.id, `[handled] ${reviewInjectionLabel(row.id)} completed in implementor run ${start.runId.slice(0, 8)} after QA stopped.`);
+        for (const row of handled) {
+          if (row.mode !== "interrupt") {
+            this.reviewInjectionFeed(thread.id, `[handled] ${reviewInjectionLabel(row.id)} completed in implementor run ${start.runId.slice(0, 8)} after QA stopped.`);
+          }
+        }
       } else {
         const failed = this.reviewInjections.fail(
           reviewRows.map((row) => row.id),
@@ -9289,9 +9301,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return queued;
   }
 
-  private markReviewImplementorDelivered(rows: ReviewInjection[], runId: string): ReviewInjection[] {
+  private markReviewImplementorDelivered(
+    rows: ReviewInjection[],
+    runId: string,
+    suppressFeed: boolean | ((row: ReviewInjection) => boolean) = false,
+  ): ReviewInjection[] {
     const delivered = this.reviewInjections.markImplementorDelivered(rows.map((row) => row.id), runId);
     for (const row of delivered) {
+      if (typeof suppressFeed === "function" ? suppressFeed(row) : suppressFeed) continue;
       this.reviewInjectionFeed(
         row.threadId,
         `[delivered] ${reviewInjectionLabel(row.id)} reached implementor run ${runId.slice(0, 8)}; waiting for implementation to finish${row.lane === "reviewer" && row.mode === "append" ? " and the reviewer to re-check it" : ""}.`,
@@ -9328,7 +9345,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             ),
             { priority: "now" },
           );
-          this.markReviewImplementorDelivered(queued, live.runId);
+          this.markReviewImplementorDelivered(queued, live.runId, true);
           return;
         }
         if (this.resuming.has(threadId) || this.activePipelines.has(threadId)) return;
@@ -9366,10 +9383,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       return { ok: false, state: thread.state, error: `${reviewInjectionLabel(row.id)}: ${reason}` };
     }
 
-    const row = this.acceptReviewInjection(thread.id, lane, mode, instruction, attachments);
+    const row = this.acceptReviewInjection(thread.id, lane, mode, instruction, attachments, mode === "interrupt");
     const queued = this.queueReviewInjectionsForImplementor(
       [row],
       `${lane === "qa" ? "QA" : "Auto-review"} finished before delivery; the instruction is retained for implementation instead of being sent to a dead reviewer.`,
+      mode === "interrupt",
     );
     const impl = this.live.get(thread.id);
     if (impl) {
@@ -9378,7 +9396,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         contentWithImages(acknowledgedInjection(`${reviewInjectionLabel(row.id)}: ${instruction}`), images?.map(toImageBlock) ?? []),
         injectionSendOptions(impl.run, mode),
       );
-      this.markReviewImplementorDelivered(queued, impl.runId);
+      this.markReviewImplementorDelivered(queued, impl.runId, mode === "interrupt");
       return {
         ok: true,
         state: "implementing",
@@ -9772,7 +9790,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         );
         if (impl) {
           this.sendCommunication(impl.run, contentWithImages(acknowledgedInjection(message), blocks), { priority: "now" });
-          this.markReviewImplementorDelivered(queued, impl.runId);
+          this.markReviewImplementorDelivered(queued, impl.runId, true);
           const task = this.autoReviewTasks.get(threadId);
           if (task) this.scheduleReviewerInterruptResume(threadId, task);
           return {
@@ -10380,7 +10398,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       releaseSlot();
       return;
     }
-    if (reviewRows.length) this.markReviewImplementorDelivered(reviewRows, start.runId);
+    if (reviewRows.length) this.markReviewImplementorDelivered(reviewRows, start.runId, (row) => row.mode === "interrupt");
     // The kickoff has consumed any stashed images; drop them so a later resume doesn't re-send the
     // base64 (wasted vision tokens) — the live/resumed session already holds them.
     this.dispatchImages.delete(thread.id);
@@ -10418,7 +10436,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
               "The implementor completed the reviewer-lane instruction; the task is parked for owner review.",
             );
             for (const row of handled) {
-              this.reviewInjectionFeed(thread.id, `✓ ${reviewInjectionLabel(row.id)} handled by implementor run ${start!.runId.slice(0, 8)}; the task is parked for owner review.`);
+              if (row.mode !== "interrupt") {
+                this.reviewInjectionFeed(thread.id, `✓ ${reviewInjectionLabel(row.id)} handled by implementor run ${start!.runId.slice(0, 8)}; the task is parked for owner review.`);
+              }
             }
           } else {
             const failed = this.reviewInjections.fail(
@@ -10841,6 +10861,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.queueReviewInjectionsForImplementor(
         needsQueue,
         "Auto-review was superseded before the active implementor completed this instruction; a clean implementor resume is required.",
+        true,
       );
     }
     const newlyImplemented = implemented.filter((row) => row.status !== "handled");
@@ -10849,7 +10870,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         newlyImplemented.map((row) => row.id),
         "The active auto-review fix implementor completed the interrupting owner instruction; Auto-review was superseded and will not re-check or accept it.",
       );
-      for (const row of handled) this.reviewInjectionFeed(threadId, `✓ ${reviewInjectionLabel(row.id)} handled by the active fix implementor; Auto-review is superseded and the task returns to owner review.`);
+      for (const row of handled) {
+        if (row.mode !== "interrupt") {
+          this.reviewInjectionFeed(threadId, `✓ ${reviewInjectionLabel(row.id)} handled by the active fix implementor; Auto-review is superseded and the task returns to owner review.`);
+        }
+      }
     }
     const reason = `Auto-review was explicitly superseded by owner instruction ${labels}. Its pending/stale verdict was discarded; the instruction ${implemented.length === interrupted.length ? "was handled by the active implementor and the task needs owner review" : "is queued for implementation"}.`;
     const parked = this.parkAutoReview(threadId, claimToken, reason);

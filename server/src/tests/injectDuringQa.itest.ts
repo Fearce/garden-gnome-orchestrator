@@ -297,6 +297,8 @@ async function main(): Promise<void> {
       check("the attached QA interrupt image reached the resumed implementor", h.resumeImages.some((n) => n === 1), JSON.stringify(h.resumeImages));
       const feed = h.db.listMessages(id).map((m) => m.content);
       check("the feed says QA is being returned to the implementor", feed.some((c) => c.includes("interrupt requested") && c.includes("returning to the implementor")), JSON.stringify(feed.filter((c) => c.includes("interrupt")).slice(0, 3)));
+      check("the QA interrupt feed emits one concise status line", feed.filter((c) => c.includes("interrupt requested") && c.includes("returning to the implementor")).length === 1, JSON.stringify(feed));
+      check("the QA interrupt feed omits routine review-injection lifecycle spam", !feed.some((c) => /\[(accepted|queued|delivered|handled)\]|✓ RI-/.test(c)), JSON.stringify(feed));
       check("the durable QA supersede marker was cleared after resume", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
       await settle();
     } finally {
@@ -500,6 +502,8 @@ async function main(): Promise<void> {
       const row = h.internals.reviewInjections.listThread(id)[0] as { status: string; implementorRunId: string | null };
       check("the instruction and image reached the resumed implementor", h.resumes.some((m) => m.includes("branch conflicts")) && h.resumeImages.some((n) => n === 1), JSON.stringify(h.resumes));
       check("the durable lifecycle records the implementor outcome", row.status === "handled" && row.implementorRunId === "stub-implementor-run", JSON.stringify(row));
+      const feed = h.db.listMessages(id).map((m) => m.content);
+      check("the Auto-review interrupt feed omits routine review-injection lifecycle spam", !feed.some((c) => /\[(accepted|queued|delivered|handled)\]|✓ RI-/.test(c)), JSON.stringify(feed));
     } finally {
       h.dispose();
     }
