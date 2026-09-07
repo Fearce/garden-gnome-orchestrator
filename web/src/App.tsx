@@ -35,6 +35,7 @@ export function App() {
     Object.values(s.coworkSessions).filter((session) => session.state === "running" || session.state === "stopping").length,
   );
   const railHidden = useStore((s) => s.railHidden);
+  const focusMode = useStore((s) => s.focusMode);
   const detailWidth = useStore((s) => s.detailWidth);
   const directorWidth = useStore((s) => s.directorWidth);
   const [mobilePane, setMobilePane] = useState<MobilePane>("board");
@@ -45,25 +46,40 @@ export function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
+      {/* Focus mode strips the bar down to what a working session might still click — the two panel
+          toggles, an update that just landed, and the socket. Everything it drops only REPORTS state
+          (build tag, office gnomes, the account burn strip, the counters), and the strip is the whole
+          second row on anything under 1800px, so the header stops eating the screen. */}
+      <header className={"topbar" + (focusMode ? " focus" : "")}>
         <div className="brand">
-          <BuildTag />
+          {focusMode ? null : <BuildTag />}
           <div className="wordmark">
             <img className="brand-logo" src={ggLogo} alt="GG Orchestrator" />
-            <span className="sub">director&nbsp;console</span>
+            {focusMode ? null : <span className="sub">director&nbsp;console</span>}
           </div>
         </div>
+        <FocusToggle />
         <RailToggle />
-        <GitButton open={gitOpen} onToggle={() => setGitOpen((o) => !o)} />
-        <SettingsButton open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} />
+        {focusMode ? null : (
+          <>
+            <GitButton open={gitOpen} onToggle={() => setGitOpen((o) => !o)} />
+            <SettingsButton open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} />
+          </>
+        )}
         <UpdateBadge />
-        <Office />
-        <Accounts />
-        <span className="stat">
-          <b>{taskCount}</b> {taskCount === 1 ? "task" : "tasks"} · <b>{coworkCount}</b> co-work · <b>{liveAgents}</b> {liveAgents === 1 ? "agent" : "agents"} live
-        </span>
-        <ApprovalToggle />
-        <NotifyBell />
+        {focusMode ? (
+          <div className="spacer" />
+        ) : (
+          <>
+            <Office />
+            <Accounts />
+            <span className="stat">
+              <b>{taskCount}</b> {taskCount === 1 ? "task" : "tasks"} · <b>{coworkCount}</b> co-work · <b>{liveAgents}</b> {liveAgents === 1 ? "agent" : "agents"} live
+            </span>
+            <ApprovalToggle />
+            <NotifyBell />
+          </>
+        )}
         <div className="conn">
           <span className={"dot " + (connected ? "on" : "off")} />
           {connected ? "live" : "reconnecting…"}
@@ -234,6 +250,29 @@ function RailToggle() {
         <rect x="3" y="3" width="18" height="18" rx="2" />
         <path d="M9 3v18" />
         {hidden ? null : <rect x="3" y="3" width="6" height="18" rx="2" fill="currentColor" stroke="none" opacity="0.32" />}
+      </svg>
+    </button>
+  );
+}
+
+/** The header's own hide switch, sibling to RailToggle and drawn from the same panel vocabulary: the
+ *  filled band shows which edge of the console the button owns — left column for the director rail,
+ *  top row for this bar. */
+function FocusToggle() {
+  const focus = useStore((s) => s.focusMode);
+  const toggle = useStore((s) => s.toggleFocus);
+  return (
+    <button
+      className={"focus-toggle" + (focus ? " off" : "")}
+      title={focus ? "Show the full top bar" : "Focus mode — hide the accounts strip, office and counters"}
+      aria-label="Toggle top bar detail"
+      aria-pressed={focus}
+      onClick={toggle}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <path d="M3 9h18" />
+        {focus ? null : <rect x="3" y="3" width="18" height="6" rx="2" fill="currentColor" stroke="none" opacity="0.32" />}
       </svg>
     </button>
   );

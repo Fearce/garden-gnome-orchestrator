@@ -127,14 +127,15 @@ button { font-family: inherit; cursor: pointer; }
   min-width: 0;
 }
 
-/* Medium desktop (1280–1799px): five subscription chips (~848px) don't fit beside brand + office +
+/* Medium desktop (1280–1899px): five subscription chips (~848px) don't fit beside brand + office +
    controls. Wrap the accounts strip onto a full-width second row so Grok's 7d/mo meters stay on
    screen instead of clipped under .app overflow:hidden. The bound is measured, not decorative, and
    measured against the WIDEST state the bar can render: with the socket dropped the fixed items come
-   to 720px which puts the single-row floor at 1748px — the old 1700px bound sat below that, which is
+   to 826px which puts the single-row floor at 1870px — the old 1700px bound sat below that, which is
    how a reconnect used to clip the chips. `npm run probe:chips -- --explain` prints that floor; keep
-   the bound comfortably above it rather than one pixel above. */
-@media (max-width: 1799.98px) and (min-width: 900px) {
+   the bound comfortably above it rather than one pixel above (the focus toggle cost 44px of that
+   headroom, which is what moved this bound from 1800px). */
+@media (max-width: 1899.98px) and (min-width: 900px) {
   .topbar {
     flex-wrap: wrap;
     row-gap: 6px;
@@ -152,6 +153,12 @@ button { font-family: inherit; cursor: pointer; }
     overflow-x: auto;
   }
 }
+
+/* Focus mode. Only the square controls and the socket are left, so the bar can sit at their own height
+   instead of the 52px the wordmark and the burn chips need — and below 1900px the strip is a whole
+   second row, which is the ~100px this actually gives back. */
+.topbar.focus { min-height: 40px; gap: 12px; }
+.topbar.focus .brand-logo { height: 24px; }
 
 .brand { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
 .build-tag {
@@ -189,12 +196,12 @@ button { font-family: inherit; cursor: pointer; }
   scrollbar-width: thin;
   -webkit-overflow-scrolling: touch;
 }
-/* Wide desktop (≥1800px): the strip is inline, on a row whose other items are not all fixed — the
+/* Wide desktop (≥1900px): the strip is inline, on a row whose other items are not all fixed — the
    connection indicator alone swings 41px ("live") to 100px ("reconnecting…"), and the gnome lane
    grows 46px per live agent. Shrinking is what the chips must never do: it hides usage behind a
    scrollbar, so the elastic items yield instead. Must stay AFTER the base rule above — an equally
    specific `.accounts` declaration later in the file wins over one inside a media query. */
-@media (min-width: 1800px) {
+@media (min-width: 1900px) {
   .accounts { flex-shrink: 0; }
 }
 .acct {
@@ -847,14 +854,14 @@ button { font-family: inherit; cursor: pointer; }
 }
 @keyframes update-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .update-spinner { animation-duration: 2s; } }
-.rail-toggle {
+.rail-toggle, .focus-toggle {
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; border-radius: var(--r-sm); cursor: pointer;
   border: 1px solid var(--line); background: var(--bg-2); color: var(--text-dim);
   transition: color 0.12s, border-color 0.12s;
 }
-.rail-toggle:hover { color: var(--text); border-color: var(--line-strong); }
-.rail-toggle.off { color: var(--text-faint); }
+.rail-toggle:hover, .focus-toggle:hover { color: var(--text); border-color: var(--line-strong); }
+.rail-toggle.off, .focus-toggle.off { color: var(--text-faint); }
 
 /* ---- agent toggles (per-task pipeline gates, in the Director rail header) ---- */
 .agent-toggles { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
@@ -2390,6 +2397,8 @@ body.dl-resizing { user-select: none; }
   .gate { width: 44px; height: 44px; padding: 0; gap: 0; justify-content: center; }
   .bell { width: 44px; height: 44px; }
   .update-badge { width: 44px; height: 44px; }
+  /* Focus mode stays reachable on a phone — the burn strip it hides is a whole row here too. */
+  .focus-toggle { width: 44px; height: 44px; }
   .rail-toggle, .resize-handle { display: none; } /* rail-hide + resize are desktop-only */
   /* The ambient office (pacing/huddling gnomes) is a multi-agent presence visualization that needs
      horizontal room a phone doesn't have — it overflowed and overlapped the topbar controls. Keep the
@@ -3140,7 +3149,7 @@ button.note-from:hover { color: var(--text-dim); }
      items go — the build sha is in Settings, and the running count is on the board itself. */
   .build-tag { display: none; }
   .stat { display: none; }
-  .bell, .update-badge, .rail-toggle, .settings-btn, .git-btn { width: var(--tap); height: var(--tap); }
+  .bell, .update-badge, .rail-toggle, .focus-toggle, .settings-btn, .git-btn { width: var(--tap); height: var(--tap); }
   .gate { width: var(--tap); height: var(--tap); padding: 0; gap: 0; justify-content: center; }
   .gate > span { display: none; }
   .settings-x { width: var(--tap); height: var(--tap); font-size: 16px; }

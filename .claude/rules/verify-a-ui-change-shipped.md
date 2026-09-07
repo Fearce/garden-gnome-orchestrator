@@ -34,14 +34,14 @@ owner, never by process name). A "lab" is a committed script on top of it that s
 drives one surface — copy the closest of `chip-lab.cjs` (accounts strip), `git-console-lab.cjs` (Git
 console + fixture repo), `tablet-lab.cjs` (both tablet orientations in a TOUCH context),
 `model-select-lab.cjs` (a Settings toggle's round-trip + a server-fed table), `inject-lab.cjs`
-(state-conditional button labels + a click that must not kill the task), `layout-lab.cjs` (the
-workbench's columns, with the rail/detail widths replayed from a BIGGER monitor, across every band
-and both drag handles) and `panel-scroll-lab.cjs` (the detail panel on the OTHER axis: a 500-entry
-transcript under a work memo and deliverables, at five viewports x both header states, asserting the
-scrollport is usable, the composer stays pinned, nothing travels sideways, and no clipping shell in
-the console is taller than its own box) and `appearance-lab.cjs` (the theme picker + the computed-style
-diff that is the only proof Classic came back untouched — `getComputedStyle` returns the ANIMATED
-value, so a snapshot taken mid-transition reads as drift). Never against live prod.
+(state-conditional button labels + a click that must not kill the task), `focus-lab.cjs` (the top bar's
+focus toggle, both themes), `layout-lab.cjs` (the workbench's columns, with the rail/detail widths
+replayed from a BIGGER monitor, across every band and both drag handles) and `panel-scroll-lab.cjs`
+(the detail panel on the OTHER axis: a 500-entry transcript under a work memo and deliverables, at five
+viewports x both header states — scrollport usable, composer pinned, nothing sideways, no clipping shell
+taller than its own box) and `appearance-lab.cjs` (the theme picker + the computed-style diff that is
+the only proof Classic came back untouched — `getComputedStyle` returns the ANIMATED value, so a
+snapshot taken mid-transition reads as drift). Never against live prod.
 **Read `lab-harness.cjs`'s header first** — selectors, `has-text` vs `text-is`, touch context, clipboard
 permissions and CSS load order are all in there; instance mechanics are in project memory
 `browser-test-throwaway-instance`.

@@ -551,6 +551,15 @@ findings); a thread opens to a detail view with the inject/interrupt controls.
 Design: intentional type + OKLCH palette, mission-control density — no AI-slop
 defaults (see root CLAUDE.md doctrine).
 
+**Hiding the chrome.** Two per-browser toggles sit at the left of the top bar,
+both persisted in `localStorage` and neither touching the server: the rail
+toggle hides the director chat, and **focus mode** (`store.focusMode`) unmounts
+everything in the header that only *reports* state — build tag, Git/settings
+buttons, office gnomes, the account burn strip, the counters, gate and bell —
+leaving the two toggles, an update badge if one landed, and the socket. Below
+1900px the strip is a whole second row, so the bar goes 128px → 41px. Browser
+check: `npm run focus-lab --prefix server`.
+
 **Themes** (Settings → Appearance) are a per-browser choice between *Classic*
 — `styles.css` itself, with no attribute on `<html>` — and *Nocturne*, whose
 every rule is scoped behind `[data-theme="nocturne"]` in `web/src/themes/`.

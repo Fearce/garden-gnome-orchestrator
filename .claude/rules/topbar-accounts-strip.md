@@ -16,7 +16,7 @@ must be *visible* at common desktop widths.
 - `.app` uses `grid-template-columns: minmax(0, 1fr)` and `overflow: hidden`.
 - `.topbar` has `min-width: 0`.
 - `.accounts` has `min-width: 0`, `overflow-x: auto`, chips `flex: 0 0 auto`.
-- At **900–1799px** desktop, `.accounts` wraps to a **full-width second row**
+- At **900–1899px** desktop, `.accounts` wraps to a **full-width second row**
   so personal+secondary+Codex+Grok+z.ai all fit (see `eda230f`). Compact (≤899.98, which
   since 2026-08-18 includes a portrait 800px tablet) already full-width-scrolls the
   strip — `probe:chips` shares that bound as `DESKTOP_MIN` and does not treat a
@@ -29,7 +29,7 @@ must be *visible* at common desktop widths.
   The original 1700px bound sat between those two numbers, so the chips clipped on every
   reconnect (2026-08-13). The probe now measures each width twice — live, then with the
   socket label widened — and fails on either.
-- **Above the bound the chips must not shrink.** `@media (min-width: 1800px)` gives
+- **Above the bound the chips must not shrink.** `@media (min-width: 1900px)` gives
   `.accounts { flex-shrink: 0 }` — the data chips hold their size, the elastic items
   (`.office` is `flex: 1`, basis 0; `.stat` is text) yield instead. The probe also fails
   if that pressure pushes any top-bar child off-screen instead.
@@ -47,7 +47,7 @@ npm run chip-lab --prefix server -- --list               # healthy | lapsed-week
 `chip-lab` (`server/scripts/chip-lab.cjs`) is the one-command version: temp DATA_DIR,
 **bogus account tokens** (a live token makes the boot ping START a real 5h window and
 wreck the stagger you're inspecting), seeded `account_usage_*` blobs, then a real
-browser at 1280/1440/1600/1750/1800/1920 (straddling the bound) printing every meter's
+browser at 1280/1440/1600/1850/1900/1920 (straddling the bound) printing every meter's
 text + tooltip. Exit 1 = clipped.
 Use it for any change to a meter's *state* — an `idle`/`stale`/lapsed-reset reading
 is invisible to a typecheck and to prod (whose accounts are usually healthy).

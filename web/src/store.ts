@@ -196,6 +196,9 @@ interface State {
   // gate blocked it. Kept in the store rather than the component so it survives a re-render of the panel.
   repoLastOp: RepoOp | null;
   railHidden: boolean;
+  // Focus mode: the top bar keeps only what a working session might click and drops everything that
+  // merely reports state (build tag, git/settings, office, account burn strip, counters, gate, bell).
+  focusMode: boolean;
   detailWidth: number;
   directorWidth: number;
   // The office: recent chat across all rooms (live feed), the project-room roll-up (drives the
@@ -304,6 +307,7 @@ interface State {
   repoAction: (path: string, op: RepoOp, force?: boolean) => void;
   clearRepoResult: () => void;
   toggleRail: () => void;
+  toggleFocus: () => void;
   setDetailWidth: (px: number) => void;
   setDirectorWidth: (px: number) => void;
   // Open the office panel on a room (defaults to the general room); fetches that room's newest page.
@@ -861,6 +865,7 @@ export const useStore = create<State>((set) => ({
   repoBusy: false,
   repoLastOp: null,
   railHidden: lsBool("orch-rail-hidden", false),
+  focusMode: lsBool("orch-focus-mode", false),
   detailWidth: lsNum("orch-detail-w", 480),
   directorWidth: lsNum("orch-rail-w", 384),
   chat: [],
@@ -1091,6 +1096,12 @@ export const useStore = create<State>((set) => ({
       const v = !s.railHidden;
       lsSet("orch-rail-hidden", v ? "1" : "0");
       return { railHidden: v };
+    }),
+  toggleFocus: () =>
+    set((s) => {
+      const v = !s.focusMode;
+      lsSet("orch-focus-mode", v ? "1" : "0");
+      return { focusMode: v };
     }),
   setDetailWidth: (px) => {
     lsSet("orch-detail-w", String(Math.round(px)));

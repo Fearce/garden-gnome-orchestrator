@@ -98,6 +98,10 @@
   background: linear-gradient(to bottom, var(--bg-2), var(--bg));
   box-shadow: 0 14px 34px -30px oklch(0 0 0 / 0.9);
 }
+/* Nocturne's bar is deliberately taller than Classic's, and that height ties with `.topbar.focus` on
+   specificity while loading later — so focus mode has to be answered here too or it stays 58px. */
+[data-theme="nocturne"] .topbar.focus { min-height: 44px; }
+
 /* A hairline of the accent under the bar, fading out before it reaches the right edge — a lit rim
    rather than a border. */
 [data-theme="nocturne"] .topbar::after {
