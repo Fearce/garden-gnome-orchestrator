@@ -33,6 +33,10 @@ export class Director {
   private activeSessionKey: string | undefined;
   private targetWasAuto = false;
   private busy = false;
+  /** Planned restarts admit steering into this already-live turn, but never start a fresh Director
+   *  process underneath a committed process-tree bounce. Attached after the coordinator exists. */
+  private restartDraining: () => boolean = () => false;
+  private restartWorkChanged: () => void = () => {};
   /** Images from the current user turn — carried past the text-only dispatch tool to the pipeline. */
   private pendingImages: ImageAttachment[] = [];
   /** The in-flight turn's content — kept so a usage-cap failover can re-send it. */
@@ -80,12 +84,40 @@ export class Director {
       : null;
   }
 
+  attachRestartDrain(isDraining: () => boolean, workChanged: () => void): void {
+    this.restartDraining = isDraining;
+    this.restartWorkChanged = workChanged;
+  }
+
+  /** One long-lived Director turn is one top-level unit the restart coordinator must drain. */
+  activeWorkCount(): number {
+    return this.busy ? 1 : 0;
+  }
+
+  private restartDrainActive(): boolean {
+    try {
+      return this.restartDraining();
+    } catch {
+      // A broken coordination read must not become permission to launch into a possible process kill.
+      return true;
+    }
+  }
+
   handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice", messageId?: string): void {
     const refs = (images ?? []).map((img) =>
       this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
     );
     const msg = this.db.addDirectorMessage({ id: messageId, role: "user", kind: "text", content: text, attachments: refs });
     this.hub.publish({ type: "director.message", message: msg });
+    // The echoed user row acknowledges the browser's durable outbox. Make the refusal equally durable
+    // and explicit instead of either dropping the prompt or starting a process the pending restart can
+    // kill. Steering an already-busy Director remains allowed and simply extends that drained turn.
+    if (this.restartDrainActive() && !this.busy) {
+      this.postDirectorNote(
+        "GGO is waiting for its active agents to finish before a planned restart. This message is saved in the chat but was not sent to a model; resend it after GGO reloads.",
+      );
+      return;
+    }
     // A new user turn opens a fresh segment; a dispatch during it links back to this prompt (+ the
     // director's replies, appended as they stream) so the task is reachable from a search hit.
     this.currentTurnMsgIds = [msg.id];
@@ -320,6 +352,7 @@ export class Director {
     if (this.busy === b) return;
     this.busy = b;
     this.hub.publish({ type: "director.busy", busy: b });
+    if (!b) this.restartWorkChanged();
   }
 
   private publishStatus(): void {

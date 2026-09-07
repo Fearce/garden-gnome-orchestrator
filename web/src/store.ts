@@ -1180,14 +1180,35 @@ export const useStore = create<State>((set) => ({
       const res = await fetch(apiUrl("/api/update/apply"), {
         method: "POST",
       });
-      const j = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; needsManualRestart?: boolean };
+      const j = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        needsManualRestart?: boolean;
+        restartDeferred?: boolean;
+        restartReason?: string;
+      };
       if (!res.ok || !j.ok) {
         set({ updateApplying: false, updateError: j.error || "Update failed — check the server log." });
         return;
       }
+      // A drain-waiting backend update deliberately leaves this page on the matching old bundle until
+      // the current agents finish and the restart lands. Reloading now could pair the new web bundle
+      // with the old server API. The version watcher reloads after the coordinated bounce.
+      if (j.restartDeferred) {
+        set({
+          updateApplying: false,
+          gitUpdate: null,
+          notice: {
+            level: "info",
+            title: "Update staged — active agents finish first",
+            message: j.restartReason || "GGO will restart as soon as its current agent work finishes. New work waits until it comes back.",
+          },
+        });
+        return;
+      }
       // Success: the server rebuilt (and may be restarting). Wait for it to answer again, then reload
-      // onto the new build. A backend-only change with no reachable hub can't auto-restart — surface
-      // that the server still needs a manual restart, but reload so the rebuilt web is at least current.
+      // onto the new build. A backend-only change with no reachable process owner still needs a manual
+      // restart, but the rebuilt web can load now.
       await waitForServer();
       if (j.needsManualRestart) {
         useStore.setState({

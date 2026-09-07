@@ -58,10 +58,9 @@ and `test:auto-review-health`.
 ## Deploying a change — DO IT YOURSELF, don't defer
 **If you changed server code, you deploy it before handing off — by restarting the orchestrator
 yourself, in the same turn. Do NOT end a turn with "needs a restart to go live" or ask the owner
-to restart. Bouncing is FINE: keepAlive + auto-resume bring every in-flight task (including you, if
-you're a worker) back on the freshly-built code.** A worker restarting its own parent is the designed,
-supported flow — the rebooted server auto-resumes you with a note saying the restart already
-completed (so you won't loop). Un-deployed hand-offs are the recurring complaint; don't be the cause.
+to restart.** `npm run deploy --prefix server` stages the build with GGO's restart coordinator. Active
+agents finish first and fresh starts pause; the server restarts as soon as the current cohort settles.
+A waiting restart is a completed deploy handoff, not permission to call the hub directly.
 
 How to restart depends on how it's running:
 
@@ -75,17 +74,20 @@ How to restart depends on how it's running:
 keepAlive armed. Implementor workers are **child processes of this server** (the Agent SDK spawns the
 `Codex` CLI — `server/src/agents/runner.ts`), so:
 - **Server change? `npm run deploy --prefix server`** - it selects the safe build path, stamps the
-  artifact, asks the live deploy gate to restart, and either verifies a NEW process is running HEAD or
-  reports the durable hold that will do so. **Use it instead
+  artifact, asks the live restart coordinator to restart after active agents finish, and either verifies
+  a NEW process is running HEAD or reports the durable drain that will do so. **Use it instead
   of building by hand:** a plain build compiles the shared working tree and can ship another agent's
   uncommitted server code. `npm run deploy --prefix server -- --plan` is read-only; after the restart
   auto-resumes this worker, `npm run deploy --prefix server -- --verify` confirms the live artifact without
   bouncing the server again. The script uses the atomic hub restart internally, so it survives the caller
   being killed mid-restart and re-arms keepAlive.
-- **`restart HELD` is a successful deploy; never bypass it.** While 2+ tasks are running, agent
-  restarts are limited to one per hour. The committed build is already staged, the server owns the
-  delayed bounce, and any other patches staged meanwhile ride the same restart. A held deploy and its
-  later `--verify` both exit 0. Do not call the script-hub by hand to make it happen sooner.
+- **`restart WAITING` is a successful deploy; never bypass it.** Every planned restart waits while any
+  task, Co-worker, Director, or Supervisor work is active. Fresh agent starts pause, existing agents
+  finish normally, and the server bounces immediately at zero active work. There is no hourly restart
+  limit. The committed build is staged, the server owns the bounce, and other staged patches ride it.
+  Waiting and `--verify` exit 0.
+  A direct script-hub restart bypasses the drain and can kill active agents; reserve it for recovery when
+  :4317 is down.
 - **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
   runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.

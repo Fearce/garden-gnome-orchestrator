@@ -3,8 +3,8 @@ import { SUPERVISED_RESTART_CODE } from "./crashLog.js";
 // How this server bounces ITSELF. Two deployments own the process in different ways, and both are
 // live: on Windows the script-hub runs it under keepAlive, and `npm run serve` runs it under
 // server/scripts/supervise.cjs. Everything that needs a restart — the update badge (update.ts) and the
-// deploy gate (orchestrator/deployGate.ts) — goes through here, so the two can never drift on which
-// mechanism owns the process or on what a refused restart looks like.
+// restart coordinator (orchestrator/restartCoordinator.ts) — goes through here, so callers cannot
+// drift on which mechanism owns the process or on what a refused restart looks like.
 
 /** The script-hub that owns this server's process on the Windows deployment. Its atomic restart re-arms
  *  keepAlive and survives the caller being killed mid-restart (see CLAUDE.md "Deploying a change"). */
@@ -91,10 +91,4 @@ export function hubRestartWasANoop(reply: unknown): boolean {
   if (r.ok === false) return true;
   const killed = r.stop && Array.isArray(r.stop.killed) ? r.stop.killed : null;
   return killed !== null && killed.length === 0;
-}
-
-/** Fire the restart once the caller's HTTP response has flushed — the bounce tree-kills this process,
- *  so an in-band restart would strand the client waiting on a reply that can never be written. */
-export function scheduleRestartSelf(delayMs = 800): void {
-  setTimeout(() => void restartSelf().catch(() => {}), delayMs).unref?.();
 }

@@ -11,12 +11,12 @@ const http = require("node:http");
 // deploy.cjs reads both endpoints at module load, so they are pointed at this file's fake servers
 // BEFORE it is required. Ports are fixed and deliberately far from :4317/:3939 — nothing here may
 // reach prod or the real script-hub.
-const GATE_PORT = 4399;
+const COORDINATOR_PORT = 4399;
 const HUB_PORT = 4398;
-process.env.DEPLOY_BASE = `http://127.0.0.1:${GATE_PORT}`;
+process.env.DEPLOY_BASE = `http://127.0.0.1:${COORDINATOR_PORT}`;
 process.env.SCRIPT_HUB_URL = `http://127.0.0.1:${HUB_PORT}`;
 
-const { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, printHeld } = require("./deploy.cjs");
+const { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, coordinatorStatus, printWaiting } = require("./deploy.cjs");
 
 let checks = 0;
 const check = (name, cond) => {
@@ -95,9 +95,9 @@ console.log("deploy: a restart that killed nothing is not a deploy");
   check("an unparseable reply is not assumed broken", !restartLookedLikeANoop(null));
 }
 
-console.log("deploy: who is asking the gate to restart");
+console.log("deploy: who is asking the coordinator to restart");
 {
-  // Provenance for the gate's log line and the owner's "restart held" banner. Never a decision input,
+  // Provenance for the coordinator log and the owner's "restart waiting" banner. Never a decision input,
   // so a missing one must degrade to "an agent", never to an error or an empty-string label.
   const saved = process.env.DEPLOY_LABEL;
   delete process.env.DEPLOY_LABEL;
@@ -126,20 +126,18 @@ const json = (res, code, body) => {
   res.end(JSON.stringify(body));
 };
 
-const HELD = {
+const WAITING = {
   outcome: "deferred",
-  reason: "3 tasks running and the last restart was 12m ago — one restart per 1h while multitasking",
-  readyAt: Date.now() + 48 * 60_000,
-  waitMs: 48 * 60_000,
-  readyAtLabel: "14:20",
-  waitLabel: "48m",
-  activeTasks: 3,
-  minIntervalMs: 3_600_000,
-  minActiveTasks: 2,
+  reason: "3 active work items remain — restart after they finish",
+  readyAt: null,
+  waitMs: 0,
+  readyAtLabel: null,
+  waitLabel: "until active work finishes",
+  activeWork: 3,
   staged: 2,
 };
 
-/** Everything printHeld wrote, so the wording can be asserted instead of eyeballed. */
+/** Everything printWaiting wrote, so the wording can be asserted instead of eyeballed. */
 function capture(fn) {
   const real = console.log;
   const lines = [];
@@ -161,50 +159,62 @@ async function restartRouting() {
   });
 
   // The normal path: the running server owns the bounce and may hold it.
-  let gate = await serve(GATE_PORT, (req, res) => {
-    if (req.url === "/api/deploy/restart") return json(res, 200, HELD);
+  let coordinator = await serve(COORDINATOR_PORT, (req, res) => {
+    if (req.url === "/api/deploy/restart") return json(res, 200, WAITING);
     json(res, 404, { error: "not found" });
   });
   const held = await requestRestart({ label: "implementor · a fix", commit: "abc1234", stampedAt: Date.now() });
-  check("the gate answers, so the hub is never touched", held.via === "gate" && hubCalls === 0);
-  check("a held deploy is reported as deferred, not failed", held.gate.outcome === "deferred" && held.gate.staged === 2);
-  await close(gate);
+  check("the coordinator answers, so the hub is never touched", held.via === "coordinator" && hubCalls === 0);
+  check("a waiting deploy is reported as deferred, not failed", held.coordinator.outcome === "deferred" && held.coordinator.staged === 2);
+  await close(coordinator);
 
-  // A live-but-broken gate must not become an escape hatch around a hard limit. Leave the build staged
-  // and fail loudly; only the route-absent bootstrap below may use the hub while :4317 is alive.
-  gate = await serve(GATE_PORT, (req, res) => json(res, 503, { error: "busy" }));
+  // A live-but-broken coordinator must not become an escape hatch around the active-agent drain. Leave
+  // the build staged and fail loudly; only the route-absent bootstrap may use the hub while :4317 lives.
+  coordinator = await serve(COORDINATOR_PORT, (req, res) => json(res, 503, { error: "busy" }));
   let refused = "";
   try {
     await requestRestart({ label: "implementor · a fix", commit: "abc1234" });
   } catch (e) {
     refused = String(e);
   }
-  check("a live gate error never falls through to an ungated hub restart", /refusing to bypass/.test(refused) && hubCalls === 0);
-  await close(gate);
+  check("a live coordinator error never falls through to an uncoordinated hub restart", /refusing to bypass/.test(refused) && hubCalls === 0);
+  await close(coordinator);
 
   // A running build OLDER than this feature has no such route. Refusing to deploy there would leave the
   // box on stale code with nothing able to fix it, which is strictly worse than one extra restart.
-  gate = await serve(GATE_PORT, (req, res) => json(res, 404, { error: "not found" }));
+  coordinator = await serve(COORDINATOR_PORT, (req, res) => json(res, 404, { error: "not found" }));
   const viaHub = await capturedAsync(() => requestRestart({ label: "implementor · a fix", commit: "abc1234" }));
-  check("a gate that 404s falls back to the hub", viaHub.value.via === "hub" && hubCalls === 1);
+  check("a coordinator route that 404s falls back to the hub", viaHub.value.via === "hub" && hubCalls === 1);
   check("...and names the one-time bootstrap rather than failing silently", /script-hub once/.test(viaHub.output));
-  await close(gate);
+  await close(coordinator);
 
   // A server that is DOWN has nobody to interrupt, and must still be deployable.
   const down = await capturedAsync(() => requestRestart({ label: "implementor · a fix", commit: "abc1234" }));
-  check("an unreachable gate falls back to the hub", down.value.via === "hub" && hubCalls === 2);
+  check("an unreachable coordinator falls back to the hub", down.value.via === "hub" && hubCalls === 2);
   check("...and the hub's own no-op detection still applies", !restartLookedLikeANoop(down.value.reply));
   await close(hub);
 
-  console.log("deploy: a held restart has to READ as finished work");
+  console.log("deploy: status reads the coordinator route with a rolling-upgrade fallback");
+  coordinator = await serve(COORDINATOR_PORT, (req, res) =>
+    json(res, req.url === "/api/deploy/status" ? 200 : 404, { route: "current" }),
+  );
+  check("current coordinator status route wins", (await coordinatorStatus())?.route === "current");
+  await close(coordinator);
+  coordinator = await serve(COORDINATOR_PORT, (req, res) =>
+    json(res, req.url === "/api/deploy/gate" ? 200 : 404, { route: "legacy" }),
+  );
+  check("the removed gate route is read only as an upgrade fallback", (await coordinatorStatus())?.route === "legacy");
+  await close(coordinator);
+
+  console.log("deploy: a drain-waiting restart has to READ as finished work");
   {
     // The reflex on "not restarted" is to go restart it by hand through the hub — which puts the
     // interruption straight back. The output has to leave no room for that reading.
-    const out = capture(() => printHeld(HELD));
-    check("it says HELD, not failed", /restart HELD/.test(out) && !/✗/.test(out));
-    check("it names when the build goes live", out.includes("14:20") && out.includes("48m"));
-    check("it says the orchestrator bounces itself", /bounces ITSELF/.test(out));
-    check("it says how many builds ride the one restart", /2 staged build\(s\)/.test(out));
+    const out = capture(() => printWaiting(WAITING));
+    check("it says WAITING, not failed", /restart WAITING/.test(out) && !/✗/.test(out));
+    check("it says active agents finish first", /current agent work finishes/.test(out));
+    check("it says fresh starts pause", /fresh agent starts pause/.test(out));
+    check("it says how many builds ride the restart", /2 staged build\(s\)/.test(out));
     check("it forbids the by-hand restart explicitly", /Do NOT restart through the hub/.test(out));
     check("it points at --verify for confirmation", /--verify/.test(out));
   }

@@ -426,11 +426,15 @@ function finalResponse(reply: string, results: SupervisorChatActionResult[]): st
 
 export class SupervisorChat {
   private tail: Promise<void> = Promise.resolve();
+  /** Accepted owner turns, including those serialized behind the current one. A pending turn is work
+   *  the process owes and therefore must settle before a planned restart. */
+  private pendingCount = 0;
 
   constructor(
     private readonly host: SupervisorChatHost,
     private readonly judge: Judge,
     private readonly onChange: () => void,
+    private readonly canStart: () => boolean = () => true,
   ) {
     const recovered = this.host.db.failPendingSupervisorChatTurns();
     if (recovered) this.host.hub.log("warn", `Supervisor chat marked ${recovered} interrupted request(s) failed after restart.`);
@@ -452,20 +456,38 @@ export class SupervisorChat {
     }
     const targets = ids.map((id) => targetSnapshot(this.host.db.getThread(id), id));
     const turn = this.host.db.createSupervisorChatTurn({ id: turnId, content: text, targets });
+    if (!this.canStart()) {
+      const rejected = this.host.db.updateSupervisorChatTurn(turn.id, {
+        status: "failed",
+        response: "GGO is waiting for its active agents to finish before a planned restart. This message is saved, but no Supervisor agent or task action was started; resend it after GGO reloads.",
+      }) ?? turn;
+      this.onChange();
+      return rejected;
+    }
+    this.pendingCount++;
     this.onChange();
 
     const run = this.tail.then(() => this.process(turn.id));
-    this.tail = run.catch((error) => {
-      const current = this.host.db.getSupervisorChatTurn(turn.id);
-      if (current?.status === "pending") {
-        this.host.db.updateSupervisorChatTurn(turn.id, {
-          status: "failed",
-          response: `The supervisor could not finish this request: ${clip(String(error), 500)}`,
-        });
+    this.tail = run
+      .catch((error) => {
+        const current = this.host.db.getSupervisorChatTurn(turn.id);
+        if (current?.status === "pending") {
+          this.host.db.updateSupervisorChatTurn(turn.id, {
+            status: "failed",
+            response: `The supervisor could not finish this request: ${clip(String(error), 500)}`,
+          });
+          this.onChange();
+        }
+      })
+      .finally(() => {
+        this.pendingCount = Math.max(0, this.pendingCount - 1);
         this.onChange();
-      }
-    });
+      });
     return turn;
+  }
+
+  activeWorkCount(): number {
+    return this.pendingCount;
   }
 
   snapshot(limit = CHAT_SNAPSHOT_TURNS): SupervisorChatTurn[] {

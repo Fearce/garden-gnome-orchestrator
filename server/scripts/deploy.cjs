@@ -17,15 +17,10 @@
 // That predicate is `server/src` + `tsconfig.json`, deliberately the same one `stamp-build.cjs` records
 // as `dirty`, so the stamp and this decision can never disagree.
 //
-// You are usually a child process of :4317, so the restart KILLS YOU. That is the designed flow (the
-// rebooted server auto-resumes in-flight tasks): everything worth reading is printed BEFORE the restart
-// is issued, and the resumed session finishes with `-- --verify`.
-//
-// The restart is REQUESTED from the running orchestrator's deploy gate, not issued to the script-hub
-// directly. While the owner has more than one task running, the gate collapses agent restarts to one an
-// hour and fires the held one itself — so `dist` still ships immediately, and several tasks each landing
-// a patch cost the owner one interruption instead of one per patch. A held deploy prints "restart HELD"
-// and exits 0: it is finished work, not a failure, and `--verify` says the same afterwards.
+// You are usually a child process of :4317, so an immediate restart kills this shell. The normal path is
+// drain-safe: GGO lets every current task/Co-work pipeline finish and pauses fresh starts before it
+// bounces. Several staged builds ride that restart. A waiting deploy exits 0 because the coordinator
+// owns the remaining operation durably.
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -205,15 +200,15 @@ async function restartViaHub() {
 }
 
 /**
- * Ask the running orchestrator's deploy gate to bounce, rather than calling the script-hub directly.
+ * Ask the running orchestrator's restart coordinator to bounce, rather than calling the hub directly.
  *
- * The gate is what keeps several tasks — each finishing its own patch — from restarting the owner's
- * console every few minutes: while more than one task is running it collapses agent restarts to one an
- * hour and fires the held one itself. It never refuses, so the build always lands; only the timing moves.
+ * The coordinator never interrupts active agents. It drains the current cohort, pauses fresh starts,
+ * then fires the restart itself. A staged build is never refused; only a failed hub/supervisor call can
+ * add a retry delay.
  *
  * Falls back to the hub only when the server is DOWN (there is nobody to interrupt) or a running build
- * is OLDER than this feature and returns 404 (the one-time bootstrap). A live gate timeout/error is a
- * failure, never permission to route around a limit whose whole contract is that it is hard.
+ * is OLDER than this feature and returns 404 (the one-time bootstrap). A live coordinator timeout/error
+ * is a failure, never permission to route around the active-agent drain.
  */
 async function requestRestart(payload) {
   let response;
@@ -226,38 +221,42 @@ async function requestRestart(payload) {
     });
   } catch (e) {
     // Connection refused means the server is down: there is nobody to interrupt and the hub is the
-    // recovery path. A timeout while a listener still exists is different — bypassing it would turn a
-    // busy event loop into an ungated restart, violating the hard limit this route exists to enforce.
+    // recovery path. A timeout while a listener still exists is different — bypassing coordination could
+    // tree-kill active agents, which is exactly what this route prevents.
     const pid = listenerPid(PORT);
     if (pid != null) {
-      throw new Error(`${BASE} did not answer its deploy gate while pid ${pid} is still listening; refusing to bypass the one-restart-per-hour limit (${String(e)})`);
+      throw new Error(`${BASE} did not answer its restart coordinator while pid ${pid} is still listening; refusing to bypass the active-agent drain (${String(e)})`);
     }
     warn(`${BASE} has no listener — restarting through the script-hub recovery path`);
     return { via: "hub", reply: await restartViaHub() };
   }
   if (response.ok) {
-    const gate = await response.json();
-    if (!gate || (gate.outcome !== "restarting" && gate.outcome !== "deferred")) {
-      throw new Error(`the deploy gate returned an invalid response; refusing to bypass the one-restart-per-hour limit`);
+    const coordinator = await response.json();
+    if (!coordinator || (coordinator.outcome !== "restarting" && coordinator.outcome !== "deferred")) {
+      throw new Error(`the restart coordinator returned an invalid response; refusing to bypass the active-agent drain`);
     }
-    return { via: "gate", gate };
+    return { via: "coordinator", coordinator };
   }
-  // The only live-server bypass is bootstrap: a build older than the gate has no route to enforce it.
+  // The only live-server bypass is bootstrap: a build older than the coordinator has no route to it.
   // Authentication failures and server errors prove a listener is present, so routing around them would
-  // make the supposedly hard limit best-effort precisely when the server is unhealthy or misconfigured.
+  // make the no-interruption guarantee best-effort precisely when the server is unhealthy.
   if (response.status !== 404) {
-    throw new Error(`the deploy gate answered ${response.status}; refusing to bypass the one-restart-per-hour limit`);
+    throw new Error(`the restart coordinator answered ${response.status}; refusing to bypass the active-agent drain`);
   }
-  warn(`the running server predates the deploy gate — using the script-hub once to install it`);
+  warn(`the running server predates restart coordination — using the script-hub once to install it`);
   return { via: "hub", reply: await restartViaHub() };
 }
 
-/** What the gate is currently holding, if anything. Null whenever it cannot be read — an unreachable
- *  gate must never be reported as "your deploy is safely staged". */
-async function gateStatus() {
+/** What the coordinator is holding, if anything. Null when it cannot be read; unreachable coordination
+ *  must never be reported as "your deploy is safely staged". */
+async function coordinatorStatus() {
   try {
-    const r = await fetch(`${BASE}/api/deploy/gate`, { signal: AbortSignal.timeout(8000) });
-    return r.ok ? await r.json() : null;
+    const current = await fetch(`${BASE}/api/deploy/status`, { signal: AbortSignal.timeout(8000) });
+    if (current.ok) return await current.json();
+    if (current.status !== 404) return null;
+    // Rolling-upgrade compatibility: the old live process only exposes this status under /gate.
+    const legacy = await fetch(`${BASE}/api/deploy/gate`, { signal: AbortSignal.timeout(8000) });
+    return legacy.ok ? await legacy.json() : null;
   } catch {
     return null;
   }
@@ -312,18 +311,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (m) => console.log(m);
 const warn = (m) => console.log(`  ⚠ ${m}`);
 
-/** The other half of `--plan`: would this deploy bounce the server now, or be held? Read-only. */
+/** The other half of `--plan`: would this deploy bounce now, or wait for active work? Read-only. */
 async function printRestartPlan() {
-  const status = await gateStatus();
+  const status = await coordinatorStatus();
   if (!status) {
-    log(`  restart     : deploy gate unreachable — the script-hub would be asked directly`);
+    log(`  restart     : coordinator unreachable — the script-hub would be asked directly`);
     return;
   }
   if (status.pending) {
-    log(`  restart     : one is ALREADY held until ${status.pendingLabel} (${status.pending.requesters.length} staged) — this build would ride it`);
+    log(`  restart     : already waiting (${status.pendingLabel}; ${status.pending.requesters.length} staged) — this build would ride it`);
     return;
   }
-  log(`  restart     : ${status.decision.allow ? "immediate" : "HELD"} — ${status.decision.reason}`);
+  log(`  restart     : ${status.decision.allow ? "immediate" : "WAITING"} — ${status.decision.reason}`);
 }
 
 function printPlan(plan, commit) {
@@ -334,8 +333,7 @@ function printPlan(plan, commit) {
   for (const p of plan.webBlockers) log(`      blocking: ${p}`);
 }
 
-/** Who is deploying, for the gate's log line and the owner's "restart held" banner. `--label "…"`, else
- *  DEPLOY_LABEL, else the gate says "an agent" — it is provenance, never a decision input. */
+/** Who is deploying, for the coordinator log and waiting banner. `--label "…"`, else DEPLOY_LABEL. */
 function deployLabel(args) {
   const i = args.indexOf("--label");
   const flag = i >= 0 ? args[i + 1] : null;
@@ -343,17 +341,23 @@ function deployLabel(args) {
 }
 
 /**
- * The restart was HELD, and that is a success: `dist` is built and the orchestrator owns the bounce.
+ * The restart is WAITING, and that is a success: `dist` is built and GGO owns the bounce.
  *
  * Said plainly and at length on purpose. The reflex on "not restarted" is to go restart it by hand
  * through the hub, which puts the interruption straight back — so the output has to leave no doubt that
  * waiting IS the finished state.
  */
-function printHeld(gate) {
-  log(`\n⏸ restart HELD — ${gate.reason}`);
-  log(`  dist is built and stamped; the orchestrator bounces ITSELF onto it at ${gate.readyAtLabel} (in ${gate.waitLabel}).`);
-  log(`  ${gate.staged} staged build(s) ride that one restart, so the owner is interrupted once — not once per patch.`);
-  log(`  ✓ nothing further to do. Do NOT restart through the hub by hand; that is the interruption this prevents.`);
+function printWaiting(coordinator) {
+  log(`\n⏸ restart WAITING — ${coordinator.reason}`);
+  if (coordinator.activeWork != null) {
+    log(`  dist is built and stamped; GGO restarts itself as soon as its current agent work finishes.`);
+    log(`  fresh agent starts pause during the drain; ${coordinator.staged} staged build(s) ride the restart.`);
+  } else {
+    // One-release compatibility: the old live server may answer while this coordinator is installed.
+    log(`  dist is built and stamped; the older server scheduled its restart for ${coordinator.readyAtLabel} (in ${coordinator.waitLabel}).`);
+    log(`  ${coordinator.staged} staged build(s) ride that restart.`);
+  }
+  log(`  ✓ nothing further to do. Do NOT restart through the hub by hand; that would kill active agents.`);
   log(`  confirm any time with:  npm run deploy --prefix server -- --verify`);
 }
 
@@ -368,7 +372,7 @@ function webNote(webChanged) {
  * Answer "is my change running?" by CONTENT, not by commit id.
  *
  * A raw SHA comparison called every docs-only, rules-only, scripts-only or test-only commit "NOT
- * running" — and this check's remedy is a prod restart that tree-kills every in-flight agent. That is
+ * running" — and this check's remedy is a prod restart. That is
  * the asymmetry health already learned (`4075fdf`): a check whose remedy is bouncing prod has to be
  * right. `liveness` is the shared predicate, so the two can no longer disagree.
  */
@@ -398,15 +402,13 @@ async function verifyOnly(commit) {
     log(`✗ live: build ${live}, HEAD is ${head8} — git cannot compare them (rebased away?), so this cannot prove your change is running.`);
     return 1;
   }
-  // Held by the deploy gate is a THIRD answer, distinct from both "running" and "not running": the
-  // build is done and the orchestrator owns the bounce, so there is nothing for the caller to do. Exit
-  // 0 — a non-zero here is read as "act", and the only action available is bypassing the gate by hand,
-  // which is exactly the interruption it exists to prevent.
+  // Waiting in the coordinator is a THIRD answer, distinct from "running" and "not running": the build
+  // is done and GGO owns the drain-safe bounce, so there is nothing for the caller to do.
   const held = await heldRestart(commit);
   if (held) {
     log(`⏸ live: build ${live}, HEAD is ${head8} — your change is BUILT and STAGED, not yet running.`);
-    log(`  the deploy gate is holding the restart until ${held.pendingLabel} — ${held.pending.requesters.length} staged build(s) ride it.`);
-    log(`  ${held.decision.allow ? "the window is open; it fires on the gate's next tick" : held.decision.reason}`);
+    log(`  the restart coordinator is waiting (${held.pendingLabel}); ${held.pending.requesters.length} staged build(s) ride it.`);
+    log(`  ${held.decision.allow ? "active work has drained; it fires on the next tick" : held.decision.reason}`);
     log(`  nothing to do: the orchestrator bounces itself onto this dist then. Do NOT restart it by hand.`);
     if (web) log(web);
     return 0;
@@ -423,7 +425,7 @@ async function verifyOnly(commit) {
  *  else's build says nothing about yours unless your code is already in the dist it will load. */
 async function heldRestart(commit) {
   if (!stagedInDist(commit)) return null;
-  const status = await gateStatus();
+  const status = await coordinatorStatus();
   return status && status.pending ? status : null;
 }
 
@@ -456,12 +458,12 @@ async function main() {
   }
 
   const oldPid = listenerPid(PORT);
-  log(`\nasking the deploy gate to restart ${HUB_ID} (this process is a child of pid ${oldPid ?? "?"} and may die here)`);
-  log(`if this session ends now, the resumed one finishes with:  npm run deploy --prefix server -- --verify`);
+  log(`\nasking GGO's restart coordinator to restart ${HUB_ID} (parent pid ${oldPid ?? "?"})`);
+  log(`active agents finish first; if this shell ends on an immediate idle restart, verify with:  npm run deploy --prefix server -- --verify`);
   const outcome = await requestRestart({ label: deployLabel(args), commit, stampedAt: stamp.at ?? null });
 
-  if (outcome.via === "gate" && outcome.gate.outcome === "deferred") {
-    printHeld(outcome.gate);
+  if (outcome.via === "coordinator" && outcome.coordinator.outcome === "deferred") {
+    printWaiting(outcome.coordinator);
     process.exit(0);
   }
   if (outcome.via === "hub" && restartLookedLikeANoop(outcome.reply)) {
@@ -479,7 +481,7 @@ async function main() {
   process.exit(0);
 }
 
-module.exports = { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, printHeld };
+module.exports = { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, coordinatorStatus, printWaiting };
 
 if (require.main === module) {
   main().catch((e) => {

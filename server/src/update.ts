@@ -1,13 +1,15 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { config } from "./config.js";
-import { restartRoute, scheduleRestartSelf } from "./selfRestart.js";
+import { restartRoute } from "./selfRestart.js";
+import type { RestartRequestResult } from "./orchestrator/restartCoordinator.js";
 
 // Self-update from git: the orchestrator periodically `git fetch`es its own checkout and reports how
 // many commits the tracked upstream is ahead, so the console can surface a quiet "update available"
 // badge. Applying is always user-initiated (a click on that badge) — never automatic: it `git pull`s,
-// rebuilds, and (when server code changed) bounces the process via the script-hub. The git working
-// dir is the repo root, one level above the server folder (config.serverRoot === <repo>/server).
+// rebuilds, and (when server code changed) asks the planned-restart coordinator to bounce the process.
+// The git working dir is the repo root, one level above server/ (config.serverRoot === <repo>/server).
 
 const REPO_ROOT = resolve(config.serverRoot, "..");
 // Don't hammer the remote: a background poll re-fetches at most this often (a forced refresh from a
@@ -37,8 +39,11 @@ export interface ApplyResult {
   ok: boolean;
   /** Which step failed, when ok is false. */
   stage?: "pull" | "install" | "build";
-  /** The server is being restarted by the hub; the client should wait for it to come back, then reload. */
+  /** The process supervisor has accepted an immediate restart; the client should wait, then reload. */
   restarting: boolean;
+  /** The build is staged; current agents finish before the restart is fired. */
+  restartDeferred: boolean;
+  restartReason?: string;
   /** Server code changed but no hub was reachable to restart it — the owner must restart manually. */
   needsManualRestart: boolean;
   serverChanged: boolean;
@@ -52,6 +57,23 @@ export interface ApplyResult {
 
 function emptyStatus(): UpdateStatus {
   return { branch: null, behind: 0, ahead: 0, localSha: null, remoteSha: null, remoteSubject: null, checkedAt: 0, error: null };
+}
+
+type PlannedRestart = (input: { label?: string; commit?: string; stampedAt?: number }) => RestartRequestResult;
+
+function stagedBuildStamp(): { commit?: string; stampedAt?: number } {
+  try {
+    const parsed = JSON.parse(readFileSync(resolve(config.serverRoot, "dist", ".build-info.json"), "utf8")) as {
+      commit?: unknown;
+      at?: unknown;
+    };
+    return {
+      ...(typeof parsed.commit === "string" ? { commit: parsed.commit } : {}),
+      ...(typeof parsed.at === "number" ? { stampedAt: parsed.at } : {}),
+    };
+  } catch {
+    return {};
+  }
 }
 
 interface GitResult {
@@ -234,10 +256,11 @@ function installTargets(changed: string[]): Array<{ label: string; cwd: string }
 }
 
 /** Pull the latest upstream, install changed package sets, rebuild, and (if server code changed) restart. User-initiated only. */
-export async function applyUpdate(): Promise<ApplyResult> {
+export async function applyUpdate(requestRestart: PlannedRestart): Promise<ApplyResult> {
   const res: ApplyResult = {
     ok: false,
     restarting: false,
+    restartDeferred: false,
     needsManualRestart: false,
     serverChanged: false,
     webChanged: false,
@@ -298,18 +321,17 @@ export async function applyUpdate(): Promise<ApplyResult> {
     res.ok = true;
     cache = await gitStatusAt(); // behind should now be 0
 
-    // Backend code changed → the running process must restart to load it. If neither the supervisor nor
-    // the hub owns this process, the web is already rebuilt, so report that the server side needs a
-    // manual restart rather than silently leaving stale backend code running.
-    //
-    // Deliberately NOT gated by the deploy gate: this restart is the owner clicking the update badge,
-    // and the gate exists to stop AGENTS interrupting them, never the other way round.
+    // Backend code changed → stage one planned restart. Owner updates use the same drain as agent
+    // deploys: the current cohort finishes and fresh work pauses, so clicking Update cannot kill an
+    // active agent. If no process owner exists, report the one unavoidable manual step instead.
     if (res.serverChanged) {
       if ((await restartRoute()) === "none") {
         res.needsManualRestart = true;
       } else {
-        res.restarting = true;
-        scheduleRestartSelf();
+        const restart = requestRestart({ label: "owner update", ...stagedBuildStamp() });
+        res.restarting = restart.outcome === "restarting";
+        res.restartDeferred = restart.outcome === "deferred";
+        res.restartReason = restart.reason;
       }
     }
     return res;

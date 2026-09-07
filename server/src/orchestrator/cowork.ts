@@ -154,6 +154,7 @@ function providerHistory(messages: CoworkMessage[]): CoworkMessage[] {
  * has no planner/QA/supervisor hooks; completing a turn always returns the session to idle. */
 export class CoworkManager {
   private readonly live = new Map<string, LiveCoworkTurn>();
+  private restartDraining: () => boolean = () => false;
 
   constructor(
     readonly db: Db,
@@ -178,6 +179,25 @@ export class CoworkManager {
 
   sessions(): CoworkSession[] {
     return this.db.listCoworkSessions();
+  }
+
+  /** Planned restarts allow live turns to finish, but admit no new turn into the draining process. */
+  attachRestartDrain(isDraining: () => boolean): void {
+    this.restartDraining = isDraining;
+  }
+
+  activeWorkCount(): number {
+    const active = new Set(this.live.keys());
+    for (const session of this.db.listCoworkSessions()) if (session.activeTurnId) active.add(session.id);
+    return active.size;
+  }
+
+  private restartDrainActive(): boolean {
+    try {
+      return this.restartDraining();
+    } catch {
+      return true;
+    }
   }
 
   history(sessionId: string): { session: CoworkSession | null; turns: CoworkTurn[]; messages: CoworkMessage[] } {
@@ -268,6 +288,13 @@ export class CoworkManager {
     if (!text) return { ok: false, error: "Write an instruction or attach a file first." };
     const session = this.db.getCoworkSession(sessionId);
     if (!session) return { ok: false, error: "Co-work session not found." };
+    if (this.restartDrainActive()) {
+      return {
+        ok: false,
+        session,
+        error: "GGO is waiting for active agents to finish before restarting. Send this turn after it comes back.",
+      };
+    }
     const attachmentError = validateCoworkAttachments(attachments);
     if (attachmentError) return { ok: false, session, error: attachmentError };
     if (!existsSync(session.workspace)) return { ok: false, session, error: `Workspace "${session.workspace}" no longer exists.` };

@@ -136,10 +136,9 @@ Gates `test:cowork`, `test:cowork-ui`, `test:cowork-health`. Traps: `.claude/rul
 ## Deploying a change — DO IT YOURSELF, don't defer
 **If you changed server code, you deploy it before handing off — by restarting the orchestrator
 yourself, in the same turn. Do NOT end a turn with "needs a restart to go live" or ask the owner
-to restart. Bouncing is FINE: keepAlive + auto-resume bring every in-flight task (including you, if
-you're a worker) back on the freshly-built code.** A worker restarting its own parent is the designed,
-supported flow — the rebooted server auto-resumes you with a note saying the restart already
-completed (so you won't loop). Un-deployed hand-offs are the recurring complaint; don't be the cause.
+to restart.** `npm run deploy --prefix server` stages the build with GGO's restart coordinator. If
+agents are active, they finish first and fresh starts pause; the server restarts as soon as the current
+cohort settles. A waiting restart is a completed deploy handoff, not permission to call the hub directly.
 
 How to restart depends on how it's running:
 
@@ -152,26 +151,27 @@ How to restart depends on how it's running:
 **Windows (script-hub production deployment):** runs as script-hub id **`claude-orchestrator`** with
 keepAlive armed. Implementor workers are **child processes of this server** (the Agent SDK spawns the
 `claude` CLI — `server/src/agents/runner.ts`), so:
-- **Server change? `npm run deploy --prefix server`** — it builds, stamps, issues the atomic hub restart
-  and verifies a NEW pid came up on HEAD. **Use it instead of building by hand**, because the right build
+- **Server change? `npm run deploy --prefix server`** — it builds, stamps, and asks the running restart
+  coordinator to bounce onto HEAD after active agents finish. On an idle server it verifies the new pid
+  immediately; during a drain it exits successfully and the server owns the pending bounce. **Use it
+  instead of building by hand**, because the right build
   depends on `git status` and gets it wrong in both directions: a plain `npm run build` compiles the DIRTY
   tree, so it ships a sibling's uncommitted, un-QA'd server code live under your deploy; the HEAD-only
   archive recipe avoids that but is ten calls and a junction that deletes `server/node_modules` if removed
   wrong. `deploy` picks per half, on what actually COMPILES in (`server/src` — a dirty lab/doc/probe does
   not count), names what it excluded, and refuses to rebuild `web/dist` from someone else's WIP.
   `-- --plan` prints the decision and touches nothing; `-- --verify` (no build, no bounce) answers "is my
-  change live?" and is what the auto-resumed session runs, since the restart kills you. Gate:
+  change live?" after the coordinated bounce. Gate:
   `test:deploy-plan`.
-- **`restart HELD` is a FINISHED deploy — never route around it.** `deploy` asks the running server
-  (`POST :4317/api/deploy/restart`), not the hub, so while **2+ tasks run** agent restarts collapse to
-  **one per hour** (`orchestrator/deployGate.ts`, gate `test:deploy-gate`). `dist` still builds at once;
-  the gate owns the bounce and fires it when the window opens (early if the board quiets), so everything
-  staged meanwhile rides that one restart. Held exits 0; `--verify` then says `⏸ … BUILT and STAGED`, also
-  0. Bouncing by hand instead IS the interruption the owner asked to stop. The owner's own update-badge
-  restart is never gated; `DEPLOY_GATE_MIN_INTERVAL_MS=0` turns it off.
+- **`restart WAITING` is a FINISHED deploy — never route around it.** `deploy` asks the running server
+  (`POST :4317/api/deploy/restart`), not the hub. `orchestrator/restartCoordinator.ts` holds every planned
+  restart while any task, Co-worker, Director, or Supervisor work is active, pauses fresh agent starts,
+  then fires immediately at zero active work. There is no hourly restart limit or elapsed-time override.
+  Owner update-badge restarts use the same drain. Waiting exits 0; `--verify` reports `BUILT and STAGED`,
+  also 0. Gate: `test:restart-drain`.
   By hand it is `POST http://127.0.0.1:3939/api/restart {"id":"claude-orchestrator"}` (atomic: runs in the
-  hub, outside this server's tree, survives the caller, re-arms keepAlive) — it **bypasses the gate**, so
-  keep it for when :4317 itself is down.
+  hub, outside this server's tree, survives the caller, re-arms keepAlive) — it **bypasses the drain and
+  can kill active agents**, so keep it for emergency recovery when :4317 itself is down.
 - **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
   runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.

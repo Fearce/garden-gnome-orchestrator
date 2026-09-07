@@ -22,7 +22,7 @@ import { CoworkManager } from "./orchestrator/cowork.js";
 import { Director } from "./orchestrator/director.js";
 import { RepoConsole } from "./orchestrator/repoConsole.js";
 import { OperatorNotes } from "./orchestrator/notes.js";
-import { DeployGate, ACTIVE_TASK_STATES, isLoopbackAddress, duration } from "./orchestrator/deployGate.js";
+import { RestartCoordinator, isLoopbackAddress } from "./orchestrator/restartCoordinator.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
 import { OnlineOffice } from "./office/onlineOffice.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
@@ -142,24 +142,20 @@ async function main(): Promise<void> {
   // task has been dispatched.
   const repos = new RepoConsole(db, config.serverRoot);
   const ide = new IdeService(db, dirname(config.serverRoot));
-  // How often an AGENT may bounce this server. Deploying tree-kills the console and every live agent,
-  // and with several tasks running — each finishing its own patch — that was landing every few minutes.
-  // Standalone over (db, hub) like notes/scheduler: it reads the board through one count and owns the
-  // restart itself, so a deploy held now still goes live without the agent waiting around for it.
-  const deployGate = new DeployGate({
+  // A process bounce tree-kills every CLI child. The restart coordinator therefore makes all planned
+  // deploy/update restarts wait for the CURRENT task, Co-work, Director, and Supervisor cohort to
+  // settle, while its admission latch keeps fresh work out. There is no hourly escape hatch.
+  const restartCoordinator = new RestartCoordinator({
     db,
     hub,
-    activeTasks: () => db.countThreadsInStates(ACTIVE_TASK_STATES),
+    activeWork: () => manager.activeWorkCount() + cowork.activeWorkCount() + director.activeWorkCount(),
     liveBuild: () => buildInfo(),
-    window: { minIntervalMs: config.deployGate.minIntervalMs, minActiveTasks: config.deployGate.minActiveTasks },
-    pollMs: config.deployGate.pollMs,
+    onDrainReleased: () => manager.restartDrainReleased(),
   });
-  hub.log(
-    "info",
-    config.deployGate.minIntervalMs > 0
-      ? `deploy gate: agents may bounce this server once per ${duration(config.deployGate.minIntervalMs)} while ${config.deployGate.minActiveTasks}+ tasks are running`
-      : `deploy gate: off — every agent deploy restarts immediately (DEPLOY_GATE_MIN_INTERVAL_MS=0)`,
-  );
+  manager.attachRestartDrain(() => restartCoordinator.isDraining(), () => restartCoordinator.workChanged());
+  cowork.attachRestartDrain(() => restartCoordinator.isDraining());
+  director.attachRestartDrain(() => restartCoordinator.isDraining(), () => restartCoordinator.workChanged());
+  hub.log("info", "restart coordinator: planned restarts wait for active task, Co-worker, Director, and Supervisor work to finish");
   // The Online Office: this instance's link to the shared relay, where agents on OTHER machines working
   // the same repository show up as coworkers. Standalone over (db, hub) + three callbacks into the
   // manager — off entirely until the operator joins one in Settings.
@@ -183,10 +179,12 @@ async function main(): Promise<void> {
    */
   const startBackgroundServices = (): void => {
     const starters: Array<() => void> = [
+      // First: a durable pending restart must either claim the idle process or be cleared as already
+      // deployed before the constructor's delayed auto-resumes/new queue work become eligible.
+      () => restartCoordinator.start(),
       () => onlineOffice.start(),
       () => accounts.start(),
       () => scheduler.start(),
-      () => deployGate.start(),
       () => manager.startModelCatalog(),
       () => freeProviders.start(),
       () => startUpdatePoll(),
@@ -266,7 +264,7 @@ async function main(): Promise<void> {
     // The current built-bundle hash, so an open client can detect a deploy and reload itself.
     app.get("/api/version", async (_req, reply) => {
       reply.header("cache-control", "no-store");
-      return { web: webBundleVersion() };
+      return { web: webBundleVersion(), restartDraining: restartCoordinator.isDraining() };
     });
 
     // How far the checkout is behind its git upstream — drives the quiet top-bar "update available"
@@ -299,33 +297,37 @@ async function main(): Promise<void> {
     // shell commands against this server's own checkout, so it must never be reachable unauthenticated.
     app.post("/api/update/apply", async (req, reply) => {
       if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
-      const result = await applyUpdate();
+      const result = await applyUpdate((input) => restartCoordinator.request(input));
       if (!result.ok) return reply.code(409).send(result);
       return result;
     });
 
-    // ---- the deploy gate: an agent asking to bounce this server onto the dist it just built ----
-    // `npm run deploy` posts here instead of calling the script-hub directly, so several tasks each
-    // shipping their own patch collapse into ONE restart while the owner is multitasking. Never a
-    // refusal: the gate either bounces now or takes the restart over and fires it when the window opens.
+    // ---- planned restart coordination (legacy /api/deploy/* path kept for script compatibility) ----
+    // `npm run deploy` posts here instead of calling the script-hub directly. The coordinator owns the
+    // bounce and waits for all current agent work to settle; fresh work is held out by its admission lock.
     //
     // Loopback-or-authed rather than cookie-only: the caller is a local child process with no session,
     // and any local process could already POST the script-hub's own restart — so this is a coordination
     // point, not a privilege boundary. What it must exclude is the LAN, which this console is on.
-    const deployGateReachable = (req: { ip: string; headers: { cookie?: string } }): boolean =>
+    const restartCoordinatorReachable = (req: { ip: string; headers: { cookie?: string } }): boolean =>
       isLoopbackAddress(req.ip) || isAuthed(req.headers.cookie);
 
     app.post<{ Body: { label?: string; commit?: string; stampedAt?: number } }>("/api/deploy/restart", async (req, reply) => {
-      if (!deployGateReachable(req)) return reply.code(401).send({ error: "unauthorized" });
-      return deployGate.request(req.body ?? {});
+      if (!restartCoordinatorReachable(req)) return reply.code(401).send({ error: "unauthorized" });
+      return restartCoordinator.request(req.body ?? {});
     });
 
-    // What the gate would do right now — read by `deploy -- --verify`, so a deferred deploy reads as
-    // "staged, live at 14:20" instead of the alarming "your change is NOT running".
-    app.get("/api/deploy/gate", async (req, reply) => {
-      if (!deployGateReachable(req)) return reply.code(401).send({ error: "unauthorized" });
+    // Read by `deploy -- --verify`, so a drain-waiting build reads as safely staged instead of failed.
+    app.get("/api/deploy/status", async (req, reply) => {
+      if (!restartCoordinatorReachable(req)) return reply.code(401).send({ error: "unauthorized" });
       reply.header("cache-control", "no-store");
-      return deployGate.status();
+      return restartCoordinator.status();
+    });
+    // One-release alias for deploy scripts talking to a server from the removed rate-limit era.
+    app.get("/api/deploy/gate", async (req, reply) => {
+      if (!restartCoordinatorReachable(req)) return reply.code(401).send({ error: "unauthorized" });
+      reply.header("cache-control", "no-store");
+      return restartCoordinator.status();
     });
 
     // ---- voice-gateway bridge: the composer's mic toggle → the local voice-gateway (:3960) ----

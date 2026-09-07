@@ -382,6 +382,8 @@ export class DirectorSupervisor {
     resolve: (value: SupervisorJudgement | null) => void;
   }[] = [];
   private judgementRunning = false;
+  private restartDraining: () => boolean = () => false;
+  private restartWorkChanged: () => void = () => {};
 
   constructor(
     private readonly host: SupervisorHost,
@@ -395,13 +397,38 @@ export class DirectorSupervisor {
     this.chat = new SupervisorChat(
       host,
       (prompt, schema) => this.requestJudgement(prompt, schema, true, () => true),
-      () => this.broadcast(),
+      () => {
+        this.broadcast();
+        this.restartWorkChanged();
+      },
+      () => !this.restartDrainActive(),
     );
     this.host.hub.subscribe((e) => {
       if (!this.enabled) return;
       if (e.type === "thread.upsert") this.onThreadUpsert(e.thread);
       else if (e.type === "thread.removed") this.stateCache.delete(e.threadId);
     });
+  }
+
+  attachRestartDrain(isDraining: () => boolean, workChanged: () => void): void {
+    this.restartDraining = isDraining;
+    this.restartWorkChanged = workChanged;
+  }
+
+  /** Queue ownership matters as much as a currently-spawned judge: every accepted item must either
+   *  finish or be synchronously refused before the process can safely bounce. */
+  activeWorkCount(): number {
+    return this.running || this.judgementRunning || this.queue.length > 0 || this.drainPromise !== undefined || this.chat.activeWorkCount() > 0
+      ? 1
+      : 0;
+  }
+
+  private restartDrainActive(): boolean {
+    try {
+      return this.restartDraining();
+    } catch {
+      return true;
+    }
   }
 
   setEnabled(on: boolean): void {
@@ -444,6 +471,10 @@ export class DirectorSupervisor {
 
   private async runNowInternal(manualOverride: boolean): Promise<void> {
     if (!this.enabled) return;
+    if (this.restartDrainActive()) {
+      if (manualOverride) this.host.hub.log("info", "Supervisor Run now skipped because GGO has a planned restart waiting.");
+      return;
+    }
     if (!manualOverride) {
       for (const task of this.host.db.listThreads()) {
         if (ACTIVE_STATES.has(task.state) || PARKED_STATES.has(task.state)) this.enqueue(task.id, "manual");
@@ -547,6 +578,7 @@ export class DirectorSupervisor {
       }
     } finally {
       this.judgementRunning = false;
+      this.restartWorkChanged();
       // A request can land after the loop's empty observation but before this finally releases the
       // latch. Start a fresh drain for that edge instead of leaving it pending indefinitely.
       if (this.judgementQueue.length) void this.drainJudgements();
@@ -566,6 +598,9 @@ export class DirectorSupervisor {
   }
 
   private enqueue(threadId: string, trigger: SupervisorTrigger): void {
+    // Existing accepted Supervisor work is counted and allowed to settle. State changes after the drain
+    // begins must not grow a new unattended queue underneath the pending restart.
+    if (this.restartDrainActive()) return;
     // A queued unattended pass must not swallow an explicit operator pass. Concurrent manual clicks are
     // coalesced by `manualSweepPromise` before reaching this queue.
     const key = `${threadId}:${trigger === "manual" ? "manual" : trigger === "state_change" ? "state_change" : "sweep"}`;
@@ -590,6 +625,7 @@ export class DirectorSupervisor {
       if (this.drainPromise !== completed) return;
       this.drainPromise = undefined;
       this.broadcast();
+      this.restartWorkChanged();
       // A new item can only arrive after the loop last observed an empty queue. Start a fresh pass for
       // it rather than leaving an edge-of-turn event stranded until the next sweep.
       if (this.enabled && this.queue.length) void this.drain();
@@ -612,6 +648,7 @@ export class DirectorSupervisor {
         if (item.trigger === "manual") this.markManualCandidateExamined();
       }
       this.running = false;
+      this.restartWorkChanged();
     }
   }
 

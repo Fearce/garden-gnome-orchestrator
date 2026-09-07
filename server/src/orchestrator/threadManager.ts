@@ -872,6 +872,11 @@ export class ThreadManager implements OrchestratorApi {
   // 'queued' state and starts when a slot frees. Resumes of in-flight work aren't gated — they
   // continue existing work — but they still count toward the active total.
   private readonly activePipelines = new Set<string>();
+  // Planned restarts drain the cohort already in `activePipelines` instead of killing it. Fresh task,
+  // resume, capacity-recovery, and auto-review entry points consult this shared admission latch; work
+  // already holding a slot may continue through its normal pipeline boundary. Inject/steer remains live.
+  private restartDraining: () => boolean = () => false;
+  private restartWorkChanged: () => void = () => {};
   // Co-work owns a separate lifecycle but shares repositories with task agents. This callback is
   // attached after CoworkManager is constructed; queue/resume gates consult it so neither surface can
   // start a writer underneath the other.
@@ -1336,6 +1341,9 @@ export class ThreadManager implements OrchestratorApi {
     // which is a crashed process rather than a skipped sweep. A closed DB means there is nothing left to
     // resume anyway.
     if (!this.db.raw.open) return;
+    // A capacity wake is fresh work. Let the staged build restart first; the new process re-arms the
+    // durable cap marker and launches it with current code instead of extending the drain indefinitely.
+    if (this.restartDrainActive()) return;
     // Headroom on ANY backend can unpark work. Claude free → resume anything. CLI free (Codex/Grok
     // enabled+authed+under caps) → also resume QA-phase parks: runRole fails planner/researcher/QA over
     // to a ready CLI when Claude is still capped (see the Claude→CLI handoff in runRole). Older parks
@@ -2932,6 +2940,9 @@ export class ThreadManager implements OrchestratorApi {
    *  reports what it cost so the supervisor can keep a visible, bounded budget. Kept as its own method
    *  (rather than widening askDirectorJson's return shape) so every other caller's contract is untouched. */
   async supervisorJudge(prompt: string, schema: JsonSchemaLike): Promise<SupervisorJudgement | null> {
+    // New unattended/chat judgements are refused at their admission points. This second boundary closes
+    // the race where a queued item reaches the model at the same instant a drain is committed.
+    if (this.restartDrainActive()) return null;
     const target = this.preferredDirectorTarget();
     if (!target) return null;
     const conciseCommunication = this.settingBool("setting_concise_agent_communication", true);
@@ -4940,6 +4951,39 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.coworkWorkspaceBusy = isBusy;
   }
 
+  /** Attach the planned-restart admission lock after the standalone coordinator is constructed. */
+  attachRestartDrain(isDraining: () => boolean, workChanged: () => void): void {
+    this.restartDraining = isDraining;
+    this.restartWorkChanged = workChanged;
+    this.supervisor.attachRestartDrain(isDraining, workChanged);
+  }
+
+  /** Top-level work that must reach a normal completion boundary before this process may restart. */
+  activeWorkCount(): number {
+    const threadIds = new Set(this.activePipelines);
+    for (const [threadId, runs] of this.activeRuns) if (runs.size) threadIds.add(threadId);
+    // The durable run ledger is a conservative backstop for any in-memory bookkeeping edge. A planned
+    // bounce must never decide "idle" while this process still claims a child agent is running.
+    for (const run of this.db.listActiveRuns()) threadIds.add(run.threadId);
+    for (const threadId of this.resuming) threadIds.add(threadId);
+    for (const threadId of this.reviewing) threadIds.add(threadId);
+    return threadIds.size + this.supervisor.activeWorkCount();
+  }
+
+  /** A pending restart proved moot (another bounce already loaded the build); release queued work. */
+  restartDrainReleased(): void {
+    this.recoverReleasedCapacity();
+  }
+
+  private restartDrainActive(): boolean {
+    try {
+      return this.restartDraining();
+    } catch {
+      // A broken coordination read must not become permission to launch into a possible process kill.
+      return true;
+    }
+  }
+
   /** Co-work asks before claiming a workspace. Query both the authoritative active slot set and the
    * visible task states because reviewer/fix lanes can own a live process outside an ordinary dispatch. */
   coworkTaskConflict(workspace: string): string | null {
@@ -4974,14 +5018,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.startPipeline(threadId);
       return;
     }
+    const restartFull = this.restartDrainActive();
     const globalFull = this.activePipelines.size >= this.settings().maxConcurrent;
     const coworkFull = !!thread && this.coworkWorkspaceBusy?.(thread.workspace) === true;
     const repoFull = !!thread && this.repoAtCapacity(thread.workspace);
-    if (globalFull || repoFull) {
+    if (restartFull || globalFull || repoFull) {
       if (!this.dispatchQueue.includes(threadId)) this.dispatchQueue.push(threadId);
       this.setState(threadId, "queued");
       const reason =
-        coworkFull && !globalFull
+        restartFull
+          ? "GGO is waiting for its current agents to finish before restarting"
+          : coworkFull && !globalFull
           ? "a Co-worker turn is active in this repo"
           : repoFull && !globalFull
           ? `${this.activeCountForRepo(thread!.workspace)} task(s) already running in this repo (per-repo cap ${this.repoConcurrencyLimit()})`
@@ -5039,6 +5086,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   /** Start queued tasks while slots are free (a pipeline settled, or maxConcurrent was raised). Skips
    *  entries no longer in 'queued' — cancelled/dismissed while waiting. */
   private pumpQueue(): void {
+    if (this.restartDrainActive()) return;
     const cap = this.settings().maxConcurrent;
     // Scan the FIFO queue rather than only peeling the head: a task blocked by its repo's per-repo cap
     // must NOT block a queued task for a DIFFERENT (free) repo behind it. startPipeline adds to
@@ -5065,6 +5113,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * immediately after any slot release so already-viable fallback capacity is not stranded until the
    * periodic supervisor sweep. FIFO queued work gets first claim; the cap supervisor fills what remains. */
   private recoverReleasedCapacity(): void {
+    this.restartWorkChanged();
     this.pumpQueue();
     if (this.capResumeQueued) return;
     this.capResumeQueued = true;
@@ -9941,6 +9990,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  a ≤8-word Haiku summary), then broadcast the rename so the lane updates live. Best-effort: any
    *  failure is swallowed and the title simply stays as-is — this must never disturb the inject path. */
   private async retitleFromInjection(threadId: string, message: string): Promise<void> {
+    if (this.restartDrainActive()) return;
     await this.applyRetitle(threadId, await titleFromInjection(message, this.accounts.auxToken()).catch(() => null), "injection");
   }
 
@@ -9948,6 +9998,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  in place of the truncated first line it was dispatched with. Best-effort and fired after dispatch,
    *  so it never blocks the pipeline; gated by the skipDirectorRetitle setting at the call site. */
   async retitleFromBrief(threadId: string, brief: string): Promise<void> {
+    if (this.restartDrainActive()) return;
     await this.applyRetitle(threadId, await titleFromBrief(brief, this.accounts.auxToken()).catch(() => null), "brief");
   }
 
@@ -10138,6 +10189,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (thread.state === "queued") {
       if (message?.trim()) this.bufferDirectorNote(threadId, message);
       return { ok: true, state: "queued" };
+    }
+    // Existing pipelines may be resumed/steered through their own boundary. A parked task would create
+    // a fresh pipeline, so leave it untouched until the staged restart has landed.
+    if (this.restartDrainActive() && !this.activePipelines.has(threadId) && !this.hasActiveRun(threadId)) {
+      return {
+        ok: false,
+        state: thread.state,
+        error: "GGO is waiting for active agents to finish before restarting. Resume this task after it comes back.",
+      };
     }
     // QA-stage gate — mirror injectThread's, routing included: during the QA stage the implementor is
     // fully stopped and the QA agent owns the slot, so a resume here must NEVER wake or spawn an
@@ -10606,6 +10666,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     if (thread.state !== "review") {
       return { ok: false, error: `Only a task parked in review can be auto-reviewed — this one is ${thread.state}.` };
+    }
+    if (this.restartDrainActive()) {
+      return {
+        ok: false,
+        state: thread.state,
+        error: "GGO is waiting for active agents to finish before restarting. Start Auto-review after it comes back.",
+      };
     }
     if (this.deadlineParked(thread)) {
       return { ok: false, error: "This task was stopped mid-work by its hard deadline. Extend or clear it and Resume the saved session; unfinished work cannot be auto-accepted." };
