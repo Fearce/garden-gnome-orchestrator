@@ -64,11 +64,11 @@ const CODEX_PRE_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
 const CODEX_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
 /** Cold-start fallback before the CLI catalog is available. Sol, Terra, and Daybreak advertise Ultra;
- * the rest of the GPT-5.6 family reaches Max, while earlier general models stop at Extra High. */
+ * the rest of the GPT-5.6 and GPT-6 families reach Max, while earlier general models stop at Extra High. */
 export function codexEffortsForModel(model: string): readonly CodexEffort[] {
   const id = model.trim();
   if (/^(?:gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
-  if (/^(?:gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
+  if (/^(?:gpt-6|gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
   return CODEX_PRE_MAX_EFFORTS;
 }
 

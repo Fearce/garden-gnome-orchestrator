@@ -87,7 +87,7 @@ export async function fetchClaudeModels(token: string): Promise<string[]> {
 
 // OpenAI's /v1/models is polluted with embeddings/tts/whisper/image/moderation entries — keep only the
 // families a Codex implementor could actually run, so the dropdown stays about coding models.
-const CODEX_MODEL_INCLUDE = /^(gpt-5|gpt-4\.|codex|o[0-9])/i;
+const CODEX_MODEL_INCLUDE = /^(gpt-6|gpt-5|gpt-4\.|codex|o[0-9])/i;
 const CODEX_MODEL_EXCLUDE = /(audio|realtime|transcribe|tts|image|embedding|moderation|search|vision|instruct)/i;
 
 /** List the OpenAI models the key can access, filtered to plausible Codex coding models. */

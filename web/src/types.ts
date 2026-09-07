@@ -33,7 +33,7 @@ const CODEX_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max
 export function codexEffortsForModel(model: string): readonly CodexEffort[] {
   const id = model.trim();
   if (/^(?:gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
-  if (/^(?:gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
+  if (/^(?:gpt-6|gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
   return CODEX_PRE_MAX_EFFORTS;
 }
 export const GROK_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
