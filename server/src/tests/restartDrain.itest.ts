@@ -160,19 +160,26 @@ async function main(): Promise<void> {
   console.log("\nrecovery: a refused restart restores the drain instead of losing the build");
   db.kvSet(PENDING_KEY, "");
   let attempts = 0;
+  let refusalReleases = 0;
   const refusing = new RestartCoordinator({
     db,
     hub,
     activeWork: () => 0,
     pollMs: 25,
     settleMs: 0,
+    onDrainReleased: () => { refusalReleases++; },
     restart: async () => {
       attempts++;
-      return attempts === 1
+      return attempts <= 3
         ? { route: "hub", ok: false, detail: "listener elevated" }
         : { route: "hub", ok: true, detail: "accepted" };
     },
   });
+  const retryNow = (): void => {
+    const pending = JSON.parse(db.kvGet(PENDING_KEY)!) as Record<string, unknown>;
+    db.kvSet(PENDING_KEY, JSON.stringify({ ...pending, retryAt: Date.now() - 1 }));
+    refusing.workChanged();
+  };
   refusing.request({ label: "task C", commit: "eeeeeee", stampedAt: stamp + 1 });
   check("the first attempt ran", await waitFor(() => attempts === 1));
   check("its staged build and failure count are durable", await waitFor(() => {
@@ -181,11 +188,15 @@ async function main(): Promise<void> {
     const pending = JSON.parse(raw) as { failures?: number; requesters?: unknown[] };
     return pending.failures === 1 && pending.requesters?.length === 1;
   }));
-  check("fresh work remains blocked during retry backoff", refusing.isDraining());
-  const pending = JSON.parse(db.kvGet(PENDING_KEY)!) as Record<string, unknown>;
-  db.kvSet(PENDING_KEY, JSON.stringify({ ...pending, retryAt: Date.now() - 1 }));
-  refusing.workChanged();
-  check("the retry can later complete", await waitFor(() => attempts === 2));
+  check("fresh work remains blocked during early retry backoff", refusing.isDraining() && refusalReleases === 0);
+  retryNow();
+  check("the second refused attempt ran", await waitFor(() => attempts === 2));
+  check("fresh work still remains blocked before the alert threshold", refusing.isDraining() && refusalReleases === 0);
+  retryNow();
+  check("the third refused attempt ran", await waitFor(() => attempts === 3));
+  check("fresh work is released during repeated-refusal backoff", !refusing.isDraining() && !refusing.status().draining && refusalReleases === 1);
+  retryNow();
+  check("a due retry closes admission and can later complete", refusing.isDraining() && await waitFor(() => attempts === 4));
   refusing.stop();
 
   console.log("\nadmission: fresh task and Co-worker starts pause, existing cohorts remain countable");

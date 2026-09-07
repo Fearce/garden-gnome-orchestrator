@@ -106,7 +106,8 @@ export interface RestartCoordinatorDeps {
   restart?: () => Promise<RestartAttempt>;
   /** The build loaded by this process, used to discard a pending restart another bounce already paid. */
   liveBuild?: () => { at: number | null } | null;
-  /** Called only when a pending drain is cancelled as moot, so queued work may start on this process. */
+  /** Called whenever the admission lock opens — a moot drain, or a restart mechanism that keeps
+   *  refusing — so queued work may start on this process. */
   onDrainReleased?: () => void;
 }
 
@@ -116,6 +117,19 @@ const LEGACY_PENDING_KEY = "deploy_gate_pending";
 const MAX_REQUESTERS = 20;
 const RETRY_BASE_MS = 5 * 60_000;
 const RETRY_MAX_MS = 30 * 60_000;
+/**
+ * Consecutive refused restarts after which the coordinator alerts the owner AND stops holding fresh work
+ * out *between* retry attempts.
+ *
+ * A restart mechanism that has refused this many times is broken rather than busy — an elevated :4317
+ * listener (see CLAUDE.md), a dead script-hub, no supervisor at all — and it can stay broken until a
+ * human intervenes. Holding the admission lock through that freezes the whole console: no dispatch, no
+ * resume, no Auto-review, no Director or Co-work turn, including the agent that would repair it.
+ *
+ * So past this count the lock releases during the backoff and closes again the moment the next attempt is
+ * due, which still lets the board drain for that attempt. The staged builds are kept either way, and a
+ * restart still only fires at zero active work — no agent is interrupted in any of these states.
+ */
 const FAILURES_BEFORE_ALERT = 3;
 
 export class RestartCoordinator {
@@ -154,13 +168,20 @@ export class RestartCoordinator {
       this.onDrainReleased();
       return;
     }
+    const now = Date.now();
     const active = this.countActive();
+    const decision = decideRestart({ activeWork: active, now, retryAt: pending.retryAt });
     this.hub.log(
       "info",
-      active > 0
+      !holdsAdmission(pending, now)
+        ? `restart coordinator: ${pending.requesters.length} staged build(s) retry at ${clock(pending.retryAt!)}; fresh work may start meanwhile`
+        : active > 0
         ? `restart coordinator: ${pending.requesters.length} staged build(s) waiting for ${countWork(active)} to finish`
-        : `restart coordinator: ${pending.requesters.length} staged build(s) are ready to restart`,
+        : decision.allow
+          ? `restart coordinator: ${pending.requesters.length} staged build(s) are ready to restart`
+          : `restart coordinator: ${pending.requesters.length} staged build(s) retry at ${clock(decision.retryAt!)}`,
     );
+    if (!holdsAdmission(pending, now)) this.onDrainReleased();
     this.arm();
   }
 
@@ -172,7 +193,8 @@ export class RestartCoordinator {
   isDraining(): boolean {
     if (this.firing) return true;
     try {
-      return this.pending() !== null;
+      const pending = this.pending();
+      return pending !== null && holdsAdmission(pending, Date.now());
     } catch {
       // Losing the coordination read must never become permission to launch into a possible restart.
       return true;
@@ -201,7 +223,7 @@ export class RestartCoordinator {
       decision,
       pending,
       pendingLabel: pending ? pendingStatus(decision, activeWork, now) : null,
-      draining: this.firing || pending !== null,
+      draining: this.firing || (pending !== null && holdsAdmission(pending, now)),
     };
   }
 
@@ -404,8 +426,14 @@ export class RestartCoordinator {
         type: "notice",
         level: "warn",
         title: "Restart refused",
-        message: `GGO has ${requesters.length} staged build(s) it cannot deploy: ${attempt.detail}`,
+        message: `GGO has ${requesters.length} staged build(s) it cannot deploy: ${attempt.detail}. New agent work runs again meanwhile; the restart retries on its own.`,
       });
+    }
+    if (!holdsAdmission(pending, Date.now())) {
+      // The mechanism is refusing rather than busy. Let queued work start instead of freezing the board
+      // on a bounce that is not coming; admission closes again when the next attempt is due.
+      this.hub.log("warn", `restart coordinator: ${failures} refused restarts — releasing the hold on fresh work until the next attempt`);
+      this.onDrainReleased();
     }
     this.arm();
   }
@@ -469,6 +497,12 @@ function pendingStatus(decision: RestartDecision, activeWork: number, now: numbe
     return `${clock(decision.retryAt)} (retry in ${duration(decision.retryAt - now)})`;
   }
   return "ready to restart";
+}
+
+function holdsAdmission(pending: PendingRestart, now: number): boolean {
+  if (pending.failures < FAILURES_BEFORE_ALERT) return true;
+  if (pending.retryAt == null) return true;
+  return pending.retryAt <= now;
 }
 
 function countWork(n: number): string {
