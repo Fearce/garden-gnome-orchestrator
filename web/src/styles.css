@@ -2316,6 +2316,12 @@ body.dl-resizing { user-select: none; }
 .fp-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fp-empty { padding: 14px 10px; font-size: 12.5px; }
 .fp-err { color: var(--danger); }
+.fp-filter {
+  width: 100%; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--text); font-size: 13px; font-family: inherit;
+  outline: none; transition: border-color 0.1s;
+}
+.fp-filter:focus { border-color: var(--accent); }
 
 .mono { font-family: var(--font-mono); }
 .dim { color: var(--text-dim); }

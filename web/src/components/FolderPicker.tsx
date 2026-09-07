@@ -25,6 +25,7 @@ export function FolderPicker({
   const [data, setData] = useState<LsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -49,6 +50,8 @@ export function FolderPicker({
   }, [path]);
 
   const current = data?.path ?? path;
+  const q = filter.trim().toLowerCase();
+  const dirs = q ? (data?.dirs ?? []).filter((d) => d.name.toLowerCase().includes(q)) : data?.dirs ?? [];
 
   return (
     <div className="scrim" onClick={onClose}>
@@ -58,20 +61,30 @@ export function FolderPicker({
           <div className="fp-crumb mono">{current}</div>
         </div>
         <div className="m-body">
+          <input
+            className="fp-filter"
+            placeholder={`Filter ${data?.dirs.length ?? 0} folders`}
+            value={filter}
+            autoFocus
+            onChange={(e) => setFilter(e.target.value)}
+          />
           <div className="fp-list">
-            {data?.parent !== null && data?.parent !== undefined && (
+            {!filter && data?.parent !== null && data?.parent !== undefined && (
               <button className="fp-row up" onClick={() => setPath(data.parent!)}>
                 <FolderIcon up />
                 <span className="nm">..</span>
               </button>
             )}
-            {data?.dirs.map((d) => (
-              <button key={d.path} className="fp-row" onClick={() => setPath(d.path)}>
+            {dirs.map((d) => (
+              <button key={d.path} className="fp-row" onClick={() => { setPath(d.path); setFilter(""); }}>
                 <FolderIcon />
                 <span className="nm">{d.name}</span>
               </button>
             ))}
-            {!loading && !error && data && data.dirs.length === 0 && (
+            {!loading && !error && data && dirs.length === 0 && q && (
+              <div className="fp-empty faint">No folders match "{filter}".</div>
+            )}
+            {!loading && !error && data && data.dirs.length === 0 && !q && (
               <div className="fp-empty faint">No subfolders here.</div>
             )}
             {loading && <div className="fp-empty faint">Loading…</div>}
