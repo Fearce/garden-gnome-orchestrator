@@ -176,7 +176,9 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
   runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.
 - **Web-only change?** Skip the restart — `web/dist` is static; `npm run build --prefix web` then
-  reload the browser.
+  reload the browser. That build stamps `web/dist/.build-info.json`, and it is the ONLY thing that
+  answers "is the bundle current?" — `--verify` and `health` both read it. A web note from either means
+  the BUNDLE is behind HEAD; it never refers to the server's build, so a rebuild is the whole remedy.
 - If a restart doesn't pick up server changes, a stale/orphaned process may still hold :4317 —
   check `Get-NetTCPConnection -LocalPort 4317` and kill the old PID, then restart.
 - **`/api/restart` silently no-ops when the :4317/:4319 PID is elevated** — the hub can't kill it, so

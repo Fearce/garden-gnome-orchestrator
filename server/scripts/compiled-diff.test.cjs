@@ -16,7 +16,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { diffBetween, liveness, serverRuntimeDiff, webInputDiff, SERVER_RUNTIME } = require("./compiled-diff.cjs");
+const { diffBetween, liveness, serverRuntimeDiff, webInputDiff, webDistState, readWebStamp, SERVER_RUNTIME } = require("./compiled-diff.cjs");
 
 let checks = 0;
 const check = (name, cond, detail) => {
@@ -112,6 +112,41 @@ try {
 
   console.log("\ndirection-agnostic (a dist built from a LATER commit is just as wrong):");
   check("reversing the pair still reports the change", (serverDiff(srcChanged, base) ?? []).length === 1);
+
+  // ---- web/dist currency, which is a fact about the BUNDLE's own stamp -----------------------------
+  // Answering it from the live server's build commit (what `deploy --verify` used to do) is wrong in
+  // both directions, and the false-silence direction is the expensive one: a bundle built from an
+  // older commit is invisible exactly when the server matches HEAD, which is most of the time.
+  console.log("\nweb/dist currency (its own stamp, never the server's build commit):");
+  const webState = (stamp, head) => webDistState(stamp, head, repo);
+  check("a bundle stamped at HEAD is current", webState({ commit: webOnly, dirty: false }, webOnly).state === "current");
+  check("a bundle stamped before a web change is STALE", webState({ commit: pkgOnly, dirty: false }, webOnly).state === "stale");
+  check(
+    "…and names how many sources moved, so the note can be acted on",
+    (webState({ commit: pkgOnly, dirty: false }, webOnly).changed ?? []).length === 1,
+  );
+  // The regression that prompted this, stated as the two facts that used to be conflated: the LIVE
+  // SERVER's build commit is behind on web sources (so the old proxy shouted "run npm run build
+  // --prefix web"), while the BUNDLE itself is already built from HEAD. Current, and silent, is the fix.
+  check("the old proxy's input still says the live server's commit is behind on web", (webDiff(pkgOnly, webOnly) ?? []).length === 1);
+  check("…yet a bundle stamped at that same HEAD is current, not stale", webState({ commit: webOnly, dirty: false }, webOnly).state === "current");
+  check("a server-only commit does NOT make the bundle stale", webState({ commit: base, dirty: false }, srcChanged).state === "current");
+  check("…nor does a docs/rules-only commit", webState({ commit: tsconfigChanged, dirty: false }, docsOnly).state === "current");
+  check("a bundle built from a dirty web tree is flagged, not called current", webState({ commit: webOnly, dirty: true }, webOnly).state === "dirty-build");
+
+  console.log("\n…and it must refuse to answer rather than claim current:");
+  check("no stamp at all is unknown", webState(null, webOnly).state === "unknown");
+  check("a stamp with no commit is unknown", webState({ commit: null, dirty: null }, webOnly).state === "unknown");
+  check(
+    "an uncomparable commit is unknown, never current",
+    webState({ commit: "0000000000000000000000000000000000000000", dirty: false }, webOnly).state === "unknown",
+  );
+  check("reading a repo with no built bundle yields no stamp (so: unknown)", readWebStamp(repo) === null);
+  // The stamp is written by web/scripts/stamp-web-build.cjs; readWebStamp must find it where that
+  // script puts it, or every consumer silently degrades to "unknown" forever.
+  write("web/dist/.build-info.json", JSON.stringify({ at: 1, commit: webOnly, dirty: false }));
+  const found = readWebStamp(repo);
+  check("…and finds one at web/dist/.build-info.json once built", found !== null && found.commit === webOnly);
 } finally {
   fs.rmSync(repo, { recursive: true, force: true });
 }

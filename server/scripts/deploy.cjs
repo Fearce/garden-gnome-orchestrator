@@ -25,7 +25,7 @@ const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { liveness } = require("./compiled-diff.cjs");
+const { liveness, readWebStamp, webDistState } = require("./compiled-diff.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const REPO = path.resolve(SERVER_DIR, "..");
@@ -361,11 +361,24 @@ function printWaiting(coordinator) {
   log(`  confirm any time with:  npm run deploy --prefix server -- --verify`);
 }
 
-/** A one-line "and the web half" note, since `web/dist` is static: a web-only change is live once it is
- *  REBUILT, and a restart would do nothing for it. Silence here would let a web change look deployed. */
-function webNote(webChanged) {
-  if (!webChanged || !webChanged.length) return null;
-  return `  ⚠ ${webChanged.length} web source(s) also changed — run \`npm run build --prefix web\` and reload the browser (web/dist is static; no restart)`;
+/**
+ * A one-line "and the web half" note, since `web/dist` is static: a web-only change is live once it is
+ * REBUILT, and a restart would do nothing for it. Silence here would let a web change look deployed.
+ *
+ * Answered from the BUNDLE's own stamp, never from the live server's build commit. That older proxy
+ * was wrong both ways: it repeated "run npm run build --prefix web" at a bundle that was already
+ * current (a server build staged behind a drain reads the same as a stale bundle — this cost a
+ * needless rebuild + re-verify on 2026-09-08), and it printed nothing at all on the `same-commit`
+ * path, which is exactly where a stale bundle hides.
+ */
+function webNote(commit) {
+  const state = webDistState(readWebStamp(REPO), commit, REPO);
+  if (state.state === "current") return null;
+  if (state.state === "stale") {
+    return `  ⚠ ${state.detail} — run \`npm run build --prefix web\` and reload the browser (web/dist is static; no restart)`;
+  }
+  if (state.state === "unknown") return `  ⚠ ${state.detail} — \`npm run build --prefix web\` establishes one`;
+  return `  ⚠ ${state.detail}`;
 }
 
 /**
@@ -386,10 +399,11 @@ async function verifyOnly(commit) {
   const live = build.commit ? build.commit.slice(0, 8) : "unstamped";
   const head8 = commit ? commit.slice(0, 8) : "unknown";
   const v = liveness(build.commit, commit);
-  const web = webNote(v.webChanged);
+  const web = webNote(commit);
 
   if (v.reason === "same-commit") {
     log(`✓ live: build ${live}${build.dirty ? " (dirty)" : ""}, pid ${pid ?? "?"} — matches HEAD`);
+    if (web) log(web);
     return 0;
   }
   if (v.reason === "no-runtime-change") {

@@ -656,6 +656,10 @@ async function main(): Promise<void> {
       await app.register(fastifyStatic, {
         root: config.webDist,
         prefix: "/",
+        // A dotfile in a built web root is bookkeeping, never an asset — web/dist carries the build
+        // stamp health and `deploy --verify` read. The plugin's own default is `allow`, which would
+        // publish it unauthenticated on the LAN; `ignore` falls through to the SPA shell instead.
+        dotfiles: "ignore",
         // Take full control of Cache-Control via setHeaders — with the plugin's own cacheControl on
         // (its default), it stamps `public, max-age=0` on everything and wins over setHeaders.
         cacheControl: false,

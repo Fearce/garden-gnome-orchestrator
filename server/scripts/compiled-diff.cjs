@@ -11,6 +11,7 @@
 // Pure and require-safe: no side effects on import, so a gate can hold it (`test:compiled-diff`).
 
 const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const REPO = path.resolve(__dirname, "..", "..");
@@ -69,6 +70,9 @@ function webInputDiff(a, b, cwd) {
  *   serverChanged: string[]|null, webChanged: string[]|null }}
  *   `live` is true only when the running process genuinely contains HEAD's server behaviour. It stays
  *   FALSE for "unknown": a check that cannot prove a deploy landed must not claim it did.
+ *
+ *   `webChanged` says only "HEAD moved the web half between these two commits". It is NOT an answer
+ *   about `web/dist`, which is static and carries its own build stamp — ask `webDistState` for that.
  */
 function liveness(liveCommit, headCommit, cwd) {
   if (liveCommit && headCommit && liveCommit === headCommit) {
@@ -81,4 +85,60 @@ function liveness(liveCommit, headCommit, cwd) {
   return { live: true, reason: "no-runtime-change", serverChanged: [], webChanged };
 }
 
-module.exports = { diffBetween, serverRuntimeDiff, webInputDiff, liveness, SERVER_RUNTIME, SERVER_NOT_RUNTIME, WEB_INPUT };
+/**
+ * Read `web/dist`'s build stamp (`web/scripts/stamp-web-build.cjs` writes it).
+ *
+ * @returns {{at?: number, commit: string|null, dirty: boolean|null} | null} null when the bundle was
+ *   never built, or was built by a bare `vite build` that skipped the stamp.
+ */
+function readWebStamp(cwd = REPO) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(cwd, "web", "dist", ".build-info.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is the bundle in `web/dist` current with HEAD's web sources?
+ *
+ * The counterpart to `liveness` for the half a restart cannot fix. `web/dist` is static: it goes live
+ * the moment it is REBUILT, and stays stale through any number of perfectly successful server deploys.
+ * So its currency is a fact about its own stamp, never about the running server's build commit —
+ * inferring it from the latter nagged for a rebuild that had already happened (a staged server build
+ * waiting on a drain looks identical to a stale bundle) and, worse, went silent whenever the live
+ * server matched HEAD, which is precisely when a stale bundle is easiest to ship unnoticed.
+ *
+ * @param {{commit?: string|null, dirty?: boolean|null}|null} stamp from `readWebStamp`
+ * @param {string|null} headCommit
+ * @returns {{ state: "current"|"stale"|"dirty-build"|"unknown", changed: string[]|null, detail: string }}
+ *   Never "current" without proof: an unreadable stamp or an uncomparable commit is "unknown".
+ */
+function webDistState(stamp, headCommit, cwd) {
+  if (!stamp) {
+    return { state: "unknown", changed: null, detail: "web/dist has no build stamp — never built here, or built by a bare `vite build`" };
+  }
+  if (!stamp.commit) {
+    return { state: "unknown", changed: null, detail: "the web build recorded no commit (no git at build time)" };
+  }
+  const short = String(stamp.commit).slice(0, 8);
+  const changed = webInputDiff(stamp.commit, headCommit, cwd);
+  if (changed === null) {
+    return { state: "unknown", changed: null, detail: `git cannot compare the bundle's commit ${short} to HEAD (unreachable after a rebase?)` };
+  }
+  if (changed.length) {
+    return {
+      state: "stale",
+      changed,
+      detail:
+        `web/dist was built from ${short}, and ${changed.length} web source(s) have changed in HEAD since ` +
+        `(${changed.slice(0, 3).join(", ")}${changed.length > 3 ? ", …" : ""})`,
+    };
+  }
+  if (stamp.dirty) {
+    return { state: "dirty-build", changed, detail: `web/dist matches HEAD's web sources (built from ${short}) but was built from a DIRTY tree — it may carry uncommitted code` };
+  }
+  return { state: "current", changed, detail: `web/dist was built from ${short}, whose web sources match HEAD` };
+}
+
+module.exports = { diffBetween, serverRuntimeDiff, webInputDiff, liveness, readWebStamp, webDistState, SERVER_RUNTIME, SERVER_NOT_RUNTIME, WEB_INPUT };

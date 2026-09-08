@@ -28,7 +28,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const Database = require("better-sqlite3");
 const { classifyProcessBuild } = require("./process-vs-dist.cjs");
-const { serverRuntimeDiff } = require("./compiled-diff.cjs");
+const { serverRuntimeDiff, readWebStamp, webDistState } = require("./compiled-diff.cjs");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
 const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, isDeadEndLine } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
@@ -366,6 +366,13 @@ async function main() {
       const vsHead = distVsHead();
       if (vsHead.state === "stale") warn(vsHead.detail);
       else ok(`dist vs HEAD: ${vsHead.detail}`);
+      // And the half a restart cannot fix. The 2026-07-29 incident this whole section exists for was a
+      // feature shipping its two halves separately; the check written afterwards only watched the server,
+      // so the same split in the other direction stayed invisible until the web build got its own stamp.
+      const webVsHead = webDistState(readWebStamp(), "HEAD");
+      if (webVsHead.state === "stale") {
+        warn(`${webVsHead.detail} — that committed change is NOT in the served bundle. Run \`npm run build --prefix web\` and reload; web/dist is static, so no restart ships it.`);
+      } else ok(`web/dist vs HEAD: ${webVsHead.detail}`);
     } else {
       fail(`missing ${sampleDist}`);
     }
