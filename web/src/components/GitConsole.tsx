@@ -4,6 +4,7 @@ import type { GitFile, GitFileStatus, RepoBranch, RepoRef, RepoState } from "../
 import { ago } from "../lib/format.js";
 import { FolderPicker } from "./FolderPicker.js";
 import { Diff } from "./Diff.js";
+import { ReturnToOrigin } from "./CodeContextBar.js";
 import "./gitConsole.css";
 import { ideApi, cachedIde, invalidateIde } from "./ide/api.js";
 
@@ -97,19 +98,22 @@ export function GitConsole({ onClose }: { onClose: () => void }) {
   const repos = useStore((s) => s.repos);
   const preferred = useStore((s) => s.repoPreferred);
   const pending = useStore((s) => s.repoListPending);
-  const selectedThreadId = useStore((s) => s.selectedThreadId);
   const loadRepos = useStore((s) => s.loadRepos);
   const loadRepoState = useStore((s) => s.loadRepoState);
-  const [path, setPath] = useState<string | null>(null);
+  // The repo the opener already knew (a co-work session or a Supervisor row has no task for the server
+  // to resolve one from). Read once: it is the state at open, not a live subscription.
+  const requestedRepo = useRef(useStore.getState().gitConsoleRepo);
+  const [path, setPath] = useState<string | null>(requestedRepo.current);
   const [browsing, setBrowsing] = useState(false);
   // Once the operator picks a repo themselves, nothing auto-selects over it — not a later rescan, and
-  // not the task that happened to be open when the console was launched.
-  const picked = useRef(false);
+  // not the task that happened to be open when the console was launched. An explicitly requested repo
+  // counts as picked for the same reason: it is the whole point of that navigation.
+  const picked = useRef(!!requestedRepo.current);
 
   // The task this console was opened from, fixed for its lifetime: switching tasks behind an open
   // console shouldn't move it, and every later request (a Rescan) must echo the SAME value or its
   // reply is discarded as stale.
-  const openedFor = useRef(selectedThreadId);
+  const openedFor = useRef(useStore.getState().gitConsoleFor);
 
   // Ask for the repo list on open, naming that task so the server can say which repo it lives in.
   useEffect(() => {
@@ -296,6 +300,7 @@ function RepoBar({
       {state?.isRepo ? <BranchPicker state={state} /> : <div className="gc-pick-spacer" />}
       {state?.isRepo ? <SyncActions state={state} /> : null}
 
+      <ReturnToOrigin className="gc-return" />
       <button className="gc-close" aria-label="Close Git" onClick={onClose}>
         ✕
       </button>
@@ -555,7 +560,10 @@ function SyncActions({ state }: { state: RepoState }) {
 
 function RepoBody({ path }: { path: string }) {
   const state = useStore((s) => s.repoStates[path]);
-  const [tab, setTab] = useState<"changes" | "history">("changes");
+  // A commit the caller asked to land on (a task's own commit, from its Changes drawer). Read once at
+  // mount: the pane opens on History for it, and HistoryPane consumes the request.
+  const requestedCommit = useRef(useStore.getState().gitConsoleCommit);
+  const [tab, setTab] = useState<"changes" | "history">(requestedCommit.current ? "history" : "changes");
 
   if (!state) return <div className="gc-empty">Reading the repository…</div>;
   if (!state.isRepo) return <div className="gc-empty">{state.error ?? "That folder isn't a git repository."}</div>;
@@ -573,7 +581,7 @@ function RepoBody({ path }: { path: string }) {
               History <span className="gc-tab-count">{state.commits.length}</span>
             </button>
           </div>
-          {tab === "changes" ? <ChangesPane state={state} /> : <HistoryPane state={state} />}
+          {tab === "changes" ? <ChangesPane state={state} /> : <HistoryPane state={state} focusHash={requestedCommit.current} />}
         </div>
       </div>
     </>
@@ -761,16 +769,29 @@ function ChangesPane({ state }: { state: RepoState }) {
 }
 
 /** History: the repo's recent commits; opening one shows its files and their diffs. */
-function HistoryPane({ state }: { state: RepoState }) {
+function HistoryPane({ state, focusHash = null }: { state: RepoState; focusHash?: string | null }) {
   const loadRepoCommit = useStore((s) => s.loadRepoCommit);
+  const consumeCommit = useStore((s) => s.consumeGitConsoleCommit);
   const detail = useStore((s) => s.repoCommits[state.path]);
   const [openHash, setOpenHash] = useState<string | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
+  const [notInLog, setNotInLog] = useState<string | null>(null);
 
   useEffect(() => {
     const first = state.commits[0]?.hash ?? null;
     setOpenHash((cur) => (cur && state.commits.some((c) => c.hash === cur) ? cur : first));
   }, [state.commits]);
+
+  // Land on the requested commit once the log is in. The console shows a bounded window of history, so
+  // an older commit legitimately isn't there — say so instead of silently opening a different one. The
+  // hashes are abbreviated on both sides and not necessarily to the same width, hence the prefix match.
+  useEffect(() => {
+    if (!focusHash || !state.commits.length) return;
+    const hit = state.commits.find((c) => c.hash === focusHash || c.hash.startsWith(focusHash) || focusHash.startsWith(c.hash));
+    if (hit) setOpenHash(hit.hash);
+    else setNotInLog(focusHash);
+    consumeCommit();
+  }, [focusHash, state.commits, consumeCommit]);
 
   useEffect(() => {
     if (openHash && !detail?.[openHash]) loadRepoCommit(state.path, openHash);
@@ -787,6 +808,9 @@ function HistoryPane({ state }: { state: RepoState }) {
     <div className="gc-panes">
       <div className="gc-list-col">
         <div className="gc-scroll">
+          {notInLog ? (
+            <div className="gc-none">Commit {notInLog} isn't in the branch history shown here.</div>
+          ) : null}
           {state.commits.length === 0 ? (
             <div className="gc-none">No commits yet.</div>
           ) : (

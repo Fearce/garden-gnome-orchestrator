@@ -10,6 +10,8 @@ import {
 import { FolderPicker } from "./FolderPicker.js";
 import { Markdown } from "./Markdown.js";
 import { PathInput } from "./PathInput.js";
+import { CodeContextBar } from "./CodeContextBar.js";
+import { coworkOrigin } from "../lib/codeNav.js";
 
 const EMPTY_COWORK_MESSAGES: CoworkMessage[] = [];
 
@@ -170,6 +172,10 @@ export function CoWork() {
                       ? `${selected.requestedProvider} · ${selected.requestedModel} · pinned`
                       : "Auto · resolves on first turn"}</span>
                 </div>
+                <CodeContextBar
+                  subject={{ kind: "cowork", id: selected.id }}
+                  origin={coworkOrigin(selected.id, selected.name)}
+                />
               </div>
               <span className={`cowork-status ${selected.state}`}>
                 <span className={`cowork-state-dot ${selected.state}`} />{statusText(selected)}

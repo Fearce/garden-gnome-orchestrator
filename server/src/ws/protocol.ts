@@ -7,6 +7,7 @@ import type { GitFileDiff, GitStatus, GitSummary } from "../gitService.js";
 import type { RepoCommitDetail } from "../git/repoOps.js";
 import type { ThreadActionResult } from "../orchestrator/api.js";
 import type { RepoActionDTO, RepoRef, RepoStateDTO } from "../orchestrator/repoConsole.js";
+import type { CodeContext } from "../orchestrator/codeContext.js";
 import type { OnlineOfficeDTO } from "../office/onlineOffice.js";
 import {
   MAX_COWORK_ATTACHMENTS,
@@ -147,6 +148,10 @@ export type ServerEvent =
   | { type: "repo.diff"; path: string; file: string; commit: string | null; diff: GitFileDiff }
   | { type: "repo.commit"; path: string; detail: RepoCommitDetail }
   | { type: "repo.result"; path: string; action: string; result: RepoActionDTO }
+  // Where one task / co-work session / workspace's code lives: its IDE workspace id, repo root + prefix
+  // and branch state. `key` is the `<kind>:<id>` the client asked about, echoed so a slow reply can't be
+  // filed against a different subject.
+  | { type: "code.context"; key: string; context: CodeContext }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
   // A cancelled task was restarted from scratch: its prior runs/findings/feed were deleted server-side,
@@ -408,6 +413,13 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     commit: z.string().min(1).max(100).optional(),
   }),
   z.object({ type: z.literal("repo.commit"), path: z.string().min(1).max(600), hash: z.string().min(1).max(100) }),
+  z.object({
+    type: z.literal("code.context"),
+    kind: z.enum(["thread", "cowork", "workspace"]),
+    // A thread/cowork id, or an absolute workspace path — the service only answers for a path some
+    // record already claims, so this is not a "stat any directory" oracle.
+    id: z.string().min(1).max(600),
+  }),
   z.object({
     type: z.literal("repo.action"),
     path: z.string().min(1).max(600),

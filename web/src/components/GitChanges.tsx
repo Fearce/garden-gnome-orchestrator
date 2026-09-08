@@ -3,6 +3,8 @@ import { useStore } from "../store.js";
 import type { GitFile, GitFileStatus, GitStatus, GitSummary, Thread } from "../types.js";
 import { ago, threadRunning } from "../lib/format.js";
 import { Diff } from "./Diff.js";
+import { CodeRoutes, OpenInIde, useCodeContext } from "./CodeContextBar.js";
+import { threadOrigin } from "../lib/codeNav.js";
 import "./gitChanges.css";
 
 /**
@@ -123,6 +125,14 @@ function GitPanel({ thread, onClose }: { thread: Thread; onClose: () => void }) 
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // Navigating OUT of this drawer closes it. Without this, following a route into the Git console or
+  // the IDE leaves the drawer stacked behind the destination, and the operator has to dismiss a sheet
+  // they already left.
+  const navigatedAway = useStore((s) => s.gitConsoleOpen || s.boardView === "ide");
+  useEffect(() => {
+    if (navigatedAway) onClose();
+  }, [navigatedAway, onClose]);
+
   // Keep the selection valid across loads: default to the first changed file when status lands, and
   // re-anchor if the file set changes underneath us (e.g. a reload after the agent commits).
   useEffect(() => {
@@ -150,9 +160,12 @@ function GitPanel({ thread, onClose }: { thread: Thread; onClose: () => void }) 
               </div>
             </div>
           </div>
-          <button className="git-close" aria-label="Close Git view" onClick={onClose}>
-            ✕
-          </button>
+          <div className="git-head-actions">
+            <CodeRoutes subject={{ kind: "thread", id: thread.id }} origin={threadOrigin(thread)} />
+            <button className="git-close" aria-label="Close Git view" onClick={onClose}>
+              ✕
+            </button>
+          </div>
         </div>
 
         {!status ? (
@@ -186,13 +199,13 @@ function GitPanel({ thread, onClose }: { thread: Thread; onClose: () => void }) 
                   {tab === "changes" ? (
                     <FileListPane status={status} selectedPath={selectedPath} onSelect={setSelectedPath} />
                   ) : (
-                    <CommitLog status={status} />
+                    <CommitLog status={status} thread={thread} />
                   )}
                 </div>
               </div>
               <div className="git-right">
                 {selectedFile ? (
-                  <DiffPane threadId={thread.id} file={selectedFile} onBack={() => setSelectedPath(null)} />
+                  <DiffPane thread={thread} file={selectedFile} onBack={() => setSelectedPath(null)} />
                 ) : (
                   <div className="git-diff-empty">
                     {status.files.length === 0 ? "This task hasn't changed any files yet." : "Select a file to view its diff."}
@@ -293,7 +306,15 @@ function SyncNote({ status, sync }: { status: GitStatus; sync: SyncState }) {
  *  author, when. A local (not-yet-pushed) commit carries a quiet "local" tag. When the task has no diff
  *  anchor (a legacy row dispatched before change-tracking), its commits can't be isolated from the repo's
  *  history, so we say so explicitly rather than dumping the full repo log. */
-function CommitLog({ status }: { status: GitStatus }) {
+function CommitLog({ status, thread }: { status: GitStatus; thread: Thread }) {
+  const context = useCodeContext({ kind: "thread", id: thread.id });
+  const openGitConsole = useStore((s) => s.openGitConsole);
+  // A commit opens in the repo-level console's History — the only place that shows its full diff. The
+  // row stays inert when there is no repo to open it in, rather than becoming a dead control.
+  const openCommit = context?.repoPath
+    ? (hash: string) =>
+        openGitConsole({ forThread: thread.id, repoPath: context.repoPath, commit: hash, origin: threadOrigin(thread) })
+    : null;
   return (
     <section className="git-section">
       <div className="git-section-head">
@@ -314,10 +335,20 @@ function CommitLog({ status }: { status: GitStatus }) {
       ) : (
         <ol className="commit-list">
           {status.commits.map((c) => (
-            <li key={c.hash} className="commit-row">
+            <li key={c.hash} className={"commit-row" + (openCommit ? " openable" : "")}>
               <span className="commit-node" aria-hidden="true" />
               <div className="commit-main">
-                <div className="commit-subject">{c.subject}</div>
+                {openCommit ? (
+                  <button
+                    className="commit-subject commit-open"
+                    title="Open this commit in the Git console"
+                    onClick={() => openCommit(c.hash)}
+                  >
+                    {c.subject}
+                  </button>
+                ) : (
+                  <div className="commit-subject">{c.subject}</div>
+                )}
                 <div className="commit-meta">
                   <span className="commit-hash mono">{c.hash}</span>
                   <span className="commit-dot">·</span>
@@ -406,7 +437,8 @@ function SelectableFileRow({ file, selected, onSelect }: { file: GitFile; select
 /** The diff pane — the one legitimate internal-scroll region. Fixed header (path + ±stat + a mobile back
  *  affordance) over a bounded body that scrolls the selected file's unified diff both ways. The diff is
  *  lazily fetched on first selection and cached, so switching files is instant once loaded. */
-function DiffPane({ threadId, file, onBack }: { threadId: string; file: GitFile; onBack: () => void }) {
+function DiffPane({ thread, file, onBack }: { thread: Thread; file: GitFile; onBack: () => void }) {
+  const threadId = thread.id;
   const diff = useStore((s) => s.gitDiffs[threadId]?.[file.path]);
   const loadGitDiff = useStore((s) => s.loadGitDiff);
   const meta = FILE_META[file.status];
@@ -440,6 +472,10 @@ function DiffPane({ threadId, file, onBack }: { threadId: string; file: GitFile;
             </>
           )}
         </span>
+        {/* A deleted file has no working copy to open — the diff is the only thing left of it. */}
+        {file.status === "deleted" ? null : (
+          <OpenInIde subject={{ kind: "thread", id: threadId }} origin={threadOrigin(thread)} path={file.path} label="Edit" />
+        )}
       </div>
       <div className="git-diff-body viewport-fit-scroll">
         {file.binary ? (

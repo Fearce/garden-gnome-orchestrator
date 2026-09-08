@@ -880,6 +880,59 @@ export interface RepoState {
   operation?: "merge" | "rebase" | null;
 }
 
+// ---- contextual code navigation (task / Co-work / Supervisor → repo, IDE, Git) ----
+
+/** What a navigation target can be about. `workspace` covers surfaces that know a path but no owning
+ *  record — a Supervisor audit row. Mirrored byte-for-byte from server/src/orchestrator/codeContext.ts. */
+export type CodeSubjectKind = "thread" | "cowork" | "workspace";
+
+/** One resolved answer to "where does this work live, and how do I get into it" — the server tells the
+ *  console the IDE's own workspace id, the repo root and its prefix, and how HEAD stands, so no deep
+ *  link is ever guessed in the browser. Mirrored byte-for-byte from
+ *  server/src/orchestrator/codeContext.ts. */
+export interface CodeContext {
+  kind: CodeSubjectKind;
+  id: string;
+  workspace: string | null;
+  workspaceName: string | null;
+  ideWorkspaceId: string | null;
+  repoPath: string | null;
+  repoName: string | null;
+  repoPrefix: string | null;
+  branch: string | null;
+  detached: boolean;
+  pushState: PushState;
+  unpushed: number;
+  behind: number;
+  hasUncommitted: boolean;
+  error: string | null;
+}
+
+/** Where the operator came from, so the IDE and the Git console can offer one click back instead of
+ *  leaving them to re-find the task. Client-only — nothing about it reaches the server. */
+export interface CodeOrigin {
+  kind: CodeSubjectKind;
+  id: string;
+  label: string;
+  /** The board area to restore. A Supervisor row returns to the audit list, not to a task card. */
+  view: BoardView;
+}
+
+/** A pending "open this in the editor" intent. The IDE consumes it once and clears it, so re-selecting
+ *  the same file later is a fresh intent rather than a replay of the old one. */
+export interface IdeTarget {
+  /** The IDE's workspace id (from CodeContext.ideWorkspaceId) — never a raw path. */
+  workspaceId: string;
+  /** Workspace-relative file path; omitted to open the workspace itself. */
+  path?: string;
+  /** 1-based line to reveal, when the origin genuinely knows one. */
+  line?: number;
+  /** Open straight into source control rather than the file explorer. */
+  mode?: "files" | "git";
+  /** Bumped per request so an identical target re-fires. */
+  nonce: number;
+}
+
 export interface RepoCommitDetail {
   hash: string;
   fullHash: string;
@@ -1026,6 +1079,9 @@ export type ServerEvent =
   | { type: "repo.diff"; path: string; file: string; commit: string | null; diff: GitFileDiff }
   | { type: "repo.commit"; path: string; detail: RepoCommitDetail }
   | { type: "repo.result"; path: string; action: string; result: RepoActionResult }
+  // `key` is the `<kind>:<id>` that was asked about, echoed so a slow reply can't be filed against a
+  // different subject.
+  | { type: "code.context"; key: string; context: CodeContext }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
   // A cancelled task was restarted from scratch: prune its now-deleted runs/findings/feed (keeping the
@@ -1112,6 +1168,7 @@ export type ClientCommand =
   | { type: "repo.diff"; path: string; file: string; commit?: string }
   | { type: "repo.commit"; path: string; hash: string }
   | { type: "repo.action"; path: string; op: RepoOp; force?: boolean }
+  | { type: "code.context"; kind: CodeSubjectKind; id: string }
   | { type: "director.cancel" }
   | { type: "director.search"; query: string }
   | { type: "chat.history"; room: string; before?: ChatCursor }

@@ -3,6 +3,8 @@ import { useStore } from "../store.js";
 import type { SupervisorChatTurn, SupervisorEvent, SupervisorSnapshot, Thread } from "../types.js";
 import { useCoarseNow } from "../lib/timing.js";
 import { since } from "../lib/format.js";
+import { supervisorOrigin } from "../lib/codeNav.js";
+import { CodeContextBar } from "./CodeContextBar.js";
 
 const TARGET_LIMIT = 8;
 type DisplaySupervisorTurn = SupervisorChatTurn & { delivery?: "sending" | "failed"; deliveryError?: string };
@@ -441,6 +443,15 @@ function SupervisorRow({ event, now }: { event: SupervisorEvent; now: number }) 
     select(thread.id);
   };
 
+  // The routes resolve through the still-open task when there is one (the server knows its workspace
+  // without being told), and otherwise through the workspace the event itself recorded — which is how a
+  // row survives its task being purged. Returning lands back HERE, not on the task board.
+  const subject = thread
+    ? ({ kind: "thread", id: thread.id } as const)
+    : event.workspace
+      ? ({ kind: "workspace", id: event.workspace } as const)
+      : null;
+
   return (
     <li className={"supervisor-row k-" + event.kind}>
       <span className="supervisor-kind" title={KIND_LABEL[event.kind]} aria-label={KIND_LABEL[event.kind]}><KindIcon kind={event.kind} /></span>
@@ -450,6 +461,13 @@ function SupervisorRow({ event, now }: { event: SupervisorEvent; now: number }) 
           <span className="supervisor-text">{event.summary}</span>
         </div>
         {event.detail ? <div className="supervisor-detail faint">{event.detail}</div> : null}
+        {subject ? (
+          <CodeContextBar
+            compact
+            subject={subject}
+            origin={supervisorOrigin(event.workspace ?? "", "Supervisor audit")}
+          />
+        ) : null}
         <div className="supervisor-meta faint mono">
           {event.trigger}{event.action ? ` · ${event.action}` : ""}
           {event.usedAgent ? ` · ${event.model ?? "agent"}${event.costUsd ? ` · $${event.costUsd.toFixed(3)}` : ""}${event.totalTokens ? ` · ${event.totalTokens} tok` : ""}` : " · deterministic"}

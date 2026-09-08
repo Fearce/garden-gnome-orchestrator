@@ -31,6 +31,11 @@ export class IdeService {
   private roots = new Map<string, { source: string; workspace: IdeWorkspace }>();
   constructor(private readonly db: Pick<Db, "listThreads" | "listCoworkSessions" | "kvGet">, private readonly self: string) {}
 
+  /** Workspace identity: the realpath, case-folded on Windows, hashed. */
+  private workspaceId(root: string): string {
+    return hash(process.platform === "win32" ? root.toLowerCase() : root).slice(0, 24);
+  }
+
   private registered() {
     let recent: string[] = [];
     try { const value: unknown = JSON.parse(this.db.kvGet("setting_recent_repos") ?? "[]"); if (Array.isArray(value)) recent = value.filter((p): p is string => typeof p === "string"); } catch { /* no recent entries */ }
@@ -47,13 +52,34 @@ export class IdeService {
       try {
         const root = await realpath(path);
         if (!(await lstat(root)).isDirectory()) continue;
-        const id = hash(process.platform === "win32" ? root.toLowerCase() : root).slice(0, 24);
+        const id = this.workspaceId(root);
         if (!result.has(id)) result.set(id, { id, path: root, name: basename(root), tasks: threads.filter(t => resolve(t.workspace) === resolve(path)).map(t => ({ id: t.id, title: t.title })) });
         this.roots.set(id, { source: path, workspace: result.get(id)! });
       } catch { /* stale registered path */ }
     }
     for (const id of this.roots.keys()) if (!result.has(id)) this.roots.delete(id);
     return [...result.values()];
+  }
+
+  /** Is this path one GGO already works in — a task or co-work workspace, a recent repo, or this
+   *  checkout? The registry is what stops any browser-supplied path from becoming a filesystem probe,
+   *  so every surface that accepts a path from the client asks HERE rather than keeping its own list. */
+  isRegistered(path: string): boolean {
+    const target = (path ?? "").trim();
+    return !!target && this.registered().paths.some(p => resolve(p) === resolve(target));
+  }
+
+  /** The IDE's id for a registered workspace path, or null when the path isn't registered or no longer
+   *  resolves to a directory. The id derivation lives here, beside `workspaces()`, so contextual deep
+   *  links from the rest of the console cannot drift from what the IDE will actually accept. */
+  async workspaceIdFor(path: string): Promise<string | null> {
+    const target = (path ?? "").trim();
+    if (!this.isRegistered(target)) return null;
+    try {
+      const root = await realpath(target);
+      if (!(await lstat(root)).isDirectory()) return null;
+      return this.workspaceId(root);
+    } catch { return null; }
   }
 
   async workspace(id: string): Promise<IdeWorkspace> {

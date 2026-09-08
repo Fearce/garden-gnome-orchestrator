@@ -21,6 +21,7 @@ import { ThreadManager } from "./orchestrator/threadManager.js";
 import { CoworkManager } from "./orchestrator/cowork.js";
 import { Director } from "./orchestrator/director.js";
 import { RepoConsole } from "./orchestrator/repoConsole.js";
+import { CodeContextService } from "./orchestrator/codeContext.js";
 import { OperatorNotes } from "./orchestrator/notes.js";
 import { RestartCoordinator, isLoopbackAddress } from "./orchestrator/restartCoordinator.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
@@ -142,6 +143,7 @@ async function main(): Promise<void> {
   // task has been dispatched.
   const repos = new RepoConsole(db, config.serverRoot);
   const ide = new IdeService(db, dirname(config.serverRoot));
+  const codeContext = new CodeContextService(db, ide);
   // A process bounce tree-kills every CLI child. The restart coordinator therefore makes all planned
   // deploy/update restarts wait for the CURRENT task, Co-work, Director, and Supervisor cohort to
   // settle, while its admission latch keeps fresh work out. There is no hourly escape hatch.
@@ -248,7 +250,7 @@ async function main(): Promise<void> {
     // Pasted images travel inline (base64) in a single prompt.new frame; lift the
     // default ws payload cap so a few screenshots don't get dropped on send.
     await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
-    registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos, onlineOffice, cowork });
+    registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos, onlineOffice, cowork, codeContext });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
     registerIdeRoutes(app, ide, isAuthed);
 

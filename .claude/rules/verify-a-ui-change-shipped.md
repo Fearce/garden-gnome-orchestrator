@@ -36,7 +36,8 @@ console + fixture repo), `tablet-lab.cjs` (both tablet orientations in a TOUCH c
 `model-select-lab.cjs` (a Settings toggle's round-trip + a server-fed table), `inject-lab.cjs`
 (state-conditional button labels + a click that must not kill the task), `focus-lab.cjs` (the top bar's
 focus toggle, both themes), `task-model-lab.cjs` (the per-task exact provider/model pin on desktop +
-phone, including persistence, Auto, and the running-task guard), `layout-lab.cjs` (the workbench's
+phone, including persistence, Auto, and the running-task guard), `code-nav-lab.cjs` (the contextual
+routes out of a task / Co-work / Supervisor row into the IDE and the Git console, and back), `layout-lab.cjs` (the workbench's
 columns, with the rail/detail widths replayed from a BIGGER monitor, across every band and both drag
 handles) and `panel-scroll-lab.cjs`
 (the detail panel on the OTHER axis: a 500-entry transcript under a work memo and deliverables, at five

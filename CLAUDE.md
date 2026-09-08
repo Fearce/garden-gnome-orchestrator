@@ -465,6 +465,27 @@ pull / discard is **refused while an agent is live in that repo**, naming the ta
 free, no browser) and `npm run git-lab --prefix server` (drives the console in a headless browser
 against its own throwaway instance + fixture repo). Details: `.claude/rules/git-changes-surface.md`.
 
+## Contextual code navigation (task / Co-work / Supervisor → IDE, Git, and back)
+One server-resolved answer per subject — `orchestrator/codeContext.ts`, over the `code.context` WS
+command — tells the console the workspace, the **IDE's own workspace id**, the repo root and its
+**prefix**, and how HEAD stands. The browser never derives a deep link itself. `CodeContextBar` renders
+that as one quiet row (branch · repo · ↑unpushed ↓behind · dirty dot) with two routes, on the task detail
+panel, the Co-work conversation header and each Supervisor audit row; a task's Changes drawer adds a
+per-file **Edit** into the editor and makes each of the task's own commits open in the Git console's
+History. Every route records where it came from, so the IDE and the console show one **back** control.
+**A route is offered only when it can be taken.** No `ideWorkspaceId` (the path isn't registered) ⇒ no
+Code button; no `repoPath` ⇒ no Git button; `repoPrefix === null` (the checkout sits ABOVE the workspace,
+so a repo-relative file has no in-workspace path) ⇒ no per-file link — never a guessed one. The
+unavailable cases say why in place of the buttons.
+Two rules not to re-break: a `workspace` subject is a path **from the browser**, so it resolves only for
+a folder GGO already works in (`IdeService.isRegistered` — the same registry the IDE enforces; without it
+this command reads any directory's git state); and the row reads `getRepoHeadState`, a repo-keyed cached
+branch/push read, **not** `getGitStatus` — a screenful of surfaces would otherwise each walk a large
+working tree. Gates: `test:code-context` (resolver + the browser-side path math) and `npm run
+code-nav-lab --prefix server` (drives every route and the phone layout headlessly, against its own
+isolated build). Traps + what the system deliberately cannot know (no line-level provenance):
+`.claude/rules/contextual-code-navigation.md`.
+
 ## The office (cross-agent chat)
 Concurrent tasks on the same repo would otherwise edit the same files blind. Every running agent is
 "in the office": each role gets an `office` MCP server (`bus/officeServer.ts` — `office_look`/`chat_post`/

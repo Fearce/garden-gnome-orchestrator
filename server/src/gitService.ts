@@ -324,6 +324,59 @@ function derivePushState(isCommitOnly: boolean, unpushed: number, hasPushRef: bo
 
 // ---- status -----------------------------------------------------------------------------------------
 
+/** Where HEAD stands: the branch, the refs it pulls from and pushes to, and how far it is from each.
+ *  Everything here is a constant-cost ref read — no working-tree walk, no per-file diff, no commit log. */
+interface RepoHead {
+  branch: string | null;
+  detached: boolean;
+  upstreamRef: string | null;
+  pushRef: string | null;
+  behind: number;
+  unpushed: number;
+  /** The unpushed commits themselves — what tags each commit local-or-pushed in the full status. */
+  unpushedShas: Set<string>;
+  isCommitOnly: boolean;
+  pushState: PushState;
+  /** False in a fresh repo with no commit yet — a diff has nothing to compare against. */
+  hasHead: boolean;
+}
+
+async function readRepoHead(repoRoot: string): Promise<RepoHead> {
+  const branchRaw = out(await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]));
+  const detached = branchRaw === "HEAD" || branchRaw === "";
+
+  const upstreamRef = okOut(await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]));
+  const pushRef = okOut(await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"]));
+
+  // behind = commits @{u} has that HEAD lacks. unpushed = commits on HEAD not yet on @{push} (fall back
+  // to @{u} when no distinct push ref is configured).
+  let behind = 0;
+  if (upstreamRef) {
+    const c = okOut(await runGit(repoRoot, ["rev-list", "--count", `HEAD..${upstreamRef}`]));
+    behind = c ? Number.parseInt(c, 10) || 0 : 0;
+  }
+  const unpushedRef = pushRef ?? upstreamRef;
+  const unpushedShas = new Set<string>();
+  if (unpushedRef) {
+    const list = okOut(await runGit(repoRoot, ["rev-list", `${unpushedRef}..HEAD`]));
+    if (list) for (const s of list.split("\n").map((x) => x.trim()).filter(Boolean)) unpushedShas.add(s);
+  }
+
+  const isCommitOnly = await isCommitOnlyRepo(repoRoot);
+  return {
+    branch: detached ? null : branchRaw,
+    detached,
+    upstreamRef,
+    pushRef,
+    behind,
+    unpushed: unpushedShas.size,
+    unpushedShas,
+    isCommitOnly,
+    pushState: derivePushState(isCommitOnly, unpushedShas.size, pushRef !== null),
+    hasHead: (await runGit(repoRoot, ["rev-parse", "--verify", "-q", "HEAD"])).code === 0,
+  };
+}
+
 /** Full git reality for a task's repo: branch + branch list, upstream/push refs, behind/unpushed counts,
  *  the changed-file list with per-file ±counts, and the recent commit log with each commit tagged
  *  local-or-pushed. Never throws — a non-repo / git failure returns isRepo:false with an `error`. */
@@ -338,58 +391,86 @@ export async function getGitStatus(workspace: string): Promise<GitStatus> {
   empty.repoRoot = repoRoot;
   empty.isRepo = true;
 
-  const branchRaw = out(await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]));
-  const detached = branchRaw === "HEAD" || branchRaw === "";
-  const branch = detached ? null : branchRaw;
-
+  const head = await readRepoHead(repoRoot);
   const branches = (okOut(await runGit(repoRoot, ["branch", "--format=%(refname:short)", "--sort=-committerdate"])) ?? "")
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const upstreamRef = okOut(await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]));
-  const pushRef = okOut(await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"]));
-
-  // behind = commits @{u} has that HEAD lacks. unpushed = commits on HEAD not yet on @{push} (fall back
-  // to @{u} when no distinct push ref is configured).
-  let behind = 0;
-  if (upstreamRef) {
-    const c = okOut(await runGit(repoRoot, ["rev-list", "--count", `HEAD..${upstreamRef}`]));
-    behind = c ? Number.parseInt(c, 10) || 0 : 0;
-  }
-  const unpushedRef = pushRef ?? upstreamRef;
-  let unpushed = 0;
-  const unpushedShas = new Set<string>();
-  if (unpushedRef) {
-    const list = okOut(await runGit(repoRoot, ["rev-list", `${unpushedRef}..HEAD`]));
-    if (list) for (const s of list.split("\n").map((x) => x.trim()).filter(Boolean)) unpushedShas.add(s);
-    unpushed = unpushedShas.size;
-  }
-
-  const isCommitOnly = await isCommitOnlyRepo(repoRoot);
-  const hasHead = (await runGit(repoRoot, ["rev-parse", "--verify", "-q", "HEAD"])).code === 0;
-
-  const files = await collectFiles(repoRoot, hasHead);
-  const commits = await collectCommits(repoRoot, hasHead, unpushedShas, unpushedRef !== null);
+  const files = await collectFiles(repoRoot, head.hasHead);
+  const commits = await collectCommits(repoRoot, head.hasHead, head.unpushedShas, (head.pushRef ?? head.upstreamRef) !== null);
 
   return {
     isRepo: true,
     repoRoot,
-    branch,
-    detached,
+    branch: head.branch,
+    detached: head.detached,
     branches,
-    upstreamRef,
-    pushRef,
-    behind,
-    unpushed,
-    isCommitOnly,
-    pushState: derivePushState(isCommitOnly, unpushed, pushRef !== null),
+    upstreamRef: head.upstreamRef,
+    pushRef: head.pushRef,
+    behind: head.behind,
+    unpushed: head.unpushed,
+    isCommitOnly: head.isCommitOnly,
+    pushState: head.pushState,
     hasUncommitted: files.length > 0,
     files,
     commits,
     hasDiffAnchor: false, // repo-wide status makes no per-task attribution claim
     error: null,
   };
+}
+
+/** Branch + push standing for a repo, without the per-file diff and commit log a full status walks.
+ *  This is what the console's contextual navigation reads: many surfaces ask about the same repo at
+ *  once, and a full `getGitStatus` per surface would turn one screen into dozens of numstat sweeps on a
+ *  large checkout. Cached per resolved repo root on the same short TTL as the chip summary. */
+export interface RepoHeadState {
+  isRepo: boolean;
+  repoRoot: string | null;
+  branch: string | null;
+  detached: boolean;
+  upstreamRef: string | null;
+  pushRef: string | null;
+  behind: number;
+  unpushed: number;
+  isCommitOnly: boolean;
+  pushState: PushState;
+  hasUncommitted: boolean;
+  error: string | null;
+}
+
+const headStateCache = new Map<string, { at: number; value: RepoHeadState }>();
+
+export async function getRepoHeadState(workspace: string): Promise<RepoHeadState> {
+  const empty: RepoHeadState = {
+    isRepo: false, repoRoot: null, branch: null, detached: false, upstreamRef: null, pushRef: null,
+    behind: 0, unpushed: 0, isCommitOnly: false, pushState: "no-remote", hasUncommitted: false, error: null,
+  };
+  const repoRoot = await resolveRepoRoot(workspace);
+  if (!repoRoot) return { ...empty, error: "Not a git repository." };
+  const cached = headStateCache.get(repoRoot);
+  if (cached && Date.now() - cached.at < SUMMARY_TTL_MS) return cached.value;
+
+  const head = await readRepoHead(repoRoot);
+  // Dirty-or-not only: the same porcelain call the full status parses, without the numstat pass that
+  // gives each file its ±counts. A caller wanting the files themselves asks for the status.
+  const dirty = await runGit(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const value: RepoHeadState = {
+    isRepo: true,
+    repoRoot,
+    branch: head.branch,
+    detached: head.detached,
+    upstreamRef: head.upstreamRef,
+    pushRef: head.pushRef,
+    behind: head.behind,
+    unpushed: head.unpushed,
+    isCommitOnly: head.isCommitOnly,
+    pushState: head.pushState,
+    hasUncommitted: dirty.stdout.length > 0,
+    error: null,
+  };
+  headStateCache.set(repoRoot, { at: Date.now(), value });
+  return value;
 }
 
 /** The changed-file list vs HEAD (staged + unstaged), plus untracked files as all-additions. */
@@ -839,4 +920,15 @@ export function bustGitCaches(): void {
   summaryCache.clear();
   taskSummaryCache.clear();
   taskStatusCache.clear();
+  headStateCache.clear();
+  generation++;
 }
+
+/** Bumped by every bust above. A cache in ANOTHER module that holds git-derived state cannot be reached
+ *  from here, and clearing only these would leave it serving pre-write reality — the console then shows
+ *  the branch it had before the checkout, for as long as its own TTL runs. Such a cache stamps this
+ *  number onto each entry and treats an older one as a miss, which needs no registration and so cannot
+ *  be forgotten by a later caller of `bustGitCaches`. */
+let generation = 0;
+
+export const gitCacheGeneration = (): number => generation;

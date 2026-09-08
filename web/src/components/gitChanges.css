@@ -57,6 +57,9 @@
   border: 1px solid color-mix(in oklch, var(--accent) 35%, var(--line));
 }
 .git-head-text { min-width: 0; }
+/* The repo-level routes sit beside Close: the drawer states this task's diff, these leave it for the
+   whole repository (the IDE, the Git console). */
+.git-head-actions { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .git-head h3 { margin: 0; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-head-sub { display: flex; align-items: baseline; font-family: var(--font-mono); font-size: 10.5px; margin-top: 2px; min-width: 0; }
 .git-head-parent { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -140,6 +143,8 @@
 }
 .git-diff-back:hover { color: var(--text); background: var(--bg-3); }
 .git-diff-path { flex: 1; min-width: 0; display: flex; align-items: baseline; font-family: var(--font-mono); font-size: 12px; overflow: hidden; }
+/* Edit-this-file: last in the row, sized like the other diff-header chips, never a growing element. */
+.git-diff-head .codectx-btn { flex: 0 0 auto; }
 /* The diff body is the one legitimate internal-scroll region — bounded both axes (long diff scrolls down,
    wide diff scrolls right) so the chrome around it stays put. */
 .git-diff-body { padding: 0; }
@@ -162,6 +167,13 @@
 .commit-node { position: relative; z-index: 1; flex: 0 0 auto; width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; background: var(--bg-1); border: 2px solid var(--role-implementor); }
 .commit-main { min-width: 0; }
 .commit-subject { font-size: 13px; color: var(--text); line-height: 1.35; }
+/* A commit is a link into the repo console's History when there IS a repo to open — the affordance
+   appears only then, so an inert row never looks clickable. */
+.commit-open {
+  display: block; width: 100%; padding: 0; text-align: left; cursor: pointer;
+  border: 0; background: none; font: inherit; color: inherit;
+}
+.commit-open:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .commit-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 3px; font-size: 11px; color: var(--text-faint); }
 .commit-hash { color: var(--accent); background: color-mix(in oklch, var(--accent) 10%, var(--bg-2)); border: 1px solid color-mix(in oklch, var(--accent) 24%, var(--line)); border-radius: 4px; padding: 0 5px; font-size: 10.5px; }
 .commit-dot { opacity: 0.5; }

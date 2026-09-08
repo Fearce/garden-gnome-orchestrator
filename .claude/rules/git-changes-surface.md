@@ -5,6 +5,8 @@ paths:
   - server/src/orchestrator/repoConsole.ts
   - web/src/components/GitChanges.tsx
   - web/src/components/GitConsole.tsx
+  - server/src/orchestrator/codeContext.ts
+  - web/src/components/CodeContextBar.tsx
 ---
 
 # The per-task Git / Changes surface (chip + drawer data flow)
@@ -34,6 +36,11 @@ each prefetch collapse to one git run — bust them together via the exported
 `bustGitCaches()` (what every write in `git/repoOps.ts` calls). Whole-repo
 branch/push/behind metadata comes from the uncached repo-wide `getGitStatus`; the
 separate repo-wide `getGitSummary` has its own `summaryCache` keyed by repoRoot.
+**Want only branch + push standing? Use `getRepoHeadState`** — same `readRepoHead` ref
+reads, no branch list / numstat / commit log, cached per repo root (`headStateCache`,
+also bust by `bustGitCaches`). `orchestrator/codeContext.ts` reads it for the contextual
+rows (CLAUDE.md § "Contextual code navigation", which owns the drawer's Edit/commit/repo
+routes); a screenful of them through the full status walks the tree once per surface.
 
 ## Not this surface — the two others that also say "git"
 - **The Git console** (top-bar GitHub button → `GitConsole.tsx`) is REPO-level and

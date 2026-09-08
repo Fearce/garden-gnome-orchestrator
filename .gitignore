@@ -10,6 +10,7 @@ node_modules/
 server/dist/
 server/.ide-lab-dist/
 server/.task-model-lab-dist/
+server/.code-nav-lab-dist/
 web/dist/
 relay/dist/
 *.tsbuildinfo

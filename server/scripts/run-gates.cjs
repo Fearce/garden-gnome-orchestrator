@@ -28,6 +28,7 @@ const STAMP = path.join(SERVER_DIR, "data", "gates-last.json");
 
 const GATES = [
   "test:ide",
+  "test:code-context",
   "test:cron",
   "test:weekly-safety",
   "test:spread-usage",

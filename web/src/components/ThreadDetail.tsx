@@ -4,6 +4,7 @@ import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
 import { agentName, isCollaborationRoom, MODEL_ROLES, repoRoom } from "../types.js";
 import { canAutoReview, clock, formatDuration, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed } from "../lib/timing.js";
+import { threadOrigin } from "../lib/codeNav.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
@@ -13,6 +14,7 @@ import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { TaskModelPicker } from "./TaskModelPicker.js";
 import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
 import { ImplementationMemos } from "./ImplementationMemos.js";
+import { CodeContextBar } from "./CodeContextBar.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -811,6 +813,7 @@ export function ThreadDetail() {
                 })}
               </div>
             )}
+            <CodeContextBar subject={{ kind: "thread", id: thread.id }} origin={threadOrigin(thread)} />
             <div className="detail-controls">
               {canInterrupt && (
                 <button

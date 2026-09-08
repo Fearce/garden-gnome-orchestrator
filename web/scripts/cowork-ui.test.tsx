@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { CoworkMessage, CoworkSession } from "../src/types.js";
+// CoWork's graph reaches a component stylesheet, which plain Node cannot load. Must precede the
+// dynamic component import below — see ssrCssStub.mjs.
+import "./ssrCssStub.mjs";
 
 // Standalone tsx gates may compile imported JSX with the classic runtime even though Vite uses the
 // automatic runtime. Match the existing model-request UI gate and make React explicit first.

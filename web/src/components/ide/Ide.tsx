@@ -3,6 +3,7 @@ import { useStore } from "../../store.js";
 import { ideApi, cachedIde, invalidateIde, type Entry, type FileData, type SearchHit, type Workspace } from "./api.js";
 import { parseSnippets, type Snippet } from "./snippets.js";
 import { readSnippetVsix, snippetSource } from "./vsix.js";
+import { ReturnToOrigin } from "../CodeContextBar.js";
 import type { EditorSettings } from "./CodeEditor.js";
 import "./ide.css";
 
@@ -29,6 +30,8 @@ export function Ide() {
   const boardView = useStore(s => s.boardView);
   const selectedTask = useStore(s => s.selectedThreadId);
   const selectTask = useStore(s => s.select);
+  const target = useStore(s => s.ideTarget);
+  const consumeTarget = useStore(s => s.consumeIdeTarget);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspace, setWorkspace] = useState("");
   const [tabs, setTabs] = useState<Tab[]>(restored);
@@ -86,6 +89,25 @@ export function Ide() {
     return () => window.removeEventListener("beforeunload", leave);
   }, [tabs]);
   useEffect(() => { try { localStorage.setItem("ggo-ide-settings", JSON.stringify(settings)); } catch { setError("Editor settings could not be stored in this browser."); } }, [settings]);
+  // A deep link from a task, a co-work session, the Supervisor audit or a changed-file row. The target
+  // names the IDE's own workspace id (resolved server-side), so nothing here has to map a path; an id
+  // the IDE no longer offers says so rather than silently opening whatever was already selected. The
+  // intent is consumed once, so re-clicking the same file is a fresh open rather than a replay.
+  useEffect(() => {
+    if (!target || !workspaces.length) return;
+    consumeTarget();
+    const ws = workspaces.find(w => w.id === target.workspaceId);
+    if (!ws) { setError("That workspace is no longer open to the IDE. Pick one from the list."); return; }
+    setWorkspace(ws.id);
+    setMode(target.mode === "git" ? "git" : "files");
+    if (target.mode === "git") setGitOpened(true);
+    setSidebar(target.mode !== "git");
+    setCompare(null);
+    setError("");
+    if (target.path) void openFile(target.path, target.line, ws.id);
+    else setActive(tabs.find(t => t.workspace === ws.id) ? keyOf(tabs.find(t => t.workspace === ws.id)!) : null);
+  }, [target, workspaces]);
+
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
       if (useStore.getState().boardView !== "ide") return;
@@ -94,8 +116,8 @@ export function Ide() {
     window.addEventListener("keydown", listener); return () => window.removeEventListener("keydown", listener);
   }, []);
 
-  const openFile = async (path: string, line?: number) => {
-    const ws = workspace;
+  const openFile = async (path: string, line?: number, inWorkspace?: string) => {
+    const ws = inWorkspace ?? workspace;
     const key = keyOf({ workspace: ws, path });
     setError(""); setCompare(null);
     if (tabs.some(t => keyOf(t) === key)) { setActive(key); setTabs(ts => ts.map(t => keyOf(t) === key ? { ...t, line } : t)); if (touch) setSidebar(false); return; }
@@ -147,6 +169,7 @@ export function Ide() {
       <button onClick={() => setSidebar(s => !s)} aria-expanded={sidebar}>Explorer</button>
       <button onClick={create} disabled={!workspace || saving}>New file</button>
       <button className="ide-save" disabled={!tab || !dirty(tab) || saving} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
+      <ReturnToOrigin className="ide-return" />
     </div>
     <nav className="ide-modes" aria-label="IDE tools">
       {([ ["files", "Files"], ["search", "Search"], ["git", "Source control"], ["extensions", "Extensions & editor"] ] as const).map(([value, label]) => <button key={value} aria-pressed={mode === value} onClick={() => { setMode(value); if (value === "git") setGitOpened(true); setSidebar(true); }}>{label}</button>)}

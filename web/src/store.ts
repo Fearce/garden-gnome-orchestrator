@@ -10,6 +10,9 @@ import type {
   ChatMessage,
   ChatRoomSummary,
   ClientCommand,
+  CodeContext,
+  CodeOrigin,
+  CodeSubjectKind,
   CoworkMessage,
   CoworkSession,
   CoworkSteeringMode,
@@ -24,6 +27,7 @@ import type {
   GitSummary,
   GitStatus,
   GitFileDiff,
+  IdeTarget,
   ImageAttachment,
   ImplementationMemo,
   ImplementorProvider,
@@ -81,6 +85,25 @@ export type OutboundMessage =
  *  different content, so the commit id (when there is one) is part of the key. */
 export function repoDiffKey(file: string, commit: string | null | undefined): string {
   return commit ? `${commit}:${file}` : file;
+}
+
+/** How long a resolved context is trusted before a surface re-asks. Short enough that a branch switch
+ *  an agent made shows up the next time a panel is opened, long enough that a board of surfaces sharing
+ *  one repo doesn't put a git read on the wire per render. */
+const CODE_CONTEXT_MAX_AGE_MS = 30_000;
+
+/** Store key for one navigation subject — the same `<kind>:<id>` the server echoes back on
+ *  `code.context`, so a reply files itself without the caller tracking its own request. */
+export function codeKey(kind: CodeSubjectKind, id: string): string {
+  return `${kind}:${id}`;
+}
+
+/** Remove one key from a record, returning the record itself when there is nothing to remove (so an
+ *  unrelated event can't invalidate every subscriber by handing back a new object). */
+function dropKey<V>(record: Record<string, V>, key: string): Record<string, V> {
+  if (!(key in record)) return record;
+  const { [key]: _omit, ...rest } = record;
+  return rest;
 }
 
 interface State {
@@ -196,6 +219,32 @@ interface State {
   // The op the last `repoAction` sent — what a "Do it anyway" re-issues with force after the live-agent
   // gate blocked it. Kept in the store rather than the component so it survives a re-render of the panel.
   repoLastOp: RepoOp | null;
+  // ---- contextual code navigation ----
+  // Where each task / co-work session / workspace's code lives, keyed `<kind>:<id>` (`codeKey`). One
+  // server-resolved answer per subject: the IDE workspace id, the repo root + prefix, and how HEAD
+  // stands. `codeContextPending` keeps a screenful of surfaces from re-asking about the same subject
+  // while its first answer is still on the wire.
+  codeContexts: Record<string, CodeContext>;
+  /** When each answer landed — a context is re-asked rather than shown indefinitely, so an agent that
+   *  switches branch mid-task doesn't leave a wrong branch on screen until the page reloads. */
+  codeContextAt: Record<string, number>;
+  codeContextPending: Record<string, true>;
+  /** The pending "open this in the editor" intent, consumed once by the IDE. */
+  ideTarget: IdeTarget | null;
+  /** Where the operator came from, so the IDE and the Git console can offer one click back. */
+  codeOrigin: CodeOrigin | null;
+  // The Git console lives in the store rather than in App's local state: any surface (a task, a
+  // co-work session, a Supervisor row) can open it ON a specific repo, which a boolean in App could
+  // not express.
+  gitConsoleOpen: boolean;
+  /** The task the console was opened from — the server resolves its repo as the picker's preference. */
+  gitConsoleFor: string | null;
+  /** An explicit repo root to open on, when the caller already knows it (a co-work or Supervisor
+   *  workspace has no thread for the server to resolve). Wins over `gitConsoleFor`. */
+  gitConsoleRepo: string | null;
+  /** A commit the console should open on in History — how a task's own commit reaches the repo-level
+   *  view. Consumed once, like `ideTarget`. */
+  gitConsoleCommit: string | null;
   railHidden: boolean;
   // Focus mode: the top bar keeps only what a working session might click and drops everything that
   // merely reports state (build tag, git/settings, office, account burn strip, counters, gate, bell).
@@ -308,6 +357,18 @@ interface State {
   loadRepoCommit: (path: string, hash: string) => void;
   repoAction: (path: string, op: RepoOp, force?: boolean) => void;
   clearRepoResult: () => void;
+  // Contextual navigation. `loadCodeContext` is idempotent and deduped; `openInIde` / `openGitConsole`
+  // both record where the operator came from so `returnToOrigin` can put them back.
+  loadCodeContext: (kind: CodeSubjectKind, id: string, refresh?: boolean) => void;
+  /** Re-ask for every context currently on screen — what a git action that moved a repo triggers. */
+  refreshCodeContexts: () => void;
+  openInIde: (target: Omit<IdeTarget, "nonce">, origin?: CodeOrigin | null) => void;
+  consumeIdeTarget: () => void;
+  openGitConsole: (opts?: { forThread?: string | null; repoPath?: string | null; commit?: string | null; origin?: CodeOrigin | null }) => void;
+  consumeGitConsoleCommit: () => void;
+  closeGitConsole: () => void;
+  returnToOrigin: () => void;
+  clearCodeOrigin: () => void;
   toggleRail: () => void;
   toggleFocus: () => void;
   setDetailWidth: (px: number) => void;
@@ -866,6 +927,15 @@ export const useStore = create<State>((set) => ({
   repoResult: null,
   repoBusy: false,
   repoLastOp: null,
+  codeContexts: {},
+  codeContextAt: {},
+  codeContextPending: {},
+  ideTarget: null,
+  codeOrigin: null,
+  gitConsoleOpen: false,
+  gitConsoleFor: null,
+  gitConsoleRepo: null,
+  gitConsoleCommit: null,
   railHidden: lsBool("orch-rail-hidden", false),
   focusMode: lsBool("orch-focus-mode", false),
   detailWidth: lsNum("orch-detail-w", 480),
@@ -1097,6 +1167,53 @@ export const useStore = create<State>((set) => ({
     sendCommand({ type: "repo.action", path, op, force });
   },
   clearRepoResult: () => set({ repoResult: null }),
+  loadCodeContext: (kind, id, refresh = false) => {
+    const key = codeKey(kind, id);
+    const state = useStore.getState();
+    // A task card, its detail panel and the Changes drawer all want the same answer. Without this the
+    // three would each put a filesystem + git read on the wire for one repo.
+    if (state.codeContextPending[key]) return;
+    if (!refresh && state.codeContexts[key] && Date.now() - (state.codeContextAt[key] ?? 0) < CODE_CONTEXT_MAX_AGE_MS) return;
+    set((s) => ({ codeContextPending: { ...s.codeContextPending, [key]: true } }));
+    sendCommand({ type: "code.context", kind, id });
+  },
+  refreshCodeContexts: () => {
+    for (const key of Object.keys(useStore.getState().codeContexts)) {
+      // `<kind>:<id>`, and a workspace subject's id is a path with colons of its own — so split on the
+      // FIRST separator only.
+      const cut = key.indexOf(":");
+      if (cut > 0) useStore.getState().loadCodeContext(key.slice(0, cut) as CodeSubjectKind, key.slice(cut + 1), true);
+    }
+  },
+  openInIde: (target, origin) => {
+    set((s) => ({
+      boardView: "ide",
+      // The Git console is a full-screen modal; leaving it open over the editor we just navigated to
+      // would hide the destination behind the surface the operator left.
+      gitConsoleOpen: false,
+      ideTarget: { ...target, nonce: s.ideTarget ? s.ideTarget.nonce + 1 : 1 },
+      ...(origin === undefined ? {} : { codeOrigin: origin }),
+    }));
+  },
+  consumeIdeTarget: () => set({ ideTarget: null }),
+  openGitConsole: (opts = {}) =>
+    set(() => ({
+      gitConsoleOpen: true,
+      gitConsoleFor: opts.forThread ?? null,
+      gitConsoleRepo: opts.repoPath ?? null,
+      gitConsoleCommit: opts.commit ?? null,
+      ...(opts.origin === undefined ? {} : { codeOrigin: opts.origin }),
+    })),
+  consumeGitConsoleCommit: () => set({ gitConsoleCommit: null }),
+  closeGitConsole: () => set({ gitConsoleOpen: false, gitConsoleCommit: null }),
+  returnToOrigin: () => {
+    const origin = useStore.getState().codeOrigin;
+    if (!origin) return;
+    set({ boardView: origin.view, gitConsoleOpen: false, codeOrigin: null, ideTarget: null });
+    // Only a task has a card to re-open; a co-work session or a Supervisor row is its own board area.
+    if (origin.kind === "thread") useStore.getState().select(origin.id);
+  },
+  clearCodeOrigin: () => set({ codeOrigin: null }),
   toggleRail: () =>
     set((s) => {
       const v = !s.railHidden;
@@ -1405,6 +1522,14 @@ function applyEvent(ev: ServerEvent): void {
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
       useStore.setState({ roomLoading: {} });
+      // Same shape for the contextual-navigation asks, but they must be RE-SENT rather than merely
+      // cleared: nothing else would ask again. A surface requests its context once, from a mount
+      // effect whose deps don't change on a reconnect — so a request lost with the old socket would
+      // leave that row saying "Locating this workspace…" until the panel was closed and reopened.
+      for (const key of Object.keys(useStore.getState().codeContextPending)) {
+        const cut = key.indexOf(":"); // a workspace subject's id is a path, with colons of its own
+        if (cut > 0) sendCommand({ type: "code.context", kind: key.slice(0, cut) as CodeSubjectKind, id: key.slice(cut + 1) });
+      }
       // If the office panel is open, re-pull the open room so it reflects anything that streamed
       // while the socket was gone (mirrors the thread.history re-fetch above).
       const openRoom = useStore.getState().officeRoom;
@@ -1633,6 +1758,17 @@ function applyEvent(ev: ServerEvent): void {
         repoDiffs: { ...s.repoDiffs, [ev.path]: { ...(s.repoDiffs[ev.path] ?? {}), [repoDiffKey(ev.file, ev.commit)]: ev.diff } },
       }));
       break;
+    case "code.context": {
+      useStore.setState((s) => {
+        const { [ev.key]: _done, ...codeContextPending } = s.codeContextPending;
+        return {
+          codeContexts: { ...s.codeContexts, [ev.key]: ev.context },
+          codeContextAt: { ...s.codeContextAt, [ev.key]: Date.now() },
+          codeContextPending,
+        };
+      });
+      break;
+    }
     case "repo.commit":
       useStore.setState((s) => ({
         repoCommits: { ...s.repoCommits, [ev.path]: { ...(s.repoCommits[ev.path] ?? {}), [ev.detail.hash]: ev.detail } },
@@ -1647,6 +1783,8 @@ function applyEvent(ev: ServerEvent): void {
         // chips are RE-REQUESTED instead of dropped: a chip only fetches its summary on mount, so
         // clearing it would make every chip on the board disappear until the card remounted.
         const { [ev.path]: _stale, ...repoDiffs } = s.repoDiffs;
+        // A checkout/pull/commit moved the repo, so every branch reading on screen is now stale.
+        queueMicrotask(() => useStore.getState().refreshCodeContexts());
         for (const threadId of Object.keys(s.gitSummaries)) sendCommand({ type: "thread.gitSummary", threadId });
         return { repoBusy: false, repoResult: { ...ev.result, action: ev.action, at: Date.now() }, repoDiffs, gitStatus: {}, gitDiffs: {} };
       });
@@ -1686,6 +1824,10 @@ function applyEvent(ev: ServerEvent): void {
           gitSummaries: drop(s.gitSummaries),
           gitStatus: drop(s.gitStatus),
           gitDiffs: drop(s.gitDiffs),
+          codeContexts: dropKey(s.codeContexts, codeKey("thread", ev.threadId)),
+          codeContextAt: dropKey(s.codeContextAt, codeKey("thread", ev.threadId)),
+          codeContextPending: dropKey(s.codeContextPending, codeKey("thread", ev.threadId)),
+          codeOrigin: s.codeOrigin?.kind === "thread" && s.codeOrigin.id === ev.threadId ? null : s.codeOrigin,
           runs,
           findings: s.findings.filter((f) => f.threadId !== ev.threadId),
           questions: s.questions.filter((q) => q.threadId !== ev.threadId),

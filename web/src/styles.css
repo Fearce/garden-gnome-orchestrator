@@ -3653,6 +3653,10 @@ button.note-from:hover { color: var(--text-dim); }
 .cowork-chat-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cowork-chat-meta span:last-child { flex: 0 1 auto; }
 .cowork-meta-sep { flex: 0 0 auto; opacity: 0.55; }
+/* The code-context row sits under the session's meta line, inside the identity column, so the routes
+   into the repo line up with the title rather than competing with the status and delete controls. */
+.cowork-chat-identity .codectx { padding: 2px 0 0; }
+.cowork-chat-identity .codectx-actions { margin-left: 12px; }
 .cowork-status {
   flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
   color: var(--text-dim); font: 10px var(--font-mono); text-transform: uppercase; letter-spacing: 0.07em;

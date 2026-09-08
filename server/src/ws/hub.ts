@@ -7,6 +7,7 @@ import type { Director } from "../orchestrator/director.js";
 import type { ThreadActionResult } from "../orchestrator/api.js";
 import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { RepoActionDTO, RepoConsole } from "../orchestrator/repoConsole.js";
+import type { CodeContextService } from "../orchestrator/codeContext.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
 import type { OnlineOffice } from "../office/onlineOffice.js";
@@ -39,6 +40,7 @@ export interface WsContext {
   scheduler: Scheduler;
   notes: OperatorNotes;
   repos: RepoConsole;
+  codeContext: CodeContextService;
   onlineOffice: OnlineOffice;
   cowork: CoworkManager;
 }
@@ -313,6 +315,11 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
         diff: await ctx.repos.diff(cmd.path, cmd.file, cmd.commit),
       });
       break;
+    case "code.context": {
+      const context = await ctx.codeContext.resolve({ kind: cmd.kind, id: cmd.id });
+      send(socket, { type: "code.context", key: `${cmd.kind}:${cmd.id}`, context });
+      break;
+    }
     case "repo.commit":
       send(socket, { type: "repo.commit", path: cmd.path, detail: await ctx.repos.commitDetail(cmd.path, cmd.hash) });
       break;

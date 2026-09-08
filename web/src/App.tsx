@@ -39,8 +39,19 @@ export function App() {
   const detailWidth = useStore((s) => s.detailWidth);
   const directorWidth = useStore((s) => s.directorWidth);
   const [mobilePane, setMobilePane] = useState<MobilePane>("board");
+  const boardView = useStore((s) => s.boardView);
+  // A contextual route (a task's Code/Git button) changes the board area from outside the mobile nav.
+  // On a phone the board is only ONE of two panes, so without this the operator taps a route and stays
+  // looking at the director rail.
+  useEffect(() => {
+    setMobilePane("board");
+  }, [boardView]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [gitOpen, setGitOpen] = useState(false);
+  // The Git console's open state lives in the store: a task, a co-work session or a Supervisor row can
+  // open it ON a specific repository, which a boolean here could not express.
+  const gitOpen = useStore((s) => s.gitConsoleOpen);
+  const openGitConsole = useStore((s) => s.openGitConsole);
+  const closeGitConsole = useStore((s) => s.closeGitConsole);
 
   if (authRequired && !authed) return <Login />;
 
@@ -62,7 +73,7 @@ export function App() {
         <RailToggle />
         {focusMode ? null : (
           <>
-            <GitButton open={gitOpen} onToggle={() => setGitOpen((o) => !o)} />
+            <GitButton open={gitOpen} onToggle={() => (gitOpen ? closeGitConsole() : openGitConsole({ forThread: selected }))} />
             <SettingsButton open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} />
           </>
         )}
@@ -97,7 +108,7 @@ export function App() {
       <QuestionModal />
       <NoticeBanner />
       {settingsOpen ? <Suspense fallback={null}><SettingsPanel onClose={() => setSettingsOpen(false)} /></Suspense> : null}
-      {gitOpen ? <Suspense fallback={null}><GitConsole onClose={() => setGitOpen(false)} /></Suspense> : null}
+      {gitOpen ? <Suspense fallback={null}><GitConsole onClose={closeGitConsole} /></Suspense> : null}
     </div>
   );
 }

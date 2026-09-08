@@ -151,6 +151,8 @@ a.gc-btn { text-decoration: none; }
   font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
   background: color-mix(in oklch, var(--text-faint) 11%, transparent); border: 1px solid color-mix(in oklch, var(--text-faint) 26%, transparent);
 }
+/* The return trip, when the console was opened FROM a task / co-work session / Supervisor row. */
+.gc-return { flex: 0 0 auto; padding-right: 6px; }
 .gc-close { flex: 0 0 auto; align-self: stretch; padding: 0 14px; background: transparent; border: none; border-left: 1px solid var(--line); color: var(--text-faint); font-size: 14px; }
 .gc-close:hover { color: var(--text); background: var(--bg-2); }
 
