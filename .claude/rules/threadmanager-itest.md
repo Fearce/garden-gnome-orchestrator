@@ -34,6 +34,10 @@ changes and assert THAT. "The probe never writes to the DB" compared size+mtime 
 probe ran migrations (on a migrated DB `CREATE TABLE IF NOT EXISTS` writes no pages; WAL misses the
 main file). It only bit staged against a DB with a migration OUTSTANDING, asserting the column stays
 absent. Sibling: an assertion on stdout cannot see a usage error printed to *stderr* (both 08-25).
+Sibling #2, for anything TTL-cached: on this box the setup's own git/DB calls routinely outlast a
+short TTL, so the entry the fix was meant to invalidate expires by itself and the gate passes without
+the fix. Freeze the clock (inject `now`) before concluding the fix isn't load-bearing (09-08,
+`.claude/rules/contextual-code-navigation.md`).
 
 **A gate that THROWS under the revert told you nothing either.** `hitFor(...)!` is a TypeError once
 the fix that produced the row is gone: a stack where you needed the line naming the defect, and every
