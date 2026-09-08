@@ -14,10 +14,10 @@ import type { CodeContext } from "../src/types.js";
 const context = (over: Partial<CodeContext> = {}): CodeContext => ({
   kind: "thread",
   id: "t1",
-  workspace: "C:/work/project",
+  workspace: "C:/temp/project",
   workspaceName: "project",
   ideWorkspaceId: "a".repeat(24),
-  repoPath: "C:/work/project",
+  repoPath: "C:/temp/project",
   repoName: "project",
   repoPrefix: "",
   branch: "master",
@@ -68,7 +68,7 @@ assert.equal(joinWorkspacePath("service", "src/a.ts"), "service/src/a.ts");
 assert.equal(joinWorkspacePath("", "src\\windows\\a.ts"), "src/windows/a.ts", "git can report either separator");
 assert.equal(joinWorkspacePath("", "./src/./a.ts"), "src/a.ts");
 assert.equal(joinWorkspacePath("", "src//a.ts"), "src/a.ts");
-for (const escape of ["../outside.ts", "src/../../outside.ts", "C:/absolute.ts", "..", ""]) {
+for (const escape of ["../outside.ts", "src/../../outside.ts", "C:/temp/absolute.ts", "..", ""]) {
   assert.equal(joinWorkspacePath("", escape), null, `must refuse ${JSON.stringify(escape)}`);
 }
 assert.equal(joinWorkspacePath("service", "../sibling/a.ts"), null, "a prefix does not license a traversal");
