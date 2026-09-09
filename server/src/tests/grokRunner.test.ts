@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { readFile, unlink } from "node:fs/promises";
-import { CodexAgentRun } from "../agents/codexRunner.js";
+import { CodexAgentRun, codexResumeRolloutMissing } from "../agents/codexRunner.js";
 import { GrokAgentRun, stageGrokPrompt } from "../agents/grokRunner.js";
 
 const prompts = Array.from({ length: 32 }, (_, i) => `task-specific-prompt-${i}`);
@@ -58,3 +58,51 @@ for (const [label, resume, expected] of [
 }
 
 console.log("Grok startup-watchdog classification passed.");
+
+assert.equal(
+  codexResumeRolloutMissing("thread/resume: thread/resume failed: no rollout found for thread id 01a08616 (code -32600)"),
+  true,
+  "the real missing-rollout error is a fresh-session recovery condition",
+);
+assert.equal(codexResumeRolloutMissing("thread/resume failed: connection reset"), false, "ordinary resume transport errors still use normal retry policy");
+assert.equal(codexResumeRolloutMissing("no rollout found for thread id mentioned in task prose"), false, "task prose alone cannot trigger session replacement");
+
+const missing = new CodexAgentRun({
+  model: "gpt-5.6-terra",
+  effort: "high",
+  cwd: process.cwd(),
+  apiKey: "sk-test",
+  resume: "missing-codex",
+  freshFallback: "full brief\n\ndurable history\n\nstanding directives",
+});
+let restarted: { prompt: string; resume?: string } | null = null;
+const missingEvents: string[] = [];
+missing.onEvent((event) => { if (event.type === "text") missingEvents.push(event.text); });
+const privateMissing = missing as unknown as {
+  isResumeTurn: boolean;
+  sawFirstEvent: boolean;
+  turnActive: boolean;
+  handleEvent(event: unknown): void;
+  onTurnClose(code: number | null): void;
+  runTurn(prompt: string, resume?: string): Promise<void>;
+};
+privateMissing.isResumeTurn = true;
+privateMissing.sawFirstEvent = true;
+privateMissing.turnActive = true;
+missing.send("latest owner steering while resume is failing");
+privateMissing.runTurn = async (prompt, resume) => { restarted = { prompt, resume }; };
+privateMissing.handleEvent({
+  type: "turn.failed",
+  error: { message: "thread/resume failed: no rollout found for thread id missing-codex", code: -32600 },
+});
+privateMissing.onTurnClose(1);
+assert.equal(missing.startupWedged, true, "a missing rollout is classified as a session startup failure");
+assert.equal(missing.startupWedgeScope, "session");
+assert.equal(missing.resumeHealed, true, "the runner consumes its one fresh-session fallback");
+assert.deepEqual(restarted, {
+  prompt: "full brief\n\ndurable history\n\nstanding directives\n\nlatest owner steering while resume is failing",
+  resume: undefined,
+});
+assert.match(missingEvents.join("\n"), /could not find the saved rollout/);
+
+console.log("Codex missing-rollout recovery checks passed.");

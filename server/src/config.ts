@@ -1,8 +1,10 @@
 import "dotenv/config";
+import { mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { Account } from "./accounts/account.js";
+import { testInvocationUsesDefaultData } from "./runtimeIsolation.js";
 
 // Parse a numeric env var, falling back when unset OR non-numeric — so a typo'd value can't become a
 // NaN that a `<= 0` guard lets through (e.g. a polling interval; setInterval(fn, NaN) fires every tick).
@@ -15,8 +17,25 @@ const here = dirname(fileURLToPath(import.meta.url));
 // src/config.ts (dev) or dist/config.js (prod) — parent is the server root either way.
 const serverRoot = resolve(here, "..");
 // Where the SQLite DB + crash log live. Defaults to server/data; DATA_DIR overrides it so an isolated
-// instance (a test run, a second copy) can keep its own state instead of sharing the live database.
-const dataDir = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : resolve(serverRoot, "data");
+// instance (a test run, a second copy) can keep its own state instead of sharing the live database. npm
+// test children that forgot DATA_DIR are isolated automatically: runner/usage-cache tests previously
+// forged crash records and overwrote live routing telemetry in server/data.
+const implicitTestDataDir = testInvocationUsesDefaultData()
+  ? resolve(tmpdir(), "ggo-test-runtime", `${process.pid}-${Date.now()}`)
+  : null;
+const dataDir = process.env.DATA_DIR
+  ? resolve(process.env.DATA_DIR)
+  : implicitTestDataDir ?? resolve(serverRoot, "data");
+if (implicitTestDataDir) {
+  mkdirSync(implicitTestDataDir, { recursive: true });
+  process.once("exit", () => {
+    try {
+      rmSync(implicitTestDataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    } catch {
+      /* a test crash may leave harmless temp evidence; never turn cleanup into a test result */
+    }
+  });
+}
 
 /**
  * Accounts from ACCOUNT_<n>_TOKEN / ACCOUNT_<n>_LABEL / ACCOUNT_<n>_ID env vars

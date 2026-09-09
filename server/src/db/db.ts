@@ -677,6 +677,22 @@ export type AutoReviewFinishResult =
   | { ok: true; thread: Thread; episode: AutoReviewEpisode }
   | { ok: false; thread: Thread | null; reason: string };
 
+export interface OwnerCommandReceipt {
+  clientId: string;
+  command: string;
+  threadId: string;
+  payloadHash: string;
+  status: "pending" | "accepted" | "completed";
+  result: unknown | null;
+  createdAt: number;
+  acceptedAt: number | null;
+  completedAt: number | null;
+}
+
+export type OwnerCommandReceiptClaim =
+  | { kind: "new" | "existing"; receipt: OwnerCommandReceipt }
+  | { kind: "conflict"; receipt: OwnerCommandReceipt };
+
 export class Db {
   readonly raw: Database.Database;
 
@@ -2567,6 +2583,79 @@ export class Db {
     return (
       this.raw.prepare("SELECT * FROM questions WHERE answer IS NULL ORDER BY created_at ASC").all() as Row[]
     ).map(rowToQuestion);
+  }
+
+  // ---- reconnect-safe owner command receipts ----
+  claimOwnerCommandReceipt(input: {
+    clientId: string;
+    command: string;
+    threadId: string;
+    payloadHash: string;
+  }): OwnerCommandReceiptClaim {
+    const createdAt = now();
+    const inserted = this.raw
+      .prepare(
+        `INSERT INTO owner_command_receipts(client_id, command, thread_id, payload_hash, status, created_at)
+         VALUES(@clientId, @command, @threadId, @payloadHash, 'pending', @createdAt)
+         ON CONFLICT(client_id) DO NOTHING`,
+      )
+      .run({ ...input, createdAt });
+    const receipt = this.ownerCommandReceipt(input.clientId);
+    if (!receipt) throw new Error(`Could not read owner command receipt ${input.clientId}.`);
+    if (
+      receipt.command !== input.command ||
+      receipt.threadId !== input.threadId ||
+      receipt.payloadHash !== input.payloadHash
+    ) {
+      return { kind: "conflict", receipt };
+    }
+    return { kind: inserted.changes === 1 ? "new" : "existing", receipt };
+  }
+
+  ownerCommandReceipt(clientId: string): OwnerCommandReceipt | null {
+    const row = this.raw
+      .prepare("SELECT * FROM owner_command_receipts WHERE client_id = ?")
+      .get(clientId) as Row | undefined;
+    if (!row) return null;
+    return {
+      clientId: row.client_id as string,
+      command: row.command as string,
+      threadId: row.thread_id as string,
+      payloadHash: row.payload_hash as string,
+      status: row.status as OwnerCommandReceipt["status"],
+      result: parseJsonOrNull(row.result_json),
+      createdAt: row.created_at as number,
+      acceptedAt: (row.accepted_at as number | null) ?? null,
+      completedAt: (row.completed_at as number | null) ?? null,
+    };
+  }
+
+  acceptOwnerCommandReceipt(clientId: string): OwnerCommandReceipt {
+    this.raw
+      .prepare(
+        `UPDATE owner_command_receipts
+         SET status = CASE WHEN status = 'pending' THEN 'accepted' ELSE status END,
+             accepted_at = COALESCE(accepted_at, ?)
+         WHERE client_id = ?`,
+      )
+      .run(now(), clientId);
+    const receipt = this.ownerCommandReceipt(clientId);
+    if (!receipt) throw new Error(`No owner command receipt ${clientId}.`);
+    return receipt;
+  }
+
+  completeOwnerCommandReceipt(clientId: string, result: unknown): OwnerCommandReceipt {
+    const at = now();
+    this.raw
+      .prepare(
+        `UPDATE owner_command_receipts
+         SET status = 'completed', result_json = ?, accepted_at = COALESCE(accepted_at, ?), completed_at = ?
+         WHERE client_id = ?`,
+      )
+      .run(JSON.stringify(result), at, at, clientId);
+    const receipt = this.ownerCommandReceipt(clientId);
+    if (!receipt) throw new Error(`No owner command receipt ${clientId}.`);
+    return receipt;
   }
 
   // ---- messages ----

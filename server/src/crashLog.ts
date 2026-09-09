@@ -3,10 +3,12 @@ import { dirname, resolve } from "node:path";
 import { getHeapStatistics } from "node:v8";
 import { config } from "./config.js";
 import { buildLabel } from "./buildInfo.js";
+import { testInvocationUsesDefaultData } from "./runtimeIsolation.js";
 
 // Persistent so a crash is diagnosable regardless of how the process was spawned
 // (the supervisor / script-hub launcher runs it detached and does not capture stdout/stderr).
 const CRASH_LOG = resolve(config.dataDir, "crash.log");
+const DISK_LOG_ENABLED = !testInvocationUsesDefaultData();
 const MAX_BYTES = 5 * 1024 * 1024;
 
 /** Exit code a supervised process uses to request a restart from its supervisor (server/scripts/supervise.cjs).
@@ -79,6 +81,9 @@ function writeRaw(text: string): void {
     // stderr may be a closed/broken pipe under a detached launcher — the disk append below is the durable
     // sink and must run regardless.
   }
+  // Unit/integration tests still get captured stderr, but an un-isolated test process must never forge a
+  // production crash/restart record. Tests that explicitly set a throwaway DATA_DIR retain disk coverage.
+  if (!DISK_LOG_ENABLED) return;
   try {
     mkdirSync(dirname(CRASH_LOG), { recursive: true });
     try {

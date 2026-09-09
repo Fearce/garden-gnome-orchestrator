@@ -639,11 +639,12 @@ type PersistedOutbound = {
   command: ClientCommand;
 };
 
-// Only persist text-only owner commands. This covers Director, Supervisor, and Office messages —
-// the writes an operator most needs to survive a reload — while deliberately not putting dropped
-// image/file attachment bytes into localStorage.
+// Only persist text-only owner commands. This covers Director, Supervisor, Office, and task messages —
+// the writes an operator most needs to survive a reload — while deliberately not putting image/file
+// attachment bytes into localStorage.
 function canPersistOutbound(message: OutboundMessage, command: ClientCommand): boolean {
   if (message.surface === "supervisor" || message.surface === "office") return true;
+  if (message.surface === "task") return command.type === "thread.inject" && !command.images?.length;
   return message.surface === "director" &&
     (command.type === "prompt.new" || command.type === "prompt.direct") &&
     !command.images?.length;
@@ -716,7 +717,15 @@ function scheduleOutboundConfirmation(id: string): void {
   outboundTimers.set(
     id,
     setTimeout(() => {
-      failOutbound(id, "No server receipt arrived after reconnecting. The message was not delivered; resend it when the console is online.");
+      const command = outboundCommands.get(id);
+      if (!command) return;
+      // Silence is not proof of non-delivery: the server may have committed the command just before a
+      // restart dropped its receipt. Keep replaying the idempotent correlation id until a real reply lands.
+      if (sendCommand(command)) scheduleOutboundConfirmation(id);
+      else {
+        scheduleOutboundConfirmation(id);
+        if (!socket || socket.readyState === WebSocket.CLOSED) connect();
+      }
     }, OUTBOUND_CONFIRM_MS),
   );
 }
@@ -769,11 +778,6 @@ function replaySendingOutbound(): void {
     }
     if (sendCommand(command)) scheduleOutboundConfirmation(message.id);
   }
-}
-
-function failSendingOutbound(error: string): void {
-  const pending = useStore.getState().outboundMessages.filter((message) => message.status === "sending");
-  for (const message of pending) failOutbound(message.id, error);
 }
 
 // Keep the proxied WS tunnel alive and self-heal missed events. A reverse proxy
@@ -1064,15 +1068,11 @@ export const useStore = create<State>((set) => ({
     const content = message.trim();
     if (!content) return Promise.resolve(false);
     const clientId = newOutboundId();
-    addOutbound({ id: clientId, surface: "task", threadId, mode, content, createdAt: Date.now(), status: "sending" });
-    return sendThreadActionCommand(
+    const sent = sendOutbound(
+      { id: clientId, surface: "task", threadId, mode, content, createdAt: Date.now(), status: "sending" },
       { type: "thread.inject", threadId, message: content, mode, recipient, images: images?.length ? images : undefined, clientId },
-      "inject",
-      threadId,
-    ).then((ok) => {
-      if (!ok) failOutbound(clientId, "The task did not confirm this instruction. Review its state, then retry if needed.");
-      return ok;
-    });
+    );
+    return Promise.resolve(sent);
   },
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
@@ -1427,16 +1427,6 @@ function pushFeed(threadId: string, item: FeedItem, receivedOutboundId?: string)
       outboundMessages,
     };
   });
-}
-
-function taskDeliveryMatchesMessage(delivery: OutboundMessage, message: Message): boolean {
-  return (
-    delivery.surface === "task" &&
-    delivery.threadId === message.threadId &&
-    message.role === "director" &&
-    message.kind === "system" &&
-    message.content.includes(delivery.content)
-  );
 }
 
 const CHAT_CAP = 1500;
@@ -1881,17 +1871,6 @@ function applyEvent(ev: ServerEvent): void {
       // NOT all-or-nothing. The old guard dropped the full history whenever live events had
       // already populated the feed (the ~20-message / reconnect bug). The DB row wins on a
       // collision; live-only artifacts (in-flight tool_results, system notes) are preserved.
-      const receivedTaskIds = acknowledgeOutbound(
-        useStore
-          .getState()
-          .outboundMessages.filter(
-            (delivery) =>
-              delivery.surface === "task" &&
-              delivery.threadId === ev.threadId &&
-              ev.messages.some((message) => taskDeliveryMatchesMessage(delivery, message)),
-          )
-          .map((delivery) => delivery.id),
-      );
       useStore.setState((s) => {
         const dbItems: FeedItem[] = [];
         for (const m of ev.messages) {
@@ -1947,7 +1926,6 @@ function applyEvent(ev: ServerEvent): void {
             ...s.implementationMemos,
             [ev.threadId]: mergeImplementationMemos(s.implementationMemos[ev.threadId] ?? [], ev.implementationMemos ?? []),
           },
-          outboundMessages: s.outboundMessages.filter((message) => !receivedTaskIds.has(message.id)),
         };
       });
       break;
@@ -1964,9 +1942,7 @@ function applyEvent(ev: ServerEvent): void {
       // A server-originated thread message (e.g. a director inject) — show it in the feed live.
       // messageToFeed + the id-keyed dedup in pushFeed keep it from doubling on a later history merge.
       const fi = messageToFeed(ev.message);
-      const delivery = useStore.getState().outboundMessages.find((candidate) => taskDeliveryMatchesMessage(candidate, ev.message));
-      if (delivery) clearOutboundTimer(delivery.id);
-      if (fi) pushFeed(ev.threadId, fi, delivery?.id);
+      if (fi) pushFeed(ev.threadId, fi);
       break;
     }
     case "thread.action":
@@ -2195,7 +2171,6 @@ export function connect(): void {
     useStore.setState({ connected: false });
     if (e.code === 4401) {
       window.dispatchEvent(new Event("ggo:auth-lost"));
-      failSendingOutbound("Your session expired before the server confirmed this message. Sign in, then resend it.");
       useStore.setState({ authRequired: true, authed: false });
       return; // auth lost — show login instead of reconnect-looping
     }

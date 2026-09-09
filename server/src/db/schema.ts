@@ -144,6 +144,24 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at  INTEGER NOT NULL
 );
 
+-- The browser may lose a WebSocket response after an owner instruction was already persisted. Keep the
+-- correlation id and terminal result so reconnect replay returns the original acknowledgement instead of
+-- performing the instruction twice or showing the owner a false "Not delivered" result.
+CREATE TABLE IF NOT EXISTS owner_command_receipts (
+  client_id     TEXT PRIMARY KEY,
+  command       TEXT NOT NULL,
+  thread_id     TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  payload_hash  TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'pending',
+  result_json   TEXT,
+  created_at    INTEGER NOT NULL,
+  accepted_at   INTEGER,
+  completed_at  INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_owner_command_receipts_thread
+  ON owner_command_receipts(thread_id, created_at);
+
 -- Substring index over messages.content, so the console's search stops being a full table scan of
 -- ~105 MB of tool output. Trigram is the only tokenizer that can serve the LIKE '%q%' semantics the
 -- search has always had — a word tokenizer measured 3.5x smaller but silently lost results ("shake"

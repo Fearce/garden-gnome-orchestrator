@@ -3,6 +3,7 @@ import { useStore, login } from "./store.js";
 import { notifyEnabled, setNotifyEnabled } from "./lib/notify.js";
 import { Director } from "./components/Director.js";
 import { Board } from "./components/Board.js";
+import { ThreadDetail } from "./components/ThreadDetail.js";
 import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
 import { Office } from "./components/Office.js";
@@ -12,9 +13,8 @@ import { apiUrl } from "./lib/base.js";
 import ggLogo from "./assets/gg-logo.png";
 import type { BoardView } from "./types.js";
 
-// These panels are both opt-in and code-heavy (full transcript renderer, repository console, provider
-// settings). Keeping them out of the first board paint makes reconnects responsive on a busy install.
-const ThreadDetail = lazy(() => import("./components/ThreadDetail.js").then(({ ThreadDetail: component }) => ({ default: component })));
+// Settings and Git are opt-in and code-heavy. Task detail stays eager: an already-open pre-deploy tab
+// must not request a removed hashed chunk and sit forever on "Opening task…" after the server restarts.
 const SettingsPanel = lazy(() => import("./components/SettingsPanel.js").then(({ SettingsPanel: component }) => ({ default: component })));
 const GitConsole = lazy(() => import("./components/GitConsole.js").then(({ GitConsole: component }) => ({ default: component })));
 
@@ -102,7 +102,7 @@ export function App() {
       >
         <Director />
         <Board />
-        {selected ? <Suspense fallback={<aside className="detail"><div className="faint" style={{ padding: 18 }}>Opening task…</div></aside>}><ThreadDetail key={selected} /></Suspense> : null}
+        {selected ? <ThreadDetail key={selected} /> : null}
       </div>
       <MobileNav pane={mobilePane} setPane={setMobilePane} />
       <QuestionModal />

@@ -68,6 +68,7 @@ import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { OperatorNotes } from "./notes.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
+import { recoveryHistoryBlock } from "./recoveryHistory.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
 import { buildSelectionPrompt, defaultCandidateEffort, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
 import {
@@ -7275,14 +7276,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // the original task — otherwise the fresh session re-runs the original task WITHOUT the requested
       // fixes, QA keeps bouncing it, and the task eventually fails. The prior edits live in the working
       // tree, so the fresh session re-reads them and applies the feedback on top.
-      const freshKickoff = [doctrine, this.withOfficeNote(thread, "implementor", baseKickoff, false), continuation].filter(Boolean).join("\n\n");
+      const history = recoveryHistoryBlock(this.db.listMessagePage(thread.id, 80).messages);
+      const freshKickoff = [
+        doctrine,
+        this.withOfficeNote(thread, "implementor", baseKickoff, false),
+        history,
+        continuation,
+      ].filter(Boolean).join("\n\n");
       // CLI resume already wedged for this thread → don't pay the 60s watchdog + self-heal spam again;
       // start fresh directly. (startImplementor with no `resume` re-prepends doctrine + office note, so
       // pass just task + continuation here to avoid duplicating them.)
       if (opts.forceFresh || this.codexResumeWedged.has(thread.id)) {
         const why = opts.forceFresh ? "the prior session returned empty" : `${label} resume previously wedged`;
         this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: ${why} — starting a fresh session directly.`);
-        const freshText = [baseKickoff, continuation].filter(Boolean).join("\n\n");
+        const freshText = [baseKickoff, history, continuation].filter(Boolean).join("\n\n");
         return this.startImplementor(thread, freshText, { effort: opts.effort, account: opts.account, images: opts.images });
       }
       this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: resuming the ${label} session ${resumeSession.slice(0, 8)} via the CLI.`);

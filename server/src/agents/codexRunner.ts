@@ -160,6 +160,13 @@ export function codexTokenUsage(raw: Record<string, number> | undefined): TokenU
 function codexErrorLooksRateLimited(value: unknown): boolean {
   return providerErrorLooksRateLimited(value);
 }
+
+/** A saved Codex thread can outlive the CLI rollout it points at. This is session-local, not a provider
+ * outage: retrying the same id cannot work, while a fresh kickoff preserves the task and working tree. */
+export function codexResumeRolloutMissing(value: unknown): boolean {
+  const text = typeof value === "string" ? value : providerErrorText(value);
+  return /thread\/resume/i.test(text) && /no rollout found for thread id/i.test(text);
+}
 // Hard ceiling on the partial-line stdout buffer. A well-behaved Codex CLI emits one newline-terminated
 // JSON event at a time, so this only trips on a runaway newline-less blob — at which point we drop it
 // rather than let it grow the heap unbounded (16 MB is far above any real single event).
@@ -341,6 +348,7 @@ export class CodexAgentRun implements AgentRunLike {
   private turnWatchdog: NodeJS.Timeout | undefined;
   private sawFirstEvent = false;
   private isResumeTurn = false;
+  private resumeRolloutMissing = false;
   // True once a wedged `exec resume` self-healed to a fresh start. Read by the thread manager after the
   // run ends so it can stop attempting resume for this thread (resume keeps wedging → skip the 60s
   // watchdog + self-heal spam every turn and go straight to fresh).
@@ -489,6 +497,7 @@ export class CodexAgentRun implements AgentRunLike {
     this.sawTerminal = false;
     this.sawFirstEvent = false;
     this.isResumeTurn = !!resumeId;
+    this.resumeRolloutMissing = false;
     this.lastErrorMsg = undefined;
     this.transientApiError = false;
     this.transientApiErrorMessage = undefined;
@@ -574,7 +583,10 @@ export class CodexAgentRun implements AgentRunLike {
     // as a fallback failure reason if the turn dies without a turn.failed event.
     child.stderr?.on("data", (chunk: string) => {
       const line = String(chunk).trim();
-      if (line && !/^\d{4}-\d\d-\d\dT/.test(line)) this.lastErrorMsg = line.slice(0, 500);
+      if (line && !/^\d{4}-\d\d-\d\dT/.test(line)) {
+        this.lastErrorMsg = line.slice(0, 500);
+        if (this.isResumeTurn && codexResumeRolloutMissing(line)) this.markResumeRolloutMissing(line);
+      }
     });
     child.on("error", (err) => {
       this.lastErrorMsg = err.message;
@@ -668,6 +680,7 @@ export class CodexAgentRun implements AgentRunLike {
       case "turn.failed": {
         this.sawTerminal = true;
         const msg = providerErrorText(ev.error) || ev.error?.message || this.lastErrorMsg || "Codex turn failed.";
+        if (this.isResumeTurn && codexResumeRolloutMissing(ev.error ?? msg)) this.markResumeRolloutMissing(msg);
         if (codexErrorLooksRateLimited(ev.error ?? msg)) this.markCapped(msg);
         else this.markTransientApiError(msg);
         this.pendingTerminalResult = { subtype: "error", isError: true, result: msg, tokenUsage: codexTokenUsage(ev.usage) };
@@ -679,6 +692,7 @@ export class CodexAgentRun implements AgentRunLike {
         if (ev.message || ev.error) {
           const message = providerErrorText(ev.error) || ev.message || "Codex provider error.";
           this.lastErrorMsg = message.slice(0, 500);
+          if (this.isResumeTurn && codexResumeRolloutMissing(ev.error ?? message)) this.markResumeRolloutMissing(message);
           if (codexErrorLooksRateLimited(ev.error ?? message)) this.markCapped(message);
           else this.markTransientApiError(message);
         }
@@ -789,6 +803,41 @@ export class CodexAgentRun implements AgentRunLike {
     this.transientApiErrorMessage = info.message;
   }
 
+  private markResumeRolloutMissing(message: string): void {
+    this.resumeRolloutMissing = true;
+    this.startupWedged = true;
+    this.startupWedgeScope = "session";
+    this.transientApiError = true;
+    this.transientApiErrorMessage = message;
+  }
+
+  /** Replace an unusable resume with the full recovery kickoff, folding in steering that arrived while
+   * the failed CLI process was closing. Otherwise that queued steering would be retried against the same
+   * missing rollout and then disappear when the second failure fell back to the older kickoff. */
+  private restartResumeAsFresh(extraText = "", extraImages: CodexImage[] = []): boolean {
+    if (
+      !this.isResumeTurn ||
+      (this.sawFirstEvent && !this.resumeRolloutMissing) ||
+      this.resumeHealed ||
+      !this.cfg.freshFallback ||
+      this.stopped
+    ) return false;
+
+    const rolloutMissing = this.resumeRolloutMissing;
+    this.resumeHealed = true;
+    this.lastResult = undefined;
+    this.lastErrorMsg = undefined;
+    this.emit({
+      type: "text",
+      text: rolloutMissing
+        ? "⚠️ Codex could not find the saved rollout for this task — restarting as a fresh session with the full brief, recent durable history, and standing directives; working-tree changes are preserved."
+        : "⚠️ Codex `exec resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved.",
+    });
+    const prompt = [toText(this.cfg.freshFallback), extraText].filter(Boolean).join("\n\n");
+    void this.runTurn(prompt, undefined, [...this.firstImages, ...extraImages]);
+    return true;
+  }
+
   /** Emit the per-turn result event (mirrors AgentRun's `result` SDK message) and cache it. */
   private finishTurn(partial: { subtype: string; isError: boolean; result?: string; numTurns?: number; tokenUsage?: TokenUsage }): void {
     this.clearWatchdog();
@@ -828,6 +877,7 @@ export class CodexAgentRun implements AgentRunLike {
       const batch = this.pendingSends.splice(0, this.pendingSends.length);
       const next = batch.map((s) => s.text).filter(Boolean).join("\n\n");
       const imgs = batch.flatMap((s) => s.images);
+      if (this.restartResumeAsFresh(next, imgs)) return;
       this.lastResult = undefined; // the chained turn produces the next result()
       void this.runTurn(next, this.sessionId, imgs);
       return;
@@ -836,18 +886,11 @@ export class CodexAgentRun implements AgentRunLike {
     // don't synthesize a failure or end. A later send() resumes the session; stop() tears it down.
     if (wasInterrupt) return;
     // Self-heal a wedged `exec resume`: the CLI can hang at 0% CPU (then get watchdog-killed) or exit
-    // instantly replaying an interrupted gpt-5 session, producing ZERO events. If a resume turn died
-    // before its first event and a freshFallback kickoff is available, retry ONCE as a fresh `exec`
+    // instantly replaying an interrupted session, producing ZERO events, or report that its saved rollout
+    // no longer exists. If that session cannot start and a freshFallback kickoff is available, retry ONCE
     // (no resume) carrying the full doctrine + task. Prior apply_patch edits already live in the working
     // tree, so the fresh session re-reads them and continues — far better than stranding the task.
-    if (this.isResumeTurn && !this.sawFirstEvent && !this.resumeHealed && this.cfg.freshFallback && !this.stopped) {
-      this.resumeHealed = true;
-      this.lastResult = undefined;
-      this.lastErrorMsg = undefined;
-      this.emit({ type: "text", text: "⚠️ Codex `exec resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved." });
-      void this.runTurn(toText(this.cfg.freshFallback), undefined, this.firstImages);
-      return;
-    }
+    if (this.restartResumeAsFresh()) return;
     // The process exited without a terminal turn event AND it wasn't an intentional interrupt —
     // synthesize a failure so a waiting result()/nextResult() resolves instead of hanging.
     if (!this.sawTerminal) {

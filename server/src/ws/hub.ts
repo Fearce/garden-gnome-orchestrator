@@ -20,6 +20,7 @@ import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./pro
 import { isAuthed } from "../auth.js";
 import { CHAT_PAGE_SIZE, THREAD_HISTORY_PAGE_SIZE } from "../types.js";
 import type { Message } from "../types.js";
+import { injectThreadWithReceipt } from "./threadInjectionReceipt.js";
 
 /** Owner-facing rewrite for CLI structured-role walls (Grok multi-turn QA especially). Idempotent
  *  on already-humanized prose so new runs and pre-fix raw messages share one display path. */
@@ -181,7 +182,7 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
         socket,
         cmd.threadId,
         "inject",
-        await ctx.manager.injectThread(cmd.threadId, cmd.message, cmd.mode, cmd.images, { recipient: cmd.recipient }),
+        await injectThreadWithReceipt(ctx.db, ctx.manager, cmd),
         cmd.clientId,
       );
       break;

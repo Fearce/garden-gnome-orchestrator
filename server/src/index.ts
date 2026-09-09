@@ -36,6 +36,8 @@ import { registerFreeProviderRoutes } from "./freeProviders/routes.js";
 import { IdeService } from "./ide/service.js";
 import { registerIdeRoutes } from "./ide/routes.js";
 import { randomUUID } from "node:crypto";
+import { acquireInstanceGuard } from "./instanceGuard.js";
+import { testInvocationUsesDefaultData } from "./runtimeIsolation.js";
 import {
   isAuthed,
   authRequired,
@@ -758,6 +760,22 @@ async function main(): Promise<void> {
   }
 }
 
-installCrashGuards();
-logBoot(); // before main(), so a startup that dies still leaves the boot bracketed in crash.log
-void main();
+// Claim this data directory before crash-log boot records, Db construction, or ThreadManager recovery.
+// A duplicate production process used to reconcile live runs and contend on SQLite before its eventual
+// EADDRINUSE, which could strand tasks even though the original listener never stopped.
+const unsafeTestBoot = testInvocationUsesDefaultData();
+const instanceGuard = unsafeTestBoot ? null : acquireInstanceGuard(`${config.dbPath}.owner.sqlite`);
+if (unsafeTestBoot) {
+  // eslint-disable-next-line no-console
+  console.error("A test-launched server must set an isolated DATA_DIR; production recovery was not opened.");
+  process.exitCode = 1;
+} else if (!instanceGuard) {
+  // eslint-disable-next-line no-console
+  console.error(`GG Orchestrator already has an owner for ${config.dbPath}; duplicate boot exits before recovery.`);
+  process.exitCode = 0;
+} else {
+  process.once("exit", () => instanceGuard.release());
+  installCrashGuards();
+  logBoot(); // before main(), so an owned startup that dies still leaves the boot bracketed in crash.log
+  void main();
+}

@@ -36,6 +36,7 @@ const GATES = [
   "test:ext-wake",
   "test:account-usage",
   "test:grok-runner",
+  "test:incident-recovery",
   "test:grok-reasoning",
   "test:grok-usage",
   "test:codex-usage",
