@@ -112,6 +112,7 @@ interface Fixture {
   setVerdict(verdict: Verdict | null): void;
   setJudgement(output: unknown | null): void;
   setBeforeJudge(action: (() => void) | undefined): void;
+  setPersistAutoReviewClaims(on: boolean): void;
   setCorrectionCanLand(on: boolean): void;
   setDiscord(on: boolean): void;
   setManualDeploymentSettlement(on: boolean): void;
@@ -139,6 +140,7 @@ function fixture(): Fixture {
   let manualDeploymentSettles = false;
   let correctionCanLand = false;
   let beforeJudge: (() => void) | undefined;
+  let persistAutoReviewClaims = false;
   let next: unknown | null = { action: "comment", message: "A bounded note is useful.", reasoning: "The task has no live run.", requiresOwner: false };
 
   const host: SupervisorHost = {
@@ -190,6 +192,10 @@ function fixture(): Fixture {
     async autoReview(threadId: string, source?: AutoReviewSource): Promise<ThreadActionResult> {
       autoReviews.push(threadId);
       autoReviewSources.push(source);
+      if (persistAutoReviewClaims) {
+        const claim = db.claimAutoReview(threadId, source === "supervisor" ? "supervisor" : "owner");
+        if (!claim.ok) return { ok: false, state: claim.thread?.state, error: claim.reason };
+      }
       return { ok: true, state: "reviewing" };
     },
     supervisorDiscordReady: () => discord,
@@ -222,6 +228,9 @@ function fixture(): Fixture {
     },
     setBeforeJudge: (action) => {
       beforeJudge = action;
+    },
+    setPersistAutoReviewClaims: (on) => {
+      persistAutoReviewClaims = on;
     },
     setCorrectionCanLand: (on) => {
       correctionCanLand = on;
@@ -409,6 +418,7 @@ async function main(): Promise<void> {
         reasoning: "A normal review park is eligible for the existing verifier.",
         requiresOwner: false,
       });
+      f.setPersistAutoReviewClaims(true);
       const supervisor = f.create();
       supervisor.setEnabled(true);
       const review = f.db.updateThread(task.id, { state: "review", error: "implementation finished; needs review" })!;
@@ -417,6 +427,14 @@ async function main(): Promise<void> {
       check(
         "a newly normal review park receives one bounded judgement and starts the existing auto-reviewer",
         f.getJudgeCalls() === 1 && f.autoReviews[0] === task.id && f.autoReviewSources[0] === "supervisor" && f.findings.some((finding) => finding.threadId === task.id && finding.summary.startsWith("Supervisor delegated review:")),
+      );
+      check(
+        "the launch audit persists the exact task-level attempt counter",
+        f.db.listSupervisorEvents().some(
+          (event) =>
+            event.threadId === task.id &&
+            new RegExp(`unattended auto-review attempt 1/${config.maxUnattendedAutoReviews}`).test(event.detail ?? ""),
+        ),
       );
 
       await supervisor.runNow();
@@ -489,7 +507,7 @@ async function main(): Promise<void> {
       supervisor.setEnabled(true);
       await Promise.all([supervisor.runNow(), supervisor.runNow()]);
       check("concurrent Supervisor ticks spend no judgement and launch no reviewer for an unchanged parked outcome", f.getJudgeCalls() === 0 && f.autoReviews.length === 0);
-      check("the suppressed automatic retry is visible in the durable Supervisor audit", f.db.listSupervisorEvents().some((event) => event.threadId === task.id && /suppressed until new task work/i.test(event.summary)));
+      check("the suppressed automatic retry is visible in the durable Supervisor audit", f.db.listSupervisorEvents().some((event) => event.threadId === task.id && /Automatic re-review is suppressed/i.test(event.summary)));
 
       const implementing = f.db.updateThread(task.id, { state: "implementing", error: null })!;
       f.hub.publish({ type: "thread.upsert", thread: implementing });
@@ -500,6 +518,56 @@ async function main(): Promise<void> {
       f.hub.publish({ type: "thread.upsert", thread: review });
       await waitFor(() => f.autoReviews.length === 1);
       check("a genuinely new work revision re-arms one legitimate automatic review", f.getJudgeCalls() === 1 && f.autoReviews.length === 1 && f.autoReviewSources[0] === "supervisor");
+      supervisor.setEnabled(false);
+    } finally {
+      f.close();
+    }
+  }
+  {
+    const f = fixture();
+    try {
+      const task = makeTask(f.db, "cross-revision review loop", "review");
+      const mintWork = (): void => {
+        const run = f.db.createRun({ threadId: task.id, role: "implementor", model: "test-model" });
+        f.db.updateRun(run.id, { state: "done", endedAt: Date.now() });
+      };
+      for (let attempt = 1; attempt <= config.maxUnattendedAutoReviews; attempt++) {
+        if (attempt > 1) mintWork();
+        const claim = f.db.claimAutoReview(task.id, "supervisor");
+        if (!claim.ok) throw new Error(claim.reason);
+        const parked = f.db.finishAutoReview({
+          threadId: task.id,
+          claimToken: claim.claimToken,
+          status: "parked",
+          reason: `Auto-review attempt ${attempt} did not settle the task.`,
+          verdict: { accept: false, summary: "still not accepted" },
+        });
+        if (!parked.ok) throw new Error(parked.reason);
+      }
+      mintWork();
+      f.setVerdict({
+        action: "start_auto_review",
+        message: "Try the reviewer yet again.",
+        reasoning: "A revision-only guard would keep looping here.",
+        requiresOwner: false,
+      });
+      const supervisor = f.create();
+      supervisor.setEnabled(true);
+      await supervisor.runNow();
+      check(
+        "a spent task-level budget blocks a third cross-revision handoff before paid judgement",
+        f.getJudgeCalls() === 0 && f.autoReviews.length === 0 && f.db.getThread(task.id)?.state === "review",
+      );
+      check(
+        "the free suppression audit explains that this task now belongs to the owner",
+        f.db.listSupervisorEvents().some(
+          (event) =>
+            event.threadId === task.id &&
+            event.summary.includes(`already ran unattended ${config.maxUnattendedAutoReviews} ${config.maxUnattendedAutoReviews === 1 ? "time" : "times"}`) &&
+            /explicit owner re-review remains available/.test(event.summary) &&
+            !/until new task work/.test(event.summary),
+        ),
+      );
       supervisor.setEnabled(false);
     } finally {
       f.close();

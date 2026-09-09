@@ -27,6 +27,9 @@
 process.env.CAP_RETRY_MS = "0"; // no cap-supervisor interval during the test
 process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
+// Pinned, not inherited: Test X's arithmetic IS the budget, so a future default change must fail loudly
+// here rather than quietly re-open the loop. Set before config.js is evaluated (imports below are dynamic).
+process.env.MAX_UNATTENDED_AUTO_REVIEWS = "2";
 
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -868,6 +871,86 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test X: the unattended budget bounds the Supervisor ACROSS revisions ---------------------------
+  // The reported loop, and the reason a per-revision guard alone could not close it: whatever the
+  // reviewer hands a task back to, the lane's own remediation — a fix round, a superseded-instruction
+  // resume, a restart auto-resume — writes a NEW non-reviewer run, which reads as fresh work and re-arms
+  // the next unattended claim. Live evidence before this bound: one task took 4 paid Supervisor
+  // check-ins and 5 reviewer runs in 9.5h, each repeat preceded by exactly one implementor run. So the
+  // budget is charged per TASK and deliberately survives a revision change; only an acceptance, an
+  // explicit owner review, or a Retry restores it.
+  console.log("\nTest X — the unattended Supervisor budget is spent across revisions, not reset by them");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedParkedTask(h);
+      // A hand-back with no concrete issues parks immediately (Test M), so each episode here is exactly
+      // one reviewer run — the arithmetic below is about the budget, not the fix loop.
+      h.setOutcome(okResult({ accept: false, summary: "still not convinced" }));
+      // Stand in for whatever writes a non-reviewer run once an episode has already settled. This is the
+      // shape the per-revision guard cannot see, because the run starts OUTSIDE the episode window.
+      const mintNewWork = (): void => {
+        const run = h.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5", account: "acct-a" });
+        h.db.updateRun(run.id, { state: "done", endedAt: Date.now() });
+      };
+
+      const first = await h.mgr.autoReview(id, "supervisor");
+      await settle();
+      check("the first unattended review runs and parks", first.ok && h.roleCalls.length === 1 && h.db.getThread(id)?.state === "review", JSON.stringify({ first, roleCalls: h.roleCalls }));
+      check("it charged one unattended attempt", h.db.getAutoReviewEpisode(id)?.unattendedStreak === 1, JSON.stringify(h.db.getAutoReviewEpisode(id)));
+
+      mintNewWork();
+      check("the new run really did move the reviewable revision", h.db.getAutoReviewEpisode(id)?.revision !== h.db.autoReviewRevision(id), JSON.stringify({ episode: h.db.getAutoReviewEpisode(id)?.revision, live: h.db.autoReviewRevision(id) }));
+      const second = await h.mgr.autoReview(id, "supervisor");
+      await settle();
+      check("genuinely new work still buys the Supervisor a second look", second.ok && h.roleCalls.length === 2, JSON.stringify({ second, roleCalls: h.roleCalls }));
+      check("...and that spends the budget", h.db.getAutoReviewEpisode(id)?.unattendedStreak === 2, JSON.stringify(h.db.getAutoReviewEpisode(id)));
+      check(
+        "the owner is told exactly once that automation has stood down",
+        h.db.listFindings(id).filter((f) => f.summary.includes("used its unattended attempts")).length === 1,
+        JSON.stringify(h.db.listFindings(id).map((f) => f.summary)),
+      );
+
+      const revisionBefore = h.db.autoReviewRevision(id);
+      mintNewWork();
+      check("a third revision exists to tempt it with", h.db.autoReviewRevision(id) !== revisionBefore, String(h.db.autoReviewRevision(id)));
+      const third = await h.mgr.autoReview(id, "supervisor");
+      await settle();
+      check(
+        "THE FIX: a new revision no longer re-arms the unattended Supervisor",
+        !third.ok && h.roleCalls.length === 2 && h.db.getThread(id)?.state === "review",
+        JSON.stringify({ third, roleCalls: h.roleCalls, state: h.db.getThread(id)?.state }),
+      );
+      check("...and the refusal says why, durably", (third.error ?? "").includes("already ran unattended"), String(third.error));
+      check(
+        "the same reason is what the Supervisor's own free pre-check reads, so no paid judgement is spent",
+        (h.db.autoReviewAutomationBlock(id) ?? "").includes("already ran unattended"),
+        String(h.db.autoReviewAutomationBlock(id)),
+      );
+
+      // The owner is never fenced out, and their click is what restores automation's trust.
+      const owner = await h.mgr.autoReview(id, "owner");
+      await settle();
+      check("an explicit owner review is never blocked by the unattended budget", owner.ok && h.roleCalls.length === 3, JSON.stringify({ owner, roleCalls: h.roleCalls }));
+      check("claiming for the owner resets the budget even when the verdict is another hand-back", h.db.getAutoReviewEpisode(id)?.unattendedStreak === 0, JSON.stringify(h.db.getAutoReviewEpisode(id)));
+
+      mintNewWork();
+      const fourth = await h.mgr.autoReview(id, "supervisor");
+      await settle();
+      check("with the budget restored the Supervisor may help again", fourth.ok && h.roleCalls.length === 4, JSON.stringify({ fourth, roleCalls: h.roleCalls }));
+
+      // An acceptance is the other reset: automation demonstrably works on this task again.
+      h.setOutcome(okResult({ accept: true, summary: "the work is finished" }));
+      mintNewWork();
+      const fifth = await h.mgr.autoReview(id, "supervisor");
+      await settle();
+      check("an accepting unattended review still settles the task", fifth.ok && h.db.getThread(id)?.state === "done", JSON.stringify({ fifth, state: h.db.getThread(id)?.state }));
+      check("acceptance restores the budget", h.db.getAutoReviewEpisode(id)?.unattendedStreak === 0, JSON.stringify(h.db.getAutoReviewEpisode(id)));
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Test M: what does NOT buy a fix round ----------------------------------------------------------
   // A verdict-less run has nothing to act on, and an `accept: false` with no issues would send the
   // implementor in to guess. Both belong on the owner's desk instead.
@@ -1201,12 +1284,14 @@ async function main(): Promise<void> {
       // Recreate exactly the pre-migration shape, then reopen through the real constructor migration.
       db.raw.prepare("DELETE FROM auto_review_episodes").run();
       db.raw.prepare("DELETE FROM kv WHERE key='auto_review_episode_backfill_v1'").run();
+      db.raw.exec("ALTER TABLE auto_review_episodes DROP COLUMN unattended_streak");
       db.raw.close();
       db = new Db(dbPath);
 
       const parkedEpisode = db.getAutoReviewEpisode(parked.id);
       const activeEpisode = db.getAutoReviewEpisode(active.id);
       check("a legacy hand-back becomes a terminal parked suppression record", parkedEpisode?.status === "parked" && parkedEpisode.source === "reconciled" && parkedEpisode.claimToken === null, JSON.stringify(parkedEpisode));
+      check("the task-level budget column migrates onto an existing episode table conservatively", parkedEpisode?.unattendedStreak === 0, JSON.stringify(parkedEpisode));
       check("a legacy in-flight reviewer receives a boot-reconcilable ownership token", activeEpisode?.status === "running" && activeEpisode.source === "reconciled" && !!activeEpisode.claimToken, JSON.stringify(activeEpisode));
       check("migration never manufactures acceptance for an already-done historical row", db.getThread(done.id)?.state === "done" && db.getAutoReviewEpisode(done.id) === null, JSON.stringify(db.getAutoReviewEpisode(done.id)));
       check("migration does not suppress a review parked after newer work than the historical reviewer saw", db.getAutoReviewEpisode(fresh.id) === null, JSON.stringify(db.getAutoReviewEpisode(fresh.id)));

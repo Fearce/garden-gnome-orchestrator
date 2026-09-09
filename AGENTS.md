@@ -39,9 +39,11 @@ read-only + Bash, `docs/ARCHITECTURE.md` §5). It flips the thread to `reviewing
 `review` with its reasons — an errored/verdict-less run always re-parks, never accepts. So `done`
 now has three sources: QA, a manual Mark done, and an accepted auto-review. A durable
 `auto_review_episodes` row owns the current non-reviewer work revision: unattended Supervisor review may
-claim it once, while an explicit owner click may deliberately retry it. Run
-`npm run probe:auto-review --prefix server` for a board-wide convergence audit. Gates: `test:auto-review`
-and `test:auto-review-health`.
+claim it once and has a two-claim task-level budget across revisions, while an explicit owner click may
+deliberately retry and reset that budget. Acceptance and Retry also reset it. Once spent, the Supervisor
+posts one handoff and leaves later revisions with the owner instead of restarting the review loop. Run
+`npm run probe:auto-review --prefix server` for a board-wide convergence audit. Gates:
+`test:auto-review`, `test:director-supervisor`, and `test:auto-review-health`.
 
 ## Run / build
 - Dev (hot reload): `npm run dev` at repo root — tsx-watch server + Vite web.

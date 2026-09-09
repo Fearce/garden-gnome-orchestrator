@@ -66,7 +66,14 @@ could mark it done on a verdict the reviewer never gave. The round runs under `i
 `reviewFixing` marker so a restart re-parks it for a fresh click instead of reviving it into the pipeline,
 and the inject/resume gates key on the episode (not the state) so nothing spawns a second implementor in
 the window where the fix run has ended but the state hasn't flipped back. So `done` has three
-sources: QA, a manual Mark done, and an accepted auto-review. Gate: `test:auto-review`.
+sources: QA, a manual Mark done, and an accepted auto-review. An unattended Supervisor gets at most one
+claim per work revision and, by default, two consecutive claims across the whole task
+(`MAX_UNATTENDED_AUTO_REVIEWS`). The cross-task budget survives new implementor runs because those are
+exactly what used to re-arm the review/fix/review loop forever. Acceptance, an explicit owner auto-review,
+or Retry restores the budget; reaching it posts one clear handoff and leaves later revisions with the
+owner. `npm run probe:auto-review --prefix server` (nightly step 12) audits the live streak, persisted
+attempt markers, same-revision repeats, and old unmeasured history. Gates: `test:auto-review`,
+`test:director-supervisor`, and `test:auto-review-health`.
 
 ## Standing owner directives (an injection outlives the session it was sent to)
 An owner instruction injected mid-task ("put this on a separate branch") used to reach ONLY the session

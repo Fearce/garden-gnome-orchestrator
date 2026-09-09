@@ -712,6 +712,9 @@ export interface AutoReviewEpisode {
   source: AutoReviewSource;
   claimToken: string | null;
   attemptCount: number;
+  /** Consecutive unattended (Supervisor) claims on this task that never reached an accepted verdict.
+   *  Survives a revision change on purpose — that is what stops the review/fix/review loop. */
+  unattendedStreak: number;
   reason: string | null;
   verdict: ReviewerOutput | null;
   verdictRunId: string | null;

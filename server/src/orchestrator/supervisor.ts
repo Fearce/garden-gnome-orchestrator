@@ -25,6 +25,7 @@
 
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
+import { config } from "../config.js";
 import type { PostFindingInput, ThreadActionResult } from "./api.js";
 import type { JsonSchemaLike } from "../agents/structuredText.js";
 import { SupervisorChat, type SupervisorChatHost } from "./supervisorChat.js";
@@ -710,16 +711,17 @@ export class DirectorSupervisor {
       ? this.host.db.autoReviewAutomationBlock(threadId)
       : null;
     if (autoReviewBlock) {
-      // This is the convergence guard: the reviewer's own terminal hand-back is not a new work
-      // revision. Stop before a paid judgement, and leave one durable explanation for lifecycle/manual
-      // signals; routine sweeps stay silent. The owner can still click Auto-review explicitly.
+      // This is the convergence guard: it covers both an unchanged terminal hand-back and a task that
+      // has spent its cross-revision unattended budget. Stop before a paid judgement, and leave one
+      // durable explanation for lifecycle/manual signals; routine sweeps stay silent. The owner can
+      // still click Auto-review explicitly.
       if (trigger === "state_change" || trigger === "manual") {
         this.record(
           thread,
           trigger,
           "skip",
           "start_auto_review",
-          `${autoReviewBlock} Automatic re-review is suppressed until new task work is recorded; an explicit owner re-review remains available.`,
+          `${autoReviewBlock} Automatic re-review is suppressed; an explicit owner re-review remains available.`,
           false,
         );
       }
@@ -951,6 +953,16 @@ export class DirectorSupervisor {
     judged?: SupervisorJudgement | null,
     notifiedDiscord = false,
   ): void {
+    const autoReviewEpisode =
+      kind === "action" && action === "start_auto_review"
+        ? this.host.db.getAutoReviewEpisode(thread.id)
+        : null;
+    const detail = [
+      judged ? `model ${judged.model} (${judged.provider})` : null,
+      autoReviewEpisode?.source === "supervisor"
+        ? `unattended auto-review attempt ${autoReviewEpisode.unattendedStreak}/${config.maxUnattendedAutoReviews}`
+        : null,
+    ].filter(Boolean).join("; ") || null;
     const event = this.host.db.recordSupervisorEvent({
       threadId: thread.id,
       threadTitle: thread.title,
@@ -959,7 +971,9 @@ export class DirectorSupervisor {
       kind,
       action,
       summary: clip(summary, 500),
-      detail: judged ? `model ${judged.model} (${judged.provider})` : null,
+      // The attempt marker makes the task-level bound historically auditable even after an explicit
+      // owner review or acceptance resets the episode's live streak.
+      detail,
       usedAgent,
       costUsd: judged?.costUsd ?? null,
       totalTokens: judged?.tokenUsage?.totalTokens ?? null,

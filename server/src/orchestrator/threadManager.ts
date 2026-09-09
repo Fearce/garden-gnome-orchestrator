@@ -10851,8 +10851,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       return { ok: false, error: this.noteManualCapacityWait(thread, "reviewer", reviewerDemand) };
     }
 
-    // The DB claim is the cross-tick/process lock and the unattended one-attempt-per-revision budget.
-    // Explicit owner/API calls may deliberately retry an unchanged parked outcome.
+    // The DB claim is the cross-tick/process lock. It enforces both one unattended attempt per revision
+    // and the task-level budget that stops new revisions from re-arming the same review loop forever.
+    // Explicit owner/API calls may deliberately retry and restore that unattended budget.
     const claim = this.db.claimAutoReview(threadId, source === "supervisor" ? "supervisor" : "owner");
     if (!claim.ok) {
       const fresh = claim.thread ?? this.db.getThread(threadId);
@@ -10874,17 +10875,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       await this.forceStopThreadRuns(threadId);
     } catch (e) {
       const reason = `Auto-review couldn't start safely: ${String(e)}`.slice(0, MAX_REVIEW_ERROR_LEN);
-      const settled = this.db.finishAutoReview({
-        threadId,
-        claimToken: claim.claimToken,
-        status: "parked",
-        reason,
-      });
-      if (settled.ok) this.publishState(settled.thread);
+      this.parkAutoReview(threadId, claim.claimToken, reason);
       this.reviewing.delete(threadId);
       this.activePipelines.delete(threadId);
       this.recoverReleasedCapacity();
-      return { ok: false, state: settled.thread?.state, error: reason };
+      return { ok: false, state: this.db.getThread(threadId)?.state, error: reason };
     }
     // An instruction that survived a restart/reviewer race stays open in the durable store. A deliberate
     // fresh Auto-review click reassigns it to this claim so the new reviewer sees it in its first turn;
@@ -10967,7 +10962,27 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   private parkAutoReview(threadId: string, claimToken: string, reason: string, verdict?: ReviewerOutput | null): boolean {
-    return this.persistAutoReviewOutcome(threadId, claimToken, "parked", reason, verdict);
+    const parked = this.persistAutoReviewOutcome(threadId, claimToken, "parked", reason, verdict);
+    if (parked) this.announceUnattendedBudgetSpent(threadId);
+    return parked;
+  }
+
+  /** Say ONCE, on the task's own feed, that unattended automation has stood down. Without it the
+   *  Supervisor simply goes quiet on this task and the owner has no way to tell "nobody looked yet" from
+   *  "the reviewer tried and could not settle it". An episode settles once, so this posts once. */
+  private announceUnattendedBudgetSpent(threadId: string): void {
+    const episode = this.db.getAutoReviewEpisode(threadId);
+    if (!episode || episode.source !== "supervisor" || episode.unattendedStreak < config.maxUnattendedAutoReviews) return;
+    this.postFinding({
+      threadId,
+      fromRole: "reviewer",
+      summary: "Auto-review has used its unattended attempts on this task — it's yours now",
+      detail:
+        `The Supervisor started an auto-review of this task ${episode.unattendedStreak} times and none of them settled it. ` +
+        `It will not hand this task to the reviewer again on its own, however much the work changes — that repetition is the loop this budget exists to stop.\n\n` +
+        `Clicking "Auto-review & mark done" runs a review anyway and restores the budget; Mark done and Resume are unaffected.`,
+      severity: "warning",
+    });
   }
 
   private parkSupersededAutoReview(threadId: string, claimToken: string): boolean {

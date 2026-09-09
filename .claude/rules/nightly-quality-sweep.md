@@ -209,6 +209,19 @@ and absent optional provider is shown as `OFF` and does not fail. Never turn a r
 `UNKNOWN` means currency was not proved. A current disk plus an old/unknown live SDK needs the normal coordinated
 `npm run deploy --prefix server` restart. Gate: `test:provider-toolchain`.
 
+## 12. `npm run probe:auto-review --prefix server` — is the unattended lane converging, or looping
+Steps 3/4 read runs and parks, so neither sees the failure the owner switched the Supervisor OFF for:
+auto-review parks a task in `review`, fresh work creates a new revision, and the Supervisor hands the same
+task straight back forever. There are two independent fences. The current `auto_review_episodes` row must
+never exceed its cross-revision unattended budget (default 2); every new Supervisor launch also persists
+its exact attempt/budget counter in the append-only Supervisor audit, so a later owner reset cannot erase
+proof that a claim crossed the bound. Separately, the audit groups launches by their live work revision and
+flags a second claim on unchanged work. Reviewer recovery and a fix-round re-check are reviewer RUNS inside
+one claim, so neither is miscounted. Old rows lack the attempt marker; their raw per-task load is context,
+not a verdict. Same-revision repeats predating `6532716` print as repaired history. `--days N` widens the
+window. **Read the evidence line before the verdict:** an empty window says `NO EVIDENCE`, never PASS.
+Gate: `test:auto-review-health`, with both loop shapes and the legacy/unmeasured cases pinned.
+
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already completed — only verify live `dist` + health.
 - **Do NOT `git add -A`** when `health` lists dirty paths; those are usually a concurrent implementor's WIP

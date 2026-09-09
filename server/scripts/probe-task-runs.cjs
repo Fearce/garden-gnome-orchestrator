@@ -37,7 +37,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 const { qaLoopReading, roundsCap } = require("./qa-loop-check.cjs");
-const { autoReviewReading, autoReviewTableExists, selectAutoReviewRows } = require("./auto-review-health.cjs");
+const { autoReviewReading, autoReviewTableExists, selectAutoReviewRows, unattendedBudget } = require("./auto-review-health.cjs");
 const { activeDeadlineReading } = require("./task-deadline-reading.cjs");
 const { collectTaskTimeline, renderTaskTimeline, utcStamp } = require("./task-timeline.cjs");
 const { modelPinReading, parsePersistedModelRequest, parseProbeArgs } = require("./model-pin-reading.cjs");
@@ -165,6 +165,8 @@ if (!autoReviewTableExists(db)) {
       status: row.status,
       source: row.source,
       attemptsOnRevision: row.attemptCount,
+      unattendedClaimsSinceReset: row.unattendedStreak ?? "unmeasured (pre-migration)",
+      unattendedClaimBudget: unattendedBudget(),
       episodeRevision: row.episodeRevision,
       currentRevision: row.currentRevision,
       revisionCurrent: reading.revisionCurrent,

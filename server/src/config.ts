@@ -309,6 +309,12 @@ export const config = {
   // Implementor fix-rounds the auto-reviewer may trigger before it gives up and parks the task for the
   // owner. Surfaced as an operator setting (persisted in kv) — this is just the first-boot default.
   maxReviewFixRounds: Number(process.env.MAX_REVIEW_FIX_ROUNDS ?? 1),
+  // How many times the UNATTENDED Supervisor may hand ONE task to the auto-reviewer before that task
+  // belongs to the owner. The per-revision guard alone never converges, because the lane's own
+  // remediation — a fix round, a superseded-instruction resume, a restart auto-resume — writes a new
+  // non-reviewer run that reads as fresh work and re-arms the next claim. An acceptance, an explicit
+  // owner review, or a Retry restores the budget.
+  maxUnattendedAutoReviews: Math.max(1, Math.floor(numEnv(process.env.MAX_UNATTENDED_AUTO_REVIEWS, 2))),
   // Default ceiling on pipelines running at once; further dispatches wait in 'queued' until a slot
   // frees. Surfaced as an operator setting (persisted in kv) — this is just the first-boot default.
   maxConcurrent: Number(process.env.MAX_CONCURRENT ?? 3),

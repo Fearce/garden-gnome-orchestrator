@@ -331,7 +331,9 @@ CREATE TABLE IF NOT EXISTS supervisor_chat_turns (
 
 -- One durable auto-review ownership/outcome row per task. revision identifies the latest non-reviewer
 -- work run; a Supervisor may claim a revision only once, while an explicit owner click may deliberately
--- retry it. claim_token fences stale callbacks after restarts and concurrent server/tick races. The
+-- retry it. unattended_streak bounds the Supervisor ACROSS revisions, because the lane's own remediation
+-- writes non-reviewer runs and would otherwise re-arm itself forever; an acceptance or an owner claim
+-- resets it. claim_token fences stale callbacks after restarts and concurrent server/tick races. The
 -- task's normal state/error remain the owner-facing source of truth; this table is the convergence lock.
 CREATE TABLE IF NOT EXISTS auto_review_episodes (
   thread_id      TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
@@ -340,6 +342,7 @@ CREATE TABLE IF NOT EXISTS auto_review_episodes (
   source         TEXT NOT NULL,
   claim_token    TEXT,
   attempt_count  INTEGER NOT NULL DEFAULT 1,
+  unattended_streak INTEGER NOT NULL DEFAULT 0,
   reason         TEXT,
   verdict_json   TEXT,
   verdict_run_id TEXT,

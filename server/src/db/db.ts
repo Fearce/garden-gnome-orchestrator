@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
+import { config } from "../config.js";
 import { manualDeploymentSummary, parseManualDeployment, parseManualDeploymentClaim } from "../orchestrator/manualDeployment.js";
 import {
   BACKFILL_CHUNK,
@@ -488,6 +489,12 @@ function parseReviewerVerdict(raw: unknown): ReviewerOutput | null {
   }
 }
 
+/** Why unattended automation has stopped delegating this task — the sentence the Supervisor's audit row
+ *  and the claim refusal both carry. `auto-review-health`'s SUPPRESSION_LITERALS pins its stable prefix. */
+function unattendedBudgetSpentReason(streak: number): string {
+  return `Auto-review already ran unattended ${streak} ${streak === 1 ? "time" : "times"} on this task without settling it, so it now needs you; an explicit owner re-review remains available.`;
+}
+
 function rowToAutoReviewEpisode(r: Row): AutoReviewEpisode {
   return {
     threadId: r.thread_id as string,
@@ -496,6 +503,7 @@ function rowToAutoReviewEpisode(r: Row): AutoReviewEpisode {
     source: r.source as AutoReviewSource,
     claimToken: (r.claim_token as string | null) ?? null,
     attemptCount: Number(r.attempt_count),
+    unattendedStreak: Number(r.unattended_streak ?? 0),
     reason: (r.reason as string | null) ?? null,
     verdict: parseReviewerVerdict(r.verdict_json),
     verdictRunId: (r.verdict_run_id as string | null) ?? null,
@@ -729,6 +737,7 @@ export class Db {
       "ALTER TABLE model_grades ADD COLUMN total_tokens INTEGER",
       "ALTER TABLE model_grades ADD COLUMN token_usage_complete INTEGER",
       "ALTER TABLE chat_messages ADD COLUMN remote_instance TEXT",
+      "ALTER TABLE auto_review_episodes ADD COLUMN unattended_streak INTEGER NOT NULL DEFAULT 0",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -1632,18 +1641,26 @@ export class Db {
     );
   }
 
-  /** Deterministic unattended-Supervisor gate. Null means this revision has never reached a terminal
-   * auto-review outcome and may be delegated. A non-null reason is durable across restarts and prevents
-   * both another reviewer launch and another paid Supervisor judgement over the same unchanged work. */
+  /** Deterministic unattended-Supervisor gate. Null means neither convergence fence blocks delegation.
+   * A non-null reason is durable across restarts and prevents both another reviewer launch and another
+   * paid Supervisor judgement: once for an unchanged revision, and permanently for a spent task budget
+   * until the owner explicitly re-reviews, the work is accepted, or the task is retried. */
   autoReviewAutomationBlock(threadId: string): string | null {
     const deployment = parseManualDeployment(this.getThreadStageOutputs(threadId).manualDeployment);
     if (deployment?.status === "verified") {
       return "This task has a verified manual deployment handoff and is terminal in GGO.";
     }
-    const revision = this.autoReviewRevision(threadId);
     const episode = this.getAutoReviewEpisode(threadId);
+    // Ownership is task-scoped even if the active fix round already minted a newer work revision.
+    if (episode?.status === "running") return "Auto-review already owns this unchanged task.";
+    // Checked BEFORE the revision, and deliberately not reset by one: a task the automation could not
+    // settle keeps minting new revisions through its own remediation, so a per-revision-only gate hands
+    // the same task back to the reviewer forever. Spending the budget makes the task the owner's.
+    if (episode && episode.status !== "running" && episode.unattendedStreak >= config.maxUnattendedAutoReviews) {
+      return unattendedBudgetSpentReason(episode.unattendedStreak);
+    }
+    const revision = this.autoReviewRevision(threadId);
     if (!revision || !episode || episode.revision !== revision) return null;
-    if (episode.status === "running") return "Auto-review already owns this unchanged task.";
     if (episode.status === "accepted") return "This revision already has a recorded accepted auto-review verdict.";
     const why = episode.reason?.trim() || "the reviewer did not accept it";
     return `Auto-review already parked this unchanged task: ${why}`;
@@ -1651,7 +1668,8 @@ export class Db {
 
   /** Atomically claim `review -> reviewing` and persist the owner token before any runner work starts.
    * The CAS is the cross-manager/process lock; `claim_token` fences late callbacks after restart. An
-   * unattended Supervisor gets one claim per work revision, while an explicit owner may retry. */
+   * unattended Supervisor gets one claim per work revision and a bounded streak across revisions,
+   * while an explicit owner may retry and reset that streak. */
   claimAutoReview(threadId: string, source: Exclude<AutoReviewSource, "reconciled">): AutoReviewClaimResult {
     return this.raw.transaction((): AutoReviewClaimResult => {
       const current = this.getThread(threadId);
@@ -1671,8 +1689,11 @@ export class Db {
       const revision = this.autoReviewRevision(threadId);
       if (!revision) return { ok: false, thread: current, reason: "No such task." };
       const previous = this.getAutoReviewEpisode(threadId);
-      if (source === "supervisor" && previous?.revision === revision) {
-        return { ok: false, thread: current, reason: this.autoReviewAutomationBlock(threadId) ?? "This unchanged review was already attempted." };
+      // One authority for both budgets, evaluated inside the transaction so a concurrent tick cannot
+      // slip a claim past the free pre-check the Supervisor uses to avoid spending a paid judgement.
+      const block = source === "supervisor" ? this.autoReviewAutomationBlock(threadId) : null;
+      if (block || (source === "supervisor" && previous?.revision === revision)) {
+        return { ok: false, thread: current, reason: block ?? "This unchanged review was already attempted." };
       }
 
       const at = now();
@@ -1684,20 +1705,25 @@ export class Db {
         return { ok: false, thread: this.getThread(threadId), reason: "Another action claimed this task before auto-review could start." };
       }
       const attemptCount = previous?.revision === revision ? previous.attemptCount + 1 : 1;
+      // The unattended budget is spent at CLAIM, not at verdict: a reviewer killed by a restart or an
+      // owner instruction still cost a paid judgement, a launch and a feed entry — the noise the budget
+      // exists to bound. An explicit owner claim means they are engaged again, so it starts over.
+      const unattendedStreak = source === "supervisor" ? (previous?.unattendedStreak ?? 0) + 1 : 0;
       this.raw
         .prepare(
           `INSERT INTO auto_review_episodes
-             (thread_id, revision, status, source, claim_token, attempt_count, reason, verdict_json,
-              verdict_run_id, started_at, settled_at, updated_at)
-           VALUES (@threadId, @revision, 'running', @source, @claimToken, @attemptCount, NULL, NULL,
-                   NULL, @at, NULL, @at)
+             (thread_id, revision, status, source, claim_token, attempt_count, unattended_streak, reason,
+              verdict_json, verdict_run_id, started_at, settled_at, updated_at)
+           VALUES (@threadId, @revision, 'running', @source, @claimToken, @attemptCount, @unattendedStreak,
+                   NULL, NULL, NULL, @at, NULL, @at)
            ON CONFLICT(thread_id) DO UPDATE SET
              revision=excluded.revision, status='running', source=excluded.source,
              claim_token=excluded.claim_token, attempt_count=excluded.attempt_count,
+             unattended_streak=excluded.unattended_streak,
              reason=NULL, verdict_json=NULL, verdict_run_id=NULL,
              started_at=excluded.started_at, settled_at=NULL, updated_at=excluded.updated_at`,
         )
-        .run({ threadId, revision, source, claimToken, attemptCount, at });
+        .run({ threadId, revision, source, claimToken, attemptCount, unattendedStreak, at });
       return {
         ok: true,
         thread: this.getThread(threadId)!,
@@ -1767,6 +1793,7 @@ export class Db {
         .prepare(
           `UPDATE auto_review_episodes
               SET revision=@revision, status=@status, claim_token=NULL, reason=@reason,
+                  unattended_streak=@unattendedStreak,
                   verdict_json=@verdictJson, verdict_run_id=@verdictRunId,
                   settled_at=@at, updated_at=@at
             WHERE thread_id=@threadId AND status='running' AND claim_token=@claimToken`,
@@ -1775,6 +1802,8 @@ export class Db {
           threadId: input.threadId,
           claimToken: input.claimToken,
           revision: this.autoReviewRevision(input.threadId) ?? episode.revision,
+          // Automation demonstrably works on this task again, so the next park deserves a full budget.
+          unattendedStreak: accepting ? 0 : episode.unattendedStreak,
           status: input.status,
           reason: input.reason,
           verdictJson: input.verdict ? JSON.stringify(input.verdict) : null,
