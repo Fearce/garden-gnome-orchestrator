@@ -270,9 +270,9 @@ const ROLE_POLICY_SETS = { roles: "MCP_DEPENDENT_ROLES", providers: "CLI_BRIDGED
 // silently drop out of the exclusion, so the gate pins this map against BACKENDS.
 const PROVIDER_RUNG = { codex: "Codex", grok: "Grok", zai: "z.ai" };
 
-/** The role→backend policy, read out of threadManager.ts rather than restated here. Returns null when
- *  either Set can't be found — a rename must read as UNKNOWN, never as "no role is restricted", which is
- *  the flattering direction this whole readout exists to avoid. */
+/** The role→backend policy, including explicit safe exceptions, read out of threadManager.ts rather than
+ *  restated here. Returns null when the simple contract can't be parsed — a policy change must read as
+ *  UNKNOWN, never as a flattering but stale reach claim. */
 function roleReachPolicy(src) {
   const members = (name) => {
     const m = src.match(new RegExp(`${name}\\b[^=]*=\\s*new Set\\(\\[([^\\]]*)\\]`));
@@ -280,7 +280,15 @@ function roleReachPolicy(src) {
   };
   const roles = members(ROLE_POLICY_SETS.roles);
   const providers = members(ROLE_POLICY_SETS.providers);
-  return roles && providers ? { roles, providers } : null;
+  const body = src.match(/export function providerServesRole\([^)]*\): boolean \{([\s\S]*?)\n\}/)?.[1];
+  if (!roles || !providers || !body) return null;
+  const defaultRule = `return !${ROLE_POLICY_SETS.roles}.has(role) || !${ROLE_POLICY_SETS.providers}.has(provider);`;
+  if (!body.replace(/\s+/g, " ").includes(defaultRule)) return null;
+  const exceptions = [...body.matchAll(/if\s*\(\s*role\s*===\s*"([a-z]+)"\s*&&\s*provider\s*===\s*"([a-z.]+)"\s*\)\s*return\s+true\s*;/g)]
+    .map((m) => ({ role: m[1], provider: m[2] }));
+  // Unknown conditional policy is more dangerous than no result: force the owner-visible UNKNOWN path.
+  if ([...body.matchAll(/\bif\s*\(/g)].length !== exceptions.length) return null;
+  return { roles, providers, exceptions };
 }
 
 /** Read the live threadManager source, or null when it isn't next to this script (a copied-out probe). */
@@ -298,8 +306,13 @@ function roleLadderDepth(backends, claudeRungs, excludedNames) {
   return claudeRungs + backends.filter((b) => b.available && !excludedNames.includes(b.name)).length;
 }
 
-/** The depth the MCP-dependent roles actually have, printed only when it differs from the implementor's —
- *  a shorter ladder for the role that decides a task's fate is the finding, and it is invisible above. */
+function excludedRungsForRole(policy, role) {
+  const explicitlyAllowed = new Set(policy.exceptions.filter((x) => x.role === role).map((x) => x.provider));
+  return policy.providers.filter((provider) => !explicitlyAllowed.has(provider)).map((provider) => PROVIDER_RUNG[provider] ?? provider);
+}
+
+/** The depth each MCP-dependent role actually has after explicit safe fallbacks, printed only when it
+ *  differs from the implementor's — a shorter ladder is the finding, and it is invisible above. */
 function printRoleReach(backends, claudeRungs, depth) {
   const src = readThreadManagerSource();
   const policy = src && roleReachPolicy(src);
@@ -310,16 +323,22 @@ function printRoleReach(backends, claudeRungs, depth) {
     );
     return;
   }
-  if (!policy.roles.length) return; // no role is restricted — the one depth above is everyone's
-  const excluded = policy.providers.map((p) => PROVIDER_RUNG[p] ?? p);
-  const roleDepth = roleLadderDepth(backends, claudeRungs, excluded);
-  console.log(
-    `\n  reach for ${policy.roles.join(" + ")}: ${roleDepth} rung(s) — these answer the owner ONLY through the` +
-      `\n  in-process MCP bus (post_finding/ask_user), so ${excluded.join(" and ")} can't serve them at all.` +
-      (roleDepth < depth
-        ? `  ⚠ SHORTER than the ${depth} above — the depth line overstates what these roles can reach.`
-        : ""),
-  );
+  for (const role of policy.roles) {
+    const excluded = excludedRungsForRole(policy, role);
+    const roleDepth = roleLadderDepth(backends, claudeRungs, excluded);
+    if (roleDepth === depth) continue;
+    const allowed = policy.exceptions
+      .filter((x) => x.role === role)
+      .map((x) => PROVIDER_RUNG[x.provider] ?? x.provider);
+    const reach = [
+      allowed.length ? `${allowed.join(" and ")} can serve it through an explicit safe fallback` : null,
+      excluded.length ? `${excluded.join(" and ")} cannot serve it` : null,
+    ].filter(Boolean).join("; ");
+    console.log(
+      `\n  reach for ${role}: ${roleDepth} rung(s) — ${reach}.` +
+        `  ⚠ SHORTER than the ${depth} above — the depth line overstates what this role can reach.`,
+    );
+  }
 }
 
 /** The dedicated-pool readout. Printed only when the plan actually HAS one, so a deployment without
@@ -456,6 +475,7 @@ module.exports = {
   claudeHasHeadroom,
   roleReachPolicy,
   roleLadderDepth,
+  excludedRungsForRole,
   readThreadManagerSource,
   PROVIDER_RUNG,
   spentWindow,

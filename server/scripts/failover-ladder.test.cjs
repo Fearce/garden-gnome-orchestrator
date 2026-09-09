@@ -22,6 +22,7 @@ const {
   POOL_HARD_LIMIT_PCT,
   roleReachPolicy,
   roleLadderDepth,
+  excludedRungsForRole,
   readThreadManagerSource,
   PROVIDER_RUNG,
 } = require("./probe-accounts.cjs");
@@ -385,6 +386,10 @@ for (const b of BACKENDS) {
   );
   assert.ok(policy.roles.length > 0, "MCP_DEPENDENT_ROLES parsed as empty — a silent 'no role is restricted' is the flattering misread");
   assert.ok(policy.providers.length > 0, "CLI_BRIDGED_PROVIDERS parsed as empty — every backend would look able to serve every role");
+  assert.ok(
+    policy.exceptions.some((x) => x.role === "reader" && x.provider === "codex"),
+    "providerServesRole's explicit Codex reader fallback must reach the probe instead of being reported as unavailable",
+  );
 
   // A CLI-bridged backend the readout can't name would quietly stop being excluded from the role depth.
   for (const p of policy.providers) {
@@ -402,6 +407,16 @@ for (const b of BACKENDS) {
 
   // A parse failure must read as UNKNOWN, never as "nothing is restricted".
   assert.equal(roleReachPolicy("const SOMETHING_ELSE = new Set([]);"), null, "an unparseable source returns null so the probe warns instead of reassuring");
+  assert.equal(
+    roleReachPolicy('const MCP_DEPENDENT_ROLES = new Set(["reader"]); const CLI_BRIDGED_PROVIDERS = new Set(["codex"]); export function providerServesRole(role, provider): boolean { if (somethingElse) return true; return !MCP_DEPENDENT_ROLES.has(role) || !CLI_BRIDGED_PROVIDERS.has(provider);\n}'),
+    null,
+    "an unfamiliar policy exception returns UNKNOWN instead of silently misstating reach",
+  );
+  assert.deepEqual(
+    excludedRungsForRole(policy, "reader"),
+    ["Grok"],
+    "the explicit Codex exception leaves only Grok excluded from the reader ladder",
+  );
 
   // The arithmetic the readout turns on: an excluded backend that IS available must not count for the
   // restricted roles. This is exactly 2026-08-13's state (Codex up, z.ai up) read for the reviewer.
