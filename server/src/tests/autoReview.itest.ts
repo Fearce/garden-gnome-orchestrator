@@ -825,7 +825,7 @@ async function main(): Promise<void> {
       const id = seedParkedTask(h);
       const rejection = okResult({ accept: false, summary: "the typecheck still fails", issues: [{ severity: "blocker", description: "tsc reports 3 errors" }] });
       stubReviewerRuns(h, [rejection]); // never satisfied
-      await h.mgr.autoReview(id);
+      await h.mgr.autoReview(id, "supervisor");
       await settle();
       check("only the budgeted single fix round ran", h.implementorStarts() === 1, String(h.implementorStarts()));
       check("the reviewer ran twice and stopped", h.roleCalls.length === 2, JSON.stringify(h.roleCalls));
@@ -833,6 +833,18 @@ async function main(): Promise<void> {
       check("the park says a fix was already attempted", (h.db.getThread(id)?.error ?? "").includes("after 1 fix round"), String(h.db.getThread(id)?.error));
       check("the park still carries the reviewer's reason", (h.db.getThread(id)?.error ?? "").includes("typecheck still fails"), String(h.db.getThread(id)?.error));
       check("the fix-round restart marker was cleared", h.db.getThreadStageOutputs(id).reviewFixing !== true, JSON.stringify(h.db.getThreadStageOutputs(id)));
+      const episode = h.db.getAutoReviewEpisode(id);
+      check(
+        "the terminal episode covers the fix run rather than re-arming that work as a new revision",
+        episode?.status === "parked" && episode.source === "supervisor" && episode.attemptCount === 1 && episode.revision === h.db.autoReviewRevision(id),
+        JSON.stringify(episode),
+      );
+      const automaticRetry = await h.mgr.autoReview(id, "supervisor");
+      check(
+        "the unattended Supervisor cannot repeat the review/fix/review loop on that unchanged fix",
+        !automaticRetry.ok && h.roleCalls.length === 2 && h.implementorStarts() === 1,
+        JSON.stringify({ automaticRetry, roleCalls: h.roleCalls, implementorStarts: h.implementorStarts() }),
+      );
     } finally {
       h.dispose();
     }
