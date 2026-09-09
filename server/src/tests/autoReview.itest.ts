@@ -100,6 +100,8 @@ interface Harness {
   roleCalls: string[]; // every role runRole was asked to run, in order
   kickoffs: string[]; // the kickoff text each run was given
   implementorStarts: () => number;
+  /** The `agent_runs` ids the stubbed fix rounds wrote, oldest first. */
+  fixRunIds: () => string[];
   fixMessages: string[]; // what each fix round's implementor was relaunched with
   fixImages: number[]; // persisted reviewer-injection images handed to each fix implementor
   resumeSessions: (string | undefined)[]; // the implementor session each fix round was asked to resume
@@ -132,6 +134,8 @@ function makeHarness(): Harness {
   const fixImages: number[] = [];
   const resumeSessions: (string | undefined)[] = [];
   let implementorStarts = 0;
+  const fixRuns = new Map<string, string>();
+  const fixRunIds: string[] = [];
   let outcome: RunOutcome = okResult({ accept: true, summary: "looks good" });
   let fixOutcome: RunOutcome = FIX_OK;
   let gate: Promise<void> | undefined;
@@ -162,7 +166,15 @@ function makeHarness(): Harness {
     fixMessages.push(opts?.resumeNudge ?? "");
     fixImages.push(opts?.images?.length ?? 0);
     resumeSessions.push(resume);
-    const live = { run: { send(): void {}, async stop(): Promise<void> {} }, runId: "stub-run", accountId: "acct-a" };
+    // The run ROW is production behavior, not bookkeeping: a fix round is a non-reviewer run, so it
+    // moves `autoReviewRevision` exactly like the implementor it stands in for. Without it the harness
+    // freezes the revision the whole episode through, and every assertion about the Supervisor's
+    // one-attempt-per-revision budget converging on a fix round passes vacuously.
+    const run = db.createRun({ threadId: thread.id, role: "implementor", model: "claude-opus-5", account: "acct-a" });
+    db.updateRun(run.id, { sessionId: resume ?? null, state: "running" });
+    fixRuns.set(thread.id, run.id);
+    fixRunIds.push(run.id);
+    const live = { run: { send(): void {}, async stop(): Promise<void> {} }, runId: run.id, accountId: "acct-a" };
     internals.live.set(thread.id, live);
     internals.setState(thread.id, "implementing");
     return live;
@@ -170,6 +182,11 @@ function makeHarness(): Harness {
   internals.awaitImplementorCompletion = async (thread: { id: string }): Promise<RunOutcome> => {
     if (fixGate) await fixGate;
     internals.live.delete(thread.id); // the real run's onEnd, which races (and usually wins) this return
+    const runId = fixRuns.get(thread.id);
+    if (runId) {
+      db.updateRun(runId, { state: "done", endedAt: Date.now() }); // the same onEnd finalizes the row
+      fixRuns.delete(thread.id);
+    }
     if (endedGate) await endedGate; // hold HERE: state is still 'implementing' but no agent is live
     return fixOutcome;
   };
@@ -190,6 +207,7 @@ function makeHarness(): Harness {
     fixImages,
     resumeSessions,
     implementorStarts: () => implementorStarts,
+    fixRunIds: () => fixRunIds,
     // How a usage cap actually reaches the fix round: `awaitImplementorResult` flags the thread in
     // `capParked` and returns undefined. That flag is what `settleReview` turns into the CAP_PARK marker
     // the supervisor acts on, so a test that only returns undefined misses the whole hazard.
@@ -573,7 +591,7 @@ async function main(): Promise<void> {
       check("the read-only reviewer handed conflict resolution to implementation", h.implementorStarts() === 1 && h.fixMessages.some((message) => message.includes("pull/push dance") && message.includes(label)), JSON.stringify(h.fixMessages));
       check("the screenshot attachment followed the instruction into the fix run", h.fixImages.some((count) => count === 1) && final.attachmentIds.length === 1, JSON.stringify(h.fixImages));
       check("the replacement reviewer verdict settled only after implementation", h.roleCalls.length === 2 && h.db.getThread(id)?.state === "done", JSON.stringify({ calls: h.roleCalls, state: h.db.getThread(id)?.state }));
-      check("the durable audit names implementation, acknowledgement, and handled outcome", final.status === "handled" && final.implementorRunId === "stub-run" && final.implementorCompletedAt != null && final.reviewerAcknowledgement?.includes(label) === true, JSON.stringify(final));
+      check("the durable audit names implementation, acknowledgement, and handled outcome", final.status === "handled" && final.implementorRunId === h.fixRunIds()[0] && final.implementorCompletedAt != null && final.reviewerAcknowledgement?.includes(label) === true, JSON.stringify(final));
     } finally {
       h.dispose();
     }

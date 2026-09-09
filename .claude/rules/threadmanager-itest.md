@@ -59,6 +59,12 @@ Both gaps above were this — the differences are exactly where lifecycle bugs l
   **Persist its `account` too**: `latestRoleRun` reads the backend back off that label
   (`zai:…`/`codex:…`/`grok:…`, else Claude), so a row without one reads as Claude and any
   assertion about provider-pinned resume passes vacuously.
+  **A stubbed IMPLEMENTOR spawn owes a row for the same reason** (`startResumedImplementor`, the
+  auto-review fix round): a non-reviewer run is what moves `autoReviewRevision`, so a harness that
+  writes none freezes one revision across the whole episode and every assertion that the Supervisor
+  converges on the work a fix round produced passes whatever the settle stamps (proven 2026-09-09 —
+  `test:auto-review` stayed green with `finishAutoReview` writing the STALE revision, i.e. with the
+  review/fix/review loop the gate exists to catch fully reopened).
 - **An empty `messages` table.** Guards like `implementorLooksDone` read the last
   implementor MESSAGE, which in production carries over from an EARLIER session — a
   QA fix-round resume routinely inherits "the task is complete". Seed a stale sign-off
