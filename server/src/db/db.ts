@@ -1656,7 +1656,7 @@ export class Db {
     // Checked BEFORE the revision, and deliberately not reset by one: a task the automation could not
     // settle keeps minting new revisions through its own remediation, so a per-revision-only gate hands
     // the same task back to the reviewer forever. Spending the budget makes the task the owner's.
-    if (episode && episode.status !== "running" && episode.unattendedStreak >= config.maxUnattendedAutoReviews) {
+    if (episode && episode.unattendedStreak >= config.maxUnattendedAutoReviews) {
       return unattendedBudgetSpentReason(episode.unattendedStreak);
     }
     const revision = this.autoReviewRevision(threadId);
