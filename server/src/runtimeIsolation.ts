@@ -7,7 +7,7 @@ export function testInvocationUsesDefaultData(
 ): boolean {
   const testLifecycle = /^test(?::|$)/i.test(env.npm_lifecycle_event?.trim() ?? "");
   const directTestFile = argv.some((part) =>
-    /(?:^|[\\/])src[\\/]tests[\\/]|(?:^|[\\/])[^\\/]+\.(?:i?test)\.(?:[cm]?[jt]s)$/i.test(part),
+    /(?:^|[\\/])src[\\/]tests[\\/]|(?:^|[\\/])[^\\/]+\.(?:i?test)\.(?:[cm]?[jt]sx?)$/i.test(part),
   );
   return (testLifecycle || directTestFile) && !env.DATA_DIR?.trim();
 }

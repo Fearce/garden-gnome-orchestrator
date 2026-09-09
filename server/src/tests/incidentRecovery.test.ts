@@ -77,6 +77,11 @@ try {
     "a directly invoked test file is isolated even outside an npm lifecycle",
   );
   assert.equal(
+    testInvocationUsesDefaultData({}, ["node", join("repo", "web", "scripts", "navigation.test.tsx")]),
+    true,
+    "a directly invoked TSX UI test is isolated too",
+  );
+  assert.equal(
     testInvocationUsesDefaultData({}, ["node", join("repo", "server", "src", "index.ts")]),
     false,
     "an ordinary direct server launch still uses its configured production data",
