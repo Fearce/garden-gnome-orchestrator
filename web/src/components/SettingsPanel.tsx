@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_EFFORTS, ZAI_SUB_ID, codexEffortsForModel, grokEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type ZaiEffort } from "../types.js";
+import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type ZaiEffort } from "../types.js";
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
 import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
@@ -1564,7 +1564,7 @@ function SubscriptionsSection() {
         {settings.zaiKeyPresent ? <ZaiUsageReadout usage={zaiUsage} /> : null}
 
         <ZaiModels />
-        <EffortCapField value={settings.zaiEffort} options={ZAI_EFFORTS} onChange={(v) => setSettings({ zaiEffort: v as ZaiEffort })} />
+        <EffortCapField value={settings.zaiEffort} options={zaiEffortsForModel(settings.zaiModel)} onChange={(v) => setSettings({ zaiEffort: v as ZaiEffort })} />
         <ZaiWeeklySafety />
       </SubCard>
     </div>

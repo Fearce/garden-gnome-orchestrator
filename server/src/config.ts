@@ -145,13 +145,14 @@ export const config = {
   codex: {
     // First-boot default + the flagship models the Subscriptions selector suggests. The field is
     // free-text (any model id the OpenAI key or ChatGPT-plan Codex login can access is accepted) —
-    // these are just quick picks, most-capable first. Keep GPT-5.6 in this curated fallback because
+    // these are just quick picks, most-capable first. Keep Astra and GPT-5.6 in this curated fallback because
     // ChatGPT-plan auth does not give us an OpenAI /v1/models list, even when Codex can run it.
     // Override the default with CODEX_MODEL.
-    defaultModel: process.env.CODEX_MODEL?.trim() || "gpt-5.6-sol",
+    defaultModel: process.env.CODEX_MODEL?.trim() || "gpt-6-astra",
     // Cold-start fallback for the CLI's visible catalog, most-capable first. models_cache.json is
     // authoritative under ChatGPT-plan auth; hidden service-only ids are not implementor choices.
     models: [
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",

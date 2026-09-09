@@ -221,6 +221,7 @@ async function main(): Promise<void> {
     const h = makeHarness((db) => {
       db.kvSet("setting_grok_effort", "high");
       db.kvSet("setting_codex_effort", "max");
+      db.kvSet("setting_zai_effort", "high");
     });
     try {
       check("the old no-cap High default migrates to Extra High", h.mgr.settings().grokEffort === "xhigh", h.mgr.settings().grokEffort);
@@ -229,6 +230,9 @@ async function main(): Promise<void> {
       check("the old no-cap Max Codex default migrates to Ultra", h.mgr.settings().codexEffort === "ultra", h.mgr.settings().codexEffort);
       h.mgr.setSettings({ codexEffort: "max" });
       check("a later explicit Codex Max cap is preserved", h.mgr.settings().codexEffort === "max", h.mgr.settings().codexEffort);
+      check("the old no-cap z.ai High default migrates to Max", h.mgr.settings().zaiEffort === "max", h.mgr.settings().zaiEffort);
+      h.mgr.setSettings({ zaiEffort: "high" });
+      check("a later explicit z.ai High cap is preserved", h.mgr.settings().zaiEffort === "high", h.mgr.settings().zaiEffort);
     } finally {
       h.dispose();
     }
@@ -251,7 +255,7 @@ async function main(): Promise<void> {
       const pickable = h.internals.pickableClaudeModels() as string[];
       check("every live Claude model is an automatic candidate", live.every((model) => roster.includes(model)), JSON.stringify(roster));
       check("the live roster is not padded with inaccessible curated ids", roster.length === live.length, JSON.stringify(roster));
-      check("manual pickers still union live and curated models", pickable.length > roster.length && pickable.includes("claude-fable-5"), JSON.stringify(pickable));
+      check("manual pickers still union live and the latest curated models", pickable.length > roster.length && pickable.includes("claude-fable-5-1"), JSON.stringify(pickable));
       const candidates = h.internals.implementorModelRoster() as { model: string; efforts: Effort[] }[];
       const opus = candidates.find((candidate) => candidate.model === "claude-opus-4-8");
       const sonnet = candidates.find((candidate) => candidate.model === "claude-sonnet-4-6");
@@ -268,7 +272,7 @@ async function main(): Promise<void> {
   {
     const h = makeHarness();
     try {
-      const codex = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
+      const codex = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
       const grok = ["grok-4.6", "grok-4.7", "grok-4.8", "grok-4.9", "grok-4.10"];
       // Deliberately NOT the curated ids: z.ai's live roster is what the key can actually reach, and a
       // curated list is only the cold-start fallback. Stubbing the picker here would assert nothing —
@@ -295,7 +299,7 @@ async function main(): Promise<void> {
         capacityWindows: [],
       });
       h.db.kvSet("cache_zai_models", JSON.stringify(zai));
-      h.internals.zaiEffort = (): Effort => "high";
+      h.internals.zaiEffort = (): Effort => "max";
       const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
       const modelsFor = (provider: ImplementorProvider): string[] => roster.filter((candidate) => candidate.provider === provider).map((candidate) => candidate.model);
       check("all Codex models reach the selector", codex.every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
@@ -303,6 +307,8 @@ async function main(): Promise<void> {
       check("all live Grok models reach the selector", grok.every((model) => modelsFor("grok").includes(model)), JSON.stringify(modelsFor("grok")));
       check("every live z.ai model reaches the selector", zai.every((model) => modelsFor("zai").includes(model)), JSON.stringify(modelsFor("zai")));
       check("the z.ai roster is not padded with ids the key cannot reach", modelsFor("zai").length === zai.length, JSON.stringify(modelsFor("zai")));
+      check("GLM-5.3 carries exactly Low, High, and Max into the selector", roster.find((candidate) => candidate.model === "glm-5.3")?.efforts.join(",") === "low,high,max", JSON.stringify(roster.find((candidate) => candidate.model === "glm-5.3")));
+      check("unknown GLM models keep the conservative verified tiers", roster.find((candidate) => candidate.model === "glm-9.9-unreleased")?.efforts.join(",") === "low,medium,high", JSON.stringify(roster.find((candidate) => candidate.model === "glm-9.9-unreleased")));
       check("Grok 4.6 carries Extra High into the selector", roster.find((candidate) => candidate.model === "grok-4.6")?.efforts.includes("xhigh") === true);
     } finally {
       h.dispose();

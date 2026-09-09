@@ -65,8 +65,9 @@ function check(label: string, cond: boolean, detail?: string): void {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** Poll until `cond` holds or the deadline passes — the client connects asynchronously. */
-async function until(cond: () => boolean, ms = 5000): Promise<boolean> {
+/** Poll until `cond` holds or the deadline passes. Presence resolves repository identity through real
+ * git subprocesses, which can exceed 5s when the complete gate suite is saturating the machine. */
+async function until(cond: () => boolean, ms = 15_000): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (cond()) return true;
@@ -529,9 +530,9 @@ async function main(): Promise<void> {
       check("connected", await until(() => office.status().state === "online" && relay.connected()));
       check("presence advertised", await until(() => relay.presence().length > 0));
 
-      const advertised = relay.presence().at(-1)!.agents[0]!;
-      check("the primary key is still the origin's, so this instance's room never moves", advertised.repoKey === UP, advertised.repoKey);
-      check("…and the fork rides along as an alias the relay can group on", (advertised.repoAliases ?? []).includes(FORK), JSON.stringify(advertised.repoAliases));
+      const advertised = relay.presence().at(-1)?.agents[0];
+      check("the primary key is still the origin's, so this instance's room never moves", advertised?.repoKey === UP, advertised?.repoKey);
+      check("…and the fork rides along as an alias the relay can group on", (advertised?.repoAliases ?? []).includes(FORK), JSON.stringify(advertised?.repoAliases));
 
       // Mikkel's agent, advertising ONLY his fork — his instance need not know about ours at all.
       const sten = remoteAgent({ instanceId: "inst-mikkel", instanceName: "Mikkel's Nissefactory", key: "t9::implementor", name: "Sten", repoKey: FORK, repoLabel: "prismicious/garden-gnome-orchestrator" });

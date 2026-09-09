@@ -117,7 +117,7 @@ internals.dispatchAccount = () => {
 internals.wireRun = () => {};
 internals.officeCheckIn = () => {};
 internals.ensureGroup = () => {};
-internals.createRoleAgent = () => ({
+const successfulRoleAgent = () => ({
   capped: false,
   rateLimited: false,
   transientApiError: false,
@@ -127,9 +127,25 @@ internals.createRoleAgent = () => ({
   result: async () => ({ type: "result", subtype: "success", isError: false, structuredOutput: { summary: "planned" } }),
   stop: async () => {},
 });
+internals.createRoleAgent = () => successfulRoleAgent();
 const directCodex = db.createThread({ title: "Codex role leaves Claude reserve asleep", workspace, rawPrompt: "plan", brief: "plan" });
 await internals.runRole(directCodex, "planner", "Plan this.", () => ({ model: "unused" }), undefined, { forcedProvider: "codex" });
 check("a non-Claude role does not select or wake a Claude account", claudeSelections === 0, String(claudeSelections));
+
+let zaiCfg: { model?: string; effort?: string } | undefined;
+internals.createRoleAgent = (provider: string, factory: () => unknown) => {
+  if (provider === "zai") zaiCfg = (factory() as { cfg?: { model?: string; effort?: string } }).cfg;
+  return successfulRoleAgent();
+};
+manager.setSettings({ zaiEffort: "max", modelOverrides: { zai: { planner: "glm-5.3" } } });
+const directZai = db.createThread({ title: "z.ai role honors its model matrix", workspace, rawPrompt: "plan", brief: "plan" });
+await internals.runRole(directZai, "planner", "Plan this.", () => ({ model: "unused" }), undefined, { forcedProvider: "zai" });
+check(
+  "a z.ai role receives its configured model and exact effort",
+  zaiCfg?.model === "glm-5.3" && zaiCfg.effort === "max",
+  JSON.stringify(zaiCfg),
+);
+internals.createRoleAgent = () => successfulRoleAgent();
 
 const originalSettings = internals.settings;
 const originalOpenaiApiKey = internals.openaiApiKey;

@@ -18,7 +18,7 @@ import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 
-const { ModelCatalog } = await import("../agents/modelCatalog.js");
+const { CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, ModelCatalog } = await import("../agents/modelCatalog.js");
 
 let passed = 0;
 let failed = 0;
@@ -41,7 +41,10 @@ const accounts = { firstUsableToken: () => "claude-token" } as unknown as Accoun
 // The Grok list is read from the CLI's own cache FILE, so it is the provider that stays reachable while
 // every network fetch is failing — which makes it the proof that one bad provider doesn't stop the rest.
 const grokHome = mkdtempSync(join(tmpdir(), "ggo-catalog-"));
-writeFileSync(join(grokHome, "models_cache.json"), JSON.stringify({ models: { "grok-4.6": {} } }), "utf8");
+writeFileSync(join(grokHome, "models_cache.json"), JSON.stringify({ models: {
+  "grok-4.6": { info: { hidden: false } },
+  "grok-service-only": { info: { hidden: true } },
+} }), "utf8");
 const { config } = await import("../config.js");
 (config.grok as { home: string }).home = grokHome;
 // Codex and Grok use the same filename under different homes in production; keep separate temp roots.
@@ -77,6 +80,8 @@ globalThis.fetch = (async (url: string | URL | Request) => {
 const catalog = new ModelCatalog(db, accounts, () => "openai-key", () => "zai-key", () => { changes++; }, (_l, m) => logs.push(m));
 
 try {
+  check("the Claude cold-start fallback begins with the latest Fable", CURATED_CLAUDE_MODELS[0] === "claude-fable-5-1", CURATED_CLAUDE_MODELS.join(","));
+  check("the Codex cold-start fallback begins with Astra", CURATED_CODEX_MODELS[0] === "gpt-6-astra", CURATED_CODEX_MODELS.join(","));
   // Observed rather than awaited bare: the pre-fix shape read each provider's key OUTSIDE its try, so a
   // throw abandoned the whole refresh. Letting that propagate here would crash the run instead of naming
   // the defect, and every later assertion would go unrun.

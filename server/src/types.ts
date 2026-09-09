@@ -63,11 +63,11 @@ export type CodexEffort = (typeof CODEX_EFFORTS)[number];
 const CODEX_PRE_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh"];
 const CODEX_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
-/** Cold-start fallback before the CLI catalog is available. Sol, Terra, and Daybreak advertise Ultra;
- * the rest of the GPT-5.6 and GPT-6 families reach Max, while earlier general models stop at Extra High. */
+/** Cold-start fallback before the CLI catalog is available. Astra, Sol, Terra, and Daybreak advertise
+ * Ultra; the rest of the GPT-5.6 and GPT-6 families reach Max, while earlier models stop at Extra High. */
 export function codexEffortsForModel(model: string): readonly CodexEffort[] {
   const id = model.trim();
-  if (/^(?:gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
+  if (/^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
   if (/^(?:gpt-6|gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
   return CODEX_PRE_MAX_EFFORTS;
 }
@@ -90,13 +90,28 @@ export function grokEffortsForModel(model: string): readonly GrokEffort[] {
   return supportsXhigh ? GROK_EFFORTS : GROK_PRE_XHIGH_EFFORTS;
 }
 
-/** z.ai is reached through the Claude SDK against an Anthropic-COMPATIBLE endpoint, so unlike Codex and
- *  Grok there is no per-model capability list to read: `effort` is passed to a server that documents no
- *  contract for it. These three are the tiers verified to round-trip; whether GLM honours `xhigh`/`max`
- *  or rejects them is unanswered, and can only be settled by a live run while the backend has headroom
- *  (it is capped as of 2026-08-27). Widen this only from such a run, never from the roster alone. */
-export const ZAI_EFFORTS = ["low", "medium", "high"] as const;
+/** Every z.ai reasoning-effort value used by at least one supported GLM family. GLM-5.3 publishes an
+ * exact Low/High/Max matrix (Medium is invalid); GLM-5.2 adds documented Max to the three tiers already
+ * verified on the Anthropic-compatible path. Older/unknown models keep the conservative verified set. */
+export const ZAI_EFFORTS = ["low", "medium", "high", "max"] as const;
 export type ZaiEffort = (typeof ZAI_EFFORTS)[number];
+const ZAI_PRE_MAX_EFFORTS: ZaiEffort[] = ["low", "medium", "high"];
+const ZAI_5_3_EFFORTS: ZaiEffort[] = ["low", "high", "max"];
+
+export function zaiEffortsForModel(model: string): readonly ZaiEffort[] {
+  const id = model.trim().toLowerCase();
+  if (/^glm-5\.3(?:-flash)?(?:[-.]|$)/.test(id)) return ZAI_5_3_EFFORTS;
+  if (/^glm-5\.2(?:[-.]|$)/.test(id)) return ZAI_EFFORTS;
+  return ZAI_PRE_MAX_EFFORTS;
+}
+
+/** Coerce a stale/cross-model cap downward to a value the selected GLM model accepts. */
+export function resolveZaiEffort(model: string, effort: Effort): ZaiEffort {
+  const supported = zaiEffortsForModel(model);
+  if ((supported as readonly Effort[]).includes(effort)) return effort as ZaiEffort;
+  const requested = EFFORTS.indexOf(effort);
+  return [...supported].reverse().find((tier) => EFFORTS.indexOf(tier) < requested) ?? supported.at(-1) ?? "high";
+}
 
 export type AgentRunState =
   | "starting"
@@ -950,7 +965,7 @@ export interface OrchestratorSettings {
   // the in-process bus/office MCP tools and can also take failover for planner/researcher/QA.
   zaiEnabled: boolean;
   zaiModel: string; // the resolved z.ai GLM implementor model (mirrors modelOverrides.zai.implementor; kept for the chip + back-compat)
-  zaiEffort: ZaiEffort; // z.ai reasoning effort cap (low/medium/high), applied to the SDK run like the other backends
+  zaiEffort: ZaiEffort; // z.ai reasoning effort cap (model-specific through max), applied to the SDK run like the other backends
   zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (default 100 = off): at/above this z.ai weekly utilization, new tasks route to another backend
   zaiKeyPresent: boolean; // read-only — an API key is stored (env or kv); the raw key is never broadcast
   zaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field

@@ -137,7 +137,7 @@ function report(snapshot, effortHelpers) {
   lines.push(...providerLines("Claude", true, snapshot.claudeModels, effortHelpers.claude, "per-account"));
   lines.push(...providerLines("Codex", snapshot.codexEnabled, snapshot.codexRows.map((row) => row.id), (id) => rowMap(snapshot.codexRows).get(id) ?? [], snapshot.codexCap));
   lines.push(...providerLines("Grok", snapshot.grokEnabled, snapshot.grokModels, effortHelpers.grok, snapshot.grokCap));
-  lines.push(...providerLines("z.ai", snapshot.zaiEnabled, snapshot.zaiModels, () => effortHelpers.zai, snapshot.zaiCap));
+  lines.push(...providerLines("z.ai", snapshot.zaiEnabled, snapshot.zaiModels, effortHelpers.zai, snapshot.zaiCap));
   const issues = catalogIssues(snapshot);
   lines.push("", "=== catalog sync ===");
   if (issues.length) for (const issue of issues) lines.push(`  ✗ ${issue}`);
@@ -177,7 +177,7 @@ async function main() {
       zaiEnabled: kv("setting_zai_enabled") === "1",
       codexCap: kv("setting_codex_effort") || "highest",
       grokCap: kv("setting_grok_effort") || "highest",
-      zaiCap: kv("setting_zai_effort") || "high",
+      zaiCap: kv("setting_zai_effort") || "max",
       claudeModels: stringList(kv("cache_claude_models")),
       codexRows: codexRows(kv("cache_codex_cli_models")),
       grokModels: stringList(kv("cache_grok_models")),
@@ -188,7 +188,7 @@ async function main() {
     const result = report(snapshot, {
       claude: (model) => [...types.claudeEffortsForModel(model)],
       grok: (model) => [...types.grokEffortsForModel(model)],
-      zai: [...types.ZAI_EFFORTS],
+      zai: (model) => [...types.zaiEffortsForModel(model)],
     });
     console.log(result.text);
     return result.issues.length ? 1 : 0;

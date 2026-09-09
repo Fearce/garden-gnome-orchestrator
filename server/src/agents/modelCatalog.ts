@@ -28,6 +28,7 @@ const MAX_QUICK_RETRIES = 3;
 
 /** Curated Claude fallback (most-capable first) for a fresh install or an unreachable models endpoint. */
 export const CURATED_CLAUDE_MODELS = [
+  "claude-fable-5-1",
   "claude-fable-5",
   "claude-opus-5",
   "claude-sonnet-5",

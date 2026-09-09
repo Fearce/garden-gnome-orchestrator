@@ -31,7 +31,7 @@ function normalized(model: string): string {
 export function isPolicyApprovedFlagship(candidate: RoutableModel): boolean {
   const model = normalized(candidate.model);
   if (candidate.provider === "claude") return /^claude-(?:opus|fable)-/.test(model);
-  if (candidate.provider === "codex") return /^gpt-5(?:\.\d+)?(?:-codex|-sol)?$/.test(model);
+  if (candidate.provider === "codex") return model === "gpt-6-astra" || /^gpt-5(?:\.\d+)?(?:-codex|-sol)?$/.test(model);
   return false;
 }
 

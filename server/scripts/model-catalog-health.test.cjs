@@ -26,7 +26,7 @@ const healthy = {
   zaiEnabled: true,
   codexCap: "ultra",
   grokCap: "xhigh",
-  zaiCap: "high",
+  zaiCap: "max",
   claudeModels: ["claude-opus"],
   codexRows: cliRows,
   grokModels: ["grok-live"],
@@ -52,9 +52,10 @@ const disabled = { ...healthy, codexEnabled: false, grokEnabled: false, zaiEnabl
 assert.deepEqual(catalogIssues(disabled), [], "disabled optional providers do not require caches");
 assert.ok(catalogIssues({ ...disabled, claudeModels: [] }).some((line) => line.startsWith("Claude")), "the primary Claude roster is always required");
 
-const rendered = report(healthy, { claude: () => ["low", "max"], grok: () => ["low", "xhigh"], zai: ["low", "medium", "high"] });
+const rendered = report(healthy, { claude: () => ["low", "max"], grok: () => ["low", "xhigh"], zai: () => ["low", "high", "max"] });
 assert.match(rendered.text, /Auto-select ON/);
 assert.match(rendered.text, /gpt-sol  \[low, ultra\]/, "the exact Codex effort matrix is owner-visible");
+assert.match(rendered.text, /glm-live  \[low, high, max\]/, "the exact z.ai effort matrix is owner-visible");
 assert.match(rendered.text, /every enabled provider has an authoritative roster/);
 
 console.log("modelCatalogHealth: all assertions passed");

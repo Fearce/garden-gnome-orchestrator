@@ -166,7 +166,7 @@ import type {
   Thread,
   ZaiEffort,
 } from "../types.js";
-import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, DIRECTORS_ROOM, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
+import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, DIRECTORS_ROOM, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, resolveZaiEffort, zaiEffortsForModel, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
 import type { LocalAgentSnapshot, OnlineOffice } from "../office/onlineOffice.js";
 import { OFFICE_ROOM as ONLINE_OFFICE_ROOM } from "../office/onlineProtocol.js";
 import type { RelayChat, RelayPresentAgent } from "../office/onlineProtocol.js";
@@ -778,6 +778,7 @@ type CapParkStage = "planner" | "researcher" | "implementor" | "qa" | "reader";
 const REMOTE_CHAT_SEEN_KV = "online_office_seen_chat";
 const GROK_XHIGH_DEFAULT_MIGRATION_KV = "migration_grok_xhigh_default_v1";
 const CODEX_ULTRA_DEFAULT_MIGRATION_KV = "migration_codex_ultra_default_v1";
+const ZAI_MAX_DEFAULT_MIGRATION_KV = "migration_zai_max_default_v1";
 /** How many relay message ids to remember. Comfortably above `ROOM_HISTORY` (60) per shared room, so a
  *  replayed backlog is still recognised after a bounce; trimmed oldest-first. */
 const REMOTE_CHAT_SEEN_MAX = 500;
@@ -1034,7 +1035,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Preserve old "highest available" defaults when a provider adds a new top tier. Each marker is
-   * independent so an installation that already migrated Grok still receives the newer Codex migration. */
+   * independent so an installation that already migrated one provider still receives later migrations. */
   private migrateProviderDefaults(): void {
     if (!this.db.kvGet(CODEX_ULTRA_DEFAULT_MIGRATION_KV)) {
       if (this.db.kvGet("setting_codex_effort") === "max") this.db.kvSet("setting_codex_effort", "ultra");
@@ -1043,6 +1044,10 @@ export class ThreadManager implements OrchestratorApi {
     if (!this.db.kvGet(GROK_XHIGH_DEFAULT_MIGRATION_KV)) {
       if (this.db.kvGet("setting_grok_effort") === "high") this.db.kvSet("setting_grok_effort", "xhigh");
       this.db.kvSet(GROK_XHIGH_DEFAULT_MIGRATION_KV, "1");
+    }
+    if (!this.db.kvGet(ZAI_MAX_DEFAULT_MIGRATION_KV)) {
+      if (this.db.kvGet("setting_zai_effort") === "high") this.db.kvSet("setting_zai_effort", "max");
+      this.db.kvSet(ZAI_MAX_DEFAULT_MIGRATION_KV, "1");
     }
   }
 
@@ -2796,6 +2801,7 @@ export class ThreadManager implements OrchestratorApi {
     if (target.provider === "zai") {
       resolved.baseUrl = config.zai.baseUrl;
       resolved.authToken = this.zaiApiKey();
+      resolved.effort = resolveZaiEffort(target.model, resolved.effort ?? this.zaiEffort(target.model));
       return new ZaiAgentRun(resolved);
     }
     const cwd = join(config.dataDir, "director-sandbox");
@@ -2935,7 +2941,7 @@ export class ThreadManager implements OrchestratorApi {
         startContent = this.communicationContent(contentWithImages(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"), images));
       } else {
         model ??= this.zaiModel();
-        const effort = session.effort ?? this.zaiEffort();
+        const effort = resolveZaiEffort(model, session.effort ?? this.zaiEffort(model));
         const cfg = coworkerRunOptions(session.workspace, {
           resume,
           effort,
@@ -3130,7 +3136,7 @@ export class ThreadManager implements OrchestratorApi {
       const models = live.length ? this.pickableZaiModels().filter((model) => live.includes(model)) : this.pickableZaiModels();
       const zai = this.zaiProviderCandidate(demand);
       const routedZai = zai.hasHeadroom ? zai : { ...zai, hasHeadroom: true, capacityWindows: [] };
-      add("zai", models, () => underCap(ZAI_EFFORTS, this.zaiEffort()), () => routedZai);
+      add("zai", models, (model) => underCap(zaiEffortsForModel(model), this.zaiEffort(model)), () => routedZai);
     }
     const capacity = preferCapacity(entries, (entry) => candidateCapacityWindows(entry.candidate), demand);
     // Usage forecasts rank model pools but never suppress one that has not actually capped.
@@ -3653,10 +3659,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     );
   }
 
-  /** The z.ai reasoning-effort CAP (low/medium/high; default high) — the per-task effort is clamped to it. */
-  private zaiEffort(): ZaiEffort {
+  /** The z.ai reasoning-effort cap, normalized to the selected model's documented accepted range. */
+  private zaiEffort(model = this.zaiModel()): ZaiEffort {
     const v = this.db.kvGet("setting_zai_effort")?.trim();
-    return ZAI_EFFORTS.includes(v as ZaiEffort) ? (v as ZaiEffort) : "high";
+    const supported = zaiEffortsForModel(model);
+    const requested = ZAI_EFFORTS.includes(v as ZaiEffort) ? (v as ZaiEffort) : supported.at(-1)!;
+    return resolveZaiEffort(model, requested);
   }
 
   /** The z.ai API key: the kv-stored UI value if present, else the server/.env fallback. NEVER broadcast —
@@ -6204,9 +6212,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         acct = this.dispatchAccount(demand);
         triedClaudeAccounts.add(acct.id);
       }
-      const model = provider === "codex" ? this.codexRoleModel(role, demand) : provider === "grok" ? this.grokModel() : provider === "zai" ? this.zaiModel() : this.modelFor(acct!.id, role);
+      const model = provider === "codex" ? this.codexRoleModel(role, demand) : provider === "grok" ? this.providerRoleModel("grok", role) : provider === "zai" ? this.providerRoleModel("zai", role) : this.modelFor(acct!.id, role);
       const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : provider === "zai" ? `zai:${model}` : acct!.label;
-      const effort = provider === "codex" ? this.codexEffort(model) : provider === "grok" ? this.grokEffort(model) : provider === "zai" ? this.zaiEffort() : undefined;
+      const effort = provider === "codex" ? this.codexEffort(model) : provider === "grok" ? this.grokEffort(model) : provider === "zai" ? this.zaiEffort(model) : undefined;
       const run = this.db.createRun({ threadId: thread.id, role, model, account: accountLabel, effort });
       this.emitRun(run.id);
       const cfg = makeCfg({ token: provider === "claude" ? acct!.token : undefined, resume: provider === "claude" ? resume : undefined, runId: run.id });
@@ -6267,6 +6275,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         accountId = "zai";
         cfg.baseUrl = config.zai.baseUrl;
         cfg.authToken = this.zaiApiKey();
+        cfg.effort = this.zaiEffort(model);
         if (resume) cfg.resume = resume;
         agent = this.createRoleAgent("zai", () => new ZaiAgentRun(cfg));
       } else {
@@ -7078,7 +7087,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // real chat_post) and the standard implementor system prompt. The per-task effort is capped at the
       // z.ai subscription's configured maximum, like the other backends.
       const model = this.pickedModel(thread.id, "zai") ?? this.zaiModel();
-      const effort = clampEffort(plannerEffort, this.zaiEffort());
+      const effort = resolveZaiEffort(model, clampEffort(plannerEffort, this.zaiEffort(model)));
       accountId = "zai";
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `zai:${model}`, effort });
       runId = run.id;

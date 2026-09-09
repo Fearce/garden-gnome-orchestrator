@@ -32,7 +32,7 @@ const CODEX_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max
 /** Cold-start mirror of server/src/types.ts; prefer settings.codexModelEfforts once connected. */
 export function codexEffortsForModel(model: string): readonly CodexEffort[] {
   const id = model.trim();
-  if (/^(?:gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
+  if (/^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
   if (/^(?:gpt-6|gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
   return CODEX_PRE_MAX_EFFORTS;
 }
@@ -47,8 +47,18 @@ export function grokEffortsForModel(model: string): readonly GrokEffort[] {
   return supportsXhigh ? GROK_EFFORTS : GROK_PRE_XHIGH_EFFORTS;
 }
 
-export const ZAI_EFFORTS = ["low", "medium", "high"] as const;
+export const ZAI_EFFORTS = ["low", "medium", "high", "max"] as const;
 export type ZaiEffort = (typeof ZAI_EFFORTS)[number];
+const ZAI_PRE_MAX_EFFORTS: ZaiEffort[] = ["low", "medium", "high"];
+const ZAI_5_3_EFFORTS: ZaiEffort[] = ["low", "high", "max"];
+
+/** Cold-start mirror of server/src/types.ts. */
+export function zaiEffortsForModel(model: string): readonly ZaiEffort[] {
+  const id = model.trim().toLowerCase();
+  if (/^glm-5\.3(?:-flash)?(?:[-.]|$)/.test(id)) return ZAI_5_3_EFFORTS;
+  if (/^glm-5\.2(?:[-.]|$)/.test(id)) return ZAI_EFFORTS;
+  return ZAI_PRE_MAX_EFFORTS;
+}
 
 /** Live backend/model for the director. This is server runtime state, not a settings-derived guess. */
 export interface DirectorStatus {
@@ -564,7 +574,7 @@ export interface OrchestratorSettings {
   // Claude Agent SDK via z.ai's Anthropic-compatible endpoint, so it keeps the bus/office MCP tools.
   zaiEnabled: boolean;
   zaiModel: string;
-  zaiEffort: ZaiEffort; // z.ai reasoning-effort cap (low/medium/high)
+  zaiEffort: ZaiEffort; // z.ai reasoning-effort cap (model-specific through max)
   zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (100 = off): above it, tasks route off z.ai
   zaiKeyPresent: boolean; // read-only: an API key is stored (raw key never reaches the client)
   zaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
@@ -737,6 +747,7 @@ export type SettingsPatch = Partial<
 
 /** Flagship Codex models suggested when the live list hasn't loaded yet (most-capable first). */
 export const CODEX_MODELS = [
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -751,7 +762,7 @@ export const CODEX_MODELS = [
 export const GROK_MODELS = ["grok-4.6"] as const;
 
 /** z.ai (GLM) models suggested for the picker — the plan's fixed GLM id set (most-capable first curated). */
-export const ZAI_MODELS = ["glm-5.1", "glm-5-turbo", "glm-4.7", "glm-4.5-air"] as const;
+export const ZAI_MODELS = ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.6", "glm-4.5-air", "glm-4.5"] as const;
 
 // ---- the real-git "Changes" surface (mirrors server/src/gitService.ts) ----
 

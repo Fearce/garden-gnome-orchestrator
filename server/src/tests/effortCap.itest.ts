@@ -10,7 +10,7 @@
  */
 
 import { clampEffort } from "../agents/roles.js";
-import { claudeEffortsForModel, CODEX_EFFORTS, codexEffortsForModel, GROK_EFFORTS, grokEffortsForModel, resolveClaudeEffort, resolveCodexEffort, ZAI_EFFORTS } from "../types.js";
+import { claudeEffortsForModel, CODEX_EFFORTS, codexEffortsForModel, GROK_EFFORTS, grokEffortsForModel, resolveClaudeEffort, resolveCodexEffort, resolveZaiEffort, zaiEffortsForModel, ZAI_EFFORTS } from "../types.js";
 import { clientCommandSchema } from "../ws/protocol.js";
 
 let passed = 0;
@@ -33,6 +33,7 @@ eq("high over a low cap → low", clampEffort("high", "low"), "low");
 eq("uncapped (max cap) never lowers a request", clampEffort("xhigh", "max"), "xhigh");
 
 console.log("\nCodex model effort support");
+eq("GPT-6 Astra exposes Ultra", codexEffortsForModel("gpt-6-astra").at(-1), "ultra");
 eq("GPT-5.6 Sol exposes Ultra", codexEffortsForModel("gpt-5.6-sol").at(-1), "ultra");
 eq("GPT-5.6 Terra snapshots expose Ultra", codexEffortsForModel("gpt-5.6-terra-2026-07-01").at(-1), "ultra");
 eq("GPT-5.6 Luna stops at Max", codexEffortsForModel("gpt-5.6-luna").at(-1), "max");
@@ -48,6 +49,12 @@ eq("Claude Sonnet 4.6 exposes Max but not Extra High", claudeEffortsForModel("cl
 eq("Claude Haiku safely lowers unsupported Max", resolveClaudeEffort("claude-haiku-4-5-20251001", "max"), "high");
 eq("Grok 4.6 exposes Extra High", grokEffortsForModel("grok-4.6").at(-1), "xhigh");
 eq("Grok 4.5 stops at High", grokEffortsForModel("grok-4.5").at(-1), "high");
+eq("GLM-5.3 exposes its exact Low/High/Max set", zaiEffortsForModel("glm-5.3").join(","), "low,high,max");
+eq("GLM-5.3 Flash shares the flagship effort set", zaiEffortsForModel("glm-5.3-flash").join(","), "low,high,max");
+eq("GLM-5.2 adds documented Max", zaiEffortsForModel("glm-5.2").at(-1), "max");
+eq("older GLM models keep the verified High ceiling", zaiEffortsForModel("glm-4.7").at(-1), "high");
+eq("GLM-5.3 lowers stale Medium to Low", resolveZaiEffort("glm-5.3", "medium"), "low");
+eq("GLM-5.3 lowers cross-provider Extra High to High", resolveZaiEffort("glm-5.3", "xhigh"), "high");
 
 console.log("\nCodex settings protocol");
 eq(
@@ -61,7 +68,7 @@ eq(
   true,
 );
 eq(
-  "WebSocket settings keeps z.ai on its verified effort set",
+  "WebSocket settings accepts every documented z.ai effort",
   ZAI_EFFORTS.every((effort) => clientCommandSchema.safeParse({ type: "settings.set", settings: { zaiEffort: effort } }).success)
     && !clientCommandSchema.safeParse({ type: "settings.set", settings: { zaiEffort: "xhigh" } }).success,
   true,
