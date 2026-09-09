@@ -12,10 +12,14 @@
 // last), so for its whole run you cannot tell a wedged gate from a slow one. That cost a full
 // re-run on 2026-08-17. The transcript grows live, so `tail -20 server/data/gates-last.log`
 // answers "which gate is it on, and what is it doing" at any moment.
+// One OS-backed lease owns that shared transcript and completion stamp. A concurrent invocation
+// exits temporarily unavailable before touching either artifact; running two copies made git-heavy
+// gates time out and let each process overwrite the other's evidence.
 const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { buildStamp, fingerprintFile } = require("./gates-provenance.cjs");
+const { acquireGateRunLease } = require("./gate-run-lease.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const ROOT_DIR = path.resolve(SERVER_DIR, "..");
@@ -25,6 +29,7 @@ const TRANSCRIPT = path.join(SERVER_DIR, "data", "gates-last.log");
 // Beside it: what that run COVERED, so a later reader can ask whether the green still holds
 // (`npm run probe:gates`) instead of comparing a log mtime against `git log` by hand.
 const STAMP = path.join(SERVER_DIR, "data", "gates-last.json");
+const BUSY_EXIT_CODE = 75;
 
 const GATES = [
   "test:ide",
@@ -211,15 +216,29 @@ function gitRead(args) {
   }
 }
 
+/** Porcelain's first two columns are data. In particular, an unstaged modification starts with a
+ *  space; trimming the whole response before `slice(3)` silently drops the first path's first byte. */
+function gitStatusPaths(run = execFileSync) {
+  try {
+    const raw = run("git", ["status", "--porcelain"], {
+      cwd: ROOT_DIR,
+      encoding: "utf8",
+      windowsHide: true,
+    }).trimEnd();
+    return raw ? raw.split(/\r?\n/).filter(Boolean).map((line) => line.slice(3)) : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Written only after every gate has run, so an interrupted suite leaves no stamp at all — the
  *  absence is how `probe:gates` tells "never finished" from "finished and passed". */
 function writeStamp(results, startedAt) {
-  const status = gitRead(["status", "--porcelain"]);
   const stamp = buildStamp({
     startedAt,
     endedAt: Date.now(),
     head: gitRead(["rev-parse", "HEAD"]),
-    dirty: status ? status.split(/\r?\n/).filter(Boolean).map((l) => l.slice(3)) : [],
+    dirty: gitStatusPaths(),
     runnerFingerprint: fingerprintFile(__filename),
     results,
   });
@@ -227,6 +246,16 @@ function writeStamp(results, startedAt) {
     fs.writeFileSync(STAMP, `${JSON.stringify(stamp, null, 2)}\n`);
   } catch {
     /* the transcript is the artifact that must not be lost; the stamp is a convenience */
+  }
+}
+
+/** A completion stamp cannot describe the run now in progress. Remove it only after this process
+ *  owns the suite lease, so a rejected duplicate cannot invalidate the real owner's result. */
+function clearCompletedStamp(stampPath = STAMP) {
+  try {
+    fs.unlinkSync(stampPath);
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
   }
 }
 
@@ -251,6 +280,20 @@ function summaryText(results) {
   return lines.join("\n");
 }
 
+function busyText(owner) {
+  const pid = Number.isInteger(owner?.pid) ? `PID ${owner.pid}` : "another process";
+  const since = typeof owner?.startedAtIso === "string" ? ` since ${owner.startedAtIso}` : "";
+  return [
+    "",
+    "=== full gate suite already running ===",
+    `    owner: ${pid}${since}`,
+    `    transcript: ${TRANSCRIPT}`,
+    "    this attempt did not touch the transcript or completion stamp",
+    "    wait for that run to finish, then rerun for your current tree; this is not a gate pass",
+    "",
+  ].join("\n");
+}
+
 function openTranscript() {
   fs.mkdirSync(path.dirname(TRANSCRIPT), { recursive: true });
   return fs.createWriteStream(TRANSCRIPT, { flags: "w" });
@@ -262,34 +305,59 @@ function closeTranscript(log) {
 }
 
 async function main() {
-  const startedAt = Date.now();
-  const log = guardBrokenPipe(openTranscript());
-  // The path goes out FIRST, not just in the summary: a backgrounded run is watched from the
-  // transcript, and by the time the summary prints there is nothing left to watch.
-  const header = `\n=== running ${GATES.length} free test gates ===\n    transcript: ${TRANSCRIPT}\n\n`;
-  say(header);
-  log.write(header);
-
-  const results = [];
-  for (const gate of GATES) {
-    say(`  … ${gate} `);
-    log.write(`\n──────── ${gate} ────────\n`);
-    const r = await runGate(gate, log);
-    results.push(r);
-    const verdict = `${r.ok ? "✓" : "✗"} (${(r.ms / 1000).toFixed(1)}s)\n`;
-    say(verdict);
-    log.write(`──────── ${gate}: ${r.ok ? "passed" : "FAILED"} in ${(r.ms / 1000).toFixed(1)}s ────────\n`);
+  const lease = acquireGateRunLease();
+  if (!lease.acquired) {
+    say(busyText(lease.owner));
+    return BUSY_EXIT_CODE;
   }
 
-  writeStamp(results, startedAt);
-  const summary = summaryText(results);
-  say(summary);
-  log.write(summary);
-  await closeTranscript(log);
-  return results.some((r) => !r.ok) ? 1 : 0;
+  const startedAt = Date.now();
+  let log;
+  try {
+    clearCompletedStamp();
+    log = guardBrokenPipe(openTranscript());
+    // The path goes out FIRST, not just in the summary: a backgrounded run is watched from the
+    // transcript, and by the time the summary prints there is nothing left to watch.
+    const header = `\n=== running ${GATES.length} free test gates ===\n    transcript: ${TRANSCRIPT}\n\n`;
+    say(header);
+    log.write(header);
+
+    const results = [];
+    for (const gate of GATES) {
+      say(`  … ${gate} `);
+      log.write(`\n──────── ${gate} ────────\n`);
+      const r = await runGate(gate, log);
+      results.push(r);
+      const verdict = `${r.ok ? "✓" : "✗"} (${(r.ms / 1000).toFixed(1)}s)\n`;
+      say(verdict);
+      log.write(`──────── ${gate}: ${r.ok ? "passed" : "FAILED"} in ${(r.ms / 1000).toFixed(1)}s ────────\n`);
+    }
+
+    const summary = summaryText(results);
+    say(summary);
+    log.write(summary);
+    await closeTranscript(log);
+    log = null;
+    writeStamp(results, startedAt);
+    return results.some((r) => !r.ok) ? 1 : 0;
+  } finally {
+    if (log) await closeTranscript(log);
+    lease.release();
+  }
 }
 
-module.exports = { GATES, TRANSCRIPT, STAMP, guardBrokenPipe, summaryText, tail };
+module.exports = {
+  BUSY_EXIT_CODE,
+  GATES,
+  STAMP,
+  TRANSCRIPT,
+  busyText,
+  clearCompletedStamp,
+  gitStatusPaths,
+  guardBrokenPipe,
+  summaryText,
+  tail,
+};
 
 if (require.main === module) {
   guardBrokenPipe(process.stdout);
