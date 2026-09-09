@@ -28,6 +28,7 @@ const {
   readCodexUsage,
   readCodexUsageForSnapshot,
 } = await import("../agents/codexUsage.js");
+const { limitStateOf } = await import("../agents/codexUsagePing.js");
 
 let passed = 0;
 let failed = 0;
@@ -133,6 +134,20 @@ try {
     __codexUsageTestHooks.rolloutScanCount() === afterPingScanCount + 2,
     `${__codexUsageTestHooks.rolloutScanCount()} vs ${afterPingScanCount}`,
   );
+
+  // --- the provider's own limit-reached verdict (`limitStateOf`) ---
+  // This mapping is what lets fresh telemetry overturn a provider-STATED cap, so the ABSENT case has
+  // to stay distinguishable from the explicit-null one. Field shapes verified live on codex-cli
+  // 0.142.4: an unblocked plan answers `rateLimitReachedType: null` + `spendControlReached: false`.
+  check('an explicit no-limit-reached reading maps to "none"', limitStateOf({ rateLimitReachedType: null, spendControlReached: false }) === "none");
+  check('a named reached limit maps to "reached"', limitStateOf({ rateLimitReachedType: "usage_limit", spendControlReached: false }) === "reached");
+  check('a spend-control block maps to "reached" even with no named limit', limitStateOf({ rateLimitReachedType: null, spendControlReached: true }) === "reached");
+  check('a response omitting the field stays UNKNOWN rather than "none"', limitStateOf({}) === undefined);
+  check("an unknown spend-control state stays UNKNOWN", limitStateOf({ rateLimitReachedType: null }) === undefined);
+  // A blank string is malformed, not an answer — it names no reached limit and is not the explicit
+  // null that means "nothing is reached", so it fails closed to UNKNOWN like any other value we
+  // cannot interpret.
+  check("a blank reached-type is UNKNOWN, neither reached nor clear", limitStateOf({ rateLimitReachedType: "   ", spendControlReached: false }) === undefined);
 
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS" : "FAIL"} - ${passed} passed, ${failed} failed ===`);
   if (failures.length) {

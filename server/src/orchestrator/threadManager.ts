@@ -16,7 +16,7 @@ import {
 } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { withCommunicationSystemPolicy, withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
-import { codexPools, codexUsageCapped, liveCodexUsage, readCodexUsage } from "../agents/codexUsage.js";
+import { codexAllowanceReopened, codexPools, codexUsageCapped, liveCodexUsage, readCodexUsage } from "../agents/codexUsage.js";
 import {
   detectTimedComplete,
   formatDuration,
@@ -937,6 +937,10 @@ export class ThreadManager implements OrchestratorApi {
    *  429 in one must never disable the other. Persisted so a bounce doesn't retry a known-capped pool. */
   private readonly poolCapUntil = new Map<string, number>();
   private codexCapRecordedAt: number | undefined;
+  /** The last reason live telemetry was refused as proof that a provider-stated Codex cap had lifted.
+   *  Held only to de-duplicate the log line: the cap supervisor re-asks every 120s, so an unchanged
+   *  reason must be said once, not forty times an hour. */
+  private codexReopenRefusal: string | undefined;
   // Epoch ms until which Grok is treated as usage-capped (route implementors elsewhere). Set when a live
   // Grok run is rejected; a fixed cooldown (no reset epoch is exposed). Persisted so a restart's auto-resume
   // wave doesn't slam a still-capped Grok. Undefined = Grok not latched-capped.
@@ -3938,6 +3942,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.codexCapUntil = undefined;
     this.codexCapUntilProviderStated = false;
     this.codexCapRecordedAt = undefined;
+    this.codexReopenRefusal = undefined; // a LATER cap must be able to explain itself again
     this.db.kvSet(CODEX_CAP_KV_KEY, "");
     this.db.kvSet(CODEX_CAP_SOURCE_KV_KEY, "");
     this.db.kvSet(CODEX_CAP_RECORDED_AT_KV_KEY, "");
@@ -3985,20 +3990,40 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // whenever a persisted cap and a fresh app-server ping coexist.
       const liveHeadroom = liveCodexUsage() && this.codexProviderCandidate(undefined, undefined, undefined, true).hasHeadroom;
       const recoveredAfterCap = this.codexCapUntilProviderStated && this.codexRecoveredAfterLastRecordedCap();
-      if (liveHeadroom && (!this.codexCapUntilProviderStated || recoveredAfterCap)) {
+      // The run trail cannot prove a MANUAL reset: while the latch holds, every Codex run is blocked,
+      // so no newer successful run can ever exist to disprove the stated reset. The provider's own
+      // fresh telemetry is the second, non-circular proof — see codexAllowanceReopened.
+      const reopened =
+        this.codexCapUntilProviderStated && !recoveredAfterCap
+          ? codexAllowanceReopened(this.codexCapRecordedAt)
+          : undefined;
+      if (liveHeadroom && (!this.codexCapUntilProviderStated || recoveredAfterCap || reopened?.reopened)) {
         this.hub.log(
           "info",
           recoveredAfterCap
             ? "Codex has a successful run newer than its recorded cap and live headroom — clearing the stale provider reset latch."
-            : "Codex live usage probe reports headroom — clearing the stale Codex cap latch.",
+            : reopened?.reopened
+              ? `Codex's allowance reopened since its recorded cap — ${reopened.reason}. Clearing the stale provider reset latch.`
+              : "Codex live usage probe reports headroom — clearing the stale Codex cap latch.",
         );
         this.clearCodexCap();
         return false;
       }
+      if (liveHeadroom && reopened) this.noteCodexReopenRefusal(reopened.reason, this.codexCapUntil);
       if (now < this.codexCapUntil) return true;
       this.clearCodexCap();
     }
     return codexUsageCapped(now);
+  }
+
+  /** Say — once per distinct reason — why live telemetry did NOT lift a provider-stated Codex cap.
+   *  Only reached when telemetry was the last thing standing between the task and a resume, so the
+   *  owner who just reset the account by hand can see whether we saw no reading, an old one, or one
+   *  carrying no verdict, instead of an unexplained park. */
+  private noteCodexReopenRefusal(reason: string, statedUntil: number): void {
+    if (this.codexReopenRefusal === reason) return;
+    this.codexReopenRefusal = reason;
+    this.hub.log("info", `Codex's stated reset still holds — ${reason}. It lifts when the provider says so, or at ${new Date(statedUntil).toLocaleString()}.`);
   }
 
   /** Called after a successful app-server usage probe. A fresh positive Codex reading can free

@@ -7,7 +7,7 @@ import type { EventHub } from "../events.js";
 import type { ResetStagger } from "../accounts/resetStagger.js";
 import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
-import { classifyRateWindows, noteCodexPing, noteCodexWake, readCodexUsageForSnapshot, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
+import { classifyRateWindows, noteCodexPing, noteCodexWake, readCodexUsageForSnapshot, type CodexLimitState, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 import { GENERAL_LIMIT_ID, normalizeLimitName, type CodexPool } from "./codexPools.js";
 
 /**
@@ -60,6 +60,11 @@ interface RpcRateLimits {
   planType?: string | null;
   limitId?: string | null;
   limitName?: string | null;
+  /** The backend's own name for whichever limit is currently blocking this pool, or `null` when
+   *  nothing is. Verified live on codex-cli 0.142.4 (see `limitStateOf`). */
+  rateLimitReachedType?: string | null;
+  /** The spend-control counterpart — a plan can be blocked on spend rather than on a window. */
+  spendControlReached?: boolean | null;
 }
 
 /** The whole `account/rateLimits/read` result. `rateLimits` is the GENERAL pool (what we have always
@@ -93,6 +98,12 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
     return null;
   }
   try {
+    // Stamp when the read was ISSUED, not when it came back. `updatedAt` is what tells every consumer
+    // how old this data is, and the round trip can take seconds: a cap latched WHILE a ping was in
+    // flight would otherwise be overturned by that ping's own pre-cap reading, which is exactly the
+    // freshness veto codexAllowanceReopened depends on. Strictly conservative for the age/staleness
+    // checks too.
+    const readAt = Date.now();
     const result = await appServerRateLimits(child, timeoutMs);
     const rl = result?.rateLimits;
     if (!rl) return null;
@@ -100,7 +111,8 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
     const usage: CodexUsageDTO = {
       ...classifyRateWindows(toMeterWindow(rl.primary), toMeterWindow(rl.secondary)),
       planType: rl.planType ?? null,
-      updatedAt: Date.now(),
+      updatedAt: readAt,
+      ...withLimitState(rl),
       ...(pools.length ? { pools } : {}),
     };
     if (usage.fiveHour == null && usage.sevenDay == null) return null; // no meter info — treat as a failed read
@@ -128,9 +140,39 @@ function toPools(result: RpcRateLimitsResult): CodexPool[] {
       // The general pool meters everything without an allowance of its own, so it names no model.
       modelSlug: limitId === GENERAL_LIMIT_ID ? null : normalizeLimitName(limitName),
       ...meters,
+      ...withLimitState(rl),
     });
   }
   return out;
+}
+
+/**
+ * The provider's own live verdict on whether this pool is currently blocked, as an explicit
+ * tri-state — see `CodexLimitState`.
+ *
+ * The distinction that matters is PRESENT-AND-NULL versus ABSENT. `rateLimitReachedType: null` is the
+ * backend actively saying "nothing is reached" (verified live on codex-cli 0.142.4, alongside
+ * `spendControlReached: false`), and that statement is the only thing allowed to overturn a
+ * provider-stated cap latch. A response that omits the key says nothing at all, so it must produce no
+ * field rather than a cheerful "none" — a backend that stops sending it would otherwise silently
+ * convert every quiet meter into permission to retry a genuinely capped plan.
+ */
+export function limitStateOf(rl: LimitStateFields): CodexLimitState | undefined {
+  if (typeof rl.rateLimitReachedType === "string" && rl.rateLimitReachedType.trim()) return "reached";
+  if (rl.spendControlReached === true) return "reached";
+  if (!("rateLimitReachedType" in rl) || rl.rateLimitReachedType !== null) return undefined;
+  // A plan blocked on spend is still blocked; only an explicit `false` clears that half.
+  return rl.spendControlReached === false ? "none" : undefined;
+}
+
+/** The two RPC fields `limitStateOf` reads. Named so the gate can exercise the mapping without
+ *  building a whole rate-limit envelope. */
+export type LimitStateFields = Pick<RpcRateLimits, "rateLimitReachedType" | "spendControlReached">;
+
+/** `limitStateOf` as a spreadable partial, so an unknown state adds no key at all. */
+function withLimitState(rl: RpcRateLimits): { limitState?: CodexLimitState } {
+  const state = limitStateOf(rl);
+  return state ? { limitState: state } : {};
 }
 
 /** Drive the minimal JSON-RPC exchange: initialize → initialized → account/rateLimits/read. */

@@ -1,7 +1,18 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
-import type { CodexPool } from "./codexPools.js";
+import { GENERAL_LIMIT_ID, type CodexPool } from "./codexPools.js";
+
+/**
+ * The provider's own answer to "is a limit currently reached on this pool?", from
+ * `account/rateLimits/read`'s `rateLimitReachedType` / `spendControlReached`.
+ *
+ * Deliberately TRI-state: `"reached"`, `"none"`, or ABSENT. A reading that simply does not carry the
+ * field — a rollout snapshot, an older persisted cache, a future backend that drops it — must never be
+ * read as "no limit reached", because this value is what allows a live meter to overturn a
+ * provider-stated cap. Absent means unknown, and unknown fails closed.
+ */
+export type CodexLimitState = "none" | "reached";
 
 /** Codex (ChatGPT-plan) usage windows, mirroring AccountDTO's 5h/weekly meters. `primary` is the rolling
  *  5-hour window, `secondary` the weekly one — both as 0-100 used-percent with an epoch-ms reset. */
@@ -14,6 +25,9 @@ export interface CodexUsageDTO {
   sevenDayReset: number | null; // epoch ms
   planType: string | null; // "plus" | "pro" | …
   updatedAt: number; // epoch ms of the turn that produced this snapshot (for the stale check)
+  /** The GENERAL pool's live limit-reached state. Live app-server ping only — a rollout snapshot
+   *  carries no such field, so it stays absent (unknown) there. See CodexLimitState. */
+  limitState?: CodexLimitState;
   wakeAt?: number | null; // 5h window idle — a cheap wake turn is scheduled at this epoch ms (stagger slot)
   /** Every independently-metered pool on the plan (`rateLimitsByLimitId`) — the general `codex` pool
    *  plus one per model that ships its own allowance (Spark). The four fields above stay the GENERAL
@@ -117,6 +131,56 @@ export function liveCodexUsage(): CodexUsageDTO | null {
   return livePing;
 }
 
+/** Used-percent at or below which a metered window counts as a genuinely REOPENED allowance, rather
+ *  than merely "not quite at the wall". Deliberately far below the routing hard limit: this evidence
+ *  is allowed to overturn a reset the provider itself stated, so "well under the limit" has to mean
+ *  it. A window still carrying most of a spent period is not a reopened one. */
+export const CODEX_REOPENED_ALLOWANCE_MAX_PCT = 50;
+
+/** Whether live telemetry proves Codex's general allowance reopened, plus the reason either way. */
+export interface CodexAllowanceEvidence {
+  reopened: boolean;
+  /** Why — carried into the operator-facing log line so a refusal is never silent. */
+  reason: string;
+}
+
+/**
+ * Whether the provider's OWN live telemetry, read after a cap was recorded, states that the general
+ * Codex allowance is open again.
+ *
+ * This exists for the manual reset (or credit purchase): the account reopens outside our run history,
+ * so the "a newer successful run disproves the stated reset" rule can never fire — the cap blocks
+ * every Codex run, so no newer successful run can exist. That is circular, and it stranded a task for
+ * six days. Live telemetry breaks the circle without inventing history.
+ *
+ * Every clause is a veto and the default is "no". The reading must be fresh (`liveCodexUsage` bounds
+ * its age), must have been taken strictly AFTER the cap was recorded, must carry the provider's
+ * explicit `limitState: "none"` — an absent state is unknown, never permission — and must show a real
+ * metered window well under the limit. Stale, missing, unknown or still-capped telemetry all fail
+ * closed, which is the case the guard this supplements was written to protect.
+ */
+export function codexAllowanceReopened(capRecordedAt: number | undefined): CodexAllowanceEvidence {
+  const no = (reason: string): CodexAllowanceEvidence => ({ reopened: false, reason });
+  if (capRecordedAt == null) return no("no recorded cap time to compare a live reading against");
+  const live = liveCodexUsage();
+  if (!live) return no("no fresh live usage reading");
+  if (live.updatedAt <= capRecordedAt) return no("the live reading is not newer than the recorded cap");
+  const pool = live.pools?.find((p) => p.limitId === GENERAL_LIMIT_ID);
+  const limitState = pool?.limitState ?? live.limitState;
+  if (limitState === "reached") return no("the provider still reports a limit reached");
+  if (limitState !== "none") return no("the live reading carries no limit-reached state");
+  const metered = (pool ? [pool.fiveHour, pool.sevenDay] : [live.fiveHour, live.sevenDay]).filter(
+    (pct): pct is number => pct != null,
+  );
+  if (!metered.length) return no("the general pool reported no metered window");
+  const used = Math.max(...metered);
+  if (used > CODEX_REOPENED_ALLOWANCE_MAX_PCT) return no(`the general pool is still ${used}% used`);
+  return {
+    reopened: true,
+    reason: `the provider reports no limit reached and ${used}% used on the general pool, read ${Math.round((Date.now() - live.updatedAt) / 60_000)} min ago`,
+  };
+}
+
 /** Record a live app-server rate-limit read. Called by the usage ping on every successful probe. */
 export function noteCodexPing(usage: CodexUsageDTO): void {
   livePing = usage;
@@ -163,12 +227,27 @@ export function readCodexUsageForSnapshot(): CodexUsageDTO | null {
   if (!candidates.length) return null;
   const freshest = candidates.reduce((best, usage) => usage.updatedAt > best.updatedAt ? usage : best);
   const wakeAt = plannedWakeAt != null && plannedWakeAt > now ? plannedWakeAt : null;
-  const pools = codexPools() ?? freshest.pools;
+  const live = liveCodexUsage();
+  const pools = live?.pools?.length ? live.pools : freshest.pools;
   return {
     ...cloneUsage(freshest)!,
     wakeAt,
+    // `pools` is overridden with the live ping's when there is one, so the limit-reached verdict has
+    // to come from that same reading or the two halves describe different moments.
+    ...restoreLimitState(pools === freshest.pools ? freshest.limitState : live?.limitState),
     ...(pools?.length ? { pools } : {}),
   };
+}
+
+/** A limit-reached verdict only survives a round trip through untrusted storage when it is one of the
+ *  two literals. Anything else — a typo, a truncated write, a future value — is unknown. */
+function restoreLimitState(value: unknown): { limitState?: CodexLimitState } {
+  return value === "none" || value === "reached" ? { limitState: value } : {};
+}
+
+function restorePool(pool: CodexPool): CodexPool {
+  const { limitState: _dropped, ...rest } = pool;
+  return { ...rest, ...restoreLimitState(pool.limitState) };
 }
 
 function loadPersistedCache(): CodexUsageDTO | null {
@@ -185,8 +264,12 @@ function loadPersistedCache(): CodexUsageDTO | null {
       sevenDayReset: typeof value.sevenDayReset === "number" ? value.sevenDayReset : null,
       planType: typeof value.planType === "string" ? value.planType : null,
       updatedAt: value.updatedAt,
+      ...restoreLimitState(value.limitState),
       wakeAt: typeof value.wakeAt === "number" ? value.wakeAt : null,
-      pools: Array.isArray(value.pools) ? value.pools.map((pool) => ({ ...pool })) : undefined,
+      // A pool's `limitState` gets the same whitelist as the top-level one. This file is on disk and
+      // that field is what may overturn a cap latch, so it must not be trusted just because the only
+      // reader today (the presentation snapshot) never decides anything with it.
+      pools: Array.isArray(value.pools) ? value.pools.map(restorePool) : undefined,
     };
   } catch {
     return null;

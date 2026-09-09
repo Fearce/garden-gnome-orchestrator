@@ -309,7 +309,10 @@ Read the run trail to tell causes apart:
   in `review` with the marker `⏳ Auto-resume pending` in its `error` — a supervisor (`resumeCapParked`,
   every `CAP_RETRY_MS`/120s) auto-resumes it the moment a Claude sub OR Codex frees up; a QA-stage park
   (message carries "(QA runs on Claude)") waits for a Claude window specifically. A plain "needs your
-  review" park carries no marker and is left for a human. Idle 5h windows restart STAGGERED: a shared
+  review" park carries no marker and is left for a human. **A Codex cap the owner clears BY HAND (usage
+  reset, credit top-up) is disproved by live telemetry, not by run history** (`codexAllowanceReopened`): a
+  stated reset once needed a newer successful Codex run, which the latch itself made impossible; absent
+  telemetry is still never permission. ARCHITECTURE.md §10. Idle 5h windows restart STAGGERED: a shared
   `ResetStagger` (`accounts/resetStagger.ts`) places each restart at the midpoint of the largest gap
   between the OTHER participants' live 5h reset phases — Claude subs AND Codex — so resets spread out
   and re-converge dynamically (a sub some outside consumer keeps waking, e.g. a background service, is detected

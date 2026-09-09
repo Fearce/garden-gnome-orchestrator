@@ -22,6 +22,7 @@
  */
 
 import type { Role } from "../types.js";
+import type { CodexLimitState } from "./codexUsage.js";
 import { preferCapacity, standardCapacityWindows, type CapacityDemand } from "../orchestrator/capacityRouting.js";
 
 /** The pool every model without a dedicated allowance draws on. */
@@ -39,6 +40,8 @@ export interface CodexPool {
   sevenDay: number | null;
   fiveHourReset: number | null; // epoch ms
   sevenDayReset: number | null; // epoch ms
+  /** This pool's live limit-reached state, when the reading carried one. See CodexLimitState. */
+  limitState?: CodexLimitState;
 }
 
 /**

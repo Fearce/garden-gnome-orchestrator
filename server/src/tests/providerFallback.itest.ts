@@ -26,7 +26,7 @@ const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { CodexAgentRun } = await import("../agents/codexRunner.js");
 const { GrokAgentRun } = await import("../agents/grokRunner.js");
-const { noteCodexPing } = await import("../agents/codexUsage.js");
+const { __codexUsageTestHooks, noteCodexPing } = await import("../agents/codexUsage.js");
 const { parseUsageLimitResetAt, usageLimitResetWasExplicitlyElapsed } = await import("../agents/runner.js");
 
 function check(label: string, condition: boolean, detail?: string): void {
@@ -1285,6 +1285,118 @@ try {
   );
   livePingDb.raw.close();
   rmSync(livePingRoot, { recursive: true, force: true });
+
+  // --- a MANUALLY reset Codex account must be recoverable from live telemetry alone ---
+  //
+  // A provider-stated reset ("try again Sep 15th") was previously only disprovable by a Codex run
+  // that succeeded AFTER the cap was recorded. That is circular: the latch blocks every Codex run, so
+  // no such run can ever exist, and an account the owner reset by hand stayed frozen until the
+  // original stated expiry — six days, with a task stranded on a strict Codex model pin.
+  //
+  // The non-circular proof is the provider's own fresh telemetry. Each case below re-latches the same
+  // provider-stated cap and varies ONLY the live reading, because the guard's original purpose —
+  // stale, absent or still-capped telemetry may not shorten a stated reset — has to survive intact.
+  const resetRoot = mkdtempSync(join(tmpdir(), "provider-fallback-manual-reset-"));
+  mkdirSync(join(resetRoot, "workspace"), { recursive: true });
+  const resetDb = new Db(join(resetRoot, "orchestrator.sqlite"));
+  const resetInternals = bootFixtureManager(resetDb, resetRoot);
+  const resetNow = Date.now();
+  const statedCapUntil = resetNow + 6 * 24 * 60 * 60_000; // the provider's own "try again in six days"
+  const capRecordedAt = resetNow - 3 * 60 * 60_000;
+
+  /** Re-arm the exact deadlocked state: a provider-stated latch, and NO Codex run newer than it. */
+  const latchStatedCap = (): void => {
+    resetInternals.codexCapUntil = statedCapUntil;
+    resetInternals.codexCapUntilProviderStated = true;
+    resetInternals.codexCapRecordedAt = capRecordedAt;
+  };
+  /** A live app-server reading, defaulting to the manual-reset shape (fresh, open, unused). */
+  const notePing = (over: Record<string, unknown> = {}): void => {
+    noteCodexPing({
+      fiveHour: null,
+      sevenDay: 0,
+      fiveHourReset: null,
+      sevenDayReset: resetNow + 7 * 24 * 60 * 60_000,
+      planType: "pro",
+      updatedAt: resetNow,
+      limitState: "none",
+      ...over,
+    } as any);
+  };
+
+  latchStatedCap();
+  notePing();
+  check(
+    "a manual reset clears a provider-stated cap with no newer successful run",
+    resetInternals.codexCapActive() === false && resetInternals.codexCapUntil === undefined,
+    `active=${resetInternals.codexCapActive()} until=${resetInternals.codexCapUntil}`,
+  );
+
+  // Still capped: the meters can read 0% while the provider is blocked on credits, so the
+  // limit-reached verdict — not the percentage — is what has to hold the latch.
+  latchStatedCap();
+  notePing({ limitState: "reached" });
+  check(
+    "a provider still reporting a limit reached keeps the cap, even at 0% used",
+    resetInternals.codexCapActive() === true && resetInternals.codexCapUntil === statedCapUntil,
+    `active=${resetInternals.codexCapActive()} until=${resetInternals.codexCapUntil}`,
+  );
+
+  // Stale: a reading taken BEFORE the cap describes the plan the cap already overruled.
+  latchStatedCap();
+  notePing({ updatedAt: capRecordedAt - 60_000 });
+  check(
+    "a live reading older than the recorded cap does not clear it",
+    resetInternals.codexCapActive() === true && resetInternals.codexCapUntil === statedCapUntil,
+    `active=${resetInternals.codexCapActive()} until=${resetInternals.codexCapUntil}`,
+  );
+
+  // Unknown: a rollout snapshot (or a backend that drops the field) carries no verdict at all. This
+  // is the pre-existing behaviour the original guard protects — absent is never permission.
+  latchStatedCap();
+  notePing({ limitState: undefined });
+  check(
+    "telemetry carrying no limit-reached verdict does not clear the cap",
+    resetInternals.codexCapActive() === true && resetInternals.codexCapUntil === statedCapUntil,
+    `active=${resetInternals.codexCapActive()} until=${resetInternals.codexCapUntil}`,
+  );
+
+  // Open, but not REOPENED: a window most of the way through a spent period is not evidence of a
+  // fresh allowance, even though ordinary routing would still call it headroom.
+  latchStatedCap();
+  notePing({ sevenDay: 80 });
+  check(
+    "a mostly-spent window does not read as a reopened allowance",
+    resetInternals.codexCapActive() === true && resetInternals.codexCapUntil === statedCapUntil,
+    `active=${resetInternals.codexCapActive()} until=${resetInternals.codexCapUntil}`,
+  );
+
+  // The GENERAL pool's own verdict wins over the plan-wide summary: the general latch is about the
+  // pool an ordinary implementor model actually spends.
+  latchStatedCap();
+  notePing({
+    pools: [
+      { limitId: "codex", limitName: null, modelSlug: null, fiveHour: null, sevenDay: 0, fiveHourReset: null, sevenDayReset: resetNow + 7 * 24 * 60 * 60_000, limitState: "reached" },
+      { limitId: "codex_bengalfox", limitName: "GPT-5.3-Codex-Spark", modelSlug: "gpt-5.3-codex-spark", fiveHour: 0, sevenDay: 0, fiveHourReset: resetNow + 3 * 60 * 60_000, sevenDayReset: resetNow + 7 * 24 * 60 * 60_000, limitState: "none" },
+    ],
+  });
+  check(
+    "a capped general pool holds the latch even while a dedicated pool is idle",
+    resetInternals.codexCapActive() === true && resetInternals.codexCapUntil === statedCapUntil,
+    `active=${resetInternals.codexCapActive()} until=${resetInternals.codexCapUntil}`,
+  );
+
+  // Missing: no live reading at all. The existing `liveCodexUsage()` gate covers this, and it must
+  // keep covering it — a manual reset is proved by telemetry, never by its absence.
+  latchStatedCap();
+  __codexUsageTestHooks.reset();
+  check(
+    "no live reading at all does not clear the cap",
+    resetInternals.codexCapActive() === true && resetInternals.codexCapUntil === statedCapUntil,
+    `active=${resetInternals.codexCapActive()} until=${resetInternals.codexCapUntil}`,
+  );
+  resetDb.raw.close();
+  rmSync(resetRoot, { recursive: true, force: true });
 } finally {
   db.raw.close();
   rmSync(root, { recursive: true, force: true });

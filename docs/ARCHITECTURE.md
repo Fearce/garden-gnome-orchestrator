@@ -647,6 +647,18 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
 - Degrades to single-account (inherited login) when fewer than two tokens are
   configured. A bar reads `—` only before the first successful ping for that
   account.
+- **A provider-stated Codex reset has two ways to be disproved, and one of them must not need a run.**
+  The first is the task database: a Codex run that completed cleanly after the cap was recorded
+  (`codexRecoveredAfterLastRecordedCap`). Alone that is circular — the latch blocks every Codex run, so
+  no newer successful run can exist — and an account the owner reset by hand (or topped up with credits)
+  stayed frozen until the original stated expiry. The second is the provider's own live telemetry
+  (`codexAllowanceReopened`, `agents/codexUsage.ts`): a fresh `account/rateLimits/read` taken strictly
+  after the recorded cap, stating `rateLimitReachedType: null` / `spendControlReached: false` and a
+  general pool well under the limit, clears the latch on the next ping. `limitState` is a TRI-state —
+  `"reached"`, `"none"`, or ABSENT — and absent means unknown, never permission: a rollout snapshot, an
+  older persisted cache, or a backend that stops sending the field all leave the cap standing, as do
+  stale readings and a still-spent window. Gate: `test:provider-fallback` (recovery, genuine cap, stale
+  / unknown / missing telemetry) and `test:codex-usage` (the field mapping).
 - **A ChatGPT plan is not one allowance** (`agents/codexPools.ts`). `account/rateLimits/read` returns
   `rateLimitsByLimitId` beside the plan-wide windows: the general `codex` pool, plus a dedicated pool
   per model that ships its own (GPT-5.3-Codex-Spark). Each has its own 5h/weekly windows, its own
