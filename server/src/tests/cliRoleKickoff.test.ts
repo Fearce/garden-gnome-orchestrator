@@ -22,6 +22,8 @@ function qaKickoff(systemPrompt: string, disallowedTools: string[]): string {
 
 const readOnly = qaKickoff(QA_PROMPT, ["Write", "Edit", "NotebookEdit", "AskUserQuestion"]);
 assert.match(readOnly, /inspect and run checks, but do not edit the implementation/i);
+assert.match(readOnly, /Do not emit a kickoff or progress preamble/i, "QA starts with tools instead of narrating routine setup");
+assert.match(readOnly, /no candidate list means only that the detector found none and never waives this check/i, "the cache-stable QA prompt owns the complete deliverables invariant");
 assert.match(readOnly, /OPERATOR_NOTE: short action \| https:\/\//, "CLI fallback roles must retain the owner-note bridge");
 assert.match(
   readOnly,
@@ -47,6 +49,8 @@ for (const provider of ["Codex", "Grok"] as const) {
   assert.equal(typeof kickoff, "string");
   const text = kickoff as string;
   assert.match(text, /stage ONLY your own QA hunks and create a focused Conventional Commit/i, `${provider} must receive the QA-fix commit doctrine`);
+  assert.match(text, /Do not emit a kickoff or progress preamble/i, `${provider} QA-fix starts with tools instead of narration`);
+  assert.match(text, /no candidate list means only that the detector found none and never waives this check/i, `${provider} QA-fix retains the complete deliverables invariant`);
   assert.match(text, /editing QA reviewer: inspect, fix every in-scope issue/i, `${provider} must receive editing QA mode`);
   assert.doesNotMatch(text, /inspect and run checks, but do not edit the implementation/i, `${provider} must not receive contradictory read-only QA mode`);
 }

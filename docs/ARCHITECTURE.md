@@ -366,6 +366,12 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   `failed` demote an already-finished, owner-parked task.
   `REVIEWER_PROMPT` tells the reviewer a fixer follows, so its issues read as work orders rather than as
   "I can't fix this myself".
+- **QA reviews start with evidence, not narration.** QA must independently inspect the current diff and
+  run the relevant checks — trusting an implementor's summary would remove the acceptance gate. It starts
+  with tool calls instead of an "I'll inspect the working tree" preamble. The invariant checklist (including
+  the full deliverables policy) lives once in the cache-stable system prompt; a task kickoff carries only
+  the brief, plan scope, owner directives, and any concrete unsurfaced-artifact candidates. It does not
+  re-bill the same generic checklist or an empty "no candidates" disclaimer on every review.
 - **QA fix-rounds resume the QA session.** Round 1 is a fresh QA session seeded with a *scope hint*
   (the plan summary + the files it expected to touch) so QA doesn't burn Opus turns rediscovering the
   change surface. Rounds 2..N **resume that same QA session** (same warm/cold gate as the implementor;

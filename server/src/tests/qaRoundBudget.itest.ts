@@ -395,7 +395,10 @@ async function main(): Promise<void> {
       check("fresh verifier kickoff carries the brief", kickoff.includes("BRIEF-SENTINEL"), "brief missing");
       check("fresh verifier kickoff carries the prior-fix handoff", kickoff.includes("previous QA reviewer just edited the working tree"), "handoff missing");
       check("fresh verifier kickoff forwards unresolved issues", kickoff.includes("[blocker] deliverable not surfaced"), "issues missing");
-      check("fresh verifier kickoff keeps the deliverables check", kickoff.includes("Deliverables check"), "deliverables block missing");
+      check("fresh verifier does not re-bill the cache-stable deliverables doctrine", !kickoff.includes("A deliverable is a file the owner"), kickoff);
+      check("an empty artifact scan adds no boilerplate", !kickoff.includes("Possible unsurfaced deliverables"), kickoff);
+      const hinted = qaFixFreshKickoff(thread, undefined, "fixed a null deref", ["reports/final.pdf"]);
+      check("a real artifact candidate still reaches fresh QA", hinted.includes("Possible unsurfaced deliverables") && hinted.includes("reports/final.pdf"), hinted);
     } finally {
       h.dispose();
     }

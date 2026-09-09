@@ -13001,12 +13001,7 @@ function qaKickoff(thread: Thread, plan?: PlanOutput, unsurfacedArtifacts: strin
   // can catch a violation before the task ships, so it must see the same durable list the implementor does.
   const directives = renderStandingDirectives(standingDirectives);
   if (directives) parts.push("", directives);
-  parts.push(
-    "",
-    "Verify the work in this repo: inspect the changes (git diff), run the project's build/typecheck/tests, and check correctness and completeness against the brief. Then return your structured verdict (pass + issues). Pass only if you'd actually ship it.",
-    "",
-    deliverablesCheckBlock(unsurfacedArtifacts),
-  );
+  appendDeliverablesHint(parts, unsurfacedArtifacts);
   return parts.join("\n");
 }
 
@@ -13023,7 +13018,8 @@ function qaRecheckKickoff(unsurfacedArtifacts: string[] = [], standingDirectives
   ];
   const directives = renderStandingDirectives(standingDirectives);
   if (directives) lines.push("", directives);
-  return [...lines, "", deliverablesCheckBlock(unsurfacedArtifacts)].join("\n");
+  appendDeliverablesHint(lines, unsurfacedArtifacts);
+  return lines.join("\n");
 }
 
 /** The RESUMED form for a reviewer the turn ceiling cut off mid-verification. It is not a re-check —
@@ -13044,7 +13040,8 @@ function qaContinueKickoff(unsurfacedArtifacts: string[] = [], applyFixes = fals
   }
   const directives = renderStandingDirectives(standingDirectives);
   if (directives) lines.push("", directives);
-  return [...lines, "", deliverablesCheckBlock(unsurfacedArtifacts)].join("\n");
+  appendDeliverablesHint(lines, unsurfacedArtifacts);
+  return lines.join("\n");
 }
 
 /** The kickoff for one QA attempt. A RESUMED session already holds the brief, the plan and the diff it
@@ -13084,7 +13081,8 @@ function qaFixRecheckKickoff(previousSummary: string, unsurfacedArtifacts: strin
   const lines = qaFixHandoffBlock(previousSummary);
   const directives = renderStandingDirectives(standingDirectives);
   if (directives) lines.push("", directives);
-  return [...lines, "", deliverablesCheckBlock(unsurfacedArtifacts)].join("\n");
+  appendDeliverablesHint(lines, unsurfacedArtifacts);
+  return lines.join("\n");
 }
 
 /** The FRESH form. A verifier pass is a fresh session on almost every route — a different provider
@@ -13111,30 +13109,17 @@ function qaFixCommitPolicy(autoPush: boolean): string {
     : "## QA fix commit policy\nAuto-push is OFF for this task. If you changed task files in this QA run, stage only your own hunks and make a focused Conventional Commit, but do NOT push it. Do not commit when you made no changes.";
 }
 
-/** The mandatory deliverables-verification step folded into every QA kickoff. Deliverable emission is
- *  a discretionary tool call the implementor can forget, and QA is the gate that marks a task done —
- *  so QA is where the reliability backstop lives. When the harness detected artifact files the
- *  implementor wrote but never surfaced, they're listed as concrete candidates; either way QA must
- *  confirm every owner-facing artifact this task produced was surfaced, and fail (blocker) if not. */
-function deliverablesCheckBlock(unsurfacedArtifacts: string[]): string {
-  const lines = [
-    "## Deliverables check (REQUIRED — do this every round)",
-    "A deliverable is a file the owner should be able to open/download from the console; the implementor surfaces one with `post_deliverable`, or with its `DELIVERABLE: label | absolute path` bridge on a Codex/Grok CLI run. Either mechanism records the same deliverable finding and is easy to forget. Verify EVERY owner-facing artifact this task produced — a report, generated document, CSV/data export, diagram, rendered image/video, or generated asset (NOT ordinary source-code or config edits). Cross-check the actual git diff / new files against the deliverables already recorded (use `read_findings` — deliverables show as `[info]` findings whose summary is the file's label).",
-    "If any produced artifact was NOT surfaced, that is a **blocker** issue: fail the review, name the exact file(s), and tell the implementor to use its available deliverable mechanism with an absolute path so the card resolves. Do not surface them yourself — bounce it back.",
-  ];
-  if (unsurfacedArtifacts.length) {
-    lines.push(
-      "",
-      "The harness flagged these files the implementor WROTE but did not surface as deliverables — check each; if it's an owner-facing artifact, its absence is a blocker (if it's genuinely just a source/support file, note that and move on):",
-      ...unsurfacedArtifacts.map((p) => `- ${p}`),
-    );
-  } else {
-    lines.push(
-      "",
-      "(The harness did not auto-detect any unsurfaced artifact from the implementor's file writes, but that detection misses files generated via scripts/Bash — still verify against the real git diff yourself.)",
-    );
-  }
-  return lines.join("\n");
+/** The invariant-heavy deliverables policy lives once in the cache-stable QA system prompt. Per-task
+ *  text carries only genuinely dynamic evidence: likely artifact files the deterministic harness found.
+ *  No candidates means no block at all — the system prompt already says absence never waives the check. */
+function appendDeliverablesHint(parts: string[], unsurfacedArtifacts: string[]): void {
+  if (!unsurfacedArtifacts.length) return;
+  parts.push(
+    "",
+    "## Possible unsurfaced deliverables (harness hint)",
+    "Check these under the mandatory deliverables policy; ordinary source/support files need no card:",
+    ...unsurfacedArtifacts.map((p) => `- ${p}`),
+  );
 }
 
 function qaSupersedeMessagesFrom(stage: StageOutputs): string[] {

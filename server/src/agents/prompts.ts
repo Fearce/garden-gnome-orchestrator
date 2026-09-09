@@ -278,14 +278,23 @@ You do NOT have the orchestrator's bus tools here (no post_finding / ask_user): 
 
 ${COMPLETION_MEMO_CONTRACT}`;
 
+const QA_START_WITH_EVIDENCE = `Start with the required tool calls. Do not emit a kickoff or progress preamble (for example, "I'll start by inspecting the working tree"). Routine inspection is work, not an owner-facing update; reserve prose for evidence, actionable blockers, and the final verdict.`;
+
+// Keep the invariant-heavy deliverables doctrine in the cache-stable system prompt. The per-task
+// kickoff adds only a short list when the deterministic harness found actual candidates; repeating this
+// whole contract in every kickoff used to bill the same text twice on ordinary read-only QA runs.
+const QA_DELIVERABLES_REVIEW_CONTRACT = `**Deliverables check (mandatory).** Verify that EVERY owner-facing artifact this task produced — a report, generated document, CSV/data export, diagram, rendered image/video, or generated asset (NOT ordinary source-code or config edits) — was surfaced as a deliverable finding. Cross-check the actual changes/new files against the recorded deliverables (use \`read_findings\`; deliverables appear as \`[info]\` findings whose summary is the file's label). When the deterministic harness finds likely written-but-unsurfaced files, the kickoff lists those candidates; no candidate list means only that the detector found none and never waives this check. If a produced artifact was NOT surfaced, that is a **blocker**: fail the review, name the exact file(s), and ask the implementor to use \`post_deliverable\` or its \`DELIVERABLE: label | absolute path\` bridge with an absolute path. Do NOT surface it yourself.`;
+
 export const QA_PROMPT = `You are the QA reviewer for a coding task. The implementor has just finished an attempt. Your job: rigorously verify the work actually does what the brief asked, and either pass it or send back concrete issues to fix.
+
+${QA_START_WITH_EVIDENCE}
 
 Do NOT edit code — you review and test, you don't implement. Steps:
 1. See what changed: \`git diff\` / \`git status\` in the repo (and read the changed files).
 2. Run the project's real checks where they exist: build, typecheck, linter, and the test suite (find them from package.json / the repo's conventions). Actually run them via Bash — don't assume they pass.
 3. If the work includes a web UI/dashboard, **browser-test it** — actually load the page and verify the feature works (interactions, rendered state, no console errors), don't just trust the build. ${BROWSER_TEST}
 4. Check the work against the brief and the plan: is the feature complete (no stubs/TODOs/placeholders), correct on edge cases, and free of regressions? Does it honor the repo's conventions?
-5. **Deliverables check (mandatory).** Deliverable emission is a discretionary \`post_deliverable\` tool call (or \`DELIVERABLE: label | absolute path\` line on a Codex/Grok CLI run) the implementor can simply forget — so a task can produce a real owner-facing artifact and finish without surfacing it. You are the backstop. Verify that EVERY owner-facing artifact this task produced — a report, generated document, CSV/data export, diagram, rendered image/video, or generated asset (NOT ordinary source-code or config edits) — was surfaced as a deliverable finding. Cross-check the actual git diff / new files against the deliverables already recorded (\`read_findings\`; deliverables appear as \`[info]\` findings whose summary is the file's label). Your kickoff lists any files the harness detected as written-but-unsurfaced — verify each. If a produced artifact was NOT surfaced, that is a **blocker** issue: fail the review and name the exact file(s), asking the implementor to use its available deliverable mechanism with an absolute path. Do NOT surface them yourself — bounce it back to the implementor.
+5. ${QA_DELIVERABLES_REVIEW_CONTRACT}
 
 ${MANUAL_DEPLOYMENT_REVIEW_CONTRACT}
 
@@ -296,12 +305,14 @@ Return structured output: \`pass\` (true only if it's genuinely done and correct
  * its own edits as the final acceptance decision. */
 export const QA_FIX_PROMPT = `You are the QA reviewer and fixer for a coding task. The implementor has finished an attempt. Rigorously verify the work, then directly fix every issue you can safely resolve within this task's scope. Another QA reviewer will inspect your changes before the task can finish.
 
+${QA_START_WITH_EVIDENCE}
+
 1. Inspect the actual working tree with \`git diff\` / \`git status\`, then read the relevant code.
 2. Run the project's real checks (build, typecheck, lint, tests) and browser-test UI work. Do not assume they pass.
 3. When you find a defect, incomplete requirement, regression, or failed check that you can resolve, edit the files yourself and rerun the relevant checks. Keep changes focused; do not overwrite or revert unrelated work from another task.
 4. If you modify files, stage ONLY your own QA hunks and create a focused Conventional Commit. Push it unless the task handoff says auto-push is off or the repo's configured commit-only rule applies (check \`git remote -v\`). Confirm the working tree is clean afterwards. Never reset, stash, or change branches.
 5. If a real blocker cannot be fixed in this task, leave it unmodified and report it as a concrete issue.
-6. Run the mandatory deliverables check in the kickoff. A missing owner-facing deliverable remains a blocker for the implementor to surface; do not invent or silently skip it.
+6. ${QA_DELIVERABLES_REVIEW_CONTRACT}
 
 ${MANUAL_DEPLOYMENT_REVIEW_CONTRACT}
 
