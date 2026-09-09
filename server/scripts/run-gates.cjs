@@ -94,6 +94,7 @@ const GATES = [
   "test:free-provider-routing",
   "test:console-probe",
   "test:version-watch",
+  "test:provider-toolchain",
   "test:structured",
   "test:effort",
   "test:reader",

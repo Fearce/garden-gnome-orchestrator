@@ -6,6 +6,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "n
 import { isAbsolute, join, dirname, basename, extname, relative } from "node:path";
 import { config } from "./config.js";
 import { buildInfo } from "./buildInfo.js";
+import { providerRuntimeVersions } from "./providerRuntime.js";
 import { installCrashGuards, logBoot, logCrash, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
 import { Db } from "./db/db.js";
 import { startSearchIndexBackfill } from "./db/searchIndex.js";
@@ -261,6 +262,7 @@ async function main(): Promise<void> {
       auth: config.oauthToken ? "oauth-token" : "inherited-cli-login",
       models: config.models,
       build: buildInfo(),
+      providerRuntime: providerRuntimeVersions(),
     }));
 
     // The current built-bundle hash, so an open client can detect a deploy and reload itself.

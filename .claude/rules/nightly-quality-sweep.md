@@ -198,6 +198,17 @@ instead of being filtered away — update the canonical effort type, runner, UI 
 accepting it. This is catalog coverage, not availability: read step 5 for caps/headroom. Gate:
 `test:model-catalog-health`.
 
+## 11. `npm run probe:provider-toolchain --prefix server` — provider runtimes are current
+The model catalog can be complete while the executable that launches it is old: Codex rejected Astra until
+its CLI was upgraded, and the Claude runtime moves with the Agent SDK rather than the global `claude` command.
+This read-only probe checks the installed Agent SDK and its bundled Claude Code version against the npm stable
+release, then verifies `/api/health` reports those versions from the running process. It checks Codex's configured `binJs` against `@openai/codex`, and
+Grok's configured binary through `grok update --check --json`. z.ai reuses the Agent SDK, so it has no separate
+local executable. Missing, old, or unverifiable versions fail for enabled providers; an intentionally disabled
+and absent optional provider is shown as `OFF` and does not fail. Never turn a registry/network failure green:
+`UNKNOWN` means currency was not proved. A current disk plus an old/unknown live SDK needs the normal coordinated
+`npm run deploy --prefix server` restart. Gate: `test:provider-toolchain`.
+
 ## Do / don't
 - **Do NOT re-restart** if the resume note says the bounce already completed — only verify live `dist` + health.
 - **Do NOT `git add -A`** when `health` lists dirty paths; those are usually a concurrent implementor's WIP

@@ -52,7 +52,13 @@ assert.deepEqual(
   Array.from({ length: covered.length }, (_, i) => i + 1),
   `steps must cover 1..N with no gaps — found ${covered.join(",")}, so a section of the rule has no command`,
 );
-assert.ok(covered.length >= 10, `the sweep rule has ten numbered sections; only ${covered.length} are wired up`);
+const rule = fs.readFileSync(path.join(ROOT, ".claude", "rules", "nightly-quality-sweep.md"), "utf8");
+const documented = [...rule.matchAll(/^## (\d+)\./gm)].map((match) => Number(match[1]));
+assert.deepEqual(
+  covered,
+  documented,
+  `the sweep driver and its documented sections must match exactly — driver=[${covered}] docs=[${documented}]`,
+);
 
 // --- 3. the transcript cannot end up in a commit ----------------------------------------------
 const transcriptDir = path.dirname(TRANSCRIPT);

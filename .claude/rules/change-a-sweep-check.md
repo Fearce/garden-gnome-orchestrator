@@ -5,7 +5,7 @@ paths:
 
 # Changing a check inside a sweep script (`probe:*` / `audit:*` / `health`)
 
-The eight nightly steps ARE these scripts — `nightly-quality-sweep.md` is the procedure to RUN
+The numbered nightly steps ARE these scripts — `nightly-quality-sweep.md` is the procedure to RUN
 them, this is how to safely CHANGE one. Half the sweeps in the last ten days ended in a diff to
 one of them, so this is the recurring shape, not a one-off.
 
