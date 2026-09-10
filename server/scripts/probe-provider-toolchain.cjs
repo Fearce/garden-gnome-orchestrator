@@ -10,6 +10,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const Database = require("better-sqlite3");
+const { inspectRestartCoordinator } = require("./restart-coordinator-health.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const FETCH_TIMEOUT_MS = 15_000;
@@ -132,6 +133,79 @@ async function fetchLiveRuntime(baseUrl, fetchImpl = globalThis.fetch, timeoutMs
   }
 }
 
+async function fetchRestartStatus(baseUrl, fetchImpl = globalThis.fetch, timeoutMs = 5_000) {
+  if (typeof fetchImpl !== "function") return { ok: false, error: "this Node runtime has no fetch implementation" };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  try {
+    const response = await fetchImpl(`${String(baseUrl).replace(/\/+$/, "")}/api/deploy/status`, {
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) return { ok: false, error: `restart coordinator endpoint returned HTTP ${response.status}` };
+    return { ok: true, body: await response.json(), error: null };
+  } catch (error) {
+    return { ok: false, error: compactError(error instanceof Error ? error.message : error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Prove that the current dist is the exact build the restart coordinator owns.
+ *
+ * A merely pending restart is not enough: it may belong to an older build, be dirty, or have
+ * repeatedly failed to fire. Keep this predicate pure and fail closed so the gate cannot turn an
+ * old live runtime green on a hopeful inference.
+ */
+function assessStagedRuntime(distBuild, restartResult) {
+  if (!restartResult?.ok) {
+    return {
+      verified: false,
+      detail: `restart coordinator status unavailable: ${compactError(restartResult?.error)}`,
+    };
+  }
+
+  const status = restartResult.body;
+  const inspection = inspectRestartCoordinator(status);
+  if (!inspection.valid) return { verified: false, detail: inspection.message };
+  if (!status.pending) return { verified: false, detail: "no coordinated restart is pending" };
+  if (status.pending.failures > 0) {
+    return {
+      verified: false,
+      detail: `restart coordinator has ${status.pending.failures} refused attempt${status.pending.failures === 1 ? "" : "s"}`,
+    };
+  }
+  if (!status.draining) return { verified: false, detail: "pending restart is not holding the coordinated drain" };
+
+  const stampAt = distBuild?.at;
+  const commit = typeof distBuild?.commit === "string" ? distBuild.commit.trim() : "";
+  if (!Number.isFinite(stampAt) || stampAt <= 0 || !commit || distBuild?.dirty !== false) {
+    return { verified: false, detail: "server/dist has no clean, identifiable build stamp" };
+  }
+
+  const matchingRequester = status.pending.requesters.some((requester) =>
+    requester?.commit === commit
+      && Number.isFinite(requester?.stampedAt)
+      && requester.stampedAt === stampAt
+      && Number.isFinite(requester?.at)
+      && requester.at >= stampAt
+      && requester.at <= status.now,
+  );
+  if (!matchingRequester) {
+    return {
+      verified: false,
+      detail: `pending restart does not name dist build ${commit.slice(0, 8)} stamped ${stampAt}`,
+    };
+  }
+
+  return {
+    verified: true,
+    detail: `dist build ${commit.slice(0, 8)} is queued (${status.pendingLabel})`,
+  };
+}
+
 function parseGrokUpdate(raw) {
   const lines = String(raw ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).reverse();
   let body = null;
@@ -177,8 +251,17 @@ function evaluateVersion(component) {
       status = "unknown";
       if (enabled) issue = `${component.label} returned versions that cannot be compared (${installedVersion} vs ${latestVersion})`;
     } else if (comparison < 0 || component.updateAvailable === true) {
-      status = "outdated";
-      if (enabled) issue = `${component.label} ${installedVersion} is behind stable ${latestVersion}; run ${component.updateCommand}`;
+      const stagedVersion = parseVersion(component.staged?.version);
+      const stagedComparison = stagedVersion ? compareVersions(stagedVersion, latestVersion) : null;
+      if (component.staged?.verified === true && stagedComparison != null && stagedComparison >= 0) {
+        status = "staged";
+      } else {
+        status = "outdated";
+        if (enabled) {
+          issue = `${component.label} ${installedVersion} is behind stable ${latestVersion}; run ${component.updateCommand}`;
+          if (component.staged?.detail) issue += `; staged replacement not verified: ${compactError(component.staged.detail)}`;
+        }
+      }
     } else if (comparison > 0) {
       status = "ahead";
     } else if (!enabled) {
@@ -192,7 +275,7 @@ function evaluateVersion(component) {
 function report(components) {
   const evaluated = components.map(evaluateVersion);
   const issues = evaluated.flatMap((component) => component.issue ? [component.issue] : []);
-  const tags = { current: "OK", ahead: "AHEAD", outdated: "OUTDATED", missing: "MISSING", unknown: "UNKNOWN", disabled: "OFF" };
+  const tags = { current: "OK", ahead: "AHEAD", staged: "STAGED", outdated: "OUTDATED", missing: "MISSING", unknown: "UNKNOWN", disabled: "OFF" };
   const lines = [
     "",
     "=== provider toolchain currency ===",
@@ -202,12 +285,15 @@ function report(components) {
     const versions = component.installedVersion
       ? `${component.installedVersion}${component.latestVersion ? ` (latest ${component.latestVersion})` : " (latest unknown)"}`
       : component.enabled ? "version unreadable" : "not installed";
-    const suffix = [component.enabled ? null : "provider disabled", component.detail].filter(Boolean).join("; ");
+    const stagedDetail = component.status === "staged" ? component.staged?.detail : null;
+    const suffix = [component.enabled ? null : "provider disabled", component.detail, stagedDetail].filter(Boolean).join("; ");
     lines.push(`  [${tags[component.status]}] ${component.label} ${versions}${suffix ? ` - ${suffix}` : ""}`);
   }
   lines.push("  z.ai uses the Claude Agent SDK/runtime listed above; it has no separate local CLI.", "", "=== toolchain verdict ===");
   if (issues.length) for (const issue of issues) lines.push(`  [FAIL] ${issue}`);
-  else lines.push("  [OK] every enabled provider runtime is at the latest stable release");
+  else if (evaluated.some((component) => component.status === "staged")) {
+    lines.push("  [OK] every enabled provider runtime is current or has a current replacement durably staged for coordinated restart");
+  } else lines.push("  [OK] every enabled provider runtime is at the latest stable release");
   lines.push("");
   return { text: lines.join("\n"), issues, components: evaluated };
 }
@@ -262,11 +348,13 @@ async function main() {
   const grokUpdate = parseGrokUpdate(grokResult.output);
 
   const baseUrl = process.env.ORCH_URL || `http://127.0.0.1:${config.port}`;
-  const [sdkLatest, codexLatest, liveRuntime] = await Promise.all([
+  const [sdkLatest, codexLatest, liveRuntime, restartStatus] = await Promise.all([
     fetchPackageLatest("@anthropic-ai/claude-agent-sdk"),
     enabled.codex || codexExists ? fetchPackageLatest("@openai/codex") : Promise.resolve({ ok: false, error: "provider disabled and CLI absent" }),
     fetchLiveRuntime(baseUrl),
+    fetchRestartStatus(baseUrl),
   ]);
+  const stagedRuntime = assessStagedRuntime(readJson(path.join(SERVER_DIR, "dist", ".build-info.json")), restartStatus);
   const components = [
     {
       label: "Claude Agent SDK",
@@ -296,6 +384,7 @@ async function main() {
       latestError: sdkLatest.error,
       updateCommand: "npm run deploy --prefix server",
       detail: "loaded by the running GGO process",
+      staged: { ...stagedRuntime, version: sdkInstalled },
     },
     {
       label: "Live Claude Code runtime",
@@ -305,6 +394,7 @@ async function main() {
       latestError: sdkLatest.ok && !sdkLatest.body?.claudeCodeVersion ? "latest SDK manifest has no claudeCodeVersion" : sdkLatest.error,
       updateCommand: "npm run deploy --prefix server",
       detail: "loaded by the running GGO process",
+      staged: { ...stagedRuntime, version: claudeRuntimeInstalled },
     },
     {
       label: "Codex CLI",
@@ -334,10 +424,12 @@ async function main() {
 }
 
 module.exports = {
+  assessStagedRuntime,
   compareVersions,
   evaluateVersion,
   fetchPackageLatest,
   fetchLiveRuntime,
+  fetchRestartStatus,
   parseGrokUpdate,
   parseVersion,
   report,

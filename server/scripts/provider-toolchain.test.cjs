@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 const assert = require("node:assert/strict");
 const {
+  assessStagedRuntime,
   compareVersions,
   evaluateVersion,
   fetchLiveRuntime,
   fetchPackageLatest,
+  fetchRestartStatus,
   parseGrokUpdate,
   parseVersion,
   report,
@@ -44,6 +46,24 @@ const base = {
 assert.equal(evaluateVersion(base).status, "current");
 assert.equal(evaluateVersion({ ...base, latestVersion: "0.154.0" }).status, "outdated");
 assert.match(evaluateVersion({ ...base, latestVersion: "0.154.0" }).issue, /npm install -g/);
+const staged = {
+  ...base,
+  installedVersion: "0.153.4",
+  latestVersion: "0.154.0",
+  staged: { verified: true, version: "0.154.0", detail: "dist build abc12345 is queued" },
+};
+assert.equal(evaluateVersion(staged).status, "staged", "a proved current replacement is distinct from the old live runtime");
+assert.equal(evaluateVersion(staged).issue, null, "a durably staged replacement satisfies the currency gate");
+assert.equal(
+  evaluateVersion({ ...staged, staged: { ...staged.staged, version: "0.153.9" } }).status,
+  "outdated",
+  "a queued replacement that is itself old must stay red",
+);
+assert.equal(
+  evaluateVersion({ ...staged, installedVersion: null }).status,
+  "missing",
+  "staging evidence must not hide an unreadable live runtime",
+);
 assert.equal(evaluateVersion({ ...base, installedVersion: "0.154.1" }).status, "ahead");
 assert.equal(evaluateVersion({ ...base, installedVersion: null }).status, "missing");
 assert.equal(evaluateVersion({ ...base, latestVersion: null, latestError: "offline" }).status, "unknown");
@@ -76,6 +96,73 @@ assert.equal(red.issues.length, 1);
 assert.match(red.text, /\[OUTDATED\]/);
 assert.match(red.text, /\[FAIL\].*behind stable/);
 
+const stagedReport = report([staged]);
+assert.deepEqual(stagedReport.issues, []);
+assert.match(stagedReport.text, /\[STAGED\] Codex CLI 0\.153\.4 \(latest 0\.154\.0\)/);
+assert.match(stagedReport.text, /current replacement durably staged/);
+
+const distBuild = { at: 1_234_567, commit: "abcdef1234567890", dirty: false };
+const coordinator = (overrides = {}) => ({
+  ok: true,
+  body: {
+    now: 1_235_000,
+    activeWork: 1,
+    decision: { allow: false, retryAt: null, reason: "1 active work item remains" },
+    pending: {
+      createdAt: 1_234_000,
+      requesters: [{ at: 1_234_600, commit: distBuild.commit, stampedAt: distBuild.at, label: null }],
+      failures: 0,
+      retryAt: null,
+    },
+    pendingLabel: "waiting for 1 active work item to finish",
+    draining: true,
+    ...overrides,
+  },
+  error: null,
+});
+assert.equal(assessStagedRuntime(distBuild, coordinator()).verified, true, "the exact clean dist build may ride a healthy drain");
+assert.equal(
+  assessStagedRuntime(distBuild, coordinator({
+    pending: { ...coordinator().body.pending, requesters: [{ at: 1_234_600, commit: "other", stampedAt: distBuild.at, label: null }] },
+  })).verified,
+  false,
+  "a restart requested for another build must not excuse this runtime",
+);
+assert.equal(
+  assessStagedRuntime(distBuild, coordinator({
+    pending: { ...coordinator().body.pending, requesters: [{ at: 1_234_600, commit: distBuild.commit, stampedAt: 9, label: null }] },
+  })).verified,
+  false,
+  "a matching commit with the wrong build stamp must not excuse this runtime",
+);
+assert.equal(
+  assessStagedRuntime(distBuild, coordinator({
+    pending: { ...coordinator().body.pending, requesters: [{ commit: distBuild.commit, stampedAt: distBuild.at, label: null }] },
+  })).verified,
+  false,
+  "a malformed requester without its request time must fail closed",
+);
+assert.equal(
+  assessStagedRuntime(distBuild, coordinator({ pending: { ...coordinator().body.pending, failures: 1 } })).verified,
+  false,
+  "a restart mechanism that already refused to fire is not a proved deployment",
+);
+assert.equal(
+  assessStagedRuntime({ ...distBuild, dirty: true }, coordinator()).verified,
+  false,
+  "a dirty dist stamp must fail closed",
+);
+assert.equal(
+  assessStagedRuntime({ ...distBuild, at: null }, coordinator()).verified,
+  false,
+  "a missing dist timestamp must not coerce to a valid stamp",
+);
+assert.equal(
+  assessStagedRuntime(distBuild, { ok: false, error: "offline" }).verified,
+  false,
+  "unavailable coordinator evidence must fail closed",
+);
+
 async function asyncChecks() {
   let registryUrl = "";
   const registry = await fetchPackageLatest("@scope/tool", async (url, init) => {
@@ -99,6 +186,14 @@ async function asyncChecks() {
   assert.deepEqual(live.body, { claudeAgentSdk: "0.3.266", claudeCode: "2.1.266" });
   const oldServer = await fetchLiveRuntime("http://x", async () => ({ ok: true, status: 200, json: async () => ({ build: {} }) }));
   assert.equal(oldServer.ok, false, "a server that cannot identify its loaded runtime must not render green");
+
+  const restart = await fetchRestartStatus("http://127.0.0.1:4317/", async (url, init) => {
+    assert.equal(url, "http://127.0.0.1:4317/api/deploy/status");
+    assert.ok(init.signal, "restart checks need a finite abort signal");
+    return { ok: true, status: 200, json: async () => coordinator().body };
+  });
+  assert.equal(restart.ok, true);
+  assert.equal(restart.body.pending.requesters[0].commit, distBuild.commit);
 
   console.log("providerToolchain: all assertions passed");
 }

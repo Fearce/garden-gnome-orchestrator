@@ -206,8 +206,11 @@ release, then verifies `/api/health` reports those versions from the running pro
 Grok's configured binary through `grok update --check --json`. z.ai reuses the Agent SDK, so it has no separate
 local executable. Missing, old, or unverifiable versions fail for enabled providers; an intentionally disabled
 and absent optional provider is shown as `OFF` and does not fail. Never turn a registry/network failure green:
-`UNKNOWN` means currency was not proved. A current disk plus an old/unknown live SDK needs the normal coordinated
-`npm run deploy --prefix server` restart. Gate: `test:provider-toolchain`.
+`UNKNOWN` means currency was not proved. A known-old live SDK may show `STAGED` while that process drains, but only
+when the on-disk replacement is current, `server/dist/.build-info.json` is clean, and the restart coordinator has
+an exact commit+stamp requester for that build with zero refused attempts. The line still prints the old loaded
+version; it never calls staged code live. An unmatched, unhealthy, missing, or unverifiable state stays red. Use the
+normal coordinated `npm run deploy --prefix server` restart to create the staged state. Gate: `test:provider-toolchain`.
 
 ## 12. `npm run probe:auto-review --prefix server` — is the unattended lane converging, or looping
 Steps 3/4 read runs and parks, so neither sees the failure the owner switched the Supervisor OFF for:
