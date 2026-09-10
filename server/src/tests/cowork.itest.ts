@@ -406,7 +406,16 @@ async function main(): Promise<void> {
     check("cancelled turn is recorded, not retried", db.listCoworkTurns(sessionId).at(-1)?.state === "cancelled");
     check("cancellation posts a usable-session message", db.listCoworkMessages(sessionId).at(-1)?.content.includes("ready for your next instruction"));
 
-    console.log("\n4a - wall-clock boundaries force a collaborative hand-back without a retry");
+    console.log("\n4a - optional wall-clock boundaries force a collaborative hand-back without a retry");
+    const untimedRuntime = new FakeRuntime();
+    const untimedManager = new CoworkManager(db, new EventHub(), untimedRuntime, { handoffMs: 0, stopMs: 0 });
+    const untimedSession = untimedManager.create({ name: "Owner-scoped pair work", workspace });
+    check("untimed fixture creates and starts", untimedSession.ok && untimedManager.send(untimedSession.session!.id, "Keep working to the requested outcome").ok);
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    check("a disabled wall boundary does not inject a hand-back or stop healthy work", untimedRuntime.runs[0]?.sends.length === 0 && db.getCoworkSession(untimedSession.session!.id)?.state === "running");
+    await untimedManager.stop(untimedSession.session!.id);
+    await waitFor(() => db.getCoworkSession(untimedSession.session!.id)?.state === "idle", "untimed session remains explicitly stoppable");
+
     const boundaryRuntime = new FakeRuntime();
     const boundaryManager = new CoworkManager(db, new EventHub(), boundaryRuntime, { handoffMs: 20, stopMs: 70 });
     const boundarySession = boundaryManager.create({ name: "Timeboxed pair work", workspace });

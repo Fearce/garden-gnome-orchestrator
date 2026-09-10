@@ -100,11 +100,12 @@ stall-nudge text). Supervisor CHAT relays the owner's own words, so it retitles 
 Gate: `test:standing-directives`.
 
 ## Co-work (the interactive lane — a conversation, not a task)
-The **Co-work** tab is pair development: an owner prompt claims one short **Co-worker** work slice
-(`coworkerRunOptions`/`COWORKER_PROMPT`) that completes one useful increment, verifies proportionately,
-and hands control back. While it runs, Queue, Inject, and Interrupt & inject persist owner direction in
-the same turn and steer the live provider; a soft/hard wall boundary prevents an unattended long solo
-run and returns a `timeboxed` turn to `idle`. Initial and live messages accept pasted/dropped/selected
+The **Co-work** tab is pair development: an owner prompt claims one owner-scoped **Co-worker** turn
+(`coworkerRunOptions`/`COWORKER_PROMPT`) that completes the requested outcome when feasible, verifies
+proportionately, and hands control back. While it runs, Queue, Inject, and Interrupt & inject persist
+owner direction in the same turn and steer the live provider. There is no arbitrary wall-clock hand-back
+by default; `COWORKER_HANDOFF_MS` (>0) opts into the soft/hard safety boundary, which returns an
+unresponsive run as a `timeboxed` turn to `idle`. Initial and live messages accept pasted/dropped/selected
 screenshots and files: refs and bytes survive reload, native image blocks reach capable providers, and
 every file gets a session-isolated agent-readable cache path plus an auth-gated download. It owns **no
 task** — no `threads`/`agent_runs` row,

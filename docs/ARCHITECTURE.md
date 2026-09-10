@@ -478,9 +478,10 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   severity / a thread policy / the director.
 - **Co-work — the interactive lane, outside this state machine entirely.**
   `orchestrator/cowork.ts` (`CoworkManager`) runs human-led pair sessions: an owner prompt claims one
-  short **Co-worker** work slice, and live `queue` / `append` / `interrupt` steering remains inside
-  that durable turn. Prompt, role-turn, and wall-clock boundaries make it complete one useful
-  increment and return control; an unresponsive run becomes a clean `timeboxed` hand-back to `idle`.
+  owner-scoped **Co-worker** turn, and live `queue` / `append` / `interrupt` steering remains inside
+  that durable turn. The requested outcome is the normal hand-back boundary; there is no arbitrary
+  wall-clock cutoff by default. Deployments may opt into one with `COWORKER_HANDOFF_MS`, in which case
+  an unresponsive run becomes a clean `timeboxed` hand-back to `idle`.
   Owner messages may include screenshots or arbitrary files. Bytes use the shared content-addressed
   `attachments` store; refs live transactionally on `cowork_messages`, images also become native
   provider blocks, and every attachment is materialized under a session-isolated server data path so

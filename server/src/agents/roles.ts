@@ -301,7 +301,7 @@ export function implementorConfig(
   return cfg;
 }
 
-/** One bounded turn in a persistent Co-work conversation. No bus/office servers and no structured
+/** One owner-scoped turn in a persistent Co-work conversation. No bus/office servers and no structured
  * pipeline output: the owner is the only coordinator and the reply itself is the hand-back. */
 export function coworkerRunOptions(
   cwd: string,

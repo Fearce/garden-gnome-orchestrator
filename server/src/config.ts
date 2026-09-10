@@ -69,12 +69,14 @@ const authConfigured = !!authPassword || !!(googleClientId && googleClientSecret
 const exposeBlocked = !localOnly && !authConfigured;
 // Hoisted so the editing-QA ceiling below can default to it: the two are the same class of budget.
 const implementorMaxTurns = Number(process.env.IMPLEMENTOR_MAX_TURNS ?? 100);
-// Co-work is a ping-pong collaboration, not a smaller autonomous pipeline. Keep its tool-cycle budget
-// deliberately short and add a provider-neutral wall-clock hand-back: batch CLIs do not consume the
-// Claude SDK's maxTurns setting, so the ceiling alone cannot stop a half-hour solo run.
-const coworkerMaxTurns = Math.max(4, Math.floor(numEnv(process.env.COWORKER_MAX_TURNS, 24)));
-const coworkerHandoffMs = Math.max(60_000, numEnv(process.env.COWORKER_HANDOFF_MS, 6 * 60_000));
-const coworkerStopMs = Math.max(coworkerHandoffMs + 60_000, numEnv(process.env.COWORKER_STOP_MS, 8 * 60_000));
+// A Co-work turn follows the outcome the owner requested. Do not interrupt useful work on an arbitrary
+// wall clock by default; the owner already has live steering and Stop. Deployments that want an unattended
+// safety boundary can opt in with COWORKER_HANDOFF_MS (>0), with COWORKER_STOP_MS as its hard backstop.
+const coworkerMaxTurns = Math.max(4, Math.floor(numEnv(process.env.COWORKER_MAX_TURNS, 100)));
+const coworkerHandoffMs = Math.max(0, numEnv(process.env.COWORKER_HANDOFF_MS, 0));
+const coworkerStopMs = coworkerHandoffMs > 0
+  ? Math.max(coworkerHandoffMs + 60_000, numEnv(process.env.COWORKER_STOP_MS, coworkerHandoffMs + 2 * 60_000))
+  : 0;
 
 export const config = {
   serverRoot,
@@ -343,8 +345,8 @@ export const config = {
   // hit an unpredictable SDK default mid-task and park on a manual Resume button).
   implementorMaxTurns,
   coworkerMaxTurns,
-  // At the soft boundary the live Co-worker is interrupted with a concise "summarize and hand back"
-  // instruction. The hard boundary stops a backend that ignored it. Both preserve the session/context.
+  // Disabled when handoffMs is 0 (the default). When opted in, the soft boundary requests a concise
+  // hand-back and the hard boundary stops a backend that ignored it; both preserve the session/context.
   coworkerHandoffMs,
   coworkerStopMs,
   // The same ceiling for QA when it runs in editing mode (`qaAppliesFixes`): that QA doesn't review a

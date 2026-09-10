@@ -37,10 +37,10 @@ cache, which the next turn rehydrates. Gate `test:cowork-health`.
   shared injection policy; `interrupt` uses priority `now`. Claude/z.ai emit a result per message,
   while Codex/Grok coalesce buffered directions into one resumed result. Keep the result accounting
   provider-aware or the DB turn will settle early (lost direction) or wait forever.
-- **Bound the collaboration, not just the SDK.** The Co-worker prompt requests one small useful
-  increment, the role ceiling is deliberately short, and the soft/hard wall timers request a summary
-  then stop an unresponsive run. `timeboxed` is an intentional terminal turn state that returns the
-  session to `idle`; it must not read as an error or trigger a continuation/retry.
+- **The owner's requested outcome is the turn boundary.** Do not impose a short default wall clock over
+  explicit direction to keep working: live steering and Stop already keep the owner in control. A
+  deployment may opt into soft/hard timers with `COWORKER_HANDOFF_MS`; when enabled, `timeboxed` is an
+  intentional terminal turn state that returns the session to `idle`, not an error or retry trigger.
 - **`send()` must return the CURRENT row, never the claimed one.** `execute()` can fail synchronously
   in `prepare()` and settle the session before the WebSocket action receipt is written; returning the
   claim then overwrites the UI back to a stale `running` it will never leave (`5efe433`).

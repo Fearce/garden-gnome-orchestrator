@@ -647,10 +647,14 @@ export class CoworkManager {
       }
     });
 
-    live.handoffTimer = setTimeout(() => this.requestTimedHandoff(session.id, turn.id), this.timebox.handoffMs);
-    live.handoffTimer.unref?.();
-    live.stopTimer = setTimeout(() => this.enforceTimedHandoff(session.id, turn.id), this.timebox.stopMs);
-    live.stopTimer.unref?.();
+    // The wall boundary is opt-in. An arbitrary six-minute default repeatedly interrupted healthy work
+    // (and overrode explicit owner instructions to continue to a concrete outcome).
+    if (this.timebox.handoffMs > 0) {
+      live.handoffTimer = setTimeout(() => this.requestTimedHandoff(session.id, turn.id), this.timebox.handoffMs);
+      live.handoffTimer.unref?.();
+      live.stopTimer = setTimeout(() => this.enforceTimedHandoff(session.id, turn.id), this.timebox.stopMs);
+      live.stopTimer.unref?.();
+    }
 
     try {
       prepared.agent.start(prepared.startContent);
