@@ -12,10 +12,11 @@ change that lets a Co-work session enter the pipeline or settle itself is the de
 to prevent — the owner is the only coordinator.
 Consequence: **every task-side probe and sweep step is blind to it.** `probe:parks`, `probe:run-errors`
 and `probe:task-runs` read `threads`/`agent_runs`, so a wedged Co-work session appears nowhere.
-`npm run probe:cowork --prefix server [-- <id-prefix|name>]` is the only view; it includes the durable
-Queue/Inject/Interrupt delivery ledger (delivered / failed / unconfirmed) and verifies that every
-attachment ref still resolves to matching blob metadata. It deliberately ignores the disposable file
-cache, which the next turn rehydrates. Gate `test:cowork-health`.
+`npm run probe:cowork --prefix server [-- <id-prefix|name>]` is the only view; it includes active-turn
+age, the durable timed-hand-back and Queue/Inject/Interrupt delivery ledgers, and verifies that every
+attachment ref still resolves to matching blob metadata. The hand-back ledger recognizes both the stable
+event tag and legacy message text, so repeated historical cutoffs stay visible. It deliberately ignores
+the disposable file cache, which the next turn rehydrates. Gate `test:cowork-health`.
 
 ## Traps
 - **The turn claim is durable, not a mutex.** `beginCoworkTurn` is one conditional UPDATE

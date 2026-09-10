@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Read-only audit of the Co-work lane: session state, the turn trail, live-steering delivery, attachment
-// references, and the durable invariants no task-side probe can see (Co-work owns no thread/agent_runs row).
+// Read-only audit of the Co-work lane: session state, turn age/trail, timed hand-backs, live-steering
+// delivery, attachment references, and the durable invariants no task-side probe can see.
 // Exit 0 = no invariant violations, 1 = actionable inconsistency, 2 = usage/schema error.
 
 const path = require("node:path");
@@ -38,6 +38,7 @@ if (schemaIssue) {
 const readings = selectCoworkRows(db, query).map(coworkReading);
 const boardIssues = coworkBoardIssues(db, readings);
 db.close();
+const observedAt = Date.now();
 
 const counts = {};
 for (const reading of readings) counts[reading.disposition] = (counts[reading.disposition] ?? 0) + 1;
@@ -56,11 +57,20 @@ function stamp(ms) {
 
 function ago(ms) {
   if (ms == null) return "-";
-  const seconds = Math.max(0, Math.round((Date.now() - Number(ms)) / 1000));
+  const seconds = Math.max(0, Math.round((observedAt - Number(ms)) / 1000));
   if (seconds < 90) return `${seconds}s ago`;
   if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
   if (seconds < 172_800) return `${Math.round(seconds / 3600)}h ago`;
   return `${Math.round(seconds / 86_400)}d ago`;
+}
+
+function duration(ms) {
+  if (ms == null) return "unknown age";
+  const seconds = Math.max(0, Math.round(Number(ms) / 1000));
+  if (seconds < 90) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h${String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")}m`;
+  return `${Math.floor(seconds / 86_400)}d${String(Math.floor((seconds % 86_400) / 3600)).padStart(2, "0")}h`;
 }
 
 function money(value) {
@@ -101,6 +111,7 @@ function publicEntry(reading) {
     messages: session.messages,
     attachments: session.attachments,
     steering: session.steering,
+    boundaries: session.boundaries,
     updatedAt: session.updatedAt,
     trail: session.turns.map((turn) => ({
       id: turn.id,
@@ -113,6 +124,7 @@ function publicEntry(reading) {
       numTurns: turn.numTurns,
       startedAt: turn.startedAt,
       endedAt: turn.endedAt,
+      elapsedMs: Math.max(0, (turn.endedAt ?? observedAt) - turn.startedAt),
       error: turn.error,
     })),
   };
@@ -168,6 +180,21 @@ if (json) {
       );
     }
     if (session.error) console.log(`  session error: ${short(session.error)}`);
+    if (session.boundaries.requests || session.boundaries.timeboxedTurns) {
+      console.log(
+        `  hand-back boundaries: requested=${session.boundaries.requests}; ` +
+          `timeboxed turns=${session.boundaries.timeboxedTurns}`,
+      );
+      for (const event of session.boundaries.events.slice(-5)) {
+        console.log(
+          `    ↳ ${event.turnId ? `turn ${event.turnId.slice(0, 8)}` : `message ${event.id.slice(0, 8)}`} ` +
+            `requested after ${duration(event.elapsedMs)}, ${ago(event.createdAt)}`,
+        );
+      }
+      if (session.boundaries.events.length > 5) {
+        console.log(`    ↳ (${session.boundaries.events.length - 5} earlier boundary request(s) not shown)`);
+      }
+    }
     if (session.steering.total) {
       const modes = session.steering.byMode;
       const deliveries = session.steering.byDelivery;
@@ -187,9 +214,11 @@ if (json) {
       }
     }
     for (const turn of session.turns.slice(-5)) {
-      const span = turn.endedAt ? `${Math.max(0, Math.round((turn.endedAt - turn.startedAt) / 1000))}s` : "running";
+      const span = turn.endedAt
+        ? duration(turn.endedAt - turn.startedAt)
+        : `active ${duration(observedAt - turn.startedAt)}`;
       console.log(
-        `  · ${turn.id.slice(0, 8)} ${turn.state.padEnd(11)} ${span.padStart(7)} ${money(turn.costUsd)} ` +
+        `  · ${turn.id.slice(0, 8)} ${turn.state.padEnd(11)} ${span.padStart(10)} ${money(turn.costUsd)} ` +
           `${turn.numTurns == null ? "" : `${turn.numTurns} agent turns `}${target(turn)}`,
       );
       if (turn.error) console.log(`      error: ${short(turn.error)}`);

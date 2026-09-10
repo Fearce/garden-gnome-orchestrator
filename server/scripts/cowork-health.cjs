@@ -14,6 +14,8 @@ const TERMINAL_TURN_STATES = new Set(["done", "error", "cancelled", "interrupted
 const FAILED_TURN_STATES = new Set(["error", "interrupted"]);
 const STEERING_MODES = new Set(["queue", "append", "interrupt"]);
 const STEERING_DELIVERIES = new Set(["delivered", "pending", "failed"]);
+const TIMED_HANDOFF_EVENT = "cowork_timed_handoff";
+const LEGACY_TIMED_HANDOFF_PREFIX = "Collaboration boundary reached";
 
 function coworkSchemaIssue(db) {
   const required = ["cowork_sessions", "cowork_turns", "cowork_messages", "attachments"];
@@ -93,6 +95,49 @@ function steeringSummary(messages) {
     byDelivery[delivery] += 1;
   }
   return { total: messages.length, byMode, byDelivery, messages };
+}
+
+/** A soft boundary normally settles as a successful `done` turn, so turn state alone hides exactly the
+ * repeated-cutoff pattern this probe needs to expose. New rows carry a stable event tag; the content
+ * prefix keeps pre-tag history visible. */
+function timedHandoffSummary(db, sessionId, turns) {
+  const turnById = new Map(turns.map((turn) => [turn.id, turn]));
+  const rows = db
+    .prepare(
+      `SELECT id, turn_id, content, meta, created_at
+         FROM cowork_messages
+        WHERE session_id=? AND role='system' AND kind='system'
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(sessionId);
+  const events = [];
+  for (const row of rows) {
+    let tagged = false;
+    if (row.meta != null) {
+      try {
+        const meta = JSON.parse(row.meta);
+        tagged = !!meta && typeof meta === "object" && meta.event === TIMED_HANDOFF_EVENT;
+      } catch {
+        // Invalid message metadata is diagnosed elsewhere only when it affects a typed feature. The
+        // legacy content marker still makes an old/malformed boundary row observable here.
+      }
+    }
+    const legacy = String(row.content ?? "").startsWith(LEGACY_TIMED_HANDOFF_PREFIX);
+    if (!tagged && !legacy) continue;
+    const turn = row.turn_id ? turnById.get(row.turn_id) : null;
+    events.push({
+      id: row.id,
+      turnId: row.turn_id,
+      createdAt: Number(row.created_at),
+      elapsedMs: turn ? Math.max(0, Number(row.created_at) - turn.startedAt) : null,
+      tagged,
+    });
+  }
+  return {
+    requests: events.length,
+    timeboxedTurns: turns.filter((turn) => turn.state === "timeboxed").length,
+    events,
+  };
 }
 
 function parseAttachmentPayload(row) {
@@ -224,6 +269,7 @@ function normalizeSession(db, row) {
       .all(row.id)
       .map(parseSteeringMessage),
   );
+  const boundaries = timedHandoffSummary(db, row.id, turns);
   return {
     id: row.id,
     name: row.name,
@@ -251,6 +297,7 @@ function normalizeSession(db, row) {
     },
     attachments: attachmentSummary(db, row.id),
     steering,
+    boundaries,
     danglingPartials,
   };
 }

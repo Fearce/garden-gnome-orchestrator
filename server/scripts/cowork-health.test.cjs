@@ -427,6 +427,39 @@ check("a timeboxed collaborative slice is a clean hand-back, not a failure", () 
   db.close();
 });
 
+check("timed hand-backs expose tagged and legacy requests with their turn age", () => {
+  const { db, file } = freshDb("boundary-ledger");
+  addSession(db, "s-boundaries", { state: "idle", agent_session_id: "agent-boundaries" });
+  addTurn(db, "s-boundaries", "t-legacy", { started_at: 1_000, ended_at: 400_000 });
+  addMessage(db, "s-boundaries", "m-legacy", {
+    turn_id: "t-legacy",
+    role: "system",
+    kind: "system",
+    content: "Collaboration boundary reached — legacy hand-back text.",
+    created_at: 361_000,
+  });
+  addTurn(db, "s-boundaries", "t-tagged", { state: "timeboxed", started_at: 500_000, ended_at: 900_000 });
+  addMessage(db, "s-boundaries", "m-tagged", {
+    turn_id: "t-tagged",
+    role: "system",
+    kind: "system",
+    content: "This wording may change without blinding the diagnostic.",
+    meta: JSON.stringify({ event: "cowork_timed_handoff" }),
+    created_at: 860_000,
+  });
+  const reading = only(db);
+  assert.equal(reading.session.boundaries.requests, 2);
+  assert.equal(reading.session.boundaries.timeboxedTurns, 1);
+  assert.deepEqual(reading.session.boundaries.events.map((event) => event.elapsedMs), [360_000, 360_000]);
+  assert.deepEqual(reading.session.boundaries.events.map((event) => event.tagged), [false, true]);
+  db.close();
+
+  const run = runProbe(file);
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /hand-back boundaries: requested=2; timeboxed turns=1/);
+  assert.equal((run.stdout.match(/requested after 6m00s/g) ?? []).length, 2, run.stdout);
+});
+
 check("steering modes and delivery outcomes are counted without turning recoverable failures into invariant violations", () => {
   const { db, file } = freshDb("steering-outcomes");
   addSession(db, "s-steer", { agent_session_id: "agent-steer" });
@@ -617,6 +650,17 @@ check("the probe exits 0 and prints PASS on a healthy board", () => {
   assert.match(run.stdout, /next turn continues it/);
 });
 
+check("the probe shows how long the active turn has actually been running", () => {
+  const { db, file } = freshDb("probe-active-age");
+  const now = Date.now();
+  addSession(db, "s-active-age", { state: "running", active_turn_id: "t-live", agent_session_id: "agent-live" });
+  addTurn(db, "s-active-age", "t-live", { state: "running", started_at: now - 120_000, ended_at: null });
+  db.close();
+  const run = runProbe(file);
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /t-live\s+running\s+active 2m0[0-2]s/);
+});
+
 check("the probe exits 1 and names the violation on a wedged claim", () => {
   const { db, file } = freshDb("probe-fail");
   addSession(db, "s-bad", { state: "running", active_turn_id: null });
@@ -649,6 +693,14 @@ check("--json carries the verdict, counts, issues and the turn trail", () => {
     content: "preserve the compact header",
     attachments: JSON.stringify([ref]),
   });
+  addMessage(db, "s-json", "m-boundary", {
+    turn_id: "t-1",
+    role: "system",
+    kind: "system",
+    content: "Tagged timed hand-back.",
+    meta: JSON.stringify({ event: "cowork_timed_handoff" }),
+    created_at: 1_500,
+  });
   db.close();
   const run = runProbe(file, "--json");
   assert.equal(run.status, 0, run.stderr);
@@ -662,6 +714,10 @@ check("--json carries the verdict, counts, issues and the turn trail", () => {
   assert.equal(payload.entries[0].steering.total, 1);
   assert.equal(payload.entries[0].steering.byMode.interrupt, 1);
   assert.equal(payload.entries[0].steering.messages[0].content, "preserve the compact header");
+  assert.equal(payload.entries[0].boundaries.requests, 1);
+  assert.equal(payload.entries[0].boundaries.events[0].elapsedMs, 400);
+  assert.equal(payload.entries[0].boundaries.events[0].tagged, true);
+  assert.equal(payload.entries[0].trail[0].elapsedMs, 800);
   assert.equal(payload.entries[0].attachments.refs, 1);
   assert.equal(payload.entries[0].attachments.stored, 1);
 });

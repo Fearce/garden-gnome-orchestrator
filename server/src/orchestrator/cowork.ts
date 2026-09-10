@@ -431,6 +431,7 @@ export class CoworkManager {
       role: "system",
       kind: "system",
       content: "Collaboration boundary reached — asking the Co-worker to summarize this work slice and hand control back.",
+      meta: { event: "cowork_timed_handoff" },
     });
     this.hub.publish({ type: "cowork.message", message });
     try {

@@ -430,6 +430,11 @@ async function main(): Promise<void> {
       "the hand-back request is visible in durable history",
       db.listCoworkMessages(boundarySession.session!.id).some((message) => message.role === "system" && message.content.includes("Collaboration boundary reached")),
     );
+    check(
+      "the hand-back request carries a stable diagnostic event tag",
+      db.listCoworkMessages(boundarySession.session!.id).some((message) =>
+        !!message.meta && typeof message.meta === "object" && "event" in message.meta && message.meta.event === "cowork_timed_handoff"),
+    );
     await waitFor(() => db.getCoworkSession(boundarySession.session!.id)?.state === "idle", "hard boundary returns an unresponsive run to idle");
     check("the bounded turn is recorded as timeboxed, not failed", db.listCoworkTurns(boundarySession.session!.id).at(-1)?.state === "timeboxed");
     check("timeboxing does not spawn an autonomous continuation", boundaryRuntime.runs.length === 1 && db.listThreads().length === 0);
