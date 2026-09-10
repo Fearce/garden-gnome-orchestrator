@@ -176,13 +176,21 @@ function listenerPid(port) {
 }
 
 async function liveBuild() {
+  return (await health())?.build ?? null;
+}
+
+/** The raw /api/health body, or null when the port genuinely did not answer. Kept separate from
+ *  liveBuild() because "the server is down" and "the server is up but reports no build stamp" are
+ *  different answers and only one of them is a reason to worry: a process started before build
+ *  stamping shipped, or run from source under tsx, answers happily with `build: null`. Collapsing
+ *  both into null made --verify report a healthy server as "not answering". */
+async function health() {
   try {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), 8000);
     const r = await fetch(`${BASE}/api/health`, { signal: ctl.signal });
     clearTimeout(t);
-    const j = await r.json();
-    return j && j.build ? j.build : null;
+    return await r.json();
   } catch {
     return null;
   }
@@ -390,10 +398,23 @@ function webNote(commit) {
  * right. `liveness` is the shared predicate, so the two can no longer disagree.
  */
 async function verifyOnly(commit) {
-  const build = await liveBuild();
+  const alive = await health();
+  const build = alive?.build ?? null;
   const pid = listenerPid(PORT);
-  if (!build) {
+  if (!alive) {
     log(`✗ ${BASE} is not answering /api/health (pid ${pid ?? "none"} on :${PORT})`);
+    return 1;
+  }
+  if (!build) {
+    // Answering, just unstamped. Name which of the two it is, and report what IS still knowable:
+    // whether HEAD is compiled into dist, which does not depend on the process naming its own build.
+    const staged = stagedInDist(commit);
+    log(`⚠ ${BASE} is UP (pid ${pid ?? "?"}) but reports no build stamp, so what is LIVE cannot be`);
+    log(`  confirmed from here. That process started before build stamping shipped, or runs from`);
+    log(`  source under tsx. Restart it to get a stamped process.`);
+    log(staged
+      ? `  dist DOES carry HEAD's server code, so a restart is all that is missing.`
+      : `  dist does NOT carry HEAD's server code; run \`npm run deploy --prefix server\` first.`);
     return 1;
   }
   const live = build.commit ? build.commit.slice(0, 8) : "unstamped";
