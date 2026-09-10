@@ -324,6 +324,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         autoResumeThresholdPercent: z.number().int().min(50).max(95),
         fastUsagePolling: z.boolean(),
         spreadUsage: z.boolean(),
+        tokenConservationMode: z.boolean(),
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
         // Use the domain constant so a new supported tier cannot be accepted by the runner but

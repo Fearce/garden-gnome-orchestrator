@@ -590,6 +590,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   autoResumeThresholdPercent: 80,
   fastUsagePolling: false,
   spreadUsage: false,
+  tokenConservationMode: false,
   codexEnabled: false,
   codexModel: "gpt-6-astra",
   codexEffort: "ultra",

@@ -165,6 +165,25 @@ The next choice reads both per-repo and global model aggregates plus model×effo
 token-window burn are separate: a flat-subscription run can say `$0` while still consuming scarce allowance,
 so the selector explicitly optimizes the cheapest *reliable* choice across both.
 
+**Token conservation mode** (`setting_token_conservation_mode`, off by default; `orchestrator/tokenConservation.ts`)
+is a much smaller, deterministic sibling of the above: once a Claude subscription or the Codex general pool
+sits in the last 10% of its weekly window, `modelFor`/`providerRoleModel` — the plain default model-resolution
+layer every role runs through absent a strict pin or an auto-select pick, including the per-role/per-subscription
+model-matrix override — caps that subscription's/backend's model to its economy tier (Claude Sonnet, GPT-5.6
+Luna) instead of a pricier one, so the remaining runway isn't spent on the most expensive model right before the
+window caps outright. Unlike `modelRoutingPolicy.isPolicyApprovedFlagship` (which fails CLOSED — an unreviewed
+model id is excluded from flagship routing), conservation's own "is this already cheap" check
+(`TOKEN_CONSERVATION_ECONOMY_MODELS`) fails OPEN toward conserving: an id it has never seen is conserved by
+default rather than silently passed through. It backs off the moment the window's reset is within 24h (nothing
+left worth conserving for), and it never touches a strict owner model pin or an auto-model-selection pick — both
+resolve before this layer runs, so an implementor carrying either one gets zero conservation. That exemption is
+per-task, not per-setting: with `autoModelSelection` on but the selector declining to pick (an adaptive task with
+no usable answer), the implementor falls back to `modelFor` and does conserve — as planner/QA/reviewer always do,
+via `runRole`'s own `modelFor` call. It also never touches a Co-work
+session's first-turn frozen target (`prepareCoworkerRun` resolves with `conserve: false`) — a Co-work pin is
+strict for the rest of the session's life, so a transient downgrade must never become permanent. Grok ships one
+model and z.ai has no reviewed flagship/economy split, so neither backend is affected. Gate: `test:token-conservation`.
+
 ## 4. In-process MCP servers (`server/src/bus/`)
 
 Three **in-process SDK MCP servers** (`createSdkMcpServer` + `tool`), whose tools

@@ -128,6 +128,7 @@ const GATES = [
   "test:director-provider",
   "test:model-request",
   "test:model-request-ui",
+  "test:token-conservation",
   "test:themes",
   "test:screensaver",
   "test:model-pin-probe",

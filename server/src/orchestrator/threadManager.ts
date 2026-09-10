@@ -76,6 +76,7 @@ import {
   applyImplementorModelPolicy,
   modelMatchesPolicy,
 } from "./modelRoutingPolicy.js";
+import { conservationResolvedModel } from "./tokenConservation.js";
 import { providerIntent } from "./providerIntent.js";
 import { detectModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
 import { LiveBenchScores } from "./liveBenchScores.js";
@@ -2343,6 +2344,7 @@ export class ThreadManager implements OrchestratorApi {
       autoResumeThresholdPercent: this.settingNum("setting_auto_resume_threshold_percent", 80, 50, 95),
       fastUsagePolling: this.settingBool("setting_fast_usage_polling", false),
       spreadUsage: this.settingBool("setting_spread_usage", false),
+      tokenConservationMode: this.settingBool("setting_token_conservation_mode", false),
       codexEnabled: this.settingBool("setting_codex_enabled", false),
       codexModel: this.codexModel(),
       codexEffort: this.codexEffort(),
@@ -2428,10 +2430,16 @@ export class ThreadManager implements OrchestratorApi {
    *  section that used to edit the default layer is gone (model selection now lives in the per-subscription
    *  cards), but the composer's quick implementor/director model picker still writes that default layer
    *  (Director.tsx), so it stays a live fallback. Used at dispatch so a change applies to the next run.
-   *  `subId` is the AccountDTO.id the role will run on. */
-  modelFor(subId: string, role: Role): string {
+   *  `subId` is the AccountDTO.id the role will run on. `conserve: false` opts a caller out of token
+   *  conservation — used only where the returned model gets FROZEN as a standing target rather than
+   *  resolved fresh per dispatch (a Co-work session's first-turn pin; see `prepareCoworkerRun`), since a
+   *  transient conservation downgrade must never become that session's permanent, strictly-pinned model. */
+  modelFor(subId: string, role: Role, opts: { conserve?: boolean } = {}): string {
     const ov = this.modelOverrides();
-    return this.poolResolved(subId, ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim() || config.models[role]);
+    const base = this.poolResolved(subId, ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim() || config.models[role]);
+    if (opts.conserve === false || !this.settingBool("setting_token_conservation_mode", false)) return base;
+    const acct = this.accounts.dto().find((a) => a.id === subId);
+    return conservationResolvedModel("claude", base, { usedPct: acct?.sevenDay ?? null, resetAt: acct?.sevenDayReset }, Date.now());
   }
 
   /** A model whose OWN metered pool is exhausted on this sub (Fable's gated allowance) dispatches on its
@@ -2658,10 +2666,25 @@ export class ThreadManager implements OrchestratorApi {
     return live.length ? live : this.pickableClaudeModels();
   }
 
-  private providerRoleModel(provider: ImplementorProvider, role: Role, accountId?: string): string {
+  /** `opts.conserve` — see `modelFor`'s doc comment; propagated to the Claude branch. */
+  private providerRoleModel(provider: ImplementorProvider, role: Role, accountId?: string, opts: { conserve?: boolean } = {}): string {
     const ov = this.modelOverrides();
-    if (provider === "claude") return this.modelFor(accountId ?? this.accounts.dispatchPreview().account.id, role);
-    if (provider === "codex") return ov[CODEX_SUB_ID]?.[role]?.trim() || this.codexModel();
+    if (provider === "claude") return this.modelFor(accountId ?? this.accounts.dispatchPreview().account.id, role, opts);
+    if (provider === "codex") {
+      const base = ov[CODEX_SUB_ID]?.[role]?.trim() || this.codexModel();
+      if (opts.conserve === false || !this.settingBool("setting_token_conservation_mode", false)) return base;
+      const usage = readCodexUsage();
+      const conserved = conservationResolvedModel("codex", base, { usedPct: usage?.sevenDay ?? null, resetAt: usage?.sevenDayReset }, Date.now());
+      if (conserved === base) return conserved;
+      // The conservation target must never coincide with a dedicated Codex pool's model: codexProviderCandidate
+      // switches a role to that pool's own windows/latch the moment its model matches, which would silently
+      // stop consulting the general pool's cap latch this feature exists to protect. TOKEN_CONSERVATION_MODEL
+      // is chosen not to collide today, but the pool map is built at runtime from the live plan — guard it
+      // rather than trust that forever.
+      const pools = this.codexPoolSnapshot();
+      if (pools && poolForModel(pools, conserved)?.modelSlug) return base;
+      return conserved;
+    }
     if (provider === "grok") return ov[GROK_SUB_ID]?.[role]?.trim() || this.grokModel();
     return ov[ZAI_SUB_ID]?.[role]?.trim() || this.zaiModel();
   }
@@ -2924,7 +2947,9 @@ export class ThreadManager implements OrchestratorApi {
       if (provider === "claude") {
         const account = session.account ? this.acctById(session.account) : this.dispatchAccount(demand);
         if (!account) return { error: "The Claude subscription linked to this Co-work context is unavailable. Restore it or create a new session; no account was substituted." };
-        model ??= this.modelFor(account.id, "implementor");
+        // conserve:false — this pick FREEZES as the session's strict pin for every later turn (see this
+        // method's doc comment), so a transient token-conservation downgrade must never land here.
+        model ??= this.modelFor(account.id, "implementor", { conserve: false });
         const requestedEffort = session.effort ?? "high";
         const effort = resolveClaudeEffort(model, clampEffort(requestedEffort, this.accountMaxEffort(account.id)));
         const cfg = coworkerRunOptions(session.workspace, {
@@ -2938,7 +2963,8 @@ export class ThreadManager implements OrchestratorApi {
         agent = new AgentRun(cfg);
         startContent = this.communicationContent(contentWithImages(prompt, images));
       } else if (provider === "codex") {
-        model ??= this.codexModel();
+        // conserve:false — see the Claude branch above; this freezes as the session's strict pin too.
+        model ??= this.providerRoleModel("codex", "implementor", undefined, { conserve: false });
         const effort = (session.effort ?? this.codexEffort(model)) as CodexEffort;
         target = { provider, model, effort, accountId: "openai-codex", accountLabel: `codex:${model}` };
         const fresh = coworkFreshKickoff(this.db, history, prompt);
@@ -3565,7 +3591,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!roleMayUseDedicatedPool(role)) return configured;
     const pools = this.codexPoolSnapshot();
     if (!pools) return configured;
-    // An explicit per-role override in the model matrix is the operator's decision — never override it.
+    // An explicit per-role override in the model matrix is the operator's decision — the dedicated-pool
+    // substitution below never second-guesses it. `configured` (from providerRoleModel) may itself already
+    // be token-conservation-adjusted; that IS in scope for this override (conservation deliberately caps
+    // the default-resolution layer, including the model matrix, during the last 10% of a weekly window).
     if (this.modelOverrides()[CODEX_SUB_ID]?.[role]?.trim()) return configured;
     const pick = dedicatedPoolModel({
       pools,
@@ -3807,6 +3836,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.db.kvSet("setting_spread_usage", patch.spreadUsage ? "1" : "0");
       this.accounts.setSpreadUsage(patch.spreadUsage);
     }
+    if (patch.tokenConservationMode !== undefined) this.db.kvSet("setting_token_conservation_mode", patch.tokenConservationMode ? "1" : "0");
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
     if (patch.codexEffort !== undefined && CODEX_EFFORTS.includes(patch.codexEffort)) this.db.kvSet("setting_codex_effort", patch.codexEffort);
     if (patch.codexWeeklySafetyPct !== undefined) this.db.kvSet("setting_codex_weekly_safety", String(patch.codexWeeklySafetyPct));
@@ -7052,7 +7082,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // patches the working tree and stops, never committing — breaking the implementor→commit contract.
     let startKickoff = kickoff;
     if (provider === "codex") {
-      const model = this.pickedModel(thread.id, "codex") ?? this.codexModel();
+      const model = this.pickedModel(thread.id, "codex") ?? this.providerRoleModel("codex", "implementor");
       // The director/planner picks the per-task effort; the Codex subscription's setting is its MAX cap, so
       // a tiny task still runs cheap while nothing exceeds what the operator allowed for this backend.
       const effort = clampEffort(plannerEffort, this.codexEffort(model)) as CodexEffort;

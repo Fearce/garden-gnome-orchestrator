@@ -943,6 +943,13 @@ export interface OrchestratorSettings {
   // ---- Fast usage polling: opt-in tighter cadence for the account usage ping ----
   fastUsagePolling: boolean; // off (default) → 10-min ping; on → poll every ~30s so the strip tracks the live burn within ~1-2%
   spreadUsage: boolean; // off (default) → burn the soonest-resetting provider/sub first; on → always dispatch to the provider (Claude sub, Codex, or Grok) with the lowest weekly usage, balancing burn across every enabled platform
+  // Token conservation mode: off (default) → normal model routing. on → once a Claude subscription or
+  // the Codex general pool sits in the LAST 10% of its weekly window (and isn't resetting within 24h),
+  // every role dispatched against it is capped to that provider's economy-tier model (Claude Sonnet /
+  // GPT-5.6 Luna) instead of a non-economy one (Opus/Fable, GPT-6 Astra / GPT-5.6 Sol) — trading quality
+  // for runway so the window doesn't hard-cap outright. Never overrides a strict owner model pin or an
+  // auto-model-selection pick. Grok/z.ai have no reviewed economy tier in this app, so they're unaffected.
+  tokenConservationMode: boolean;
   // ---- Subscriptions: which provider backs the implementor (hard routing gate at dispatch) ----
   // Claude is the default backend. Planner/researcher/QA start on Claude and fail over to an enabled
   // Codex/Grok CLI when every Claude sub is capped (structured-output adapters recover the role result).

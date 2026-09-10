@@ -555,6 +555,11 @@ export interface OrchestratorSettings {
   // the provider (Claude sub, Codex, or Grok) with the lowest weekly usage, balancing burn evenly across
   // every enabled platform.
   spreadUsage: boolean;
+  // Token conservation mode: off (default) = normal model routing. on = once a Claude subscription or
+  // the Codex general pool sits in the last 10% of its weekly window (and isn't resetting within 24h),
+  // every role dispatched against it is capped to that provider's economy-tier model (Claude Sonnet /
+  // GPT-5.6 Luna) instead of a flagship one. Never overrides a strict model pin or an auto-select pick.
+  tokenConservationMode: boolean;
   // Subscriptions: which provider backs the implementor (server-authoritative hard gate). Claude is the
   // default backend; individual Claude accounts toggle via AccountDTO.enabled (account.set), not here.
   codexEnabled: boolean;

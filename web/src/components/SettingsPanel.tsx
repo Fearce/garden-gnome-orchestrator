@@ -426,6 +426,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   on={settings.spreadUsage}
                   onChange={(v) => setSettings({ spreadUsage: v })}
                 />
+                <ToggleRow
+                  label="Token conservation mode"
+                  hint="On: once a Claude subscription or the Codex general pool sits in the last 10% of its weekly window, every role dispatched against it is capped to a cheap, fast model (Claude Sonnet / GPT-5.6 Luna) instead of a pricier one (Opus/Fable, GPT-6 Astra / GPT-5.6 Sol) — unless that window resets within 24h, in which case there's nothing worth conserving for. Never overrides an explicit model pin or an auto-selected model. Off by default."
+                  on={settings.tokenConservationMode}
+                  onChange={(v) => setSettings({ tokenConservationMode: v })}
+                />
               </Group>
             </SettingsCategoryPanel>
 
