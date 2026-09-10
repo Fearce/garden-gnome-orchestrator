@@ -1,6 +1,7 @@
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
+import type { TokenShiftReport } from "./usageWindows.js";
 import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, Thread, ThreadLane } from "../types.js";
 
 export interface DispatchInput {
@@ -109,6 +110,10 @@ export interface OrchestratorApi {
 
   listThreads(): Thread[];
   getThread(id: string): Thread | null;
+
+  /** When the next usage window rolls over and hands capacity back. A pure read of the same live
+   *  readings the account chips show; it never touches a provider, the DB, or any thread state. */
+  tokenShift(now?: number): TokenShiftReport;
 
   /** Record a finding and route it (inject into a live implementor if apt). */
   postFinding(input: PostFindingInput): Finding;

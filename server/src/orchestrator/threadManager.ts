@@ -16,7 +16,7 @@ import {
 } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { withCommunicationSystemPolicy, withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
-import { codexAllowanceReopened, codexPools, codexUsageCapped, liveCodexUsage, readCodexUsage } from "../agents/codexUsage.js";
+import { codexAllowanceReopened, codexPools, codexUsageCapped, liveCodexUsage, readCodexUsage, readCodexUsageForSnapshot } from "../agents/codexUsage.js";
 import {
   detectTimedComplete,
   formatDuration,
@@ -98,6 +98,7 @@ import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitF
 import { validRepoPath } from "../git/repoOps.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
+import { tokenShiftReport, type TokenShiftReport } from "./usageWindows.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import {
   declareManualDeployment,
@@ -2293,6 +2294,25 @@ export class ThreadManager implements OrchestratorApi {
     this.hub.log("info", `Dispatched task ${thread.id.slice(0, 8)} "${thread.title}"`);
     this.enqueueOrRun(thread.id);
     return thread.id;
+  }
+
+  /**
+   * "When does the next token shift happen?", read on demand by the director's `next_token_shift`
+   * tool. Deliberately a thin collector: it feeds the SAME live readings `buildHello` publishes to the
+   * account chips into the pure `usageWindows.ts`, so the tool can never disagree with the console and
+   * can never mutate anything. `now` is injectable for the same reason the module takes it.
+   */
+  tokenShift(now = Date.now()): TokenShiftReport {
+    const settings = this.settings();
+    return tokenShiftReport(
+      {
+        accounts: this.accounts.dto(),
+        codex: { usage: readCodexUsageForSnapshot(), enabled: settings.codexEnabled },
+        grok: { usage: readGrokUsage(), enabled: settings.grokEnabled },
+        zai: { usage: readZaiUsage(), enabled: settings.zaiEnabled },
+      },
+      now,
+    );
   }
 
   // ---- settings (operator-tunable, persisted in kv, broadcast like approvalMode) ----

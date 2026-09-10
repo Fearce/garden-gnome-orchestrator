@@ -38,6 +38,7 @@ const GATES = [
   "test:weekly-safety",
   "test:spread-usage",
   "test:capacity-routing",
+  "test:usage-windows",
   "test:ext-wake",
   "test:account-usage",
   "test:grok-runner",

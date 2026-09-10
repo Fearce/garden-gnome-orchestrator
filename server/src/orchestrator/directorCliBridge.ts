@@ -8,6 +8,7 @@ import type { Scheduler } from "./scheduler.js";
 import { findWorkspaces } from "../workspace/findWorkspace.js";
 import { normalizeDuration } from "./timedTasks.js";
 import { clampAgentCount } from "./shotgun.js";
+import { formatTokenShift } from "./usageWindows.js";
 
 /** Codex/Grok cannot attach the in-process director MCP server. They instead return one constrained
  *  command per turn; this module executes it through the exact same orchestrator APIs and sends the
@@ -21,7 +22,7 @@ export const DIRECTOR_CLI_SCHEMA: JsonSchemaLike = {
       type: "string",
       enum: [
         "reply", "ask_user", "find_workspace", "dispatch", "dispatch_read", "list_threads",
-        "thread_status", "inject", "interrupt_thread", "auto_review", "read_findings", "post_operator_note",
+        "thread_status", "inject", "interrupt_thread", "auto_review", "read_findings", "next_token_shift", "post_operator_note",
         "create_scheduled_task", "list_scheduled_tasks", "update_scheduled_task", "delete_scheduled_task",
       ],
     },
@@ -53,6 +54,7 @@ export const DIRECTOR_CLI_SCHEMA: JsonSchemaLike = {
     prompt: { type: "string" },
     cron: { type: "string" },
     enabled: { type: "boolean" },
+    all: { type: "boolean" },
     effort: { type: "string", enum: ["low", "medium", "high", "max"] },
   },
 };
@@ -79,6 +81,7 @@ export interface DirectorCliAction {
   prompt?: string;
   cron?: string;
   enabled?: boolean;
+  all?: boolean;
   effort?: "low" | "medium" | "high" | "max";
 }
 
@@ -108,6 +111,7 @@ Commands and fields:
 - interrupt_thread: threadId (pauses implementation, or stops/supersedes active QA and returns the task to implementation)
 - auto_review: threadId (start the app's auto-reviewer for a task parked in review)
 - read_findings: threadId? (omit for all)
+- next_token_shift: all? (read-only) — when the next usage window rolls over and hands capacity back. Timestamps come back server-local with an explicit date and UTC offset; quote them as-is.
 - post_operator_note: note, url?
 - create_scheduled_task: title, workspace, prompt, cron, enabled?, effort?
 - list_scheduled_tasks
@@ -222,6 +226,9 @@ export async function executeDirectorCliAction(
         return outcome("read_findings", findings.length
           ? findings.map((f) => `- ${f.threadId.slice(0, 8)} [${f.severity}] (${f.fromRole}) ${f.summary}`).join("\n")
           : "No findings.");
+      }
+      case "next_token_shift": {
+        return outcome("next_token_shift", formatTokenShift(api.tokenShift(), action.all === true));
       }
       case "post_operator_note": {
         const r = notes.add({ body: required(action, "note"), url: action.url ?? null });

@@ -182,6 +182,24 @@ and `directorServer.ts` (the director's `ask_user` / `dispatch` / inject control
 The thread id is bound per-agent at construction (the SDK passes no caller
 identity into a tool), so each agent's bus instance is scoped to its thread.
 
+One director tool is a pure READ of orchestrator state rather than a control:
+
+- `next_token_shift({ all? })` answers "when does the next token shift happen?", i.e. the
+  next moment a usage window rolls over and hands capacity back. It calls
+  `OrchestratorApi.tokenShift()` (`ThreadManager.tokenShift`), which feeds the same live
+  readings `buildHello` publishes to the account chips (every ENABLED Claude subscription's
+  5h/7d windows plus its cap latch, stagger hold and per-model pool caps, and Codex/Grok/z.ai
+  including Codex's dedicated model pools, when those backends are enabled) into the pure
+  `orchestrator/usageWindows.ts`. That module is a function of a snapshot plus `now`: no clock,
+  no DB, no provider call, which is why the tool cannot mutate anything and why the arithmetic
+  and the exact wording read back to the owner are unit-testable (`test:usage-windows`). Rules
+  it keeps: a reset already in the PAST has rolled over, so it is capacity you have and never a
+  pending shift; a DISABLED subscription or backend is named under "Not counted" rather than
+  silently dropped, because its window rolls over on schedule but frees nothing routable; and
+  timestamps are rendered server-local with weekday, date, IANA zone and numeric offset, since a
+  bare clock time is the answer that gets misread a timezone later. Codex/Grok directors reach
+  the same code through the `next_token_shift` command on the CLI bridge.
+
 ## 5. Thread manager & pipeline (`server/src/orchestrator/threadManager.ts`)
 
 `ThreadManager` holds every live thread and runs the per-thread pipeline inline

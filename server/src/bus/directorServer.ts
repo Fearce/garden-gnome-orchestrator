@@ -11,6 +11,7 @@ import { config } from "../config.js";
 import { normalizeDuration } from "../orchestrator/timedTasks.js";
 import { clampAgentCount } from "../orchestrator/shotgun.js";
 import { findWorkspaces } from "../workspace/findWorkspace.js";
+import { formatTokenShift } from "../orchestrator/usageWindows.js";
 
 /**
  * The director's control surface: clarify with the user, dispatch tasks, and
@@ -285,6 +286,20 @@ export function createDirectorServer(
     },
   );
 
+  const nextTokenShift = tool(
+    "next_token_shift",
+    `Answer "when is the next token shift?", i.e. the next moment a usage window rolls over and hands capacity back. Use it whenever ${config.ownerName} asks when tokens/quota reset, when a subscription or backend frees up, or whether it is worth waiting before dispatching heavy work. Read-only: it reports the same live readings the account chips show and changes nothing. Every timestamp is already server-local with an explicit date and UTC offset, so quote it as-is rather than converting it. A window whose reset has passed is capacity available NOW, not a pending shift, and anything not counted (a disabled subscription or backend) is listed with its reason.`,
+    {
+      all: z
+        .boolean()
+        .default(false)
+        .describe("Report EVERY tracked window and every not-counted reason instead of the next shift plus the few after it."),
+    },
+    async (args) => {
+      return { content: [{ type: "text", text: formatTokenShift(api.tokenShift(), args.all) }] };
+    },
+  );
+
   const postOperatorNote = tool(
     "post_operator_note",
     `Put a SHORT line on ${config.ownerName}'s note list — their own list of things waiting on them, shown as the Notes tab on the board. Each note is one clickable pointer (usually a branch or PR) that they act on and then delete. Use it when ${config.ownerName} asks you to park/remember something for them to look at, or hands you a link to keep for later. ONE line, max ${NOTE_MAX_CHARS} characters — a to-do line, not a summary. Don't use it to report on tasks (they can see the board) and don't add one off your own initiative unless they asked for a reminder.`,
@@ -375,6 +390,6 @@ export function createDirectorServer(
   return createSdkMcpServer({
     name: DIRECTOR_SERVER,
     version: "0.1.0",
-    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, autoReview, readFindings, postOperatorNote, createScheduledTask, listScheduledTasks, updateScheduledTask, deleteScheduledTask],
+    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, autoReview, readFindings, nextTokenShift, postOperatorNote, createScheduledTask, listScheduledTasks, updateScheduledTask, deleteScheduledTask],
   });
 }
