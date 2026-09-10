@@ -236,12 +236,24 @@ Gate: `test:auto-review-health`, with both loop shapes and the legacy/unmeasured
 
 ## Related
 - Office harvest gotchas: `.claude/rules/office-bridge.md`
-- Shared-checkout commits and rebases — **paths verified 2026-09-01; every pointer here was previously
-  wrong in both directions, so confirm a tool exists before citing one.** The memory is this project's
-  `shared-checkout-concurrent-edits` (no global `shared-working-tree-collisions` exists), and the tools
-  live in `~/.claude/scripts`, never as `~/Claude/tools/*.sh`:
-  `python ~/.claude/scripts/safe_commit.py -m "msg" -- <paths>` commits ONLY those paths whatever a
-  peer staged (a bare `git commit` takes the whole shared index) and fails loudly otherwise;
-  `stage_my_hunks.py --keep 1,4 <file>` splits a file you are both inside (pathspec is per-FILE) —
-  then commit the INDEX with no pathspec; `Invoke-SafeRebase.ps1 -Onto master` replaces `git pull
-  --rebase` and proves both sides' hunks survived.
+- Shared-checkout commits and rebases — **re-verified 2026-09-10 by running each tool; every pointer
+  here had been wrong in both directions twice before, so `ls` the directory before citing a path
+  rather than trusting this list, including this version of it.** The tools are bash and they live in
+  `~/Claude/tools/`. They are NOT under `~/.claude/scripts/`, which holds only orchestrator start
+  scripts, and there is no Python or PowerShell member of this family:
+  - `bash ~/Claude/tools/safe-commit.sh <paths> -- -m "msg"` commits ONLY those paths whatever a peer
+    staged, via `git commit --only`, then verifies after the fact that nothing else rode along.
+    **Never finish with a bare `git commit`**: it takes the whole shared index, which is the incident
+    this tool exists for.
+  - `bash ~/Claude/tools/stage-my-hunks.sh --match <regex> <file>` splits a file you are both inside
+    (a pathspec is per-FILE, so `git add` is all-or-nothing on it). `--list` numbers the hunks,
+    `--keep 1,4` takes them positionally, `-n` is a dry run. It refuses a regex that matches every
+    hunk, and verifies the staged diff is exactly what you selected or unstages the file. Then commit
+    with `safe-commit.sh` as above.
+  - `bash ~/Claude/tools/safe-rebase.sh` replaces `git pull --rebase`, whose `--autostash` is a
+    whole-tree stash of everyone's WIP under another name. It fast-forwards without stashing at all
+    when you have no local commits, replays local commits in a throwaway worktree first, and proves
+    the restore afterwards.
+  The canonical memory is the GLOBAL `~/.claude/memory/shared-working-tree-collisions.md`. This
+  project has no memory directory of its own, and no `shared-checkout-concurrent-edits` exists
+  anywhere.
