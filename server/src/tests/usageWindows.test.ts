@@ -20,6 +20,8 @@ import type { CodexUsageDTO } from "../agents/codexUsage.js";
 import type { GrokUsageDTO } from "../agents/grokUsage.js";
 import type { ZaiUsageDTO } from "../agents/zaiUsage.js";
 import type { AccountDTO } from "../ws/protocol.js";
+import { DIRECTOR_TOOLS, T } from "../agents/toolNames.js";
+import { DIRECTOR_CLI_PROTOCOL, DIRECTOR_CLI_SCHEMA } from "../orchestrator/directorCliBridge.js";
 
 let passed = 0;
 let failed = 0;
@@ -273,6 +275,18 @@ check("both forms open with the instant the question was asked at", compact.star
 
 const empty = formatTokenShift(tokenShiftReport({ accounts: [], ...NO_BACKENDS, timeZone: ZONE }, NOW), true);
 check("with nothing tracked it says so instead of inventing a shift", empty.includes("no token shift to report"), empty);
+
+console.log("\n=== token shift: the wiring that fails silently ===\n");
+
+// A director tool the SDK can call but that is missing from the allowlist just no-ops, with nothing
+// to see. The CLI bridge fails the same way in its own dialect: an action the schema's enum does not
+// name can never be returned, so the Codex/Grok director loses the tool without an error either.
+check("the tool is on the director's allowlist, not merely registered", DIRECTOR_TOOLS.includes(T.nextTokenShift), T.nextTokenShift);
+check("the allowlisted name matches the tool the server registers", T.nextTokenShift.endsWith("__next_token_shift"), T.nextTokenShift);
+const kinds = (DIRECTOR_CLI_SCHEMA.properties?.kind as { enum?: string[] } | undefined)?.enum ?? [];
+check("Codex/Grok directors can return the command at all", kinds.includes("next_token_shift"), JSON.stringify(kinds));
+check("and its `all` flag is a declared field, not silently dropped", DIRECTOR_CLI_SCHEMA.properties?.all != null);
+check("the CLI protocol tells them the command exists", DIRECTOR_CLI_PROTOCOL.includes("- next_token_shift:"));
 
 console.log(`\n=== RESULT: ${failed === 0 ? "PASS ✅" : "FAIL ❌"}: ${passed} passed, ${failed} failed ===`);
 if (failures.length) {
