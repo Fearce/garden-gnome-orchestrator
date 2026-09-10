@@ -129,6 +129,7 @@ const GATES = [
   "test:model-request",
   "test:model-request-ui",
   "test:themes",
+  "test:screensaver",
   "test:model-pin-probe",
   "test:livebench",
   "test:self-improve-restart",

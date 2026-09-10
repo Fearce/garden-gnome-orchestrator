@@ -8,6 +8,7 @@ import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
 import { Office } from "./components/Office.js";
 import { NoticeBanner } from "./components/NoticeBanner.js";
+import { useIdle } from "./components/screensaver/useIdle.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
 import ggLogo from "./assets/gg-logo.png";
@@ -17,6 +18,10 @@ import type { BoardView } from "./types.js";
 // must not request a removed hashed chunk and sit forever on "Opening task…" after the server restarts.
 const SettingsPanel = lazy(() => import("./components/SettingsPanel.js").then(({ SettingsPanel: component }) => ({ default: component })));
 const GitConsole = lazy(() => import("./components/GitConsole.js").then(({ GitConsole: component }) => ({ default: component })));
+// The screensaver only ever renders after minutes of inactivity, so its scene, rig and stylesheet
+// have no business in the first paint. By the time it is wanted the chunk has long since been idle-
+// fetched, and the fade-in covers a cold load anyway.
+const Screensaver = lazy(() => import("./components/screensaver/Screensaver.js").then(({ Screensaver: component }) => ({ default: component })));
 
 type MobilePane = "director" | "board";
 
@@ -109,7 +114,24 @@ export function App() {
       <NoticeBanner />
       {settingsOpen ? <Suspense fallback={null}><SettingsPanel onClose={() => setSettingsOpen(false)} /></Suspense> : null}
       {gitOpen ? <Suspense fallback={null}><GitConsole onClose={closeGitConsole} /></Suspense> : null}
+      <ScreensaverGate />
     </div>
+  );
+}
+
+/** Decides whether the AFK scene is on screen. Kept to its own component so the idle clock's one
+ *  state flip re-renders this and nothing else: putting it in App would re-render the whole console
+ *  the moment the screensaver appeared or was dismissed, which is exactly the state loss the feature
+ *  promises not to cause. */
+function ScreensaverGate() {
+  const enabled = useStore((s) => s.screensaver);
+  const idleMinutes = useStore((s) => s.screensaverIdleMinutes);
+  const idle = useIdle(idleMinutes * 60_000, enabled);
+  if (!idle) return null;
+  return (
+    <Suspense fallback={null}>
+      <Screensaver />
+    </Suspense>
   );
 }
 

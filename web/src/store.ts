@@ -185,6 +185,11 @@ interface State {
   // Which look the console wears (Settings → Appearance). "classic" is the original console and puts
   // NO attribute on <html>, so choosing it can't change a single existing rule — see lib/theme.ts.
   theme: ThemeId;
+  // AFK screensaver: after `screensaverIdleMinutes` with no mouse or keyboard activity anywhere in
+  // the app, the board is covered by the gnome scene until the next input. Per browser, like the
+  // theme: a wall-mounted screen wants it and the laptop it is driven from may not.
+  screensaver: boolean;
+  screensaverIdleMinutes: number;
   // The manual board order (active thread ids, front-to-back). Only consulted while taskDragAndDrop is
   // on; persisted under `orch-task-order` so a reorder survives reloads. Stale/new ids are reconciled
   // against the live thread set at render time, so this list is allowed to drift out of sync.
@@ -343,6 +348,8 @@ interface State {
   setTaskSort: (v: TaskSort) => void;
   setTaskDragAndDrop: (v: boolean) => void;
   setTheme: (v: ThemeId) => void;
+  setScreensaver: (v: boolean) => void;
+  setScreensaverIdleMinutes: (v: number) => void;
   setTaskOrder: (ids: string[]) => void;
   approve: (threadId: string, approved: boolean, feedback?: string) => void;
   loadChanges: (threadId: string) => void;
@@ -451,6 +458,18 @@ export type TaskSort = "created_desc" | "created_asc" | "updated" | "status" | "
 const TASK_SORTS: readonly TaskSort[] = ["created_desc", "created_asc", "updated", "status", "workspace", "title"];
 const isTaskSort = (v: unknown): v is TaskSort => typeof v === "string" && (TASK_SORTS as readonly string[]).includes(v);
 
+/** How long the console may sit untouched before the screensaver takes the screen. The floor is a
+ *  minute (anything shorter fires while somebody is reading a task feed) and the ceiling is four
+ *  hours (past that it is switched off, not delayed). A stored value outside the range, or one that
+ *  is not a number at all, degrades to the default rather than disabling the feature. */
+export const IDLE_MINUTES_MIN = 1;
+export const IDLE_MINUTES_MAX = 240;
+const clampIdleMinutes = (v: unknown): number => {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return 5;
+  return Math.min(IDLE_MINUTES_MAX, Math.max(IDLE_MINUTES_MIN, n));
+};
+
 // Client-only view settings live together under one stable localStorage key (per the brief), separate
 // from the server-authoritative pipeline settings. Defaults: keep finished tasks visible, full output.
 const VIEW_SETTINGS_KEY = "director_settings";
@@ -465,8 +484,12 @@ interface ViewSettings {
   // The console's look. Read at boot by the inline script in index.html too, which paints the theme
   // before the bundle runs — keep the stored key and shape in step with it.
   theme: ThemeId;
+  // Whether the AFK gnome scene may take the screen, and how long the console must sit untouched
+  // first. Minutes rather than milliseconds because that is the unit the settings row edits.
+  screensaver: boolean;
+  screensaverIdleMinutes: number;
 }
-const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME };
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, screensaver: true, screensaverIdleMinutes: 5 };
 const loadViewSettings = (): ViewSettings => {
   try {
     const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
@@ -478,6 +501,8 @@ const loadViewSettings = (): ViewSettings => {
       taskDragAndDrop: typeof v.taskDragAndDrop === "boolean" ? v.taskDragAndDrop : VIEW_DEFAULTS.taskDragAndDrop,
       taskSort: isTaskSort(v.taskSort) ? v.taskSort : VIEW_DEFAULTS.taskSort,
       theme: isThemeId(v.theme) ? v.theme : VIEW_DEFAULTS.theme,
+      screensaver: typeof v.screensaver === "boolean" ? v.screensaver : VIEW_DEFAULTS.screensaver,
+      screensaverIdleMinutes: clampIdleMinutes(v.screensaverIdleMinutes),
     };
   } catch {
     return VIEW_DEFAULTS;
@@ -488,7 +513,16 @@ const saveViewSettings = (v: ViewSettings): void => lsSet(VIEW_SETTINGS_KEY, JSO
  *  untouched. Spelling them out per setter is what loses a field the moment a fifth one is added, so
  *  the patch is merged against live state here instead. */
 const persistView = (s: ViewSettings, patch: Partial<ViewSettings>): void =>
-  saveViewSettings({ showCompleted: s.showCompleted, verbosity: s.verbosity, taskSort: s.taskSort, taskDragAndDrop: s.taskDragAndDrop, theme: s.theme, ...patch });
+  saveViewSettings({
+    showCompleted: s.showCompleted,
+    verbosity: s.verbosity,
+    taskSort: s.taskSort,
+    taskDragAndDrop: s.taskDragAndDrop,
+    theme: s.theme,
+    screensaver: s.screensaver,
+    screensaverIdleMinutes: s.screensaverIdleMinutes,
+    ...patch,
+  });
 
 // The manual board order persists on its own key (it's a list, not a flag, and churns far more often
 // than the view toggles). A bad/old payload degrades to "no manual order" — the board then renders by
@@ -915,6 +949,8 @@ export const useStore = create<State>((set) => ({
   taskSort: loadViewSettings().taskSort,
   taskDragAndDrop: loadViewSettings().taskDragAndDrop,
   theme: loadViewSettings().theme,
+  screensaver: loadViewSettings().screensaver,
+  screensaverIdleMinutes: loadViewSettings().screensaverIdleMinutes,
   taskOrder: loadTaskOrder(),
   pendingPlans: {},
   threadChanges: {},
@@ -1138,6 +1174,17 @@ export const useStore = create<State>((set) => ({
     set((s) => {
       persistView(s, { taskDragAndDrop: v });
       return { taskDragAndDrop: v };
+    }),
+  setScreensaver: (v) =>
+    set((s) => {
+      persistView(s, { screensaver: v });
+      return { screensaver: v };
+    }),
+  setScreensaverIdleMinutes: (v) =>
+    set((s) => {
+      const minutes = clampIdleMinutes(v);
+      persistView(s, { screensaverIdleMinutes: minutes });
+      return { screensaverIdleMinutes: minutes };
     }),
   setTheme: (v) =>
     set((s) => {

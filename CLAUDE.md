@@ -724,6 +724,41 @@ and changes nothing about how tasks run. Gate `test:themes` (scoping, keyframe c
 pre-paint list, hard-coded-accent leaks, the picker); browser `npm run appearance-lab --prefix server`,
 which diffs Classic's computed style across a switch-away-and-back. Third theme: `add-a-theme.md`.
 
+## The AFK screensaver (Settings → Appearance, per browser, ON by default)
+After `screensaverIdleMinutes` (default 5, clamped 1..240) with no pointer/key/wheel/scroll activity
+anywhere in the app, a full-viewport scene covers the board: one gnome per task, rappelling off a
+scaffold beam and raising a thirteen-piece timber frame. **Every lane is a real task**, not a demo
+script. `components/screensaver/taskScene.ts` derives the cast from the same live `threads`/`runs`/
+`threadDrafts` the board renders from: `ThreadState` picks the pose (working / perched / done +
+pennant / failed + rope slip), the run trail picks the role and its tool, and the build height is a
+**floor** (the furthest pipeline stage any run of this task reached, so a QA hand-back can never
+un-build the frame) plus a saturating **creep** on the live run's real elapsed seconds, which
+approaches its stage's band and never arrives. Tasks appearing, finishing or failing while it is up
+animate in and out live.
+
+Rules not to re-break:
+- **Dismissal is instant and lossless.** `useIdle` listens on the CAPTURE phase, so the first input
+  clears the overlay before anything can consume it; the scene only ever READS the store, so the
+  board underneath is byte-for-byte as it was. Activity writes a timestamp, never state: re-arming a
+  timer per `mousemove` would be the most expensive thing on the page while somebody works.
+- **It idles cheaply.** The scene is a `lazy()` chunk that does not exist until it is wanted, its one
+  rAF loop exists only while it is on screen, and it stops entirely on `document.hidden` or
+  `prefers-reduced-motion` (which still POSES every lane correctly, it just holds still). The loop
+  writes rounded values straight to the DOM and only when they changed, rather than through state.
+- **Nothing leaks onto the real console.** `screensaver.css` is scoped entirely under `.gs-root`,
+  every keyframe carries a `gs-` prefix (animation names are GLOBAL), and every token it declares is
+  `--gs-`. It reads the console's accent, role and state hues through `var()`, so a theme retints it.
+- **The rigging is solved, not keyframed.** One target point yields both the rope length and the lean
+  (`scene.ts` `rigFor`). A CSS `rotate(+t)` swings a point hanging BELOW the origin LEFT, so reaching
+  right is a NEGATIVE rotation; the reversed sign stays plausible while the build is low and only
+  walks the gnome off the board once he traverses out along his rafter.
+
+Gate `test:screensaver` (solver composed forward, the live-data mapping, the `nextPhase` lifecycle,
+the settings, SSR markup, CSS blast radius). Browser: `npm run screensaver-lab --prefix server
+[-- --shots <dir>] [--video <dir>]`, which boots its own instance on :5317 with a seeded task per
+lifecycle state and MEASURES the scene across the timeline (computed transforms decomposed back into
+an impact point) rather than eyeballing stills.
+
 ## Before investigating "should we adopt / replace X?"
 Read **`docs/DECISIONS.md`** — the closed-questions register: one row per settled question with its
 headline verdict, plus what's genuinely still open. Adding a backend, swapping the harness, and

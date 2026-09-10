@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { useStore } from "../store.js";
+import { IDLE_MINUTES_MAX, IDLE_MINUTES_MIN, useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type ZaiEffort } from "../types.js";
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
@@ -26,7 +26,7 @@ const SETTINGS_CATEGORIES = [
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
   { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
   { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles.", keywords: "relay collaboration coworkers team machine url password presence chatroom" },
-  { id: "appearance", section: "Workspace", label: "Appearance", description: "Choose how the console looks on this browser.", keywords: "theme themes look dark colours colors palette classic nocturne skin style font typography animation" },
+  { id: "appearance", section: "Workspace", label: "Appearance", description: "Choose how the console looks on this browser.", keywords: "theme themes look dark colours colors palette classic nocturne skin style font typography animation screensaver idle afk gnomes scene away timeout" },
   { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed.", keywords: "composer board completed drag reorder output model picker recent repositories ui" },
 ] as const satisfies readonly SettingsCategory[];
 
@@ -63,6 +63,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setTaskDragAndDrop = useStore((s) => s.setTaskDragAndDrop);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  const screensaver = useStore((s) => s.screensaver);
+  const setScreensaver = useStore((s) => s.setScreensaver);
+  const screensaverIdleMinutes = useStore((s) => s.screensaverIdleMinutes);
+  const setScreensaverIdleMinutes = useStore((s) => s.setScreensaverIdleMinutes);
   const [activeCategoryId, setActiveCategoryId] = useState<SettingsCategoryId>("general");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SettingsSearchResult[]>([]);
@@ -458,6 +462,27 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 <div className="settings-note tight">
                   The theme is stored in this browser, so each screen you open the console on — desktop,
                   tablet, phone — keeps its own. Nothing about how tasks run changes.
+                </div>
+              </Group>
+              <Group label="Screensaver">
+                <ToggleRow
+                  label="Gnome scene when idle"
+                  hint="On (default): after a spell with no mouse or keyboard activity, the board is covered by the workshop scene, one gnome per task, building your real work. Any input brings the console straight back with nothing lost."
+                  on={screensaver}
+                  onChange={setScreensaver}
+                />
+                <NumberRow
+                  label="Idle minutes"
+                  hint="How long the console sits untouched before the scene takes the screen."
+                  value={screensaverIdleMinutes}
+                  min={IDLE_MINUTES_MIN}
+                  max={IDLE_MINUTES_MAX}
+                  onChange={setScreensaverIdleMinutes}
+                />
+                <div className="settings-note tight">
+                  Stored in this browser, like the theme, so a wall display can run it while the laptop
+                  driving it does not. It follows your system's reduced-motion setting: with motion
+                  reduced the scene still shows every task's real state, it just holds still.
                 </div>
               </Group>
             </SettingsCategoryPanel>

@@ -1,0 +1,633 @@
+/* screensaver.css: the AFK scene's stage and every animation in it.
+ *
+ * Ported from the `proto/nisse-workers` prototype's scene.css. Two things changed in the port and
+ * both are load-bearing:
+ *
+ *   1. EVERY selector is prefixed `gs-` and lives under `.gs-root`. The prototype was a standalone
+ *      page and could call a class `.card`; the console already owns `.card`, `.title`, `.badge`,
+ *      `.plot` and `.foot`, and an unprefixed rule here would repaint the real board. @keyframes
+ *      names are global too, so those carry the prefix for the same reason (styles.css already owns
+ *      `pulse`, `live-pulse`, `update-spin` and friends).
+ *   2. The craft tokens are declared on `.gs-root`, not on `:root`. Classic is the console's
+ *      unconditional sheet and a theme may only add scoped rules, so the screensaver brings its own
+ *      palette extension with it and leaves the console's token block untouched. Everything that
+ *      the console DOES define (accent, role hues, ok/warn/danger, surfaces, type) is read through
+ *      var(), so a theme retints the scene for free.
+ *
+ * Motion rules kept throughout (this is the part that separates a mascot from clip art):
+ *   - nothing moves linearly. Every loop carries anticipation, a fast active frame, and a settle.
+ *     The swing keyframes below use per-keyframe timing functions for exactly that.
+ *   - secondary parts lag. Hat and legs run on their own longer, off-beat periods so they trail the
+ *     body instead of marching with it.
+ *   - one impact, one reaction. The recoil and the sparks share a single generic keyframe each and
+ *     are aligned to their tool's strike with animation-delay, so a tool cannot drift out of sync
+ *     with its own consequences.
+ */
+
+.gs-root {
+  /* ---- the gnome's own non-role colours, lifted from components/Gnome.tsx ---- */
+  --gs-beard: oklch(0.95 0.02 90);
+  --gs-skin: oklch(0.79 0.07 64);
+  --gs-boots: oklch(0.34 0.025 50);
+  --gs-metal: oklch(0.74 0.018 250);
+  --gs-wood: oklch(0.56 0.06 60);
+
+  /* ---- new for the rappelling look ---- */
+  --gs-rope: oklch(0.62 0.055 68); /* hemp: warm, a shade duller than the tool handles */
+  --gs-rope-dark: oklch(0.44 0.045 66);
+  --gs-strap: oklch(0.38 0.03 40); /* harness webbing: dark, matches the boots family */
+  --gs-timber: oklch(0.58 0.062 62); /* the build itself: fresh-cut pine */
+  --gs-timber-dark: oklch(0.44 0.05 58);
+  --gs-spark: oklch(0.88 0.16 82);
+
+  position: fixed;
+  inset: 0;
+  z-index: 900; /* over the board and its panels, under nothing: this IS the screen while it is up */
+  overflow: hidden;
+  background:
+    radial-gradient(120% 80% at 50% -10%, oklch(0.24 0.024 262) 0%, transparent 62%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.006em;
+  /* Nothing in here is interactive. Letting the pointer through would also let a click land on the
+     board underneath, and the whole promise is that the board is not touched. */
+  pointer-events: none;
+  user-select: none;
+  animation: gs-arrive 900ms ease both;
+}
+
+@keyframes gs-arrive {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* The scaffold beam. Every rope hangs off it, and it is where a gnome sits when it has nothing to
+   build yet, or has finished. */
+.gs-root .gs-beam {
+  position: absolute;
+  top: 12%;
+  left: 0;
+  right: 0;
+  height: 16px;
+  background: linear-gradient(180deg, oklch(0.52 0.055 60) 0%, oklch(0.44 0.05 58) 46%, oklch(0.33 0.04 54) 100%);
+  border-top: 1px solid oklch(0.6 0.06 62);
+  box-shadow: 0 10px 26px oklch(0 0 0 / 0.42);
+}
+/* Plank seams + bolt heads, drawn with gradients so the beam has grain without an asset. */
+.gs-root .gs-beam-grain {
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 148px, oklch(0 0 0 / 0.34) 148px 150px),
+    repeating-linear-gradient(90deg, transparent 0 74px, oklch(0.66 0.05 62 / 0.22) 74px 75px);
+  opacity: 0.85;
+}
+
+.gs-root .gs-cards {
+  position: absolute;
+  top: 46%;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  gap: 46px;
+  padding: 0 40px;
+}
+
+.gs-root .gs-workers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.gs-root .gs-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 26px;
+  margin: 0;
+  text-align: center;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  animation: gs-breathe 4.2s ease-in-out infinite alternate;
+}
+@keyframes gs-breathe {
+  from { opacity: 0.22; }
+  to { opacity: 0.62; }
+}
+
+.gs-root .gs-empty {
+  position: absolute;
+  inset: 46% 0 auto;
+  margin: 0;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+/* --------------------------------------------------------------------------- the card ---- */
+
+.gs-root .gs-card {
+  flex: 1 1 0;
+  min-width: 208px;
+  max-width: 268px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px 11px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  box-shadow: var(--shadow-1);
+  animation: gs-card-in 520ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+/* A lane that appears while the scene is up arrives rather than blinking into existence. */
+@keyframes gs-card-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+/* The state accent bar the console's own cards use, driven by the task's real state colour. */
+.gs-root .gs-card::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 0;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: var(--gs-state, var(--text-faint));
+  opacity: 0.85;
+}
+
+.gs-root .gs-title {
+  font-size: 13px;
+  font-weight: 550;
+  letter-spacing: -0.012em;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.gs-root .gs-ws {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The build plot. Fixed to the viewBox aspect so plot units map to pixels exactly, which is what
+   lets the rigging aim a gnome's swing at the top of the structure. */
+.gs-root .gs-plot {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 150 / 108;
+  margin-top: 2px;
+}
+.gs-root .gs-plot svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.gs-root .gs-activity {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 16px;
+}
+.gs-root .gs-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.gs-root .gs-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 100px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--gs-state, var(--text-faint));
+  border: 1px solid color-mix(in oklch, var(--gs-state, var(--text-faint)) 40%, transparent);
+  background: color-mix(in oklch, var(--gs-state, var(--text-faint)) 12%, transparent);
+}
+.gs-root .gs-rolechip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--gs-role, var(--text-faint));
+}
+.gs-root .gs-rolechip i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  font-style: normal;
+}
+.gs-root .gs-elapsed {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------- rope, rig and pendulum ---- */
+
+/* A worker is a zero-size anchor pinned under its hook on the beam. Everything below hangs from it
+   through three nested rotators, each owning exactly one concern:
+     .gs-lean    the base angle, written by JS, so the gnome can traverse sideways along his build
+                 the way a rappeller pendulums across a wall.
+     .gs-sway    the idle pendulum oscillation, period scaled to the rope length.
+     .gs-recoil  the kick the rope takes when the tool actually lands.
+   Nesting them keeps three animations off one transform property, which would clobber. */
+.gs-root .gs-worker {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+.gs-root .gs-lean,
+.gs-root .gs-sway,
+.gs-root .gs-recoil {
+  transform-origin: 50% 0;
+  will-change: transform;
+}
+.gs-root .gs-sway {
+  animation: gs-sway var(--gs-sway-dur, 3.4s) cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+.gs-root .gs-recoil {
+  animation: gs-recoil var(--gs-tool-dur, 0.9s) linear infinite;
+  animation-delay: calc(var(--gs-tool-dur, 0.9s) * var(--gs-impact-frac, 0.38));
+}
+
+.gs-root .gs-hook {
+  position: absolute;
+  left: -6px;
+  top: -13px;
+  width: 12px;
+  height: 13px;
+  border-radius: 0 0 7px 7px;
+  border: 2px solid var(--gs-metal);
+  border-top-color: transparent;
+  opacity: 0.9;
+}
+
+.gs-root .gs-rope {
+  position: relative;
+  left: -1.5px;
+  width: 3px;
+  height: 0;
+  border-radius: 2px;
+  /* Twisted hemp: a diagonal repeat reads as lay, and the vertical pass gives it a lit edge. */
+  background:
+    repeating-linear-gradient(58deg, var(--gs-rope-dark) 0 2px, var(--gs-rope) 2px 4.4px),
+    linear-gradient(90deg, var(--gs-rope-dark), var(--gs-rope) 45%, var(--gs-rope-dark));
+  box-shadow: 0 0 6px oklch(0 0 0 / 0.4);
+}
+.gs-root .gs-rig {
+  position: relative;
+  left: -29.33px;
+  width: 96px;
+}
+.gs-root .gs-rig svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+
+/* ---- the gnome's parts ---- */
+.gs-root .gs-robe { fill: currentColor; }
+.gs-root .gs-hat-cloth { fill: currentColor; }
+.gs-root .gs-beard { fill: var(--gs-beard); }
+.gs-root .gs-pom { fill: var(--gs-beard); }
+.gs-root .gs-nose,
+.gs-root .gs-mitt { fill: var(--gs-skin); }
+.gs-root .gs-boot { fill: var(--gs-boots); }
+.gs-root .gs-leg { stroke: var(--gs-boots); stroke-width: 4.6; stroke-linecap: round; fill: none; }
+.gs-root .gs-limb { stroke: currentColor; stroke-width: 4.4; stroke-linecap: round; fill: none; }
+.gs-root .gs-strap { stroke: var(--gs-strap); stroke-width: 3.4; stroke-linecap: round; fill: none; }
+.gs-root .gs-strap-thin { stroke: var(--gs-strap); stroke-width: 1.9; stroke-linecap: round; fill: none; }
+.gs-root .gs-strap-f { fill: none; stroke: var(--gs-strap); stroke-width: 1.5; }
+.gs-root .gs-buckle { fill: var(--gs-metal); }
+.gs-root .gs-rope-tail { stroke: var(--gs-rope); stroke-width: 2.4; stroke-linecap: round; fill: none; }
+.gs-root .gs-rope-curl { stroke: var(--gs-rope); stroke-width: 2; stroke-linecap: round; fill: none; opacity: 0.9; }
+.gs-root .gs-steel { stroke: var(--gs-metal); stroke-linecap: round; stroke-linejoin: round; fill: none; }
+.gs-root .gs-steel-f { fill: var(--gs-metal); }
+.gs-root .gs-haft { stroke: var(--gs-wood); stroke-width: 2.8; stroke-linecap: round; fill: none; }
+.gs-root .gs-haft-f { fill: var(--gs-wood); }
+.gs-root .gs-coil { stroke: var(--gs-rope); opacity: 0; }
+.gs-root .gs-sparks circle { fill: var(--gs-spark); opacity: 0; }
+
+/* Every part that moves declares its own pivot in viewBox units. .gs-tool is deliberately absent:
+   its forearm angle lives on a wrapper <g> in the markup (a CSS pivot on top of an attribute
+   rotate() composes into a rotation about twice the pivot, which throws the tool clear of the
+   mitt), and the only motion it owns is a translate along its own axis. */
+.gs-root .gs-arm { transform-box: view-box; transform-origin: 44px 38px; }
+.gs-root .gs-hat { transform-box: view-box; transform-origin: 35px 33px; }
+.gs-root .gs-legs { transform-box: view-box; transform-origin: 35px 48.6px; }
+/* The sparks all leave the same point, so they scale up out of it rather than out of the middle of
+   the gnome. */
+.gs-root .gs-sparks circle { transform-box: view-box; transform-origin: 58.7px 46.5px; }
+
+/* ------------------------------------------------------------------------ working loop ---- */
+
+/* The swing is one shared declaration plus a per-tool keyframe name, so a tool's motion and its
+   period/impact alignment can never drift apart. */
+.gs-root .gs-worker.gs-working .gs-arm { animation-duration: var(--gs-tool-dur); animation-iteration-count: infinite; }
+.gs-root .gs-worker.gs-t-hammer.gs-working .gs-arm { animation-name: gs-swing-hammer; }
+.gs-root .gs-worker.gs-t-pickaxe.gs-working .gs-arm { animation-name: gs-swing-pickaxe; }
+.gs-root .gs-worker.gs-t-gavel.gs-working .gs-arm { animation-name: gs-swing-gavel; }
+.gs-root .gs-worker.gs-t-wrench.gs-working .gs-arm { animation-name: gs-swing-wrench; }
+.gs-root .gs-worker.gs-t-saw.gs-working .gs-arm { animation-name: gs-swing-saw; }
+.gs-root .gs-worker.gs-working .gs-hat { animation: gs-hat-wobble calc(var(--gs-tool-dur) * 2.3) ease-in-out infinite alternate; }
+.gs-root .gs-worker.gs-working .gs-legs { animation: gs-legs-kick calc(var(--gs-tool-dur) * 2.9) ease-in-out infinite alternate; }
+.gs-root .gs-worker.gs-working .gs-sparks circle {
+  animation: gs-spark var(--gs-tool-dur) linear infinite;
+  animation-delay: calc(var(--gs-tool-dur) * (var(--gs-impact-frac) + var(--sd, 0)));
+}
+.gs-root .gs-worker.gs-t-saw.gs-working .gs-tool { animation: gs-saw-stroke var(--gs-tool-dur) cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+
+/* Descending and ascending are driven from JS (rope length + lean angle), so the arm just holds a
+   braced pose and the legs run free. */
+.gs-root .gs-worker.gs-moving .gs-arm { transform: rotate(-64deg); }
+.gs-root .gs-worker.gs-moving .gs-legs { animation: gs-legs-kick 1.15s ease-in-out infinite alternate; }
+.gs-root .gs-worker.gs-moving .gs-hat { animation: gs-hat-wobble 1.5s ease-in-out infinite alternate; }
+.gs-root .gs-worker.gs-moving .gs-recoil { animation: none; }
+
+/* ---- perched on the beam: queued (waiting) and done (finished) ---- */
+/* The lift puts his hips on the beam's top edge so he reads as sitting on it rather than hanging
+   just under it; the legs swing forward and dangle over the front. */
+.gs-root .gs-worker.gs-perched .gs-rig { transform: translateY(-80px); }
+.gs-root .gs-worker.gs-perched .gs-recoil { animation: none; }
+.gs-root .gs-worker.gs-perched .gs-rope-tail,
+.gs-root .gs-worker.gs-perched .gs-rope-curl,
+.gs-root .gs-worker.gs-perched .gs-belay { opacity: 0; }
+.gs-root .gs-worker.gs-perched .gs-coil { opacity: 0.95; }
+.gs-root .gs-worker.gs-perched .gs-legs { animation: gs-dangle 2.7s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate; }
+.gs-root .gs-worker.gs-perched .gs-arm { animation: gs-arm-shouldered 3.6s ease-in-out infinite alternate; }
+.gs-root .gs-worker.gs-perched .gs-hat { animation: gs-hat-wobble 3.2s ease-in-out infinite alternate; }
+/* A finished gnome tips his hat every few seconds instead of just sitting there. */
+.gs-root .gs-worker.gs-perched.gs-done .gs-hat { animation: gs-hat-tip 4.4s ease-in-out infinite; }
+.gs-root .gs-worker.gs-perched.gs-done .gs-arm { animation: gs-arm-shouldered 4.4s ease-in-out infinite alternate; }
+
+/* ---- downed tools ---- */
+/* He slumps in the harness, the hat falls over his eyes, the arm goes limp, and the tool is handed
+   to a separate falling element. Nothing here loops: a failure holds its pose. */
+.gs-root .gs-worker.gs-failed .gs-rig { transform: rotate(9deg); transform-box: border-box; transform-origin: 44% 46%; }
+.gs-root .gs-worker.gs-failed .gs-recoil { animation: none; }
+.gs-root .gs-worker.gs-failed .gs-arm { animation: none; transform: rotate(40deg); }
+.gs-root .gs-worker.gs-failed .gs-legs { animation: none; transform: rotate(7deg); }
+.gs-root .gs-worker.gs-failed .gs-hat { animation: none; transform: rotate(23deg); }
+.gs-root .gs-worker.gs-failed .gs-tool { visibility: hidden; }
+.gs-root .gs-worker.gs-failed .gs-sparks { display: none; }
+.gs-root .gs-worker.gs-failed .gs-rope { filter: saturate(0.45) brightness(0.85); }
+.gs-root .gs-worker.gs-failed .gs-limb,
+.gs-root .gs-worker.gs-failed .gs-robe,
+.gs-root .gs-worker.gs-failed .gs-hat-cloth { filter: saturate(0.55); }
+
+/* The falling tool renders at the same scale as the one in his hand. Its box is a window cut out of
+   the rig frame, so the renderer sizes and places it from those rig units rather than from pixels
+   repeated here. */
+.gs-root .gs-dropped {
+  position: absolute;
+  top: 0;
+  opacity: 0;
+}
+.gs-root .gs-dropped svg { width: 100%; height: auto; display: block; overflow: visible; }
+.gs-root .gs-dropped.gs-falling { animation: gs-tool-fall 1.45s forwards; }
+
+/* ------------------------------------------------------------------------ the keyframes ---- */
+
+@keyframes gs-sway {
+  from { transform: rotate(calc(-1 * var(--gs-sway-amp, 1.2deg))); }
+  to { transform: rotate(var(--gs-sway-amp, 1.2deg)); }
+}
+
+/* One impact, one reaction: the rope jerks up, overshoots back, and settles. Aligned to the tool's
+   strike frame by animation-delay rather than by copying percentages per tool. */
+@keyframes gs-recoil {
+  0% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.15, 0.8, 0.4, 1); }
+  6% { transform: rotate(1.75deg); animation-timing-function: cubic-bezier(0.3, 0, 0.4, 1); }
+  22% { transform: rotate(-0.75deg); animation-timing-function: ease-in-out; }
+  40% { transform: rotate(0.22deg); animation-timing-function: ease-in-out; }
+  56%, 100% { transform: rotate(0deg); }
+}
+
+/* Sparks: dead for most of the cycle, then a 26% burst starting exactly on impact. */
+@keyframes gs-spark {
+  0% { opacity: 0; transform: translate(0, 0) scale(0.35); animation-timing-function: cubic-bezier(0.1, 0.9, 0.3, 1); }
+  5% { opacity: 1; transform: translate(0, 0) scale(1); animation-timing-function: cubic-bezier(0.2, 0.6, 0.35, 1); }
+  26% { opacity: 0; transform: translate(var(--sx), var(--sy)) scale(0.3); }
+  100% { opacity: 0; transform: translate(var(--sx), var(--sy)) scale(0.3); }
+}
+
+/* Every swing below passes through rotate(0deg) on its own impact frame, and that is a constraint
+   rather than a coincidence: the tool is DRAWN at the point the rigging aims the rig at, and the
+   sparks are drawn there too and do not travel with the arm. Give a swing its lowest point at some
+   other angle and the head lands a little off the work while the sparks fire on it, which at a
+   magnified size reads as a tool that never quite connects. */
+
+/* HAMMER. Ready low on the work, a decelerating wind-up over the shoulder, a one-frame hitch at the
+   top (the anticipation), then the strike drops through in a tenth of the cycle. The rebound, the
+   settle and the lift are three separate beats so it never reads as a bounce. */
+@keyframes gs-swing-hammer {
+  0% { transform: rotate(-13deg); animation-timing-function: cubic-bezier(0.22, 0.62, 0.35, 1); }
+  16% { transform: rotate(-84deg); animation-timing-function: cubic-bezier(0.35, 0, 0.7, 1); }
+  28% { transform: rotate(-92deg); animation-timing-function: cubic-bezier(0.74, 0, 0.9, 0.6); }
+  38% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.15, 0.7, 0.4, 1); }
+  44% { transform: rotate(-12deg); animation-timing-function: ease-in-out; }
+  55% { transform: rotate(-4deg); animation-timing-function: ease-in-out; }
+  74% { transform: rotate(-17deg); animation-timing-function: ease-in-out; }
+  100% { transform: rotate(-13deg); }
+}
+
+/* PICKAXE. The same shape with a longer arc and a heavier head: wind-up goes further past vertical,
+   the chop travels further, and the recoil is bigger because the head bites. */
+@keyframes gs-swing-pickaxe {
+  0% { transform: rotate(-22deg); animation-timing-function: cubic-bezier(0.2, 0.6, 0.35, 1); }
+  20% { transform: rotate(-104deg); animation-timing-function: cubic-bezier(0.35, 0, 0.7, 1); }
+  32% { transform: rotate(-115deg); animation-timing-function: cubic-bezier(0.78, 0, 0.92, 0.55); }
+  43% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.12, 0.8, 0.4, 1); }
+  50% { transform: rotate(-16deg); animation-timing-function: ease-out; }
+  62% { transform: rotate(-6deg); animation-timing-function: ease-in-out; }
+  80% { transform: rotate(-27deg); animation-timing-function: ease-in-out; }
+  100% { transform: rotate(-22deg); }
+}
+
+/* GAVEL. A shorter, tidier version of the hammer: less wind-up, no follow-through past the work.
+   The reviewer taps, it does not demolish. */
+@keyframes gs-swing-gavel {
+  0% { transform: rotate(-13deg); animation-timing-function: cubic-bezier(0.25, 0.6, 0.4, 1); }
+  18% { transform: rotate(-73deg); animation-timing-function: cubic-bezier(0.35, 0, 0.7, 1); }
+  30% { transform: rotate(-80deg); animation-timing-function: cubic-bezier(0.72, 0, 0.9, 0.6); }
+  40% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.15, 0.7, 0.4, 1); }
+  46% { transform: rotate(-10deg); animation-timing-function: ease-in-out; }
+  58% { transform: rotate(-5deg); animation-timing-function: ease-in-out; }
+  76% { transform: rotate(-16deg); animation-timing-function: ease-in-out; }
+  100% { transform: rotate(-13deg); }
+}
+
+/* WRENCH. Not a swing at all: set the jaw on the bolt, haul it round fast, let it slip back a notch,
+   hold, then reset slowly for the next bite. */
+@keyframes gs-swing-wrench {
+  0% { transform: rotate(-41deg); animation-timing-function: cubic-bezier(0.4, 0, 0.7, 1); }
+  10% { transform: rotate(-48deg); animation-timing-function: cubic-bezier(0.5, 0, 0.35, 1); }
+  30% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.2, 0.9, 0.4, 1); }
+  38% { transform: rotate(-7deg); animation-timing-function: ease-in-out; }
+  54% { transform: rotate(-6deg); animation-timing-function: cubic-bezier(0.55, 0, 0.45, 1); }
+  78% { transform: rotate(-41deg); animation-timing-function: ease-in-out; }
+  100% { transform: rotate(-41deg); }
+}
+
+/* SAW. The arm barely moves; the blade does the work, so the stroke lives on the tool. The wrapper
+   <g> has already rotated onto the forearm axis, so a plain translate here runs along the blade
+   rather than across it. */
+@keyframes gs-swing-saw {
+  0% { transform: rotate(-6deg); animation-timing-function: ease-in-out; }
+  30% { transform: rotate(0deg); animation-timing-function: ease-in-out; }
+  62% { transform: rotate(-9deg); animation-timing-function: ease-in-out; }
+  100% { transform: rotate(-6deg); }
+}
+@keyframes gs-saw-stroke {
+  0% { transform: translate(0, 0); animation-timing-function: cubic-bezier(0.35, 0, 0.25, 1); }
+  30% { transform: translate(5.6px, 0); animation-timing-function: cubic-bezier(0.4, 0, 0.3, 1); }
+  62% { transform: translate(-2.4px, 0); animation-timing-function: cubic-bezier(0.4, 0, 0.5, 1); }
+  100% { transform: translate(0, 0); }
+}
+
+/* Secondary motion. Both run on periods derived from the swing but deliberately not a whole multiple
+   of it, so hat and legs drift in and out of phase with the body instead of locking. */
+@keyframes gs-hat-wobble {
+  from { transform: rotate(-2.6deg); }
+  to { transform: rotate(3.2deg); }
+}
+@keyframes gs-legs-kick {
+  from { transform: rotate(-3.4deg); }
+  to { transform: rotate(4.2deg); }
+}
+@keyframes gs-dangle {
+  from { transform: rotate(-15deg); }
+  to { transform: rotate(5deg); }
+}
+@keyframes gs-arm-shouldered {
+  from { transform: rotate(-103deg); }
+  to { transform: rotate(-97deg); }
+}
+/* Finished: sit still, then doff the hat and put it back on. */
+@keyframes gs-hat-tip {
+  0%, 52% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.3, 0.7, 0.3, 1); }
+  60% { transform: rotate(-21deg); animation-timing-function: ease-in-out; }
+  70% { transform: rotate(-24deg); animation-timing-function: cubic-bezier(0.4, 0, 0.3, 1); }
+  82% { transform: rotate(3deg); animation-timing-function: cubic-bezier(0.2, 0.8, 0.4, 1); }
+  90%, 100% { transform: rotate(0deg); }
+}
+
+/* The dropped tool: gravity in, two decaying bounces, then it lies where it fell. */
+@keyframes gs-tool-fall {
+  0% { opacity: 1; transform: translate(0, 0) rotate(0deg); animation-timing-function: cubic-bezier(0.55, 0, 0.85, 0.5); }
+  58% { transform: translate(7px, var(--gs-fall)) rotate(298deg); animation-timing-function: cubic-bezier(0.15, 0.7, 0.4, 1); }
+  70% { transform: translate(10px, calc(var(--gs-fall) - 17px)) rotate(342deg); animation-timing-function: cubic-bezier(0.5, 0, 0.85, 0.5); }
+  83% { transform: translate(14px, var(--gs-fall)) rotate(371deg); animation-timing-function: cubic-bezier(0.15, 0.7, 0.4, 1); }
+  91% { transform: translate(16px, calc(var(--gs-fall) - 5px)) rotate(379deg); animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.5); }
+  100% { opacity: 1; transform: translate(18px, var(--gs-fall)) rotate(383deg); }
+}
+
+/* -------------------------------------------------------------------------- the build ---- */
+
+.gs-root .gs-b-wood { fill: var(--gs-timber); }
+.gs-root .gs-b-beam { stroke: var(--gs-timber); stroke-linecap: round; fill: none; }
+.gs-root .gs-b-bolt { fill: var(--gs-metal); }
+.gs-root .gs-b-ground { stroke: var(--line-strong); stroke-width: 1.4; stroke-dasharray: 5 4; fill: none; }
+.gs-root .gs-b-stake { stroke: var(--gs-timber-dark); stroke-width: 2.4; stroke-linecap: round; fill: none; }
+.gs-root .gs-b-pane { fill: color-mix(in oklch, var(--accent) 16%, transparent); stroke: var(--gs-timber-dark); stroke-width: 1.6; }
+.gs-root .gs-b-mullion { stroke: var(--gs-timber-dark); stroke-width: 1.6; fill: none; }
+.gs-root .gs-b-door { fill: var(--gs-timber-dark); stroke: var(--gs-timber); stroke-width: 1.6; }
+.gs-root .gs-b-pole { stroke: var(--gs-timber-dark); stroke-width: 1.8; stroke-linecap: round; fill: none; }
+.gs-root .gs-b-pennant { fill: var(--accent); }
+
+/* A piece lands rather than fades: it drops the last few units and settles with a small overshoot,
+   pivoting on its own base so it looks placed onto the frame below it. */
+.gs-root .gs-b-piece {
+  opacity: 0;
+  transform: translateY(-7px) scale(0.94);
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  transition: opacity 200ms ease, transform 380ms cubic-bezier(0.2, 1.6, 0.4, 1);
+}
+.gs-root .gs-b-piece.gs-on { opacity: 1; transform: none; }
+/* Re-posing a whole board at once must not animate thirteen pieces flying in per card. */
+.gs-root .gs-plot.gs-instant .gs-b-piece { transition: none; }
+
+/* The piece he was working on when it went wrong: it lets go and leans. */
+.gs-root .gs-b-piece.gs-snapped {
+  transform: rotate(11deg) translateY(2px);
+  transform-origin: 12% 100%;
+  filter: saturate(0.35) brightness(0.78);
+  transition: transform 620ms cubic-bezier(0.3, 1.2, 0.5, 1), filter 620ms ease;
+}
+.gs-root .gs-plot.gs-plot-failed { filter: saturate(0.72); }
+.gs-root .gs-plot.gs-plot-done .gs-b-piece.gs-on { filter: drop-shadow(0 0 7px color-mix(in oklch, var(--ok) 34%, transparent)); }
+.gs-root .gs-plot.gs-plot-done .gs-b-flag {
+  animation: gs-flag 1.9s ease-in-out infinite alternate;
+  transform-box: fill-box;
+  transform-origin: 0% 50%;
+}
+@keyframes gs-flag {
+  from { transform: skewY(-3.5deg) scaleX(0.97); }
+  to { transform: skewY(4deg) scaleX(1); }
+}
+
+/* ---------------------------------------------------------------- narrower viewports ---- */
+
+/* Fewer, tighter lanes rather than a squeezed six: the build plot is what carries the progress, so
+   it keeps its size and the gutters give way first. */
+@media (max-width: 1100px) {
+  .gs-root .gs-cards { gap: 24px; padding: 0 20px; }
+  .gs-root .gs-card { min-width: 168px; }
+}
+@media (max-width: 760px) {
+  .gs-root .gs-cards { gap: 14px; padding: 0 12px; }
+  .gs-root .gs-card { min-width: 128px; padding: 9px 10px 8px; }
+  .gs-root .gs-ws, .gs-root .gs-activity { display: none; }
+}
+
+/* Motion is the whole point here, so reduced motion keeps the staging and the poses (the gnome
+   still hangs at the right depth on the right rope, and the right timbers are up) and drops only
+   the loops. The render loop stops too, so this is belt and braces rather than the only guard. */
+@media (prefers-reduced-motion: reduce) {
+  .gs-root,
+  .gs-root .gs-card,
+  .gs-root .gs-hint,
+  .gs-root .gs-sway,
+  .gs-root .gs-recoil,
+  .gs-root .gs-arm,
+  .gs-root .gs-hat,
+  .gs-root .gs-legs,
+  .gs-root .gs-tool,
+  .gs-root .gs-sparks circle,
+  .gs-root .gs-dropped,
+  .gs-root .gs-plot.gs-plot-done .gs-b-flag {
+    animation: none !important;
+  }
+  .gs-root .gs-b-piece { transition: opacity 120ms linear; }
+}
