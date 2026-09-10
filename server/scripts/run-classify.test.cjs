@@ -6,7 +6,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { classifyRun, CLASSES, ROLE_TURN_CEILING } = require("./probe-run-errors.cjs");
+const { classifyRun, CLASSES, ROLE_TURN_CEILING, explainedPark } = require("./probe-run-errors.cjs");
 
 const run = (over) => ({ role: "implementor", state: "error", error: "", num_turns: null, ...over });
 const is = (expected, over, why) => assert.equal(classifyRun(run(over)), expected, why);
@@ -152,5 +152,50 @@ for (const role of Object.keys(ROLE_TURN_CEILING)) {
 // director is deliberately absent — it sets no maxTurns, so it genuinely has no ceiling to hit.
 assert.equal(declared.director, undefined, "director is expected to be unbounded in roles.ts");
 assert.equal(ROLE_TURN_CEILING.director, undefined, "an unbounded role must NOT be given a ceiling");
+
+// --- the recovery check's park allowlist: two probes, one verdict per task -------------------------
+// The recovery check asks "did the handling mechanism actually run?", and answers ⚠ for any owed-work task
+// with no follow-up run whose park text it does not recognise. A park that is a DELIBERATE stop has no
+// mechanism owing it anything, so a missing entry here reports a by-design park as a defect — and worse,
+// disagrees with probe-parks about the same task inside one sweep (2026-09-10: the hard-deadline park on
+// task 6dc961fa read "by design" in step 4 and "nothing is waiting to resume it" in step 3).
+{
+  const DEADLINE_PARK =
+    "⏰ Hard deadline reached at 10/09/2026, 03.17.00. All live agents were stopped and automatic dispatch/resume is blocked. " +
+    "The run trail, saved session, handoff, partial files and commits are preserved.";
+  assert.ok(
+    explainedPark(DEADLINE_PARK),
+    "the operator's hard-deadline park is a deliberate stop — probe-parks gives it no stale-recovery flag, so this check must not raise one either",
+  );
+  // The deadline marker can carry the PRIOR park's text appended beneath it (expireActiveDeadline appends
+  // whatever the task was reporting). classifyPark ranks the marker first; this must inherit that ordering.
+  assert.ok(
+    explainedPark(`${DEADLINE_PARK}\n\nThe task was previously reporting: needs your review.`),
+    "a deadline stop that interrupted another park is still a deliberate stop",
+  );
+  // The direction that must never regress: an unrecognised park is still a finding, not a silent pass.
+  assert.equal(
+    explainedPark("Run failed (error_during_execution)."),
+    undefined,
+    "an unexplained park must stay a finding — this allowlist is not allowed to swallow one",
+  );
+  assert.equal(explainedPark(null), undefined, "no park text is not an explanation");
+  assert.ok(explainedPark("⏳ Auto-resume pending — every backend is capped."), "the cap park is owned by resumeCapParked");
+}
+
+// --- health's junk-office-chat warn: agent bridge output only ---------------------------------------
+// It exists to catch the CLI office BRIDGE truncating a claim ("claimi") or posting a bare "\n". The
+// directors' room is the room for PEOPLE, where a 3-character line is an ordinary message, so counting it
+// made the warn fire on the owner's own chat and stop meaning anything.
+{
+  const healthSrc = fs.readFileSync(path.resolve(__dirname, "nightly-health.cjs"), "utf8");
+  const junkQuery = healthSrc.match(/SELECT count\(\*\) c FROM chat_messages[\s\S]*?`/)?.[0];
+  assert.ok(junkQuery, "could not find the junk-chat query in nightly-health.cjs");
+  assert.match(
+    junkQuery,
+    /scope[\s\S]*?<>\s*'directors'/,
+    "the junk-office-chat warn must exclude scope='directors' — human lines there are not office-bridge output",
+  );
+}
 
 console.log("runClassify: all assertions passed");

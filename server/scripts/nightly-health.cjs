@@ -528,10 +528,16 @@ async function main() {
       if (lost.otherFailure) warn(`${lost.otherFailure} failed thread(s) with text no class recognizes — ${NAME_THEM}`);
       if (lost.clickResume) ok(`${lost.clickResume} restart casualt(ies) handed back for a Resume click, not stuck`);
 
+      // What this looks for is the CLI office BRIDGE truncating an agent's claim mid-word ("claimi") or
+      // posting a bare "\n" — a defect that only exists on agent chat. `scope='directors'` is the room for
+      // the PEOPLE running the consoles, where "LOL" and "hallå" are ordinary human messages, so counting
+      // it warned every night the owner typed a short line (4 such rows on 2026-09-10) and trained the
+      // reader to skim a warn that is supposed to mean a real extractor bug.
       const junkChat = db
         .prepare(
           `SELECT count(*) c FROM chat_messages
-           WHERE created_at > ? AND (body = '\\n' OR body = 'claimi' OR length(body) BETWEEN 1 AND 6)`,
+           WHERE created_at > ? AND COALESCE(scope, '') <> 'directors'
+             AND (body = '\\n' OR body = 'claimi' OR length(body) BETWEEN 1 AND 6)`,
         )
         .get(since);
       if (junkChat?.c) warn(`${junkChat.c} suspicious short/junk office chat body(ies) in 24h`);

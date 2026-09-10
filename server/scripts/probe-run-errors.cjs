@@ -29,6 +29,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 const { ceilingEconomics } = require("./ceiling-economics.cjs");
+const { classifyPark } = require("./probe-parks.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const DB_PATH = path.resolve(SERVER_DIR, "data", "orchestrator.sqlite");
@@ -167,7 +168,7 @@ function classifierDisagreements(classified) {
   return { unrecognizedByRunner, unrecognizedByProbe };
 }
 
-module.exports = { classifyRun, CLASSES, ROLE_TURN_CEILING, classifierDisagreements };
+module.exports = { classifyRun, CLASSES, ROLE_TURN_CEILING, classifierDisagreements, explainedPark };
 
 // ---- CLI ----
 
@@ -353,6 +354,36 @@ function reportCapAgreement(buckets) {
 // a benign-looking cap or restart as the last thing that happened is a task that stopped mid-work.
 const OWED_WORK_STATES = new Set(["review", "failed"]);
 
+// Most "never ran again" tasks are waiting on a PERSON by design, and the thread's own park text says which.
+// Only an unexplained one is a finding — flagging the by-design parks with ⚠ too is what trains a reader to
+// skim the check, which is how the tree-killed row went unnoticed in the first place. Module-scoped so
+// run-classify.test.cjs can pin it: a park class that silently stops being recognised here re-earns that ⚠.
+function explainedPark(threadError) {
+  const e = String(threadError || "");
+  if (e.includes("⏳ Auto-resume pending")) return "cap-supervisor park — resumeCapParked owns it";
+  // The operator's hard deadline is a DELIBERATE stop: dispatch and resume are blocked on purpose, so
+  // nothing was ever supposed to run again. probe-parks already treats it that way and deliberately
+  // gives it no stale-recovery flag (parks-classify.test.cjs) — flagging it here made step 3 and step 4
+  // of the same sweep disagree about the same task, which is exactly what this allowlist exists to stop.
+  // Classified through probe-parks so the literal stays pinned in ONE place, against threadManager.ts.
+  if (classifyPark(e).key === "deadline") return "operator hard-deadline park — a deliberate stop; extend/clear the clock, then Resume";
+  // A QA round that ended without a verdict parks for a person BY DESIGN. An involuntary stop there is
+  // recovered first — a turn-ceiling cutoff is continued (bounded by qaCutoffResumes), an empty run is
+  // re-run fresh (qaSilentRetries) — so a park naming a spent budget means the mechanism ran and gave up,
+  // not that nothing tried. health counts these separately as its own warn.
+  if (/QA could not complete/i.test(e)) {
+    if (/cut off again each time/i.test(e)) return "QA park — the reviewer's continuation budget is spent, awaiting the owner";
+    if (/restarted on a fresh session/i.test(e)) return "QA park — the reviewer came back empty and its fresh-session retry is spent, awaiting the owner";
+    return "QA park — QA ended without a verdict, awaiting the owner";
+  }
+  // An auto-review that reached no verdict re-parks the task BY DESIGN — an absent decision is never an
+  // acceptance. Its involuntary stops are recovered first (a cutoff continues the session, an empty run
+  // starts over), so a park here means the recovery ran and the button is the owner's again.
+  if (/Auto-review (?:couldn't|could not) reach a verdict/i.test(e)) return "auto-review park — no verdict reached, back on the owner's desk";
+  if (/interrupted by (?:a )?server restart/i.test(e)) return "human-gated park after a restart — Resume continues it";
+  return undefined;
+}
+
 function reportRecovery(db, buckets) {
   // `>=` with the id excluded rather than `>`, so a sibling run created in the same millisecond still counts
   // as a follow-up instead of reading as a stall.
@@ -369,31 +400,9 @@ function reportRecovery(db, buckets) {
     console.log("  ✓ every task that still owed work ran again after its cap/restart/retry.");
     return;
   }
-  // Most "never ran again" tasks are waiting on a PERSON by design, and the thread's own park text says which.
-  // Only an unexplained one is a finding — flagging the by-design parks with ⚠ too is what trains a reader to
-  // skim the check, which is how the tree-killed row went unnoticed in the first place.
-  const explained = (threadError) => {
-    const e = String(threadError || "");
-    if (e.includes("⏳ Auto-resume pending")) return "cap-supervisor park — resumeCapParked owns it";
-    // A QA round that ended without a verdict parks for a person BY DESIGN. An involuntary stop there is
-    // recovered first — a turn-ceiling cutoff is continued (bounded by qaCutoffResumes), an empty run is
-    // re-run fresh (qaSilentRetries) — so a park naming a spent budget means the mechanism ran and gave up,
-    // not that nothing tried. health counts these separately as its own warn.
-    if (/QA could not complete/i.test(e)) {
-      if (/cut off again each time/i.test(e)) return "QA park — the reviewer's continuation budget is spent, awaiting the owner";
-      if (/restarted on a fresh session/i.test(e)) return "QA park — the reviewer came back empty and its fresh-session retry is spent, awaiting the owner";
-      return "QA park — QA ended without a verdict, awaiting the owner";
-    }
-    // An auto-review that reached no verdict re-parks the task BY DESIGN — an absent decision is never an
-    // acceptance. Its involuntary stops are recovered first (a cutoff continues the session, an empty run
-    // starts over), so a park here means the recovery ran and the button is the owner's again.
-    if (/Auto-review (?:couldn't|could not) reach a verdict/i.test(e)) return "auto-review park — no verdict reached, back on the owner's desk";
-    if (/interrupted by (?:a )?server restart/i.test(e)) return "human-gated park after a restart — Resume continues it";
-    return undefined;
-  };
   let unexplained = 0;
   for (const s of stalled) {
-    const why = explained(s.run.thread_error);
+    const why = explainedPark(s.run.thread_error);
     if (why) {
       console.log(`  · by design: task ${String(s.run.thread_id).slice(0, 8)} [${s.run.thread_state}] — ${why}`);
       continue;
