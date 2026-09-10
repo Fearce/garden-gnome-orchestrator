@@ -351,7 +351,7 @@ function printWaiting(coordinator) {
   log(`\n⏸ restart WAITING — ${coordinator.reason}`);
   if (coordinator.activeWork != null) {
     log(`  dist is built and stamped; GGO restarts itself as soon as its current agent work finishes.`);
-    log(`  fresh agent starts pause during the drain; ${coordinator.staged} staged build(s) ride the restart.`);
+    log(`  on the current coordinator, fresh work continues until the idle restart begins; ${coordinator.staged} staged build(s) ride the restart.`);
   } else {
     // One-release compatibility: the old live server may answer while this coordinator is installed.
     log(`  dist is built and stamped; the older server scheduled its restart for ${coordinator.readyAtLabel} (in ${coordinator.waitLabel}).`);

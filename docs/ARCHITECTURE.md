@@ -49,12 +49,13 @@ process differs per deployment — the script-hub's atomic `/api/restart` under 
 Windows, `scripts/supervise.cjs` and a clean exit with code 75 under `npm run serve` — so
 `selfRestart.ts` is the single place that knows which, shared by the update badge and the
 restart coordinator. The supervisor still tree-kills the server and its CLI children, so every
-**planned** restart (agent deploy or owner update) first drains current task pipelines, Co-worker turns,
-Director turns, and Supervisor work. The coordinator's admission latch queues fresh task dispatches;
-refuses fresh resume, Auto-review, capacity-wakeup, and Co-worker starts; and records a clear rejection
-for new Director/Supervisor chats while existing work reaches its normal completion boundary. Steering
-existing agents stays live. When active work reaches zero, the
-coordinator fires immediately — there is no time-based escape hatch and no hourly restart limit.
+**planned** restart (agent deploy or owner update) waits for idle task pipelines, Co-worker turns,
+Director turns, and Supervisor work. Pending builds never block fresh dispatch, resume, Auto-review,
+capacity wakeups, Co-worker turns, or Director/Supervisor chats. When active work reaches zero, the
+coordinator synchronously closes admission and fires the restart. Only that brief actual bounce queues
+fresh task dispatches and refuses other fresh starts. Newly admitted work is counted too, so finishing
+the original QA cannot interrupt a newer task. There is no time-based escape hatch or hourly restart
+limit. Even the first refused restart releases admission while its retry waits.
 The pending build list lives in kv so several staged builds ride the same restart and a failed hub call
 can retry without losing them. A pending restart whose build some other bounce already loaded is
 dropped at boot and queued work is released. `/api/version` exposes both the admission latch and whether

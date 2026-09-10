@@ -459,7 +459,7 @@ export class SupervisorChat {
     if (!this.canStart()) {
       const rejected = this.host.db.updateSupervisorChatTurn(turn.id, {
         status: "failed",
-        response: "GGO is waiting for its active agents to finish before a planned restart. This message is saved, but no Supervisor agent or task action was started; resend it after GGO reloads.",
+        response: "GGO is performing a planned restart now. This message is saved, but no Supervisor agent or task action was started; resend it once the console reconnects.",
       }) ?? turn;
       this.onChange();
       return rejected;

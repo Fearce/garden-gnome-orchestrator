@@ -6,9 +6,9 @@ import { restartSelf, type RestartAttempt } from "../selfRestart.js";
  * Coordinates planned server restarts with the agents that server owns.
  *
  * The process supervisor tree-kills the server and its CLI children. A restart is therefore safe only
- * after the current task, Co-work, Director, and Supervisor cohort has finished. Once a restart is
- * requested, callers use `isDraining()` as an admission lock: existing work may run through its normal
- * completion boundary, while fresh agent starts wait until the new process is live. There is no
+ * when task, Co-work, Director, and Supervisor work is idle. A pending deployment does NOT block new
+ * work: an hours-long QA run must not freeze the entire console. `isDraining()` closes admission only
+ * after an idle restart is committed, through its settle delay and supervisor call. There is no
  * elapsed-time escape hatch. An active agent is never traded for a faster deploy.
  *
  * The pending record is durable because the operation it represents destroys the in-memory timer that
@@ -117,19 +117,7 @@ const LEGACY_PENDING_KEY = "deploy_gate_pending";
 const MAX_REQUESTERS = 20;
 const RETRY_BASE_MS = 5 * 60_000;
 const RETRY_MAX_MS = 30 * 60_000;
-/**
- * Consecutive refused restarts after which the coordinator alerts the owner AND stops holding fresh work
- * out *between* retry attempts.
- *
- * A restart mechanism that has refused this many times is broken rather than busy — an elevated :4317
- * listener (see CLAUDE.md), a dead script-hub, no supervisor at all — and it can stay broken until a
- * human intervenes. Holding the admission lock through that freezes the whole console: no dispatch, no
- * resume, no Auto-review, no Director or Co-work turn, including the agent that would repair it.
- *
- * So past this count the lock releases during the backoff and closes again the moment the next attempt is
- * due, which still lets the board drain for that attempt. The staged builds are kept either way, and a
- * restart still only fires at zero active work — no agent is interrupted in any of these states.
- */
+/** Repeated refusals alert the owner; even the first refusal releases admission during backoff. */
 const FAILURES_BEFORE_ALERT = 3;
 
 export class RestartCoordinator {
@@ -173,15 +161,13 @@ export class RestartCoordinator {
     const decision = decideRestart({ activeWork: active, now, retryAt: pending.retryAt });
     this.hub.log(
       "info",
-      !holdsAdmission(pending, now)
-        ? `restart coordinator: ${pending.requesters.length} staged build(s) retry at ${clock(pending.retryAt!)}; fresh work may start meanwhile`
-        : active > 0
-        ? `restart coordinator: ${pending.requesters.length} staged build(s) waiting for ${countWork(active)} to finish`
+      active > 0
+        ? `restart coordinator: ${pending.requesters.length} staged build(s) waiting for idle; fresh work may start meanwhile`
         : decision.allow
           ? `restart coordinator: ${pending.requesters.length} staged build(s) are ready to restart`
           : `restart coordinator: ${pending.requesters.length} staged build(s) retry at ${clock(decision.retryAt!)}`,
     );
-    if (!holdsAdmission(pending, now)) this.onDrainReleased();
+    this.onDrainReleased();
     this.arm();
   }
 
@@ -191,19 +177,12 @@ export class RestartCoordinator {
 
   /** Admission lock shared by every agent entry point. It remains true through the settle delay. */
   isDraining(): boolean {
-    if (this.firing) return true;
-    try {
-      const pending = this.pending();
-      return pending !== null && holdsAdmission(pending, Date.now());
-    } catch {
-      // Losing the coordination read must never become permission to launch into a possible restart.
-      return true;
-    }
+    return this.firing;
   }
 
   /**
-   * True while any coordinated restart is owed, even if the admission latch has temporarily reopened
-   * between repeated refused attempts. UI clients use this to avoid loading a staged web bundle against
+   * True while any coordinated restart is owed, including while fresh work continues. UI clients use
+   * this to avoid loading a staged web bundle against
    * the old in-memory server API before the pending bounce has landed.
    */
   hasPendingRestart(): boolean {
@@ -218,7 +197,7 @@ export class RestartCoordinator {
 
   /** Release paths call this to avoid waiting for the fallback poll interval. */
   workChanged(): void {
-    if (!this.isDraining() || this.firing) return;
+    if (!this.hasPendingRestart() || this.firing) return;
     this.clearTimer();
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -238,7 +217,7 @@ export class RestartCoordinator {
       decision,
       pending,
       pendingLabel: pending ? pendingStatus(decision, activeWork, now) : null,
-      draining: this.firing || (pending !== null && holdsAdmission(pending, now)),
+      draining: this.firing,
     };
   }
 
@@ -349,8 +328,8 @@ export class RestartCoordinator {
   ): void {
     this.hub.log("info", `restart coordinator: holding ${describe(requester)} — ${decision.reason}`);
     const message = activeWork > 0
-      ? `${countWork(activeWork)} will finish before GGO restarts. Fresh agent starts are paused; ${pending.requesters.length} staged build(s) will ride the restart.`
-      : `The prior restart was refused. GGO will retry at ${clock(decision.retryAt!)}; staged builds remain queued.`;
+      ? `GGO will restart when idle. You can continue starting and resuming work; ${pending.requesters.length} staged build(s) will ride the restart.`
+      : `The prior restart was refused. GGO will retry at ${clock(decision.retryAt!)} when idle; you can continue working meanwhile.`;
     this.hub.publish({
       type: "notice",
       level: "info",
@@ -431,7 +410,7 @@ export class RestartCoordinator {
       failures,
       retryAt: Date.now() + retryIn,
     };
-    // Restore the durable admission lock synchronously before exposing `firing=false` to another turn.
+    // Preserve the staged builds before reopening admission after the refused attempt.
     this.savePending(pending);
     this.inFlight = null;
     this.firing = false;
@@ -444,12 +423,8 @@ export class RestartCoordinator {
         message: `GGO has ${requesters.length} staged build(s) it cannot deploy: ${attempt.detail}. New agent work runs again meanwhile; the restart retries on its own.`,
       });
     }
-    if (!holdsAdmission(pending, Date.now())) {
-      // The mechanism is refusing rather than busy. Let queued work start instead of freezing the board
-      // on a bounce that is not coming; admission closes again when the next attempt is due.
-      this.hub.log("warn", `restart coordinator: ${failures} refused restarts — releasing the hold on fresh work until the next attempt`);
-      this.onDrainReleased();
-    }
+    this.hub.log("warn", `restart coordinator: restart refused — fresh work may start while the idle retry waits`);
+    this.onDrainReleased();
     this.arm();
   }
 
@@ -512,12 +487,6 @@ function pendingStatus(decision: RestartDecision, activeWork: number, now: numbe
     return `${clock(decision.retryAt)} (retry in ${duration(decision.retryAt - now)})`;
   }
   return "ready to restart";
-}
-
-function holdsAdmission(pending: PendingRestart, now: number): boolean {
-  if (pending.failures < FAILURES_BEFORE_ALERT) return true;
-  if (pending.retryAt == null) return true;
-  return pending.retryAt <= now;
 }
 
 function countWork(n: number): string {

@@ -114,7 +114,7 @@ export class Director {
     // kill. Steering an already-busy Director remains allowed and simply extends that drained turn.
     if (this.restartDrainActive() && !this.busy) {
       this.postDirectorNote(
-        "GGO is waiting for its active agents to finish before a planned restart. This message is saved in the chat but was not sent to a model; resend it after GGO reloads.",
+        "GGO is restarting now. This message is saved in the chat but was not sent to a model; resend it once the console reconnects.",
       );
       return;
     }

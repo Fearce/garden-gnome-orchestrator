@@ -148,8 +148,8 @@ async function main(): Promise<void> {
   const ide = new IdeService(db, dirname(config.serverRoot));
   const codeContext = new CodeContextService(db, ide);
   // A process bounce tree-kills every CLI child. The restart coordinator therefore makes all planned
-  // deploy/update restarts wait for the CURRENT task, Co-work, Director, and Supervisor cohort to
-  // settle, while its admission latch keeps fresh work out. There is no hourly escape hatch.
+  // deploy/update restarts wait for idle task, Co-work, Director, and Supervisor work. Fresh work stays
+  // available while a build waits; admission closes only when the actual idle restart begins.
   const restartCoordinator = new RestartCoordinator({
     db,
     hub,
@@ -314,7 +314,7 @@ async function main(): Promise<void> {
 
     // ---- planned restart coordination (legacy /api/deploy/* path kept for script compatibility) ----
     // `npm run deploy` posts here instead of calling the script-hub directly. The coordinator owns the
-    // bounce and waits for all current agent work to settle; fresh work is held out by its admission lock.
+    // bounce and waits for all agent work to settle; only the actual bounce holds out fresh work.
     //
     // Loopback-or-authed rather than cookie-only: the caller is a local child process with no session,
     // and any local process could already POST the script-hub's own restart — so this is a coordination

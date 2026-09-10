@@ -144,8 +144,8 @@ Gates `test:cowork`, `test:cowork-ui`, `test:cowork-health`. Traps: `.claude/rul
 **If you changed server code, you deploy it before handing off — by restarting the orchestrator
 yourself, in the same turn. Do NOT end a turn with "needs a restart to go live" or ask the owner
 to restart.** `npm run deploy --prefix server` stages the build with GGO's restart coordinator. If
-agents are active, they finish first and fresh starts pause; the server restarts as soon as the current
-cohort settles. A waiting restart is a completed deploy handoff, not permission to call the hub directly.
+agents are active, they finish normally and fresh work remains available; the server restarts when all
+work is idle. A waiting restart is a completed deploy handoff, not permission to call the hub directly.
 
 How to restart depends on how it's running:
 
@@ -172,8 +172,9 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   `test:deploy-plan`.
 - **`restart WAITING` is a FINISHED deploy — never route around it.** `deploy` asks the running server
   (`POST :4317/api/deploy/restart`), not the hub. `orchestrator/restartCoordinator.ts` holds every planned
-  restart while any task, Co-worker, Director, or Supervisor work is active, pauses fresh agent starts,
-  then fires immediately at zero active work. There is no hourly restart limit or elapsed-time override.
+  restart while any task, Co-worker, Director, or Supervisor work is active, allows fresh agent starts,
+  then closes admission only for the actual bounce at zero active work. Pending builds and refused
+  restarts must never freeze GGO. There is no hourly restart limit or elapsed-time override.
   Owner update-badge restarts use the same drain. Waiting exits 0; `--verify` reports `BUILT and STAGED`,
   also 0. Gate: `test:restart-drain`.
   By hand it is `POST http://127.0.0.1:3939/api/restart {"id":"claude-orchestrator"}` (atomic: runs in the

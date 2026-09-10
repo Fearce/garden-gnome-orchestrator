@@ -292,7 +292,7 @@ export class CoworkManager {
       return {
         ok: false,
         session,
-        error: "GGO is waiting for active agents to finish before restarting. Send this turn after it comes back.",
+        error: "GGO is restarting now. Send this turn once the console reconnects.",
       };
     }
     const attachmentError = validateCoworkAttachments(attachments);

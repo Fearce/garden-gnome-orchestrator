@@ -5131,7 +5131,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.setState(threadId, "queued");
       const reason =
         restartFull
-          ? "GGO is waiting for its current agents to finish before restarting"
+          ? "GGO is restarting now; this task will start after reconnecting"
           : coworkFull && !globalFull
           ? "a Co-worker turn is active in this repo"
           : repoFull && !globalFull
@@ -10353,7 +10353,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       return {
         ok: false,
         state: thread.state,
-        error: "GGO is waiting for active agents to finish before restarting. Resume this task after it comes back.",
+        error: "GGO is restarting now. Resume this task once the console reconnects.",
       };
     }
     // QA-stage gate — mirror injectThread's, routing included: during the QA stage the implementor is
@@ -10830,7 +10830,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       return {
         ok: false,
         state: thread.state,
-        error: "GGO is waiting for active agents to finish before restarting. Start Auto-review after it comes back.",
+        error: "GGO is restarting now. Start Auto-review once the console reconnects.",
       };
     }
     if (this.deadlineParked(thread)) {

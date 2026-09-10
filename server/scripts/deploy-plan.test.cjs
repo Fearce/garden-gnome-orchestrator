@@ -213,7 +213,7 @@ async function restartRouting() {
     const out = capture(() => printWaiting(WAITING));
     check("it says WAITING, not failed", /restart WAITING/.test(out) && !/✗/.test(out));
     check("it says active agents finish first", /current agent work finishes/.test(out));
-    check("it says fresh starts pause", /fresh agent starts pause/.test(out));
+    check("it says fresh work continues until the idle restart", /fresh work continues until the idle restart begins/.test(out));
     check("it says how many builds ride the restart", /2 staged build\(s\)/.test(out));
     check("it forbids the by-hand restart explicitly", /Do NOT restart through the hub/.test(out));
     check("it points at --verify for confirmation", /--verify/.test(out));

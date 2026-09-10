@@ -94,7 +94,8 @@ async function main(): Promise<void> {
   const first = coordinator.request({ label: "task A", commit: "aaaaaaa", stampedAt: now });
   check("one active task is enough to defer", first.outcome === "deferred" && first.activeWork === 1);
   check("a normal drain has no fake clock deadline", first.readyAt === null && /active work/.test(first.waitLabel));
-  check("the admission lock is active immediately", coordinator.isDraining());
+  check("a pending deploy leaves fresh work available", !coordinator.isDraining() && !coordinator.status().draining);
+  check("the pending build remains visible to clients", coordinator.hasPendingRestart());
   const second = coordinator.request({ label: "task B", commit: "bbbbbbb", stampedAt: now + 1 });
   check("a second build joins the same durable restart", second.outcome === "deferred" && second.staged === 2);
   await sleep(80);
@@ -188,16 +189,17 @@ async function main(): Promise<void> {
     const pending = JSON.parse(raw) as { failures?: number; requesters?: unknown[] };
     return pending.failures === 1 && pending.requesters?.length === 1;
   }));
-  check("fresh work remains blocked during early retry backoff", refusing.isDraining() && refusalReleases === 0);
+  check("the first refusal releases fresh work immediately", !refusing.isDraining() && refusalReleases === 1);
   retryNow();
   check("the second refused attempt ran", await waitFor(() => attempts === 2));
-  check("fresh work still remains blocked before the alert threshold", refusing.isDraining() && refusalReleases === 0);
+  check("the second refusal also leaves fresh work available", !refusing.isDraining() && refusalReleases === 2);
   retryNow();
   check("the third refused attempt ran", await waitFor(() => attempts === 3));
-  check("fresh work is released during repeated-refusal backoff", !refusing.isDraining() && !refusing.status().draining && refusalReleases === 1);
+  check("fresh work is released during repeated-refusal backoff", !refusing.isDraining() && !refusing.status().draining && refusalReleases === 3);
   check("the pending restart remains visible while admission is released", refusing.hasPendingRestart() && refusing.status().pending !== null);
   retryNow();
-  check("a due retry closes admission and can later complete", refusing.isDraining() && await waitFor(() => attempts === 4));
+  check("a due retry leaves admission open until the idle restart is committed", !refusing.isDraining());
+  check("the committed retry closes admission and completes", await waitFor(() => attempts === 4) && refusing.isDraining());
   refusing.stop();
 
   console.log("\nadmission: fresh task and Co-worker starts pause, existing cohorts remain countable");
@@ -293,6 +295,50 @@ async function main(): Promise<void> {
   const created = cowork.create({ workspace });
   const coworkStart = cowork.send(created.session!.id, "new turn");
   check("fresh Co-worker turn is refused before provider preparation", !coworkStart.ok && /restarting/.test(coworkStart.error ?? ""));
+
+  console.log("\nregression: a long QA and pending deployment do not freeze unrelated owner work");
+  db.kvSet(PENDING_KEY, "");
+  const qaTask = db.createThread({ title: "long QA", workspace, rawPrompt: "verify" });
+  const qaRun = db.createRun({ threadId: qaTask.id, role: "qa", model: "test-model" });
+  let idleRestarts = 0;
+  const available = new RestartCoordinator({
+    db, hub,
+    activeWork: () => manager.activeWorkCount() + director.activeWorkCount(),
+    pollMs: 60_000, // workChanged must wake it; a fast poll cannot hide a missed idle transition.
+    settleMs: 30,
+    restart: async () => { idleRestarts++; return { route: "hub", ok: true, detail: "accepted" }; },
+  });
+  manager.attachRestartDrain(() => available.isDraining(), () => available.workChanged());
+  director.attachRestartDrain(() => available.isDraining(), () => available.workChanged());
+  available.request({ label: "deploy during QA", stampedAt: Date.now() });
+  const ownerTask = db.createThread({ title: "owner needs work now", workspace, rawPrompt: "work" });
+  manager.enqueueOrRun(ownerTask.id);
+  check("fresh dispatch reaches the pipeline while QA keeps the restart pending", started.includes(ownerTask.id));
+  const resumed: string[] = [];
+  manager.resumeImplementorOnly = async (thread: { id: string }): Promise<void> => { resumed.push(thread.id); };
+  const ownerResume = await manager.resumeThread(parked.id, "finish my saved work", true);
+  check("manual resume is accepted while the same restart is pending", ownerResume.ok && resumed.includes(parked.id));
+  manager.resuming.delete(parked.id);
+  let directorStarted = false;
+  directorInternals.start = async (): Promise<void> => { directorStarted = true; };
+  director.handleUserMessage("Start another task while QA works", workspace);
+  check("Director prompts reach the runner during the pending deployment", directorStarted);
+  const ownerRun = db.createRun({ threadId: ownerTask.id, role: "implementor", model: "test-model" });
+  db.updateRun(qaRun.id, { state: "done", endedAt: Date.now() });
+  available.workChanged();
+  await sleep(50);
+  check("finishing the original QA cannot kill newly admitted work", idleRestarts === 0 && !available.isDraining());
+  db.updateRun(ownerRun.id, { state: "done", endedAt: Date.now() });
+  available.workChanged();
+  await sleep(50);
+  check("the accepted Director turn is also protected until it finishes", idleRestarts === 0 && !available.isDraining());
+  directorInternals.setBusy(false);
+  check("the eventual idle boundary starts the staged restart without waiting for the poll", await waitFor(() => available.isDraining()));
+  const duringRestart = db.createThread({ title: "arrived during bounce", workspace, rawPrompt: "work" });
+  manager.enqueueOrRun(duringRestart.id);
+  check("only the actual bounce queues fresh work", db.getThread(duringRestart.id)?.state === "queued" && !started.includes(duringRestart.id));
+  check("one restart pays the staged deployment", await waitFor(() => idleRestarts === 1));
+  available.stop();
 
   console.log("\nboundary: local deploy callers are accepted, LAN callers are not");
   check("IPv4 loopback", isLoopbackAddress("127.0.0.1"));

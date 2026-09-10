@@ -61,7 +61,7 @@ posts one handoff and leaves later revisions with the owner instead of restartin
 **If you changed server code, you deploy it before handing off — by restarting the orchestrator
 yourself, in the same turn. Do NOT end a turn with "needs a restart to go live" or ask the owner
 to restart.** `npm run deploy --prefix server` stages the build with GGO's restart coordinator. Active
-agents finish first and fresh starts pause; the server restarts as soon as the current cohort settles.
+agents finish normally and fresh work remains available; the server restarts when all work is idle.
 A waiting restart is a completed deploy handoff, not permission to call the hub directly.
 
 How to restart depends on how it's running:
@@ -84,8 +84,9 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   bouncing the server again. The script uses the atomic hub restart internally, so it survives the caller
   being killed mid-restart and re-arms keepAlive.
 - **`restart WAITING` is a successful deploy; never bypass it.** Every planned restart waits while any
-  task, Co-worker, Director, or Supervisor work is active. Fresh agent starts pause, existing agents
-  finish normally, and the server bounces immediately at zero active work. There is no hourly restart
+  task, Co-worker, Director, or Supervisor work is active. Fresh agent starts remain available, existing
+  agents finish normally, and the server bounces immediately at zero active work. Only the actual bounce
+  briefly pauses starts; a pending build or refused restart must never freeze GGO. There is no hourly restart
   limit. The committed build is staged, the server owns the bounce, and other staged patches ride it.
   Waiting and `--verify` exit 0.
   A direct script-hub restart bypasses the drain and can kill active agents; reserve it for recovery when

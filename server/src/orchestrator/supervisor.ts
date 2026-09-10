@@ -473,7 +473,7 @@ export class DirectorSupervisor {
   private async runNowInternal(manualOverride: boolean): Promise<void> {
     if (!this.enabled) return;
     if (this.restartDrainActive()) {
-      if (manualOverride) this.host.hub.log("info", "Supervisor Run now skipped because GGO has a planned restart waiting.");
+      if (manualOverride) this.host.hub.log("info", "Supervisor Run now skipped because GGO is restarting now.");
       return;
     }
     if (!manualOverride) {
