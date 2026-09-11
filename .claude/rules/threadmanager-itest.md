@@ -74,6 +74,36 @@ Both gaps above were this — the differences are exactly where lifecycle bugs l
   the settle path's catch swallows into the owner-facing message. Fake the whole shape —
   and leave `result` unset for an SDK error, or it outranks the canned subtype reason.
 
+## A gate that reads the operator's `.env` or the machine's auth is not a gate
+
+It is red on some boxes and green on others, so it gets written off as a "known environment
+failure" and stops being read at all. Both of these sat red for weeks that way, and two separate
+sessions re-diagnosed them to the same non-answer before 2026-09-11 fixed them (`c55c294`):
+
+- **`test:account-usage`** asserted `buildEnv({}).CLAUDE_ORCH_ACCOUNT_ID === undefined`. `buildEnv`
+  falls back to `config.oauthToken` and legitimately re-publishes an identity when that token matches
+  a configured account, so the assertion only holds on a box whose `.env` configures none. Fix: drive
+  it with a token no configuration can match, so the property under test (a stale inherited identity
+  never survives) is asserted the same way everywhere.
+- **`test:director-provider`** did not fail, it CRASHED. `directorTargets` calls `codexAuthAvailable`,
+  which asks the machine (a `~/.codex` ChatGPT login, a seeded isolated `CODEX_HOME`, or a key) and
+  which none of the test's `internals.*` stubs reach. With no Codex login there was no target at all,
+  `configured[0]` was `undefined`, and the file died on a TypeError with three assertions still
+  unexecuted. Fix: seed the seam into the test's OWN throwaway Db (`db.kvSet("openai_api_key", ...)`).
+
+The general rule: **stubbing a ThreadManager method does not stub a module-level function it calls.**
+`codexImplementorReady` and `codexProviderCandidate` are methods and were stubbed; `codexAuthAvailable`
+is an import and was not, which is why the stubs looked complete and the gate still read the box.
+Before adding a gate, ask which of its reads leave the process: `config.*` (the real `.env`, loaded at
+import), `$HOME`, an auth file, a port, the clock. Each one is a machine the gate will be wrong on.
+
+**"Pre-existing, not my diff" is where both earlier sessions stopped, and it is not a stopping point.**
+`bash ~/Claude/tools/gate-blame.sh <npm-script>` answers whose diff it is safely, and for CI
+`gate-ran.sh` separates ran-and-failed from never-ran. Locally the suite now does that last part
+itself: a red gate in the summary is tagged `[reported]`, `[crashed]` or `[silent]`. Read the tag
+before the tail, because for the last two the tail is actively misleading (a stack with no assertion
+in it, or twelve lines of PASSING output). Gate: `test:gates-driver`.
+
 ## Gotchas that cost a run each
 
 - Set env (`MAX_AUTO_RESUMES`, `CAP_RETRY_MS=0`, `ACCOUNT_PING_MS`) BEFORE `config.js`

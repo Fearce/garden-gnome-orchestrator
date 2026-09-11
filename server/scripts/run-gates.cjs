@@ -28,6 +28,11 @@ const ROOT_DIR = path.resolve(SERVER_DIR, "..");
 const TRANSCRIPT = path.join(SERVER_DIR, "data", "gates-last.log");
 // Beside it: what that run COVERED, so a later reader can ask whether the green still holds
 // (`npm run probe:gates`) instead of comparing a log mtime against `git log` by hand.
+// The PREVIOUS run, kept for exactly one generation. The transcript is rewritten in full on every
+// run, so starting a second suite to answer "was that red reproducible?" used to delete the first
+// run failure output before it had been read, and recovering it meant running those gates again
+// (2026-09-11). One rotation costs nothing and makes the compare-two-runs question answerable.
+const PREVIOUS_TRANSCRIPT = path.join(SERVER_DIR, "data", "gates-prev.log");
 const STAMP = path.join(SERVER_DIR, "data", "gates-last.json");
 const BUSY_EXIT_CODE = 75;
 
@@ -216,7 +221,7 @@ function runGate(gate, log) {
       take(`\n! could not start "npm run ${gate}": ${err.message}\n`);
       resolve({ gate, ok: false, ms: Date.now() - started, output });
     });
-    child.on("close", (code) => resolve({ gate, ok: code === 0, ms: Date.now() - started, output }));
+    child.on("close", (code) => resolve({ gate, ok: code === 0, code, ms: Date.now() - started, output }));
   });
 }
 
@@ -277,11 +282,36 @@ function tail(text, n) {
   return lines.slice(-n).join("\n");
 }
 
+// A red gate is three different events that demand different responses, and the summary used to
+// render all three as "last output" plus a 12-line tail. That tail is the END of the run, so for a
+// gate that DIED mid-run it is a stack with no assertion in sight, and for one that exited printing
+// nothing it is twelve passing checks: the two shapes that are not "your diff broke an assertion"
+// are exactly the two the tail describes worst. All three were hit in one evening (2026-09-11):
+// test:account-usage reported failing checks, test:director-provider threw a TypeError with three
+// assertions still unexecuted, and test:route-pipeline exited non-zero having printed only passes.
+// The CI-level version of this distinction is ~/Claude/tools/gate-ran.sh; this is its local half.
+const CRASH_RE = /^[A-Za-z_$][\w.]*Error(?::|\b)|^\s+at\s.+:\d+:\d+\)?\s*$|^Node\.js v/m;
+const REPORTED_RE = /(^|\s)(✗|❌|✘)|\bFAIL\b|\d+ check\(s\) failed|\bnot ok\b|\d+ failed/m;
+
+/** What a failing gate actually did: "reported" (it ran and scored), "crashed" (it died part way,
+ *  so every assertion after that point never executed and the passes above are not coverage), or
+ *  "silent" (a non-zero exit with no failure and no error anywhere in its output — nothing to read,
+ *  and a tail of its last lines actively misleads). Exported so the driver gate can pin all three. */
+function classifyFailure(output, code) {
+  const text = String(output ?? "");
+  if (CRASH_RE.test(text)) return { shape: "crashed", note: "died part way through; every assertion after the error never ran, so the passes above it are not coverage" };
+  if (REPORTED_RE.test(text)) return { shape: "reported", note: "ran and scored: read the failing checks below" };
+  const exited = Number.isInteger(code) ? `exited ${code}` : "exited non-zero";
+  return { shape: "silent", note: `${exited} having printed no failure and no error; its last lines below are PASSING output, not the cause` };
+}
+
 function summaryText(results) {
   const failed = results.filter((r) => !r.ok);
   const lines = ["", "=== summary ===", `  ${results.length - failed.length}/${results.length} gates passed`];
   for (const r of failed) {
-    lines.push(`\n  ✗ ${r.gate} — last output:`);
+    const { shape, note } = classifyFailure(r.output, r.code);
+    lines.push(`\n  ✗ ${r.gate} [${shape}] ${note}`);
+    lines.push("    last output:");
     lines.push(
       tail(r.output, 12)
         .split("\n")
@@ -307,7 +337,20 @@ function busyText(owner) {
   ].join("\n");
 }
 
+/** Keep the previous run's transcript for exactly one generation. A suite rewrites the log in full,
+ *  so starting a second run to ask whether a red gate was reproducible used to destroy the first
+ *  run's failure output before anyone had read it, and getting it back meant running those gates
+ *  again (2026-09-11). Best effort: a failed rotation must never stop the suite from running. */
+function rotateTranscript(from = TRANSCRIPT, to = PREVIOUS_TRANSCRIPT) {
+  try {
+    if (fs.existsSync(from)) fs.copyFileSync(from, to);
+  } catch {
+    /* a locked or unreadable previous log is not a reason to refuse to run the gates */
+  }
+}
+
 function openTranscript() {
+  rotateTranscript();
   fs.mkdirSync(path.dirname(TRANSCRIPT), { recursive: true });
   return fs.createWriteStream(TRANSCRIPT, { flags: "w" });
 }
@@ -363,10 +406,13 @@ module.exports = {
   BUSY_EXIT_CODE,
   GATES,
   STAMP,
+  PREVIOUS_TRANSCRIPT,
   TRANSCRIPT,
   busyText,
+  classifyFailure,
   clearCompletedStamp,
   gitStatusPaths,
+  rotateTranscript,
   guardBrokenPipe,
   summaryText,
   tail,

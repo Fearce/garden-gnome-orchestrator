@@ -26,10 +26,13 @@ const { PassThrough } = require("node:stream");
 const {
   BUSY_EXIT_CODE,
   GATES,
+  PREVIOUS_TRANSCRIPT,
   TRANSCRIPT,
   busyText,
+  classifyFailure,
   clearCompletedStamp,
   gitStatusPaths,
+  rotateTranscript,
   guardBrokenPipe,
   summaryText,
   tail,
@@ -103,6 +106,66 @@ assert.deepEqual(
   [],
   "a source tarball without Git still runs the suite",
 );
+
+// --- 3b. a red gate is classified by what it LEFT BEHIND, not by a fixed 12-line tail -----------
+// All three shapes below were hit in one evening (2026-09-11) and the summary rendered them
+// identically, which is what let two of them be written off as "known environment failures":
+//   reported -> the gate ran and scored. Read the failing checks; this is the normal red.
+//   crashed  -> it died part way. Assertions after the error NEVER RAN, so the passes above are
+//               not coverage, and the 12-line tail is a stack with no assertion in it.
+//   silent   -> a non-zero exit with nothing to read. The tail is PASSING output, so a reader who
+//               trusts it concludes the gate nearly passed when in fact it never reported at all.
+const crashed = classifyFailure(
+  ["  OK one", "  OK two", "TypeError: Cannot read properties of undefined (reading 'provider')", "    at Director.wire (src/orchestrator/director.ts:363:24)", "Node.js v24.15.0"].join("\n"),
+  1,
+);
+assert.equal(crashed.shape, "crashed", "a stack trace means assertions after it never executed");
+assert.match(crashed.note, /never ran/);
+
+const reported = classifyFailure(["  ok one", "  X two", "2 check(s) failed"].join("\n"), 1);
+assert.equal(reported.shape, "reported", "a gate that scored its own checks is an ordinary red");
+
+const silent = classifyFailure(["  ok one", "  ok two", "  ok three"].join("\n"), 1);
+assert.equal(silent.shape, "silent", "no failure and no error anywhere is its own diagnosis");
+assert.match(silent.note, /exited 1/, "name the exit code, since it is the only evidence there is");
+assert.match(silent.note, /PASSING output/, "warn that the tail below is not the cause");
+
+// The classification must reach the summary the reader actually sees.
+const shapes = summaryText([
+  { gate: "test:crash", ok: false, code: 1, output: "ReferenceError: x is not defined\n    at f (a.js:1:1)" },
+  { gate: "test:silent", ok: false, code: 1, output: "  ok a\n  ok b" },
+]);
+assert.match(shapes, /test:crash \[crashed\]/);
+assert.match(shapes, /test:silent \[silent\]/);
+
+// A crash that also printed failing checks is a CRASH: the unrun assertions are the bigger fact.
+assert.equal(
+  classifyFailure("  X one\n1 check(s) failed\nTypeError: boom\n    at f (a.js:1:1)", 1).shape,
+  "crashed",
+  "reported failures do not downgrade a crash, because the run still stopped early",
+);
+
+// --- 3c. the previous transcript is kept for exactly one generation -----------------------------
+// Starting a second suite to ask "was that red reproducible?" used to delete the first run's
+// failure output before it had been read (2026-09-11), and recovering it meant re-running gates.
+assert.notEqual(PREVIOUS_TRANSCRIPT, TRANSCRIPT, "a rotation that overwrites the same path is not one");
+assert.equal(path.dirname(PREVIOUS_TRANSCRIPT), path.dirname(TRANSCRIPT), "both are working artifacts under server/data");
+assert.ok(!gitStatusPaths(() => "").includes(PREVIOUS_TRANSCRIPT), "the rotated log is gitignored like its sibling");
+
+const rotDir = fs.mkdtempSync(path.join(os.tmpdir(), "gates-rotate-"));
+const rotFrom = path.join(rotDir, "gates-last.log");
+const rotTo = path.join(rotDir, "gates-prev.log");
+rotateTranscript(rotFrom, rotTo);
+assert.ok(!fs.existsSync(rotTo), "a first-ever run has nothing to keep, and must not invent an empty previous run");
+fs.writeFileSync(rotFrom, "run one: test:route-pipeline FAILED");
+rotateTranscript(rotFrom, rotTo);
+assert.ok(fs.existsSync(rotTo), "the previous run transcript must exist after a rotation, or there is nothing to compare against");
+assert.equal(fs.readFileSync(rotTo, "utf8"), "run one: test:route-pipeline FAILED", "the run being replaced is what must survive");
+fs.writeFileSync(rotFrom, "run two: green");
+rotateTranscript(rotFrom, rotTo);
+assert.ok(fs.existsSync(rotTo), "a second rotation must still leave a previous transcript behind");
+assert.equal(fs.readFileSync(rotTo, "utf8"), "run two: green", "exactly one generation is kept, so the rotation cannot grow without bound");
+fs.rmSync(rotDir, { recursive: true, force: true });
 
 // --- 4. the tail helper keeps the END (where a failure's reason is), not the head ---------------
 const many = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n");
