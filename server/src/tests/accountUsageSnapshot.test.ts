@@ -50,8 +50,14 @@ check("z.ai run drops the subscription token", zaiEnv.CLAUDE_CODE_OAUTH_TOKEN ==
 // survive into a run it spawns — it would mislabel every session as whatever spawned the server.
 process.env.CLAUDE_ORCH_ACCOUNT_ID = "stale-acct";
 process.env.CLAUDE_ORCH_ACCOUNT_LABEL = "stale-label";
-check("inherited account id is cleared", buildEnv({}).CLAUDE_ORCH_ACCOUNT_ID === undefined);
-check("inherited account label is cleared", buildEnv({}).CLAUDE_ORCH_ACCOUNT_LABEL === undefined);
+// buildEnv({}) legitimately RE-publishes an identity when the run token matches a configured account,
+// so asserting undefined there only holds on a machine whose .env configures none — which is what made
+// this gate red on the operator own checkout while proving nothing about the deletion it guards. Drive
+// it with a token no configuration can match: the identity must then be absent, which stops being true
+// the moment the RUN_IDENTITY_ENV delete above is removed, on every machine.
+const unmatchable = "tok-no-configured-account-matches-this";
+check("inherited account id is cleared", buildEnv({ oauthToken: unmatchable }).CLAUDE_ORCH_ACCOUNT_ID === undefined);
+check("inherited account label is cleared", buildEnv({ oauthToken: unmatchable }).CLAUDE_ORCH_ACCOUNT_LABEL === undefined);
 check("z.ai run clears it too", buildEnv({ baseUrl: "u", authToken: "k" }).CLAUDE_ORCH_ACCOUNT_LABEL === undefined);
 delete process.env.CLAUDE_ORCH_ACCOUNT_ID;
 delete process.env.CLAUDE_ORCH_ACCOUNT_LABEL;

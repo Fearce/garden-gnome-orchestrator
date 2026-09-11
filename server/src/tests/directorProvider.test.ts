@@ -61,6 +61,12 @@ try {
   console.log("\n=== provider-neutral director ===\n");
   mgr.setSettings({ codexEnabled: true, modelOverrides: { codex: { director: "gpt-director" } } });
   internals.codexImplementorReady = (): boolean => true;
+  // directorTargets asks the MACHINE whether Codex is authenticated (codexAuthAvailable: a ~/.codex
+  // ChatGPT login, a seeded isolated CODEX_HOME, or a configured key) — a real check no internals stub
+  // above reaches. Without a key this section has no Codex target at all on any box that never logged
+  // into Codex, configured[0] is undefined, and the gate dies on a TypeError instead of testing routing.
+  // Seed one into this test own throwaway Db so what is exercised is target selection, not the box.
+  db.kvSet("openai_api_key", "sk-test-director-provider");
   internals.codexProviderCandidate = () => ({ provider: "codex", hasHeadroom: true, fiveHour: 20, sevenDay: 30, sevenDayReset: Date.now() + 86_400_000, weeklySafetyPct: 100 });
   internals.codexRosterModels = (): string[] => ["gpt-smart-a", "gpt-smart-b"];
 
