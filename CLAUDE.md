@@ -259,7 +259,7 @@ Read the run trail to tell causes apart:
   implementor itself (account cap, Fable pool, transient-API retry), so it returns the run it ended on
   (`ImplementorTurn`) and `awaitImplementorCompletion` tracks THAT, never the run it passed in. Tracking the
   argument stopped a corpse and started the continuation beside a child still working: two agents committing
-  over each other on one production branch for 20 minutes (2026-09-11). `startImplementor` ends an unfinished
+  over each other on one production branch for 45 minutes (2026-09-11). `startImplementor` ends an unfinished
   implementor it displaces as a backstop. Gate: `test:implementor-handover`. A 5h/weekly cap auto-switches account and
   resumes the SDK session; `runner.ts` flags the cap from a `rate_limit_event`, an assistant
   `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
