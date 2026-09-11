@@ -77,12 +77,23 @@
 //     is `fetch failed`, whose real reason ("Response does not match the HTTP/1.1 protocol") is on
 //     `e.cause`, never on `e.message`. Always unwrap `cause` before believing a `fetch failed`.
 //
-// The three traps it encodes, all of which bite silently:
+// The four traps it encodes, all of which bite silently:
 //   • ACCOUNT_i_TOKEN must be BOGUS. A live token makes the boot ping start a REAL 5h window and shift
 //     the reset stagger — corrupting the production account state you were only trying to look at.
 //   • Kill by PORT OWNER, never by process name: `pkill -f "node dist/index.js"` is a silent no-op in
 //     Git Bash on Windows AND would match prod's node if it worked.
 //   • NODE_PATH is unset in agent shells, so a bare `require("playwright")` misses the global install.
+//   • CLOSE EACH CONTEXT BEFORE OPENING THE NEXT. A lab measures what a console does when nothing is
+//     happening to it, so a context you forgot to close is not untidiness: it is a second console
+//     holding a socket, running timers and going idle on its own schedule, and it misbehaves in a
+//     LATER step rather than where it leaked. `screensaver-lab` closed its main context only on the
+//     `--video` path (closing is what flushes a recording), failed 2 runs in 3 at two different
+//     steps, and the fix for that still missed two more contexts in the same file. `loadChromium`
+//     here is wrapped by `labContextGuard.cjs`, which now refuses the second one and names where the
+//     first was opened; `allowConcurrentContexts()` opts out when two live consoles ARE the point.
+//     It watches contexts you create explicitly, not the one behind `browser.newPage()`: real
+//     Playwright builds a page's context through the public `newContext`, so guarding that too reds
+//     every lab that simply opens two pages. Gate: `test:lab-contexts`.
 
 const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
@@ -92,7 +103,15 @@ const SERVER_ROOT = path.resolve(__dirname, "..");
 
 /** The globally-installed Playwright, found without NODE_PATH. Shared with the web/ probes, so the
  *  search order can never drift between them again (see `findPlaywright.cjs` for why it bit). */
-const { loadChromium } = require("./findPlaywright.cjs");
+const { loadChromium: resolveChromium } = require("./findPlaywright.cjs");
+const { guardConcurrentContexts, allowConcurrentContexts } = require("./labContextGuard.cjs");
+
+/** The same Playwright, with the two-live-contexts guard armed. Labs reach Playwright through this
+ *  module rather than `findPlaywright.cjs` directly, so the guard costs no lab an edit of its own;
+ *  `labContextGuard.cjs` explains which failure it is there to prevent. */
+function loadChromium() {
+  return guardConcurrentContexts(resolveChromium());
+}
 
 /** The real console password, so a lab can log its browser in. The throwaway instance inherits
  *  `server/.env`, so this is the password it will actually accept. */
@@ -216,4 +235,4 @@ function shotDir(dataDir) {
   return chosen;
 }
 
-module.exports = { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, boxBounds, shotDir };
+module.exports = { SERVER_ROOT, loadChromium, allowConcurrentContexts, authPassword, requireBuild, boot, killInstance, createChecks, boxBounds, shotDir };

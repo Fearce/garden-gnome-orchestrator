@@ -458,7 +458,7 @@ async function main() {
 
     /* ---- 8. reduced motion: posed, not moving ---- */
 
-    const { page: calmPage } = await openConsole(browser, { reducedMotion: "reduce" });
+    const { context: calm, page: calmPage } = await openConsole(browser, { reducedMotion: "reduce" });
     await awaitScene(calmPage, "a reduced-motion console");
     await calmPage.waitForTimeout(1200);
     const calmA = await probe(calmPage);
@@ -469,12 +469,16 @@ async function main() {
     check("reduced motion holds the arm still", calmWork(calmA).armDeg === calmWork(calmB).armDeg, `${calmWork(calmA).armDeg} then ${calmWork(calmB).armDeg}`);
     check("reduced motion holds the rope still", calmWork(calmA).ropeH === calmWork(calmB).ropeH, `${calmWork(calmA).ropeH} then ${calmWork(calmB).ropeH}`);
     await calmPage.screenshot({ path: path.join(shots, "08-reduced-motion.png") });
+    await calm.close();
 
     /* ---- 9. switching it off means off ---- */
 
-    const { page: offPage } = await openConsole(browser, { viewport: { width: 1200, height: 800 }, view: { screensaver: false } });
+    // A whole idle delay passes here with nothing else to look at, so any console still open from an
+    // earlier step would be sitting out the same wait beside it, raising its own scene.
+    const { context: off, page: offPage } = await openConsole(browser, { viewport: { width: 1200, height: 800 }, view: { screensaver: false } });
     await offPage.waitForTimeout((IDLE_MINUTES * 60 + 20) * 1000);
     check("switched off, the scene never appears", (await offPage.locator(".gs-root").count()) === 0);
+    await off.close();
 
     console.log(`\nshots: ${shots}`);
     code = check.summary();

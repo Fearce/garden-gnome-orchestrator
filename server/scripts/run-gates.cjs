@@ -136,6 +136,7 @@ const GATES = [
   "test:token-conservation",
   "test:themes",
   "test:screensaver",
+  "test:lab-contexts",
   "test:model-pin-probe",
   "test:livebench",
   "test:self-improve-restart",

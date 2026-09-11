@@ -134,6 +134,7 @@
     "test:token-conservation": "tsx src/tests/tokenConservation.test.ts",
     "test:themes": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/themes.test.tsx",
     "test:screensaver": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/screensaver.test.tsx",
+    "test:lab-contexts": "node scripts/lab-contexts.test.cjs",
     "test:model-pin-probe": "node scripts/model-pin-reading.test.cjs",
     "test:livebench": "tsx src/tests/liveBenchScores.test.ts",
     "test:self-improve-restart": "tsx src/tests/selfImproveRestart.itest.ts",
