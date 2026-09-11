@@ -94,6 +94,7 @@
     "test:mirror-drift": "node scripts/mirror-drift.test.cjs",
     "test:zai-usage": "tsx src/tests/zaiUsage.test.ts",
     "test:usage-freshness": "tsx src/tests/usageFreshness.test.ts",
+    "test:hub-stop-reach": "node scripts/hub-stop-reach.test.cjs",
     "test:codex-pools": "tsx src/tests/codexPools.test.ts",
     "task-mode-lab": "node scripts/task-mode-lab.cjs",
     "deadline-lab": "node scripts/deadline-lab.cjs",

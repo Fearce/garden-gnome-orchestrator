@@ -34,6 +34,7 @@ const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, isDeadEndLine
 const { scanCrashLog } = require("./crashlog-scan.cjs");
 const { inspectAccountUsage } = require("./account-usage-health.cjs");
 const { inspectRestartCoordinator } = require("./restart-coordinator-health.cjs");
+const { checkHubStopReach, unreachableRemedy } = require("./hub-stop-reach.cjs");
 
 const args = process.argv.slice(2);
 function flag(name) {
@@ -306,11 +307,21 @@ async function main() {
   // ---- 2) Listener PID + start vs dist mtime ----
   section("process vs dist");
   const pid = winListener(4317);
+  let stopReach = null;
   if (!pid) warn("no LISTEN on :4317 (netstat) — service may be down or non-Windows probe");
   else {
     ok(`:4317 LISTEN pid=${pid}`);
     const startMs = processStartMs(pid);
     if (startMs) ok(`process started ${new Date(startMs).toISOString()}`);
+
+    // Can the hub STOP this process, or only SEE it? Asked every sweep, not only when a restart is
+    // already stuck: a matcher that stops matching is invisible from every other angle — the hub still
+    // reports the script running (portMatchers), the coordinator still stages builds, and nothing goes
+    // red until a deploy has been silently refused for days. Unknown is never green.
+    stopReach = await checkHubStopReach({ pid });
+    if (stopReach.state === "reachable") ok(`script-hub can stop this process (matched ${stopReach.matched})`);
+    else if (stopReach.state === "unreachable") fail(unreachableRemedy(stopReach));
+    else warn(`script-hub stop reach unproven: ${stopReach.reason} — a planned deploy may be refused`);
 
     const sampleDist = path.join(DIST, "agents", "grokRunner.js");
     if (fs.existsSync(sampleDist)) {
@@ -340,10 +351,19 @@ async function main() {
           );
         } else if (staged) {
           // Pending but the restart mechanism keeps refusing — that IS an operator action item.
+          // Never guess the cause here. This line used to read "the listener is probably elevated",
+          // which on 2026-09-11 sent the reader past the real one: the entry's processMatchers had
+          // stopped matching the live command line, so every stop killed nothing. The reach check
+          // above has already MEASURED it, so say what it found.
+          const cause =
+            stopReach && stopReach.state === "unreachable"
+              ? unreachableRemedy(stopReach)
+              : stopReach && stopReach.state === "reachable"
+                ? "the hub CAN reach this process, so the refusals are not a matcher miss — check whether the listener is elevated (CLAUDE.md) or the hub's process enumeration is degraded"
+                : `the cause is unmeasured (${stopReach ? stopReach.reason : "no reach check ran"}) — run \`node scripts/hub-stop-reach.cjs ${pid}\``;
           warn(
             `${vsDist.detail} — the restart coordinator has ` +
-              `staged it but ${failures} restart attempt(s) were REFUSED (${staged.pendingLabel}); the listener is ` +
-              `probably elevated, see CLAUDE.md`,
+              `staged it but ${failures} restart attempt(s) were REFUSED (${staged.pendingLabel}). ${cause}`,
           );
         } else warn(`${vsDist.detail}. Run \`npm run deploy --prefix server\`; it routes the bounce through the restart coordinator.`);
       } else if (vsDist.state === "dirty-build" || vsDist.state === "unknown") warn(`process vs dist: ${vsDist.detail}`);

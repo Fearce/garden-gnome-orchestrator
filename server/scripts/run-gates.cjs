@@ -92,6 +92,7 @@ const GATES = [
   "test:mirror-drift",
   "test:zai-usage",
   "test:usage-freshness",
+  "test:hub-stop-reach",
   "test:codex-pools",
   "test:active-deadlines",
   "test:timed-tasks",
