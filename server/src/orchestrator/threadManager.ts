@@ -1267,7 +1267,9 @@ export class ThreadManager implements OrchestratorApi {
       resetSource: reset == null ? "fallback" : "provider",
     };
     if (accountLabel?.startsWith("codex:")) {
-      this.noteCodexCap(info);
+      // The label IS `codex:<model>`, so a dedicated pool's cap is latched to that pool rather than
+      // shutting the general pool — `notePoolCap` returns false for a model that has no pool of its own.
+      this.noteCodexCap(info, accountLabel.slice("codex:".length) || undefined);
       return;
     }
     if (accountLabel?.startsWith("grok:")) {
@@ -3999,6 +4001,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (snapshots.length) return Math.min(...snapshots);
     if (info?.resetsAt != null && info.resetsAt > now) return info.resetsAt;
     return now + fallbackMs;
+  }
+
+  /** The model the newest implementor run was actually dispatched with. Read from the run ROW, never
+   *  from `this.live` (a terminal result and the `end` that clears the handle are emitted in one
+   *  synchronous block, so the handle is already gone by the time an awaiting caller resumes) and never
+   *  from a re-resolve (a limit another thread latched meanwhile would redirect it). */
+  private latestImplementorRunModel(threadId: string): string | undefined {
+    return this.db
+      .listRuns(threadId)
+      .filter((r) => r.role === "implementor")
+      .sort((a, b) => b.startedAt - a.startedAt)[0]?.model;
   }
 
   private noteCodexCap(info?: RateLimitInfo, model?: string): void {
@@ -7616,10 +7629,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // that a limit latched by a concurrent thread could have already redirected.
       const sameAcct = this.acctById(currentAccountId);
       const fbSession = this.lastImplementorSession.get(thread.id);
-      const runModel = this.db
-        .listRuns(thread.id)
-        .filter((r) => r.role === "implementor")
-        .sort((a, b) => b.startedAt - a.startedAt)[0]?.model;
+      const runModel = this.latestImplementorRunModel(thread.id);
       if (
         !this.db.getThread(thread.id)?.modelRequest &&
         sameAcct &&
@@ -7827,10 +7837,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const zaiCapped = current instanceof ZaiAgentRun && current.rateLimited;
     if (res?.isError && !this.cancelled(thread.id) && (cliCapped || zaiCapped)) {
       const from = this.implementorProvider.get(thread.id) ?? "claude";
-      if (from === "codex") {
-        const activeRunId = this.live.get(thread.id)?.runId;
-        this.noteCodexCap(current.rateLimitInfo, activeRunId ? this.db.getRun(activeRunId)?.model : undefined);
-      }
+      if (from === "codex") this.noteCodexCap(current.rateLimitInfo, this.latestImplementorRunModel(thread.id));
       else if (from === "grok") this.noteGrokCap(current.rateLimitInfo);
       else if (from === "zai") this.noteZaiCap(current.rateLimitInfo);
       unavailableProviders.add(from);

@@ -183,6 +183,73 @@ internals.codexProviderCandidate = originalCodexProviderCandidate;
 internals.dedicatedPoolReadyFor = originalDedicatedPoolReadyFor;
 internals.codexCapActive = originalCodexCapActive;
 
+// A dedicated Codex pool's cap must never be recorded as the GENERAL pool's. Both attribution sites
+// used to lose the model — one read it out of `this.live` (already cleared: the terminal result and the
+// `end` that clears the handle are emitted in one synchronous block, so an awaiting caller always sees
+// undefined), the other never looked at the account label that carries it. Either way a Spark rejection
+// shut the general pool, and every ordinary implementor lost the Codex rung for the whole cooldown.
+{
+  const poolSnapshot = originalCodexPoolSnapshot;
+  internals.codexPoolSnapshot = () => [{
+    limitId: "codex_bengalfox",
+    limitName: "GPT-Dedicated",
+    modelSlug: "gpt-dedicated",
+    fiveHour: 100,
+    sevenDay: 100,
+    fiveHourReset: Date.now() + 3 * 60 * 60_000,
+    sevenDayReset: Date.now() + 7 * 24 * 60 * 60_000,
+  }];
+
+  const poolThread = db.createThread({ title: "Dedicated Codex pool cap", workspace, rawPrompt: "verify", brief: "verify" });
+  db.createRun({ threadId: poolThread.id, role: "implementor", model: "gpt-5.6-sol", account: "codex:gpt-5.6-sol" });
+  await new Promise((r) => setTimeout(r, 2)); // distinct startedAt, so "newest" is not a tie
+  db.createRun({ threadId: poolThread.id, role: "implementor", model: "gpt-dedicated", account: "codex:gpt-dedicated" });
+  db.createRun({ threadId: poolThread.id, role: "qa", model: "claude-opus-5", account: "personal" });
+  check(
+    "the dispatched model comes from the newest IMPLEMENTOR run row, not a later QA run",
+    internals.latestImplementorRunModel(poolThread.id) === "gpt-dedicated",
+    String(internals.latestImplementorRunModel(poolThread.id)),
+  );
+  check(
+    "the live handle is already gone by then — which is why the row is the only source",
+    internals.live.get(poolThread.id) === undefined,
+  );
+
+  // The live CLI-cap flip: whatever `awaitImplementorCompletion` hands `noteCodexCap` must carry the model.
+  const flipSource = String(internals.awaitImplementorCompletion);
+  check(
+    "the CLI cap flip attributes the Codex cap to the model it dispatched",
+    /noteCodexCap\([^)]*latestImplementorRunModel/.test(flipSource),
+    flipSource.slice(flipSource.indexOf("noteCodexCap"), flipSource.indexOf("noteCodexCap") + 120),
+  );
+
+  // The legacy restore path, end to end: the account label IS `codex:<model>`.
+  const beforeGeneral = internals.codexCapUntil;
+  internals.latchLegacyProviderCap("codex:gpt-dedicated", "You've hit your usage limit.", Date.now());
+  check(
+    "a legacy dedicated-pool cap latches that pool",
+    internals.poolCapUntil.get("codex_bengalfox") !== undefined,
+    JSON.stringify([...internals.poolCapUntil.entries()]),
+  );
+  check(
+    "…and leaves the general Codex pool open",
+    internals.codexCapUntil === beforeGeneral,
+    `before=${beforeGeneral} after=${internals.codexCapUntil}`,
+  );
+
+  // The same path for an ordinary model still latches the general pool — the fix must not disable it.
+  internals.latchLegacyProviderCap("codex:gpt-5.6-sol", "You've hit your usage limit.", Date.now());
+  check(
+    "an ordinary Codex model still latches the general pool",
+    internals.codexCapUntil !== undefined && internals.codexCapUntil !== beforeGeneral,
+    `before=${beforeGeneral} after=${internals.codexCapUntil}`,
+  );
+
+  internals.poolCapUntil.delete("codex_bengalfox");
+  internals.clearCodexCap();
+  internals.codexPoolSnapshot = poolSnapshot;
+}
+
 // Forecasts rank the failover pool but never block it. A provider's actual rejection is the signal
 // that advances the chain; a remaining subscription should be used before it is declared exhausted.
 const originalClaudeProviderCandidate = internals.claudeProviderCandidate;
