@@ -1636,14 +1636,36 @@ button { font-family: inherit; cursor: pointer; }
 .card .title { font-size: 15px; font-weight: 600; line-height: 1.3; padding-right: 22px; }
 /* The target repo is a primary scan target (which task to open/resume), so it's a distinct chip:
    the repo folder (leaf) is bright + bold and never truncates; the parent path dims and gives way. */
-.card .ws-path {
+/* Unscoped on purpose: one <WorkspacePath> button serves the board card, the scheduled-task card and
+   the detail header, so the chip cannot drift between them. Clicking it opens the folder in the
+   host's file manager, so it needs a click affordance the card underneath doesn't already give:
+   the border warms to the accent (the same amber as the folder icon) and the parent path lifts out
+   of faint. Hover must NOT brighten the fill, because a hovered card is already --bg-2 and the chip
+   would dissolve into it. */
+.ws-path {
+  appearance: none; margin: 0; text-align: left; color: inherit;
   display: flex; align-items: center; gap: 5px; max-width: 100%; overflow: hidden;
   font-family: var(--font-mono); font-size: 11.5px;
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 3px 8px;
+  cursor: pointer; transition: border-color 0.14s, color 0.14s;
 }
-.card .ws-ico { flex: 0 0 auto; color: var(--accent); }
-.card .ws-parent { color: var(--text-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card .ws-leaf { flex: 0 0 auto; color: var(--text); font-weight: 700; white-space: nowrap; }
+.ws-path:hover { border-color: color-mix(in oklch, var(--accent) 55%, transparent); }
+.ws-path:hover .ws-parent { color: var(--text-dim); }
+.ws-path:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ws-ico { flex: 0 0 auto; color: var(--accent); }
+.ws-parent { color: var(--text-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.14s; }
+.ws-leaf { flex: 0 0 auto; color: var(--text); font-weight: 700; white-space: nowrap; }
+/* Detail-panel header: the same button, minus the pill. The header line under the title stays the
+   quiet mono meta it has always been (a second chip up there beside the state badges would be
+   noise); the folder icon is the only added mark, and hover brightens the path itself. */
+.ws-path-meta {
+  background: none; border-color: transparent; padding: 2px 0; gap: 4px; font-size: 10.5px;
+}
+.ws-path-meta:hover { border-color: transparent; }
+.ws-path-meta .ws-leaf { color: var(--text-dim); font-weight: 600; }
+.ws-path-meta .ws-ico { color: var(--text-faint); }
+.ws-path-meta:hover .ws-leaf { color: var(--text); }
+.ws-path-meta:hover .ws-ico { color: var(--accent); }
 .card .pips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .card .activity { font-size: 12.5px; color: var(--text-dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 18px; }
 .card .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -3245,6 +3267,8 @@ button.note-from:hover { color: var(--text-dim); }
   .repo-select { height: var(--tap); font-size: 16px; }
   .repo-select-x { width: var(--tap); height: var(--tap); }
   .closed-toggle { min-height: var(--tap-sm); padding: 4px 8px; }
+  /* The workspace chip became a button (it opens the folder), so it needs a finger-sized box too. */
+  .ws-path { min-height: var(--tap-sm); }
   /* Every button, not only the .sm ones: the base .btn is a 32px box built for a cursor. */
   .btn { min-height: var(--tap); display: inline-flex; align-items: center; justify-content: center; }
   /* Copied verbatim from the compact band so the two cannot drift. */

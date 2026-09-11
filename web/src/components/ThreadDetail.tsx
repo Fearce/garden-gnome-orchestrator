@@ -15,6 +15,7 @@ import { TaskModelPicker } from "./TaskModelPicker.js";
 import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
 import { ImplementationMemos } from "./ImplementationMemos.js";
 import { CodeContextBar } from "./CodeContextBar.js";
+import { WorkspacePath } from "./WorkspacePath.js";
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -753,7 +754,7 @@ export function ThreadDetail() {
         <div className="top">
           <div>
             <EditableTitle threadId={thread.id} title={thread.title} />
-            {!headCollapsed && <div className="meta">{thread.workspace}</div>}
+            {!headCollapsed && <WorkspacePath path={thread.workspace} variant="meta" />}
           </div>
           <div className="detail-title-actions">
             <Elapsed

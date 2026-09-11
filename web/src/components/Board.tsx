@@ -16,10 +16,11 @@ import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
 import type { AgentRun, BoardView, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
-import { closesInDays, formatDuration, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { activityPreview, closesInDays, formatDuration, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
+import { splitWorkspace, WorkspacePath } from "./WorkspacePath.js";
 import { ScheduledTasks } from "./ScheduledTasks.js";
 import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
@@ -490,39 +491,6 @@ function ClosedCard({ thread }: { thread: Thread }) {
   );
 }
 
-/** Collapse multi-line agent text (Grok QA checklist + Pass/Fail) to one card-friendly line. */
-function activityPreview(text: string): string {
-  const lines = text
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  if (!lines.length) return text.trim();
-
-  // Prefer the Pass/Fail/Status headline when present — never the wall of ticks/body under it.
-  const verdict = lines.find((l) => /^\*\*(?:Pass|Fail|Status)\*\*/.test(l));
-  let picked = verdict
-    ? verdict.replace(/\*\*/g, "")
-    : (() => {
-        // Streaming draft is a growing checklist — show the latest tick, not the first "Starting…".
-        const ticks = lines.filter((l) => /^[-*+•]\s+/.test(l));
-        if (ticks.length) return ticks[ticks.length - 1]!.replace(/^[-*+•]\s+/, "");
-        return lines[0]!;
-      })();
-
-  // Single-line raw JSON progress still occasionally lands as a draft before humanize flushes.
-  if (/^\{\s*"pass"\s*:/.test(picked)) {
-    try {
-      const obj = JSON.parse(picked) as { summary?: unknown };
-      if (typeof obj.summary === "string" && obj.summary.trim()) picked = obj.summary.trim();
-    } catch {
-      /* keep picked */
-    }
-  }
-
-  return picked.length > 160 ? picked.slice(0, 157) + "…" : picked;
-}
-
 function latestRun(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
 }
@@ -539,30 +507,6 @@ function pipRoles(runs: AgentRun[], lane: Thread["lane"]): Role[] {
   if (lane === "read") return ["reader", ...reviewed];
   const ran = PIPELINE_ORDER.filter((role) => runs.some((r) => r.role === role));
   return ran.length ? [...ran, ...reviewed] : ["planner"];
-}
-
-/** Split a workspace path into its parent and its last segment (the repo folder). The leaf carries
- *  its leading separator so it reads naturally, and it's the part the user scans for — so it's never
- *  truncated; the parent is what gives way when space is tight. */
-function splitWorkspace(p: string): { parent: string; leaf: string } {
-  const norm = p.replace(/[\\/]+$/, "");
-  const i = Math.max(norm.lastIndexOf("\\"), norm.lastIndexOf("/"));
-  return i < 0 ? { parent: "", leaf: norm } : { parent: norm.slice(0, i), leaf: norm.slice(i) };
-}
-
-/** The target repo, foregrounded on the card — it's how you tell tasks apart at a glance (and decide
- *  which to resume). Repo folder is bold/bright and always shown; the parent path dims and truncates. */
-function WorkspacePath({ path }: { path: string }) {
-  const { parent, leaf } = splitWorkspace(path);
-  return (
-    <div className="ws-path" title={path}>
-      <svg className="ws-ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-      </svg>
-      {parent ? <span className="ws-parent">{parent}</span> : null}
-      <span className="ws-leaf">{leaf}</span>
-    </div>
-  );
 }
 
 // Memoized + each subscription is narrowed to THIS thread, so a card re-renders only when its own

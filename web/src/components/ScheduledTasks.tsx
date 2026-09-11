@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
 import type { Effort, ScheduledTask } from "../types.js";
+import { WorkspacePath } from "./WorkspacePath.js";
 import { PathInput } from "./PathInput.js";
 import { useCoarseNow } from "../lib/timing.js";
 import {
@@ -359,23 +360,6 @@ function TimeInput({ hour, minute, onChange }: { hour: number; minute: number; o
         if (Number.isFinite(h) && Number.isFinite(m)) onChange(h!, m!);
       }}
     />
-  );
-}
-
-/** Compact folder path, mirroring the board card's WorkspacePath styling via shared classes. */
-function WorkspacePath({ path }: { path: string }) {
-  const norm = path.replace(/[\\/]+$/, "");
-  const i = Math.max(norm.lastIndexOf("\\"), norm.lastIndexOf("/"));
-  const parent = i < 0 ? "" : norm.slice(0, i);
-  const leaf = i < 0 ? norm : norm.slice(i);
-  return (
-    <div className="ws-path" title={path}>
-      <svg className="ws-ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-      </svg>
-      {parent ? <span className="ws-parent">{parent}</span> : null}
-      <span className="ws-leaf">{leaf}</span>
-    </div>
   );
 }
 

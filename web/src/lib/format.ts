@@ -270,3 +270,36 @@ export function pacePeriodForModel(model: string | null | undefined): number {
   // Everything else (Sonnet and unknowns) — a medium lap.
   return 3.4;
 }
+
+/** Collapse multi-line agent text (Grok QA checklist + Pass/Fail) to one card-friendly line. */
+export function activityPreview(text: string): string {
+  const lines = text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) return text.trim();
+
+  // Prefer the Pass/Fail/Status headline when present — never the wall of ticks/body under it.
+  const verdict = lines.find((l) => /^\*\*(?:Pass|Fail|Status)\*\*/.test(l));
+  let picked = verdict
+    ? verdict.replace(/\*\*/g, "")
+    : (() => {
+        // Streaming draft is a growing checklist — show the latest tick, not the first "Starting…".
+        const ticks = lines.filter((l) => /^[-*+•]\s+/.test(l));
+        if (ticks.length) return ticks[ticks.length - 1]!.replace(/^[-*+•]\s+/, "");
+        return lines[0]!;
+      })();
+
+  // Single-line raw JSON progress still occasionally lands as a draft before humanize flushes.
+  if (/^\{\s*"pass"\s*:/.test(picked)) {
+    try {
+      const obj = JSON.parse(picked) as { summary?: unknown };
+      if (typeof obj.summary === "string" && obj.summary.trim()) picked = obj.summary.trim();
+    } catch {
+      /* keep picked */
+    }
+  }
+
+  return picked.length > 160 ? picked.slice(0, 157) + "…" : picked;
+}

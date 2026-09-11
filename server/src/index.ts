@@ -28,6 +28,7 @@ import { RestartCoordinator, isLoopbackAddress } from "./orchestrator/restartCoo
 import { Scheduler } from "./orchestrator/scheduler.js";
 import { OnlineOffice } from "./office/onlineOffice.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
+import { knownWorkspaces, revealWorkspace } from "./workspace/revealWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
 import { refreshStatus, getStatus, applyUpdate, startUpdatePoll } from "./update.js";
 import { registerWs } from "./ws/hub.js";
@@ -653,6 +654,22 @@ async function main(): Promise<void> {
       }
       console.log(`[INFO] fs/complete: "${raw}" → dir="${dir}" frag="${fragment}" ${entries.length} match(es)`);
       return { entries };
+    });
+
+    // Clicking a workspace path in the console opens that folder in the host's file manager. The
+    // browser can't do it, so the click lands here; the server runs on the same machine. Scoped on
+    // purpose (see workspace/revealWorkspace.ts): only a folder that is already a known workspace is
+    // opened, so this never becomes a "launch anything" endpoint.
+    app.post<{ Body: { path?: string } }>("/api/fs/reveal", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      const requested = typeof req.body?.path === "string" ? req.body.path : "";
+      const result = await revealWorkspace(requested, knownWorkspaces(db));
+      if (!result.ok) {
+        console.log(`[INFO] fs/reveal: refused "${requested}" (${result.status}) ${result.error}`);
+        return reply.code(result.status).send({ error: result.error });
+      }
+      console.log(`[INFO] fs/reveal: opened "${requested}"`);
+      return { ok: true };
     });
 
     // Serve the built frontend in production (single origin). In dev, Vite serves it.
