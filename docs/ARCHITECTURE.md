@@ -672,6 +672,11 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   `runRole`, implementor + QA-fix rounds via `awaitImplementorResult`) and to manual
   resume; up to 3 hops, then it settles to `review` only if *no* account has headroom (it
   never runs QA on a half-finished implementation). A webhook ping fires on each switch.
+  Because the relaunch happens *inside* `awaitImplementorResult`, it hands its caller back the
+  run it ended on (`ImplementorTurn`), not just the result: the caller's later `stop()` — the
+  turn-ceiling auto-resume, the provider flips — must reach the child that is actually alive.
+  Stopping the run it originally passed in left the real one working and started a second agent
+  beside it in the same checkout (`test:implementor-handover`).
 - **Workload-sized runway, before dispatch.** Known-viable capacity wins over unmetered capacity, which
   wins over known-at-risk capacity. Existing weekly-safety, spread-usage, and soonest-reset preferences
   remain tiebreakers inside that capacity tier. A reset inside the estimated run reduces the amount that

@@ -254,7 +254,13 @@ Read the run trail to tell causes apart:
   `--resume` then loads a session the old process still holds and exits with just `system:init`. Tear down
   through `Query.return()`/asyncDispose, which run `performCleanup()` -> a bounded await on
   `Transport.waitForExit` (the SDK documents exactly this on `waitForExit`). Gate: `test:runner-stop-drain`;
-  reproduce with `npm run probe:sdk-resume --prefix server` (real quota). A 5h/weekly cap auto-switches account and
+  reproduce with `npm run probe:sdk-resume --prefix server` (real quota). **Its OTHER cause is stopping the
+  wrong OBJECT — and that one leaves TWO agents on the workspace.** `awaitImplementorResult` relaunches the
+  implementor itself (account cap, Fable pool, transient-API retry), so it returns the run it ended on
+  (`ImplementorTurn`) and `awaitImplementorCompletion` tracks THAT, never the run it passed in. Tracking the
+  argument stopped a corpse and started the continuation beside a child still working: two agents committing
+  over each other on one production branch for 20 minutes (2026-09-11). `startImplementor` ends an unfinished
+  implementor it displaces as a backstop. Gate: `test:implementor-handover`. A 5h/weekly cap auto-switches account and
   resumes the SDK session; `runner.ts` flags the cap from a `rate_limit_event`, an assistant
   `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
   another sub with headroom. A cap on a **Fable** model is first classified (`classifyCap`: fresh Haiku

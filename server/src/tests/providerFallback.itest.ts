@@ -372,7 +372,10 @@ try {
   check("a pre-init Claude cap launches the next account", starts.length === 1, String(starts.length));
   check("the pre-init fallback starts fresh instead of resuming a missing session", starts[0]?.opts.resume === undefined, JSON.stringify(starts[0]?.opts));
   check("the pre-init fallback keeps the full kickoff context", starts[0]?.message.includes("FULL KICKOFF") === true, starts[0]?.message);
-  check("the pre-init fallback completes instead of cap-parking", earlyResult?.isError === false && !internals.capParked.has(earlyCap.id));
+  check("the pre-init fallback completes instead of cap-parking", earlyResult?.res?.isError === false && !internals.capParked.has(earlyCap.id));
+  // The caller stops the run it is handed back, so a failover must hand back the run it relaunched —
+  // returning the capped one leaves the replacement alive beside the next agent (test:implementor-handover).
+  check("the failover hands back the run it relaunched, not the capped one", earlyResult?.run === secondImplementor);
 
   // Exact fe529d83 first-chance ordering: restart recovery was retrying QA directly, so the outer
   // implementor provider gate had deliberately not run. An owner correction superseded that QA pass and

@@ -325,6 +325,18 @@ interface LiveImplementor {
   accountId: string;
 }
 
+/** One implementor turn's outcome PLUS the run that actually produced it. `awaitImplementorResult`
+ *  relaunches the implementor itself (account failover, Fable model-cap fallback, transient-API retry),
+ *  so the run its caller passed in is routinely dead by the time a result comes back. Handing the result
+ *  over without the live run is what put TWO agents on one workspace: the caller's next `stop()` hit the
+ *  already-dead object, the real child kept working, and the resume beside it became a second agent
+ *  committing to the same branch. Every read of the finishing run (its `stop()`, its provider class, its
+ *  cap info) must go through this. */
+interface ImplementorTurn {
+  res: ResultEvent | undefined;
+  run: AgentRunLike;
+}
+
 class LabQaAgentRun implements AgentRunLike {
   readonly emitter = new EventEmitter();
   sessionId: string | undefined = "lab-qa-fixture";
@@ -7335,6 +7347,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       agent = new AgentRun(cfg);
     }
     this.wireRun(agent, thread.id, runId, "implementor", accountId);
+    this.stopDisplacedImplementor(thread.id);
     this.live.set(thread.id, { run: agent, runId, accountId });
     this.track(thread.id, agent);
     this.officeCheckIn(thread.id, "implementor");
@@ -7528,6 +7541,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * Await the implementor's result, failing over to another account if its account hits a
    * 5h/weekly cap mid-run: relaunch resuming the session (so the work-so-far is preserved),
    * re-send `continueMsg`, and await again — until it completes or no account has headroom.
+   *
+   * Returns the relaunched run alongside the result, because every relaunch below replaces the run the
+   * caller handed us and the caller has to stop the LIVE one, never the one it started with.
    */
   private async awaitImplementorResult(
     thread: Thread,
@@ -7537,30 +7553,33 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     currentAccountId: string,
     useNext: boolean,
     continueMsg: string,
-  ): Promise<ResultEvent | undefined> {
+  ): Promise<ImplementorTurn> {
     // Each account gets one attempt in this cap chain. This supports every configured subscription and
     // prevents a selector from cycling back onto a known-capped account.
     const triedClaudeAccounts = new Set<string>([currentAccountId]);
     const demand = this.capacityDemand(thread, "implementor", effort);
     let transientFailures = 0;
+    // Reads `current` at call time, so every exit below reports whichever run this loop last relaunched
+    // rather than the one the caller handed in.
+    const turn = (res: ResultEvent | undefined): ImplementorTurn => ({ res, run: current });
     while (true) {
       const res = await this.awaitTurnResult(current, useNext);
       const capped =
         current.rateLimited ||
         ((current instanceof CodexAgentRun || current instanceof GrokAgentRun) && current.capped);
-      if (this.cancelled(thread.id) || (res && !res.isError && !capped)) return res;
+      if (this.cancelled(thread.id) || (res && !res.isError && !capped)) return turn(res);
 
       // 500/529/overload/transport failures are provider incidents, not quota. Retry the SAME provider
       // twice (three consecutive failures total) and preserve its session whenever one was established.
       // The enclosing completion layer switches backend after the third failure.
       if (!capped && current.transientApiError) {
-        if (current.startupWedged) return res;
+        if (current.startupWedged) return turn(res);
         transientFailures++;
-        if (transientFailures >= MAX_TRANSIENT_API_FAILURES) return res;
+        if (transientFailures >= MAX_TRANSIENT_API_FAILURES) return turn(res);
         const provider = this.providerForRun(current);
         await this.waitForTransientRetry(thread, "implementor", transientFailures, provider);
         await current.stop();
-        if (this.cancelled(thread.id)) return res;
+        if (this.cancelled(thread.id)) return turn(res);
         const session = current.sessionId ?? this.lastImplementorSession.get(thread.id);
         const acct = provider === "claude" ? this.acctById(currentAccountId) ?? undefined : undefined;
         const retryMessage = `The ${providerLabel(provider)} API returned a temporary server error. Retry the interrupted work now and continue exactly where you left off.`;
@@ -7573,20 +7592,22 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         continue;
       }
 
-      if (!capped) return res;
+      if (!capped) return turn(res);
       // CLI cap notices can be followed by a success-shaped terminal result. Normalize that into
       // the error-shaped outcome awaitImplementorCompletion already routes through its provider flip.
       if (current instanceof CodexAgentRun || current instanceof GrokAgentRun) {
-        return res?.isError
-          ? res
-          : { type: "result", subtype: "error_during_execution", isError: true, result: "CLI provider usage cap" };
+        return turn(
+          res?.isError
+            ? res
+            : { type: "result", subtype: "error_during_execution", isError: true, result: "CLI provider usage cap" },
+        );
       }
       // z.ai is AgentRun-based but a single-key subscription, not a Claude account — there's no sibling
       // account to fail over to. Latch its cap and return an error result so awaitImplementorCompletion's
       // provider-flip continues the task on another backend (mirrors the CLI cap handling).
       if (current instanceof ZaiAgentRun) {
         this.noteZaiCap(current.rateLimitInfo);
-        return res?.isError ? res : { type: "result", subtype: "error_during_execution", isError: true, result: "z.ai usage cap" };
+        return turn(res?.isError ? res : { type: "result", subtype: "error_during_execution", isError: true, result: "z.ai usage cap" });
       }
       // A Fable-pool rejection with normal-window headroom relaunches on the SAME account — modelFor
       // resolves the fallback model now that classifyCap latched the pool limit (see modelCapFallback).
@@ -7621,7 +7642,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // settle tags it for the supervisor, which resumes the task once an account frees up.
       if (!next || triedClaudeAccounts.has(next.id)) {
         if (current.rateLimited) this.capParked.set(thread.id, "implementor");
-        return undefined;
+        return turn(undefined);
       }
       this.logFailover(thread, "implementor", next.label, current.rateLimitInfo);
       await current.stop();
@@ -7663,8 +7684,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   ): Promise<ResultEvent | undefined> {
     const demand = this.capacityDemand(thread, "implementor", effort);
     let attemptFrom = this.attemptStart(thread.id);
-    let res = await this.awaitImplementorResult(thread, effort, kickoff, run, accountId, useNext, continueMsg);
-    let current = run;
+    // `current` is whatever run the awaited turn ENDED on, never the one we started it with: a cap
+    // failover, a Fable model fallback or a transient-API retry relaunches the implementor inside that
+    // call, and every stop()/provider read below has to address the live child. Tracking the argument
+    // instead is what let a turn-ceiling resume spawn a second agent onto the same workspace while the
+    // real one kept committing.
+    let turn = await this.awaitImplementorResult(thread, effort, kickoff, run, accountId, useNext, continueMsg);
+    let res = turn.res;
+    let current = turn.run;
     let silent = this.ranSilently(thread.id, "implementor", attemptFrom, res);
     if (silent) this.markSilentRun(thread.id, "implementor");
     while (
@@ -7710,9 +7737,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       });
       if (!start) break; // cancelled while compressing the prior session
       this.flushDirectorNotes(thread.id, start.run);
-      current = start.run;
       attemptFrom = this.attemptStart(thread.id);
-      res = await this.awaitImplementorResult(thread, effort, kickoff, start.run, start.accountId, false, nudge);
+      turn = await this.awaitImplementorResult(thread, effort, kickoff, start.run, start.accountId, false, nudge);
+      res = turn.res;
+      current = turn.run;
       silent = this.ranSilently(thread.id, "implementor", attemptFrom, res);
       if (silent) this.markSilentRun(thread.id, "implementor");
     }
@@ -12909,6 +12937,32 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     });
     this.emitRun(runId);
     if (run.role === "implementor") this.recordImplementationMemo(runId, res);
+  }
+
+  /**
+   * End the implementor a new one is about to displace — the last line of defence against two agents
+   * working one workspace.
+   *
+   * Every relaunch path already stops the run it replaces, so an UNFINISHED run still holding the live
+   * handle here means one of them missed: it stopped the wrong object, or took a route that forgot. That
+   * is not a tidy inconsistency — the two agents share a checkout with no merge step between them, so
+   * they commit over each other and the loser's work disappears with no signal (2026-09-11: a turn-limit
+   * resume ran 20 minutes alongside the implementor it was continuing, on a production branch).
+   *
+   * Fire-and-forget, because `startImplementor` is synchronous. The displaced child can therefore still
+   * be holding its session when the new run resumes it, which returns empty — the silent-run retry
+   * recovers that, and one empty run is a far better outcome than two live agents.
+   */
+  private stopDisplacedImplementor(threadId: string): void {
+    const previous = this.live.get(threadId);
+    if (!previous || previous.run.finished) return;
+    this.hub.log(
+      "warn",
+      `Thread ${threadId.slice(0, 8)}: implementor run ${previous.runId.slice(0, 8)} was still live when a new implementor started — stopping it so two agents never share the workspace.`,
+    );
+    void previous.run.stop().catch(() => {
+      /* already down, or a transport that refuses disposal — the new run takes the handle regardless */
+    });
   }
 
   /** Stop the live implementor for a thread, if any. Closing its session ends the run, whose
