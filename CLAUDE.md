@@ -108,6 +108,16 @@ How to restart depends on how it's running:
 - Under `npm run dev` (`tsx watch`): editing `server/src` already hot-restarts it — but that
   KILLS in-flight tasks, so use `serve` when real pipelines are running.
 
+**A THIRD real shape, on any OS: `npm run serve --prefix server` under its own supervisor**
+(`server/scripts/supervise.cjs`, not script-hub). This process loads TypeScript **source** directly via
+tsx and never reads `server/dist`. `server/src/selfRestart.ts`'s `restartRoute()` detects it from
+`ORCH_SUPERVISED=1` and prefers it over the hub: a restart is a clean `process.exit(75)`, which
+`supervise.cjs` respawns immediately onto whatever is on disk, not counting it as a crash. `npm run
+deploy --prefix server` already routes through this correctly, no different command is needed. What
+differs is diagnosis: `npm run health --prefix server` cannot compare this process to `dist` (there is
+none to compare to) and instead compares `server/src` file mtimes to the process start
+(`.claude/rules/nightly-quality-sweep.md` §1, `scripts/listener-shape.cjs`).
+
 **Windows (script-hub production deployment):** runs as script-hub id **`claude-orchestrator`** with
 keepAlive armed. Implementor workers are **child processes of this server** (the Agent SDK spawns the
 `claude` CLI — `server/src/agents/runner.ts`), so:

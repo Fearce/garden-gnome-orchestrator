@@ -8,13 +8,19 @@
 // What a resume-after-orchestrator-bounce agent needs in one command:
 //   • /api/health up?
 //   • restart coordinator reachable, and is it idle / draining / retrying?
-//   • is the running process on the code in dist? Compared by BUILD COMMIT — the
-//     process reports which build it loaded (`build` on /api/health) — and, when
+//   • is the running process on the code in dist? Compared by BUILD COMMIT, the
+//     process reports which build it loaded (`build` on /api/health), and, when
 //     that differs from dist, by whether any server/src content actually changed
 //     between the two (see scripts/process-vs-dist.cjs). A process too old to
 //     carry the stamp falls back to the dist-mtime-vs-listener-start heuristic,
 //     which only warns when RUNTIME server/src mtimes ALSO moved after start
-//     (src/tests + src/tools excluded — see newestSrcMtimeMs).
+//     (src/tests + src/tools excluded, see scripts/src-mtime.cjs).
+//     BUT that heuristic, and dist itself, only mean something when the process
+//     actually LOADS dist (see scripts/listener-shape.cjs). A process running
+//     TypeScript source directly under tsx (`npm run serve` -> supervise.cjs,
+//     CLAUDE.md's "supervisor" deployment shape) is also unstamped, and for
+//     that shape dist is irrelevant: the check instead compares server/src
+//     mtimes directly against the process start.
 //   • reliability symbols still present in dist (office/Grok QA path)?
 //   • git dirty files (concurrent teammate WIP — leave alone unless yours)
 //   • thread/run health from SQLite (caps, parks, stuck runs)
@@ -28,13 +34,16 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const Database = require("better-sqlite3");
 const { classifyProcessBuild } = require("./process-vs-dist.cjs");
+const { classifyDistVsHead } = require("./dist-vs-head.cjs");
+const { classifyListenerShape } = require("./listener-shape.cjs");
+const { newestSrcMtimeMs, srcFilesNewerThan } = require("./src-mtime.cjs");
 const { serverRuntimeDiff, readWebStamp, webDistState } = require("./compiled-diff.cjs");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
 const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, isDeadEndLine } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
 const { inspectAccountUsage } = require("./account-usage-health.cjs");
 const { inspectRestartCoordinator } = require("./restart-coordinator-health.cjs");
-const { checkHubStopReach, unreachableRemedy } = require("./hub-stop-reach.cjs");
+const { checkHubStopReach, unreachableRemedy, commandLineOf } = require("./hub-stop-reach.cjs");
 
 const args = process.argv.slice(2);
 function flag(name) {
@@ -88,86 +97,33 @@ function winListener(port) {
 }
 
 /**
- * Newest mtime among compiled RUNTIME sources under server/src. Used to tell a
- * real stale-build (runtime server/src changed after the process started) apart
- * from a benign rebuild (dist mtimes bump on any `npm run build` even when no
- * runtime code changed). Tests (`src/tests/`, `*.test.ts`, `*.itest.ts`) and
- * agent tooling (`src/tools/`, the tsx-run probes) are excluded: neither is
- * loaded by the running server, but an edit to one after boot (a StubAccounts
- * fake following a feature, a probe added while tuning it) would otherwise trip
- * the "real stale build" warning as a false positive every nightly sweep.
- * Returns null if src is unreadable.
- */
-function newestSrcMtimeMs() {
-  const srcDir = path.join(SERVER, "src");
-  let newest = 0;
-  const walk = (dir) => {
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (e.name === "tests" || e.name === "tools") continue;
-        walk(full);
-      } else if (e.isFile() && /\.(ts|tsx|mts|cts)$/.test(e.name) && !/\.(test|itest)\.(ts|tsx|mts|cts)$/.test(e.name)) {
-        const m = fs.statSync(full).mtimeMs;
-        if (m > newest) newest = m;
-      }
-    }
-  };
-  walk(srcDir);
-  return newest || null;
-}
-
-/**
  * Whether `dist` was built from current HEAD's server code — the gap the process-vs-dist check cannot see.
  * Both of those can agree perfectly while `dist` ITSELF predates HEAD, which is how a feature shipped its
  * web half and sat in prod for a day with its server half unbuilt (the director Stop button, 2026-07-29:
  * the button rendered, and the WS command it sent wasn't in the server's union).
  *
- * Compared by CONTENT, never by timestamp: build → verify → commit is the normal order, so a dist a minute
- * older than HEAD is usually correct, and mtimes are rewritten wholesale by a checkout. The build stamps the
- * commit it came from (scripts/stamp-build.cjs); the only question that matters is whether anything under
- * server/src changed between that commit and HEAD.
+ * The pure classification lives in `dist-vs-head.cjs` (gated by `test:dist-vs-head`) so its wording
+ * contract — the "stale" detail states only the fact THIS check owns, never a liveness verdict about the
+ * running process, which it never even reads — can be pinned. See that module's header for why: on
+ * 2026-09-11 the old inline version baked "that committed change is NOT live, however fresh the process
+ * looks" into this detail unconditionally, which a source-run process (tsx under `npm run serve`, no dist
+ * at all) inherited anyway, misreporting a live commit (`b26fdaa`) as undeployed. The liveness clause is
+ * now composed by the caller below, gated on the listener's confirmed shape.
  *
  * Returns { state, detail } where state is "current" | "stale" | "unknown" | "dirty-build".
  */
 function distVsHead() {
   const stampFile = path.join(DIST, ".build-info.json");
-  let stamp;
+  let stamp = null;
   try {
     stamp = JSON.parse(fs.readFileSync(stampFile, "utf8"));
   } catch {
-    return { state: "unknown", detail: "dist has no .build-info.json — built before build stamping, or by a bare `tsc`" };
+    stamp = null;
   }
-  if (!stamp.commit) return { state: "unknown", detail: "the build recorded no commit (no git at build time)" };
-  const short = String(stamp.commit).slice(0, 8);
   // Two-dot, direction-agnostic, tests/tools excluded — see `scripts/compiled-diff.cjs`, which is the
   // single implementation this and `deploy.cjs --verify` both read.
-  const files = serverRuntimeDiff(stamp.commit, "HEAD");
-  if (files === null) {
-    return { state: "unknown", detail: `git cannot compare the built commit ${short} to HEAD (unreachable after a rebase?)` };
-  }
-  if (files.length) {
-    return {
-      state: "stale",
-      detail:
-        `dist was built from ${short}, and ${files.length} server/src file(s) have changed in HEAD since ` +
-        `(${files.slice(0, 3).join(", ")}${files.length > 3 ? ", …" : ""}) — that committed change is NOT live, ` +
-        "however fresh the process looks. Run `npm run deploy --prefix server`; it builds HEAD and routes the bounce through the restart coordinator.",
-    };
-  }
-  if (stamp.dirty) {
-    return {
-      state: "dirty-build",
-      detail: `dist matches HEAD's server/src (built from ${short}) but was built from a DIRTY tree — it may carry uncommitted code`,
-    };
-  }
-  return { state: "current", detail: `dist was built from ${short}, whose server/src matches HEAD` };
+  const changedFiles = stamp && stamp.commit ? serverRuntimeDiff(stamp.commit, "HEAD") : null;
+  return classifyDistVsHead({ distStamp: stamp, changedFiles });
 }
 
 /** `server/src` files whose content differs between two commits, or null if git cannot compare them.
@@ -308,25 +264,43 @@ async function main() {
   section("process vs dist");
   const pid = winListener(4317);
   let stopReach = null;
-  if (!pid) warn("no LISTEN on :4317 (netstat) — service may be down or non-Windows probe");
+  let listenerShape = "unknown";
+  if (!pid) warn("no LISTEN on :4317 (netstat), service may be down or non-Windows probe");
   else {
     ok(`:4317 LISTEN pid=${pid}`);
     const startMs = processStartMs(pid);
     if (startMs) ok(`process started ${new Date(startMs).toISOString()}`);
+    // Confirmed from the LISTENER's own command line, never guessed: see scripts/listener-shape.cjs
+    // for why (a source-run process is unstamped too, so `runningBuild` alone cannot tell it apart
+    // from a pre-stamp-era dist process).
+    listenerShape = classifyListenerShape(commandLineOf(pid));
 
     // Can the hub STOP this process, or only SEE it? Asked every sweep, not only when a restart is
-    // already stuck: a matcher that stops matching is invisible from every other angle — the hub still
+    // already stuck: a matcher that stops matching is invisible from every other angle, the hub still
     // reports the script running (portMatchers), the coordinator still stages builds, and nothing goes
     // red until a deploy has been silently refused for days. Unknown is never green.
     stopReach = await checkHubStopReach({ pid });
     if (stopReach.state === "reachable") ok(`script-hub can stop this process (matched ${stopReach.matched})`);
     else if (stopReach.state === "unreachable") fail(unreachableRemedy(stopReach));
-    else warn(`script-hub stop reach unproven: ${stopReach.reason} — a planned deploy may be refused`);
+    else warn(`script-hub stop reach unproven: ${stopReach.reason}, a planned deploy may be refused`);
 
     const sampleDist = path.join(DIST, "agents", "grokRunner.js");
     if (fs.existsSync(sampleDist)) {
       const distMs = fs.statSync(sampleDist).mtimeMs;
       ok(`dist/agents/grokRunner.js mtime ${new Date(distMs).toISOString()}`);
+
+      // 2026-09-11: on a machine running `npm run serve` (CLAUDE.md's "supervisor" deployment shape,
+      // scripts/supervise.cjs -> tsx loading src/index.ts directly), this process never reads dist at
+      // all, so every dist-mtime comparison below describes a build it never opened. Say so plainly,
+      // once, instead of leaving the reader to rediscover the process tree by hand, which is what the
+      // 2026-09-11 misread of commit b26fdaa cost.
+      if (listenerShape === "source") {
+        ok(
+          "process runs from SOURCE under tsx (server/scripts/supervise.cjs -> node <tsx> src/index.ts, " +
+            "not server/dist), confirmed from its own command line. Every dist mtime below describes a " +
+            "build this process never reads",
+        );
+      }
 
       // The process reports the build it loaded, so this is a comparison rather than an inference. Only a
       // process too old to carry that stamp falls back to the mtimes below.
@@ -368,7 +342,35 @@ async function main() {
         } else warn(`${vsDist.detail}. Run \`npm run deploy --prefix server\`; it routes the bounce through the restart coordinator.`);
       } else if (vsDist.state === "dirty-build" || vsDist.state === "unknown") warn(`process vs dist: ${vsDist.detail}`);
       else if (vsDist.state === "current") ok(`process vs dist: ${vsDist.detail}`);
-      else if (startMs && distMs > startMs + 2000) {
+      else if (listenerShape === "source") {
+        // Unstamped AND confirmed source-run: the dist-mtime heuristic below means nothing for this
+        // process (see the note above it). The only honest liveness signal left is server/src mtime
+        // against the process's own start, tsx read whatever bytes sat on disk the moment it imported
+        // each file, so a file touched on disk after that instant is not what is running.
+        if (startMs) {
+          const drifted = srcFilesNewerThan(startMs);
+          if (drifted.length) {
+            const shown = drifted
+              .slice(0, 3)
+              .map((f) => f.path)
+              .join(", ");
+            warn(
+              `${drifted.length} server/src runtime file(s) changed on disk AFTER this process started ` +
+                `(${shown}${drifted.length > 3 ? ", …" : ""}), so their on-disk content is not what tsx is ` +
+                "running, whatever HEAD says. A `git checkout` rewrites mtimes wholesale, so on a freshly " +
+                "checked out tree treat this as corroborating evidence, not proof. Remedy: " +
+                "`npm run deploy --prefix server` (on this shape the coordinated bounce is a clean exit " +
+                "that scripts/supervise.cjs respawns immediately onto current disk contents).",
+            );
+          } else {
+            ok(
+              `no server/src runtime file changed on disk since the process started ${new Date(startMs).toISOString()}, the running source matches disk`,
+            );
+          }
+        } else {
+          warn("process runs from source but its start time could not be read, server/src drift cannot be checked against it");
+        }
+      } else if (startMs && distMs > startMs + 2000) {
         const srcMs = newestSrcMtimeMs();
         if (srcMs && srcMs > startMs + 2000) {
           warn(
@@ -382,10 +384,32 @@ async function main() {
       } else if (startMs && startMs >= distMs - 5000) {
         ok("process started at/after dist mtime (fresh build likely loaded)");
       }
-      // The gap the process-vs-dist comparison above cannot see: dist itself behind HEAD.
+      // The gap the process-vs-dist comparison above cannot see: dist itself behind HEAD. This is a
+      // fact about the BUILD, not about what is live; the liveness clause is only ever added below,
+      // and only once the listener shape confirms the running process actually reads dist (see
+      // dist-vs-head.cjs's header for the 2026-09-11 incident this split exists to prevent).
       const vsHead = distVsHead();
-      if (vsHead.state === "stale") warn(vsHead.detail);
-      else ok(`dist vs HEAD: ${vsHead.detail}`);
+      if (vsHead.state === "stale") {
+        if (listenerShape === "dist") {
+          warn(
+            `${vsHead.detail}, that committed change is NOT live, however fresh the process looks. Run ` +
+              "`npm run deploy --prefix server`; it builds HEAD and routes the bounce through the restart coordinator.",
+          );
+        } else if (listenerShape === "source") {
+          warn(
+            `${vsHead.detail}. This process does not load dist at all (runs from source under tsx), so ` +
+              "this is only a fact about the BUILD, not about what is live here, see the server/src " +
+              "check above for that. Still worth rebuilding before any future dist-based deploy: " +
+              "`npm run deploy --prefix server`.",
+          );
+        } else {
+          warn(
+            `${vsHead.detail}. Whether that change is live cannot be confirmed here (the running ` +
+              "process's shape could not be determined from its command line). Run `npm run deploy " +
+              "--prefix server` to be safe.",
+          );
+        }
+      } else ok(`dist vs HEAD: ${vsHead.detail}`);
       // And the half a restart cannot fix. The 2026-07-29 incident this whole section exists for was a
       // feature shipping its two halves separately; the check written afterwards only watched the server,
       // so the same split in the other direction stayed invisible until the web build got its own stamp.
