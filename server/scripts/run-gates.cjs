@@ -90,6 +90,7 @@ const GATES = [
   "test:relay-core",
   "test:relay-access",
   "test:mirror-drift",
+  "test:doc-paths",
   "test:zai-usage",
   "test:usage-freshness",
   "test:hub-stop-reach",

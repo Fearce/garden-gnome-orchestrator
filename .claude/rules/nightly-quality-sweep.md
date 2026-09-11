@@ -56,14 +56,31 @@ Steps 3/4 read runs and parks, so neither sees the failure the owner switched th
 
 ## Related
 - Office harvest gotchas: `.claude/rules/office-bridge.md`
-- Shared-checkout commits and rebases — **this entry has now been wrong three times, always by citing
-  a helper script that is not on disk. `ls` before you trust any path here, including this version.**
-  As of 2026-09-11 there is no `~/Claude/tools/` and no
-  `~/.claude/memory/shared-working-tree-collisions.md`; the surviving record is the PROJECT memory
-  `~/.claude/projects/c--claude-orchestrator/memory/shared-checkout-concurrent-edits.md`. So carry the
-  technique, not the tool: **`git commit --only <paths> -F <msgfile>`** commits exactly those paths
-  whatever a peer left staged — never finish with a bare `git commit`, which takes the whole shared
-  index. When you and a peer are inside ONE file (a pathspec is per-FILE, so `git add` is
+- Shared-checkout commits and rebases. **This entry has now been wrong four times, always about
+  WHERE the helper scripts are, and twice in opposite directions.** The reason is that this repo is
+  worked from several machines: the tool family is the OWNER's, not the repo's, so an agent on
+  another box correctly finds nothing and writes down "they do not exist", and the next agent on the
+  owner's box rebuilds by hand what was sitting in `~/Claude/tools/` all along (2026-09-11: a hunk
+  splitter, for the third time). So: **`ls ~/Claude/tools/` once, and believe the listing, not this
+  paragraph.** On the owner's machine it holds `safe-commit.sh`, `safe-rebase.sh` and
+  `stage-my-hunks.sh`, and `~/.claude/memory/shared-working-tree-collisions.md` is the record behind
+  them. Elsewhere, expect none of it and carry the TECHNIQUE instead:
+  **`git commit --only <paths> -F <msgfile>`** commits exactly those paths whatever a peer left
+  staged, and never finish with a bare `git commit`, which takes the whole shared index. **`git
+  reset` first if the index is already populated** by an earlier session: `git status --porcelain`
+  shows that as a staged `M` in the FIRST column, and a later `git add` of a subset does not unstage
+  the rest. When you and a peer are inside ONE file (a pathspec is per-FILE, so `git add` is
   all-or-nothing on it), split it by writing the hunks you own to a patch and `git apply --cached`,
   then verify `git diff --cached` is only yours before committing. And prefer `git pull` /
+  **Never do that split by rebuilding the file in a script.** This repo's blobs are CRLF, so a
+  read-modify-write that splits on a newline and rejoins with a carriage-return-newline doubles
+  every line ending: the staged diff becomes the whole file and hides what you actually selected.
+  Delete or replace whole lines in place (sed, or a byte-preserving line edit) and diff before you
+  believe either colour.
   `git rebase` without `--autostash`, which is a whole-tree stash of everyone's WIP under another name.
+- **The repo's own pointers are gated now, so this class of rot stops at the doc it lives in.**
+  `npm run probe:doc-paths --prefix server` (gate `test:doc-paths`, in the suite step 2 runs) fails
+  when CLAUDE.md, a rule file or a doc cites a repo path or an `npm run` script that does not
+  resolve. It deliberately does NOT judge a `~/` path, for the machine-dependent reason above: those
+  are reported as unchecked, which is why the paragraph before this one has to say which machine it
+  means.
