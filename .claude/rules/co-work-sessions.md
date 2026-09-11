@@ -64,8 +64,39 @@ the disposable file cache, which the next turn rehydrates. Gate `test:cowork-hea
 - **`AskUserQuestion` is disallowed on purpose.** A blocker question is returned as the turn's reply;
   the built-in tool would bypass the durable transcript and park the session in an unrepresented state.
 
+## Console traps (the QoL layer)
+- **The desk is MOUNTED, not re-rendered.** `Board.tsx` keeps `<CoWork hidden={...} />` alive the way it
+  keeps the IDE alive. Turning that back into a conditional render silently restores the whole "leaving
+  the tab mid-turn loses your place" complaint: the session DATA is in the store either way, but the
+  scroll position, expanded bursts, draft and staged attachments are component state.
+  `.cowork-shell` is `display: grid`, which overrides the UA rule behind `hidden` — `.cowork-shell[hidden]
+  { display: none; }` is what actually hides it, and without it the desk covers the task board.
+- **Scroll position and expansion belong to the STORE, keyed by session.** `display: none` resets
+  `scrollTop`, and the component is remounted by a key change on session switch. Both are also what the
+  owner means by "where I was", so they are per session, never global.
+- **A tool result pairs by `meta.id`, never by adjacency.** Parallel tool use returns out of order, and a
+  result can arrive before its own call row. Pairing on position looks right in every hand-written
+  fixture and mismatches under real load, which shows the owner one call's output under another's name.
+- **A burst is a FLEX ITEM in a flex column, so it needs `flex: 0 0 auto`.** `.cowork-tools` carries
+  `overflow: hidden` for its rounded corners, which resolves its automatic minimum size to 0; without an
+  explicit basis every burst is squashed to a hairline the moment the conversation is taller than the
+  scrollport (which is always). Caught only in a browser — SSR markup was perfect.
+- **The board card owns nothing.** `CoworkCards.tsx` may read session state and send the steering
+  commands the composer already sends. A "mark done", a QA pip or a findings list on that card is the
+  exact defect this lane exists to prevent.
+- **The summary is deterministic on purpose.** `coworkSummary.ts` never calls a model: the owner reads it
+  when a session was timeboxed or abandoned, which is when capacity is least likely to be there. A commit
+  is only reported when git printed its `[branch sha] subject` receipt in a SUCCESSFUL tool RESULT — the
+  attempted command is never evidence, because a pre-commit hook refusing a commit is the normal case here.
+- **Promotion is one-way and refused mid-turn.** `promote` dispatches a SEPARATE ordinary task and leaves
+  the session with no thread id, no findings and no settle path. It refuses while a turn is live so the
+  brief can never describe unsettled work.
+- **Browser: `npm run cowork-lab --prefix server`** drives all of the above against its own instance on
+  :5417 (`-- --shots data/cowork-lab-shots` to keep the pictures). Uncommitted server work needs an
+  isolated build: `npx tsc -p tsconfig.json --outDir .cowork-lab-dist` then `GGO_LAB_ENTRY=.cowork-lab-dist/index.js`.
+
 ## Verify
-`npm run test:cowork && npm run test:cowork-ui && npm run test:cowork-health --prefix server` (all
+`npm run test:cowork && npm run test:cowork-summary && npm run test:cowork-ui && npm run test:cowork-health --prefix server` (all
 free, no agent, no quota), then `npm run typecheck && npm run build`. `cowork.itest.ts` stubs only the
 agent-spawning leaf (`CoworkRuntime`), so every decision above runs for real — extend it rather than
 writing a new harness, and do the revert-check (`threadmanager-itest.md`): the pre-start race and the

@@ -7,6 +7,12 @@ import { contentWithImages, type ImageBlock } from "../attachments.js";
 import { config } from "../config.js";
 import { injectionSendOptions } from "./injection.js";
 import {
+  coworkTaskTitle,
+  renderCoworkSummary,
+  renderCoworkTaskBrief,
+  summarizeCoworkSession,
+} from "./coworkSummary.js";
+import {
   coworkContentWithAttachments,
   coworkImageBlocks,
   materializeCoworkAttachments,
@@ -17,6 +23,7 @@ import type {
   CoworkActionResult,
   CoworkMessage,
   CoworkSession,
+  CoworkSessionSummary,
   CoworkSteeringMode,
   CoworkTurn,
   Effort,
@@ -50,6 +57,10 @@ export interface CoworkRuntime {
   isCapped(target: CoworkTarget, agent: AgentRunLike): boolean;
   noteCap(target: CoworkTarget, agent: AgentRunLike): void;
   releasedWorkspace(): void;
+  /** Hand a brief to the ORDINARY task pipeline and return the new thread id. Deliberately one-way:
+   * Co-work still owns no task, creates no findings and cannot be settled. This is the same call the
+   * Director makes, so a promoted task is an ordinary task in every later respect. */
+  promoteToTask(input: { title: string; workspace: string; brief: string }): Promise<string>;
 }
 
 export interface CoworkTimebox {
@@ -131,6 +142,11 @@ function cleanName(value: string): string {
 
 function workspaceName(workspace: string): string {
   return basename(workspace.replace(/[\\/]+$/, "")) || "New Co-work";
+}
+
+/** The first line of an owner instruction, for a one-line breadcrumb. */
+function firstLine(text: string): string {
+  return text.trim().split("\n")[0]!.trim();
 }
 
 function attachmentOnlyPrompt(files: FileAttachment[]): string {
@@ -279,6 +295,50 @@ export class CoworkManager {
     }
     this.hub.publish({ type: "cowork.removed", sessionId });
     return { ok: true };
+  }
+
+  /** The deterministic trail of what this conversation did. No model call: the owner reads this exactly
+   * when a session was timeboxed or abandoned, which is when capacity is least likely to be there. */
+  summary(sessionId: string): { summary: CoworkSessionSummary; markdown: string } | null {
+    const { session, turns, messages } = this.history(sessionId);
+    if (!session) return null;
+    const summary = summarizeCoworkSession({ session, turns, messages });
+    return { summary, markdown: renderCoworkSummary(summary) };
+  }
+
+  /** Graduate exploration into pipeline work. This creates a SEPARATE ordinary task from a snapshot of
+   * the conversation; the session keeps no thread id, gains no findings, and is not settled by whatever
+   * the task does next. The breadcrumb left in the transcript is display-only. */
+  async promote(sessionId: string, objective?: string): Promise<CoworkActionResult> {
+    const built = this.summary(sessionId);
+    if (!built) return { ok: false, error: "Co-work session not found." };
+    const session = this.db.getCoworkSession(sessionId)!;
+    if (session.activeTurnId || this.live.has(sessionId)) {
+      return { ok: false, session, error: "Let the running turn finish before promoting this session, so the brief describes settled work." };
+    }
+    const goal = objective?.trim() || built.summary.directions[built.summary.directions.length - 1] || "";
+    if (!goal) return { ok: false, session, error: "Write what the task should do. This conversation has no owner instruction to fall back on." };
+    if (!existsSync(session.workspace)) return { ok: false, session, error: `Workspace "${session.workspace}" no longer exists.` };
+
+    let threadId: string;
+    try {
+      threadId = await this.runtime.promoteToTask({
+        title: objective?.trim() ? cleanName(objective).slice(0, 90) : coworkTaskTitle(built.summary),
+        workspace: session.workspace,
+        brief: renderCoworkTaskBrief(built.summary, goal),
+      });
+    } catch (error) {
+      return { ok: false, session, error: `The task could not be dispatched: ${(error as Error).message || String(error)}` };
+    }
+    const message = this.db.upsertCoworkMessage({
+      sessionId,
+      role: "system",
+      kind: "system",
+      content: `Promoted to a task: "${firstLine(goal)}". This conversation is unchanged and stays yours to continue.`,
+      meta: { event: "cowork_promoted", threadId },
+    });
+    this.hub.publish({ type: "cowork.message", message });
+    return { ok: true, session: this.db.getCoworkSession(sessionId) ?? session, threadId };
   }
 
   /** Claims and starts one bounded turn, but does not await its potentially long agent run. The durable
@@ -722,9 +782,30 @@ export class CoworkManager {
             : error!,
       });
       this.hub.publish({ type: "cowork.message", message });
+      // A turn that did not simply finish is the one an owner comes back to hours later, or never.
+      // Leave the readable trail (what was asked, what the tree gained, which commits landed) in the
+      // transcript itself, so an abandoned session explains itself without a second agent turn.
+      this.postSessionSummary(session.id, turn.id);
     }
     if (updated) this.publishSession(updated);
     this.runtime.releasedWorkspace();
+  }
+
+  private postSessionSummary(sessionId: string, turnId: string): void {
+    const built = this.summary(sessionId);
+    if (!built) return;
+    const message = this.db.upsertCoworkMessage({
+      // One summary per turn, keyed by the turn: a duplicate settle or a reconnect refreshes the row
+      // it already wrote instead of stacking a second identical trail under the same outcome.
+      id: `${turnId}:summary`,
+      sessionId,
+      turnId,
+      role: "system",
+      kind: "system",
+      content: built.markdown,
+      meta: { event: "cowork_session_summary" },
+    });
+    this.hub.publish({ type: "cowork.message", message });
   }
 
   private failBeforeStart(sessionId: string, turnId: string, error: string): void {

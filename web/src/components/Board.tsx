@@ -26,6 +26,7 @@ import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { CoWork } from "./CoWork.js";
+import { CoworkBoardCards } from "./CoworkCards.js";
 import { ManualDeploymentBadge } from "./ManualDeploymentStatus.js";
 const Ide = lazy(() => import("./ide/Ide.js").then(m => ({ default: m.Ide })));
 
@@ -122,6 +123,8 @@ export function Board() {
   const taskOrder = useStore((s) => s.taskOrder);
   const [ideOpened, setIdeOpened] = useState(false);
   useEffect(() => { if (boardView === "ide") setIdeOpened(true); }, [boardView]);
+  const [coworkOpened, setCoworkOpened] = useState(false);
+  useEffect(() => { if (boardView === "cowork") setCoworkOpened(true); }, [boardView]);
   const setTaskOrder = useStore((s) => s.setTaskOrder);
   const setTaskSort = useStore((s) => s.setTaskSort);
   const all = Object.values(threads);
@@ -235,10 +238,13 @@ export function Board() {
         ) : null}
       </div>
       {(ideOpened || boardView === "ide") && <div className="ide-mount" hidden={boardView !== "ide"}><Suspense fallback={<p>Opening IDE…</p>}><Ide /></Suspense></div>}
-      {boardView === "ide" ? null : boardView === "schedules" ? (
+      {/* Co-work stays MOUNTED once opened, hidden the way the IDE is. Unmounting it was the whole
+          "leaving the tab mid-turn loses your place" complaint: the session data lives in the store and
+          keeps streaming either way, but the transcript's scroll position, expanded tool bursts, draft
+          and staged attachments are component state, and they died on every switch to the task board. */}
+      {(coworkOpened || boardView === "cowork") && <CoWork hidden={boardView !== "cowork"} />}
+      {boardView === "ide" || boardView === "cowork" ? null : boardView === "schedules" ? (
         <ScheduledTasks />
-      ) : boardView === "cowork" ? (
-        <CoWork />
       ) : boardView === "notes" ? (
         <OperatorNotes />
       ) : boardView === "supervisor" ? (
@@ -277,6 +283,7 @@ export function Board() {
               ) : null}
             </>
           )}
+          <CoworkBoardCards />
           <ClosedSection threads={closed} />
         </>
       )}

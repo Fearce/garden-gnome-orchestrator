@@ -4,13 +4,13 @@ import type { CoworkMessage, CoworkSession, CoworkSteeringMode, ImplementorProvi
 import {
   CoworkAttachButton,
   CoworkComposerAttachments,
-  CoworkMessageAttachments,
   useCoworkAttachments,
 } from "../lib/attachments.js";
 import { FolderPicker } from "./FolderPicker.js";
 import { Markdown } from "./Markdown.js";
 import { PathInput } from "./PathInput.js";
 import { CodeContextBar } from "./CodeContextBar.js";
+import { CoworkTranscript } from "./CoworkTranscript.js";
 import { coworkOrigin } from "../lib/codeNav.js";
 
 const EMPTY_COWORK_MESSAGES: CoworkMessage[] = [];
@@ -35,7 +35,10 @@ function statusText(session: CoworkSession): string {
   }
 }
 
-export function CoWork() {
+/** `hidden` keeps this whole desk mounted while the owner is looking at another board area. The
+ *  attribute (not a conditional render) is what preserves the transcript scroll position, expanded tool
+ *  bursts, the draft and any staged attachments across a trip to the task board mid-turn. */
+export function CoWork({ hidden = false }: { hidden?: boolean } = {}) {
   const sessionsById = useStore((state) => state.coworkSessions);
   const selectedId = useStore((state) => state.selectedCoworkId);
   const select = useStore((state) => state.selectCowork);
@@ -51,7 +54,9 @@ export function CoWork() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [promoteOpen, setPromoteOpen] = useState(false);
+  const openSummary = useStore((state) => state.openCoworkSummary);
+  const summaryFor = useStore((state) => state.coworkSummaryFor);
   const attachmentSession = useRef(selectedId);
 
   const sessions = useMemo(
@@ -63,15 +68,6 @@ export function CoWork() {
     ? outbound.filter((message): message is Extract<typeof message, { surface: "cowork" }> =>
       message.surface === "cowork" && message.sessionId === selectedId)
     : [];
-  const activitySignature = `${messages.length}:${messages.reduce((chars, message) => chars + message.content.length + (message.attachments?.length ?? 0), 0)}:${pending.length}`;
-
-  useEffect(() => {
-    const node = scrollRef.current;
-    if (!node) return;
-    const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 180;
-    if (nearBottom || messages.length < 3) node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-  }, [activitySignature, messages.length]);
-
   useEffect(() => {
     if (selectedId && !sessionsById[selectedId]) select(null);
   }, [selectedId, sessionsById, select]);
@@ -96,7 +92,7 @@ export function CoWork() {
   };
 
   return (
-    <section className={`cowork-shell${selected ? " has-session" : ""}`}>
+    <section className={`cowork-shell${selected ? " has-session" : ""}`} hidden={hidden}>
       <aside className="cowork-session-list" aria-label="Co-work sessions">
         <div className="cowork-list-head">
           <div>
@@ -181,6 +177,21 @@ export function CoWork() {
                 <span className={`cowork-state-dot ${selected.state}`} />{statusText(selected)}
               </span>
               <button
+                className="btn ghost sm cowork-head-action"
+                title="What this conversation changed: files, commits and what was asked"
+                onClick={() => openSummary(selected.id)}
+              >
+                <TrailIcon /> Summary
+              </button>
+              <button
+                className="btn ghost sm cowork-head-action"
+                title="Hand this exploration to the pipeline as a proper task"
+                disabled={selected.state === "running" || selected.state === "stopping"}
+                onClick={() => setPromoteOpen(true)}
+              >
+                <PromoteIcon /> Promote to task
+              </button>
+              <button
                 className="cowork-delete"
                 title="Delete session and conversation"
                 aria-label="Delete session"
@@ -203,8 +214,12 @@ export function CoWork() {
               </div>
             ) : null}
 
-            <div className="cowork-transcript" ref={scrollRef}>
-              {!messages.length && !pending.length ? (
+            <CoworkTranscript
+              key={selected.id}
+              sessionId={selected.id}
+              messages={messages}
+              pending={pending}
+              empty={(
                 <div className="cowork-chat-empty">
                   <div className="cowork-empty-mark"><SparkIcon /></div>
                   <h3>Work directly with your Co-worker</h3>
@@ -215,29 +230,11 @@ export function CoWork() {
                     <span><CheckIcon /> You decide what’s next</span>
                   </div>
                 </div>
-              ) : null}
-              {messages.map((message) => <CoworkBubble key={message.id} message={message} />)}
-              {pending.map((message) => (
-                <div key={message.id} className="cowork-message user pending">
-                  <div className="cowork-bubble">{message.content}</div>
-                  <CoworkComposerAttachments files={message.attachments ?? []} />
-                  <span className={message.status === "failed" ? "delivery-failed" : "delivery-sending"}>
-                    {message.status === "failed"
-                      ? message.error ?? "Not delivered"
-                      : message.mode === "queue"
-                        ? "queueing…"
-                        : message.mode === "interrupt"
-                          ? "interrupting…"
-                          : message.mode === "append"
-                            ? "injecting…"
-                            : "sending…"}
-                  </span>
-                </div>
-              ))}
-              {selected.state === "running" && !messages.some((message) => message.turnId === selected.activeTurnId && message.role === "coworker") ? (
+              )}
+              footer={selected.state === "running" && !messages.some((message) => message.turnId === selected.activeTurnId && message.role === "coworker") ? (
                 <div className="cowork-working"><span /><span /><span /> Co-worker is working — steer it any time</div>
               ) : null}
-            </div>
+            />
 
             <footer className="cowork-composer-wrap">
               <div
@@ -329,59 +326,9 @@ export function CoWork() {
         )}
       </div>
       {newOpen ? <NewCoworkModal onClose={() => setNewOpen(false)} /> : null}
+      {promoteOpen && selected ? <PromoteCoworkModal session={selected} onClose={() => setPromoteOpen(false)} /> : null}
+      {summaryFor ? <CoworkSummaryModal sessionId={summaryFor} onClose={() => openSummary(null)} /> : null}
     </section>
-  );
-}
-
-function CoworkBubble({ message }: { message: CoworkMessage }) {
-  const meta = message.meta && typeof message.meta === "object" ? message.meta as Record<string, unknown> : null;
-  if (message.kind === "thinking") {
-    return (
-      <details className="cowork-detail thinking">
-        <summary>{message.partial ? "Thinking…" : "Reasoning"}</summary>
-        <Markdown text={message.content} />
-      </details>
-    );
-  }
-  if (message.kind === "tool" || message.kind === "tool_result") {
-    const label = message.kind === "tool"
-      ? String(meta?.name ?? message.content)
-      : `${meta?.isError ? "Failed" : "Finished"} ${String(meta?.id ?? "tool")}`;
-    return (
-      <details className={`cowork-detail tool${meta?.isError ? " error" : ""}`}>
-        <summary><ToolIcon /> {label}</summary>
-        <pre>{message.kind === "tool" ? JSON.stringify(meta?.input ?? meta, null, 2) : message.content}</pre>
-      </details>
-    );
-  }
-  if (message.role === "system" || message.kind === "system") {
-    return <div className="cowork-system-message"><span>{message.content}</span></div>;
-  }
-  const steeringMode = message.role === "user" && typeof meta?.steeringMode === "string" ? meta.steeringMode : null;
-  const steeringDelivery = typeof meta?.delivery === "string" ? meta.delivery : null;
-  const steeringLabel = steeringDelivery === "failed"
-    ? "Delivery failed"
-    : steeringDelivery === "pending"
-      ? "Delivery unconfirmed"
-      : steeringMode === "queue"
-        ? "Queued"
-        : steeringMode === "append"
-          ? "Injected"
-          : steeringMode === "interrupt"
-            ? "Interrupted + injected"
-            : null;
-  return (
-    <article className={`cowork-message ${message.role}${message.partial ? " partial" : ""}`}>
-      <div className="cowork-speaker">
-        {message.role === "user" ? "You" : "Co-worker"}
-        {steeringLabel ? <span className={`cowork-steering-badge ${steeringMode} ${steeringDelivery ?? ""}`}>{steeringLabel}</span> : null}
-      </div>
-      <div className="cowork-bubble">
-        {message.role === "coworker" ? <Markdown text={message.content} /> : message.content}
-        <CoworkMessageAttachments refs={message.attachments} />
-        {message.partial ? <span className="cowork-caret" /> : null}
-      </div>
-    </article>
   );
 }
 
@@ -482,11 +429,113 @@ export function NewCoworkModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** Hand this exploration to the pipeline. The brief the task starts from is composed SERVER-side from
+ *  the durable transcript (repo, what was asked, files touched, commits made); the owner supplies only
+ *  the objective, because that is the one thing the conversation cannot infer. */
+function PromoteCoworkModal({ session, onClose }: { session: CoworkSession; onClose: () => void }) {
+  const promote = useStore((state) => state.promoteCowork);
+  const promoting = useStore((state) => state.coworkPromoting);
+  const error = useStore((state) => state.coworkActionError);
+  const promoted = useStore((state) => state.coworkPromoted);
+  const clearPromotion = useStore((state) => state.clearCoworkPromotion);
+  const selectThread = useStore((state) => state.select);
+  const setBoardView = useStore((state) => state.setBoardView);
+  const lastOwnerLine = useStore((state) => {
+    const messages = state.coworkMessages[session.id] ?? [];
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i]!;
+      if (message.role === "user" && message.kind === "text") return message.content;
+    }
+    return "";
+  });
+  const [objective, setObjective] = useState(lastOwnerLine);
+  const landed = promoted?.sessionId === session.id ? promoted : null;
+
+  const open = (): void => {
+    if (!landed) return;
+    clearPromotion();
+    setBoardView("tasks");
+    selectThread(landed.threadId);
+    onClose();
+  };
+
+  return (
+    <div className="scrim" onClick={onClose}>
+      <div className="modal cowork-promote-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="m-head">
+          <div className="q-context">Promote to task</div>
+          <p>Starts an ordinary pipeline task in <span className="mono">{repoLabel(session.workspace)}</span>. This conversation stays exactly as it is.</p>
+        </div>
+        <div className="m-body">
+          {landed ? (
+            <div className="cowork-promote-done" role="status">
+              <strong>Task dispatched.</strong>
+              <span>It carries this session’s repo, instructions, touched files and commits as context to verify.</span>
+            </div>
+          ) : (
+            <>
+              <label>
+                <span>What should the task do?</span>
+                <textarea
+                  value={objective}
+                  rows={4}
+                  autoFocus
+                  maxLength={2000}
+                  placeholder="Ship the responsive Co-work shell"
+                  onChange={(event) => setObjective(event.target.value)}
+                />
+                <small>The rest of the brief is built from this conversation: what you asked, where it got to, which files it touched and what it committed.</small>
+              </label>
+              {error ? <div className="cowork-create-error" role="alert">{error}</div> : null}
+            </>
+          )}
+        </div>
+        <div className="m-foot">
+          <button className="btn ghost" onClick={onClose}>{landed ? "Stay here" : "Cancel"}</button>
+          {landed ? (
+            <button className="btn primary" onClick={open}>Open the task</button>
+          ) : (
+            <button className="btn primary" disabled={promoting || !objective.trim()} onClick={() => promote(session.id, objective)}>
+              {promoting ? "Dispatching…" : "Create task"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The readable trail: what a session changed, for one you timeboxed, abandoned, or simply forgot.
+ *  Derived server-side from the transcript itself, so opening it costs no agent turn. */
+function CoworkSummaryModal({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+  const built = useStore((state) => state.coworkSummaries[sessionId]);
+  const name = useStore((state) => state.coworkSessions[sessionId]?.name ?? "this session");
+  return (
+    <div className="scrim" onClick={onClose}>
+      <div className="modal cowork-summary-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="m-head">
+          <div className="q-context">Session trail</div>
+          <p>{name}</p>
+        </div>
+        <div className="m-body cowork-summary-body">
+          {built === undefined ? <p className="faint">Reading the conversation…</p>
+            : built === null ? <p className="faint">That session is no longer available.</p>
+              : <Markdown text={built.markdown} />}
+        </div>
+        <div className="m-foot">
+          <button className="btn ghost" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PlusIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M12 5v14M5 12h14" /></svg>; }
 function SendIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></svg>; }
 function StopIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>; }
 function TrashIcon() { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5" /></svg>; }
-function ToolIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14.7 6.3a4 4 0 0 0-5-5l2.1 2.1-2.8 2.8L6.9 4.1a4 4 0 0 0 5 5L19 16.2a2 2 0 1 1-2.8 2.8l-7.1-7.1" /></svg>; }
 function FolderIcon() { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h6l2 2h10v11H3Z" /></svg>; }
 function CheckIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m5 12 4 4L19 6" /></svg>; }
 function SparkIcon() { return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m12 3 1.7 4.3L18 9l-4.3 1.7L12 15l-1.7-4.3L6 9l4.3-1.7Z" /><path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8Z" /></svg>; }
+function TrailIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h11M4 12h16M4 18h9" /></svg>; }
+function PromoteIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19V5M6 11l6-6 6 6" /></svg>; }

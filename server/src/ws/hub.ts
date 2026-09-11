@@ -169,6 +169,19 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
     case "cowork.delete":
       sendCoworkAction(socket, "delete", ctx.cowork.remove(cmd.sessionId));
       break;
+    case "cowork.summary": {
+      const built = ctx.cowork.summary(cmd.sessionId);
+      send(socket, {
+        type: "cowork.summary",
+        sessionId: cmd.sessionId,
+        summary: built?.summary ?? null,
+        markdown: built?.markdown ?? null,
+      });
+      break;
+    }
+    case "cowork.promote":
+      sendCoworkAction(socket, "promote", await ctx.cowork.promote(cmd.sessionId, cmd.objective), cmd.clientId);
+      break;
     case "cowork.history": {
       const history = ctx.cowork.history(cmd.sessionId);
       send(socket, { type: "cowork.history", sessionId: cmd.sessionId, ...history });

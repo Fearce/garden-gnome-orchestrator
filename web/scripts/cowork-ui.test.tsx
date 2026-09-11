@@ -117,7 +117,12 @@ assert.match(ready, /header\.tsx/, "an ordinary sent file renders by name after 
 assert.match(ready, /api\/attachment\/source-1\?download=1/, "ordinary files use the forced-download route");
 assert.match(ready, /Changed the responsive shell/, "Co-worker reply renders durably");
 assert.match(ready, /<strong>Typecheck passed\.<\/strong>/, "agent markdown is rendered as conversation content");
-assert.match(ready, /<details class="cowork-detail tool"/, "tool activity is present but collapsed");
+// Tool activity is FOLDED, not listed: one burst row carrying what it did, expandable on click. This
+// replaced one <details> per call, which is what buried the conversation it was meant to explain.
+assert.match(ready, /<div class="cowork-tools"/, "tool activity folds into a single collapsed burst");
+assert.match(ready, /cowork-tools-label">worked [^<]*call/, "the folded burst says how long it worked and how many calls it made");
+assert.match(ready, /aria-expanded="false"/, "the burst starts collapsed, so the transcript reads as conversation");
+assert.doesNotMatch(ready, /npm run typecheck/, "a collapsed burst does not paint its raw tool input into the transcript");
 assert.match(ready, /Delivery failed/, "a failed live direction remains clear after reload");
 assert.match(ready, /What should we work on next\?/, "completed turn hands the composer back to the owner");
 assert.match(ready, /context linked/, "resumable context is disclosed");

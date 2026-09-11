@@ -124,6 +124,10 @@ async function main(): Promise<void> {
     isCapped: (target, agent) => manager.coworkRunCapped(target, agent),
     noteCap: (target, agent) => manager.coworkNoteCap(target, agent),
     releasedWorkspace: () => manager.coworkReleasedWorkspace(),
+    // "Promote to task" is a one-way hand-off into the ordinary pipeline: the new thread is a normal
+    // task from here on, and the conversation it came from keeps no thread, no findings and no settle
+    // path. Same call the Director makes, so route selection/QA behave exactly as for any dispatch.
+    promoteToTask: (input) => manager.dispatch(input),
   });
   manager.attachCoworkWorkspaceGuard((workspace) => cowork.hasLiveWorkspace(workspace));
   // Crash records should show what the pipeline was DOING when it died, and a slow memory climb should be

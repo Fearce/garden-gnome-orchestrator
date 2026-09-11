@@ -13,7 +13,7 @@ import {
   trigramMatchExpr,
   type BackfillStep,
 } from "./searchIndex.js";
-import { BRIEF_PREVIEW_CHARS } from "../types.js";
+import { BRIEF_PREVIEW_CHARS, COWORK_SNIPPET_CHARS } from "../types.js";
 import type {
   AgentRun,
   AgentRunState,
@@ -276,8 +276,30 @@ function rowToCoworkSession(r: Row): CoworkSession {
     error: (r.error as string | null) ?? null,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
+    activeTurnStartedAt: (r.active_turn_started_at as number | null) ?? null,
+    lastActivityAt: (r.last_activity_at as number | null) ?? null,
+    lastSnippet: (r.last_snippet as string | null) ?? null,
+    lastSnippetRole: (r.last_snippet_role as CoworkMessageRole | null) ?? null,
   };
 }
+
+/** Every read of a session carries its board-card fields, so a card never costs a second round trip and
+ *  no caller can accidentally publish a half-populated session. The snippet is clipped IN SQL: a card
+ *  shows one line, and a Co-worker reply can run to kilobytes (see hot-path-query-performance.md).
+ *  Tool traffic is excluded on purpose - "ran Bash" is not what the owner left the session doing. */
+const COWORK_SESSION_SELECT = `
+  SELECT s.*,
+         (SELECT t.started_at FROM cowork_turns t WHERE t.id = s.active_turn_id) AS active_turn_started_at,
+         m.created_at AS last_activity_at,
+         substr(m.content, 1, ${COWORK_SNIPPET_CHARS}) AS last_snippet,
+         m.role AS last_snippet_role
+    FROM cowork_sessions s
+    LEFT JOIN cowork_messages m ON m.id = (
+      SELECT id FROM cowork_messages
+       WHERE session_id = s.id AND kind IN ('text', 'system')
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1
+    )`;
 
 function rowToCoworkTurn(r: Row): CoworkTurn {
   return {
@@ -1075,6 +1097,10 @@ export class Db {
       error: null,
       createdAt: at,
       updatedAt: at,
+      activeTurnStartedAt: null,
+      lastActivityAt: null,
+      lastSnippet: null,
+      lastSnippetRole: null,
     };
     this.raw.prepare(
       `INSERT INTO cowork_sessions
@@ -1083,17 +1109,36 @@ export class Db {
        VALUES
          (@id, @name, @autoNamed, @workspace, @state, @requestedProvider, @requestedModel, @provider, @model,
           @effort, @account, @agentSessionId, @activeTurnId, @error, @createdAt, @updatedAt)`,
-    ).run({ ...session, autoNamed: session.autoNamed ? 1 : 0 });
+      // Bind the COLUMNS only: the session object also carries derived card fields, which named binding
+      // would reject as unknown parameters.
+    ).run({
+      id: session.id,
+      name: session.name,
+      autoNamed: session.autoNamed ? 1 : 0,
+      workspace: session.workspace,
+      state: session.state,
+      requestedProvider: session.requestedProvider,
+      requestedModel: session.requestedModel,
+      provider: session.provider,
+      model: session.model,
+      effort: session.effort,
+      account: session.account,
+      agentSessionId: session.agentSessionId,
+      activeTurnId: session.activeTurnId,
+      error: session.error,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+    });
     return session;
   }
 
   getCoworkSession(id: string): CoworkSession | null {
-    const row = this.raw.prepare("SELECT * FROM cowork_sessions WHERE id = ?").get(id) as Row | undefined;
+    const row = this.raw.prepare(`${COWORK_SESSION_SELECT} WHERE s.id = ?`).get(id) as Row | undefined;
     return row ? rowToCoworkSession(row) : null;
   }
 
   listCoworkSessions(): CoworkSession[] {
-    return (this.raw.prepare("SELECT * FROM cowork_sessions ORDER BY updated_at DESC, created_at DESC").all() as Row[]).map(rowToCoworkSession);
+    return (this.raw.prepare(`${COWORK_SESSION_SELECT} ORDER BY s.updated_at DESC, s.created_at DESC`).all() as Row[]).map(rowToCoworkSession);
   }
 
   listCoworkTurns(sessionId: string): CoworkTurn[] {
@@ -1382,7 +1427,7 @@ export class Db {
   /** A process restart never autonomously replays a human-led turn. It closes orphan rows but retains
    * their provider session id, so the owner's next instruction can deliberately continue the conversation. */
   interruptOrphanedCoworkTurns(): CoworkSession[] {
-    const active = (this.raw.prepare("SELECT * FROM cowork_sessions WHERE active_turn_id IS NOT NULL OR state IN ('running','stopping')").all() as Row[]).map(rowToCoworkSession);
+    const active = (this.raw.prepare(`${COWORK_SESSION_SELECT} WHERE s.active_turn_id IS NOT NULL OR s.state IN ('running','stopping')`).all() as Row[]).map(rowToCoworkSession);
     if (!active.length) return [];
     const at = now();
     const error = "The server restarted during this turn. The conversation and agent session were preserved; send the next instruction to continue.";

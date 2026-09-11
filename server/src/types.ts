@@ -1049,7 +1049,19 @@ export interface CoworkSession {
   error: string | null;
   createdAt: number;
   updatedAt: number;
+  /** Derived, never a column: the live turn's start, so a board card can run an elapsed clock without
+   *  fetching that session's history. Null whenever no turn is claimed. */
+  activeTurnStartedAt: number | null;
+  /** Derived, never a column: the newest conversational line (owner, Co-worker or system, with tool
+   *  noise excluded), clipped in SQL so a snapshot never carries a whole reply. */
+  lastActivityAt: number | null;
+  lastSnippet: string | null;
+  lastSnippetRole: CoworkMessageRole | null;
 }
+
+/** The width a session card's last-message snippet is clipped to, in SQL, before it ever crosses the
+ *  SQLite/JS boundary. A card shows one line; a reply can run to kilobytes. */
+export const COWORK_SNIPPET_CHARS = 220;
 
 /** One bounded work slice claimed by an initial owner prompt and optionally refined by live steering. */
 export interface CoworkTurn {
@@ -1090,6 +1102,43 @@ export interface CoworkActionResult {
   ok: boolean;
   session?: CoworkSession;
   error?: string;
+  /** Set only by `promote`: the id of the NEW pipeline task built from this conversation's context.
+   *  The session itself never gains a thread: this is a one-way hand-off, not an attachment. */
+  threadId?: string;
+}
+
+/** A file the conversation wrote, as replayed from the durable transcript's own tool calls. */
+export interface CoworkTouchedFile {
+  path: string;
+  /** How many tool calls wrote it: the cheapest honest signal of where the work concentrated. */
+  writes: number;
+}
+
+export interface CoworkCommit {
+  sha: string;
+  subject: string;
+}
+
+/** What a Co-work conversation actually did, derived deterministically from its durable transcript.
+ *  No model call: a summary the owner reads to decide whether to resume or abandon must not itself
+ *  depend on capacity, and a timeboxed session is exactly when capacity is short. */
+export interface CoworkSessionSummary {
+  sessionId: string;
+  name: string;
+  workspace: string;
+  /** Owner instructions in order: what was asked, which is what "explored/decided" means here. */
+  directions: string[];
+  /** The Co-worker's closing prose for each completed turn, newest last. */
+  outcomes: string[];
+  files: CoworkTouchedFile[];
+  commits: CoworkCommit[];
+  turns: number;
+  toolCalls: number;
+  costUsd: number | null;
+  startedAt: number;
+  endedAt: number;
+  /** Present when the last turn did not simply finish: the trail an abandoned session leaves. */
+  endedBecause: CoworkTurnState | null;
 }
 
 /** An explicit owner model/capacity request. This is task-local and strict: automatic model/provider

@@ -18,6 +18,7 @@ import { join } from "node:path";
 import type { AgentRunLike, ResultEvent, SendOpts, UserContent } from "../agents/runner.js";
 import { contentWithImages } from "../attachments.js";
 import type { CoworkMessage, FileAttachment, RateLimitInfo, AgentEvent } from "../types.js";
+import { COWORK_SNIPPET_CHARS } from "../types.js";
 import type { CoworkRuntime, CoworkTarget } from "../orchestrator/cowork.js";
 import type { AccountManager } from "../accounts/accountManager.js";
 
@@ -197,6 +198,8 @@ class FakeRuntime implements CoworkRuntime {
   released = 0;
   capped = false;
   steeringResultMode: "per-message" | "coalesced" | undefined;
+  readonly promoted: { title: string; workspace: string; brief: string }[] = [];
+  promoteError: string | null = null;
 
   prepare(input: Parameters<CoworkRuntime["prepare"]>[0]) {
     if (this.prepareError) return { error: this.prepareError };
@@ -217,6 +220,11 @@ class FakeRuntime implements CoworkRuntime {
   isCapped(): boolean { return this.capped; }
   noteCap(): void {}
   releasedWorkspace(): void { this.released++; }
+  async promoteToTask(input: { title: string; workspace: string; brief: string }): Promise<string> {
+    if (this.promoteError) throw new Error(this.promoteError);
+    this.promoted.push(input);
+    return `promoted-thread-${this.promoted.length}`;
+  }
 }
 
 class StubAccounts {
@@ -404,7 +412,13 @@ async function main(): Promise<void> {
     check("stop is acknowledged while a turn is live", stopResult.ok);
     await waitFor(() => db.getCoworkSession(sessionId)?.state === "idle", "cancellation returns the session to ready");
     check("cancelled turn is recorded, not retried", db.listCoworkTurns(sessionId).at(-1)?.state === "cancelled");
-    check("cancellation posts a usable-session message", db.listCoworkMessages(sessionId).at(-1)?.content.includes("ready for your next instruction"));
+    const afterStop = db.listCoworkMessages(sessionId);
+    check("cancellation posts a usable-session message", afterStop.some((message) => message.content.includes("ready for your next instruction")));
+    // The trail follows the outcome line, because a session the owner walked away from has to explain
+    // itself without a second agent turn (workstream 4).
+    const stopTrail = afterStop.at(-1);
+    check("a stopped turn leaves a readable session trail", stopTrail?.kind === "system" && stopTrail.content.includes("Session summary"));
+    check("the trail names the outcome, not just the fact of stopping", !!stopTrail?.content.includes("the owner stopped the last turn"));
 
     console.log("\n4a - optional wall-clock boundaries force a collaborative hand-back without a retry");
     const untimedRuntime = new FakeRuntime();
@@ -514,6 +528,44 @@ async function main(): Promise<void> {
     await waitFor(() => db.getCoworkSession(orphan.id)?.state === "idle", "post-restart follow-up completes normally");
 
     check("session/message events were emitted for live UI convergence", events.includes("cowork.session") && events.includes("cowork.message") && events.includes("cowork.delta"));
+
+    console.log("\n7 - board-card fields and the one-way promotion to a task");
+    const card = db.getCoworkSession(sessionId)!;
+    check("an idle session reports no live-turn clock", card.activeTurnStartedAt === null);
+    check("a card carries the newest conversational line without a second fetch", !!card.lastSnippet && card.lastActivityAt !== null);
+    check("the snippet is clipped in SQL, never shipped whole", (card.lastSnippet ?? "").length <= COWORK_SNIPPET_CHARS);
+    check("tool traffic never becomes the card's snippet", card.lastSnippetRole !== null && ["user", "coworker", "system"].includes(card.lastSnippetRole!));
+    const liveCardStart = Date.now();
+    check("a live turn exposes its start so a card can run an elapsed clock", restarted.send(orphan.id, "Take one more look").ok);
+    const liveCard = db.getCoworkSession(orphan.id)!;
+    check("the live clock is the TURN's start, not the session's", (liveCard.activeTurnStartedAt ?? 0) >= liveCardStart - 5_000 && liveCard.activeTurnStartedAt !== null);
+    const busyPromote = await restarted.promote(orphan.id);
+    check("a running session refuses promotion rather than briefing unsettled work", !busyPromote.ok && !!busyPromote.error?.includes("finish"));
+    restartRuntime.runs.at(-1)!.complete("Nothing further needed.");
+    await waitFor(() => db.getCoworkSession(orphan.id)?.state === "idle", "the extra card turn settles");
+
+    const promoted = await restarted.promote(sessionId, "Ship the responsive shell for real");
+    check("promotion dispatches an ordinary task", promoted.ok && !!promoted.threadId);
+    const brief = restartRuntime.promoted.at(-1);
+    check("the promoted task runs in the same workspace", brief?.workspace === realpathSync(workspace));
+    check("the objective leads the brief", !!brief?.brief.startsWith("Ship the responsive shell for real"));
+    check("the brief names its source conversation", !!brief?.brief.includes("Promoted from the Co-work session"));
+    check("the brief warns that exploration is context, not delivered work", !!brief?.brief.includes("context to verify"));
+    check("the brief carries what the owner asked", !!brief?.brief.includes("What the owner asked during that session"));
+    check("promotion leaves a breadcrumb in the conversation", db.listCoworkMessages(sessionId).some((message) => message.content.includes("Promoted to a task")));
+    check(
+      "the session itself gains no thread, so nothing can settle it",
+      db.getCoworkSession(sessionId)?.state === "idle" && !("threadId" in (db.getCoworkSession(sessionId) as object)),
+    );
+    restartRuntime.promoteError = "dispatch refused";
+    const refused = await restarted.promote(sessionId, "Try again");
+    check("a refused dispatch reports instead of pretending a task exists", !refused.ok && !!refused.error?.includes("dispatch refused"));
+    restartRuntime.promoteError = null;
+
+    const trail = restarted.summary(sessionId);
+    check("a summary is available on demand for any session", !!trail?.markdown.includes("Session summary"));
+    check("the summary reports the conversation's own turn count", (trail?.summary.turns ?? 0) > 0);
+    check("the summary knows which workspace it describes", trail?.summary.workspace === realpathSync(workspace));
   } finally {
     try { db.raw.close(); } catch { /* already closed */ }
     rmSync(root, { recursive: true, force: true });

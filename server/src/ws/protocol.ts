@@ -21,6 +21,7 @@ import type {
   CoworkActionResult,
   CoworkMessage,
   CoworkSession,
+  CoworkSessionSummary,
   CoworkTurn,
   DirectorMessage,
   DirectorStatus,
@@ -136,6 +137,7 @@ export type ServerEvent =
   | { type: "cowork.delta"; sessionId: string; turnId: string; messageId: string; text: string }
   | { type: "cowork.thinking"; sessionId: string; turnId: string; messageId: string; text: string }
   | { type: "cowork.action"; sessionId?: string; action: string; clientId?: string; ok: boolean; error?: string; result: CoworkActionResult }
+  | { type: "cowork.summary"; sessionId: string; summary: CoworkSessionSummary | null; markdown: string | null }
   // ---- the repo-level Git console (the in-app GitHub Desktop) ----
   // `preferred` is the repo of the task the console was opened from (`forThread`), already resolved
   // from its workspace — null when there was no task or it isn't in a checkout. `forThread` is echoed
@@ -255,6 +257,15 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("cowork.rename"), sessionId: z.string(), name: z.string().trim().min(1).max(120) }),
   z.object({ type: z.literal("cowork.delete"), sessionId: z.string() }),
   z.object({ type: z.literal("cowork.history"), sessionId: z.string() }),
+  z.object({ type: z.literal("cowork.summary"), sessionId: z.string() }),
+  z.object({
+    type: z.literal("cowork.promote"),
+    sessionId: z.string(),
+    // Blank means "use the conversation's own last instruction as the objective"; the manager decides,
+    // because only it can see whether that instruction exists.
+    objective: z.string().max(2_000).optional(),
+    clientId: z.string().optional(),
+  }),
   z.object({ type: z.literal("question.answer"), questionId: z.string(), answer: z.string() }),
   z.object({
     type: z.literal("thread.inject"),

@@ -15,6 +15,7 @@ import type {
   CodeSubjectKind,
   CoworkMessage,
   CoworkSession,
+  CoworkSessionSummary,
   CoworkSteeringMode,
   CoworkTurn,
   DirectorItem,
@@ -165,6 +166,18 @@ interface State {
   selectedCoworkId: string | null;
   coworkCreating: boolean;
   coworkActionError: string | null;
+  // Where the owner had scrolled each transcript, and whether they were pinned to the bottom. Kept in
+  // the STORE rather than the component: leaving the Co-work tab mid-turn must cost nothing, and the
+  // panel unmounts when the board switches views.
+  coworkScroll: Record<string, { top: number; stuck: boolean }>;
+  // Tool bursts and individual calls the owner opened. Same reasoning: an expansion is a reading
+  // position, and losing it on every tab switch is the scroll pain this remembers.
+  coworkOpenTools: Record<string, true>;
+  coworkSummaries: Record<string, { summary: CoworkSessionSummary; markdown: string } | null>;
+  coworkSummaryFor: string | null;
+  coworkPromoting: boolean;
+  // The task a promotion created, so the console can offer to jump to it once.
+  coworkPromoted: { sessionId: string; threadId: string } | null;
   implementationMemos: Record<string, ImplementationMemo[]>;
   approvalMode: boolean;
   // Server-authoritative pipeline settings (broadcast over WS); the panel edits these via setSettings.
@@ -310,6 +323,11 @@ interface State {
   renameCowork: (sessionId: string, name: string) => void;
   deleteCowork: (sessionId: string) => void;
   clearCoworkError: () => void;
+  rememberCoworkScroll: (sessionId: string, at: { top: number; stuck: boolean }) => void;
+  toggleCoworkTool: (key: string) => void;
+  openCoworkSummary: (sessionId: string | null) => void;
+  promoteCowork: (sessionId: string, objective: string) => boolean;
+  clearCoworkPromotion: () => void;
   // Search the whole director conversation and every task (title, brief, conversation), or clear it.
   searchDirector: (query: string) => void;
   clearDirectorSearch: () => void;
@@ -938,6 +956,12 @@ export const useStore = create<State>((set) => ({
   selectedCoworkId: null,
   coworkCreating: false,
   coworkActionError: null,
+  coworkScroll: {},
+  coworkOpenTools: {},
+  coworkSummaries: {},
+  coworkSummaryFor: null,
+  coworkPromoting: false,
+  coworkPromoted: null,
   implementationMemos: {},
   approvalMode: false,
   settings: DEFAULT_SETTINGS,
@@ -1066,6 +1090,30 @@ export const useStore = create<State>((set) => ({
   renameCowork: (sessionId, name) => sendCommand({ type: "cowork.rename", sessionId, name: name.trim() }),
   deleteCowork: (sessionId) => sendCommand({ type: "cowork.delete", sessionId }),
   clearCoworkError: () => set({ coworkActionError: null }),
+  rememberCoworkScroll: (sessionId, at) => set((s) => ({ coworkScroll: { ...s.coworkScroll, [sessionId]: at } })),
+  toggleCoworkTool: (key) =>
+    set((s) => {
+      if (s.coworkOpenTools[key]) {
+        const { [key]: _open, ...rest } = s.coworkOpenTools;
+        return { coworkOpenTools: rest };
+      }
+      return { coworkOpenTools: { ...s.coworkOpenTools, [key]: true as const } };
+    }),
+  openCoworkSummary: (sessionId) => {
+    set({ coworkSummaryFor: sessionId });
+    // Always re-ask rather than reusing a cached answer: the trail describes work that may have moved
+    // on since the dialog was last opened, and it is one cheap read.
+    if (sessionId) sendCommand({ type: "cowork.summary", sessionId });
+  },
+  promoteCowork: (sessionId, objective) => {
+    const text = objective.trim();
+    if (!text) return false;
+    set({ coworkActionError: null, coworkPromoting: true });
+    const sent = sendCommand({ type: "cowork.promote", sessionId, objective: text });
+    if (!sent) set({ coworkPromoting: false, coworkActionError: "Not delivered - the console is reconnecting." });
+    return sent;
+  },
+  clearCoworkPromotion: () => set({ coworkPromoted: null }),
   searchDirector: (query) => {
     const q = query.trim();
     if (!q) {
@@ -1592,11 +1640,17 @@ function applyEvent(ev: ServerEvent): void {
         const { [ev.sessionId]: _session, ...coworkSessions } = s.coworkSessions;
         const { [ev.sessionId]: _messages, ...coworkMessages } = s.coworkMessages;
         const { [ev.sessionId]: _turns, ...coworkTurns } = s.coworkTurns;
+        const { [ev.sessionId]: _scroll, ...coworkScroll } = s.coworkScroll;
+        const { [ev.sessionId]: _summary, ...coworkSummaries } = s.coworkSummaries;
         return {
           coworkSessions,
           coworkMessages,
           coworkTurns,
+          coworkScroll,
+          coworkSummaries,
           selectedCoworkId: s.selectedCoworkId === ev.sessionId ? null : s.selectedCoworkId,
+          coworkSummaryFor: s.coworkSummaryFor === ev.sessionId ? null : s.coworkSummaryFor,
+          coworkPromoted: s.coworkPromoted?.sessionId === ev.sessionId ? null : s.coworkPromoted,
         };
       });
       break;
@@ -1656,13 +1710,27 @@ function applyEvent(ev: ServerEvent): void {
       }));
       for (const message of ev.messages) clearOutboundTimer(message.id);
       break;
+    case "cowork.summary":
+      useStore.setState((s) => ({
+        coworkSummaries: {
+          ...s.coworkSummaries,
+          [ev.sessionId]: ev.summary && ev.markdown ? { summary: ev.summary, markdown: ev.markdown } : null,
+        },
+      }));
+      break;
     case "cowork.action":
       if (ev.clientId && !ev.ok) failOutbound(ev.clientId, ev.error ?? "The Co-worker command failed.");
       useStore.setState((s) => ({
         coworkCreating: ev.action === "create" ? false : s.coworkCreating,
+        coworkPromoting: ev.action === "promote" ? false : s.coworkPromoting,
         coworkActionError: ev.ok ? null : ev.error ?? "The Co-worker command failed.",
         ...(ev.result.session ? { coworkSessions: { ...s.coworkSessions, [ev.result.session.id]: ev.result.session } } : {}),
         ...(ev.ok && ev.action === "create" && ev.result.session ? { selectedCoworkId: ev.result.session.id } : {}),
+        // The board is where a task lives, so a successful promotion offers the jump rather than
+        // taking it: the owner may well want to keep pairing in the conversation they are looking at.
+        ...(ev.ok && ev.action === "promote" && ev.result.threadId && ev.sessionId
+          ? { coworkPromoted: { sessionId: ev.sessionId, threadId: ev.result.threadId } }
+          : {}),
       }));
       if (ev.ok && ev.action === "create" && ev.result.session) sendCommand({ type: "cowork.history", sessionId: ev.result.session.id });
       break;
