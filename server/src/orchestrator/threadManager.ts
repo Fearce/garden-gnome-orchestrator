@@ -56,8 +56,9 @@ import {
   type CodexPool,
 } from "../agents/codexPools.js";
 import { GrokAgentRun, grokAuthAvailable, readGrokAuth } from "../agents/grokRunner.js";
-import { noteGrokCap, readGrokUsage, grokUsageCapped } from "../agents/grokUsage.js";
-import { noteZaiCap, readZaiUsage, zaiUsageCapped } from "../agents/zaiUsage.js";
+import { grokAllowanceReopened, noteGrokCap, readGrokUsage, grokUsageCapped } from "../agents/grokUsage.js";
+import type { AllowanceEvidence } from "../agents/usageFreshness.js";
+import { noteZaiCap, readZaiUsage, zaiAllowanceReopened, zaiUsageCapped } from "../agents/zaiUsage.js";
 import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, CURATED_ZAI_MODELS, uniq } from "../agents/modelCatalog.js";
 import { clampEffort, coworkerRunOptions, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort, reviewerConfig } from "../agents/roles.js";
 import { jsonContractInstruction, type JsonSchemaLike } from "../agents/structuredText.js";
@@ -604,11 +605,15 @@ const POOL_CAP_KV_KEY = "codex_pool_cap_until";
 // a fixed cooldown (config.grok.capCooldownMs). kv-persisted.
 const GROK_CAP_KV_KEY = "grok_cap_until";
 const GROK_CAP_RECORDED_AT_KV_KEY = "grok_cap_recorded_at";
+const GROK_CAP_LIFT_KV_KEY = "grok_cap_lift_at";
+const GROK_LABEL = "Grok";
 // z.ai's quota scrape supplies the true 5h/weekly reset; before it lands, a rejected turn falls back to a
 // fixed cooldown (config.zai.capCooldownMs). kv-persisted so a restart's auto-resume wave doesn't slam a
 // still-capped z.ai.
 const ZAI_CAP_KV_KEY = "zai_cap_until";
 const ZAI_CAP_RECORDED_AT_KV_KEY = "zai_cap_recorded_at";
+const ZAI_CAP_LIFT_KV_KEY = "zai_cap_lift_at";
+const ZAI_LABEL = "z.ai";
 const PROVIDER_HARD_LIMIT = 98;
 const STARTUP_HEALTH_COOLDOWN_LABEL = "startup health cooldown";
 // Provider usage caches older than their normal polling horizon are availability hints, not current
@@ -944,6 +949,14 @@ export class ThreadManager implements OrchestratorApi {
    *  Held only to de-duplicate the log line: the cap supervisor re-asks every 120s, so an unchanged
    *  reason must be said once, not forty times an hour. */
   private codexReopenRefusal: string | undefined;
+  /** Last logged "why the latch still holds" reason per provider label, so a refusal explains itself
+   *  once rather than on every routing decision. Cleared when that provider's latch lifts. */
+  private readonly reopenRefusals = new Map<string, string>();
+  /** When a telemetry disproof last lifted this provider's cap latch. A lift is a bet against the
+   *  provider's own verdict; a cap recorded AFTER it means the provider answered that bet, and no
+   *  further probe is spent until that latch expires on its own. Persisted, so a restart cannot buy a
+   *  second probe. */
+  private readonly allowanceLiftAt = new Map<string, number>();
   // Epoch ms until which Grok is treated as usage-capped (route implementors elsewhere). Set when a live
   // Grok run is rejected; a fixed cooldown (no reset epoch is exposed). Persisted so a restart's auto-resume
   // wave doesn't slam a still-capped Grok. Undefined = Grok not latched-capped.
@@ -3949,6 +3962,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
   }
 
+  /** Restore when this provider's latch was last lifted by telemetry. Hydrated even when no latch is
+   *  held: the re-cap that answers a lift arrives after it, so the memory has to outlive the lift. */
+  private loadAllowanceLift(label: string, key: string): void {
+    const at = Number(this.db.kvGet(key));
+    if (Number.isFinite(at) && at > 0) this.allowanceLiftAt.set(label, at);
+  }
+
   private persistedCapRecordedAt(key: string): number | undefined {
     const recordedAt = Number(this.db.kvGet(key));
     return Number.isFinite(recordedAt) && recordedAt > 0 ? recordedAt : undefined;
@@ -4077,6 +4097,75 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.hub.log("info", `Codex's stated reset still holds — ${reason}. It lifts when the provider says so, or at ${new Date(statedUntil).toLocaleString()}.`);
   }
 
+  /**
+   * Lift a Grok/z.ai cap latch when the provider's own fresh telemetry says the allowance reopened,
+   * and return whether it was lifted.
+   *
+   * This is the non-circular disproof Codex already has. A latch blocks every run on that provider, so
+   * "a newer successful run proves the reset stale" can never fire — the latch is precisely what stops
+   * such a run existing. Without this, a hold stands for its full nominal duration however wrong it
+   * was: one z.ai rejection on 2026-09-04 stated a weekly exhaustion resetting 6.2 days out, and the
+   * backend sat excluded for all of it while z.ai's own quota endpoint read its weekly window 6% used.
+   *
+   * `allowanceReopened` vetoes on missing, stale, not-newer-than-the-cap or still-spent telemetry, so
+   * the default remains the latch. What bounds the cost of a disagreeing meter is the RE-CAP check: a
+   * lift is a bet against the provider's own verdict, and once the provider answers that bet by
+   * capping us again, its verdict wins until that latch expires on its own. Bounding it by the probed
+   * WINDOW instead does not work — a rejection that states no reset falls back to a fixed cooldown, so
+   * every re-cap lands further out than the window before it and would slip straight past the guard,
+   * re-opening the lift/reject/lift flap this exists to prevent. A refusal is logged once per distinct
+   * reason, never silently.
+   */
+  private liftLatchOnReopenedAllowance(
+    label: string,
+    evidence: AllowanceEvidence,
+    latch: { capRecordedAt: number | undefined; latchedUntil: number; liftKey: string; clear: () => void },
+  ): boolean {
+    const lastLift = this.allowanceLiftAt.get(label);
+    if (lastLift != null && latch.capRecordedAt != null && latch.capRecordedAt > lastLift) {
+      // We cleared the latch once and the provider capped us again anyway. Its own verdict outranks a
+      // meter that cannot see whatever pool it is actually refusing on, and re-probing every poll
+      // would spend a dispatch a minute proving the same thing.
+      this.noteReopenRefusal(label, "the provider re-capped after its meters showed headroom", latch.latchedUntil, false);
+      return false;
+    }
+    if (!evidence.reopened) {
+      this.noteReopenRefusal(label, evidence.reason, latch.latchedUntil);
+      return false;
+    }
+    const now = Date.now();
+    this.hub.log(
+      "info",
+      `${label}'s allowance reopened since its recorded cap — ${evidence.reason}. Clearing the stale cap latch.`,
+    );
+    latch.clear(); // also drops this label's refusal note, so a later cap can explain itself again
+    this.allowanceLiftAt.set(label, now);
+    this.db.kvSet(latch.liftKey, String(now));
+    return true;
+  }
+
+  /** Forget a provider's last telemetry lift once its latch expires on its own. The disagreement that
+   *  lift started is settled by then, so the NEXT cap episode is entitled to its own single probe. */
+  private forgetAllowanceLift(label: string, liftKey: string): void {
+    this.allowanceLiftAt.delete(label);
+    this.db.kvSet(liftKey, "");
+  }
+
+  /** Log why a latch still holds, once per distinct reason — `grokCapActive`/`zaiCapActive` run on
+   *  every routing decision, so an undeduplicated line would be said dozens of times an hour. */
+  private noteReopenRefusal(label: string, reason: string, latchedUntil: number, meterCanLift = true): void {
+    // Dedupe on the reason with its numbers removed: one reason embeds a used-percent, and a meter that
+    // drifts 71% → 72% is the same state, not a new one to re-announce.
+    const key = reason.replace(/\d+/g, "#");
+    if (this.reopenRefusals.get(label) === key) return;
+    this.reopenRefusals.set(label, key);
+    const until = new Date(latchedUntil).toLocaleString();
+    this.hub.log(
+      "info",
+      `${label}'s usage-cap latch still holds — ${reason}. ${meterCanLift ? `It lifts when the meters say so, or at ${until}.` : `Its own verdict outranks our meters, so it holds until ${until}.`}`,
+    );
+  }
+
   /** Called after a successful app-server usage probe. A fresh positive Codex reading can free
    * cap-parked work immediately instead of waiting for the cap supervisor's next interval. */
   onCodexUsageRefresh(): void {
@@ -4087,6 +4176,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   /** Restore the persisted Grok usage-cap latch on boot (mirrors loadCodexCap). */
   private loadGrokCap(): void {
+    this.loadAllowanceLift(GROK_LABEL, GROK_CAP_LIFT_KV_KEY);
     const v = this.db.kvGet(GROK_CAP_KV_KEY);
     const until = v ? Number(v) : NaN;
     if (Number.isFinite(until) && until > Date.now()) {
@@ -4099,6 +4189,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private clearGrokCap(): void {
     this.grokCapUntil = undefined;
     this.grokCapRecordedAt = undefined;
+    this.reopenRefusals.delete(GROK_LABEL); // a LATER cap must be able to explain itself again
     this.db.kvSet(GROK_CAP_KV_KEY, "");
     this.db.kvSet(GROK_CAP_RECORDED_AT_KV_KEY, "");
     noteGrokCap(null);
@@ -4126,8 +4217,21 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private grokCapActive(): boolean {
     const now = Date.now();
     if (this.grokCapUntil != null) {
-      if (now < this.grokCapUntil) return true;
-      this.clearGrokCap();
+      if (now >= this.grokCapUntil) {
+        this.forgetAllowanceLift(GROK_LABEL, GROK_CAP_LIFT_KV_KEY);
+        this.clearGrokCap();
+      } else if (
+        this.liftLatchOnReopenedAllowance(GROK_LABEL, grokAllowanceReopened(this.grokCapRecordedAt, now), {
+          capRecordedAt: this.grokCapRecordedAt,
+          latchedUntil: this.grokCapUntil,
+          liftKey: GROK_CAP_LIFT_KV_KEY,
+          clear: () => this.clearGrokCap(),
+        })
+      ) {
+        return grokUsageCapped(now);
+      } else {
+        return true;
+      }
     }
     // Also honor the scraped weekly window: if `/usage show` shows 100% used (not yet reset), Grok is
     // capped even without a live-run rejection.
@@ -4136,6 +4240,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   /** Restore the persisted z.ai usage-cap latch on boot (mirrors loadGrokCap). */
   private loadZaiCap(): void {
+    this.loadAllowanceLift(ZAI_LABEL, ZAI_CAP_LIFT_KV_KEY);
     const v = this.db.kvGet(ZAI_CAP_KV_KEY);
     const until = v ? Number(v) : NaN;
     if (Number.isFinite(until) && until > Date.now()) {
@@ -4148,6 +4253,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private clearZaiCap(): void {
     this.zaiCapUntil = undefined;
     this.zaiCapRecordedAt = undefined;
+    this.reopenRefusals.delete(ZAI_LABEL); // a LATER cap must be able to explain itself again
     this.db.kvSet(ZAI_CAP_KV_KEY, "");
     this.db.kvSet(ZAI_CAP_RECORDED_AT_KV_KEY, "");
     noteZaiCap(null);
@@ -4176,8 +4282,21 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private zaiCapActive(): boolean {
     const now = Date.now();
     if (this.zaiCapUntil != null) {
-      if (now < this.zaiCapUntil) return true;
-      this.clearZaiCap();
+      if (now >= this.zaiCapUntil) {
+        this.forgetAllowanceLift(ZAI_LABEL, ZAI_CAP_LIFT_KV_KEY);
+        this.clearZaiCap();
+      } else if (
+        this.liftLatchOnReopenedAllowance(ZAI_LABEL, zaiAllowanceReopened(this.zaiCapRecordedAt, now), {
+          capRecordedAt: this.zaiCapRecordedAt,
+          latchedUntil: this.zaiCapUntil,
+          liftKey: ZAI_CAP_LIFT_KV_KEY,
+          clear: () => this.clearZaiCap(),
+        })
+      ) {
+        return zaiUsageCapped(now);
+      } else {
+        return true;
+      }
     }
     // Also honor the scraped windows: either window at 100% (not yet reset) caps z.ai even without a rejection.
     return zaiUsageCapped(now);

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
 import { readGrokAuth } from "./grokRunner.js";
+import { allowanceReopened, readingIsStale, windowStillSpent, type AllowanceEvidence } from "./usageFreshness.js";
 
 /**
  * Grok (SuperGrok) usage for the top-bar chip AND provider routing.
@@ -54,7 +55,7 @@ let lastError: string | null = null;
 
 // A scrape older than this reads as stale (the chip dims it). ~2.5× the default HTTP/log poll so a
 // transient failure doesn't immediately blank the meter.
-const SCRAPE_STALE_MS = 40 * 60_000;
+export const GROK_SCRAPE_STALE_MS = 40 * 60_000;
 
 // Mirrored cap latch (authoritative copy lives in the thread manager, kv-persisted).
 let capUntil: number | null = null;
@@ -68,6 +69,11 @@ interface GrokUsageCache {
   monthlyUsed?: number;
   monthlyLimit?: number;
   monthlyReset?: number | null;
+  /** When each meter was READ. A single shared `at` cannot describe two independently-aged readings,
+   *  and the freshness rule is only sound on the reading clock — see `usageFreshness.ts`. `at` is kept
+   *  as the older single-stamp form so a downgrade still paints a chip. */
+  weeklyAt?: number;
+  monthlyAt?: number;
   at?: number;
 }
 
@@ -82,7 +88,10 @@ function loadCache(): void {
         sevenDay: Math.min(100, Math.max(0, c.sevenDay)),
         sevenDayReset: typeof c.sevenDayReset === "number" ? c.sevenDayReset : null,
         plan: typeof c.plan === "string" ? c.plan : null,
-        at: typeof c.at === "number" ? c.at : 0,
+        // A legacy cache carries only `at`, which was a WRITE clock (`max(..., Date.now())`). Adopting
+        // it as a read clock would resurrect every frozen meter as brand new on the first boot after
+        // this ships. An unknown read time is 0 — i.e. stale — and the next poll repairs it.
+        at: typeof c.weeklyAt === "number" ? c.weeklyAt : 0,
         source: "cache",
       };
     }
@@ -91,7 +100,7 @@ function loadCache(): void {
         monthlyUsed: c.monthlyUsed,
         monthlyLimit: c.monthlyLimit,
         monthlyReset: typeof c.monthlyReset === "number" ? c.monthlyReset : null,
-        at: typeof c.at === "number" ? c.at : 0,
+        at: typeof c.monthlyAt === "number" ? c.monthlyAt : 0, // see the weekly note above
       };
     }
   } catch {
@@ -101,7 +110,9 @@ function loadCache(): void {
 
 function persistCache(): void {
   try {
-    const at = Math.max(liveWeekly?.at ?? 0, liveMonthly?.at ?? 0, Date.now());
+    // Never Date.now(): the write clock would re-date a meter that has not been re-read, and after a
+    // restart a frozen reading would come back looking brand new — the exact inversion the freshness
+    // rule exists to prevent.
     const body: GrokUsageCache = {
       sevenDay: liveWeekly?.sevenDay,
       sevenDayReset: liveWeekly?.sevenDayReset ?? null,
@@ -109,7 +120,9 @@ function persistCache(): void {
       monthlyUsed: liveMonthly?.monthlyUsed,
       monthlyLimit: liveMonthly?.monthlyLimit,
       monthlyReset: liveMonthly?.monthlyReset ?? null,
-      at,
+      weeklyAt: liveWeekly?.at,
+      monthlyAt: liveMonthly?.at,
+      at: Math.max(liveWeekly?.at ?? 0, liveMonthly?.at ?? 0),
     };
     writeFileSync(CACHE_FILE(), JSON.stringify(body), "utf8");
   } catch {
@@ -129,27 +142,51 @@ export function noteGrokCap(until: number | null): void {
 export function noteGrokUsageScrape(
   sevenDay: number,
   sevenDayReset: number | null,
-  opts?: { plan?: string | null; source?: GrokWeeklyScrape["source"] },
+  opts?: { plan?: string | null; source?: GrokWeeklyScrape["source"]; at?: number },
 ): void {
+  // `at` is the moment the READING was taken. The CLI log source must pass the line's own timestamp:
+  // a billing line lingering in the tail is re-read on every poll, and stamping it `now` would make a
+  // frozen meter permanently fresh — defeating both the rollover guard and the rescrape gate.
+  const now = Date.now();
+  // Clamped to the read clock: a forward-skewed stamp would be permanently fresh AND permanently
+  // newer than any recorded cap, so one bad line could lift every latch on sight.
+  const at = Math.min(opts?.at ?? now, now);
+  // A meter's reading time never moves backwards. The CLI log keeps re-offering the same lingering
+  // billing line on every poll, and without this it would clobber a newer winpty scrape each time.
+  if (liveWeekly && at < liveWeekly.at) return;
   liveWeekly = {
     sevenDay: Math.min(100, Math.max(0, sevenDay)),
     sevenDayReset,
     plan: opts?.plan ?? liveWeekly?.plan ?? null,
-    at: Date.now(),
+    at,
     source: opts?.source ?? "winpty",
   };
   lastError = null;
   persistCache();
 }
 
-/** Record a fresh monthly credit reading from the HTTP billing endpoint. */
-export function noteGrokMonthly(monthlyUsed: number, monthlyLimit: number, monthlyReset: number | null): void {
-  if (!(monthlyLimit > 0) || !Number.isFinite(monthlyUsed)) return;
+/** Record a fresh monthly credit reading from the HTTP billing endpoint. `at` is the moment the reading
+ *  was taken; it is clamped to the read clock for the same reason `noteGrokUsageScrape`'s is. */
+export function noteGrokMonthly(
+  monthlyUsed: number,
+  monthlyLimit: number,
+  monthlyReset: number | null,
+  at?: number,
+): void {
+  if (!Number.isFinite(monthlyUsed) || !Number.isFinite(monthlyLimit)) return;
+  if (!(monthlyLimit > 0)) {
+    // The endpoint answered and reported no metered monthly pool. Retiring the previous reading is the
+    // point: a pinned snapshot whose reset is already past reads as a rollover — i.e. as free — forever.
+    liveMonthly = null;
+    persistCache();
+    return;
+  }
+  const now = Date.now();
   liveMonthly = {
     monthlyUsed: Math.max(0, monthlyUsed),
     monthlyLimit,
     monthlyReset,
-    at: Date.now(),
+    at: Math.min(at ?? now, now),
   };
   lastError = null;
   persistCache();
@@ -202,6 +239,8 @@ export function parseGrokCreditsLog(raw: string, now = Date.now()): {
   sevenDay: number;
   sevenDayReset: number | null;
   plan: string | null;
+  /** The log line's OWN timestamp — the moment this reading was taken, not the moment we read it. */
+  at: number;
 } | null {
   let best: { sevenDay: number; sevenDayReset: number | null; plan: string | null; ts: number } | null = null;
   for (const line of raw.split(/\r?\n/)) {
@@ -232,18 +271,19 @@ export function parseGrokCreditsLog(raw: string, now = Date.now()): {
       const t = Date.parse(endIso);
       if (Number.isFinite(t)) sevenDayReset = t;
     }
-    const ts = obj.ts ? Date.parse(obj.ts) : now;
+    // A line that cannot state when it was written cannot vouch for the age of its own reading, and
+    // dating it to the read clock is exactly how a frozen meter stays permanently fresh. Skip it.
+    const ts = obj.ts ? Date.parse(obj.ts) : NaN;
+    if (!Number.isFinite(ts)) continue;
+    // A forward-skewed stamp would read as fresh AND as newer than any recorded cap, so it could lift
+    // a live latch on its own. The read clock is the ceiling.
+    const at = Math.min(ts, now);
     const plan = typeof obj.ctx?.subscriptionTier === "string" ? obj.ctx.subscriptionTier : null;
-    if (!best || (Number.isFinite(ts) && ts >= best.ts)) {
-      best = {
-        sevenDay: Math.min(100, Math.max(0, Math.round(pct))),
-        sevenDayReset,
-        plan,
-        ts: Number.isFinite(ts) ? ts : now,
-      };
+    if (!best || at >= best.ts) {
+      best = { sevenDay: Math.min(100, Math.max(0, Math.round(pct))), sevenDayReset, plan, ts: at };
     }
   }
-  return best ? { sevenDay: best.sevenDay, sevenDayReset: best.sevenDayReset, plan: best.plan } : null;
+  return best ? { sevenDay: best.sevenDay, sevenDayReset: best.sevenDayReset, plan: best.plan, at: best.ts } : null;
 }
 
 /** Parse the HTTP `/v1/billing` JSON body into monthly credit fields. */
@@ -257,7 +297,9 @@ export function parseGrokBillingHttp(body: unknown): {
   if (!cfg || typeof cfg !== "object") return null;
   const used = numVal(cfg.used);
   const limit = numVal(cfg.monthlyLimit);
-  if (used == null || limit == null || !(limit > 0)) return null;
+  // A parseable `monthlyLimit: 0` is the plan STATING it meters no monthly credit pool — a real answer,
+  // passed through so noteGrokMonthly can retire a stale pool. Only an unreadable body is a failure.
+  if (used == null || limit == null) return null;
   const endIso = typeof cfg.billingPeriodEnd === "string" ? cfg.billingPeriodEnd : null;
   const monthlyReset = endIso && Number.isFinite(Date.parse(endIso)) ? Date.parse(endIso) : null;
   return { monthlyUsed: used, monthlyLimit: limit, monthlyReset };
@@ -291,18 +333,65 @@ export function tierFromAccessToken(token: string | null | undefined): number | 
 /** Whether Grok is exhausted per the latest meters — weekly used ≥ 100 with a future reset, OR monthly
  *  credits fully spent before the billing period ends. Best-effort under the live-run cap latch. */
 export function grokUsageCapped(now: number): boolean {
-  if (liveWeekly && liveWeekly.sevenDay >= 100 && liveWeekly.sevenDayReset != null && liveWeekly.sevenDayReset > now) {
-    return true;
-  }
-  if (
-    liveMonthly &&
+  const weeklySpent =
+    !!liveWeekly &&
+    windowStillSpent(
+      {
+        atLimit: liveWeekly.sevenDay >= 100,
+        resetAt: liveWeekly.sevenDayReset,
+        readingAt: liveWeekly.at,
+        staleAfterMs: GROK_SCRAPE_STALE_MS,
+      },
+      now,
+    );
+  const monthlySpent =
+    !!liveMonthly &&
     liveMonthly.monthlyLimit > 0 &&
-    liveMonthly.monthlyUsed >= liveMonthly.monthlyLimit &&
-    (liveMonthly.monthlyReset == null || liveMonthly.monthlyReset > now)
-  ) {
-    return true;
-  }
-  return false;
+    windowStillSpent(
+      {
+        atLimit: liveMonthly.monthlyUsed >= liveMonthly.monthlyLimit,
+        resetAt: liveMonthly.monthlyReset,
+        readingAt: liveMonthly.at,
+        staleAfterMs: GROK_SCRAPE_STALE_MS,
+      },
+      now,
+    );
+  return weeklySpent || monthlySpent;
+}
+
+/** Whether the weekly meter is fresh enough to act on. The winpty rescrape is gated on this rather than
+ *  on the meter merely EXISTING: a frozen weekly reading otherwise satisfies "we have one" forever and
+ *  permanently disables the only source that could refresh it. */
+export function grokWeeklyIsFresh(now = Date.now()): boolean {
+  return !!liveWeekly && !readingIsStale(liveWeekly.at, GROK_SCRAPE_STALE_MS, now);
+}
+
+/** Highest used-percent that still counts as reopened (mirrors Codex's threshold). */
+export const GROK_REOPENED_ALLOWANCE_MAX_PCT = 50;
+
+/** Whether Grok's own live meters, read after a cap was recorded, show headroom again. See
+ *  `allowanceReopened`; the monthly pool contributes only when it actually meters a limit. */
+export function grokAllowanceReopened(capRecordedAt: number | undefined, now = Date.now()): AllowanceEvidence {
+  // The weekly window is what Grok actually gates on, so monthly credits alone are never a disproof:
+  // a fresh credit reading beside a frozen weekly would otherwise carry the lift on its own.
+  if (!liveWeekly) return { reopened: false, reason: "no Grok weekly reading" };
+  const monthlyPct =
+    liveMonthly && liveMonthly.monthlyLimit > 0
+      ? Math.min(100, (liveMonthly.monthlyUsed / liveMonthly.monthlyLimit) * 100)
+      : null;
+  return allowanceReopened(
+    "Grok",
+    capRecordedAt,
+    {
+      meters: [
+        { usedPct: liveWeekly.sevenDay, readingAt: liveWeekly.at },
+        { usedPct: monthlyPct, readingAt: liveMonthly?.at ?? null },
+      ],
+      staleAfterMs: GROK_SCRAPE_STALE_MS,
+      maxUsedPct: GROK_REOPENED_ALLOWANCE_MAX_PCT,
+    },
+    now,
+  );
 }
 
 /** The current identity + meters + cap state for the chip and routing. Never throws — a missing login
@@ -313,8 +402,11 @@ export function readGrokUsage(): GrokUsageDTO {
   if (capUntil != null && capUntil <= now) capUntil = null;
   const weekly = liveWeekly;
   const monthly = liveMonthly;
-  const freshestAt = Math.max(weekly?.at ?? 0, monthly?.at ?? 0);
-  const stale = freshestAt > 0 ? now - freshestAt > SCRAPE_STALE_MS : undefined;
+  // STALEST, never freshest. The monthly HTTP ping succeeds on every poll, so `max()` let a fresh
+  // credit reading vouch for a frozen weekly — and `stale` is what the chip dims and what
+  // `capacityWindowsWithFreshness` hands to routing. One meter's age may not speak for another's.
+  const ages = [weekly?.at, monthly?.at].filter((at): at is number => typeof at === "number");
+  const stale = ages.length ? ages.some((at) => readingIsStale(at, GROK_SCRAPE_STALE_MS, now)) : undefined;
   // Prefer a plan name from the weekly log; otherwise map a known tier number.
   const plan = weekly?.plan ?? (auth.tier === 1 || tierFromAccessToken(readGrokAccessTokenRaw()) === 1 ? "SuperGrok" : null);
   const tier = auth.tier ?? tierFromAccessToken(readGrokAccessTokenRaw());
@@ -350,3 +442,10 @@ export function readGrokAccessTokenRaw(): string | null {
     return null;
   }
 }
+
+export const __grokUsageTestHooks = {
+  /** Drop the weekly meter so a gate can assert what monthly credits alone may (not) prove. */
+  clearWeekly(): void {
+    liveWeekly = null;
+  },
+};

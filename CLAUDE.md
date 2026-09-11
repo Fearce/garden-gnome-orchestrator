@@ -220,10 +220,24 @@ Read the run trail to tell causes apart:
   in `review` with the marker `⏳ Auto-resume pending` in its `error` — a supervisor (`resumeCapParked`,
   every `CAP_RETRY_MS`/120s) auto-resumes it the moment a Claude sub OR Codex frees up; a QA-stage park
   (message carries "(QA runs on Claude)") waits for a Claude window specifically. A plain "needs your
-  review" park carries no marker and is left for a human. **A Codex cap the owner clears BY HAND (usage
-  reset, credit top-up) is disproved by live telemetry, not by run history** (`codexAllowanceReopened`): a
-  stated reset once needed a newer successful Codex run, which the latch itself made impossible; absent
-  telemetry is still never permission. ARCHITECTURE.md §10. Idle 5h windows restart STAGGERED: a shared
+  review" park carries no marker and is left for a human. **A cap the owner clears BY HAND (usage reset,
+  credit top-up), or that the provider stated wrongly, is disproved by live telemetry, not by run
+  history** — `codexAllowanceReopened`, and since 2026-09-11 `grokAllowanceReopened`/`zaiAllowanceReopened`
+  over the shared `agents/usageFreshness.ts`: a stated reset once needed a newer successful run on that
+  provider, which the latch itself made impossible. Absent telemetry is still never permission, a reading
+  older than the cap is not evidence, and a lift is a BET the provider gets to answer — a cap recorded
+  AFTER one means it capped us again anyway, so no further probe is spent until that latch expires on its
+  own (bounding it by the probed WINDOW does not work: a rejection stating no reset falls back to a
+  cooldown from now, so every re-cap lands further out and slips past). **Freshness is what makes a reset
+  timestamp readable at all**: a scrape that stops updating leaves its reset drifting further into the
+  past every minute, so a frozen exhausted pool reads as permanently rolled-over and free. Grok was
+  offered as a live failover rung for two days that way, rejecting every run handed to it. A stale
+  reading may still report a window SPENT; it may not CLEAR one on a reset it never witnessed elapse —
+  and `probe:accounts` mirrors that guard, or the sweep's ladder keeps printing the frozen rung
+  available. **A usage gate's clock must be its READING clock**: the frozen meter above was written by
+  the gate suite itself, before `config.ts` isolated a test's `DATA_DIR` (`d3e8f38`). Gates:
+  `test:usage-freshness`, `test:provider-fallback`, `test:failover-ladder`.
+  ARCHITECTURE.md §10. Idle 5h windows restart STAGGERED: a shared
   `ResetStagger` (`accounts/resetStagger.ts`) places each restart at the midpoint of the largest gap
   between the OTHER participants' live 5h reset phases — Claude subs AND Codex — so resets spread out
   and re-converge dynamically (a sub some outside consumer keeps waking, e.g. a background service, is detected

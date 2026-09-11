@@ -66,7 +66,23 @@ assert.ok(fromLog);
 assert.equal(fromLog!.sevenDay, 8);
 assert.equal(fromLog!.plan, "SuperGrok");
 assert.equal(fromLog!.sevenDayReset, Date.parse("2026-07-26T23:10:26.537917+00:00"));
+// The line's OWN ts, not the read clock. Everything downstream — the rollover guard, the winpty
+// rescrape gate, the cap-latch disproof — is decided on this number. Read an hour later, since this
+// fixture's ts sits just after `julyNow` and the parser clamps a forward stamp to the read clock.
+const laterRead = parseGrokCreditsLog(`${logLine}\n`, julyNow + 3_600_000);
+assert.equal(laterRead!.at, Date.parse("2026-07-20T02:29:33.080Z"));
 assert.equal(parseGrokCreditsLog("not json\n", julyNow), null);
+
+// A line that cannot state when it was written is skipped, not dated to the read clock: dating it
+// would make a frozen meter permanently fresh, which is exactly the defect the `at` plumbing fixes.
+const undated = JSON.parse(logLine) as Record<string, unknown>;
+delete undated.ts;
+assert.equal(parseGrokCreditsLog(`${JSON.stringify(undated)}\n`, julyNow), null, "no ts -> no reading");
+
+// A forward-skewed stamp is clamped to the read clock. Unclamped it would be permanently fresh AND
+// permanently newer than any recorded cap, so one bad line could lift every cap latch on sight.
+const skewed = { ...(JSON.parse(logLine) as Record<string, unknown>), ts: "2027-01-01T00:00:00.000Z" };
+assert.equal(parseGrokCreditsLog(`${JSON.stringify(skewed)}\n`, julyNow)!.at, julyNow);
 
 // HTTP /v1/billing monthly credits body.
 const httpBody = {
@@ -91,18 +107,30 @@ assert.equal(tierFromAccessToken("not-a-jwt"), null);
 assert.equal(tierFromAccessToken(null), null);
 
 // Cap detection: weekly 100% with future reset, or monthly fully spent before period end.
+// Every reading is stamped with `julyNow`, so the fixed clock below is also the READING clock: a
+// window's rollover only clears a cap while the reading that reported it is still fresh.
 const future = julyNow + 7 * 24 * 60 * 60 * 1000;
-noteGrokUsageScrape(11, future, { plan: "SuperGrok", source: "log" });
-noteGrokMonthly(100, 15000, future);
+const read = { plan: "SuperGrok", source: "log" as const, at: julyNow };
+noteGrokUsageScrape(11, future, read);
+noteGrokMonthly(100, 15000, future, julyNow);
 assert.equal(grokUsageCapped(julyNow), false);
-noteGrokUsageScrape(100, future, { plan: "SuperGrok", source: "log" });
+noteGrokUsageScrape(100, future, read);
 assert.equal(grokUsageCapped(julyNow), true);
 // Monthly alone can cap even when weekly is fine.
-noteGrokUsageScrape(10, future, { plan: "SuperGrok", source: "log" });
-noteGrokMonthly(15000, 15000, future);
+noteGrokUsageScrape(10, future, read);
+noteGrokMonthly(15000, 15000, future, julyNow);
 assert.equal(grokUsageCapped(julyNow), true);
-// Past monthly reset clears the monthly cap.
-noteGrokMonthly(15000, 15000, julyNow - 1000);
+// Past monthly reset clears the monthly cap — the reading is still fresh, so the rollover is trusted.
+noteGrokMonthly(15000, 15000, julyNow - 1000, julyNow);
 assert.equal(grokUsageCapped(julyNow), false);
+// A weekly at its limit with NO stated reset stays capped: nothing proves it reopened. (z.ai has always
+// read it this way; Grok used to call it uncapped, and `scrapeGrokUsage` can genuinely produce it when
+// the winpty buffer ends after "Weekly limit:" but before "Next reset:".)
+noteGrokUsageScrape(100, null, read);
+assert.equal(grokUsageCapped(julyNow), true, "100% with no stated reset is capped, not free");
+// A reading never travels backwards: the CLI log re-offers the same lingering billing line on every
+// poll, and without this it would clobber a newer winpty scrape each time.
+noteGrokUsageScrape(3, future, { plan: "SuperGrok", source: "log", at: julyNow - 60_000 });
+assert.equal(grokUsageCapped(julyNow), true, "an older reading is ignored, not applied");
 
 console.log("All Grok usage parser checks passed.");

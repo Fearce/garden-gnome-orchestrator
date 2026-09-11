@@ -28,6 +28,8 @@ const { CodexAgentRun } = await import("../agents/codexRunner.js");
 const { GrokAgentRun } = await import("../agents/grokRunner.js");
 const { __codexUsageTestHooks, noteCodexPing } = await import("../agents/codexUsage.js");
 const { parseUsageLimitResetAt, usageLimitResetWasExplicitlyElapsed } = await import("../agents/runner.js");
+const { noteGrokMonthly, noteGrokUsageScrape } = await import("../agents/grokUsage.js");
+const { noteZaiUsage } = await import("../agents/zaiUsage.js");
 
 function check(label: string, condition: boolean, detail?: string): void {
   if (condition) {
@@ -1397,6 +1399,102 @@ try {
   );
   resetDb.raw.close();
   rmSync(resetRoot, { recursive: true, force: true });
+
+  // The same deadlock on the CLI backends, which had no disproof at all. A latch blocks every run on
+  // that provider, so "a newer successful run proves the stated reset stale" can never fire. One z.ai
+  // rejection on 2026-09-04 stated a weekly reset 6.2 days out and held the backend out of routing for
+  // all of it, while z.ai's own quota endpoint read the weekly window 6% used.
+  const cliRoot = mkdtempSync(join(tmpdir(), "provider-fallback-cli-reopen-"));
+  mkdirSync(join(cliRoot, "workspace"), { recursive: true });
+  const cliDb = new Db(join(cliRoot, "orchestrator.sqlite"));
+  const cliInternals = bootFixtureManager(cliDb, cliRoot);
+  const cliNow = Date.now();
+  const cliHour = 60 * 60_000;
+  const cliDay = 24 * cliHour;
+  const cliCapUntil = cliNow + 6 * cliDay;
+  const cliCapRecordedAt = cliNow - 3 * cliHour;
+
+  const latchZai = (until: number, recordedAt: number): void => {
+    cliInternals.zaiCapUntil = until;
+    cliInternals.zaiCapRecordedAt = recordedAt;
+    cliDb.kvSet("zai_cap_until", String(until));
+    cliDb.kvSet("zai_cap_recorded_at", String(recordedAt));
+  };
+  const zaiHeadroom = (): void =>
+    noteZaiUsage({ plan: "lite", fiveHour: 4, fiveHourReset: cliNow + cliHour, sevenDay: 6, sevenDayReset: cliNow + 6 * cliDay });
+
+  latchZai(cliCapUntil, cliCapRecordedAt);
+  zaiHeadroom();
+  check(
+    "fresh z.ai telemetry with headroom clears a latch no run could ever disprove",
+    cliInternals.zaiCapActive() === false && cliInternals.zaiCapUntil === undefined,
+    `active=${cliInternals.zaiCapActive()} until=${cliInternals.zaiCapUntil}`,
+  );
+  check("and the durable z.ai latch row is cleared with it", cliDb.kvGet("zai_cap_until") === "", String(cliDb.kvGet("zai_cap_until")));
+  check("the lift is recorded durably", Number(cliDb.kvGet("zai_cap_lift_at")) > 0, String(cliDb.kvGet("zai_cap_lift_at")));
+
+  // The provider answers that bet by capping us again. Its own verdict outranks a meter that cannot see
+  // whichever pool it is refusing on. The re-cap lands FURTHER OUT than the window we probed, because a
+  // rejection that states no reset falls back to a fixed cooldown measured from now — so a bound keyed
+  // on the probed window would miss exactly this shape and re-open the lift/reject/lift flap.
+  const cliLaterUntil = cliCapUntil + cliDay;
+  const zaiLiftAt = Number(cliDb.kvGet("zai_cap_lift_at"));
+  const zaiRecapAt = zaiLiftAt + 1; // recorded strictly after the lift = the provider disagreeing
+  latchZai(cliLaterUntil, zaiRecapAt);
+  // The reading has to land strictly after that re-cap, or `allowanceReopened`'s own not-newer-than-the
+  // -cap veto answers first and the bound under test is never reached — a green that proves nothing.
+  while (Date.now() <= zaiRecapAt) { /* spin past the millisecond boundary */ }
+  zaiHeadroom(); // still reporting headroom — the meter has not changed its mind, the provider has
+  check(
+    "a provider that re-caps after a lift is believed, however far out its new window lands",
+    cliInternals.zaiCapActive() === true && cliInternals.zaiCapUntil === cliLaterUntil,
+    `active=${cliInternals.zaiCapActive()} until=${cliInternals.zaiCapUntil}`,
+  );
+
+  // "kv-persisted so a restart cannot buy a second probe" is a doc claim, so pin it: a fresh manager
+  // over the same rows must reach the same refusal.
+  const rebooted = bootFixtureManager(cliDb, cliRoot);
+  zaiHeadroom();
+  check(
+    "and a restart does not buy the second probe back",
+    rebooted.zaiCapActive() === true && rebooted.zaiCapUntil === cliLaterUntil,
+    `active=${rebooted.zaiCapActive()} until=${rebooted.zaiCapUntil}`,
+  );
+
+  // Once that latch expires on its own the disagreement is settled, so the NEXT cap episode is entitled
+  // to its own single probe. Otherwise one re-cap silences telemetry for this provider forever.
+  cliInternals.zaiCapUntil = cliNow - cliHour;
+  check("an expired latch is not capped", cliInternals.zaiCapActive() === false, String(cliInternals.zaiCapUntil));
+  check("and it forgets the lift it was holding", cliDb.kvGet("zai_cap_lift_at") === "", String(cliDb.kvGet("zai_cap_lift_at")));
+  latchZai(cliNow + 6 * cliDay, Date.now() - 1000);
+  zaiHeadroom();
+  check(
+    "a later cap episode earns a fresh probe",
+    cliInternals.zaiCapActive() === false && cliInternals.zaiCapUntil === undefined,
+    `active=${cliInternals.zaiCapActive()} until=${cliInternals.zaiCapUntil}`,
+  );
+
+  cliInternals.grokCapUntil = cliCapUntil;
+  cliInternals.grokCapRecordedAt = cliCapRecordedAt;
+  cliDb.kvSet("grok_cap_until", String(cliCapUntil));
+  noteGrokMonthly(0, 0, null); // the plan states no metered monthly pool
+  noteGrokUsageScrape(9, cliNow + 3 * cliDay, { plan: "SuperGrok", source: "log" });
+  check(
+    "fresh Grok telemetry with headroom clears its latch too",
+    cliInternals.grokCapActive() === false && cliInternals.grokCapUntil === undefined,
+    `active=${cliInternals.grokCapActive()} until=${cliInternals.grokCapUntil}`,
+  );
+
+  cliInternals.grokCapUntil = cliLaterUntil;
+  cliInternals.grokCapRecordedAt = cliCapRecordedAt;
+  noteGrokUsageScrape(100, cliNow + 3 * cliDay, { plan: "SuperGrok", source: "log" });
+  check(
+    "a Grok weekly that is still spent leaves the latch alone",
+    cliInternals.grokCapActive() === true && cliInternals.grokCapUntil === cliLaterUntil,
+    `active=${cliInternals.grokCapActive()} until=${cliInternals.grokCapUntil}`,
+  );
+  cliDb.raw.close();
+  rmSync(cliRoot, { recursive: true, force: true });
 } finally {
   db.raw.close();
   rmSync(root, { recursive: true, force: true });

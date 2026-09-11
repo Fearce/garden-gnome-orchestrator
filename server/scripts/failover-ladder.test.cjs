@@ -124,6 +124,49 @@ assert.equal(spentWindow({ fiveHour: 100, fiveHourReset: NOW + HOUR }, NOW).wind
 assert.equal(spentWindow({ sevenDay: HARD_LIMIT_PCT, sevenDayReset: NOW + HOUR }, NOW)?.window, "7d", "AT the limit is spent (>= check)");
 assert.equal(spentWindow({ sevenDay: HARD_LIMIT_PCT - 1, sevenDayReset: NOW + HOUR }, NOW), null, "just under the limit has room");
 assert.equal(spentWindow({ sevenDay: 100, sevenDayReset: NOW - HOUR }, NOW), null, "a window whose reset already passed is free again");
+
+// …but only while the READING is fresh. A meter that stops updating leaves its reset drifting further
+// into the past every minute, so a frozen exhausted pool would read as permanently rolled-over — which is
+// what printed Grok `available` for two days while it rejected every run handed to it (2026-09-09..11).
+// This mirrors agents/usageFreshness.ts `windowStillSpent`; the routing predicate and this readout must
+// reach the same verdict on the same bytes.
+const grokFresh = BACKENDS.find((b) => b.name === "Grok").freshness;
+const zaiFresh = BACKENDS.find((b) => b.name === "z.ai").freshness;
+assert.equal(
+  spentWindow({ sevenDay: 100, sevenDayReset: NOW - HOUR, weeklyAt: NOW - 60_000 }, NOW, grokFresh),
+  null,
+  "a FRESH reading may report its window rolled over",
+);
+assert.equal(
+  spentWindow({ sevenDay: 100, sevenDayReset: NOW - HOUR, weeklyAt: NOW - 3 * HOUR }, NOW, grokFresh)?.pct,
+  100,
+  "a STALE reading may not clear a window on a reset it never witnessed elapse",
+);
+assert.equal(
+  spentWindow({ sevenDay: 100, sevenDayReset: NOW - HOUR }, NOW, grokFresh)?.pct,
+  100,
+  "a legacy cache that recorded no reading time is unknown, i.e. stale",
+);
+assert.equal(
+  spentWindow({ fiveHour: 100, fiveHourReset: NOW - HOUR, at: NOW - HOUR }, NOW, zaiFresh)?.pct,
+  100,
+  "z.ai's 3-minute horizon is its own, and a one-hour-old reading is past it",
+);
+assert.equal(
+  spentCredits({ monthlyUsed: 15000, monthlyLimit: 15000, monthlyReset: NOW - HOUR, monthlyAt: NOW - 3 * HOUR }, NOW, grokFresh)?.pct,
+  100,
+  "credits age on their OWN clock — a frozen pool is not a refilled one",
+);
+assert.equal(
+  spentCredits({ monthlyUsed: 15000, monthlyLimit: 15000, monthlyReset: NOW - HOUR, monthlyAt: NOW - 60_000 }, NOW, grokFresh),
+  null,
+  "a fresh credit reading past its billing period end really has refilled",
+);
+assert.equal(
+  spentWindow({ sevenDay: 100, sevenDayReset: NOW - HOUR }, NOW, undefined)?.pct ?? null,
+  null,
+  "a backend that declares no freshness keeps the unguarded inference its routing also uses (Codex)",
+);
 assert.equal(spentWindow({ sevenDay: 100 }, NOW)?.pct, 100, "a full window with an UNKNOWN reset is still spent — routing refuses it too");
 assert.equal(spentWindow({ sevenDay: null, fiveHour: null }, NOW), null, "an unmetered backend is not 'spent'");
 // Grok reports no 5h window at all; a missing meter must not read as 0% room or as spent.

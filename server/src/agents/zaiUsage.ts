@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
+import { allowanceReopened, windowStillSpent, type AllowanceEvidence } from "./usageFreshness.js";
 
 /**
  * z.ai (Zhipu GLM Coding Plan) usage for the top-bar chip AND provider routing.
@@ -45,7 +46,7 @@ let capUntil: number | null = null;
 
 // A reading older than this reads as stale (the chip dims it). ~2.5× the default poll so a transient
 // failure doesn't immediately blank the meter.
-const SCRAPE_STALE_MS = 3 * 60_000;
+export const ZAI_SCRAPE_STALE_MS = 3 * 60_000;
 
 const CACHE_FILE = (): string => join(config.dataDir, "zai-usage-cache.json");
 
@@ -165,10 +166,42 @@ export function parseZaiQuota(body: unknown): Omit<ZaiQuotaScrape, "at"> | null 
 /** Whether z.ai is exhausted per the latest meters — either window used ≥ 100 with a future (or unknown)
  *  reset. Best-effort under the live-run cap latch (which the thread manager holds authoritatively). */
 export function zaiUsageCapped(now: number): boolean {
-  if (!liveUsage) return false;
+  const u = liveUsage;
+  if (!u) return false;
   const spent = (pct: number | null, reset: number | null): boolean =>
-    pct != null && pct >= 100 && (reset == null || reset > now);
-  return spent(liveUsage.fiveHour, liveUsage.fiveHourReset) || spent(liveUsage.sevenDay, liveUsage.sevenDayReset);
+    windowStillSpent(
+      { atLimit: pct != null && pct >= 100, resetAt: reset, readingAt: u.at, staleAfterMs: ZAI_SCRAPE_STALE_MS },
+      now,
+    );
+  return spent(u.fiveHour, u.fiveHourReset) || spent(u.sevenDay, u.sevenDayReset);
+}
+
+/** Highest used-percent on either window that still counts as reopened (mirrors Codex's threshold). */
+export const ZAI_REOPENED_ALLOWANCE_MAX_PCT = 50;
+
+/**
+ * Whether z.ai's own live quota reading, taken after a cap was recorded, shows the plan has headroom
+ * again. See `allowanceReopened` for why the run trail alone cannot answer this.
+ *
+ * The reading must be the SCRAPE (`liveUsage.at`), never `readZaiUsage().updatedAt` — that field is the
+ * time the DTO was assembled, so passing it would make every read look newer than any cap and turn a
+ * fail-closed guard into a fail-open one.
+ */
+export function zaiAllowanceReopened(capRecordedAt: number | undefined, now = Date.now()): AllowanceEvidence {
+  const u = liveUsage;
+  return allowanceReopened(
+    "z.ai",
+    capRecordedAt,
+    {
+      meters: [
+        { usedPct: u?.fiveHour, readingAt: u?.at ?? null },
+        { usedPct: u?.sevenDay, readingAt: u?.at ?? null },
+      ],
+      staleAfterMs: ZAI_SCRAPE_STALE_MS,
+      maxUsedPct: ZAI_REOPENED_ALLOWANCE_MAX_PCT,
+    },
+    now,
+  );
 }
 
 /** The current meters + plan + cap state for the chip and routing. Never throws — a missing reading leaves
@@ -177,7 +210,7 @@ export function readZaiUsage(): ZaiUsageDTO {
   const now = Date.now();
   if (capUntil != null && capUntil <= now) capUntil = null;
   const u = liveUsage;
-  const stale = u && u.at > 0 ? now - u.at > SCRAPE_STALE_MS : undefined;
+  const stale = u && u.at > 0 ? now - u.at > ZAI_SCRAPE_STALE_MS : undefined;
   return {
     configured,
     plan: u?.plan ?? null,

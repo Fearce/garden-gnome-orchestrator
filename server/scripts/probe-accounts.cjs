@@ -51,11 +51,42 @@ const HARD_LIMIT_PCT = 98;
 // 3 when only 1 could take work — the same "one-rung ladder looks healthy" blind spot in a new door.
 // Windows are not the only door: Grok's plan also meters a monthly CREDIT pool that routing refuses the
 // rung on, and it can run dry while the weekly window still reads room (see spentCredits).
+//
+// `freshness` mirrors agents/usageFreshness.ts for the backends whose routing predicate applies it
+// (grokUsageCapped / zaiUsageCapped). Without it this readout keeps the unguarded rollover inference —
+// "the reset already passed, so the window refilled" — which a FROZEN meter satisfies forever, since its
+// reset only gets older. That is how Grok was printed `available` for two days while rejecting every run
+// (2026-09-09..11). Codex has no entry because its routing predicate applies no such inference; adding one
+// here would make the mirror overstate in the other direction. `at` names the per-WINDOW reading clock:
+// two meters age independently, and a legacy cache that recorded none is unknown, i.e. stale.
 const BACKENDS = [
   { name: "Codex", enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", cooldownKey: "provider_startup_cooldown_codex_until", usageFile: "codex-usage-cache.json", poolCapKey: "codex_pool_cap_until" },
-  { name: "Grok", enabledKey: "setting_grok_enabled", capKey: "grok_cap_until", cooldownKey: "provider_startup_cooldown_grok_until", usageFile: "grok-usage-cache.json" },
-  { name: "z.ai", enabledKey: "setting_zai_enabled", capKey: "zai_cap_until", cooldownKey: "provider_startup_cooldown_zai_until", usageFile: "zai-usage-cache.json" },
+  {
+    name: "Grok",
+    enabledKey: "setting_grok_enabled",
+    capKey: "grok_cap_until",
+    cooldownKey: "provider_startup_cooldown_grok_until",
+    usageFile: "grok-usage-cache.json",
+    freshness: { staleAfterMs: 40 * 60_000, at: (m, window) => (window === "monthly credits" ? (m.monthlyAt ?? 0) : (m.weeklyAt ?? 0)) },
+  },
+  {
+    name: "z.ai",
+    enabledKey: "setting_zai_enabled",
+    capKey: "zai_cap_until",
+    cooldownKey: "provider_startup_cooldown_zai_until",
+    usageFile: "zai-usage-cache.json",
+    freshness: { staleAfterMs: 3 * 60_000, at: (m) => m.at ?? 0 },
+  },
 ];
+
+/** Whether a window's already-passed reset may still be read as a rollover. Mirrors `windowStillSpent`:
+ *  a stale reading may report a window SPENT, but it may not CLEAR one on a reset it never witnessed
+ *  elapse. A backend with no declared freshness keeps the unguarded inference its routing also uses. */
+function rolloverIsBelievable(freshness, meters, window, at) {
+  if (!freshness) return true;
+  const readingAt = freshness.at(meters, window);
+  return readingAt != null && at - readingAt <= freshness.staleAfterMs;
+}
 // Every term threadManager's *ProviderCandidate methods gate `hasHeadroom` on, and where THIS file
 // mirrors it. The ladder re-implements routing's decision by hand, so the two drift — and the drift is
 // one-directional: a door added over there that isn't read over here keeps printing the rung as
@@ -115,14 +146,14 @@ const pct = (v) => (v == null ? "  —" : `${String(Math.round(v)).padStart(3)}%
  *  carries the deadline routing itself is waiting on. A SPENT window is reported separately from a latched
  *  cap so the readout can say which one is holding the rung — they need different reactions (a latch
  *  self-expires; a spent weekly waits for the real reset). */
-function backendState({ enabledKey, capKey, cooldownKey, usageFile }, kv, at, usage = () => null) {
+function backendState({ enabledKey, capKey, cooldownKey, usageFile, freshness }, kv, at, usage = () => null) {
   if (kv(enabledKey) !== "1") return { available: false, reason: "disabled" };
   const cooldownUntil = cooldownKey ? Number(kv(cooldownKey)) : 0;
   if (Number.isFinite(cooldownUntil) && cooldownUntil > at) return { available: false, reason: "startup cooldown", until: cooldownUntil };
   const until = Number(kv(capKey));
   if (Number.isFinite(until) && until > at) return { available: false, reason: "capped", until };
   const meters = usageFile ? usage(usageFile) : null;
-  const spent = meters ? (spentWindow(meters, at) ?? spentCredits(meters, at)) : null;
+  const spent = meters ? (spentWindow(meters, at, freshness) ?? spentCredits(meters, at, freshness)) : null;
   if (spent) {
     return {
       available: false,
@@ -147,13 +178,15 @@ const WINDOW_MAX_RESET_MS = { "5h": 2 * 5 * 3_600_000, "7d": 2 * 7 * 86_400_000 
  *  reset is exactly the state routing refuses to send work into. A reset too distant to be this window's
  *  is reported as unknown rather than counted down — the verdict is unaffected (routing reads the same
  *  meters and reaches the same conclusion), but a bogus countdown would be read as a real outage length. */
-function spentWindow(meters, at) {
+function spentWindow(meters, at, freshness) {
   for (const [window, pct, reset] of [
     ["5h", meters.fiveHour, meters.fiveHourReset],
     ["7d", meters.sevenDay, meters.sevenDayReset],
   ]) {
     if (typeof pct !== "number" || pct < HARD_LIMIT_PCT) continue;
-    if (reset != null && reset <= at) continue; // window already rolled over — it has room again
+    // window already rolled over — it has room again, but only a reading fresh enough to have witnessed
+    // that reset elapse may say so
+    if (reset != null && reset <= at && rolloverIsBelievable(freshness, meters, window, at)) continue;
     const plausible = reset != null && reset - at <= WINDOW_MAX_RESET_MS[window];
     if (reset == null || plausible) return { window, pct, reset };
     return { window, pct, reset: null, reportedReset: reset };
@@ -169,10 +202,11 @@ const MONTHLY_MAX_RESET_MS = 2 * 31 * 86_400_000;
  *  window, and routing refuses the rung on it too (`monthlyExhausted` in grokProviderCandidate). Credits
  *  can run dry while the weekly still reads room, so reading windows alone would report an available rung
  *  that routing skips — the overstated-depth blind spot, through the one door percentages can't express. */
-function spentCredits(meters, at) {
+function spentCredits(meters, at, freshness) {
   const { monthlyUsed: used, monthlyLimit: limit, monthlyReset: reset } = meters;
   if (typeof used !== "number" || typeof limit !== "number" || !(limit > 0) || used < limit) return null;
-  if (reset != null && reset <= at) return null; // billing period ended — the pool has refilled
+  // billing period ended — the pool has refilled, if the reading is fresh enough to vouch for that
+  if (reset != null && reset <= at && rolloverIsBelievable(freshness, meters, "monthly credits", at)) return null;
   const pct = Math.round((used / limit) * 100);
   const plausible = reset != null && reset - at <= MONTHLY_MAX_RESET_MS;
   if (reset == null || plausible) return { window: "monthly credits", pct, reset };

@@ -4,7 +4,10 @@ import { dirname, join } from "node:path";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { EventHub } from "../events.js";
+import { readingIsStale } from "./usageFreshness.js";
 import {
+  GROK_SCRAPE_STALE_MS,
+  grokWeeklyIsFresh,
   noteGrokMonthly,
   noteGrokUsageError,
   noteGrokUsageScrape,
@@ -58,7 +61,7 @@ export function grokUsageScrapeAvailable(): boolean {
 
 /** Tail-read the CLI unified log and extract the latest SuperGrok weekly creditUsagePercent. Returns
  *  null when the log is missing/empty or has no billing line yet. Never throws. */
-export function readGrokCreditsFromLog(): { sevenDay: number; sevenDayReset: number | null; plan: string | null } | null {
+export function readGrokCreditsFromLog(): { sevenDay: number; sevenDayReset: number | null; plan: string | null; at: number } | null {
   const logPath = join(config.grok.home, "logs", "unified.jsonl");
   if (!existsSync(logPath)) return null;
   try {
@@ -204,9 +207,15 @@ export function startGrokUsageMonitor(hub: EventHub, opts: { configured: () => b
     pinging = true;
     try {
       // 1) Free weekly meter from the CLI log (any recent TUI/session, including our own scrapes).
+      // The log only grows when the CLI runs, so a lingering billing line is re-read every poll —
+      // carry its OWN timestamp through rather than the read clock, or a frozen meter is re-stamped
+      // fresh forever. An OLD line is still recorded: `windowStillSpent` fails closed on a stale
+      // reading, so a known-exhausted weekly that only the log remembers still keeps Grok out of
+      // routing. Dropping it would leave `liveWeekly` null, which routing reads as unmetered headroom.
       const fromLog = readGrokCreditsFromLog();
+      const logIsFresh = !!fromLog && !readingIsStale(fromLog.at, GROK_SCRAPE_STALE_MS, Date.now());
       if (fromLog) {
-        noteGrokUsageScrape(fromLog.sevenDay, fromLog.sevenDayReset, { plan: fromLog.plan, source: "log" });
+        noteGrokUsageScrape(fromLog.sevenDay, fromLog.sevenDayReset, { plan: fromLog.plan, source: "log", at: fromLog.at });
       }
 
       // 2) HTTP monthly credits (OAuth token — no model turn).
@@ -215,15 +224,19 @@ export function startGrokUsageMonitor(hub: EventHub, opts: { configured: () => b
         noteGrokMonthly(monthly.monthlyUsed, monthly.monthlyLimit, monthly.monthlyReset);
       }
 
-      // 3) winpty fallback for weekly only when the log is cold and enough time has passed.
-      const haveWeekly = readGrokUsage().sevenDay != null;
+      // 3) winpty fallback for weekly when the log has gone cold and enough time has passed. Gated on
+      // the meter being FRESH, not merely present: a frozen weekly otherwise keeps satisfying "we
+      // already have one" and permanently disables the only source that could refresh it.
+      const haveWeekly = grokWeeklyIsFresh();
       const winptyDue = Date.now() - lastWinptyAt >= WINPTY_MIN_INTERVAL_MS;
       if (!haveWeekly && winptyDue && grokUsageScrapeAvailable()) {
         lastWinptyAt = Date.now();
         const r = await scrapeGrokUsage();
         if (r) {
           noteGrokUsageScrape(r.sevenDay, r.sevenDayReset, { source: "winpty" });
-        } else if (!fromLog && !monthly) {
+        } else if (!logIsFresh && !(monthly && monthly.monthlyLimit > 0)) {
+          // A limit-0 billing answer records no meter, so it must not be read as one here either —
+          // otherwise a Grok with no weekly reading shows a blank chip with no stated reason.
           noteGrokUsageError("usage scrape failed — retrying");
         }
       }

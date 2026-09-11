@@ -61,8 +61,13 @@ assert.equal(parseZaiQuota({ data: {} }), null);
 assert.equal(parseZaiQuota(null), null);
 assert.equal(parseZaiQuota("nonsense"), null);
 
-// Cap detection: either window at 100% with a future (or unknown) reset caps z.ai; a passed reset clears it.
-const now = 1_800_000_000_000;
+// Cap detection: either window at 100% with a future (or unknown) reset caps z.ai; a passed reset clears
+// it — but only while the READING is fresh (`usageFreshness.ts`), and `noteZaiUsage` stamps the wall
+// clock. So the clock here has to be the real one: a fixed far-future sentinel would make every reading
+// look months stale, and `windowStillSpent` fails closed on a stale rollover. (That sentinel is also what
+// `probe-accounts.cjs`'s WINDOW_MAX_RESET_MS once had to defend against, when this gate still wrote the
+// live cache — `config.ts` isolates a test's DATA_DIR now, but an honest clock is what keeps it honest.)
+const now = Date.now();
 const future = now + 3_600_000;
 noteZaiUsage({ plan: "lite", fiveHour: 40, fiveHourReset: future, sevenDay: 20, sevenDayReset: future });
 assert.equal(zaiUsageCapped(now), false);

@@ -705,6 +705,53 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   older persisted cache, or a backend that stops sending the field all leave the cap standing, as do
   stale readings and a still-spent window. Gate: `test:provider-fallback` (recovery, genuine cap, stale
   / unknown / missing telemetry) and `test:codex-usage` (the field mapping).
+- **Grok and z.ai get the same disproof, plus the freshness rule that makes any reset timestamp
+  readable** (`agents/usageFreshness.ts`, `ThreadManager.liftLatchOnReopenedAllowance`). Two separate
+  failures, one module:
+  - *The rollover inference is only sound while the READING is fresh.* A reset already in the past
+    normally means the window rolled over, so a meter at its limit is free again. A scrape that stops
+    updating leaves that reset drifting further into the past every minute, so a permanently frozen
+    exhausted pool reads as permanently free. Grok spent two days (2026-09-09 → 11) offered as a live
+    failover rung while rejecting every run it was handed: its weekly and monthly readings had frozen,
+    and a 2026-07 "15000/15000" credit snapshot was still deciding routing. `windowStillSpent` therefore
+    fails CLOSED on the inference — a stale reading may still report a window spent, it may no longer
+    clear one on a reset it never witnessed elapse. This is the load-bearing half: it makes ANY frozen
+    meter read as spent rather than free, whatever froze it.
+    What froze that particular reading was not a code path. Until `config.ts` grew its implicit test
+    isolation (`d3e8f38`, 2026-09-09 17:14), a gate run wrote `server/data/grok-usage-cache.json`
+    itself, and production's copy was byte-for-byte `grokUsage.test.ts`'s final synthetic state stamped
+    16:05 that day. The lesson that outlives it: a usage gate's clock must be its READING clock, or the
+    gate only asserts whatever its own drift allows. Two real freeze paths are closed alongside it:
+    `parseGrokBillingHttp` discarded the endpoint's real `monthlyLimit: 0` ("this plan meters no monthly
+    pool") as an unreadable body, so a genuinely retired pool could never be retired; and the winpty
+    weekly rescrape was gated on a weekly meter merely EXISTING, so a frozen one permanently disabled
+    the only path that could refresh it. It is gated on `grokWeeklyIsFresh` instead. Three smaller
+    fail-opens in the same clock go with them: a log line that states no `ts` is skipped rather than
+    dated to the read clock, a forward-skewed stamp is clamped to it, and a legacy cache's `at` (a WRITE
+    clock) is no longer adopted as a per-meter read clock. `readGrokUsage`'s `stale` flag is the
+    STALEST meter, never the freshest — the monthly ping succeeds every poll, so `max()` let a fresh
+    credit reading vouch for a frozen weekly.
+    `scripts/probe-accounts.cjs` mirrors the same guard (`rolloverIsBelievable`), because the sweep's
+    failover ladder re-implements routing's decision by hand and drifts in the flattering direction:
+    unguarded, it kept printing the frozen Grok rung `available`.
+  - *A cap latch blocks the very run that would disprove it*, exactly as on Codex. One z.ai rejection on
+    2026-09-04 stated a weekly exhaustion resetting 6.2 days out; the backend sat excluded for all of it
+    while z.ai's own quota endpoint read the weekly window 6% used. `allowanceReopened` is the shared
+    evidence function: every clause is a veto and the default is "no" — the reading must exist, be fresh,
+    be strictly NEWER than the recorded cap, and show a real metered window well under the limit.
+    Neither provider exposes Codex's tri-state limit-reached verdict, only percentages, so a lift is a
+    BET against the provider's own verdict, and the provider gets to answer it: a cap recorded after the
+    lift (`allowanceLiftAt`, kv-persisted so a restart cannot buy a second probe) means the provider
+    capped us again anyway, and its rejection then outranks a meter that may not see the pool it is
+    refusing on — no further probe until that latch expires on its own, which is also when the
+    memory is forgotten so the NEXT cap episode gets its own. Unbounded, the lift would flap: the z.ai
+    meter polls every ~72s, so each new reading is newer than the fresh cap and would clear it again —
+    a spent dispatch a minute. Bounding it by the probed WINDOW instead does not work, and that is the
+    trap to keep closed: a rejection that states no reset falls back to a fixed cooldown measured from
+    now, so every re-cap lands further out than the window before it and slips straight past such a
+    guard. Gates: `test:usage-freshness` (the rules), `test:provider-fallback` (the ThreadManager
+    wiring, both providers, lift / still-spent / re-capped / across a restart / after expiry),
+    `test:failover-ladder` (the probe's mirror of the freshness guard).
 - **A ChatGPT plan is not one allowance** (`agents/codexPools.ts`). `account/rateLimits/read` returns
   `rateLimitsByLimitId` beside the plan-wide windows: the general `codex` pool, plus a dedicated pool
   per model that ships its own (GPT-5.3-Codex-Spark). Each has its own 5h/weekly windows, its own
