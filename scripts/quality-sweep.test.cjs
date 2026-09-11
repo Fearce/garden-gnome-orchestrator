@@ -13,6 +13,11 @@
 //      eventually into somebody's commit.
 //   4. The verdict text and the exit code agree — a summary that reads green while exiting 1
 //      (or the reverse) is the one output nobody double-checks.
+//   5. Step selection: a flag is not a step number, and an unknown number selects nothing.
+//   6. A closed stdout (a reader piping into `head`) cannot truncate the transcript.
+//   7. A second concurrent sweep refuses instead of interleaving the first one's transcript, and
+//      refuses BEFORE opening it — `flags:"w"` truncates, so a late refusal destroys the log it
+//      was declining to write.
 //
 // Run: node scripts/quality-sweep.test.cjs
 
@@ -20,9 +25,22 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { PassThrough } = require("node:stream");
-const { STEPS, TRANSCRIPT, selected, summaryText, exitCodeFor, guardBrokenPipe } = require("./quality-sweep.cjs");
+const {
+  STEPS,
+  TRANSCRIPT,
+  SWEEP_LOCK_DB,
+  SWEEP_OWNER,
+  BUSY_EXIT_CODE,
+  selected,
+  summaryText,
+  exitCodeFor,
+  guardBrokenPipe,
+  sweepBusyText,
+} = require("./quality-sweep.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
+const SERVER = path.join(ROOT, "server");
+const { LOCK_DB, OWNER_FILE } = require(path.join(SERVER, "scripts", "gate-run-lease.cjs"));
 
 // --- 1. every step points at a script that exists where it will be run ------------------------
 const pkgCache = new Map();
@@ -108,6 +126,50 @@ assert.throws(
   () => guardBrokenPipe(new PassThrough()).emit("error", Object.assign(new Error("nope"), { code: "ENOSPC" })),
   /nope/,
   "only a broken pipe is survivable — a full disk must still fail loudly",
+);
+
+// --- 7. a second sweep refuses instead of shredding the first one's transcript -------------------
+// Both instances open TRANSCRIPT with `flags:"w"` and write at independent offsets, so two live
+// sweeps interleave one file: on 2026-09-11 the summary that got read said step 2 green while
+// `test:zai-usage` had failed, with another step's output spliced through the gate list. The lease is
+// the existing SQLite one the gate suite already uses, on its own lock file so a sweep never blocks
+// the gates run it is about to spawn.
+const { spawnSync } = require("node:child_process");
+const { acquireGateRunLease } = require(path.join(SERVER, "scripts", "gate-run-lease.cjs"));
+
+assert.ok(SWEEP_LOCK_DB.startsWith(path.join(SERVER, "data")), "the sweep lock lives in gitignored server/data");
+assert.notEqual(SWEEP_LOCK_DB, LOCK_DB, "a sweep must not take the GATE lease — it spawns a gates run itself");
+assert.notEqual(SWEEP_OWNER, OWNER_FILE, "…and must not overwrite the gate lease's owner file either");
+
+const busy = sweepBusyText({ pid: 4321, startedAtIso: "2026-09-11T03:25:00.000Z" });
+assert.match(busy, /PID 4321/, "the refusal must name the incumbent, or it cannot be acted on");
+assert.match(busy, /taskkill \/PID 4321/, "…with the command that ends it");
+assert.match(busy, /--force/, "…and the override, so the guard is never a dead end");
+assert.match(busy, /NOT a sweep result/, "…and must refuse to be read as a verdict");
+
+const held = acquireGateRunLease({ lockDbPath: SWEEP_LOCK_DB, ownerPath: SWEEP_OWNER });
+assert.ok(held.acquired, "a free lease must be claimable");
+try {
+  const before = fs.existsSync(TRANSCRIPT) ? fs.statSync(TRANSCRIPT).mtimeMs : null;
+  const second = spawnSync(process.execPath, [path.join(ROOT, "scripts", "quality-sweep.cjs"), "1"], {
+    encoding: "utf8",
+    cwd: ROOT,
+  });
+  assert.equal(second.status, BUSY_EXIT_CODE, "a second sweep exits BUSY, never 0 — busy is not a pass");
+  assert.match(second.stdout, /already running/);
+  const after = fs.existsSync(TRANSCRIPT) ? fs.statSync(TRANSCRIPT).mtimeMs : null;
+  assert.equal(after, before, "and it must refuse BEFORE opening the transcript, which truncates");
+} finally {
+  held.release();
+}
+assert.ok(
+  acquireGateRunLease({ lockDbPath: SWEEP_LOCK_DB, ownerPath: SWEEP_OWNER }).acquired &&
+    (() => {
+      const l = acquireGateRunLease({ lockDbPath: SWEEP_LOCK_DB, ownerPath: SWEEP_OWNER });
+      l.release?.();
+      return true;
+    })(),
+  "a released lease is immediately reclaimable — the guard must not outlive the run that took it",
 );
 
 console.log(`qualitySweep: all assertions passed (${STEPS.length} steps across ${covered.length} sections)`);

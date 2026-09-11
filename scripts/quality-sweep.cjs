@@ -25,6 +25,36 @@ const SERVER = path.join(ROOT, "server");
 
 // Under server/data, which is gitignored — a sweep transcript is a working artifact, never a commit.
 const TRANSCRIPT = path.join(SERVER, "data", "quality-sweep-last.log");
+// One sweep at a time, on the same SQLite lease the gate suite uses — its own lock file, so a sweep
+// never blocks the gates run it is about to spawn. SQLite is what makes this better than a pidfile:
+// the OS releases its transaction even on a hard kill, so a crashed sweep leaves nothing to guess at.
+//
+// Two sweeps both open this transcript with `flags:"w"` and write it at independent offsets, so the
+// log does not double — it INTERLEAVES. On 2026-09-11 an orphaned sweep from a resumed session
+// overlapped a fresh one, and the summary that got read reported step 2 green while `test:zai-usage`
+// had actually failed, with another step's output spliced through the gate list. A verdict you cannot
+// trust costs more than no verdict, and nothing here could tell you it had happened.
+const { acquireGateRunLease } = require(path.join(SERVER, "scripts", "gate-run-lease.cjs"));
+const SWEEP_LOCK_DB = path.join(SERVER, "data", "quality-sweep-run-lock.sqlite");
+const SWEEP_OWNER = path.join(SERVER, "data", "quality-sweep-run-owner.json");
+const BUSY_EXIT_CODE = 75;
+
+/** The refusal an operator reads: who holds it, why it matters, and both ways out. */
+function sweepBusyText(owner) {
+  const pid = Number.isInteger(owner?.pid) ? `PID ${owner.pid}` : "another process";
+  const since = typeof owner?.startedAtIso === "string" ? ` since ${owner.startedAtIso}` : "";
+  return [
+    "",
+    "=== a quality sweep is already running ===",
+    `    owner: ${pid}${since}`,
+    `    transcript: ${TRANSCRIPT}`,
+    "    two sweeps interleave that one file, so the summary can belong to a different run than the",
+    "    steps above it — this attempt did not touch it, and this is NOT a sweep result",
+    `    wait for that run, or end it and rerun:  taskkill /PID ${owner?.pid ?? "<pid>"} /T /F`,
+    "    override only if you know they write different files:  --force",
+    "",
+  ].join("\n");
+}
 
 // step = the numbered section in the rule; several sections take more than one command.
 const STEPS = [
@@ -143,6 +173,16 @@ async function main() {
     return 0;
   }
 
+  // Claimed BEFORE the transcript is opened: `flags:"w"` truncates, so a refusal that came after it
+  // would already have destroyed the running sweep's log in order to say it was not going to run.
+  const lease = argv.includes("--force")
+    ? { acquired: true, release() {} }
+    : acquireGateRunLease({ lockDbPath: SWEEP_LOCK_DB, ownerPath: SWEEP_OWNER });
+  if (!lease.acquired) {
+    console.log(sweepBusyText(lease.owner));
+    return BUSY_EXIT_CODE;
+  }
+
   const log = openTranscript();
   // Announced up front, not just in the summary: a sweep is usually backgrounded, and this is where
   // to watch it from while it runs.
@@ -158,10 +198,22 @@ async function main() {
 
   emit(log, summaryText(results));
   await closeTranscript(log);
+  lease.release();
   return exitCodeFor(results);
 }
 
-module.exports = { STEPS, TRANSCRIPT, selected, summaryText, exitCodeFor, guardBrokenPipe };
+module.exports = {
+  STEPS,
+  TRANSCRIPT,
+  SWEEP_LOCK_DB,
+  SWEEP_OWNER,
+  BUSY_EXIT_CODE,
+  selected,
+  summaryText,
+  exitCodeFor,
+  guardBrokenPipe,
+  sweepBusyText,
+};
 
 if (require.main === module) {
   guardBrokenPipe(process.stdout);

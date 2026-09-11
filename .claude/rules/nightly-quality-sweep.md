@@ -39,12 +39,13 @@ The model catalog can be complete while the executable that launches it is old: 
 Steps 3/4 read runs and parks, so neither sees the failure the owner switched the Supervisor OFF for: auto-review parks a task in `review`, fresh work creates a new revision, and the Supervisor hands the same task straight back forever. There are two independent fences. The current `auto_review_episodes` row must never exceed its cross-revision unattended budget (default 2); every new Supervisor launch also persists its exact attempt/budget counter in the append-only Supervisor audit, so a later owner reset cannot erase proof that a claim crossed the bound. Separately, the audit groups launches by their live work revision and flags a second claim on unchanged work. Reviewer recovery and a fix-round re-check are reviewer RUNS inside one claim, so neither is miscounted. Old rows lack the attempt marker; their raw per-task load is context, not a verdict. Same-revision repeats predating `6532716` print as repaired history. `--days N` widens the window. **Read the evidence line before the verdict:** an empty window says `NO EVIDENCE`, never PASS. Gate: `test:auto-review-health`, with both loop shapes and the legacy/unmeasured cases pinned.
 
 ## Do / don't
-- **A summary that disagrees with its own step list means TWO sweeps are running.** Both write
-  `quality-sweep-last.log` and `gates-last.log` with independent offsets, so the transcript interleaves
-  and you read one run's verdict over another's steps — on 09-11 that reported step 2 green while
-  `test:zai-usage` had failed. A resumed session's orphaned sweep is the usual second writer. Check
-  (`Get-CimInstance Win32_Process | ? CommandLine -match 'quality-sweep|run-gates'`), kill the strays,
-  re-run once. Never reconcile the two by reading harder.
+- **`npm run quality` exiting 75 means another sweep already holds the lease** — it prints the owner
+  pid and the `taskkill` for it. That is not a sweep result and never a pass; end the incumbent (a
+  resumed session's orphan is the usual one) and re-run. It refuses rather than starting because two
+  sweeps write `quality-sweep-last.log` at independent offsets, so the transcript INTERLEAVES: on 09-11,
+  before the lease existed, that reported step 2 green while `test:zai-usage` had failed. `--force`
+  overrides it. If you ever see a summary disagreeing with its own step list anyway, suspect the same
+  shape and check for a second writer rather than reading harder.
 - **Do NOT re-restart** if the resume note says the bounce already completed — only verify live `dist` + health.
 - **Do NOT `git add -A`** when `health` lists dirty paths; those are usually a concurrent implementor's WIP
   (office claims win). Pathspec only your files. Nor **re-apply** a teammate's already-pushed fix — check
