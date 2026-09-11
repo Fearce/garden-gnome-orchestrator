@@ -465,6 +465,7 @@ export function ThreadDetail() {
   const showAgentModel = useStore((s) => s.settings.showAgentModel);
   const historyHasMore = useStore((s) => (id ? s.threadHistoryHasMore[id] ?? false : false));
   const historyLoading = useStore((s) => (id ? s.threadHistoryLoading[id] ?? false : false));
+  const historyLoaded = useStore((s) => (id ? s.threadHistoryLoaded[id] ?? false : false));
   // The project chatroom for THIS task's repo, if one exists (≥2 participants ever collaborated here —
   // possibly in a PAST task, since the room persists). Repo-keyed so a fresh task on a repo with
   // prior history also gets the button to read the old chatter; invisible on repos that never collaborated.
@@ -989,12 +990,16 @@ export function ThreadDetail() {
           {visible.length === 0 && !draft && !(showTools && thinkingDraft) && (
             <div className="faint" style={{ fontSize: 13 }}>
               {feedItems.length === 0
-                ? // historyLoading covers the normal case (the request is in flight); on a CPU-starved
-                  // box the fetch itself can take many seconds, and without this the empty state reads
-                  // as "nothing has started" when it's really "still waiting on the reply".
-                  historyLoading
-                  ? "Loading conversation…"
-                  : "Planner and researcher are warming up. Their findings and the implementor's work will stream here."
+                ? // "Warming up" is a claim about the SERVER's state, so only make it once the server has
+                  // actually answered for this task. `historyLoaded` is the only thing that proves that:
+                  // a request in flight is slow on a CPU-starved box (~15s WS-open + ~2s round trip
+                  // measured during a 94%-CPU spell), and a request that never went out at all — select()
+                  // while the socket is down, which nothing re-asks until the next `hello` — leaves the
+                  // feed empty too. Both used to read as "nothing has started", which is what made a
+                  // console full of busy tasks look stuck.
+                  historyLoaded
+                  ? "Planner and researcher are warming up. Their findings and the implementor's work will stream here."
+                  : "Loading conversation…"
                 : roleFilter === "all"
                   ? "Nothing to show."
                   : `No ${roleFilter} output${showTools ? "" : " (tools & reasoning hidden)"} yet.`}

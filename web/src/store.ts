@@ -152,6 +152,11 @@ interface State {
   threadHistoryCursors: Record<string, MessageCursor>;
   threadHistoryHasMore: Record<string, boolean>;
   threadHistoryLoading: Record<string, boolean>;
+  // Whether a thread.history REPLY has ever landed for this task. `threadHistoryLoading` only covers a
+  // request that actually went out — `select()` can't send while the socket is down, and nothing else
+  // re-asks until the next `hello`. So "the request is not in flight" is NOT the same as "the server
+  // answered", and only this flag lets an empty feed be reported as genuinely empty rather than unknown.
+  threadHistoryLoaded: Record<string, boolean>;
   // How many EXTRA older pages the owner has loaded for a task. Raises that task's feed retention caps
   // so the fetched page survives the merge instead of being trimmed straight back off.
   threadHistoryPages: Record<string, number>;
@@ -946,6 +951,7 @@ export const useStore = create<State>((set) => ({
   threadHistoryCursors: {},
   threadHistoryHasMore: {},
   threadHistoryLoading: {},
+  threadHistoryLoaded: {},
   threadHistoryPages: {},
   threadDrafts: {},
   thinkingDrafts: {},
@@ -1921,6 +1927,7 @@ function applyEvent(ev: ServerEvent): void {
           threadHistoryCursors: drop(s.threadHistoryCursors),
           threadHistoryHasMore: drop(s.threadHistoryHasMore),
           threadHistoryLoading: drop(s.threadHistoryLoading),
+          threadHistoryLoaded: drop(s.threadHistoryLoaded),
           threadHistoryPages: drop(s.threadHistoryPages),
           implementationMemos: drop(s.implementationMemos),
           threadDrafts: drop(s.threadDrafts),
@@ -1966,6 +1973,7 @@ function applyEvent(ev: ServerEvent): void {
           threadHistoryCursors: drop(s.threadHistoryCursors),
           threadHistoryHasMore: drop(s.threadHistoryHasMore),
           threadHistoryLoading: drop(s.threadHistoryLoading),
+          threadHistoryLoaded: drop(s.threadHistoryLoaded),
           threadHistoryPages: drop(s.threadHistoryPages),
           threadDrafts: drop(s.threadDrafts),
           thinkingDrafts: drop(s.thinkingDrafts),
@@ -2038,6 +2046,7 @@ function applyEvent(ev: ServerEvent): void {
             [ev.threadId]: replayedNewestPage ? s.threadHistoryHasMore[ev.threadId] ?? false : ev.hasMoreMessages ?? false,
           },
           threadHistoryLoading: { ...s.threadHistoryLoading, [ev.threadId]: false },
+          threadHistoryLoaded: { ...s.threadHistoryLoaded, [ev.threadId]: true },
           implementationMemos: {
             ...s.implementationMemos,
             [ev.threadId]: mergeImplementationMemos(s.implementationMemos[ev.threadId] ?? [], ev.implementationMemos ?? []),
