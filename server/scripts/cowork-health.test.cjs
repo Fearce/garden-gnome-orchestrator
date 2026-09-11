@@ -658,7 +658,10 @@ check("the probe shows how long the active turn has actually been running", () =
   db.close();
   const run = runProbe(file);
   assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, /t-live\s+running\s+active 2m0[0-2]s/);
+  // Seconds-wide, not 2-seconds-wide: the probe runs as a CHILD PROCESS, so this tolerance is really
+  // node's startup budget on a loaded box — it read 2m08s during a full gate suite and passes solo.
+  // The minute figure is what proves the age is real; a 0s/wrong-column regression still fails here.
+  assert.match(run.stdout, /t-live\s+running\s+active 2m\d\ds/);
 });
 
 check("the probe exits 1 and names the violation on a wedged claim", () => {
