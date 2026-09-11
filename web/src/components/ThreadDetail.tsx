@@ -989,7 +989,12 @@ export function ThreadDetail() {
           {visible.length === 0 && !draft && !(showTools && thinkingDraft) && (
             <div className="faint" style={{ fontSize: 13 }}>
               {feedItems.length === 0
-                ? "Planner and researcher are warming up. Their findings and the implementor's work will stream here."
+                ? // historyLoading covers the normal case (the request is in flight); on a CPU-starved
+                  // box the fetch itself can take many seconds, and without this the empty state reads
+                  // as "nothing has started" when it's really "still waiting on the reply".
+                  historyLoading
+                  ? "Loading conversation…"
+                  : "Planner and researcher are warming up. Their findings and the implementor's work will stream here."
                 : roleFilter === "all"
                   ? "Nothing to show."
                   : `No ${roleFilter} output${showTools ? "" : " (tools & reasoning hidden)"} yet.`}
