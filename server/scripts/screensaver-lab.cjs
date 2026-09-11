@@ -176,6 +176,81 @@ const PROBE_BODY = `() => {
   };
 }`;
 
+/** The view-settings record the console boots from, written before the bundle runs so a page starts
+ *  on the delay this lab wants rather than the default five minutes. */
+function viewSettings(patch) {
+  return JSON.stringify({
+    showCompleted: true,
+    verbosity: "full",
+    taskDragAndDrop: false,
+    taskSort: "created_desc",
+    theme: "classic",
+    screensaver: true,
+    screensaverIdleMinutes: IDLE_MINUTES,
+    ...patch,
+  });
+}
+
+/** Armed in every page, so a scene that never arrives can say WHY. `useIdle` goes idle on a
+ *  timestamp that any pointer/key/wheel/scroll event rewrites, and `scroll` CAPTURES from the
+ *  window, so something as innocent as Playwright scrolling an element into view for a screenshot
+ *  holds the console awake. A bare `waitForSelector` timeout cannot tell that apart from a build
+ *  where the overlay is broken, which is the difference between a lab bug and a product bug. */
+function recordActivity() {
+  window.__gsActivity = { last: null, counts: {} };
+  const note = (e) => {
+    const t = e.target;
+    const where = t && t.nodeType === 1 ? `${t.tagName}.${String(t.className).slice(0, 40)}` : String(t);
+    const key = `${e.type} <- ${where}`;
+    window.__gsActivity.counts[key] = (window.__gsActivity.counts[key] || 0) + 1;
+    window.__gsActivity.last = { key, at: Date.now() };
+  };
+  for (const type of ["pointerdown", "pointermove", "mousedown", "mousemove", "keydown", "wheel", "touchstart", "scroll"]) {
+    window.addEventListener(type, note, { capture: true, passive: true });
+  }
+}
+
+/** A logged-in console page with its view settings already on disk and the recorder armed. Every
+ *  page the lab opens comes through here, so each is measured on the same terms. */
+async function openConsole(browser, { view, ...options } = {}) {
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 2, ...options });
+  await context.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
+  await context.addInitScript(([key, json]) => localStorage.setItem(key, json), ["director_settings", viewSettings(view)]);
+  await context.addInitScript(recordActivity);
+  const page = await context.newPage();
+  await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45_000 });
+  // Wait for the socket's hello, not the shell: everything server-authoritative renders neutral
+  // defaults until that frame lands (lab-harness.cjs).
+  await page.waitForSelector(".gs-card, .card", { timeout: 45_000 });
+  return { context, page };
+}
+
+/** Wait for the scene to take the screen, and turn the silence of a timeout into evidence. */
+async function awaitScene(page, label) {
+  try {
+    await page.waitForSelector(".gs-root", { timeout: (IDLE_MINUTES + 1) * 60_000 });
+  } catch {
+    const why = await page.evaluate(() => ({
+      present: !!document.querySelector(".gs-root"),
+      settings: localStorage.getItem("director_settings"),
+      hidden: document.hidden,
+      visibility: document.visibilityState,
+      activity: window.__gsActivity || null,
+    }));
+    const last = why.activity && why.activity.last;
+    throw new Error(
+      [
+        `the scene never covered the board (${label})`,
+        `  .gs-root present: ${why.present}`,
+        `  document: hidden=${why.hidden} visibilityState=${why.visibility}`,
+        `  view settings: ${why.settings}`,
+        `  last activity: ${last ? `${last.key}, ${((Date.now() - last.at) / 1000).toFixed(1)}s ago` : "none since load"}`,
+        `  activity seen: ${JSON.stringify(why.activity ? why.activity.counts : {})}`,
+      ].join("\n"),
+    );
+  }
+}
+
 /** One measurement of the live scene, or a hard failure: a null frame means the scene is not on
  *  screen, which every caller below is entitled to assume it is. */
 async function probe(page) {
@@ -223,25 +298,9 @@ async function main() {
   let code = 1;
 
   try {
-    const context = await browser.newContext({
-      viewport: { width: 1600, height: 1000 },
-      deviceScaleFactor: 2,
+    const { context, page } = await openConsole(browser, {
       ...(VIDEO_DIR ? { recordVideo: { dir: VIDEO_DIR, size: { width: 1600, height: 1000 } } } : {}),
     });
-    await context.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
-    // Set the view-settings record BEFORE the bundle runs, so the console boots straight into a
-    // one-minute idle delay rather than the default five.
-    await context.addInitScript(
-      ([key, minutes]) => {
-        localStorage.setItem(key, JSON.stringify({ showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: "classic", screensaver: true, screensaverIdleMinutes: minutes }));
-      },
-      ["director_settings", IDLE_MINUTES],
-    );
-    const page = await context.newPage();
-    await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45_000 });
-    // Wait for the socket's hello, not the shell: everything server-authoritative renders neutral
-    // defaults until that frame lands (lab-harness.cjs).
-    await page.waitForSelector(".gs-card, .card", { timeout: 45_000 });
     const boardCards = await page.locator(".card").count();
     check("the board renders the seeded tasks before anything goes idle", boardCards >= SEED.length, `${boardCards} cards`);
     await page.screenshot({ path: path.join(shots, "00-board-before.png") });
@@ -249,7 +308,7 @@ async function main() {
     /* ---- 1. it arrives on its own, after the configured idle ---- */
 
     const waitStart = Date.now();
-    await page.waitForSelector(".gs-root", { timeout: (IDLE_MINUTES + 1) * 60_000 });
+    await awaitScene(page, "the main console");
     const waited = (Date.now() - waitStart) / 1000;
     check("the scene appears by itself after the idle delay", waited >= IDLE_MINUTES * 60 - 5, `waited ${waited.toFixed(0)}s for a ${IDLE_MINUTES}min setting`);
 
@@ -390,26 +449,17 @@ async function main() {
     check("it stays dismissed while the owner is working", stillGone === 0);
 
     // Closing the context is the only moment Playwright flushes a recording to disk, so the clip is
-    // finalised here rather than in `finally`: everything below runs in contexts of its own.
-    if (VIDEO_DIR) {
-      const video = page.video();
-      await context.close();
-      if (video) console.log(`\nvideo: ${await video.path()}`);
-    }
+    // finalised here rather than in `finally`. It is closed either way: everything below runs in a
+    // context of its own, and a page left open is a second console going idle in the background,
+    // which is state the steps below neither want nor control.
+    const video = VIDEO_DIR ? page.video() : null;
+    await context.close();
+    if (video) console.log(`\nvideo: ${await video.path()}`);
 
     /* ---- 8. reduced motion: posed, not moving ---- */
 
-    const calm = await browser.newContext({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 2, reducedMotion: "reduce" });
-    await calm.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
-    await calm.addInitScript(
-      ([key, minutes]) => {
-        localStorage.setItem(key, JSON.stringify({ showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: "classic", screensaver: true, screensaverIdleMinutes: minutes }));
-      },
-      ["director_settings", IDLE_MINUTES],
-    );
-    const calmPage = await calm.newPage();
-    await calmPage.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45_000 });
-    await calmPage.waitForSelector(".gs-root", { timeout: (IDLE_MINUTES + 1) * 60_000 });
+    const { page: calmPage } = await openConsole(browser, { reducedMotion: "reduce" });
+    await awaitScene(calmPage, "a reduced-motion console");
     await calmPage.waitForTimeout(1200);
     const calmA = await probe(calmPage);
     await calmPage.waitForTimeout(1200);
@@ -422,17 +472,7 @@ async function main() {
 
     /* ---- 9. switching it off means off ---- */
 
-    const off = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-    await off.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
-    await off.addInitScript(
-      (key) => {
-        localStorage.setItem(key, JSON.stringify({ showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: "classic", screensaver: false, screensaverIdleMinutes: 1 }));
-      },
-      "director_settings",
-    );
-    const offPage = await off.newPage();
-    await offPage.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45_000 });
-    await offPage.waitForSelector(".card", { timeout: 45_000 });
+    const { page: offPage } = await openConsole(browser, { viewport: { width: 1200, height: 800 }, view: { screensaver: false } });
     await offPage.waitForTimeout((IDLE_MINUTES * 60 + 20) * 1000);
     check("switched off, the scene never appears", (await offPage.locator(".gs-root").count()) === 0);
 
