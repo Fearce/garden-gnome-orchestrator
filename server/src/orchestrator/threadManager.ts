@@ -12954,7 +12954,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * handle here means one of them missed: it stopped the wrong object, or took a route that forgot. That
    * is not a tidy inconsistency — the two agents share a checkout with no merge step between them, so
    * they commit over each other and the loser's work disappears with no signal (2026-09-11: a turn-limit
-   * resume ran 20 minutes alongside the implementor it was continuing, on a production branch).
+   * resume ran 45 minutes alongside the implementor it was continuing, on a production branch).
    *
    * Fire-and-forget, because `startImplementor` is synchronous. The displaced child can therefore still
    * be holding its session when the new run resumes it, which returns empty — the silent-run retry

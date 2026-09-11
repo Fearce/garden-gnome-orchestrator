@@ -6,7 +6,7 @@
  * Its caller `awaitImplementorCompletion` kept `let current = run` — the run it had passed IN — so after
  * any of those relaunches `current` pointed at an already-dead object. The next turn-ceiling auto-resume
  * then "stopped" that corpse, left the real child running, and started a second agent beside it. Both
- * worked the same checkout for 20 minutes and committed over each other on a production branch; the
+ * worked the same checkout for 45 minutes and committed over each other on a production branch; the
  * resume in between came back empty (0 turns) because the original still held its session.
  *
  * WHAT IS REAL vs. SIMULATED
