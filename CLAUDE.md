@@ -94,6 +94,13 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   reload the browser. That build stamps `web/dist/.build-info.json`, and it is the ONLY thing that
   answers "is the bundle current?" — `--verify` and `health` both read it. A web note from either means
   the BUNDLE is behind HEAD; it never refers to the server's build, so a rebuild is the whole remedy.
+  **That build IS the deploy.** The running server serves `web/dist` out of this checkout, so it
+  replaces what the live console shows the second it finishes, unverified WIP and all. `deploy` refuses
+  to rebuild `web/dist` from a SIBLING's WIP, which makes it easy to assume a plain `npm run build
+  --prefix web` is guarded too; it is not, and it does not care whose WIP it is, including yours. The
+  usual way it happens is building mid-task to feed a throwaway instance, so either build a detached
+  worktree and point the throwaway at that, or treat prod as carrying your change and do not stop until
+  it is verified and committed (then rebuild once more, so the stamp names the real commit, `dirty:false`).
 - If a restart doesn't pick up server changes, a stale/orphaned process may still hold :4317 —
   check `Get-NetTCPConnection -LocalPort 4317` and kill the old PID, then restart.
 - **`/api/restart` silently no-ops when the :4317/:4319 PID is elevated** — the hub can't kill it, so
