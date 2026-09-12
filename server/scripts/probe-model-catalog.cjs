@@ -68,6 +68,66 @@ function visibleGrokModels(body) {
     .filter(Boolean);
 }
 
+// How much of the CLI's unified log to read back. Mirrors grokUsagePing's tail: a catalog event is
+// written on every TUI boot, so the recent tail always carries one if the CLI has run at all.
+const GROK_LOG_TAIL_BYTES = 512 * 1024;
+
+/**
+ * The Grok CLI's OWN latest statement of its catalog, from its unified log.
+ *
+ * `models_cache.json` is not a reliable witness: the CLI deletes it on every self-update ("removed
+ * stale models_cache.json after update") and only rewrites it when a session next persists the
+ * catalog, so a routine `grok update` left the probe asserting drift it had no evidence of, every
+ * night, until a TUI happened to run. The log keeps stating `model_count` (and the selected id)
+ * across that gap. It carries no id LIST, so it cannot replace a full comparison — but a count that
+ * disagrees with the server's roster is exactly the drift this check exists to catch, and the
+ * missing file used to hide it completely.
+ */
+function grokCatalogFromLog(logPath) {
+  let text;
+  try {
+    const size = fs.statSync(logPath).size;
+    if (size <= 0) return null;
+    const start = Math.max(0, size - GROK_LOG_TAIL_BYTES);
+    const fd = fs.openSync(logPath, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+    // Starting mid-file leaves a partial first line, which would only ever fail to parse — drop it.
+    if (start > 0) text = text.slice(text.indexOf("\n") + 1);
+  } catch {
+    return null;
+  }
+  let best = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.includes("model catalog")) continue;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof obj?.msg !== "string" || !obj.msg.startsWith("model catalog")) continue;
+    const count = obj.ctx?.model_count;
+    if (typeof count !== "number" || !Number.isFinite(count)) continue;
+    // Dated by the line's own clock, like every other reading taken out of this log.
+    const at = obj.ts ? Date.parse(obj.ts) : NaN;
+    if (!Number.isFinite(at)) continue;
+    if (!best || at >= best.at) {
+      best = {
+        modelCount: count,
+        currentModelId: typeof obj.ctx?.current_model_id === "string" ? obj.ctx.current_model_id : best?.currentModelId ?? null,
+        at,
+      };
+    }
+  }
+  return best;
+}
+
 function rowMap(rows) {
   return new Map(rows.map((row) => [row.id, row.efforts]));
 }
@@ -108,15 +168,28 @@ function catalogIssues(snapshot) {
   }
 
   if (snapshot.grokEnabled) {
-    if (!snapshot.localGrokModels.length) {
-      issues.push("Grok is enabled but models_cache.json is missing, corrupt, or has no visible models");
-    } else {
+    if (snapshot.localGrokModels.length) {
       for (const id of snapshot.localGrokModels) {
         if (!snapshot.grokModels.includes(id)) issues.push(`Grok cache drift: visible CLI model ${id} is missing from the server cache`);
       }
       for (const id of snapshot.grokModels) {
         if (!snapshot.localGrokModels.includes(id)) issues.push(`Grok cache drift: server still exposes ${id}, which is no longer visible in the CLI catalog`);
       }
+    } else if (snapshot.grokLogCatalog) {
+      // No cache file — normal right after a `grok update`. The log still states the catalog's SIZE,
+      // which catches a roster that has grown or shrunk even though it cannot name the new ids.
+      const { modelCount, currentModelId } = snapshot.grokLogCatalog;
+      if (modelCount !== snapshot.grokModels.length) {
+        issues.push(
+          `Grok catalog drift: the CLI reports ${modelCount} visible model(s), the server offers ${snapshot.grokModels.length}` +
+            ` (${snapshot.grokModels.join(", ") || "none"}) — run the CLI once to rewrite models_cache.json and name them`,
+        );
+      }
+      if (currentModelId && !snapshot.grokModels.includes(currentModelId)) {
+        issues.push(`Grok catalog drift: the CLI's selected model ${currentModelId} is not in the server cache`);
+      }
+    } else {
+      issues.push("Grok is enabled but neither models_cache.json nor its CLI log states a catalog — currency is not proved");
     }
   }
   return issues;
@@ -184,6 +257,7 @@ async function main() {
       zaiModels: stringList(kv("cache_zai_models")),
       localCodexRows: visibleCodexRows(readJsonFile(path.join(codexHome, "models_cache.json"))),
       localGrokModels: visibleGrokModels(readJsonFile(path.join(grokHome, "models_cache.json"))),
+      grokLogCatalog: grokCatalogFromLog(path.join(grokHome, "logs", "unified.jsonl")),
     };
     const result = report(snapshot, {
       claude: (model) => [...types.claudeEffortsForModel(model)],
@@ -197,7 +271,7 @@ async function main() {
   }
 }
 
-module.exports = { catalogIssues, codexRows, report, stringList, visibleCodexRows, visibleGrokModels };
+module.exports = { catalogIssues, codexRows, grokCatalogFromLog, report, stringList, visibleCodexRows, visibleGrokModels };
 
 if (require.main === module) {
   main().then((code) => process.exit(code)).catch((error) => {
