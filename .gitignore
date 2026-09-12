@@ -12,6 +12,7 @@ server/.ide-lab-dist/
 server/.task-model-lab-dist/
 server/.code-nav-lab-dist/
 server/.cowork-lab-dist/
+server/.chip-lab-dist/
 web/dist/
 relay/dist/
 *.tsbuildinfo
