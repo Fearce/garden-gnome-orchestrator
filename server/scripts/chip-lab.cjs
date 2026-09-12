@@ -46,6 +46,33 @@ const SCENARIOS = {
   capped: (at) => ({ fiveHour: 99, sevenDay: 99, fiveHourReset: at + 25 * 60_000, sevenDayReset: at + 6 * DAY, usageAt: at - 30_000 }),
 };
 
+/**
+ * Grok chip states, written to the instance's own grok-usage-cache.json. Selecting one also points
+ * GROK_HOME_DIR at an empty temp home, so the live usage ping cannot overwrite the state being
+ * demonstrated with whatever this machine's own CLI happens to report — the same reason the Claude
+ * tokens are bogus. A lab whose output depends on the operator's box is not a lab.
+ */
+const GROK_STATES = {
+  // The 2026-09-12 bug: a free plan states a tier with zero balances and NO creditUsagePercent, so the
+  // parser discarded every line and the chip kept a months-old `SuperGrok · 7d 10%` while every run was
+  // being rejected. This is what it must read instead.
+  "grok-free": (at) => ({ plan: "Free", unmetered: true, unmeteredAt: at - 60_000, sevenDayReset: null, monthlyReset: null, at: at - 60_000 }),
+  // The metered plan beside it, so a reviewer can see both halves of `creditAllowance` in one sitting.
+  "grok-metered": (at) => ({
+    plan: "SuperGrok",
+    sevenDay: 22,
+    sevenDayReset: at + 5 * DAY,
+    weeklyAt: at - 60_000,
+    monthlyUsed: 1400,
+    monthlyLimit: 15000,
+    monthlyAt: at - 60_000,
+    monthlyReset: at + 12 * DAY,
+    at: at - 60_000,
+  }),
+};
+
+const SCENARIO_NAMES = [...Object.keys(SCENARIOS), ...Object.keys(GROK_STATES)];
+
 function parseArgs(argv) {
   const out = { scenario: "lapsed-weekly", widths: [1280, 1440, 1600, 1850, 1900, 1920], keep: false, list: false };
   for (let i = 0; i < argv.length; i++) {
@@ -74,9 +101,28 @@ function seed(dataDir, scenario) {
     db
       .prepare("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
       .run(`account_usage_${id}`, JSON.stringify({ holdUntil: null, extWakeAt: null, ...usage }));
+  const kv = (key, value) =>
+    db.prepare("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value);
   put("acct1", SCENARIOS.healthy(at));
-  put("acct2", SCENARIOS[scenario](at));
+  put("acct2", (SCENARIOS[scenario] ?? SCENARIOS.healthy)(at));
+  if (GROK_STATES[scenario]) {
+    kv("setting_grok_enabled", "1");
+    fs.writeFileSync(path.join(dataDir, "grok-usage-cache.json"), JSON.stringify(GROK_STATES[scenario](at)), "utf8");
+  }
   db.close();
+}
+
+/** An isolated, signed-in-looking Grok home: enough for the chip to leave its "no auth" state, with no
+ *  log for the usage ping to re-read and a token no request can succeed with. */
+function seedGrokHome(dataDir) {
+  const home = path.join(dataDir, "grok-home");
+  fs.mkdirSync(path.join(home, "logs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, "auth.json"),
+    JSON.stringify({ "chip-lab": { key: "chip-lab-not-a-real-token", email: "lab@example.test" } }),
+    "utf8",
+  );
+  return home;
 }
 
 /** Every chip's meters plus the one geometry fact that matters: does the strip hide anything? */
@@ -96,6 +142,9 @@ async function readStrip(page) {
           r: m.querySelector(".meter-r")?.textContent?.trim() || "",
           tip: m.getAttribute("title"),
         })),
+        // A chip with no meters says why on this line instead — "polling usage…", an error, or (a free
+        // Grok plan) "no metered allowance". Without it such a chip reads as blank in the transcript.
+        note: (el.querySelector(".codex-model")?.textContent || "").trim(),
       })),
     };
   });
@@ -108,30 +157,32 @@ function report(width, strip) {
     const tags = c.tags.length ? ` [${c.tags.join(", ")}]` : "";
     console.log(`    ${c.label}${tags}`);
     for (const m of c.meters) console.log(`      ${m.k.padEnd(3)} ${(m.v || "").padStart(5)}  ${m.r.padEnd(12)} ${m.tip ?? ""}`);
+    if (!c.meters.length && c.note) console.log(`      ${c.note}`);
   }
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.list) {
-    console.log("scenarios: " + Object.keys(SCENARIOS).join(", "));
+    console.log("scenarios: " + SCENARIO_NAMES.join(", "));
     return 0;
   }
-  if (!SCENARIOS[args.scenario]) {
-    console.error(`unknown scenario "${args.scenario}" — one of: ${Object.keys(SCENARIOS).join(", ")}`);
+  if (!SCENARIO_NAMES.includes(args.scenario)) {
+    console.error(`unknown scenario "${args.scenario}" — one of: ${SCENARIO_NAMES.join(", ")}`);
     return 2;
   }
   requireBuild();
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "chip-lab-"));
+  const env = GROK_STATES[args.scenario] ? { ...ACCOUNT_ENV, GROK_HOME_DIR: seedGrokHome(dataDir) } : ACCOUNT_ENV;
   console.log(`chip-lab — scenario "${args.scenario}" on ${BASE} (data ${dataDir})`);
   let clipped = false;
   try {
     // First boot creates the schema; the snapshots are only read by bootPing, so seed and boot again.
-    await boot({ dataDir, port: PORT, env: ACCOUNT_ENV });
+    await boot({ dataDir, port: PORT, env });
     killInstance(PORT);
     seed(dataDir, args.scenario);
-    await boot({ dataDir, port: PORT, env: ACCOUNT_ENV });
+    await boot({ dataDir, port: PORT, env });
 
     const browser = await loadChromium().launch();
     const shot = path.join(shotDir(dataDir), "strip.png");

@@ -1490,7 +1490,9 @@ function SubscriptionsSection() {
       </SubCard>
 
       <SubCard
-        name="Grok (SuperGrok)"
+        // Named by the plan the CLI actually reports, not by the product line: a free account titled
+        // "Grok (SuperGrok)" is the same lie the chip used to tell with its stale weekly meter.
+        name={`Grok (${grokUsage?.plan ?? "SuperGrok"})`}
         vendor="xAI"
         on={settings.grokEnabled}
         active={grokActive}
@@ -1789,7 +1791,7 @@ function GrokWeeklySafety() {
   return (
     <SubStepperField
       label="Weekly safety %"
-      hint="Switch backends when SuperGrok's weekly usage reaches this threshold. Won't freeze tasks."
+      hint="Switch backends when Grok's weekly usage reaches this threshold. Won't freeze tasks."
       value={value}
       min={1}
       max={100}
