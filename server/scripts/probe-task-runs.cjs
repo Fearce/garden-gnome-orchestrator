@@ -41,6 +41,7 @@ const { autoReviewReading, autoReviewTableExists, selectAutoReviewRows, unattend
 const { activeDeadlineReading } = require("./task-deadline-reading.cjs");
 const { collectTaskTimeline, renderTaskTimeline, utcStamp } = require("./task-timeline.cjs");
 const { modelPinReading, parsePersistedModelRequest, parseProbeArgs } = require("./model-pin-reading.cjs");
+const { hollowRunReading } = require("./task-run-activity.cjs");
 
 let options;
 try {
@@ -192,13 +193,11 @@ const runs = db
 // line), so they say nothing about whether the agent worked — the same exclusion ranSilently uses.
 const outputOf = db.prepare("SELECT COUNT(*) n FROM messages WHERE run_id = ? AND kind != 'system'");
 const produced = (r) => outputOf.get(r.id).n;
-// A run that ended NON-ERROR having produced nothing never reached the model. That's the silent-resume
-// signature, and it reads as a perfectly healthy `done` row — which is exactly why it went undiagnosed
-// for days. Rows written before the fix keep their misleading `done` state, so the probe has to say it.
-const silent = (r) => r.state === "done" && r.ended_at != null && produced(r) === 0;
+const activityByRun = new Map(runs.map((r) => [r.id, hollowRunReading(r, produced(r))]));
 
 section(`run trail (${runs.length} runs)`);
 for (const r of runs) {
+  const activity = activityByRun.get(r.id);
   console.log({
     role: r.role,
     model: r.model,
@@ -213,7 +212,7 @@ for (const r of runs) {
     // What the RUNNER concluded about a cap, where an error row is read. Absent = no verdict recorded
     // (a row predating the flag, or one a restart/silent-run stamp closed out) — never "saw no cap".
     ...(r.cap_flagged != null ? { cap: r.cap_flagged === 1 } : {}),
-    ...(silent(r) ? { output: "⚠ NONE — never reached the model" } : {}),
+    ...(activity ? { output: activity.summary } : {}),
   });
 }
 
@@ -267,21 +266,25 @@ section(`control-flow timeline (${timeZone || "local time"} + UTC; ${timeline.le
 console.log(`  crash lifecycle source: ${crashLogState}`);
 for (const line of renderTaskTimeline(timeline, timeZone)) console.log(line);
 
-const silentRuns = runs.filter(silent);
-if (silentRuns.length) {
-  section(`silent runs (${silentRuns.length})`);
+const hollowRuns = runs.filter((r) => activityByRun.get(r.id));
+if (hollowRuns.length) {
+  section(`hollow runs (${hollowRuns.length})`);
   console.log(
-    "  These ended as `done` without producing a single message — the agent never ran. On an implementor\n" +
-      "  that is the silent-resume failure: the CLI loaded the session, emitted init and exited, and the\n" +
-      "  pipeline used to read it as a finish and hand the half-done work straight to QA.",
+    "  These ended as `done` without reaching a new model turn. Usually that means no agent messages.\n" +
+      "  A resumed SDK query can instead replay the cut-off query's pending tool_use, leaving message\n" +
+      "  traffic even though the new query reports 0 turns / $0. Explicit zero telemetry decides.",
   );
-  for (const r of silentRuns) {
-    console.log(`  - ${r.role} · ${r.model} · ${iso(r.started_at)} · ${dur(r.started_at, r.ended_at)} · ${r.num_turns ?? "—"} turns`);
+  for (const r of hollowRuns) {
+    const activity = activityByRun.get(r.id);
+    console.log(
+      `  - ${r.role} · ${r.model} · ${iso(r.started_at)} · ${dur(r.started_at, r.ended_at)} · ` +
+        `${activity.kind} · ${activity.messageCount} non-system message${activity.messageCount === 1 ? "" : "s"} · ${r.num_turns ?? "—"} turns`,
+    );
   }
   console.log(
-    "  ↳ Handled since 2026-07-27 (threadManager `ranSilently` → forced-fresh retry, gate test:silent-resume).\n" +
-      "    A silent run on a NEW row is stamped `error` instead and shows up in `npm run probe:run-errors`;\n" +
-      "    a `done` one here predates that. Several in a row on one task means the retry itself isn't working.",
+    "  ↳ Empty resumes are handled since 2026-07-27; zero-turn continuations carrying replayed output\n" +
+      "    are handled since d6463f4 (2026-09-12). `ranSilently` forces one bounded fresh retry and stamps\n" +
+      "    the hollow row `error`. A `done` row predates its fix; a newer one means recovery is not working.",
   );
 }
 

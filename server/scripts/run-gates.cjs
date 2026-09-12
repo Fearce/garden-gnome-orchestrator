@@ -80,6 +80,7 @@ const GATES = [
   "test:cap-flag",
   "test:crashlog-scan",
   "test:task-timeline",
+  "test:task-run-activity",
   "test:task-deadline-reading",
   "test:process-build",
   "test:dist-vs-head",

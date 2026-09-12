@@ -79,6 +79,7 @@
     "test:cap-flag": "tsx src/tests/capFlag.test.ts",
     "test:crashlog-scan": "node scripts/crashlog-scan.test.cjs",
     "test:task-timeline": "node scripts/task-timeline.test.cjs",
+    "test:task-run-activity": "node scripts/task-run-activity.test.cjs",
     "test:task-deadline-reading": "node scripts/task-deadline-reading.test.cjs",
     "test:process-build": "node scripts/process-vs-dist.test.cjs",
     "test:dist-vs-head": "node scripts/dist-vs-head.test.cjs",
