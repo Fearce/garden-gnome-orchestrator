@@ -104,8 +104,12 @@ Rules that bite:
 - **A monospace option needs the 600/1000 advance the others have.** The top bar's meters and
   the account chips are measured against JetBrains Mono's width; a narrower or wider mono needs
   `npm run probe:chips` re-run before it can be offered.
-- **Leave `--font-serif` alone.** It is a theme's display accent (Nocturne's titles, the empty
-  states), not the owner's body-face choice.
+- **`--font-serif` may not reach a HEADING.** It is the empty-state flourish (`.empty .big`, the
+  Supervisor and Co-work empty panes): placeholder art, not the name of anything. A theme that
+  faces a heading-tier element with it hands a serif to an owner who chose no heading typeface
+  and cannot see a picker for one, which is exactly what Nocturne did until 2026-09-12. The
+  heading list offers Instrument Serif as an explicit pick instead. `test:fonts` audits every
+  theme sheet against the tier and fails on any serif-resolving family.
 - **The default entry advertises `styles.css`'s own token**, so changing `--font-sans` or
   `--font-mono` there means changing the matching `stack` in `font.ts`. The gate compares those
   two as well.

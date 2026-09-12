@@ -152,6 +152,11 @@ async function choose(page, id) {
   await page.waitForTimeout(420);
 }
 
+/** Whether a computed font-family resolves to a serif. The trailing `sans-serif` keyword of every
+ *  ordinary sans stack is stripped first, or this would fire on all of them. */
+const isSerif = (family) =>
+  /(^|[\s,"'])serif\b|georgia|times|instrument serif|source serif/i.test(family.replace(/sans-serif/gi, ""));
+
 /** The three typeface attributes, as the pre-paint script and lib/font.ts write them. */
 const activeFonts = (page) =>
   page.evaluate(() => ({
@@ -247,6 +252,14 @@ async function main() {
         JSON.stringify(classicBefore),
       );
 
+      const classicFaces = await usedFaces(page);
+      for (const [surface, family] of [
+        ["masthead", classicFaces.masthead],
+        ["task card header", classicFaces.title],
+      ]) {
+        check(`a fresh console's ${surface} is not a serif`, !isSerif(family), family);
+      }
+
       await openAppearance(page);
       check("the Appearance page renders the picker", (await page.locator(".theme-picker").count()) === 1);
       check("it offers exactly the two themes", (await page.locator(".theme-option").count()) === 2);
@@ -293,17 +306,34 @@ async function main() {
         nocturne.page.backgroundColor !== classicBefore.page.backgroundColor,
         `${classicBefore.page.backgroundColor} vs ${nocturne.page.backgroundColor}`,
       );
+      // The theme owns the heading SCALE, not the face. It used to face this whole tier in
+      // Instrument Serif, which handed a serif to every console that had chosen no heading
+      // typeface and could not see a picker for one ("Theme default is still a serif font for the
+      // titles", 2026-09-12). So what a theme is now allowed to change here is the size.
       check(
-        "board headings switch to the serif",
-        nocturne["board heading"].fontFamily !== classicBefore["board heading"].fontFamily &&
-          /Instrument Serif/.test(nocturne["board heading"].fontFamily),
-        nocturne["board heading"].fontFamily,
+        "board headings take the theme's own scale",
+        nocturne["board heading"].fontSize !== classicBefore["board heading"].fontSize,
+        `${classicBefore["board heading"].fontSize} -> ${nocturne["board heading"].fontSize}`,
       );
       check(
-        "task titles switch to the serif too",
-        /Instrument Serif/.test(nocturne["task card title"].fontFamily),
-        nocturne["task card title"].fontFamily,
+        "task titles take it too",
+        nocturne["task card title"].fontSize !== classicBefore["task card title"].fontSize,
+        `${classicBefore["task card title"].fontSize} -> ${nocturne["task card title"].fontSize}`,
       );
+      // And the claim the owner actually made. Checked on the COMPUTED family of the two surfaces
+      // he named, with no heading face chosen, because a static scan of the sheets cannot see what
+      // the cascade finally resolved to.
+      const themedDefault = await usedFaces(page);
+      for (const [surface, family] of [
+        ["masthead", themedDefault.masthead],
+        ["task card header", themedDefault.title],
+      ]) {
+        check(
+          `a theme imposes no serif on the ${surface} when no heading face is chosen`,
+          !isSerif(family),
+          family,
+        );
+      }
       // The switcher is a heading beside plain buttons; restyling only the heading splits the row.
       check(
         "the board's view switcher stays one control",
@@ -337,7 +367,7 @@ async function main() {
       await reloaded.setViewportSize({ width: 430, height: 900 });
       await reloaded.waitForSelector(".card", { timeout: 15_000 });
       const phoneTitle = await reloaded.evaluate(() => getComputedStyle(document.querySelector(".card .title")).fontSize);
-      check("the serif card title takes the theme's compact phone size", phoneTitle === "16.5px", phoneTitle);
+      check("the card title takes the theme's compact phone size", phoneTitle === "15.5px", phoneTitle);
 
       await openAppearanceNarrow(reloaded);
       const columns = await reloaded.evaluate(() => getComputedStyle(document.querySelector(".theme-picker")).gridTemplateColumns);
