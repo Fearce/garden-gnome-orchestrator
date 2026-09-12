@@ -209,8 +209,11 @@ Read the run trail to tell causes apart:
   `probe:task-runs` reconciles launches against, not a budget. QA's own
   ceiling is 60 read-only but implementor-grade in `qaAppliesFixes` mode (`QA_FIX_MAX_TURNS`, default
   `IMPLEMENTOR_MAX_TURNS`) — an editing QA does the implementor's work, so it gets its budget.
-  "Resumed session produced no output" is a run that came back empty (0 turns, $0, no messages — the CLI
-  loaded the session and exited without reaching the model). Benign on its own: it is never read as an
+  "Resumed session produced no output" is a run that came back hollow (0 turns, $0 — the CLI loaded the
+  session and exited without reaching the model). Usually it emits nothing at all, but a resumed SDK
+  session can REPLAY the cut-off query's pending tool call, so message traffic alone never proves the new
+  query reached the model — the explicit zero telemetry decides (`ranSilently`; that replay shape parked
+  task 7b4d99a0 after its verifier hit the ceiling). Benign on its own: it is never read as an
   answer on any path whose output GATES the pipeline, and each of those recovers it — the implementor retries
   on a FRESH session seeded from a compressed handoff (parking only if its whole auto-resume budget goes that
   way), a QA round re-runs the review fresh once (durable `qaSilentRetries`, since re-waking the same
