@@ -164,7 +164,7 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   }
 }
 
-module.exports = { MODES, UUID_RE, cookieHeader, parseArgs, passwordFromEnvOrDotenv, socketUrl, targetSummary, usage };
+module.exports = { MODES, UUID_RE, cookieHeader, login, parseArgs, passwordFromEnvOrDotenv, socketUrl, targetSummary, usage };
 
 if (require.main === module) {
   main().then((code) => process.exit(code));

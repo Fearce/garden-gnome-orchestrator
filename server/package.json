@@ -196,6 +196,7 @@
     "probe:gates": "node scripts/gates-status.cjs",
     "probe:text": "node scripts/probe-text.cjs",
     "probe:schedule-detect": "tsx src/tools/probeScheduleDetect.ts",
+    "probe:thread-feed": "node scripts/probe-thread-feed.cjs",
     "health": "node scripts/nightly-health.cjs",
     "audit:deps": "node scripts/audit-deps.cjs",
     "audit:overrides": "node scripts/audit-overrides.cjs",

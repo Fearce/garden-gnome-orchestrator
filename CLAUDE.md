@@ -28,57 +28,9 @@ A director's console for running Claude Code agents: a provider-neutral **direct
 An owner instruction injected mid-task ("put this on a separate branch") used to reach ONLY the session live at that moment. `stage_outputs.kickoff` is a frozen snapshot composed before the implementor first started and is never rewritten, so every LATER fresh/cold session — a reviewer fix round, a cap failover, a manual Resume, a restart — rebuilt its kickoff from that snapshot and never saw the instruction. It silently dropped, which is exactly the "the agents forgot what I told them" report. `injectThread` now durably appends every owner injection to `stage_outputs.standingDirectives` (verbatim, oldest first, most recent 25, exact-repeat deduped), and `renderStandingDirectives` puts the whole list into **every** kickoff-composing path: every implementor resume shape, QA/reviewer (incl. resumed/recheck forms), and planner/researcher/reader — a planner or reader can re-run after the directive lands, and must not hand back a plan that quietly contradicts it. Two rules: **a directive is only as durable as the narrowest path that omits it**, so a new kickoff builder must render it too; and it is rendered VERBATIM, never folded into the Haiku-compressed prior-session handoff, which is lossy. The list also survives a from-scratch **Retry** (`resetThreadForRetry` preserves it beside the reader escalation): a retry re-runs the ORIGINAL brief, and these are the owner's corrections TO that brief, so wiping them puts the retry straight back into the reported failure. **Only OWNER text is recorded.** The non-owner callers that reuse the same injection machinery pass `standing: false` — a routed `critical` finding (another agent, or another task via `notify_thread`) and an autonomous Supervisor correction are transient steering for the agent that is live right now, and the rendered block states outright that every line came from the owner. They pass `retitle: false` for the same reason (neither is a change of objective; both used to rename the owner's card to the finding / stall-nudge text). Supervisor CHAT relays the owner's own words, so it retitles nothing but IS recorded. Gate: `test:standing-directives`.
 
 ## Co-work (the interactive lane — a conversation, not a task)
-The **Co-work** tab is pair development: an owner prompt claims one owner-scoped **Co-worker** turn
-(`coworkerRunOptions`/`COWORKER_PROMPT`) that completes the requested outcome when feasible, verifies
-proportionately, and hands control back. While it runs, Queue, Inject, and Interrupt & inject persist
-owner direction in the same turn and steer the live provider. There is no arbitrary wall-clock hand-back
-by default; `COWORKER_HANDOFF_MS` (>0) opts into the soft/hard safety boundary, which returns an
-unresponsive run as a `timeboxed` turn to `idle`. Initial and live messages accept pasted/dropped/selected
-screenshots and files: refs and bytes survive reload, native image blocks reach capable providers, and
-every file gets a session-isolated agent-readable cache path plus an auth-gated download. It owns **no
-task** — no `threads`/`agent_runs` row,
-no findings, no bus/office MCP, no `runPipeline`, no planner/QA/reviewer/supervisor/auto-review — so
-nothing can mark it done and ordinary dispatch is untouched. `orchestrator/cowork.ts` owns the lifecycle
-over `cowork_sessions`/`cowork_turns`/`cowork_messages`, reaching provider/account/capacity routing
-through the narrow `CoworkRuntime` bridge so no pipeline state enters the conversation. One turn at a
-time is a durable CAS in `beginCoworkTurn` (not an in-memory lock), a restart reconciles orphaned turns
-at construction, an explicit provider/model is a **strict pin** (the turn fails rather than
-substituting), and a live turn and a task agent are mutually exclusive in one workspace both ways
-(`attachCoworkWorkspaceGuard` + `taskConflict`). **Every task-side probe is blind to this lane**, so
-debug with `npm run probe:cowork --prefix server [-- <id-prefix|name>]` — state, active-turn age, the
-turn trail with cost/model/account, timed-hand-back frequency/timing, resume linkage, each live
-direction's mode and delivery outcome, and the invariants
-(a claim nothing can release, an unsealed partial reply, a substituted pin, one provider session in
-two conversations, invalid steering metadata, or an attachment ref whose blob/name/type no longer
-matches durable storage); exit 1 names it.
-Gates `test:cowork`, `test:cowork-summary`, `test:cowork-ui`, `test:cowork-health`. Browser:
-`npm run cowork-lab --prefix server`. Traps: `.claude/rules/co-work-sessions.md`.
+The **Co-work** tab is pair development: an owner prompt claims one owner-scoped **Co-worker** turn (`coworkerRunOptions`/`COWORKER_PROMPT`) that completes the requested outcome when feasible, verifies proportionately, and hands control back. While it runs, Queue, Inject, and Interrupt & inject persist owner direction in the same turn and steer the live provider. There is no arbitrary wall-clock hand-back by default; `COWORKER_HANDOFF_MS` (>0) opts into the soft/hard safety boundary, which returns an unresponsive run as a `timeboxed` turn to `idle`. Initial and live messages accept pasted/dropped/selected screenshots and files: refs and bytes survive reload, native image blocks reach capable providers, and every file gets a session-isolated agent-readable cache path plus an auth-gated download. It owns **no task** — no `threads`/`agent_runs` row, no findings, no bus/office MCP, no `runPipeline`, no planner/QA/reviewer/supervisor/auto-review — so nothing can mark it done and ordinary dispatch is untouched. `orchestrator/cowork.ts` owns the lifecycle over `cowork_sessions`/`cowork_turns`/`cowork_messages`, reaching provider/account/capacity routing through the narrow `CoworkRuntime` bridge so no pipeline state enters the conversation. One turn at a time is a durable CAS in `beginCoworkTurn` (not an in-memory lock), a restart reconciles orphaned turns at construction, an explicit provider/model is a **strict pin** (the turn fails rather than substituting), and a live turn and a task agent are mutually exclusive in one workspace both ways (`attachCoworkWorkspaceGuard` + `taskConflict`). **Every task-side probe is blind to this lane**, so debug with `npm run probe:cowork --prefix server [-- <id-prefix|name>]` — state, active-turn age, the turn trail with cost/model/account, timed-hand-back frequency/timing, resume linkage, each live direction's mode and delivery outcome, and the invariants (a claim nothing can release, an unsealed partial reply, a substituted pin, one provider session in two conversations, invalid steering metadata, or an attachment ref whose blob/name/type no longer matches durable storage); exit 1 names it. Gates `test:cowork`, `test:cowork-summary`, `test:cowork-ui`, `test:cowork-health`. Browser: `npm run cowork-lab --prefix server`. Traps: `.claude/rules/co-work-sessions.md`.
 
-**The console side is a conversation, not a log, and it never holds the rest of the app hostage.** Tool
-traffic FOLDS: a call and its result are one row, paired on the provider's own tool id (never adjacency,
-which parallel tool use breaks), and consecutive calls collapse into one burst accordion ("worked 2m ·
-14 calls") that prose closes (`web/src/lib/coworkTranscript.ts`). The transcript sticks to the bottom
-while a turn streams, stops the moment the owner scrolls up, and offers a "jump to latest" pill back;
-scroll position and expanded bursts are stored PER SESSION in the store, because the desk is a component
-and the store outlives it. The desk itself now stays MOUNTED behind `hidden` while another board area is
-on screen (the pattern the IDE already used), so leaving mid-turn to read the board or talk to the
-Director costs no scroll position, no expanded burst, no draft and no staged attachment. `.cowork-shell`
-sets `display: grid`, which beats the UA rule behind `hidden`, so `.cowork-shell[hidden]` is explicit and
-load-bearing. The server-side mutual workspace guard is untouched: that lock is correct, the UI modality
-was the bug.
-Each live or recently-used session also gets a **card on the task board** (`CoworkCards.tsx`): repo,
-state, an elapsed clock off the live TURN, the last conversational line, click-to-open, and
-queue/inject/interrupt/stop through the same `sendCowork` path the composer uses. Display-only by
-construction: no thread, no findings, no QA/done semantics. The card fields (`activeTurnStartedAt`,
-`lastSnippet`) are DERIVED in the session read, clipped in SQL, so a card never costs a second fetch.
-Two hand-offs close the loop, both driven by `orchestrator/coworkSummary.ts`, which reads the durable
-transcript DETERMINISTICALLY (no model call: the owner reads this exactly when capacity is short, and a
-commit is only real if git printed its receipt in the tool RESULT). **Promote to task** (`cowork.promote`)
-composes a brief from repo + what was asked + where it got to + files touched + commits made, dispatches
-an ordinary task through `manager.dispatch`, and leaves the conversation untouched — one-way, so Co-work
-still owns no task. A **session trail** is auto-posted into the transcript whenever a turn ends
-timeboxed/cancelled/errored, and the same trail is available on demand from the header, so an abandoned
-session explains itself without a second agent turn.
+**The console side is a conversation, not a log, and it never holds the rest of the app hostage.** Tool traffic FOLDS: a call and its result are one row, paired on the provider's own tool id (never adjacency, which parallel tool use breaks), and consecutive calls collapse into one burst accordion ("worked 2m · 14 calls") that prose closes (`web/src/lib/coworkTranscript.ts`). The transcript sticks to the bottom while a turn streams, stops the moment the owner scrolls up, and offers a "jump to latest" pill back; scroll position and expanded bursts are stored PER SESSION in the store, because the desk is a component and the store outlives it. The desk itself now stays MOUNTED behind `hidden` while another board area is on screen (the pattern the IDE already used), so leaving mid-turn to read the board or talk to the Director costs no scroll position, no expanded burst, no draft and no staged attachment. `.cowork-shell` sets `display: grid`, which beats the UA rule behind `hidden`, so `.cowork-shell[hidden]` is explicit and load-bearing. The server-side mutual workspace guard is untouched: that lock is correct, the UI modality was the bug. Each live or recently-used session also gets a **card on the task board** (`CoworkCards.tsx`): repo, state, an elapsed clock off the live TURN, the last conversational line, click-to-open, and queue/inject/interrupt/stop through the same `sendCowork` path the composer uses. Display-only by construction: no thread, no findings, no QA/done semantics. The card fields (`activeTurnStartedAt`, `lastSnippet`) are DERIVED in the session read, clipped in SQL, so a card never costs a second fetch. Two hand-offs close the loop, both driven by `orchestrator/coworkSummary.ts`, which reads the durable transcript DETERMINISTICALLY (no model call: the owner reads this exactly when capacity is short, and a commit is only real if git printed its receipt in the tool RESULT). **Promote to task** (`cowork.promote`) composes a brief from repo + what was asked + where it got to + files touched + commits made, dispatches an ordinary task through `manager.dispatch`, and leaves the conversation untouched — one-way, so Co-work still owns no task. A **session trail** is auto-posted into the transcript whenever a turn ends timeboxed/cancelled/errored, and the same trail is available on demand from the header, so an abandoned session explains itself without a second agent turn.
 
 ## Run / build
 - Dev (hot reload): `npm run dev` at repo root — tsx-watch server + Vite web.
@@ -108,15 +60,7 @@ How to restart depends on how it's running:
 - Under `npm run dev` (`tsx watch`): editing `server/src` already hot-restarts it — but that
   KILLS in-flight tasks, so use `serve` when real pipelines are running.
 
-**A THIRD real shape, on any OS: `npm run serve --prefix server` under its own supervisor**
-(`server/scripts/supervise.cjs`, not script-hub). This process loads TypeScript **source** directly via
-tsx and never reads `server/dist`. `server/src/selfRestart.ts`'s `restartRoute()` detects it from
-`ORCH_SUPERVISED=1` and prefers it over the hub: a restart is a clean `process.exit(75)`, which
-`supervise.cjs` respawns immediately onto whatever is on disk, not counting it as a crash. `npm run
-deploy --prefix server` already routes through this correctly, no different command is needed. What
-differs is diagnosis: `npm run health --prefix server` cannot compare this process to `dist` (there is
-none to compare to) and instead compares `server/src` file mtimes to the process start
-(`.claude/rules/nightly-quality-sweep.md` §1, `scripts/listener-shape.cjs`).
+**A THIRD real shape, on any OS: `npm run serve --prefix server` under its own supervisor** (`server/scripts/supervise.cjs`, not script-hub). This process loads TypeScript **source** directly via tsx and never reads `server/dist`. `server/src/selfRestart.ts`'s `restartRoute()` detects it from `ORCH_SUPERVISED=1` and prefers it over the hub: a restart is a clean `process.exit(75)`, which `supervise.cjs` respawns immediately onto whatever is on disk, not counting it as a crash. `npm run deploy --prefix server` already routes through this correctly, no different command is needed. What differs is diagnosis: `npm run health --prefix server` cannot compare this process to `dist` (there is none to compare to) and instead compares `server/src` file mtimes to the process start (`.claude/rules/nightly-quality-sweep.md` §1, `scripts/listener-shape.cjs`).
 
 **Windows (script-hub production deployment):** runs as script-hub id **`claude-orchestrator`** with
 keepAlive armed. Implementor workers are **child processes of this server** (the Agent SDK spawns the
@@ -194,6 +138,15 @@ run count — a turn-ceiling continuation, an empty-run retry and a cap failover
 recovering one *round*, so launches legitimately exceed the cap. And when `qaAppliesFixes` is on (it is, in
 prod), QA edits the tree itself and hands each changed pass to a VERIFIER QA pass, so **many QA runs against
 one implementor run is the designed shape, not a stuck loop** (`.claude/rules/qa-fixes-mode.md`).
+For **"the console shows 'Planner and researcher are warming up' forever" / a task looks stuck in the
+browser**, run `npm run probe:thread-feed --prefix server [-- --thread <uuid> | --title <substring>]`
+(read-only — it sends the same `thread.history` the browser would). It times an unauthenticated
+`/api/health` baseline, login, WS connect, the `hello` round trip, and the `thread.history` round trip
+separately: a FAST baseline beside a SLOW WS/hello/history leg means this box is contended in a way that
+specifically stalls this Node process's socket handling (see "Local processes" above), not a bug in
+message storage or the feed-mapping logic; a slow baseline too means look at the box first. This is the
+diagnosis that took four hand-written throwaway WS probe scripts to reach on 2026-09-11 (a 94-96%-loaded
+box made every task's WS take ~15s just to open) — use this instead of rebuilding one.
 To triage ALL non-done runs in a window instead of one task — which errors are real vs. an expected
 cutoff/cap/retry/restart, and did the handling mechanism actually run — use
 `npm run probe:run-errors --prefix server [-- <hours>]` (its classifier also backs health's `non-done
