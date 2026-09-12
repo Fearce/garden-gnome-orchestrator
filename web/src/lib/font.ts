@@ -16,8 +16,8 @@
 // The DISPLAY face drives --font-display: the handful of elements that NAME something. The masthead
 // in the top bar, a task card's header, the section and lane headings, the detail panel's title and
 // the dialog titles. Those are the ones neither of the other two pickers could reach, because the
-// masthead is hard-set in mono as chrome and Nocturne re-faces the whole tier to its own serif. This
-// channel out-specifies both, and like them it is inert until the owner picks a face.
+// masthead is hard-set in mono as chrome and a theme restates the whole tier with its own scale and
+// weights. This channel out-specifies both, and like them it is inert until the owner picks a face.
 
 /** The interface face. `default` is the absence of an attribute, per the note above. */
 export type FontId = "default" | "system" | "geist" | "plex-sans" | "source-serif" | "space-grotesk" | "jetbrains";
@@ -155,18 +155,19 @@ export const MONO_FONTS: readonly FontMeta<MonoFontId>[] = [
  * list leans display rather than text, and why there is no "System UI" row (a machine's default UI
  * face is the one thing that never reads as a chosen identity).
  *
- * "Theme default" advertises the INTERFACE token, because the tier's largest and most-read member,
- * the task card header, renders in it today. The rest of the tier does not: the masthead is mono
- * chrome, and under Nocturne the whole tier is Instrument Serif, so the row's note says so rather
- * than letting one specimen imply the console is uniform here already. Choosing any other row is
- * exactly what makes it uniform.
+ * "Theme default" advertises the INTERFACE token, because that is the token every theme now faces
+ * this tier with: no theme may hand the owner a serif they never picked (`test:fonts` section 10).
+ * It is still not uniform under the default, since the masthead is mono chrome and each theme sets
+ * its own heading scale and weights, so the row's note says what the default really is rather than
+ * letting one specimen imply the console is uniform here already. Choosing any other row is exactly
+ * what makes it uniform.
  */
 export const DISPLAY_FONTS: readonly FontMeta<DisplayFontId>[] = [
   {
     id: "default",
     name: "Theme default",
     category: "Sans",
-    note: "Headings stay as the theme draws them: a mono masthead, Instrument Serif under Nocturne. Changes nothing.",
+    note: "The theme's own heading scale and weights, in the interface face. Serif is a pick below, never a default. Changes nothing.",
     stack: '"Inter Tight", system-ui, -apple-system, sans-serif',
   },
   {

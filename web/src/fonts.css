@@ -92,7 +92,7 @@
  *
  * The tier is the elements that NAME something: the masthead, a card's header, the section and lane
  * headings, the detail panel's title (and the input that replaces it on a rename), the dialog
- * titles. It is the same tier Nocturne already re-faces to its serif, which is why it is defined
+ * titles. It is the same tier Nocturne already restates with its own scale, which is why it is defined
  * here rather than invented, because "heading-level chrome" is a decision this console already made.
  *
  * Everything that READS AS DATA is deliberately absent: the account meters, the badges and pips, the

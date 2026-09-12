@@ -15,9 +15,10 @@
        light, which leaves saturated colour to mean STATE and nothing else.
        Role hues are deliberately unchanged: a director is violet in both
        themes, and that continuity is worth more than a fresh palette.
-     · Titles that name a thing — a task, a panel, a dialog — switch to
-       Instrument Serif (already loaded for Classic's accents). Everything
-       measured stays in JetBrains Mono. That split is the theme's voice.
+     · Titles that name a thing (a task, a panel, a dialog) take a larger
+       sentence-case scale, in the interface face rather than a face of the
+       theme's own. Everything measured stays in JetBrains Mono. That split
+       is the theme's voice.
      · Geometry softens (larger radii, more air) and surfaces gain a lit top
        edge instead of a flat fill, so depth comes from light, not from borders.
      · Motion is only where something arrives or leaves: the detail panel, a

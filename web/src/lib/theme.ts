@@ -32,7 +32,7 @@ export const THEMES: readonly ThemeMeta[] = [
     name: "Nocturne",
     tagline: "Midnight ink, cold light, editorial type",
     description:
-      "A deeper near-black board lit by pale cyan instead of amber. Task, panel and dialog titles switch to Instrument Serif, surfaces gain a lifted edge and softer corners, and panels, dialogs and menus move — a slide, a rise — instead of appearing.",
+      "A deeper near-black board lit by pale cyan instead of amber. Task, panel and dialog titles take a larger sentence-case scale in the interface face, surfaces gain a lifted edge and softer corners, and panels, dialogs and menus move (a slide, a rise) instead of appearing.",
   },
 ];
 

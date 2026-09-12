@@ -495,8 +495,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 <div className="settings-note tight">
                   The face the console names things in: the wordmark in the top bar, a task card's header,
                   the section and lane headings, the panel and dialog titles. It is its own pick because
-                  those are chrome: the top bar is set in the monospace face and a theme may draw them in
-                  its own serif, so neither picker above can reach them.
+                  those are chrome: the top bar is set in the monospace face and a theme restates the whole
+                  tier with its own scale and weights, so neither picker above can reach them.
                 </div>
                 <FontPicker
                   fonts={DISPLAY_FONTS}

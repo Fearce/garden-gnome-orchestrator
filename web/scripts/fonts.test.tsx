@@ -49,6 +49,8 @@ const {
   applyFonts,
 } = await import("../src/lib/font.js");
 const { FontPicker } = await import("../src/components/FontPicker.js");
+// The themes' own copy, so the prose beside the stylesheets can be checked against them (section 11).
+const { THEMES } = await import("../src/lib/theme.js");
 
 const fontsCss = read("src/fonts.css");
 /** The same sheet with its comments gone: a scan over raw text would match the selectors the file
@@ -63,9 +65,9 @@ const html = read("index.html");
  *
  *  `defaultToken` is where the "Theme default" row's specimen comes from. For the first two that is
  *  the token they drive, because the default IS that token. The heading tier has no single default
- *  face, since the masthead is mono chrome and a theme may draw the whole tier in its own serif, so
- *  its default row advertises the face its largest and most-read member, a task card's header,
- *  renders in today. The row's note carries the rest; see DISPLAY_FONTS. */
+ *  face, since the masthead is mono chrome and each theme sets its own heading scale and weights, so
+ *  its default row advertises --font-sans, the token every theme now faces the tier with. The row's
+ *  note carries the rest; see DISPLAY_FONTS. */
 const GROUPS = [
   { label: "interface", fonts: UI_FONTS, fallback: DEFAULT_FONT, attr: "data-font", token: "--font-sans", defaultToken: "--font-sans" },
   { label: "monospace", fonts: MONO_FONTS, fallback: DEFAULT_MONO_FONT, attr: "data-font-mono", token: "--font-mono", defaultToken: "--font-mono" },
@@ -579,6 +581,8 @@ for (const name of fs.readdirSync(themeDir)) {
 assert.ok(sheets.length >= 2, "no theme stylesheet was found to audit");
 
 let audited = 0;
+/** Every family a theme sheet really does put on a heading-tier element. Section 11 reads it back. */
+const tierFamilies: string[] = [];
 for (const [name, css] of sheets) {
   for (const block of blocks(css)) {
     const declared = block.body.match(/font-family:\s*([^;]+);/);
@@ -586,6 +590,7 @@ for (const [name, css] of sheets) {
     for (const selector of block.head.split(",").map((sel) => sel.trim())) {
       if (!TIER.some(([element]) => sameElement(PREFIX + element, selector))) continue;
       audited += 1;
+      tierFamilies.push(declared[1]!.trim());
       assert.ok(
         !resolvesSerif(declared[1]!),
         `${name} faces "${selector}" with ${declared[1]!.trim()}. That is a heading-tier element, so a ` +
@@ -601,9 +606,60 @@ assert.ok(
     "fewer than the tier has elements. The selectors drifted, so this check proved nothing",
 );
 
+/* ---- 11. no owner-facing copy may name a face the themes do not draw headings in --------------- */
+
+/* Section 10 one layer out, because fixing the stylesheets left the prose beside them selling the
+ * serif they had just stopped drawing: the "Theme default" row still promised "Instrument Serif under
+ * Nocturne" and the Nocturne description still promised serif titles, both of them live in the served
+ * bundle, both read by the owner who had asked for that serif to go. A face named in this copy is a
+ * claim about a stylesheet, so check it against the stylesheets: if no theme declares that family for
+ * a heading-tier element, the copy is advertising a default the owner would have to go and pick.
+ */
+
+/** A family with `var(--font-x)` expanded through the sheets' own token declarations, so
+ *  `var(--font-serif)` answers for Instrument Serif the way the browser resolves it. */
+const FONT_TOKENS = new Map<string, string>();
+for (const [, css] of sheets) {
+  for (const [, token, value] of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(--font-[\w-]+):\s*([^;]+);/g)) {
+    FONT_TOKENS.set(token!, value!.trim());
+  }
+}
+const expand = (family: string): string =>
+  family.replace(/var\((--font-[\w-]+)\)/g, (whole, token: string) => FONT_TOKENS.get(token) ?? whole);
+assert.match(
+  expand("var(--font-serif)"),
+  /Instrument Serif/,
+  "the token expansion drifted, so every face named in the copy would read as undrawn",
+);
+
+/** What the themes actually put on the tier, as one haystack of resolved family names. */
+const drawn = tierFamilies.map(expand).join(" | ");
+assert.match(
+  drawn,
+  /JetBrains Mono/,
+  "styles.css faces the masthead with the mono token, so a haystack without JetBrains Mono in it is not " +
+    "reading the families the themes really declare, and every name in the copy would read as undrawn",
+);
+const headingDefault = DISPLAY_FONTS.find((f) => f.id === DEFAULT_DISPLAY_FONT)!;
+const COPY: [string, string][] = [
+  [`the heading list's "${headingDefault.name}" note`, headingDefault.note],
+  ...THEMES.map((t): [string, string] => [`the ${t.name} theme's picker copy`, `${t.tagline} ${t.description}`]),
+];
+for (const [where, copy] of COPY) {
+  for (const face of DISPLAY_FONTS) {
+    if (face.id === DEFAULT_DISPLAY_FONT || !copy.includes(face.name)) continue;
+    assert.ok(
+      drawn.includes(face.name),
+      `${where} names "${face.name}", but no theme sheet puts that family on a heading-tier element. The ` +
+        "copy sells as the default a face the owner would have to pick from the heading list to get",
+    );
+  }
+}
+
 console.log(
   `Fonts gate passed: ${UI_FONTS.length} interface, ${MONO_FONTS.length} monospace and ${DISPLAY_FONTS.length} heading ` +
     `face(s), each scoped, bundled, pre-painted, persisted and selectable. The heading tier covers ${TIER.length} ` +
     `element(s), out-specifies the theme on every one they share across ${audited} audited theme rule(s), ` +
-    "imposes no serif on a console that chose no heading face, and reaches nothing that reads as data.",
+    "imposes no serif on a console that chose no heading face, and reaches nothing that reads as data. " +
+    `The ${COPY.length} piece(s) of owner-facing copy beside it name no face the themes do not draw headings in.`,
 );
