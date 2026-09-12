@@ -544,9 +544,66 @@ for (const block of displayBlocks) {
   }
 }
 
+/* ---- 10. no THEME may impose a serif on the heading tier ------------------------------------- */
+
+/* The owner's second report, and the one this section exists to make impossible to reintroduce:
+ * "Theme default is still a serif font for the titles." Nocturne faced the whole tier in
+ * var(--font-serif), so a console that had chosen NO heading typeface still read as a serif, on
+ * exactly the two surfaces the channel was built for. A theme owns the heading SCALE and case; it
+ * does not get to hand the owner a face they never picked and cannot see a picker for. Serif stays
+ * one click away as an explicit choice in the heading list.
+ *
+ * The empty-state flourishes (.empty .big, .supervisor-chat-empty, .cowork-chat-empty h3) keep
+ * var(--font-serif) on purpose. They are placeholder art in an empty pane, not the name of
+ * anything, and none of them is in TIER, so sameElement never matches them here.
+ */
+
+/** Does this font-family value resolve to a serif? `sans-serif` is stripped first, or every
+ *  ordinary sans stack would match on its own fallback keyword. */
+function resolvesSerif(value: string): boolean {
+  const cleaned = value.replace(/sans-serif/gi, "");
+  return /--font-serif|(^|[\s,"'])serif\b|georgia|times|instrument serif|source serif/i.test(cleaned);
+}
+
+assert.ok(resolvesSerif("var(--font-serif)") && resolvesSerif('"Source Serif 4", Georgia, serif'), "serif detector");
+assert.ok(
+  !resolvesSerif('"Inter Tight", system-ui, -apple-system, sans-serif') && !resolvesSerif("var(--font-mono)"),
+  "the serif detector must not fire on an ordinary sans stack's own sans-serif fallback",
+);
+
+const themeDir = path.join(WEB, "src/themes");
+const sheets: [string, string][] = [["src/styles.css", classic]];
+for (const name of fs.readdirSync(themeDir)) {
+  if (name.endsWith(".css")) sheets.push([`src/themes/${name}`, read(`src/themes/${name}`)]);
+}
+assert.ok(sheets.length >= 2, "no theme stylesheet was found to audit");
+
+let audited = 0;
+for (const [name, css] of sheets) {
+  for (const block of blocks(css)) {
+    const declared = block.body.match(/font-family:\s*([^;]+);/);
+    if (!declared) continue;
+    for (const selector of block.head.split(",").map((sel) => sel.trim())) {
+      if (!TIER.some(([element]) => sameElement(PREFIX + element, selector))) continue;
+      audited += 1;
+      assert.ok(
+        !resolvesSerif(declared[1]!),
+        `${name} faces "${selector}" with ${declared[1]!.trim()}. That is a heading-tier element, so a ` +
+          "console that chose no heading typeface would be handed a serif it never picked and cannot " +
+          "see a picker for. Themes own the heading scale, not the face",
+      );
+    }
+  }
+}
+assert.ok(
+  audited >= TIER.length,
+  `only ${audited} heading-tier font-family rule(s) were audited across ${sheets.length} sheet(s), which is ` +
+    "fewer than the tier has elements. The selectors drifted, so this check proved nothing",
+);
+
 console.log(
   `Fonts gate passed: ${UI_FONTS.length} interface, ${MONO_FONTS.length} monospace and ${DISPLAY_FONTS.length} heading ` +
     `face(s), each scoped, bundled, pre-painted, persisted and selectable. The heading tier covers ${TIER.length} ` +
-    "element(s), out-specifies the theme on every one they share, and reaches nothing that reads as data, " +
-    "with nothing at all reaching a console that chose none of them.",
+    `element(s), out-specifies the theme on every one they share across ${audited} audited theme rule(s), ` +
+    "imposes no serif on a console that chose no heading face, and reaches nothing that reads as data.",
 );

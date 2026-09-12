@@ -71,13 +71,13 @@
   --r-lg: 14px;
 }
 
-/* The Appearance tile advertises the type change too — the wordmark is the one place a serif is
+/* The Appearance tile advertises the type change too: the wordmark is the one place a face is
    legible at thumbnail size. */
 [data-theme-preview="nocturne"] .theme-preview-mark {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-weight: 400;
-  font-size: 12px;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: -0.006em;
 }
 [data-theme-preview="nocturne"] .theme-preview-card {
   box-shadow: var(--nocturne-lip);
@@ -121,70 +121,77 @@
 }
 
 /* ---- typography ------------------------------------------------------------
-   Serif for the names of things; mono keeps every measurement. */
+   A bigger, sentence-case heading SCALE for the names of things; mono keeps every measurement.
+   The scale is the theme's; the FACE is not. Every rule here reads --font-sans, so a console that
+   has chosen no heading typeface never gets a serif imposed on its titles by the theme it picked
+   for its colours (2026-09-12, the owner: "Theme default is still a serif font for the titles").
+   Instrument Serif is still one click away, as an explicit choice in Settings -> Appearance ->
+   Heading typeface, where it brings its own weight and sizes. Weights are 600/650 rather than the
+   400 a display serif wanted: a grotesque at 400 in a 16px heading reads washed out beside the
+   card's own 12.5px body. */
 [data-theme="nocturne"] .rail-head h2,
 [data-theme="nocturne"] .board-head h2 {
-  font-family: var(--font-serif);
-  font-size: 18px;
-  font-weight: 400;
-  letter-spacing: 0.004em;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.006em;
   text-transform: none;
   color: var(--text);
 }
 /* The board's view switcher is a heading (the active view) sitting beside plain buttons, and the two
    only read as one control while they share a face. Restyle the buttons with the heading or the row
-   comes out as one serif word followed by four mono ones. */
+   comes out as one large word followed by four small mono ones. */
 [data-theme="nocturne"] .board-tab {
-  font-family: var(--font-serif);
-  font-size: 18px;
-  font-weight: 400;
-  letter-spacing: 0.004em;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.006em;
   text-transform: none;
 }
 [data-theme="nocturne"] .board-tab:hover { color: var(--text-dim); }
 [data-theme="nocturne"] .wordmark .sub {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: 14px;
-  letter-spacing: 0.01em;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   text-transform: none;
   padding-bottom: 3px;
 }
 [data-theme="nocturne"] .card .title {
-  font-family: var(--font-serif);
-  font-size: 18.5px;
-  font-weight: 400;
-  letter-spacing: 0.004em;
-  line-height: 1.24;
+  font-family: var(--font-sans);
+  font-size: 16.5px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+  line-height: 1.28;
 }
 /* The task title is click-to-rename, so the input has to match the heading it replaces — otherwise
    the panel jumps a font and a size the moment the owner clicks it. */
 [data-theme="nocturne"] .detail-head h2,
 [data-theme="nocturne"] .title-edit {
-  font-family: var(--font-serif);
-  font-size: 21px;
-  font-weight: 400;
-  letter-spacing: 0.004em;
+  font-family: var(--font-sans);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 [data-theme="nocturne"] .settings-head h3,
 [data-theme="nocturne"] .modal .m-head h3 {
-  font-family: var(--font-serif);
-  font-weight: 400;
-  letter-spacing: 0;
+  font-family: var(--font-sans);
+  font-weight: 650;
+  letter-spacing: -0.012em;
 }
-[data-theme="nocturne"] .settings-head h3 { font-size: 26px; }
-[data-theme="nocturne"] .modal .m-head h3 { font-size: 19px; }
+[data-theme="nocturne"] .settings-head h3 { font-size: 22px; }
+[data-theme="nocturne"] .modal .m-head h3 { font-size: 18px; }
 
 /* Classic shrinks these headings on a phone. Every rule above out-specifies those media blocks (an
    attribute selector beats a bare class), so the theme has to restate the compact sizes or a tablet
-   gets a serif tab row that wraps and a settings title that eats the dialog head. */
+   gets a tab row that wraps and a settings title that eats the dialog head. */
 @media (max-width: 899.98px) {
-  [data-theme="nocturne"] .settings-head h3 { font-size: 18px; }
+  [data-theme="nocturne"] .settings-head h3 { font-size: 17px; }
   [data-theme="nocturne"] .board-head h2,
-  [data-theme="nocturne"] .board-tab { font-size: 13.5px; letter-spacing: 0.01em; }
+  [data-theme="nocturne"] .board-tab { font-size: 13px; letter-spacing: -0.004em; }
   [data-theme="nocturne"] .detail-head h2,
-  [data-theme="nocturne"] .title-edit { font-size: 18px; }
-  [data-theme="nocturne"] .card .title { font-size: 16.5px; }
+  [data-theme="nocturne"] .title-edit { font-size: 17px; }
+  [data-theme="nocturne"] .card .title { font-size: 15.5px; }
 }
 
 /* ---- cards ----------------------------------------------------------------- */
