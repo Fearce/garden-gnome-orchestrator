@@ -1053,6 +1053,27 @@ async function main(): Promise<void> {
         f.db.addDirectorMessage({ id: directorId, role: "user", kind: "text", content: "Hello" }).id === directorId &&
           f.db.addChatMessage({ id: officeId, room: "general", scope: "general", role: "director", body: "Hello" }).id === officeId,
       );
+      // The outbox REPLAYS an unconfirmed message until a receipt lands, so that receipt id is an
+      // idempotency key, not just a correlation tag. A plain INSERT threw `UNIQUE constraint failed:
+      // director_messages.id` on the replay — synchronously on the chat path, and as a process-level
+      // unhandledRejection from the async skip-director one (crash.log, 2026-09-11T12:26:05Z).
+      const first = f.db.directorMessage(directorId);
+      let replay: { id: string; content: string } | undefined;
+      let threw = false;
+      try {
+        replay = f.db.addDirectorMessage({ id: directorId, role: "user", kind: "text", content: "Hello again" });
+      } catch {
+        threw = true;
+      }
+      check(
+        "a replayed owner message id returns the row already stored instead of throwing",
+        !threw && replay?.id === directorId && replay?.content === "Hello" && first?.content === "Hello",
+      );
+      check(
+        "…and stores no second copy of it",
+        f.db.listDirectorMessages().filter((m) => m.id === directorId).length === 1,
+      );
+      check("an unknown id reads as never received", f.db.directorMessage(crypto.randomUUID()) === undefined);
     } finally {
       f.close();
     }

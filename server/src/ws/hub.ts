@@ -18,6 +18,7 @@ import { readZaiUsage } from "../agents/zaiUsage.js";
 import { formatStructuredRoleFeed } from "../agents/structuredText.js";
 import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./protocol.js";
 import { isAuthed } from "../auth.js";
+import { logCrash } from "../crashLog.js";
 import { CHAT_PAGE_SIZE, THREAD_HISTORY_PAGE_SIZE } from "../types.js";
 import type { Message } from "../types.js";
 import { injectThreadWithReceipt } from "./threadInjectionReceipt.js";
@@ -135,7 +136,15 @@ export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
         ctx.hub.log("warn", `Ignored malformed command: ${result.error.message}`);
         return;
       }
-      void handleCommand(ctx, socket, result.data);
+      // A rejecting command handler used to escape as a process-level unhandledRejection: on
+      // 2026-09-11T12:26:05Z a replayed director message hit `UNIQUE constraint failed:
+      // director_messages.id` and took the whole orchestrator's crash guards with it, mid-QA-run. One
+      // bad command must never be able to do that. The command is still recorded where a failure is
+      // read from — the hub log the console shows, and crash.log, which the nightly sweep scans.
+      void handleCommand(ctx, socket, result.data).catch((error) => {
+        ctx.hub.log("error", `Command ${result.data.type} failed: ${error instanceof Error ? error.message : String(error)}`);
+        logCrash(`ws.command.${result.data.type}`, error);
+      });
     });
 
     socket.on("close", () => unsubscribe());

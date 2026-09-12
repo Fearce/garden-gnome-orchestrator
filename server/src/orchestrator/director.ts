@@ -103,7 +103,25 @@ export class Director {
     }
   }
 
+  /**
+   * A replayed owner message, if this id has already been received.
+   *
+   * The console's outbox replays an unconfirmed message until a receipt lands, so the SAME id
+   * legitimately arrives twice — after a reconnect, or when a restart dropped the receipt of a
+   * command the server had already committed. That repeat is a delivery, not a new turn: re-publish
+   * the durable row so the browser's outbox settles, and leave everything else alone. Acting on it
+   * twice would start a second director turn, or dispatch the same task again.
+   */
+  private replayedOwnerMessage(messageId: string | undefined): boolean {
+    if (!messageId) return false;
+    const existing = this.db.directorMessage(messageId);
+    if (!existing) return false;
+    this.hub.publish({ type: "director.message", message: existing });
+    return true;
+  }
+
   handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice", messageId?: string): void {
+    if (this.replayedOwnerMessage(messageId)) return;
     const refs = (images ?? []).map((img) =>
       this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
     );
@@ -171,6 +189,7 @@ export class Director {
    * what was sent; the long-lived director session is left completely untouched.
    */
   async dispatchDirect(text: string, workspace?: string, images?: ImageAttachment[], messageId?: string): Promise<void> {
+    if (this.replayedOwnerMessage(messageId)) return;
     // Skip-director is an EXPLICIT owner choice, so honor it unconditionally: even a scheduling-shaped
     // message goes straight to the pipeline. (We used to reroute anything that looked like a schedule
     // request to the director — which owns the scheduling tools — but silently overriding the toggle

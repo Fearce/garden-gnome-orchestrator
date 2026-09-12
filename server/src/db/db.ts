@@ -2824,13 +2824,28 @@ export class Db {
       attachments: input.attachments?.length ? input.attachments : undefined,
       createdAt: now(),
     };
-    this.raw
+    // An `id` supplied by the browser is an IDEMPOTENCY KEY: the console's durable outbox replays an
+    // unconfirmed message until a receipt lands, so the same id legitimately arrives twice and a plain
+    // INSERT threw `UNIQUE constraint failed: director_messages.id` — synchronously on the chat path,
+    // and as a process-level unhandledRejection from the async skip-director path (crash.log,
+    // 2026-09-11T12:26:05Z). Storing the row is idempotent; callers that must not ACT twice on one
+    // owner message ask `directorMessage` first.
+    const info = this.raw
       .prepare(
         `INSERT INTO director_messages(id, role, kind, content, attachments, created_at)
-         VALUES(@id, @role, @kind, @content, @attachments, @createdAt)`,
+         VALUES(@id, @role, @kind, @content, @attachments, @createdAt)
+         ON CONFLICT(id) DO NOTHING`,
       )
       .run({ ...m, attachments: JSON.stringify(m.attachments ?? []) });
-    return m;
+    // The stored row is the durable truth — return it, not the re-derived copy, so a replay can never
+    // hand a caller a different createdAt than the one every other reader already has.
+    return info.changes === 0 ? (this.directorMessage(m.id) ?? m) : m;
+  }
+
+  /** One director-chat row by id, or undefined. The "have I already received this?" read. */
+  directorMessage(id: string): DirectorMessage | undefined {
+    const row = this.raw.prepare("SELECT * FROM director_messages WHERE id = ?").get(id) as Row | undefined;
+    return row ? rowToDirectorMessage(row) : undefined;
   }
 
   /** Link the given director messages to the task their conversation turn dispatched, so a search hit
