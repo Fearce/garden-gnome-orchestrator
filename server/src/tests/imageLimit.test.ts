@@ -35,8 +35,10 @@ const { contentWithImages, toImageBlock, MAX_IMAGE_BASE64_BYTES } = await import
  *  would leave this gate green through exactly the regression it exists to catch — the bug was a
  *  constant set to the wrong quantity, so a copy of the right quantity proves nothing. Both right-hand
  *  sides are evaluated, not string-matched, so reformatting them is not a failure. */
-function consoleLimits(): { base64Cap: number; fileCap: number } {
-  const src = readFileSync(fileURLToPath(new URL("../../../web/src/lib/attachments.tsx", import.meta.url)), "utf8");
+const consoleSource = readFileSync(fileURLToPath(new URL("../../../web/src/lib/attachments.tsx", import.meta.url)), "utf8");
+
+function consoleLimits(): { base64Cap: number; fileCap: number; sourceCap: number } {
+  const src = consoleSource;
   const rhs = (name: string): string => {
     const m = new RegExp(`export const ${name}\\s*=\\s*([^;]+);`).exec(src);
     if (!m?.[1]) throw new Error(`${name} is gone from web/src/lib/attachments.tsx — this gate reads it`);
@@ -44,7 +46,8 @@ function consoleLimits(): { base64Cap: number; fileCap: number } {
   };
   const base64Cap = Number(new Function(`return (${rhs("MAX_IMAGE_BASE64_BYTES")});`)());
   const fileCap = Number(new Function("MAX_IMAGE_BASE64_BYTES", `return (${rhs("MAX_IMAGE_BYTES")});`)(base64Cap));
-  return { base64Cap, fileCap };
+  const sourceCap = Number(new Function(`return (${rhs("MAX_IMAGE_SOURCE_BYTES")});`)());
+  return { base64Cap, fileCap, sourceCap };
 }
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
@@ -76,7 +79,7 @@ const blocksIn = (content: string | unknown[]): unknown[] => (typeof content ===
 // ---- A. threshold ------------------------------------------------------------------------------------
 console.log("\nA. threshold — the console's file cap is the one that encodes to the API's cap");
 {
-  const { base64Cap, fileCap: MAX_IMAGE_BYTES } = consoleLimits();
+  const { base64Cap, fileCap: MAX_IMAGE_BYTES, sourceCap } = consoleLimits();
   check(
     "the console and the server agree on the API's limit",
     base64Cap === MAX_IMAGE_BASE64_BYTES,
@@ -91,16 +94,56 @@ console.log("\nA. threshold — the console's file cap is the one that encodes t
   check("...and one byte more encodes past it", base64LengthOf(MAX_IMAGE_BYTES + 1) > MAX_IMAGE_BASE64_BYTES);
 
   // The four images actually in the database when this was found, by the raw file size each came from.
+  // These are no longer REFUSED — the console re-encodes them (scenario E) — but they may never be sent
+  // through untouched, which is the property that killed the run.
   for (const mib of [3.77, 3.83, 3.87, 4.17]) {
     const bytes = Math.round(mib * 1024 * 1024);
     check(
-      `a ${mib}MB file — which the old 5MB file cap allowed — is refused now`,
+      `a ${mib}MB file — which the old 5MB file cap allowed — can never be sent as-is`,
       bytes > MAX_IMAGE_BYTES && base64LengthOf(bytes) > MAX_IMAGE_BASE64_BYTES,
     );
   }
   // …without taking the ordinary case with it: a full-screen PNG screenshot is well under a megabyte.
   const ordinary = Math.round(0.9 * 1024 * 1024);
   check("an ordinary screenshot still passes", ordinary <= MAX_IMAGE_BYTES && base64LengthOf(ordinary) <= MAX_IMAGE_BASE64_BYTES);
+
+  // The operator's own ceiling is a separate quantity from the API's, and is meant to be generous:
+  // "theres no reason to limit it to just 3.8mb" (2026-09-11). What must NOT happen is the two being
+  // conflated again — a bigger pick is fine precisely because it is re-encoded before it is sent.
+  check("a picked file may be far larger than what the API accepts", sourceCap >= 8 * MAX_IMAGE_BYTES, `${sourceCap} vs ${MAX_IMAGE_BYTES}`);
+  check(
+    "...and a 12MB phone photo is accepted for resizing rather than refused",
+    Math.round(12 * 1024 * 1024) <= sourceCap,
+  );
+}
+
+// ---- E. re-encode ------------------------------------------------------------------------------------
+// Raising the pick ceiling WITHOUT a re-encode is the original $8 dead run with a bigger number, so the
+// structure that makes the bigger number safe is what is pinned here: an oversized pick must route into
+// the shrink path, and every payload that path produces must be measured against the API's own cap.
+console.log("\nE. re-encode — an oversized pick is resized, and the resized payload is checked");
+{
+  const attachFn = /async function fileToAttachment\(([\s\S]*?)\n}/.exec(consoleSource)?.[1] ?? "";
+  check("fileToAttachment is still the single entry point", attachFn.length > 0);
+  check(
+    "a pick past the operator ceiling is refused outright",
+    /f\.size > MAX_IMAGE_SOURCE_BYTES\)\s*return "size"/.test(attachFn),
+    attachFn,
+  );
+  check(
+    "a pick past the API's own cap is re-encoded, never read straight through",
+    /f\.size > MAX_IMAGE_BYTES\)\s*return \(await shrinkImage\(f\)\)/.test(attachFn),
+    attachFn,
+  );
+
+  const shrinkFn = /async function shrinkImage\(([\s\S]*?)\n}/.exec(consoleSource)?.[1] ?? "";
+  check("shrinkImage exists", shrinkFn.length > 0);
+  check(
+    "...and only returns a payload that fits the API's cap",
+    /dataBase64\.length <= MAX_IMAGE_BASE64_BYTES/.test(shrinkFn),
+    shrinkFn,
+  );
+  check("...else it reports failure rather than attaching something oversized", /return null;\s*$/.test(shrinkFn.trim()));
 }
 
 // ---- B. drop -----------------------------------------------------------------------------------------

@@ -13,6 +13,16 @@ export const MAX_IMAGE_BASE64_BYTES = 5 * 1024 * 1024;
  *  exists to prevent: it let every image between 3.75MB and 5MB through to be rejected mid-run, killing
  *  the task that carried it (2026-08-26 — one $8 implementor run, and four such images already stored). */
 export const MAX_IMAGE_BYTES = Math.floor((MAX_IMAGE_BASE64_BYTES * 3) / 4);
+/** …and what the operator may actually PICK. The two caps above are the API's and cannot move — a
+ *  payload past them is not degraded, the run DIES ("Image base64 size exceeds API limit") — but nothing
+ *  says the operator has to do the shrinking. A file over `MAX_IMAGE_BYTES` is re-encoded here before it
+ *  becomes an attachment, so a 4K screenshot or a phone photo attaches instead of being refused. This is
+ *  only a bound on how much work one paste may cost; anything under it is accepted and resized. */
+export const MAX_IMAGE_SOURCE_BYTES = 64 * 1024 * 1024;
+/** The longest edge a re-encode renders to. The API downsamples anything past ~1568px on the long edge
+ *  before the model ever sees it, so pixels beyond this bound cost payload size and tokens and buy no
+ *  detail. Kept above 1568 so the console is never the thing that loses legibility first. */
+const MAX_IMAGE_EDGE = 2000;
 const OK_TYPES = new Set<ImageMediaType>(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 function isImageAttachment(file: FileAttachment): file is ImageAttachment {
@@ -29,7 +39,7 @@ function previewUrl(a: ImageAttachment): string {
 
 /** Why a file didn't become an attachment, so the composer can say so — a picture that simply never
  *  appears reads as a broken paste, and the operator sends the prompt believing the agent can see it. */
-type Rejection = "type" | "size";
+type Rejection = "type" | "size" | "shrink" | "unreadable";
 
 async function readBase64(f: File): Promise<string | null> {
   const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -42,22 +52,118 @@ async function readBase64(f: File): Promise<string | null> {
   return comma < 0 ? null : dataUrl.slice(comma + 1);
 }
 
-async function fileToAttachment(f: File): Promise<ImageAttachment | Rejection> {
-  if (!OK_TYPES.has(f.type as ImageMediaType)) return "type";
-  if (f.size > MAX_IMAGE_BYTES) return "size";
-  const dataBase64 = await readBase64(f);
-  if (dataBase64 == null) return "type";
-  return { name: f.name || "image", mediaType: f.type as ImageMediaType, dataBase64 };
+/** Decode a picked file into something a canvas can draw. `createImageBitmap` is the cheap path and is
+ *  everywhere the console runs; the `<img>` fallback exists because a decode failure has to be told
+ *  apart from an unsupported browser — both end as one honest "couldn't resize" rather than a silent
+ *  drop. The object URL is always revoked, including on the failure path. */
+async function decodeImage(f: File): Promise<{ width: number; height: number; draw: CanvasImageSource; release: () => void } | null> {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(f);
+      // An ImageBitmap holds its decoded pixels outside the JS heap, so a 4K paste stays resident until
+      // GC gets round to it. Closing it is the caller's job once the last render is done.
+      return { width: bitmap.width, height: bitmap.height, draw: bitmap, release: () => bitmap.close() };
+    } catch {
+      // Fall through to the <img> decoder below.
+    }
+  }
+  const url = URL.createObjectURL(f);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("decode failed"));
+      el.src = url;
+    });
+    return { width: img.naturalWidth, height: img.naturalHeight, draw: img, release: () => {} };
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
-const MAX_IMAGE_MB = (MAX_IMAGE_BYTES / (1024 * 1024)).toFixed(1);
+/** One render attempt: fit the image inside `edge` on its long side and encode it. Returns the base64
+ *  payload, which is the quantity the API measures — never the canvas byte count. */
+function renderBase64(
+  source: { width: number; height: number; draw: CanvasImageSource },
+  edge: number,
+  mediaType: ImageMediaType,
+  quality: number,
+): string | null {
+  const scale = Math.min(1, edge / Math.max(source.width, source.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(source.width * scale));
+  canvas.height = Math.max(1, Math.round(source.height * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(source.draw, 0, 0, canvas.width, canvas.height);
+  const dataUrl = canvas.toDataURL(mediaType, quality);
+  // A browser that can't encode the requested type silently hands back a PNG data URL, which would
+  // mislabel the block's media_type on the wire. Trust the prefix, not the request.
+  if (!dataUrl.startsWith(`data:${mediaType};base64,`)) return null;
+  return dataUrl.slice(dataUrl.indexOf(",") + 1);
+}
+
+/**
+ * Shrink an oversized picture until its base64 fits the API's per-image cap. Dimensions come down
+ * first, because payload grows with area and the API discards the extra pixels anyway; only once that
+ * isn't enough does it trade format/quality. A GIF becomes a still PNG — its first frame beats the
+ * alternative, which today is the whole image being refused.
+ */
+async function shrinkImage(f: File): Promise<ImageAttachment | null> {
+  const source = await decodeImage(f);
+  if (!source || !source.width || !source.height) return null;
+  const keepsPng = f.type !== "image/jpeg";
+  const ladder: Array<{ edge: number; mediaType: ImageMediaType; quality: number }> = [
+    { edge: MAX_IMAGE_EDGE, mediaType: keepsPng ? "image/png" : "image/jpeg", quality: 0.92 },
+    { edge: 1568, mediaType: keepsPng ? "image/png" : "image/jpeg", quality: 0.9 },
+    { edge: 1568, mediaType: "image/jpeg", quality: 0.85 },
+    { edge: 1200, mediaType: "image/jpeg", quality: 0.8 },
+    { edge: 900, mediaType: "image/jpeg", quality: 0.7 },
+  ];
+  try {
+    for (const step of ladder) {
+      const dataBase64 = renderBase64(source, step.edge, step.mediaType, step.quality);
+      if (dataBase64 && dataBase64.length <= MAX_IMAGE_BASE64_BYTES) {
+        return { name: f.name || "image", mediaType: step.mediaType, dataBase64 };
+      }
+    }
+  } finally {
+    source.release();
+  }
+  return null;
+}
+
+/** The single entry point, and it never throws: a decode/read failure is an ORDINARY outcome here (a
+ *  truncated download, a file the OS handed over mid-write), and letting it reject would take the whole
+ *  batch's banner with it and leave the operator sending a prompt that silently has no picture. */
+async function fileToAttachment(f: File): Promise<ImageAttachment | Rejection> {
+  if (!OK_TYPES.has(f.type as ImageMediaType)) return "type";
+  if (f.size > MAX_IMAGE_SOURCE_BYTES) return "size";
+  try {
+    // Anything that already fits is passed through byte-identical: re-encoding a picture that was never
+    // a problem would cost fidelity for nothing.
+    if (f.size > MAX_IMAGE_BYTES) return (await shrinkImage(f)) ?? "shrink";
+    const dataBase64 = await readBase64(f);
+    if (dataBase64 == null) return "unreadable";
+    return { name: f.name || "image", mediaType: f.type as ImageMediaType, dataBase64 };
+  } catch {
+    return "unreadable";
+  }
+}
+
+const MAX_IMAGE_MB = (MAX_IMAGE_SOURCE_BYTES / (1024 * 1024)).toFixed(0);
 
 /** One banner covering everything a drop/paste threw away, in the operator's terms (the size of the file
  *  they picked, not of the payload it encodes to). */
-function rejectionNotice(size: number, type: number): { level: "warn"; title: string; message: string } | null {
+function rejectionNotice(counts: Record<Rejection, number>): { level: "warn"; title: string; message: string } | null {
+  const { size, type, shrink, unreadable } = counts;
   const parts: string[] = [];
   if (size) parts.push(`${size} image${size === 1 ? " is" : "s are"} over the ${MAX_IMAGE_MB} MB limit`);
   if (type) parts.push(`${type} file${type === 1 ? " is" : "s are"} not a PNG, JPEG, GIF or WebP`);
+  if (shrink) parts.push(`${shrink} image${shrink === 1 ? " couldn't" : "s couldn't"} be resized to fit the model's per-image limit`);
+  if (unreadable) parts.push(`${unreadable} file${unreadable === 1 ? " couldn't" : "s couldn't"} be read`);
   if (!parts.length) return null;
   return { level: "warn", title: "Not attached", message: `${parts.join(", and ")} — resend a smaller or converted copy.` };
 }
@@ -85,16 +191,14 @@ export function useAttachments(): AttachmentsApi {
   const addFiles = useCallback((files: FileList | File[]) => {
     void (async () => {
       const next: ImageAttachment[] = [];
-      let size = 0;
-      let type = 0;
+      const rejected: Record<Rejection, number> = { size: 0, type: 0, shrink: 0, unreadable: 0 };
       for (const f of Array.from(files)) {
         const a = await fileToAttachment(f);
-        if (a === "size") size++;
-        else if (a === "type") type++;
+        if (typeof a === "string") rejected[a]++;
         else next.push(a);
       }
       if (next.length) setImages((cur) => [...cur, ...next].slice(0, MAX_IMAGES));
-      const notice = rejectionNotice(size, type);
+      const notice = rejectionNotice(rejected);
       if (notice) useStore.setState({ notice });
     })();
   }, []);
@@ -194,8 +298,9 @@ function coworkAttachmentNotice(rejected: { imageSize: number; fileSize: number;
   }
 }
 
-/** Co-work accepts screenshots plus arbitrary files. Screenshots retain the stricter provider image
- * ceiling; all files share count/per-file/total caps that keep one WebSocket frame below its 64 MB limit. */
+/** Co-work accepts screenshots plus arbitrary files. A screenshot is resized to the provider's image
+ * ceiling rather than refused for exceeding it; all files share count/per-file/total caps that keep one
+ * WebSocket frame below its 64 MB limit. */
 export function useCoworkAttachments(): CoworkAttachmentsApi {
   const [items, setItems] = useState<CoworkDraftAttachment[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -214,8 +319,20 @@ export function useCoworkAttachments(): CoworkAttachmentsApi {
       const rejected = { imageSize: 0, fileSize: 0, unreadable: 0, count: 0, total: 0 };
       for (const source of Array.from(input)) {
         const image = OK_TYPES.has(source.type as ImageMediaType);
-        if (image && source.size > MAX_IMAGE_BYTES) { rejected.imageSize++; continue; }
-        if (!image && source.size > MAX_COWORK_FILE_BYTES) { rejected.fileSize++; continue; }
+        if (image) {
+          // Screenshots go through the same accept-and-resize path the task composer uses, so an
+          // oversized one is shrunk rather than refused. `bytes` is then what the message actually
+          // carries, not what the operator picked — the total budget guards the WebSocket frame.
+          const attached = await fileToAttachment(source);
+          if (attached === "size") { rejected.imageSize++; continue; }
+          if (typeof attached === "string") { rejected.unreadable++; continue; }
+          candidates.push({
+            file: { ...attached, name: (attached.name || "screenshot").slice(0, 240) },
+            bytes: Math.ceil((attached.dataBase64.length * 3) / 4),
+          });
+          continue;
+        }
+        if (source.size > MAX_COWORK_FILE_BYTES) { rejected.fileSize++; continue; }
         let dataBase64: string | null;
         try {
           dataBase64 = await readBase64(source);
@@ -226,7 +343,7 @@ export function useCoworkAttachments(): CoworkAttachmentsApi {
         if (dataBase64 == null) { rejected.fileSize++; continue; }
         candidates.push({
           file: {
-            name: (source.name || (image ? "screenshot" : "attachment")).slice(0, 240),
+            name: (source.name || "attachment").slice(0, 240),
             mediaType: source.type || "application/octet-stream",
             dataBase64,
           },

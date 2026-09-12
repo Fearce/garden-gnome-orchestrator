@@ -791,9 +791,20 @@ CLI/SDK image input is base64-only; there is no file-path image source.
 
 - **Capture** (`web/src/lib/attachments.tsx`). `useAttachments()` handles paste
   (clipboard `file` items), drag-drop, and a paperclip file-picker; caps at 8
-  images / 5 MB each; images only. Both composers (Director new-task +
+  images; images only. Both composers (Director new-task +
   ThreadDetail inject) share it. Previews render from data URLs; sent bubbles
   render from `/api/attachment/:id`.
+- **Two different size caps, and conflating them is the known bug.** The API's is
+  **5 MB of BASE64** per image (`MAX_IMAGE_BASE64_BYTES`, mirrored in
+  `server/src/attachments.ts`) — exceeding it does not degrade the request, it kills
+  the run. Base64 is 4/3 of the file, so a file only passes through untouched up to
+  `MAX_IMAGE_BYTES` (3.75 MB). What the operator may PICK is a third, much larger
+  number (`MAX_IMAGE_SOURCE_BYTES`, 64 MB): anything between the two is **re-encoded
+  in the browser** — long edge down to ≤2000px first (the API discards pixels past
+  ~1568px anyway), then format/quality — until its base64 fits, so a 4K screenshot or
+  a phone photo attaches instead of being refused. A GIF re-encodes to a still PNG.
+  Gate: `test:image-limit`, which reads both console constants out of the shipped file
+  and pins the re-encode routing.
 - **Transport.** `prompt.new` / `thread.inject` carry `images: [{name, mediaType,
   dataBase64}]` (zod-validated, `.max(8)`; `ws` `maxPayload` lifted to 64 MB).
 - **Fan-out — the hard part.** Each role is an isolated session and the
