@@ -180,6 +180,34 @@ async function drive(page, shots) {
   check("with the originating task still open", (await page.textContent(".detail-head"))?.includes("Repo task") === true);
   check("and the return banner is spent", (await page.$(".codectx-return")) === null);
 
+  console.log("\nWORKSPACE CHIP → IDE — the path line the owner actually clicks");
+  // The owner circled this chip, not the Code button: in the detail panel it must open the workspace
+  // in the editor, not the host file manager. A board card has no resolved context, so its identical
+  // chip must keep the reveal — a route is only offered where it can be taken.
+  // Tolerant on purpose, like the commit landing below: a chip that never resolves must REPORT here
+  // rather than throw and take every later section with it. The click is gated on the label because an
+  // unrouted chip reveals the folder in the host file manager, which a headless drive cannot undo.
+  await page.waitForSelector('.detail-head .ws-path[title^="Open in the IDE"]', { timeout: 20_000 }).catch(() => {});
+  const chipLabel = (await page.getAttribute(".detail-head .ws-path", "title").catch(() => "")) ?? "";
+  const chipRouted = chipLabel.startsWith("Open in the IDE");
+  check("the detail panel's chip says it opens the IDE", chipRouted, chipLabel);
+  check(
+    "a board card's chip is untouched — no context is resolved there",
+    (await page.getAttribute('.card:has-text("Repo task") .ws-path', "aria-label"))?.startsWith("Open in File Explorer") === true,
+    (await page.getAttribute('.card:has-text("Repo task") .ws-path', "aria-label")) ?? "",
+  );
+  if (chipRouted) {
+    await page.click(".detail-head .ws-path");
+    await page.waitForSelector(".ide-mount:not([hidden]) .ide", { timeout: 20_000 }).catch(() => {});
+    check("clicking the workspace path lands in the editor", await page.isVisible(".ide-mount:not([hidden]) .ide"));
+    check(
+      "and it records the task as the origin, so back returns here",
+      (await page.textContent(".ide-return .codectx-btn").catch(() => ""))?.includes("Repo task") === true,
+    );
+    await page.click(".ide-return .codectx-btn").catch(() => {});
+    await page.waitForSelector(".board-tasks", { timeout: 15_000 }).catch(() => {});
+  }
+
   console.log("\nTASK → GIT — the console opens on that repository");
   await page.click('.detail .codectx-btn:has-text("Git")');
   await page.waitForSelector(".gc-window", { timeout: 20_000 });
@@ -243,6 +271,13 @@ async function drive(page, shots) {
   await openTask(page, "Parent task");
   check("a parent-of-repo workspace still reads its branch", (await branchText(page, ".detail")) === "master");
   check("and still offers both routes", (await page.$$(".detail .codectx-actions .codectx-btn")).length === 2);
+  // `repoPrefix` is null here (the checkout sits below the workspace), which correctly withdraws the
+  // per-FILE link. It must not withdraw the WORKSPACE one — that is the whole point of the chip.
+  check(
+    "the workspace chip still opens the IDE when the repo is nested",
+    (await page.getAttribute(".detail-head .ws-path", "title"))?.startsWith("Open in the IDE") === true,
+    (await page.getAttribute(".detail-head .ws-path", "title")) ?? "",
+  );
 
   console.log("\nCO-WORK — the conversation header carries the same row");
   // Close the task panel first: that is how an operator moves between areas, and it also gives the

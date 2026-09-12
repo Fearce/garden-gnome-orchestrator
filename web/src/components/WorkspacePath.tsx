@@ -57,23 +57,41 @@ function FolderIcon() {
 }
 
 /** `chip` is the pill the board and scheduled-task cards carry; `meta` is the flatter line the task
- *  detail header uses, which keeps that header's quiet one-line look while gaining the same click. */
-export function WorkspacePath({ path, variant = "chip" }: { path: string; variant?: "chip" | "meta" }) {
+ *  detail header uses, which keeps that header's quiet one-line look while gaining the same click.
+ *
+ *  `onOpen`/`destination` let a surface that has RESOLVED where this workspace lives send the click
+ *  somewhere better than the file manager — the task detail panel routes it into the IDE. The default
+ *  stays the File Explorer reveal, because a board card has no resolved context and a route is only
+ *  offered when it can be taken (`.claude/rules/contextual-code-navigation.md`). The two labels are
+ *  derived from `destination`, never passed separately: a chip that names one place and opens another
+ *  is the same lie as a link to the wrong file. */
+export function WorkspacePath({
+  path,
+  variant = "chip",
+  onOpen,
+  destination = "File Explorer",
+}: {
+  path: string;
+  variant?: "chip" | "meta";
+  onOpen?: () => void;
+  destination?: string;
+}) {
   const { parent, leaf } = splitWorkspace(path);
 
   return (
     <button
       type="button"
       className={"ws-path" + (variant === "meta" ? " ws-path-meta" : "")}
-      title={"Open in File Explorer\n" + path}
-      aria-label={"Open " + path + " in File Explorer"}
+      title={"Open in " + destination + "\n" + path}
+      aria-label={"Open " + path + " in " + destination}
       // A board card is itself one big click target (it selects the task) and a dnd-kit drag source,
       // so both events have to stop here: the click would also open the detail panel, and the
       // pointerdown would arm a drag instead of letting the press stay a click.
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
-        void openWorkspace(path);
+        if (onOpen) onOpen();
+        else void openWorkspace(path);
       }}
     >
       <FolderIcon />

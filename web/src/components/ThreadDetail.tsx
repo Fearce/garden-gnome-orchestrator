@@ -4,7 +4,7 @@ import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
 import { agentName, isCollaborationRoom, MODEL_ROLES, repoRoom } from "../types.js";
 import { canAutoReview, clock, formatDuration, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed } from "../lib/timing.js";
-import { threadOrigin } from "../lib/codeNav.js";
+import { canOpenIde, ideWorkspaceTarget, threadOrigin } from "../lib/codeNav.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
@@ -14,8 +14,30 @@ import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { TaskModelPicker } from "./TaskModelPicker.js";
 import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
 import { ImplementationMemos } from "./ImplementationMemos.js";
-import { CodeContextBar } from "./CodeContextBar.js";
+import { CodeContextBar, useCodeContext } from "./CodeContextBar.js";
 import { WorkspacePath } from "./WorkspacePath.js";
+
+/**
+ * The detail panel's workspace chip. The panel already resolves this task's code context for its
+ * context bar, so the same answer says whether the editor knows this folder — and when it does, the
+ * chip opens the workspace in the IDE (recording the task as the origin, so the IDE's back control
+ * returns here) instead of the host file manager. When the workspace was never registered with the
+ * IDE there is no route to offer, so the chip keeps its File Explorer reveal rather than becoming a
+ * button that fails. Detail-panel only: a board card renders the same component with no resolved
+ * context, inside a click/drag target of its own.
+ */
+function TaskWorkspacePath({ thread }: { thread: Thread }) {
+  const context = useCodeContext({ kind: "thread", id: thread.id });
+  const openInIde = useStore((s) => s.openInIde);
+  const target = context && canOpenIde(context) ? ideWorkspaceTarget(context) : null;
+  return (
+    <WorkspacePath
+      path={thread.workspace}
+      variant="meta"
+      {...(target ? { destination: "the IDE", onOpen: () => openInIde(target, threadOrigin(thread)) } : {})}
+    />
+  );
+}
 
 function latestRunOf(runs: AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -755,7 +777,7 @@ export function ThreadDetail() {
         <div className="top">
           <div>
             <EditableTitle threadId={thread.id} title={thread.title} />
-            {!headCollapsed && <WorkspacePath path={thread.workspace} variant="meta" />}
+            {!headCollapsed && <TaskWorkspacePath thread={thread} />}
           </div>
           <div className="detail-title-actions">
             <Elapsed

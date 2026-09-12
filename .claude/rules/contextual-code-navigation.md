@@ -4,6 +4,7 @@ paths:
   - web/src/components/CodeContextBar.tsx
   - web/src/lib/codeNav.ts
   - web/src/components/codeContext.css
+  - web/src/components/WorkspacePath.tsx
 ---
 
 # Task / Co-work / Supervisor → IDE and Git (the traps, not the tour)
@@ -19,6 +20,16 @@ CLAUDE.md § "Contextual code navigation" has the shape. This is what bites, plu
   needs the prefix prepended); **`null` = the checkout sits ABOVE the workspace**, where a repo-relative
   file has no in-workspace path at all. Collapsing null into `""` silently produces links to the wrong
   file. `repoPrefixOf` and `joinWorkspacePath` are both gated on this.
+- **The workspace path chip is a route too, and only in the detail panel.** `WorkspacePath.tsx` is one
+  component rendered on the board card, the scheduled-task card AND the task detail header. Only the
+  panel has a resolved `CodeContext`, so only there does the chip take the `onOpen`/`openLabel` override
+  that sends the click to `openInIde(ideWorkspaceTarget(context), threadOrigin(thread))`; everywhere
+  else it keeps its File Explorer reveal. Do not push the IDE route onto the cards: they resolve no
+  context (so the route could not be taken) and each is itself one big click target and a dnd-kit drag
+  source. The chip's `title`/`aria-label` must follow whichever route it actually has — a chip that says
+  "Open in File Explorer" and opens the editor is the same lie as a button that opens the wrong file.
+  A nested checkout (`repoPrefix === null`) withdraws the per-FILE link but NOT this one; the lab pins
+  that both ways.
 - **A `workspace` subject is a path FROM THE BROWSER.** It resolves only through
   `IdeService.isRegistered` — the same registry the IDE enforces. Drop that check and `code.context`
   becomes a "stat any directory and read its git remote state" oracle for anyone who reaches the
