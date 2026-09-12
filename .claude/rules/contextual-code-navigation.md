@@ -22,7 +22,7 @@ CLAUDE.md § "Contextual code navigation" has the shape. This is what bites, plu
   file. `repoPrefixOf` and `joinWorkspacePath` are both gated on this.
 - **The workspace path chip is a route too, and only in the detail panel.** `WorkspacePath.tsx` is one
   component rendered on the board card, the scheduled-task card AND the task detail header. Only the
-  panel has a resolved `CodeContext`, so only there does the chip take the `onOpen`/`openLabel` override
+  panel has a resolved `CodeContext`, so only there does the chip take the `onOpen`/`destination` override
   that sends the click to `openInIde(ideWorkspaceTarget(context), threadOrigin(thread))`; everywhere
   else it keeps its File Explorer reveal. Do not push the IDE route onto the cards: they resolve no
   context (so the route could not be taken) and each is itself one big click target and a dnd-kit drag
