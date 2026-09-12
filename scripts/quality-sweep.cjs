@@ -23,8 +23,6 @@ const path = require("node:path");
 const ROOT = path.resolve(__dirname, "..");
 const SERVER = path.join(ROOT, "server");
 
-// Under server/data, which is gitignored — a sweep transcript is a working artifact, never a commit.
-const TRANSCRIPT = path.join(SERVER, "data", "quality-sweep-last.log");
 // One sweep at a time, on the same SQLite lease the gate suite uses — its own lock file, so a sweep
 // never blocks the gates run it is about to spawn. SQLite is what makes this better than a pidfile:
 // the OS releases its transaction even on a hard kill, so a crashed sweep leaves nothing to guess at.
@@ -35,8 +33,29 @@ const TRANSCRIPT = path.join(SERVER, "data", "quality-sweep-last.log");
 // had actually failed, with another step's output spliced through the gate list. A verdict you cannot
 // trust costs more than no verdict, and nothing here could tell you it had happened.
 const { acquireGateRunLease } = require(path.join(SERVER, "scripts", "gate-run-lease.cjs"));
-const SWEEP_LOCK_DB = path.join(SERVER, "data", "quality-sweep-run-lock.sqlite");
-const SWEEP_OWNER = path.join(SERVER, "data", "quality-sweep-run-owner.json");
+/**
+ * Where this run keeps its three artifacts. Under server/data, which is gitignored — a sweep
+ * transcript is a working artifact, never a commit.
+ *
+ * GGO_SWEEP_SANDBOX relocates all three together, so `test:quality-sweep` can exercise the refusal
+ * path against a lease nobody else holds. It has to: that gate runs INSIDE the sweep (step 2 spawns
+ * the whole gate suite), so on the production lease it asserted "a free lease must be claimable"
+ * while the sweep running it held exactly that lease — one gate red on every nightly run, for the
+ * one reason that proves the guard works. The three move as a unit on purpose: relocating only the
+ * lease would leave the gate truncating the live sweep's transcript to prove that it does not.
+ */
+function sweepArtifactPaths(sandboxDir) {
+  const dir = sandboxDir ? path.resolve(sandboxDir) : path.join(SERVER, "data");
+  return {
+    transcript: path.join(dir, "quality-sweep-last.log"),
+    lockDb: path.join(dir, "quality-sweep-run-lock.sqlite"),
+    owner: path.join(dir, "quality-sweep-run-owner.json"),
+  };
+}
+const ARTIFACTS = sweepArtifactPaths(process.env.GGO_SWEEP_SANDBOX);
+const TRANSCRIPT = ARTIFACTS.transcript;
+const SWEEP_LOCK_DB = ARTIFACTS.lockDb;
+const SWEEP_OWNER = ARTIFACTS.owner;
 const BUSY_EXIT_CODE = 75;
 
 /** The refusal an operator reads: who holds it, why it matters, and both ways out. */
@@ -208,6 +227,7 @@ module.exports = {
   SWEEP_LOCK_DB,
   SWEEP_OWNER,
   BUSY_EXIT_CODE,
+  sweepArtifactPaths,
   selected,
   summaryText,
   exitCodeFor,

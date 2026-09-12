@@ -23,6 +23,7 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { PassThrough } = require("node:stream");
 const {
@@ -36,6 +37,7 @@ const {
   exitCodeFor,
   guardBrokenPipe,
   sweepBusyText,
+  sweepArtifactPaths,
 } = require("./quality-sweep.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -147,29 +149,39 @@ assert.match(busy, /taskkill \/PID 4321/, "…with the command that ends it");
 assert.match(busy, /--force/, "…and the override, so the guard is never a dead end");
 assert.match(busy, /NOT a sweep result/, "…and must refuse to be read as a verdict");
 
-const held = acquireGateRunLease({ lockDbPath: SWEEP_LOCK_DB, ownerPath: SWEEP_OWNER });
-assert.ok(held.acquired, "a free lease must be claimable");
+// Exercised in a sandbox, never on the production lease: step 2 of the sweep spawns the gate suite,
+// so this file routinely runs WHILE a sweep holds that lease, and claiming it here would both fail
+// ("a free lease must be claimable") and truncate the running sweep's own transcript.
+const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "gg-sweep-gate-"));
+const sandboxed = sweepArtifactPaths(sandbox);
+assert.notEqual(sandboxed.lockDb, SWEEP_LOCK_DB, "GGO_SWEEP_SANDBOX must relocate the lease…");
+assert.notEqual(sandboxed.owner, SWEEP_OWNER, "…its owner file…");
+assert.notEqual(sandboxed.transcript, TRANSCRIPT, "…and the transcript, which this gate would otherwise truncate");
+
 try {
-  const before = fs.existsSync(TRANSCRIPT) ? fs.statSync(TRANSCRIPT).mtimeMs : null;
-  const second = spawnSync(process.execPath, [path.join(ROOT, "scripts", "quality-sweep.cjs"), "1"], {
-    encoding: "utf8",
-    cwd: ROOT,
-  });
-  assert.equal(second.status, BUSY_EXIT_CODE, "a second sweep exits BUSY, never 0 — busy is not a pass");
-  assert.match(second.stdout, /already running/);
-  const after = fs.existsSync(TRANSCRIPT) ? fs.statSync(TRANSCRIPT).mtimeMs : null;
-  assert.equal(after, before, "and it must refuse BEFORE opening the transcript, which truncates");
+  const held = acquireGateRunLease({ lockDbPath: sandboxed.lockDb, ownerPath: sandboxed.owner });
+  assert.ok(held.acquired, "a free lease must be claimable");
+  try {
+    const second = spawnSync(process.execPath, [path.join(ROOT, "scripts", "quality-sweep.cjs"), "1"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      env: { ...process.env, GGO_SWEEP_SANDBOX: sandbox },
+    });
+    assert.equal(second.status, BUSY_EXIT_CODE, "a second sweep exits BUSY, never 0 — busy is not a pass");
+    assert.match(second.stdout, /already running/);
+    assert.equal(
+      fs.existsSync(sandboxed.transcript),
+      false,
+      "and it must refuse BEFORE opening the transcript, which truncates",
+    );
+  } finally {
+    held.release();
+  }
+  const reclaimed = acquireGateRunLease({ lockDbPath: sandboxed.lockDb, ownerPath: sandboxed.owner });
+  assert.ok(reclaimed.acquired, "a released lease is immediately reclaimable — the guard must not outlive the run that took it");
+  reclaimed.release();
 } finally {
-  held.release();
+  fs.rmSync(sandbox, { recursive: true, force: true });
 }
-assert.ok(
-  acquireGateRunLease({ lockDbPath: SWEEP_LOCK_DB, ownerPath: SWEEP_OWNER }).acquired &&
-    (() => {
-      const l = acquireGateRunLease({ lockDbPath: SWEEP_LOCK_DB, ownerPath: SWEEP_OWNER });
-      l.release?.();
-      return true;
-    })(),
-  "a released lease is immediately reclaimable — the guard must not outlive the run that took it",
-);
 
 console.log(`qualitySweep: all assertions passed (${STEPS.length} steps across ${covered.length} sections)`);
