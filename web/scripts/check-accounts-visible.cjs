@@ -121,7 +121,11 @@ async function measure(page) {
         );
       }
     }
-    if (grok && !/7d|mo|SUPERGROK|polling usage/i.test(grok.text)) {
+    // "no metered allowance" is a STATEMENT about the allowance, not the absence of one: it is what
+    // Accounts.tsx's `noAllowance` branch renders for a Free plan that meters nothing, and it is the
+    // reading the free-tier fix made truthful. The accepted set stays a list of the exact strings the
+    // chip can render, so a chip that silently loses its meters still fails this.
+    if (grok && !/7d|mo|SUPERGROK|polling usage|no metered allowance/i.test(grok.text)) {
       failures.push(`Grok chip lacks usage affordance: ${grok.text.slice(0, 120)}`);
     }
 
