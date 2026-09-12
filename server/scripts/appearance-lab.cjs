@@ -66,6 +66,7 @@ const SNAPSHOT = [
   { name: "task card", selector: ".card", props: ["backgroundColor", "borderRadius", "boxShadow", "padding"] },
   { name: "task card title", selector: ".card .title", props: ["fontFamily", "fontSize", "fontWeight"] },
   { name: "board tab", selector: ".board-tab", props: ["fontFamily", "fontSize", "textTransform"] },
+  { name: "masthead", selector: ".wordmark .sub", props: ["fontFamily", "fontSize", "letterSpacing"] },
 ];
 
 /** getComputedStyle for each watched surface — the state a theme is allowed to change, and Classic
@@ -151,27 +152,38 @@ async function choose(page, id) {
   await page.waitForTimeout(420);
 }
 
-/** The two typeface attributes, as the pre-paint script and lib/font.ts write them. */
+/** The three typeface attributes, as the pre-paint script and lib/font.ts write them. */
 const activeFonts = (page) =>
   page.evaluate(() => ({
     ui: document.documentElement.dataset.font ?? null,
     mono: document.documentElement.dataset.fontMono ?? null,
+    display: document.documentElement.dataset.fontDisplay ?? null,
   }));
 
 /** The families actually in use, which is the only thing a font choice is allowed to change here.
- *  `.conn` is a top-bar readout set in --font-mono, so the two tokens are read from live elements
- *  rather than from the token block: an option that changes the variable but reaches nothing looks
- *  identical in :root. */
+ *  `.conn` is a top-bar readout set in --font-mono, so the tokens are read from live elements rather
+ *  than from the token block: an option that changes the variable but reaches nothing looks identical
+ *  in :root. The masthead and a task card's header are the heading channel's own two surfaces, and
+ *  the reason it exists: the first is hard-set in mono as chrome and the second is re-faced by a
+ *  theme, so neither of the other pickers could ever reach them. */
 const usedFaces = (page) =>
-  page.evaluate(() => ({
-    body: getComputedStyle(document.body).fontFamily,
-    mono: getComputedStyle(document.querySelector(".conn")).fontFamily,
-  }));
+  page.evaluate(() => {
+    const family = (selector) => getComputedStyle(document.querySelector(selector)).fontFamily;
+    return {
+      body: family("body"),
+      mono: family(".conn"),
+      masthead: family(".wordmark .sub"),
+      title: family(".card .title"),
+    };
+  });
 
-/** Pick a face in the Nth font picker (0 = interface, 1 = monospace) and wait for <html> to agree. */
+/** The three pickers, in the order Settings renders them, paired with the attribute each one writes. */
+const PICKERS = { interface: [0, "font"], heading: [1, "fontDisplay"], monospace: [2, "fontMono"] };
+
+/** Pick a face in one of the three pickers and wait for <html> to agree. */
 async function chooseFont(page, group, id) {
-  const attr = group === 0 ? "font" : "fontMono";
-  await page.locator(".font-picker").nth(group).locator(`[data-font-option="${id}"]`).click();
+  const [index, attr] = PICKERS[group];
+  await page.locator(".font-picker").nth(index).locator(`[data-font-option="${id}"]`).click();
   await page.waitForFunction(
     ({ attr, id }) => (document.documentElement.dataset[attr] ?? "default") === id,
     { attr, id },
@@ -368,9 +380,9 @@ async function main() {
       // --font-mono element while the interface face changes.
       const defaultFaces = await usedFaces(reloaded);
       await openAppearance(reloaded);
-      check("the Appearance page renders both typeface pickers", (await reloaded.locator(".font-picker").count()) === 2);
+      check("the Appearance page renders all three typeface pickers", (await reloaded.locator(".font-picker").count()) === 3);
 
-      await chooseFont(reloaded, 0, "source-serif");
+      await chooseFont(reloaded, "interface", "source-serif");
       const serif = await usedFaces(reloaded);
       check("choosing an interface face repaints the chrome", serif.body !== defaultFaces.body && /Source Serif/.test(serif.body), serif.body);
       check(
@@ -379,10 +391,65 @@ async function main() {
         `${defaultFaces.mono} -> ${serif.mono}`,
       );
 
-      await chooseFont(reloaded, 1, "fira-code");
+      await chooseFont(reloaded, "monospace", "fira-code");
       const both = await usedFaces(reloaded);
       check("choosing a monospace face repaints the transcript face", /Fira Code/.test(both.mono), both.mono);
       check("without disturbing the interface face", both.body === serif.body, `${serif.body} -> ${both.body}`);
+
+      // ---- the heading face ------------------------------------------------------------------
+      // The channel the owner asked for, and the two surfaces that named the bug: the masthead is
+      // mono chrome, so the interface picker never reached it, and a task card's header is re-faced
+      // by Nocturne, so under that theme the interface picker did not reach it either.
+      check(
+        "the masthead is mono CHROME, so until now only the monospace picker could move it",
+        defaultFaces.masthead === defaultFaces.mono && both.masthead === both.mono,
+        `${defaultFaces.masthead} / ${both.masthead} vs ${both.mono}`,
+      );
+      await chooseFont(reloaded, "heading", "bricolage");
+      const headed = await usedFaces(reloaded);
+      check("choosing a heading face repaints the masthead", /Bricolage/.test(headed.masthead), headed.masthead);
+      check("and a task card's header with it", /Bricolage/.test(headed.title), headed.title);
+      check(
+        "while the interface and monospace faces stay exactly where they were",
+        headed.body === both.body && headed.mono === both.mono,
+        `${JSON.stringify(both)} -> ${JSON.stringify(headed)}`,
+      );
+      await closeSettings(reloaded);
+      await reloaded.screenshot({ path: path.join(shots, "console-heading-bricolage.png") });
+      await openAppearance(reloaded);
+
+      // The second face, and the one that matters most: Nocturne draws this whole tier in its own
+      // serif, and an explicit pick has to out-specify that or the owner's choice does nothing.
+      await choose(reloaded, "nocturne");
+      const nocturneHeaded = await usedFaces(reloaded);
+      check(
+        "a chosen heading face survives switching to a theme that faces the same tier",
+        /Bricolage/.test(nocturneHeaded.title) && /Bricolage/.test(nocturneHeaded.masthead),
+        `${nocturneHeaded.masthead} / ${nocturneHeaded.title}`,
+      );
+      await chooseFont(reloaded, "heading", "space-grotesk");
+      const grotesque = await usedFaces(reloaded);
+      check(
+        "and switching faces under that theme repaints both surfaces again",
+        /Space Grotesk/.test(grotesque.masthead) && /Space Grotesk/.test(grotesque.title),
+        `${grotesque.masthead} / ${grotesque.title}`,
+      );
+      await reloaded.locator(".settings-pop").screenshot({ path: path.join(shots, "appearance-heading-picker.png") });
+      await closeSettings(reloaded);
+      await reloaded.screenshot({ path: path.join(shots, "console-heading-space-grotesk-nocturne.png") });
+      await openAppearance(reloaded);
+
+      // Back to Classic FIRST, then to the heading default, so the rest of the pass measures the
+      // console it was measuring before. Clearing the face under Nocturne would hand these two
+      // surfaces to the THEME's serif, which is a different console to compare against.
+      await choose(reloaded, "classic");
+      await chooseFont(reloaded, "heading", "default");
+      const unheaded = await usedFaces(reloaded);
+      check(
+        "choosing the heading default hands both surfaces straight back to the console's own faces",
+        unheaded.masthead === both.masthead && unheaded.title === both.title,
+        `${JSON.stringify(both)} -> ${JSON.stringify(unheaded)}`,
+      );
 
       // A computed font-family only echoes the stack; `document.fonts` is the one thing that proves
       // the FACE arrived instead of falling through to the next entry, which is what an unbundled
@@ -392,6 +459,15 @@ async function main() {
       for (const family of ["Source Serif 4 Variable", "Fira Code Variable"]) {
         check(`the chosen "${family}" face actually loaded (no silent fallback)`, chosenFaces.includes(family), chosenFaces.join(", "));
       }
+      // Left set, so the reload below proves the heading attribute is pre-painted like the other two.
+      await chooseFont(reloaded, "heading", "instrument-sans");
+      await reloaded.evaluate(() => document.fonts.ready);
+      const headingFaces = await reloaded.evaluate(() => [...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family));
+      check(
+        'the chosen "Instrument Sans Variable" face actually loaded (no silent fallback)',
+        headingFaces.includes("Instrument Sans Variable"),
+        headingFaces.join(", "),
+      );
       await reloaded.locator(".settings-pop").screenshot({ path: path.join(shots, "appearance-typefaces.png") });
       await closeSettings(reloaded);
       await reloaded.screenshot({ path: path.join(shots, "console-source-serif.png") });
@@ -402,8 +478,9 @@ async function main() {
       const refonted = await context.newPage();
       await refonted.goto(`${BASE}/`, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
       check(
-        "both faces are painted before the bundle mounts (no reflow on load)",
-        JSON.stringify(await activeFonts(refonted)) === JSON.stringify({ ui: "source-serif", mono: "fira-code" }),
+        "all three faces are painted before the bundle mounts (no reflow on load)",
+        JSON.stringify(await activeFonts(refonted)) ===
+          JSON.stringify({ ui: "source-serif", mono: "fira-code", display: "instrument-sans" }),
         JSON.stringify(await activeFonts(refonted)),
       );
       await refonted.waitForSelector(".accounts .acct", { timeout: 25_000 });
@@ -411,17 +488,42 @@ async function main() {
       check("and they survive the reload", /Source Serif/.test((await usedFaces(refonted)).body), (await usedFaces(refonted)).body);
 
       await openAppearance(refonted);
-      await chooseFont(refonted, 0, "default");
-      await chooseFont(refonted, 1, "default");
+      await chooseFont(refonted, "heading", "instrument-serif");
+      await refonted.locator(".settings-pop").screenshot({ path: path.join(shots, "appearance-heading-serif.png") });
+      await closeSettings(refonted);
+      const serifHeadings = await usedFaces(refonted);
       check(
-        "choosing the default back removes both attributes entirely",
-        JSON.stringify(await activeFonts(refonted)) === JSON.stringify({ ui: null, mono: null }),
+        "a display serif reaches the masthead and the card headers on Classic too",
+        /Instrument Serif/.test(serifHeadings.masthead) && /Instrument Serif/.test(serifHeadings.title),
+        `${serifHeadings.masthead} / ${serifHeadings.title}`,
+      );
+      // Instrument Serif has ONE weight, so Classic's 600 would be drawn as a synthetic bold, and it
+      // sets small for its em. The face carries its own weight and size for the title tier; without
+      // them a card header is a smeared 15px, which is the whole reason per-face tuning exists here.
+      const serifTitle = await refonted.evaluate(() => {
+        const cs = getComputedStyle(document.querySelector(".card .title"));
+        return { weight: cs.fontWeight, size: cs.fontSize };
+      });
+      check(
+        "and brings its own weight and size, so it is never drawn as a synthetic bold",
+        serifTitle.weight === "400" && serifTitle.size === "18.5px",
+        JSON.stringify(serifTitle),
+      );
+      await refonted.screenshot({ path: path.join(shots, "console-heading-instrument-serif.png") });
+      await openAppearance(refonted);
+
+      await chooseFont(refonted, "interface", "default");
+      await chooseFont(refonted, "monospace", "default");
+      await chooseFont(refonted, "heading", "default");
+      check(
+        "choosing the default back removes all three attributes entirely",
+        JSON.stringify(await activeFonts(refonted)) === JSON.stringify({ ui: null, mono: null, display: null }),
         JSON.stringify(await activeFonts(refonted)),
       );
       const restoredFaces = await usedFaces(refonted);
       check(
         "and the console renders in exactly the families it started in",
-        restoredFaces.body === defaultFaces.body && restoredFaces.mono === defaultFaces.mono,
+        JSON.stringify(restoredFaces) === JSON.stringify(defaultFaces),
         `${JSON.stringify(defaultFaces)} -> ${JSON.stringify(restoredFaces)}`,
       );
 

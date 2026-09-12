@@ -18,6 +18,8 @@ import "@fontsource/instrument-serif/400-italic.css";
 // actually set in that face, so an owner on the default pays the CSS and none of the font bytes.
 import "@fontsource-variable/geist";
 import "@fontsource-variable/ibm-plex-sans";
+import "@fontsource-variable/instrument-sans";
+import "@fontsource-variable/bricolage-grotesque";
 import "@fontsource-variable/source-serif-4";
 import "@fontsource-variable/space-grotesk";
 import "@fontsource-variable/fira-code";
@@ -26,8 +28,9 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "./styles.css";
-// Every rule in here is behind [data-font…]/[data-font-mono…], which the default option never sets,
-// so a console that never chose a typeface matches nothing in this file.
+// Every rule in here is behind [data-font…]/[data-font-mono…]/[data-font-display…], which the
+// default option of each channel never sets, so a console that never chose a typeface matches
+// nothing in this file.
 import "./fonts.css";
 // Every rule in here is scoped behind [data-theme="nocturne"], so importing it changes nothing for a
 // console on Classic. Order matters only for ties, and it is loaded after styles.css deliberately.
@@ -42,7 +45,7 @@ import { startUpdateWatch } from "./lib/update.js";
 // index.html's inline script has normally painted the theme already; this reconciles <html> with the
 // value the store actually parsed, so a stored theme the boot script doesn't recognise still applies.
 applyTheme(useStore.getState().theme);
-applyFonts(useStore.getState().uiFont, useStore.getState().monoFont);
+applyFonts(useStore.getState().uiFont, useStore.getState().monoFont, useStore.getState().displayFont);
 
 void init();
 startVersionWatch();

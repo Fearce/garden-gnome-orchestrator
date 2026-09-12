@@ -8,7 +8,7 @@ import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { FreeProviders } from "./FreeProviders.js";
 import { ThemePicker } from "./ThemePicker.js";
 import { FontPicker } from "./FontPicker.js";
-import { MONO_FONTS, UI_FONTS } from "../lib/font.js";
+import { DISPLAY_FONTS, MONO_FONTS, UI_FONTS } from "../lib/font.js";
 
 type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "voice-alerts" | "office" | "appearance" | "interface";
 
@@ -28,7 +28,7 @@ const SETTINGS_CATEGORIES = [
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
   { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
   { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles.", keywords: "relay collaboration coworkers team machine url password presence chatroom" },
-  { id: "appearance", section: "Workspace", label: "Appearance", description: "Choose how the console looks on this browser.", keywords: "theme themes look dark colours colors palette classic nocturne skin style font fonts typeface typefaces typography interface monospace mono serif sans ligatures inter geist plex fira grotesk animation screensaver idle afk gnomes scene away timeout" },
+  { id: "appearance", section: "Workspace", label: "Appearance", description: "Choose how the console looks on this browser.", keywords: "theme themes look dark colours colors palette classic nocturne skin style font fonts typeface typefaces typography interface monospace mono serif sans display heading headings headline title titles masthead wordmark card header ligatures inter geist plex fira grotesk bricolage instrument animation screensaver idle afk gnomes scene away timeout" },
   { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed.", keywords: "composer board completed drag reorder output model picker recent repositories ui" },
 ] as const satisfies readonly SettingsCategory[];
 
@@ -69,6 +69,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setUiFont = useStore((s) => s.setUiFont);
   const monoFont = useStore((s) => s.monoFont);
   const setMonoFont = useStore((s) => s.setMonoFont);
+  const displayFont = useStore((s) => s.displayFont);
+  const setDisplayFont = useStore((s) => s.setDisplayFont);
   const screensaver = useStore((s) => s.screensaver);
   const setScreensaver = useStore((s) => s.setScreensaver);
   const screensaverIdleMinutes = useStore((s) => s.screensaverIdleMinutes);
@@ -489,6 +491,21 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   sample="Dispatch the implementor and watch it work"
                 />
               </Group>
+              <Group label="Heading typeface">
+                <div className="settings-note tight">
+                  The face the console names things in: the wordmark in the top bar, a task card's header,
+                  the section and lane headings, the panel and dialog titles. It is its own pick because
+                  those are chrome: the top bar is set in the monospace face and a theme may draw them in
+                  its own serif, so neither picker above can reach them.
+                </div>
+                <FontPicker
+                  fonts={DISPLAY_FONTS}
+                  value={displayFont}
+                  onChange={setDisplayFont}
+                  ariaLabel="Heading typeface"
+                  sample="Director Console"
+                />
+              </Group>
               <Group label="Monospace typeface">
                 <div className="settings-note tight">
                   Transcripts, tool output, diffs, the editor and every measurement in the top bar. Kept
@@ -502,7 +519,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   sample={"git commit --only web/src  ·  0O1lI  ·  != >= =>"}
                 />
                 <div className="settings-note tight">
-                  Both faces ship in the console's own bundle rather than from a font CDN, so they render
+                  Every face ships in the console's own bundle rather than from a font CDN, so they render
                   the same on the LAN with no internet at all.
                 </div>
               </Group>

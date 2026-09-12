@@ -1,7 +1,7 @@
-/* The Appearance typefaces (Settings → Appearance → Interface / Monospace typeface).
+/* The Appearance typefaces (Settings → Appearance → Interface / Monospace / Heading typeface).
  *
- * Every rule in this file is behind [data-font="…"] or [data-font-mono="…"], and the default option
- * sets NEITHER attribute. That is the whole safety story: a console that never chose a face never
+ * Every rule in this file is behind [data-font="…"], [data-font-mono="…"] or [data-font-display…],
+ * and the default option of each channel sets NO attribute. That is the whole safety story: a console that never chose a face never
  * matches a rule in here, so styles.css keeps declaring --font-sans / --font-mono unopposed and the
  * console is byte-for-byte the one it was. `test:fonts` fails the suite if a rule escapes that scope.
  *
@@ -86,4 +86,133 @@
 
 :root[data-font-mono="source-code"] {
   --font-mono: "Source Code Pro Variable", "Source Code Pro", ui-monospace, monospace;
+}
+
+/* ---- the heading face (--font-display) -----------------------------------------------------------
+ *
+ * The tier is the elements that NAME something: the masthead, a card's header, the section and lane
+ * headings, the detail panel's title (and the input that replaces it on a rename), the dialog
+ * titles. It is the same tier Nocturne already re-faces to its serif, which is why it is defined
+ * here rather than invented, because "heading-level chrome" is a decision this console already made.
+ *
+ * Everything that READS AS DATA is deliberately absent: the account meters, the badges and pips, the
+ * elapsed clocks, the build tag, the workspace chip, model ids, timestamps, and every transcript,
+ * diff and editor surface. Those stay on --font-mono, several of them because the top bar's chip
+ * widths are measured against JetBrains Mono's 600/1000 advance (`npm run probe:chips`).
+ *
+ * Every selector below carries `:root` deliberately. `[data-theme="nocturne"] .card .title` is
+ * (0,3,0) and faces this exact element, so the attribute alone would TIE it and lose on source
+ * order, since fonts.css is imported before the theme. `:root` buys the extra point that makes the
+ * owner's explicit pick outrank a theme's default face. Drop it and Nocturne quietly keeps its
+ * serif on every heading, which is the bug this channel exists to fix.
+ */
+
+:root[data-font-display] .wordmark .sub,
+:root[data-font-display] .rail-head h2,
+:root[data-font-display] .board-head h2,
+:root[data-font-display] .board-tab,
+:root[data-font-display] .cowork-board-head h3,
+:root[data-font-display] .card .title,
+:root[data-font-display] .cowork-card-name,
+:root[data-font-display] .detail-head h2,
+:root[data-font-display] .title-edit,
+:root[data-font-display] .settings-head h3,
+:root[data-font-display] .modal .m-head h3 {
+  font-family: var(--font-display);
+}
+
+/* The tier splits in two optically. The four above are uppercase micro-labels already carrying
+   0.14em of tracking, which swamps anything a face would want; these are the real titles, set at
+   their own size, and they are where a face's own tracking has to be restated. Each face sets the
+   value, so the token is never read unset. */
+:root[data-font-display] .card .title,
+:root[data-font-display] .cowork-card-name,
+:root[data-font-display] .detail-head h2,
+:root[data-font-display] .title-edit,
+:root[data-font-display] .settings-head h3,
+:root[data-font-display] .modal .m-head h3 {
+  letter-spacing: var(--font-display-tracking);
+}
+
+:root[data-font-display="geist"] {
+  --font-display: "Geist Variable", "Geist", system-ui, sans-serif;
+  --font-display-tracking: -0.012em;
+}
+
+:root[data-font-display="instrument-sans"] {
+  --font-display: "Instrument Sans Variable", "Instrument Sans", system-ui, sans-serif;
+  --font-display-tracking: -0.008em;
+}
+
+/* Squared counters and generous sidebearings, so a card header runs long unless it is pulled in
+   harder than a grotesque drawn for text. */
+:root[data-font-display="space-grotesk"] {
+  --font-display: "Space Grotesk Variable", "Space Grotesk", system-ui, sans-serif;
+  --font-display-tracking: -0.02em;
+}
+
+:root[data-font-display="bricolage"] {
+  --font-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", system-ui, sans-serif;
+  --font-display-tracking: -0.012em;
+}
+
+/* A display serif: high contrast, and the tracking a grotesque wants closes its thin strokes. */
+:root[data-font-display="instrument-serif"] {
+  --font-display: "Instrument Serif", Georgia, serif;
+  --font-display-tracking: normal;
+}
+
+:root[data-font-display="source-serif"] {
+  --font-display: "Source Serif 4 Variable", "Source Serif 4", Georgia, serif;
+  --font-display-tracking: normal;
+}
+
+/* Every glyph on a 600/1000 advance, so a heading runs wider than any of the others. */
+:root[data-font-display="jetbrains"] {
+  --font-display: "JetBrains Mono", ui-monospace, monospace;
+  --font-display-tracking: -0.03em;
+}
+
+/* Instrument Serif ships ONE weight, so the tier's 600 and 650 would be drawn as a SYNTHETIC bold:
+   a smeared outline at a card header's 15px. It is also drawn small for its em. Nocturne, the theme
+   that already uses this face, answers both by setting its own weight and size wherever it appears;
+   a face this specific has to bring that tuning with it to be offerable on any theme, so these are
+   the theme's own proven numbers, restated for the channel. */
+:root[data-font-display="instrument-serif"] .card .title,
+:root[data-font-display="instrument-serif"] .cowork-card-name,
+:root[data-font-display="instrument-serif"] .detail-head h2,
+:root[data-font-display="instrument-serif"] .title-edit,
+:root[data-font-display="instrument-serif"] .settings-head h3,
+:root[data-font-display="instrument-serif"] .modal .m-head h3 {
+  font-weight: 400;
+}
+:root[data-font-display="instrument-serif"] .card .title {
+  font-size: 18.5px;
+  line-height: 1.24;
+}
+:root[data-font-display="instrument-serif"] .cowork-card-name {
+  font-size: 15.5px;
+}
+:root[data-font-display="instrument-serif"] .detail-head h2,
+:root[data-font-display="instrument-serif"] .title-edit {
+  font-size: 21px;
+}
+:root[data-font-display="instrument-serif"] .settings-head h3 {
+  font-size: 24px;
+}
+
+/* Classic shrinks a couple of these on a phone with a bare class, which every rule above
+   out-specifies, so the compact sizes have to be restated or a phone gets the desktop type. Same
+   trap a theme hits; see .claude/rules/add-a-theme.md. */
+@media (max-width: 899.98px) {
+  :root[data-font-display="instrument-serif"] .card .title {
+    font-size: 16.5px;
+  }
+  :root[data-font-display="instrument-serif"] .detail-head h2,
+  :root[data-font-display="instrument-serif"] .title-edit {
+    font-size: 18px;
+  }
+  :root[data-font-display="instrument-serif"] .settings-head h3 {
+    font-size: 18px;
+  }
 }

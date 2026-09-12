@@ -53,33 +53,54 @@ cannot be reached by one. Never make Classic conditional — no `:root:not([data
 - **`.theme-transition` is on `<html>` for the length of the cross-fade only.** Leaving a
   global `transition: … !important` live would put a fade on every state change in the app.
 
-## Adding a TYPEFACE (the second picker on the same page)
-The interface and monospace faces are the same mechanism one level down, and the same rule
-carries it: **"Theme default" sets no attribute**, so `web/src/fonts.css` is entirely behind
-`[data-font="<id>"]` / `[data-font-mono="<id>"]` and a console that chose nothing matches
-nothing in it. `test:fonts` fails on a rule that escapes, in either direction (it also refuses
-a `[data-font…]` selector appearing in `styles.css`).
+## Adding a TYPEFACE (the three pickers on the same page)
+The interface, heading and monospace faces are the same mechanism one level down, and the same
+rule carries it: **"Theme default" sets no attribute**, so `web/src/fonts.css` is entirely behind
+`[data-font="<id>"]` / `[data-font-mono="<id>"]` / `[data-font-display…]` and a console that
+chose nothing matches nothing in it. `test:fonts` fails on a rule that escapes, in either
+direction (it also refuses a `[data-font…]` selector appearing in `styles.css`).
 
 Touch map, all five or the face half-ships:
 1. `web/package.json` + `npm install --prefix web` the `@fontsource-variable/<family>` (or
    `@fontsource/<family>`) package, and import it in `web/src/main.tsx`. Never a font-CDN
    `<link>`: the console is LAN/offline-first, and a missing face falls silently through to the
    next entry in the stack, which looks like a working choice until the network is gone.
-2. `web/src/lib/font.ts` — the id in the `FontId` / `MonoFontId` union and an entry in
-   `UI_FONTS` / `MONO_FONTS` (name, category, note, and the exact `stack`).
-3. `web/src/fonts.css` — `:root[data-font="<id>"] { --font-sans: <the same stack>; }`, plus the
+2. `web/src/lib/font.ts`: the id in the `FontId` / `MonoFontId` / `DisplayFontId` union and an
+   entry in `UI_FONTS` / `MONO_FONTS` / `DISPLAY_FONTS` (name, category, note, exact `stack`).
+3. `web/src/fonts.css`: `:root[data-font="<id>"] { --font-sans: <the same stack>; }`, plus the
    tracking (and leading, if the face needs it) on `body`. `styles.css` already tracks `body` at
-   -0.006em for Inter Tight, so a face that wants its own number has to restate it.
-4. `web/index.html` — the id in the pre-paint list. Sharper than the theme's case: a face
+   -0.006em for Inter Tight, so a face that wants its own number has to restate it. A HEADING
+   face sets `--font-display` and `--font-display-tracking` instead; the shared tier rule reads
+   that token with NO fallback, so a face that omits it inherits the body's tracking instead.
+4. `web/index.html`: the id in the pre-paint list. Sharper than the theme's case, since a face
    applied after the bundle loads REFLOWS the whole console, on every single load.
-5. Nothing else. `persistView` already carries `uiFont`/`monoFont`, and `SettingsPanel` renders
-   whatever the two lists hold.
+5. Nothing else. `persistView` already carries `uiFont`/`monoFont`/`displayFont`, and
+   `SettingsPanel` renders whatever the three lists hold.
+
+The heading channel has rules of its own, because unlike the other two it does not merely swap a
+token that rules already read. Nothing faces the heading tier AS a tier, so `fonts.css` applies
+`--font-display` to an explicit selector list (masthead, card headers, section and lane headings,
+the panel title and its rename input, dialog titles), and that list is the feature:
+- **Every tier selector starts `:root[data-font-display] `.** `[data-theme="nocturne"] .card
+  .title` faces the same element, and `fonts.css` is imported BEFORE the theme, so the bare
+  attribute ties it and loses on source order. That tie was the reported bug (the owner's "I
+  still can't change the font for the task headers" was Nocturne's serif winning), and
+  re-introducing it looks exactly like a face that simply did not apply. `test:fonts` computes
+  the specificity of both sides and fails on a tie.
+- **Chips, meters, badges, clocks and every transcript surface stay OUT of the tier.** They read
+  as data, and the top bar's widths are measured against JetBrains Mono's advance
+  (`npm run probe:chips`). The gate refuses those selectors by name.
+- A face may restate the tier's weight and size when it needs to, and then owes the phone sizes
+  as well (the same trap a theme hits, above). Instrument Serif is the worked example: one
+  weight only, so the tier's 600 would otherwise be drawn as a synthetic bold.
 
 Rules that bite:
 - **The stack is written twice (font.ts and fonts.css) and must match**, because the picker
   paints each row in the option's own stack while a DIFFERENT face is active. A row that
   advertises a face the rule does not install is the one lie nobody can see. `test:fonts`
-  compares them, normalised for quoting and spacing.
+  compares them, normalised for quoting and spacing. The heading list's "Theme default" row is
+  the one exception, and a deliberate one: that tier has no single default face, so the row
+  advertises `--font-sans` (what a card header renders in today) and its NOTE carries the rest.
 - **A monospace option needs the 600/1000 advance the others have.** The top bar's meters and
   the account chips are measured against JetBrains Mono's width; a narrower or wider mono needs
   `npm run probe:chips` re-run before it can be offered.
@@ -99,8 +120,10 @@ read the instant it stops being selected is still mid-transition, and `getComput
 reports the ANIMATED value (that is what `settled()` waits out, not a product bug).
 
 For a typeface: `npm run test:fonts --prefix server` (free, no browser: scoping both ways, the
-stack match, the pre-paint lists, `persistView`, the bundled-family check, both rendered
-pickers), then drive it in a real browser against a throwaway instance on :5317
-(`bash ~/Claude/tools/orch-throwaway.sh start -r <repo> -p 5317`, never prod): pick a face,
-assert the computed `font-family` on `body` and on a `.conn` mono element, reload, and pick
-"Theme default" again to prove both attributes come back OFF.
+stack match, the pre-paint lists, `persistView`, the bundled-family check, the heading tier's
+coverage and its specificity against the theme, all three rendered pickers), then
+`npm run appearance-lab --prefix server -- --shots data/appearance-lab-shots`, whose typeface
+pass picks a face in each of the three pickers, proves the other two did not move, checks that
+`document.fonts` actually LOADED the face (a computed `font-family` only echoes the stack), and
+picks "Theme default" back to prove all three attributes come back OFF. Point `--shots` inside
+`server/data/` so the pictures outlive the run without dirtying the checkout.

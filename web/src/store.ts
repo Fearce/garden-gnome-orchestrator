@@ -57,10 +57,13 @@ import { notify } from "./lib/notify.js";
 import { applyTheme, DEFAULT_THEME, isThemeId, type ThemeId } from "./lib/theme.js";
 import {
   applyFonts,
+  DEFAULT_DISPLAY_FONT,
   DEFAULT_FONT,
   DEFAULT_MONO_FONT,
+  isDisplayFontId,
   isFontId,
   isMonoFontId,
+  type DisplayFontId,
   type FontId,
   type MonoFontId,
 } from "./lib/font.js";
@@ -212,11 +215,14 @@ interface State {
   // Which look the console wears (Settings → Appearance). "classic" is the original console and puts
   // NO attribute on <html>, so choosing it can't change a single existing rule — see lib/theme.ts.
   theme: ThemeId;
-  // Which typefaces the console is set in (Settings → Appearance). `uiFont` drives
-  // --font-sans, `monoFont` drives --font-mono, and they are independent so a serif interface never
-  // turns a transcript proportional. "default" is the absence of an attribute, exactly like Classic.
+  // Which typefaces the console is set in (Settings → Appearance). `uiFont` drives --font-sans,
+  // `monoFont` drives --font-mono and `displayFont` drives --font-display (the masthead, the card
+  // headers, the section titles). All three are independent, so a serif interface never turns a
+  // transcript proportional and a heading face never reaches a diff. "default" is the absence of an
+  // attribute, exactly like Classic.
   uiFont: FontId;
   monoFont: MonoFontId;
+  displayFont: DisplayFontId;
   // AFK screensaver: after `screensaverIdleMinutes` with no mouse or keyboard activity anywhere in
   // the app, the board is covered by the gnome scene until the next input. Per browser, like the
   // theme: a wall-mounted screen wants it and the laptop it is driven from may not.
@@ -387,6 +393,7 @@ interface State {
   setTheme: (v: ThemeId) => void;
   setUiFont: (v: FontId) => void;
   setMonoFont: (v: MonoFontId) => void;
+  setDisplayFont: (v: DisplayFontId) => void;
   setScreensaver: (v: boolean) => void;
   setScreensaverIdleMinutes: (v: number) => void;
   setTaskOrder: (ids: string[]) => void;
@@ -527,12 +534,13 @@ interface ViewSettings {
   // reflows the whole console once on every load, which is worse than a colour flash.
   uiFont: FontId;
   monoFont: MonoFontId;
+  displayFont: DisplayFontId;
   // Whether the AFK gnome scene may take the screen, and how long the console must sit untouched
   // first. Minutes rather than milliseconds because that is the unit the settings row edits.
   screensaver: boolean;
   screensaverIdleMinutes: number;
 }
-const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, screensaver: true, screensaverIdleMinutes: 5 };
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, displayFont: DEFAULT_DISPLAY_FONT, screensaver: true, screensaverIdleMinutes: 5 };
 const loadViewSettings = (): ViewSettings => {
   try {
     const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
@@ -546,6 +554,7 @@ const loadViewSettings = (): ViewSettings => {
       theme: isThemeId(v.theme) ? v.theme : VIEW_DEFAULTS.theme,
       uiFont: isFontId(v.uiFont) ? v.uiFont : VIEW_DEFAULTS.uiFont,
       monoFont: isMonoFontId(v.monoFont) ? v.monoFont : VIEW_DEFAULTS.monoFont,
+      displayFont: isDisplayFontId(v.displayFont) ? v.displayFont : VIEW_DEFAULTS.displayFont,
       screensaver: typeof v.screensaver === "boolean" ? v.screensaver : VIEW_DEFAULTS.screensaver,
       screensaverIdleMinutes: clampIdleMinutes(v.screensaverIdleMinutes),
     };
@@ -566,6 +575,7 @@ const persistView = (s: ViewSettings, patch: Partial<ViewSettings>): void =>
     theme: s.theme,
     uiFont: s.uiFont,
     monoFont: s.monoFont,
+    displayFont: s.displayFont,
     screensaver: s.screensaver,
     screensaverIdleMinutes: s.screensaverIdleMinutes,
     ...patch,
@@ -1006,6 +1016,7 @@ export const useStore = create<State>((set) => ({
   theme: loadViewSettings().theme,
   uiFont: loadViewSettings().uiFont,
   monoFont: loadViewSettings().monoFont,
+  displayFont: loadViewSettings().displayFont,
   screensaver: loadViewSettings().screensaver,
   screensaverIdleMinutes: loadViewSettings().screensaverIdleMinutes,
   taskOrder: loadTaskOrder(),
@@ -1277,14 +1288,20 @@ export const useStore = create<State>((set) => ({
   setUiFont: (v) =>
     set((s) => {
       persistView(s, { uiFont: v });
-      applyFonts(v, s.monoFont);
+      applyFonts(v, s.monoFont, s.displayFont);
       return { uiFont: v };
     }),
   setMonoFont: (v) =>
     set((s) => {
       persistView(s, { monoFont: v });
-      applyFonts(s.uiFont, v);
+      applyFonts(s.uiFont, v, s.displayFont);
       return { monoFont: v };
+    }),
+  setDisplayFont: (v) =>
+    set((s) => {
+      persistView(s, { displayFont: v });
+      applyFonts(s.uiFont, s.monoFont, v);
+      return { displayFont: v };
     }),
   setTaskOrder: (ids) => {
     saveTaskOrder(ids);

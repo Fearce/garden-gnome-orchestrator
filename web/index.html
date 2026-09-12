@@ -22,8 +22,9 @@
          theme ever ships without being listed here. -->
     <!-- The chosen typefaces are painted here for a sharper reason than the theme's: a face applied
          after the bundle loads reflows the entire console once on every load, not just recolours it.
-         The id lists mirror UI_FONTS / MONO_FONTS in web/src/lib/font.ts ("default" is the absence of
-         the attribute) and `test:fonts` fails if a face ever ships without being listed here. -->
+         The id lists mirror UI_FONTS / MONO_FONTS / DISPLAY_FONTS in web/src/lib/font.ts ("default" is
+         the absence of the attribute) and `test:fonts` fails if a face ever ships without being
+         listed here. -->
     <script>
       try {
         var v = JSON.parse(localStorage.getItem("director_settings") || "{}");
@@ -35,6 +36,11 @@
         var m = v.monoFont;
         if (["system", "plex-mono", "fira-code", "source-code"].indexOf(m) >= 0)
           document.documentElement.dataset.fontMono = m;
+        var d = v.displayFont;
+        if (
+          ["geist", "instrument-sans", "space-grotesk", "bricolage", "instrument-serif", "source-serif", "jetbrains"].indexOf(d) >= 0
+        )
+          document.documentElement.dataset.fontDisplay = d;
       } catch (e) {
         /* private mode / corrupt record — Classic and the theme's own faces are the right fallback */
       }

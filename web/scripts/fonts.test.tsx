@@ -36,9 +36,18 @@ Object.assign(globalThis, { React });
 const dataset: Record<string, string> = {};
 Object.assign(globalThis, { document: { documentElement: { dataset } } });
 
-const { UI_FONTS, MONO_FONTS, DEFAULT_FONT, DEFAULT_MONO_FONT, isFontId, isMonoFontId, applyFonts } = await import(
-  "../src/lib/font.js"
-);
+const {
+  UI_FONTS,
+  MONO_FONTS,
+  DISPLAY_FONTS,
+  DEFAULT_FONT,
+  DEFAULT_MONO_FONT,
+  DEFAULT_DISPLAY_FONT,
+  isFontId,
+  isMonoFontId,
+  isDisplayFontId,
+  applyFonts,
+} = await import("../src/lib/font.js");
 const { FontPicker } = await import("../src/components/FontPicker.js");
 
 const fontsCss = read("src/fonts.css");
@@ -46,17 +55,26 @@ const fontsCss = read("src/fonts.css");
  *  DOCUMENTS as well as the ones it declares, which is the false-positive direction. */
 const fontsCssCode = fontsCss.replace(/\/\*[\s\S]*?\*\//g, "");
 const classic = read("src/styles.css");
+const nocturneCss = read("src/themes/nocturne.css");
 const entry = read("src/main.tsx");
 const html = read("index.html");
 
-/** Both pickers, paired with the attribute and the token each one drives. */
+/** Every picker, paired with the attribute and the token it drives.
+ *
+ *  `defaultToken` is where the "Theme default" row's specimen comes from. For the first two that is
+ *  the token they drive, because the default IS that token. The heading tier has no single default
+ *  face, since the masthead is mono chrome and a theme may draw the whole tier in its own serif, so
+ *  its default row advertises the face its largest and most-read member, a task card's header,
+ *  renders in today. The row's note carries the rest; see DISPLAY_FONTS. */
 const GROUPS = [
-  { label: "interface", fonts: UI_FONTS, fallback: DEFAULT_FONT, attr: "data-font", token: "--font-sans" },
-  { label: "monospace", fonts: MONO_FONTS, fallback: DEFAULT_MONO_FONT, attr: "data-font-mono", token: "--font-mono" },
+  { label: "interface", fonts: UI_FONTS, fallback: DEFAULT_FONT, attr: "data-font", token: "--font-sans", defaultToken: "--font-sans" },
+  { label: "monospace", fonts: MONO_FONTS, fallback: DEFAULT_MONO_FONT, attr: "data-font-mono", token: "--font-mono", defaultToken: "--font-mono" },
+  { label: "heading", fonts: DISPLAY_FONTS, fallback: DEFAULT_DISPLAY_FONT, attr: "data-font-display", token: "--font-display", defaultToken: "--font-sans" },
 ] as const;
 
 assert.equal(DEFAULT_FONT, "default", 'the interface fallback has to stay "default": it is the no-attribute case');
 assert.equal(DEFAULT_MONO_FONT, "default", 'the monospace fallback has to stay "default"');
+assert.equal(DEFAULT_DISPLAY_FONT, "default", 'the heading fallback has to stay "default"');
 
 /* ---- 1. nothing in fonts.css can reach a console that chose nothing ----------------------------- */
 
@@ -88,7 +106,10 @@ function blocks(css: string): Block[] {
   return out;
 }
 
-const SCOPED = /\[data-font(-mono)?[~^]?=/;
+// The heading channel applies its token through one shared tier rule, which selects on the PRESENCE
+// of the attribute rather than on a value. That is still unreachable by an unmarked <html>, so it
+// counts as scoped, but `[data-font-display]` has to be accepted with no `=` after it.
+const SCOPED = /\[data-font(-mono|-display)?[~^]?[=\]]/;
 const selectors = blocks(fontsCss).flatMap((b) => b.head.split(",").map((s) => s.trim()));
 assert.ok(selectors.length > 0, "src/fonts.css parsed to no rules at all");
 assert.deepEqual(
@@ -124,12 +145,12 @@ for (const group of GROUPS) {
     if (meta.id === group.fallback) {
       // "Theme default" advertises the token as styles.css declares it. A specimen that lies about
       // the face you already have is the one row nobody would ever check.
-      const declared = classic.match(new RegExp(`${group.token}:\\s*([^;]+);`));
-      assert.ok(declared, `src/styles.css no longer declares ${group.token}`);
+      const declared = classic.match(new RegExp(`${group.defaultToken}:\\s*([^;]+);`));
+      assert.ok(declared, `src/styles.css no longer declares ${group.defaultToken}`);
       assert.equal(
         normalise(meta.stack),
         normalise(declared[1]!),
-        `"${meta.name}" advertises a stack src/styles.css does not declare for ${group.token}`,
+        `"${meta.name}" advertises a stack src/styles.css does not declare for ${group.defaultToken}`,
       );
       continue;
     }
@@ -164,15 +185,29 @@ for (const group of GROUPS) {
 
 assert.ok(isFontId("geist") && !isFontId("nope"), "isFontId must accept an offered interface face and reject anything else");
 assert.ok(isMonoFontId("fira-code") && !isMonoFontId("geist"), "isMonoFontId must not accept an interface-only face");
+assert.ok(
+  isDisplayFontId("bricolage") && !isDisplayFontId("plex-sans"),
+  "isDisplayFontId must accept an offered heading face and reject one only the interface list carries",
+);
 
 /* ---- 3. applying a choice marks the document, and the default unmarks it ------------------------- */
 
-applyFonts("geist", "fira-code");
-assert.deepEqual(dataset, { font: "geist", fontMono: "fira-code" }, "applyFonts must mark <html> with both choices");
-applyFonts(DEFAULT_FONT, "fira-code");
-assert.deepEqual(dataset, { fontMono: "fira-code" }, 'the default interface face must REMOVE the attribute, not write "default"');
-applyFonts(DEFAULT_FONT, DEFAULT_MONO_FONT);
-assert.deepEqual(dataset, {}, "both defaults must leave <html> exactly as an untouched console has it");
+applyFonts("geist", "fira-code", "bricolage");
+assert.deepEqual(
+  dataset,
+  { font: "geist", fontMono: "fira-code", fontDisplay: "bricolage" },
+  "applyFonts must mark <html> with all three choices",
+);
+applyFonts(DEFAULT_FONT, "fira-code", "bricolage");
+assert.deepEqual(
+  dataset,
+  { fontMono: "fira-code", fontDisplay: "bricolage" },
+  'the default interface face must REMOVE the attribute, not write "default"',
+);
+applyFonts(DEFAULT_FONT, "fira-code", DEFAULT_DISPLAY_FONT);
+assert.deepEqual(dataset, { fontMono: "fira-code" }, "the default heading face must remove its own attribute too");
+applyFonts(DEFAULT_FONT, DEFAULT_MONO_FONT, DEFAULT_DISPLAY_FONT);
+assert.deepEqual(dataset, {}, "all three defaults must leave <html> exactly as an untouched console has it");
 
 /* ---- 4. the pre-paint script knows every face ---------------------------------------------------- */
 
@@ -181,6 +216,7 @@ assert.deepEqual(dataset, {}, "both defaults must leave <html> exactly as an unt
 for (const [variable, group] of [
   ["f", GROUPS[0]],
   ["m", GROUPS[1]],
+  ["d", GROUPS[2]],
 ] as const) {
   const list = html.match(new RegExp(`\\[([^\\]]*)\\]\\.indexOf\\(${variable}\\)`));
   assert.ok(list, `index.html no longer carries the pre-paint list for the ${group.label} typeface`);
@@ -197,6 +233,7 @@ for (const [variable, group] of [
 }
 assert.match(html, /dataset\.font\s*=/, "index.html never sets data-font before paint");
 assert.match(html, /dataset\.fontMono\s*=/, "index.html never sets data-font-mono before paint");
+assert.match(html, /dataset\.fontDisplay\s*=/, "index.html never sets data-font-display before paint");
 
 const storeSource = read("src/store.ts");
 const storeKey = storeSource.match(/const VIEW_SETTINGS_KEY = "([^"]+)"/);
@@ -212,20 +249,20 @@ assert.ok(
 // the next time an unrelated toggle is flipped. That is invisible until a reload much later.
 const persist = storeSource.match(/const persistView[\s\S]*?\}\);/);
 assert.ok(persist, "store.ts no longer declares persistView");
-for (const field of ["uiFont", "monoFont"]) {
+for (const field of ["uiFont", "monoFont", "displayFont"]) {
   assert.ok(
     new RegExp(`${field}: s\\.${field},`).test(persist[0]),
     `persistView does not write ${field} back, so the next change to any other view setting erases it`,
   );
   assert.ok(
-    new RegExp(`${field}: is(Font|MonoFont)Id\\(v\\.${field}\\)`).test(storeSource),
+    new RegExp(`${field}: is(Font|MonoFont|DisplayFont)Id\\(v\\.${field}\\)`).test(storeSource),
     `loadViewSettings does not validate ${field}, so a corrupt record would apply an unknown face`,
   );
 }
 assert.match(entry, /import "\.\/fonts\.css";/, "main.tsx never imports the typeface stylesheet");
 assert.match(
   entry,
-  /applyFonts\(useStore\.getState\(\)\.uiFont, useStore\.getState\(\)\.monoFont\)/,
+  /applyFonts\(useStore\.getState\(\)\.uiFont, useStore\.getState\(\)\.monoFont, useStore\.getState\(\)\.displayFont\)/,
   "main.tsx never reconciles <html> with the stored faces at boot",
 );
 
@@ -318,18 +355,198 @@ assert.match(
   /<SettingsCategoryPanel id="appearance"/,
   "the Appearance category panel is gone, so the pickers would render on every settings page",
 );
-for (const list of ["UI_FONTS", "MONO_FONTS"]) {
+for (const list of ["UI_FONTS", "MONO_FONTS", "DISPLAY_FONTS"]) {
   assert.ok(new RegExp(`fonts=\\{${list}\\}`).test(panel), `SettingsPanel never renders a FontPicker over ${list}`);
 }
 assert.match(panel, /onChange=\{setUiFont\}/, "the interface picker is not wired to the store");
 assert.match(panel, /onChange=\{setMonoFont\}/, "the monospace picker is not wired to the store");
+assert.match(panel, /onChange=\{setDisplayFont\}/, "the heading picker is not wired to the store");
 assert.match(
   read("src/components/ide/CodeEditor.tsx"),
   /attributeFilter: \[[^\]]*"data-font-mono"/,
   "the editor does not watch data-font-mono, so Monaco would keep the face it booted with",
 );
 
+/* ---- 9. the heading tier: what it reaches, what it must not, and whether it wins ----------------- */
+
+/* This channel is the only one that does not merely swap a token. --font-sans and --font-mono are
+ * already read by the rules that want them, so a face there is a one-line change; the heading tier
+ * is not faced by any single token today, so fonts.css has to APPLY --font-display to a list of
+ * elements. That list is the feature, and it has three ways to be quietly wrong:
+ *
+ *   . an element drops out (renamed class, a selector edited away) and one heading keeps the old
+ *     face while the rest change, which reads as a rendering bug rather than a missing rule,
+ *   . a selector loses the `:root` prefix, at which point a theme that faces the same element ties
+ *     it and wins on source order, so the owner's explicit pick silently does nothing under that
+ *     theme. That is the exact bug this whole channel was built to fix,
+ *   . the list grows into the readouts. Chips, meters, badges and transcripts are DATA, several of
+ *     them measured against JetBrains Mono's advance (`npm run probe:chips`), and a heading face
+ *     has no business in any of them.
+ */
+
+/** The elements the heading face must reach, and the reason each belongs to the tier. */
+const TIER = [
+  [".wordmark .sub", "the masthead in the top bar"],
+  [".rail-head h2", "the rail's section heading"],
+  [".board-head h2", "the board's section heading"],
+  [".board-tab", "the board's view switcher, which reads as a heading beside it"],
+  [".cowork-board-head h3", "the Co-work board's section heading"],
+  [".card .title", "a task card's header"],
+  [".cowork-card-name", "a Co-work card's header"],
+  [".detail-head h2", "the task panel's title"],
+  [".title-edit", "the input that replaces that title on a rename, so the panel does not jump"],
+  [".settings-head h3", "the Settings dialog title"],
+  [".modal .m-head h3", "every other dialog title"],
+] as const;
+
+/** Every class name styles.css declares, so a tier selector can be checked against reality. */
+const CLASSIC_CLASSES = new Set(
+  blocks(classic).flatMap((b) => b.head.match(/\.[\w-]+/g) ?? []),
+);
+
+const tierRule = blocks(fontsCss).find((b) => /font-family:\s*var\(--font-display\)/.test(b.body));
+assert.ok(tierRule, "src/fonts.css never applies var(--font-display) to anything, so the heading picker is inert");
+const tierSelectors = tierRule.head.split(",").map((sel) => sel.trim());
+
+const PREFIX = ":root[data-font-display] ";
+for (const [selector, why] of TIER) {
+  assert.ok(
+    tierSelectors.includes(PREFIX + selector),
+    `the heading tier does not cover "${selector}" (${why}), so that heading keeps a face the owner cannot change`,
+  );
+  // And every class it names still exists: a renamed one would leave a rule selecting nothing, which
+  // looks exactly like a face that "did not apply". Checked against the class names styles.css
+  // actually declares, not a substring scan, so `.card` cannot be satisfied by `.card-dismiss`.
+  for (const cls of selector.match(/\.[\w-]+/g) ?? []) {
+    assert.ok(
+      CLASSIC_CLASSES.has(cls),
+      `src/styles.css no longer declares "${cls}" (from "${selector}", ${why}), so the heading tier is ` +
+        "aimed at a class that has been renamed away",
+    );
+  }
+}
+for (const selector of tierSelectors) {
+  assert.ok(
+    selector.startsWith(PREFIX),
+    `the heading tier's "${selector}" does not start with "${PREFIX}". The bare attribute ties a theme ` +
+      "rule facing the same element and loses on source order, so a chosen face would do nothing there",
+  );
+}
+
+/** CSS specificity as [ids, classes, types], enough for the flat selectors both sheets use. */
+function specificity(selector: string): [number, number, number] {
+  const withoutAttrs = selector.replace(/\[[^\]]*\]/g, "");
+  return [
+    (selector.match(/#[\w-]+/g) ?? []).length,
+    (selector.match(/\.[\w-]+/g) ?? []).length +
+      (selector.match(/\[[^\]]*\]/g) ?? []).length +
+      (selector.match(/:(?!:)[\w-]+/g) ?? []).length,
+    (withoutAttrs.match(/(?:^|[\s>+~])([a-z][\w-]*)/g) ?? []).length,
+  ];
+}
+const beats = (a: [number, number, number], b: [number, number, number]): boolean =>
+  a[0] !== b[0] ? a[0] > b[0] : a[1] !== b[1] ? a[1] > b[1] : a[2] > b[2];
+
+assert.deepEqual(specificity(":root[data-font-display] .card .title"), [0, 4, 0], "the specificity model drifted");
+assert.deepEqual(specificity('[data-theme="nocturne"] .card .title'), [0, 3, 0], "the specificity model drifted");
+
+/** A selector's compound parts, with the ones that qualify <html> itself (`:root`, the theme and
+ *  typeface attributes) dropped: those say WHICH console, not which element. */
+const parts = (selector: string): string[] =>
+  selector
+    .split(/[\s>+~]+/)
+    .filter((part) => part.length > 0 && !/^(?::root)?(?:\[[^\]]*\])*$/.test(part));
+
+/** Whether `a` appears inside `b` in order: a descendant chain matches every element a longer chain
+ *  ending the same way does, which is what makes the two rules candidates for the same heading. */
+const subsequence = (a: string[], b: string[]): boolean => {
+  let i = 0;
+  for (const part of b) if (i < a.length && a[i] === part) i += 1;
+  return i === a.length;
+};
+
+/** Could these two rules ever style the SAME element? Same final compound, and one chain contained
+ *  in the other. `.settings-head h3` and `.modal .m-head h3` share a final `h3` and are still two
+ *  different headings, so the containment half is what keeps this from crying wolf. */
+function sameElement(a: string, b: string): boolean {
+  const [pa, pb] = [parts(a), parts(b)];
+  if (pa.length === 0 || pb.length === 0) return false;
+  if (pa[pa.length - 1] !== pb[pb.length - 1]) return false;
+  return subsequence(pa, pb) || subsequence(pb, pa);
+}
+
+// The real comparison, against the theme that actually faces this tier. fonts.css is imported before
+// the theme, so a tie loses; every heading they can both reach has to be won outright.
+let contested = 0;
+for (const block of blocks(nocturneCss)) {
+  if (!/font-family:/.test(block.body)) continue;
+  for (const themed of block.head.split(",").map((sel) => sel.trim())) {
+    for (const mine of tierSelectors.filter((sel) => sameElement(sel, themed))) {
+      contested += 1;
+      assert.ok(
+        beats(specificity(mine), specificity(themed)),
+        `"${mine}" does not out-specify the theme's "${themed}" (${specificity(mine)} vs ${specificity(themed)}), ` +
+          "so choosing a heading face would leave that element in the theme's own face",
+      );
+    }
+  }
+}
+assert.ok(
+  contested >= 5,
+  `only ${contested} heading element(s) were compared against src/themes/nocturne.css. The theme faces this ` +
+    "tier, so a near-zero overlap means the selectors drifted apart and the comparison proved nothing",
+);
+
+// The shared tracking rule reads --font-display-tracking with no fallback, so every face has to set
+// it. An unset custom property makes the whole declaration invalid at computed-value time, which
+// falls back to the INHERITED tracking rather than the element's own.
+for (const meta of DISPLAY_FONTS) {
+  if (meta.id === DEFAULT_DISPLAY_FONT) continue;
+  const rule = blocks(fontsCss).find((b) => b.head.includes(`[data-font-display="${meta.id}"]`));
+  assert.ok(
+    rule && /--font-display-tracking:\s*[^;]+;/.test(rule.body),
+    `"${meta.name}" sets no --font-display-tracking, so its headings inherit the body tracking of a face ` +
+      "that is no longer on screen",
+  );
+}
+
+// Data stays data. These are the readouts the console measures with, and a heading face reaching one
+// of them is both a design regression and, for the chip row, a measured-width regression.
+const DATA_SURFACES = [
+  ".acct",
+  ".meter-",
+  ".badge",
+  ".pip",
+  ".conn",
+  ".stat",
+  ".build-tag",
+  ".ws-path",
+  ".task-elapsed",
+  ".fi ",
+  ".monaco",
+  "code",
+  "pre",
+];
+for (const surface of DATA_SURFACES) {
+  assert.ok(
+    !tierSelectors.some((sel) => sel.includes(surface)),
+    `the heading tier reaches "${surface}", which reads as data and must stay on --font-mono`,
+  );
+}
+const displayBlocks = blocks(fontsCss).filter((b) => b.head.includes("data-font-display"));
+for (const block of displayBlocks) {
+  for (const token of ["--font-sans", "--font-mono"]) {
+    assert.ok(
+      !block.body.includes(`${token}:`),
+      `a [data-font-display] rule sets ${token}. The heading channel owns --font-display only; ` +
+        "reaching another channel's token is how one picker starts overriding another",
+    );
+  }
+}
+
 console.log(
-  `Fonts gate passed: ${UI_FONTS.length} interface and ${MONO_FONTS.length} monospace face(s), each scoped, ` +
-    "bundled, pre-painted, persisted and selectable, with nothing reaching a console that chose neither.",
+  `Fonts gate passed: ${UI_FONTS.length} interface, ${MONO_FONTS.length} monospace and ${DISPLAY_FONTS.length} heading ` +
+    `face(s), each scoped, bundled, pre-painted, persisted and selectable. The heading tier covers ${TIER.length} ` +
+    "element(s), out-specifies the theme on every one they share, and reaches nothing that reads as data, " +
+    "with nothing at all reaching a console that chose none of them.",
 );
