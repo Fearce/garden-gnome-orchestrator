@@ -248,6 +248,12 @@ export const config = {
     // A live-run rejection still latches a cap for this cooldown as a fallback — but the usage scrape
     // (below) also supplies the real weekly reset, so the cap normally clears at the true reset epoch.
     capCooldownMs: numEnv(process.env.GROK_CAP_COOLDOWN_MS, 60 * 60_000),
+    // A rejection on a plan that meters NO included allowance (the free tier) is an entitlement
+    // refusal, not a spent metered window: nothing on that plan reports a reset, and the CLI only says
+    // "try again later". The hourly fallback above therefore re-offered Grok on a timer into a window
+    // that had not moved — 13 rejected runs over three days, each one a spawned CLI and a failover hop.
+    // A metered reading (i.e. an upgraded plan) clears this the moment it lands.
+    entitlementCooldownMs: numEnv(process.env.GROK_ENTITLEMENT_COOLDOWN_MS, 24 * 60 * 60_000),
     // ---- Live SuperGrok usage (chip + provider routing) ----
     // Three sources, cheapest first (see grokUsagePing): (1) CLI unified.jsonl weekly creditUsagePercent,
     // (2) HTTP GET billingUrl with the OAuth token for monthly credits, (3) winpty TUI `/usage show` as a

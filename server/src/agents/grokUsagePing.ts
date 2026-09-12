@@ -9,6 +9,7 @@ import {
   GROK_SCRAPE_STALE_MS,
   grokWeeklyIsFresh,
   noteGrokMonthly,
+  noteGrokNoCreditAllowance,
   noteGrokUsageError,
   noteGrokUsageScrape,
   parseGrokBillingHttp,
@@ -59,9 +60,10 @@ export function grokUsageScrapeAvailable(): boolean {
   );
 }
 
-/** Tail-read the CLI unified log and extract the latest SuperGrok weekly creditUsagePercent. Returns
- *  null when the log is missing/empty or has no billing line yet. Never throws. */
-export function readGrokCreditsFromLog(): { sevenDay: number; sevenDayReset: number | null; plan: string | null; at: number } | null {
+/** Tail-read the CLI unified log for the latest billing reading. `sevenDay: null` means the plan stated
+ *  it meters no allowance (free tier). Null when the log is missing/empty or has no readable billing
+ *  line yet. Never throws. */
+export function readGrokCreditsFromLog(): { sevenDay: number | null; sevenDayReset: number | null; plan: string | null; at: number } | null {
   const logPath = join(config.grok.home, "logs", "unified.jsonl");
   if (!existsSync(logPath)) return null;
   try {
@@ -215,7 +217,13 @@ export function startGrokUsageMonitor(hub: EventHub, opts: { configured: () => b
       const fromLog = readGrokCreditsFromLog();
       const logIsFresh = !!fromLog && !readingIsStale(fromLog.at, GROK_SCRAPE_STALE_MS, Date.now());
       if (fromLog) {
-        noteGrokUsageScrape(fromLog.sevenDay, fromLog.sevenDayReset, { plan: fromLog.plan, source: "log", at: fromLog.at });
+        if (fromLog.sevenDay == null) {
+          // The plan itself says it includes no metered allowance. Recording that RETIRES the previous
+          // weekly snapshot: a pinned reading from a plan we no longer hold reads as headroom forever.
+          noteGrokNoCreditAllowance(fromLog.plan, fromLog.at);
+        } else {
+          noteGrokUsageScrape(fromLog.sevenDay, fromLog.sevenDayReset, { plan: fromLog.plan, source: "log", at: fromLog.at });
+        }
       }
 
       // 2) HTTP monthly credits (OAuth token — no model turn).
@@ -229,7 +237,10 @@ export function startGrokUsageMonitor(hub: EventHub, opts: { configured: () => b
       // already have one" and permanently disables the only source that could refresh it.
       const haveWeekly = grokWeeklyIsFresh();
       const winptyDue = Date.now() - lastWinptyAt >= WINPTY_MIN_INTERVAL_MS;
-      if (!haveWeekly && winptyDue && grokUsageScrapeAvailable()) {
+      // A plan that states it meters no allowance has no weekly meter for `/usage show` to report, so
+      // the expensive TUI scrape would run forever against an answer we already have.
+      const meterable = readGrokUsage().creditAllowance !== "none";
+      if (!haveWeekly && meterable && winptyDue && grokUsageScrapeAvailable()) {
         lastWinptyAt = Date.now();
         const r = await scrapeGrokUsage();
         if (r) {

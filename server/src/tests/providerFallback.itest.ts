@@ -28,7 +28,7 @@ const { CodexAgentRun } = await import("../agents/codexRunner.js");
 const { GrokAgentRun } = await import("../agents/grokRunner.js");
 const { __codexUsageTestHooks, noteCodexPing } = await import("../agents/codexUsage.js");
 const { parseUsageLimitResetAt, usageLimitResetWasExplicitlyElapsed } = await import("../agents/runner.js");
-const { noteGrokMonthly, noteGrokUsageScrape } = await import("../agents/grokUsage.js");
+const { __grokUsageTestHooks, noteGrokMonthly, noteGrokNoCreditAllowance, noteGrokUsageScrape } = await import("../agents/grokUsage.js");
 const { noteZaiUsage } = await import("../agents/zaiUsage.js");
 
 function check(label: string, condition: boolean, detail?: string): void {
@@ -1260,8 +1260,30 @@ try {
   const fallbackInternals = bootFixtureManager(fallbackDb, fallbackRoot);
   check("a reset-less Grok cap is restored with a bounded latch", fallbackInternals.grokCapUntil > Date.now(), String(fallbackInternals.grokCapUntil));
   check("a reset-less z.ai cap is restored with a bounded latch", fallbackInternals.zaiCapUntil > Date.now(), String(fallbackInternals.zaiCapUntil));
+  const meteredLatchMs = fallbackInternals.grokCapUntil - Date.now();
   fallbackDb.raw.close();
   rmSync(fallbackRoot, { recursive: true, force: true });
+
+  // The same reset-less rejection on a plan that meters NO allowance must latch for far longer. Nothing
+  // on a free plan reports a reset and no meter can ever show headroom returning, so the hourly fallback
+  // simply re-offered Grok on a timer into an unchanged window — 13 rejected runs over three days.
+  const freeRoot = mkdtempSync(join(tmpdir(), "provider-fallback-grok-free-"));
+  const freeWorkspace = join(freeRoot, "workspace");
+  mkdirSync(freeWorkspace, { recursive: true });
+  const freeDb = new Db(join(freeRoot, "orchestrator.sqlite"));
+  const freeThread = freeDb.createThread({ title: "Free-tier Grok entitlement rejection", workspace: freeWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(freeDb, freeThread, "grok:grok-4.6", "error", "You’ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, or try again later", false, Date.now() - 2_000);
+  noteGrokNoCreditAllowance("Free", Date.now());
+  const freeInternals = bootFixtureManager(freeDb, freeRoot);
+  const freeLatchMs = freeInternals.grokCapUntil - Date.now();
+  check(
+    "a rejection on a plan with no metered allowance latches for the entitlement cooldown, not the hourly one",
+    freeLatchMs > meteredLatchMs * 2 && freeLatchMs > 12 * 60 * 60_000,
+    `free=${Math.round(freeLatchMs / 60_000)}min metered=${Math.round(meteredLatchMs / 60_000)}min`,
+  );
+  __grokUsageTestHooks.clearUnmetered();
+  freeDb.raw.close();
+  rmSync(freeRoot, { recursive: true, force: true });
 
   // A later model-capacity notice is not proof that an earlier provider-stated plan reset is stale.
   // Keep the authoritative date until a clean run succeeds after it.

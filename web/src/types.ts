@@ -501,6 +501,10 @@ export interface GrokUsageDTO {
   monthlyUsed: number | null; // monthly credit units used, else null
   monthlyLimit: number | null; // monthly credit unit cap, else null
   monthlyReset: number | null; // epoch ms the monthly billing period ends, else null
+  /** Whether the plan includes a metered credit allowance at all. "none" is a real reading (a free
+   *  tier stating a zero on-demand cap and prepaid balance), so `sevenDay` is null by fact rather
+   *  than by omission; `null` means nothing has established it yet. */
+  creditAllowance: "metered" | "none" | null;
   capUntil: number | null; // epoch ms a usage-cap rejection is latched until, else null
   stale?: boolean; // the reading hasn't refreshed recently
   error?: string | null; // soft failure when meters are missing

@@ -14,6 +14,7 @@ const {
   claudeHasHeadroom,
   spentWindow,
   spentCredits,
+  meterSummary,
   BACKENDS,
   HARD_LIMIT_PCT,
   MIRRORED_HEADROOM_TERMS,
@@ -473,5 +474,12 @@ for (const b of BACKENDS) {
   assert.equal(roleLadderDepth(rungs, 1, ["Codex", "Grok", "z.ai"]), 1, "exclude every alt backend and only the Claude subs remain");
   assert.equal(roleLadderDepth(rungs, 0, ["Codex", "Grok", "z.ai"]), 0, "no subs and no serving backend is a zero-rung role — the state that parks a click");
 }
+
+// A rung with no windows has two very different causes, and the readout must not merge them. A plan
+// that STATES it meters nothing (Grok's free tier, `unmetered` in its cache) has no allowance sitting
+// there unused; "no windows metered" would read as one nobody has got round to reading yet.
+assert.equal(meterSummary({ unmetered: true }), "no metered allowance on this plan");
+assert.equal(meterSummary({}), "no windows metered");
+assert.equal(meterSummary({ sevenDay: 12, unmetered: true }), "7d 12%", "a real meter still wins — an upgraded plan reports again");
 
 console.log("failoverLadder: all assertions passed");

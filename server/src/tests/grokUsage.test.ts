@@ -3,9 +3,12 @@
 
 import assert from "node:assert/strict";
 import {
+  __grokUsageTestHooks,
   grokUsageCapped,
   noteGrokMonthly,
+  noteGrokNoCreditAllowance,
   noteGrokUsageScrape,
+  readGrokUsage,
   parseGrokBillingHttp,
   parseGrokCreditsLog,
   parseGrokReset,
@@ -83,6 +86,71 @@ assert.equal(parseGrokCreditsLog(`${JSON.stringify(undated)}\n`, julyNow), null,
 // permanently newer than any recorded cap, so one bad line could lift every cap latch on sight.
 const skewed = { ...(JSON.parse(logLine) as Record<string, unknown>), ts: "2027-01-01T00:00:00.000Z" };
 assert.equal(parseGrokCreditsLog(`${JSON.stringify(skewed)}\n`, julyNow)!.at, julyNow);
+
+// --- The FREE tier's billing line (the shape that shipped a stale SuperGrok meter for weeks) --------
+// Verbatim from ~/.grok/logs/unified.jsonl on 2026-09-12: no `creditUsagePercent` at all, a stated
+// tier, and zero on-demand cap / prepaid balance. Requiring the percent discarded all 155 of these,
+// so `grok-usage-cache.json` kept serving a months-old `SuperGrok · 7d 10%` while the ladder offered
+// Grok as a live rung and 13 runs in three days were rejected outright.
+const freeLine = JSON.stringify({
+  ts: "2026-09-12T01:26:59.150Z",
+  src: "shell",
+  lvl: "info",
+  msg: "billing: fetched credits config",
+  ctx: {
+    config: {
+      currentPeriod: {
+        type: "USAGE_PERIOD_TYPE_WEEKLY",
+        start: "2026-09-06T23:10:26.537917+00:00",
+        end: "2026-09-13T23:10:26.537917+00:00",
+      },
+      onDemandCap: { val: 0 },
+      onDemandUsed: { val: 0 },
+      prepaidBalance: { val: 0 },
+      isUnifiedBillingUser: true,
+      billingPeriodEnd: "2026-09-13T23:10:26.537917+00:00",
+      historyLen: 0,
+    },
+    onDemandEnabled: null,
+    subscriptionTier: "Free",
+  },
+});
+const septNow = Date.parse("2026-09-12T02:00:00.000Z");
+const free = parseGrokCreditsLog(`${freeLine}\n`, septNow);
+assert.ok(free, "a free-tier billing line is a reading, not an unreadable line");
+assert.equal(free!.sevenDay, null, "no metered allowance is stated as null, never as a percentage");
+assert.equal(free!.plan, "Free");
+assert.equal(free!.at, Date.parse("2026-09-12T01:26:59.150Z"), "and it still carries its OWN clock");
+
+// Silence is never a reading: a line that merely omits the percent, without positively stating a tier
+// and zero balances, stays unreadable — otherwise a truncated or future log shape reads as "free".
+const mute = JSON.parse(freeLine) as { ctx: { config: Record<string, unknown>; subscriptionTier?: unknown } };
+delete mute.ctx.subscriptionTier;
+assert.equal(parseGrokCreditsLog(`${JSON.stringify(mute)}\n`, septNow), null, "no tier -> not a reading");
+const funded = JSON.parse(freeLine) as { ctx: { config: Record<string, unknown> } };
+funded.ctx.config.prepaidBalance = { val: 40 };
+assert.equal(
+  parseGrokCreditsLog(`${JSON.stringify(funded)}\n`, septNow),
+  null,
+  "a non-zero prepaid balance with no percent is unknown, not 'meters nothing'",
+);
+
+// Recording it RETIRES the weekly snapshot, and the DTO says why the meter is gone.
+noteGrokUsageScrape(10, septNow + 6 * 86_400_000, { plan: "SuperGrok", source: "log", at: septNow - 1000 });
+assert.equal(readGrokUsage().creditAllowance, "metered");
+noteGrokNoCreditAllowance(free!.plan, free!.at);
+const freeDto = readGrokUsage();
+assert.equal(freeDto.creditAllowance, "none");
+assert.equal(freeDto.sevenDay, null, "the stale SuperGrok percentage must not survive the free-tier reading");
+assert.equal(freeDto.plan, "Free", "…and neither must its plan name");
+// An upgrade is readable in the other direction too: a metered reading supersedes the free verdict.
+noteGrokUsageScrape(4, septNow + 6 * 86_400_000, { plan: "SuperGrok", source: "log", at: free!.at + 1000 });
+assert.equal(readGrokUsage().creditAllowance, "metered");
+assert.equal(readGrokUsage().sevenDay, 4);
+__grokUsageTestHooks.clearWeekly();
+__grokUsageTestHooks.clearUnmetered();
+noteGrokMonthly(0, 0, null, septNow);
+assert.equal(readGrokUsage().creditAllowance, null, "nothing established yet is not the same as 'meters nothing'");
 
 // HTTP /v1/billing monthly credits body.
 const httpBody = {

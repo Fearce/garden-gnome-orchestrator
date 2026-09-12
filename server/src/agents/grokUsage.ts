@@ -26,6 +26,10 @@ export interface GrokUsageDTO {
   monthlyUsed: number | null; // monthly credit units used (HTTP billing), else null
   monthlyLimit: number | null; // monthly credit unit cap, else null
   monthlyReset: number | null; // epoch ms the monthly billing period ends, else null
+  /** Whether the plan includes a metered credit allowance at all. `"none"` is a real reading — the CLI's
+   *  billing line naming a tier with a zero on-demand cap and a zero prepaid balance — and is why
+   *  `sevenDay` is null on a free plan rather than merely unread. `null` = not established yet. */
+  creditAllowance: "metered" | "none" | null;
   capUntil: number | null; // epoch ms a live-run usage-cap rejection is latched until, else null
   stale?: boolean; // the reading hasn't refreshed within the freshness window
   error?: string | null; // last soft failure reason when meters are missing (chip surfaces it)
@@ -49,8 +53,15 @@ interface GrokMonthlyScrape {
   at: number;
 }
 
+/** The plan STATING that it includes no metered allowance (the free tier), with its own reading clock. */
+interface GrokUnmeteredPlan {
+  plan: string | null;
+  at: number;
+}
+
 let liveWeekly: GrokWeeklyScrape | null = null;
 let liveMonthly: GrokMonthlyScrape | null = null;
+let unmeteredPlan: GrokUnmeteredPlan | null = null;
 let lastError: string | null = null;
 
 // A scrape older than this reads as stale (the chip dims it). ~2.5× the default HTTP/log poll so a
@@ -75,6 +86,9 @@ interface GrokUsageCache {
   weeklyAt?: number;
   monthlyAt?: number;
   at?: number;
+  /** The plan reported no metered credit allowance (free tier) as of `unmeteredAt`. */
+  unmetered?: boolean;
+  unmeteredAt?: number;
 }
 
 /** Load the last successful reading from disk so a restart paints the chip immediately (stale until the
@@ -94,6 +108,9 @@ function loadCache(): void {
         at: typeof c.weeklyAt === "number" ? c.weeklyAt : 0,
         source: "cache",
       };
+    }
+    if (c.unmetered && !liveWeekly) {
+      unmeteredPlan = { plan: typeof c.plan === "string" ? c.plan : null, at: typeof c.unmeteredAt === "number" ? c.unmeteredAt : 0 };
     }
     if (typeof c.monthlyUsed === "number" && typeof c.monthlyLimit === "number" && c.monthlyLimit > 0) {
       liveMonthly = {
@@ -116,13 +133,15 @@ function persistCache(): void {
     const body: GrokUsageCache = {
       sevenDay: liveWeekly?.sevenDay,
       sevenDayReset: liveWeekly?.sevenDayReset ?? null,
-      plan: liveWeekly?.plan ?? null,
+      plan: liveWeekly?.plan ?? unmeteredPlan?.plan ?? null,
       monthlyUsed: liveMonthly?.monthlyUsed,
       monthlyLimit: liveMonthly?.monthlyLimit,
       monthlyReset: liveMonthly?.monthlyReset ?? null,
       weeklyAt: liveWeekly?.at,
       monthlyAt: liveMonthly?.at,
-      at: Math.max(liveWeekly?.at ?? 0, liveMonthly?.at ?? 0),
+      unmetered: unmeteredPlan ? true : undefined,
+      unmeteredAt: unmeteredPlan?.at,
+      at: Math.max(liveWeekly?.at ?? 0, liveMonthly?.at ?? 0, unmeteredPlan?.at ?? 0),
     };
     writeFileSync(CACHE_FILE(), JSON.stringify(body), "utf8");
   } catch {
@@ -161,6 +180,23 @@ export function noteGrokUsageScrape(
     at,
     source: opts?.source ?? "winpty",
   };
+  // A metered reading supersedes a free-plan one: the plan changed, so the old verdict is history.
+  unmeteredPlan = null;
+  lastError = null;
+  persistCache();
+}
+
+/** Record the plan STATING that it includes no metered credit allowance — the CLI's billing line naming
+ *  a tier with a zero on-demand cap and a zero prepaid balance. This is a real reading with its own
+ *  clock, not a missing one, and it retires the previous weekly snapshot the same way a `monthlyLimit: 0`
+ *  answer retires the monthly pool: a snapshot from a plan we no longer hold reads as headroom forever.
+ *  (A free tier is what left `7d 10% · SuperGrok` pinned in the cache while every run was rejected.) */
+export function noteGrokNoCreditAllowance(plan: string | null, at?: number): void {
+  const now = Date.now();
+  const readAt = Math.min(at ?? now, now);
+  if (unmeteredPlan && readAt < unmeteredPlan.at) return; // a reading time never moves backwards
+  unmeteredPlan = { plan: plan ?? unmeteredPlan?.plan ?? null, at: readAt };
+  liveWeekly = null;
   lastError = null;
   persistCache();
 }
@@ -231,26 +267,36 @@ export function parseGrokUsage(raw: string, now: number): { sevenDay: number | n
 }
 
 /**
- * Parse one CLI unified.jsonl line (or a blob of them) for the latest SuperGrok weekly credits config.
- * The CLI logs `billing: fetched credits config` with `creditUsagePercent` + weekly period end whenever
- * a TUI session boots — cheaper and more reliable than re-driving the TUI ourselves.
+ * Parse one CLI unified.jsonl line (or a blob of them) for the latest weekly credits config.
+ * The CLI logs `billing: fetched credits config` whenever a TUI session boots — cheaper and more
+ * reliable than re-driving the TUI ourselves.
+ *
+ * Two readings come out of that line, and telling them apart is the point. A plan with an included
+ * allowance reports `creditUsagePercent`; a FREE plan omits it entirely and instead states a tier
+ * beside a zero on-demand cap and a zero prepaid balance — which is an answer ("this plan meters
+ * nothing"), not a missing one, and surfaces as `sevenDay: null`. Requiring the percent discarded
+ * every line the free tier emits, so the cache kept serving a months-old `SuperGrok 7d 10%` while
+ * every run was rejected, and routing kept offering Grok on the strength of it.
  */
 export function parseGrokCreditsLog(raw: string, now = Date.now()): {
-  sevenDay: number;
+  /** Weekly credit used-percent, or null when the plan states it meters no allowance at all. */
+  sevenDay: number | null;
   sevenDayReset: number | null;
   plan: string | null;
   /** The log line's OWN timestamp — the moment this reading was taken, not the moment we read it. */
   at: number;
 } | null {
-  let best: { sevenDay: number; sevenDayReset: number | null; plan: string | null; ts: number } | null = null;
+  let best: { sevenDay: number | null; sevenDayReset: number | null; plan: string | null; ts: number } | null = null;
   for (const line of raw.split(/\r?\n/)) {
-    if (!line.includes("fetched credits config") || !line.includes("creditUsagePercent")) continue;
+    if (!line.includes("fetched credits config")) continue;
     let obj: {
       ts?: string;
       msg?: string;
       ctx?: {
         config?: {
           creditUsagePercent?: number;
+          onDemandCap?: unknown;
+          prepaidBalance?: unknown;
           currentPeriod?: { end?: string; type?: string };
           billingPeriodEnd?: string;
         };
@@ -263,8 +309,18 @@ export function parseGrokCreditsLog(raw: string, now = Date.now()): {
       continue;
     }
     if (obj.msg !== "billing: fetched credits config") continue;
-    const pct = obj.ctx?.config?.creditUsagePercent;
-    if (typeof pct !== "number" || !Number.isFinite(pct)) continue;
+    const cfg = obj.ctx?.config;
+    const pct = cfg?.creditUsagePercent;
+    const metered = typeof pct === "number" && Number.isFinite(pct);
+    // Only a POSITIVE statement of no allowance counts. A line that merely omits the percent is
+    // unreadable and must stay unreadable — silence is never a reading.
+    const statesNoAllowance =
+      !metered &&
+      typeof obj.ctx?.subscriptionTier === "string" &&
+      obj.ctx.subscriptionTier.length > 0 &&
+      numVal(cfg?.onDemandCap) === 0 &&
+      numVal(cfg?.prepaidBalance) === 0;
+    if (!metered && !statesNoAllowance) continue;
     const endIso = obj.ctx?.config?.currentPeriod?.end ?? obj.ctx?.config?.billingPeriodEnd ?? null;
     let sevenDayReset: number | null = null;
     if (endIso) {
@@ -280,7 +336,12 @@ export function parseGrokCreditsLog(raw: string, now = Date.now()): {
     const at = Math.min(ts, now);
     const plan = typeof obj.ctx?.subscriptionTier === "string" ? obj.ctx.subscriptionTier : null;
     if (!best || at >= best.ts) {
-      best = { sevenDay: Math.min(100, Math.max(0, Math.round(pct))), sevenDayReset, plan, ts: at };
+      best = {
+        sevenDay: metered ? Math.min(100, Math.max(0, Math.round(pct as number))) : null,
+        sevenDayReset,
+        plan,
+        ts: at,
+      };
     }
   }
   return best ? { sevenDay: best.sevenDay, sevenDayReset: best.sevenDayReset, plan: best.plan, at: best.ts } : null;
@@ -374,7 +435,11 @@ export const GROK_REOPENED_ALLOWANCE_MAX_PCT = 50;
 export function grokAllowanceReopened(capRecordedAt: number | undefined, now = Date.now()): AllowanceEvidence {
   // The weekly window is what Grok actually gates on, so monthly credits alone are never a disproof:
   // a fresh credit reading beside a frozen weekly would otherwise carry the lift on its own.
-  if (!liveWeekly) return { reopened: false, reason: "no Grok weekly reading" };
+  if (!liveWeekly) {
+    // A plan that meters nothing has no meter that could ever show headroom returning, so the latch
+    // must run its course rather than be lifted by silence.
+    return { reopened: false, reason: unmeteredPlan ? "Grok plan meters no allowance to read" : "no Grok weekly reading" };
+  }
   const monthlyPct =
     liveMonthly && liveMonthly.monthlyLimit > 0
       ? Math.min(100, (liveMonthly.monthlyUsed / liveMonthly.monthlyLimit) * 100)
@@ -405,10 +470,14 @@ export function readGrokUsage(): GrokUsageDTO {
   // STALEST, never freshest. The monthly HTTP ping succeeds on every poll, so `max()` let a fresh
   // credit reading vouch for a frozen weekly — and `stale` is what the chip dims and what
   // `capacityWindowsWithFreshness` hands to routing. One meter's age may not speak for another's.
-  const ages = [weekly?.at, monthly?.at].filter((at): at is number => typeof at === "number");
+  const ages = [weekly?.at, monthly?.at, unmeteredPlan?.at].filter((at): at is number => typeof at === "number");
   const stale = ages.length ? ages.some((at) => readingIsStale(at, GROK_SCRAPE_STALE_MS, now)) : undefined;
-  // Prefer a plan name from the weekly log; otherwise map a known tier number.
-  const plan = weekly?.plan ?? (auth.tier === 1 || tierFromAccessToken(readGrokAccessTokenRaw()) === 1 ? "SuperGrok" : null);
+  // Prefer a plan name from the weekly log, then from the free-tier billing line; otherwise map a
+  // known tier number. Never fall back to "SuperGrok" once a line has stated the plan meters nothing.
+  const plan =
+    weekly?.plan ??
+    unmeteredPlan?.plan ??
+    (!unmeteredPlan && (auth.tier === 1 || tierFromAccessToken(readGrokAccessTokenRaw()) === 1) ? "SuperGrok" : null);
   const tier = auth.tier ?? tierFromAccessToken(readGrokAccessTokenRaw());
   return {
     signedIn: auth.signedIn,
@@ -420,9 +489,10 @@ export function readGrokUsage(): GrokUsageDTO {
     monthlyUsed: monthly?.monthlyUsed ?? null,
     monthlyLimit: monthly?.monthlyLimit ?? null,
     monthlyReset: monthly?.monthlyReset ?? null,
+    creditAllowance: weekly ? "metered" : unmeteredPlan ? "none" : null,
     capUntil,
     stale,
-    error: weekly || monthly ? null : lastError,
+    error: weekly || monthly || unmeteredPlan ? null : lastError,
     updatedAt: now,
   };
 }
@@ -447,5 +517,9 @@ export const __grokUsageTestHooks = {
   /** Drop the weekly meter so a gate can assert what monthly credits alone may (not) prove. */
   clearWeekly(): void {
     liveWeekly = null;
+  },
+  /** Drop the free-plan verdict so a gate can start from "nothing established yet". */
+  clearUnmetered(): void {
+    unmeteredPlan = null;
   },
 };

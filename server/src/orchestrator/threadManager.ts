@@ -4228,7 +4228,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Prefer the real weekly reset from the live `/usage show` scrape; fall back to a fixed cooldown when
     // no scrape has landed yet. A cap response's stated reset is still authoritative enough to avoid
     // immediately retrying the same exhausted provider before the next scrape lands.
-    const until = this.capResetUntil(info, [readGrokUsage().sevenDayReset], config.grok.capCooldownMs);
+    const usage = readGrokUsage();
+    // A plan that meters no included allowance states no reset anywhere, and its own meters can never
+    // show headroom returning — so the short fallback just re-offers Grok on a timer into an unchanged
+    // window. Hold it for the entitlement cooldown instead; an upgraded plan's metered reading is what
+    // reopens it. See config.grok.entitlementCooldownMs.
+    const fallbackMs = usage.creditAllowance === "none" ? config.grok.entitlementCooldownMs : config.grok.capCooldownMs;
+    const until = this.capResetUntil(info, [usage.sevenDayReset], fallbackMs);
     this.grokCapRecordedAt = now;
     this.db.kvSet(GROK_CAP_RECORDED_AT_KV_KEY, String(now));
     if (this.grokCapUntil && this.grokCapUntil >= until) return; // already latched at least this long

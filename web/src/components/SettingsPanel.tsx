@@ -1806,6 +1806,9 @@ function grokSettingsMeta(
   if (!settings.grokEnabled) return "Off — enable to add Grok to the implementor + role-failover rotation.";
   if (!settings.grokSignedIn) return "Enabled but not signed in — run `grok login` before tasks can route here.";
   const who = settings.grokAccount ? ` · ${settings.grokAccount}` : "";
+  if (usage?.creditAllowance === "none") {
+    return `In rotation${who}${usage.plan ? ` · ${usage.plan}` : ""} · no metered allowance on this plan — runs draw the free tier's own rolling limit and are rejected once it is spent · model ${settings.grokModel} · ${settings.grokEffort} max effort`;
+  }
   const weekly = usage?.sevenDay != null ? `weekly ${Math.round(usage.sevenDay)}%` : "weekly —";
   const monthly =
     usage?.monthlyUsed != null && usage.monthlyLimit != null && usage.monthlyLimit > 0
@@ -1826,6 +1829,15 @@ function GrokUsageReadout({ usage }: { usage: import("../types.js").GrokUsageDTO
     usage.monthlyUsed != null && usage.monthlyLimit != null && usage.monthlyLimit > 0
       ? `${usage.monthlyUsed}/${usage.monthlyLimit} credits (${Math.round((100 * usage.monthlyUsed) / usage.monthlyLimit)}%)`
       : "—";
+  if (usage.creditAllowance === "none") {
+    return (
+      <div className="sub-msg dim" title="The CLI's billing line reports this tier with a zero on-demand cap and a zero prepaid balance.">
+        This plan{usage.plan ? ` (${usage.plan})` : ""} includes no metered allowance, so there are no usage meters to
+        show. Runs draw the free tier's own rolling limit and are rejected once it is spent; a subscription restores the
+        weekly and monthly meters.
+      </div>
+    );
+  }
   if (usage.sevenDay == null && usage.monthlyUsed == null) {
     return (
       <div className={"sub-msg" + (usage.error ? " bad" : " dim")}>

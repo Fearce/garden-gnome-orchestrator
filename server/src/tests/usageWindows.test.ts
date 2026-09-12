@@ -223,6 +223,7 @@ const grok: GrokUsageDTO = {
   monthlyUsed: 250,
   monthlyLimit: 1000,
   monthlyReset: NOW + 11 * DAY,
+  creditAllowance: "metered",
   capUntil: null,
   stale: true,
   updatedAt: NOW - HOUR,

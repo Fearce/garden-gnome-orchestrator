@@ -216,17 +216,19 @@ function spentCredits(meters, at, freshness) {
 /** The windows an available backend still has, so "available" is a number the reader can check rather than
  *  a bare claim. Omits a window the backend doesn't meter (Grok reports no 5h, only Grok meters credits). */
 function meterSummary(m) {
-  return (
-    [
-      typeof m.fiveHour === "number" ? `5h ${Math.round(m.fiveHour)}%` : null,
-      typeof m.sevenDay === "number" ? `7d ${Math.round(m.sevenDay)}%` : null,
-      typeof m.monthlyUsed === "number" && m.monthlyLimit > 0
-        ? `credits ${Math.round((m.monthlyUsed / m.monthlyLimit) * 100)}%`
-        : null,
-    ]
-      .filter(Boolean)
-      .join(" · ") || "no windows metered"
-  );
+  const windows = [
+    typeof m.fiveHour === "number" ? `5h ${Math.round(m.fiveHour)}%` : null,
+    typeof m.sevenDay === "number" ? `7d ${Math.round(m.sevenDay)}%` : null,
+    typeof m.monthlyUsed === "number" && m.monthlyLimit > 0
+      ? `credits ${Math.round((m.monthlyUsed / m.monthlyLimit) * 100)}%`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  if (windows) return windows;
+  // A plan that STATES it meters nothing is a different rung from one nothing has read yet: a free tier
+  // has no window to run down, so the generic wording reads as a full allowance sitting there unused.
+  return m.unmetered ? "no metered allowance on this plan" : "no windows metered";
 }
 
 /** A backend's cached meters, read from data/<file>. Read-only and never throws: a missing or corrupt
@@ -514,6 +516,7 @@ module.exports = {
   PROVIDER_RUNG,
   spentWindow,
   spentCredits,
+  meterSummary,
   BACKENDS,
   HARD_LIMIT_PCT,
   MIRRORED_HEADROOM_TERMS,

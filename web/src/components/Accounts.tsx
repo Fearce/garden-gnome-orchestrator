@@ -361,7 +361,10 @@ function GrokChip({
     state === "implementing" ? "implementing" : state === "ready" ? "ready" : state === "capped" ? "capped" : state === "noauth" ? "no auth" : "off";
   const tagCls = state === "noauth" || state === "capped" ? "acct-tag" : state === "off" ? "acct-tag dim" : "acct-tag ok";
   const who = account ? ` · ${account}` : "";
-  const plan = usage?.plan ?? (usage?.tier === 1 ? "SuperGrok" : null);
+  // A plan that states it meters no allowance is never "SuperGrok" by tier inference — that fallback is
+  // exactly what kept a free account labelled as a subscription while every run was being rejected.
+  const noAllowance = usage?.creditAllowance === "none";
+  const plan = usage?.plan ?? (!noAllowance && usage?.tier === 1 ? "SuperGrok" : null);
   const monthlyPct =
     usage?.monthlyUsed != null && usage.monthlyLimit != null && usage.monthlyLimit > 0
       ? Math.min(100, Math.max(0, (100 * usage.monthlyUsed) / usage.monthlyLimit))
@@ -441,20 +444,24 @@ function GrokChip({
         <div
           className="codex-model"
           title={
-            usage?.error
-              ? `usage unavailable: ${usage.error}`
-              : hasAuth
-                ? `Polling SuperGrok weekly + monthly usage… · ${model} · ${effort}${who}`
-                : `${model} · ${effort} effort${who}`
+            noAllowance
+              ? `This Grok plan${plan ? ` (${plan})` : ""} includes no metered allowance, so there is no weekly meter to show. Runs use the free tier's own rolling limit and are rejected once it is spent; a subscription restores the meters. · ${model} · ${effort}${who}`
+              : usage?.error
+                ? `usage unavailable: ${usage.error}`
+                : hasAuth
+                  ? `Polling SuperGrok weekly + monthly usage… · ${model} · ${effort}${who}`
+                  : `${model} · ${effort} effort${who}`
           }
         >
           {state === "capped" && usage?.capUntil
             ? `retry in ${countdown(usage.capUntil, now)}`
-            : usage?.error
-              ? usage.error
-              : hasAuth
-                ? "polling usage…"
-                : `${model} · ${effort}`}
+            : noAllowance
+              ? "no metered allowance"
+              : usage?.error
+                ? usage.error
+                : hasAuth
+                  ? "polling usage…"
+                  : `${model} · ${effort}`}
         </div>
       )}
     </div>
