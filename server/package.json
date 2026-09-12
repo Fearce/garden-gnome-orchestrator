@@ -138,6 +138,7 @@
     "test:model-request-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/model-request-ui.test.tsx",
     "test:token-conservation": "tsx src/tests/tokenConservation.test.ts",
     "test:themes": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/themes.test.tsx",
+    "test:fonts": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/fonts.test.tsx",
     "test:screensaver": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/screensaver.test.tsx",
     "test:lab-contexts": "node scripts/lab-contexts.test.cjs",
     "test:model-pin-probe": "node scripts/model-pin-reading.test.cjs",

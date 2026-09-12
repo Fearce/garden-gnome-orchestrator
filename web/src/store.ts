@@ -55,6 +55,15 @@ import type {
 import { agentKey, GENERAL_ROOM, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
 import { notify } from "./lib/notify.js";
 import { applyTheme, DEFAULT_THEME, isThemeId, type ThemeId } from "./lib/theme.js";
+import {
+  applyFonts,
+  DEFAULT_FONT,
+  DEFAULT_MONO_FONT,
+  isFontId,
+  isMonoFontId,
+  type FontId,
+  type MonoFontId,
+} from "./lib/font.js";
 import { mergeImplementationMemos } from "./implementationMemos.js";
 
 interface ThreadDraft {
@@ -203,6 +212,11 @@ interface State {
   // Which look the console wears (Settings → Appearance). "classic" is the original console and puts
   // NO attribute on <html>, so choosing it can't change a single existing rule — see lib/theme.ts.
   theme: ThemeId;
+  // Which typefaces the console is set in (Settings → Appearance). `uiFont` drives
+  // --font-sans, `monoFont` drives --font-mono, and they are independent so a serif interface never
+  // turns a transcript proportional. "default" is the absence of an attribute, exactly like Classic.
+  uiFont: FontId;
+  monoFont: MonoFontId;
   // AFK screensaver: after `screensaverIdleMinutes` with no mouse or keyboard activity anywhere in
   // the app, the board is covered by the gnome scene until the next input. Per browser, like the
   // theme: a wall-mounted screen wants it and the laptop it is driven from may not.
@@ -371,6 +385,8 @@ interface State {
   setTaskSort: (v: TaskSort) => void;
   setTaskDragAndDrop: (v: boolean) => void;
   setTheme: (v: ThemeId) => void;
+  setUiFont: (v: FontId) => void;
+  setMonoFont: (v: MonoFontId) => void;
   setScreensaver: (v: boolean) => void;
   setScreensaverIdleMinutes: (v: number) => void;
   setTaskOrder: (ids: string[]) => void;
@@ -507,12 +523,16 @@ interface ViewSettings {
   // The console's look. Read at boot by the inline script in index.html too, which paints the theme
   // before the bundle runs — keep the stored key and shape in step with it.
   theme: ThemeId;
+  // The typefaces, read by that same pre-paint script: a face applied only after the bundle loads
+  // reflows the whole console once on every load, which is worse than a colour flash.
+  uiFont: FontId;
+  monoFont: MonoFontId;
   // Whether the AFK gnome scene may take the screen, and how long the console must sit untouched
   // first. Minutes rather than milliseconds because that is the unit the settings row edits.
   screensaver: boolean;
   screensaverIdleMinutes: number;
 }
-const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, screensaver: true, screensaverIdleMinutes: 5 };
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, screensaver: true, screensaverIdleMinutes: 5 };
 const loadViewSettings = (): ViewSettings => {
   try {
     const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
@@ -524,6 +544,8 @@ const loadViewSettings = (): ViewSettings => {
       taskDragAndDrop: typeof v.taskDragAndDrop === "boolean" ? v.taskDragAndDrop : VIEW_DEFAULTS.taskDragAndDrop,
       taskSort: isTaskSort(v.taskSort) ? v.taskSort : VIEW_DEFAULTS.taskSort,
       theme: isThemeId(v.theme) ? v.theme : VIEW_DEFAULTS.theme,
+      uiFont: isFontId(v.uiFont) ? v.uiFont : VIEW_DEFAULTS.uiFont,
+      monoFont: isMonoFontId(v.monoFont) ? v.monoFont : VIEW_DEFAULTS.monoFont,
       screensaver: typeof v.screensaver === "boolean" ? v.screensaver : VIEW_DEFAULTS.screensaver,
       screensaverIdleMinutes: clampIdleMinutes(v.screensaverIdleMinutes),
     };
@@ -542,6 +564,8 @@ const persistView = (s: ViewSettings, patch: Partial<ViewSettings>): void =>
     taskSort: s.taskSort,
     taskDragAndDrop: s.taskDragAndDrop,
     theme: s.theme,
+    uiFont: s.uiFont,
+    monoFont: s.monoFont,
     screensaver: s.screensaver,
     screensaverIdleMinutes: s.screensaverIdleMinutes,
     ...patch,
@@ -980,6 +1004,8 @@ export const useStore = create<State>((set) => ({
   taskSort: loadViewSettings().taskSort,
   taskDragAndDrop: loadViewSettings().taskDragAndDrop,
   theme: loadViewSettings().theme,
+  uiFont: loadViewSettings().uiFont,
+  monoFont: loadViewSettings().monoFont,
   screensaver: loadViewSettings().screensaver,
   screensaverIdleMinutes: loadViewSettings().screensaverIdleMinutes,
   taskOrder: loadTaskOrder(),
@@ -1247,6 +1273,18 @@ export const useStore = create<State>((set) => ({
       // Animated, because this one is the owner watching the console change under their own click.
       applyTheme(v, true);
       return { theme: v };
+    }),
+  setUiFont: (v) =>
+    set((s) => {
+      persistView(s, { uiFont: v });
+      applyFonts(v, s.monoFont);
+      return { uiFont: v };
+    }),
+  setMonoFont: (v) =>
+    set((s) => {
+      persistView(s, { monoFont: v });
+      applyFonts(s.uiFont, v);
+      return { monoFont: v };
     }),
   setTaskOrder: (ids) => {
     saveTaskOrder(ids);

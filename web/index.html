@@ -20,12 +20,23 @@
          `director_settings` record web/src/store.ts writes; the id list mirrors THEMES in
          web/src/lib/theme.ts (Classic is the absence of the attribute) and `test:themes` fails if a
          theme ever ships without being listed here. -->
+    <!-- The chosen typefaces are painted here for a sharper reason than the theme's: a face applied
+         after the bundle loads reflows the entire console once on every load, not just recolours it.
+         The id lists mirror UI_FONTS / MONO_FONTS in web/src/lib/font.ts ("default" is the absence of
+         the attribute) and `test:fonts` fails if a face ever ships without being listed here. -->
     <script>
       try {
-        var t = JSON.parse(localStorage.getItem("director_settings") || "{}").theme;
+        var v = JSON.parse(localStorage.getItem("director_settings") || "{}");
+        var t = v.theme;
         if (["nocturne"].indexOf(t) >= 0) document.documentElement.dataset.theme = t;
+        var f = v.uiFont;
+        if (["system", "geist", "plex-sans", "source-serif", "space-grotesk", "jetbrains"].indexOf(f) >= 0)
+          document.documentElement.dataset.font = f;
+        var m = v.monoFont;
+        if (["system", "plex-mono", "fira-code", "source-code"].indexOf(m) >= 0)
+          document.documentElement.dataset.fontMono = m;
       } catch (e) {
-        /* private mode / corrupt record — Classic is the correct fallback */
+        /* private mode / corrupt record — Classic and the theme's own faces are the right fallback */
       }
     </script>
   </head>

@@ -4076,6 +4076,50 @@ button.note-from:hover { color: var(--text-dim); }
 .theme-option-tagline { font-size: 11.5px; color: var(--text-dim); }
 .theme-option-desc { margin-top: 3px; font-size: 11px; line-height: 1.45; color: var(--text-faint); }
 
+/* The typeface chooser (Settings → Appearance → Typography). A specimen sheet, not a dropdown: one
+   row per face, each row set in the face it sells, so the choice is made by reading rather than by
+   recognising a name. Single column at every width because the specimen line is the point and two
+   narrow columns clip it. */
+.font-picker { display: flex; flex-direction: column; gap: 8px; padding: 4px 24px 10px; }
+.font-option {
+  display: flex; align-items: flex-start; gap: 13px; padding: 11px 13px; text-align: left;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-2); cursor: pointer;
+  transition: border-color 0.14s, box-shadow 0.14s, background 0.14s;
+}
+.font-option:hover { border-color: var(--line-strong); background: var(--bg-3); }
+.font-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.font-option.on { border-color: color-mix(in oklch, var(--accent) 62%, var(--line)); box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent) 45%, transparent); }
+
+/* The glyph block is a fixed square so the rows align down the left edge however wide the face
+   draws "Aa"; the face itself is free to overflow it visually, which is half of what tells the
+   faces apart at a glance. */
+.font-option-glyph {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  width: 46px; height: 46px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--text); font-size: 21px; line-height: 1; letter-spacing: normal;
+}
+.font-option.on .font-option-glyph { border-color: color-mix(in oklch, var(--accent) 40%, var(--line)); color: var(--accent); }
+
+.font-option-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.font-option-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.font-option-name { font-size: 14.5px; font-weight: 600; color: var(--text); letter-spacing: normal; }
+.font-option-cat {
+  font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.font-option-active {
+  font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent) 45%, var(--line));
+  border-radius: 100px; padding: 2px 7px; margin-left: auto;
+}
+.font-option-note { font-size: 11px; line-height: 1.45; color: var(--text-faint); }
+/* The specimen is the row's payload, so it gets the console's real body size and is allowed to be
+   cut off rather than wrapped: a second line would push the next face's row out of comparison. */
+.font-option-sample {
+  margin-top: 2px; font-size: 13px; line-height: 1.4; color: var(--text-dim); letter-spacing: normal;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
 /* Colour changes are the one place a whole-page transition is right: switching theme is a deliberate
    click, and snapping between two palettes reads as a glitch. The class is added for the length of
    the fade only (web/src/lib/theme.ts), so nothing here is live during normal use. */
@@ -4091,6 +4135,7 @@ html.theme-transition * {
 
 @media (max-width: 899.98px) {
   .theme-picker { grid-template-columns: minmax(0, 1fr); padding-left: 16px; padding-right: 16px; }
+  .font-picker { padding-left: 16px; padding-right: 16px; }
 }
 
 /* Area navigation adapts to the board's actual width, including an open task detail. */

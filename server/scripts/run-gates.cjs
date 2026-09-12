@@ -145,6 +145,7 @@ const GATES = [
   "test:model-request-ui",
   "test:token-conservation",
   "test:themes",
+  "test:fonts",
   "test:screensaver",
   "test:lab-contexts",
   "test:model-pin-probe",

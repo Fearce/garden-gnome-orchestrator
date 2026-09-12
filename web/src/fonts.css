@@ -1,0 +1,89 @@
+/* The Appearance typefaces (Settings → Appearance → Interface / Monospace typeface).
+ *
+ * Every rule in this file is behind [data-font="…"] or [data-font-mono="…"], and the default option
+ * sets NEITHER attribute. That is the whole safety story: a console that never chose a face never
+ * matches a rule in here, so styles.css keeps declaring --font-sans / --font-mono unopposed and the
+ * console is byte-for-byte the one it was. `test:fonts` fails the suite if a rule escapes that scope.
+ *
+ * Each option is two things: the token swap, and the tuning that face needs to sit correctly at the
+ * console's sizes. styles.css already tracks `body` at -0.006em, which is right for Inter Tight and
+ * wrong for a wider or a squarer face, so each face restates the value it wants rather than
+ * inheriting a number chosen for a different typeface. The tuning lands on `body` so it inherits the
+ * way the Classic value does, and no face changes anything else about the layout.
+ */
+
+/* ---- the interface face (--font-sans) ---------------------------------------------------------- */
+
+:root[data-font="system"] {
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+/* Segoe UI and SF are drawn looser than Inter Tight and lose their rhythm when squeezed. */
+:root[data-font="system"] body {
+  letter-spacing: -0.002em;
+}
+
+:root[data-font="geist"] {
+  --font-sans: "Geist Variable", "Geist", system-ui, sans-serif;
+}
+/* Geist is already tight by design; Inter Tight's extra negative tracking closes the counters. */
+:root[data-font="geist"] body {
+  letter-spacing: -0.002em;
+}
+
+:root[data-font="plex-sans"] {
+  --font-sans: "IBM Plex Sans Variable", "IBM Plex Sans", system-ui, sans-serif;
+}
+/* Humanist and wide. It wants its own metrics, not a tightening meant for a grotesque. */
+:root[data-font="plex-sans"] body {
+  letter-spacing: normal;
+}
+
+:root[data-font="source-serif"] {
+  --font-sans: "Source Serif 4 Variable", "Source Serif 4", Georgia, serif;
+}
+/* A serif at 14px needs air between the lines and none taken out between the letters, or the
+   serifs start touching in a task title. */
+:root[data-font="source-serif"] body {
+  letter-spacing: normal;
+  line-height: 1.54;
+}
+
+:root[data-font="space-grotesk"] {
+  --font-sans: "Space Grotesk Variable", "Space Grotesk", system-ui, sans-serif;
+}
+/* Wide, squared-off sidebearings: tightened further than Inter Tight so a card title still fits. */
+:root[data-font="space-grotesk"] body {
+  letter-spacing: -0.014em;
+}
+
+:root[data-font="jetbrains"] {
+  --font-sans: "JetBrains Mono", ui-monospace, monospace;
+}
+/* Every glyph on a 600/1000 advance, so prose runs long. Tracking buys back most of the width and
+   the tighter leading keeps a two-line title from reading as two rows. */
+:root[data-font="jetbrains"] body {
+  letter-spacing: -0.022em;
+  line-height: 1.45;
+}
+
+/* ---- the code and transcript face (--font-mono) ------------------------------------------------- */
+
+/* These four all sit on the same 600/1000 advance JetBrains Mono uses, so the top bar's meters and
+   the chip row keep their measured widths. A narrower or wider mono would need the chip bounds
+   re-checked (`npm run probe:chips`) before it could be offered here. */
+
+:root[data-font-mono="system"] {
+  --font-mono: ui-monospace, "Cascadia Code", Consolas, "SF Mono", monospace;
+}
+
+:root[data-font-mono="plex-mono"] {
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+:root[data-font-mono="fira-code"] {
+  --font-mono: "Fira Code Variable", "Fira Code", ui-monospace, monospace;
+}
+
+:root[data-font-mono="source-code"] {
+  --font-mono: "Source Code Pro Variable", "Source Code Pro", ui-monospace, monospace;
+}

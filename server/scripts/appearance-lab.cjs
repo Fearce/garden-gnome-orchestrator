@@ -151,6 +151,34 @@ async function choose(page, id) {
   await page.waitForTimeout(420);
 }
 
+/** The two typeface attributes, as the pre-paint script and lib/font.ts write them. */
+const activeFonts = (page) =>
+  page.evaluate(() => ({
+    ui: document.documentElement.dataset.font ?? null,
+    mono: document.documentElement.dataset.fontMono ?? null,
+  }));
+
+/** The families actually in use, which is the only thing a font choice is allowed to change here.
+ *  `.conn` is a top-bar readout set in --font-mono, so the two tokens are read from live elements
+ *  rather than from the token block: an option that changes the variable but reaches nothing looks
+ *  identical in :root. */
+const usedFaces = (page) =>
+  page.evaluate(() => ({
+    body: getComputedStyle(document.body).fontFamily,
+    mono: getComputedStyle(document.querySelector(".conn")).fontFamily,
+  }));
+
+/** Pick a face in the Nth font picker (0 = interface, 1 = monospace) and wait for <html> to agree. */
+async function chooseFont(page, group, id) {
+  const attr = group === 0 ? "font" : "fontMono";
+  await page.locator(".font-picker").nth(group).locator(`[data-font-option="${id}"]`).click();
+  await page.waitForFunction(
+    ({ attr, id }) => (document.documentElement.dataset[attr] ?? "default") === id,
+    { attr, id },
+    { timeout: 10_000 },
+  );
+}
+
 function diffStyles(before, after) {
   const changed = [];
   for (const [surface, props] of Object.entries(before)) {
@@ -332,7 +360,81 @@ async function main() {
       const drift = diffStyles(classicBefore, classicAfter);
       check(`Classic comes back EXACTLY as it was (${SNAPSHOT.length} surfaces, property for property)`, drift.length === 0, drift.join("; "));
       await reloaded.screenshot({ path: path.join(shots, "console-classic-restored.png") });
+
+      // ---- typefaces -------------------------------------------------------------------------
+      // Same claim as the theme's, one level down: the default sets NO attribute, so choosing and
+      // un-choosing a face has to land back on the exact families a console that never opened this
+      // page renders in. And the two choices are independent, which is only provable by watching a
+      // --font-mono element while the interface face changes.
+      const defaultFaces = await usedFaces(reloaded);
+      await openAppearance(reloaded);
+      check("the Appearance page renders both typeface pickers", (await reloaded.locator(".font-picker").count()) === 2);
+
+      await chooseFont(reloaded, 0, "source-serif");
+      const serif = await usedFaces(reloaded);
+      check("choosing an interface face repaints the chrome", serif.body !== defaultFaces.body && /Source Serif/.test(serif.body), serif.body);
+      check(
+        "and leaves the monospace areas exactly as they were",
+        serif.mono === defaultFaces.mono,
+        `${defaultFaces.mono} -> ${serif.mono}`,
+      );
+
+      await chooseFont(reloaded, 1, "fira-code");
+      const both = await usedFaces(reloaded);
+      check("choosing a monospace face repaints the transcript face", /Fira Code/.test(both.mono), both.mono);
+      check("without disturbing the interface face", both.body === serif.body, `${serif.body} -> ${both.body}`);
+
+      // A computed font-family only echoes the stack; `document.fonts` is the one thing that proves
+      // the FACE arrived instead of falling through to the next entry, which is what an unbundled
+      // font looks like on an offline LAN console.
+      await reloaded.evaluate(() => document.fonts.ready);
+      const chosenFaces = await reloaded.evaluate(() => [...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family));
+      for (const family of ["Source Serif 4 Variable", "Fira Code Variable"]) {
+        check(`the chosen "${family}" face actually loaded (no silent fallback)`, chosenFaces.includes(family), chosenFaces.join(", "));
+      }
+      await reloaded.locator(".settings-pop").screenshot({ path: path.join(shots, "appearance-typefaces.png") });
+      await closeSettings(reloaded);
+      await reloaded.screenshot({ path: path.join(shots, "console-source-serif.png") });
       await reloaded.close();
+
+      // The pre-paint script again, and for a harder reason than the theme's: a face applied after
+      // the bundle loads reflows the entire console, on every single load.
+      const refonted = await context.newPage();
+      await refonted.goto(`${BASE}/`, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
+      check(
+        "both faces are painted before the bundle mounts (no reflow on load)",
+        JSON.stringify(await activeFonts(refonted)) === JSON.stringify({ ui: "source-serif", mono: "fira-code" }),
+        JSON.stringify(await activeFonts(refonted)),
+      );
+      await refonted.waitForSelector(".accounts .acct", { timeout: 25_000 });
+      await refonted.waitForSelector(".card", { timeout: 15_000 });
+      check("and they survive the reload", /Source Serif/.test((await usedFaces(refonted)).body), (await usedFaces(refonted)).body);
+
+      await openAppearance(refonted);
+      await chooseFont(refonted, 0, "default");
+      await chooseFont(refonted, 1, "default");
+      check(
+        "choosing the default back removes both attributes entirely",
+        JSON.stringify(await activeFonts(refonted)) === JSON.stringify({ ui: null, mono: null }),
+        JSON.stringify(await activeFonts(refonted)),
+      );
+      const restoredFaces = await usedFaces(refonted);
+      check(
+        "and the console renders in exactly the families it started in",
+        restoredFaces.body === defaultFaces.body && restoredFaces.mono === defaultFaces.mono,
+        `${JSON.stringify(defaultFaces)} -> ${JSON.stringify(restoredFaces)}`,
+      );
+
+      // The specimen row carries a nowrap sample line, so a phone is where it would overflow.
+      await refonted.setViewportSize({ width: 430, height: 900 });
+      await refonted.waitForSelector(".font-picker", { state: "visible", timeout: 10_000 });
+      const rowOverflow = await refonted.evaluate(() => {
+        const row = document.querySelector(".font-option");
+        return row.scrollWidth - row.clientWidth;
+      });
+      check("a typeface row fits its column on a phone", rowOverflow <= 0, `overflow ${rowOverflow}px`);
+      await refonted.locator(".settings-pop").screenshot({ path: path.join(shots, "appearance-typefaces-phone.png") });
+      await refonted.close();
 
       check(
         `every request stayed on this origin (typefaces bundled, no font CDN)`,

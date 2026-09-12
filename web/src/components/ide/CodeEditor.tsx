@@ -36,7 +36,10 @@ export function CodeEditor(props: EditorProps) {
   const models = useRef(new Map<string, { model: monaco.editor.ITextModel; view: monaco.editor.ICodeEditorViewState | null }>());
   const current = useRef<string>("");
   useEffect(() => {
-    const editor = monaco.editor.create(host.current!, { model: null, automaticLayout: true, theme: "vs-dark", fontFamily: "JetBrains Mono, monospace", fontSize: 13, scrollBeyondLastLine: false, padding: { top: 12 }, fixedOverflowWidgets: true, tabSize: 2, ariaLabel: "Code editor", renderWhitespace: "selection" });
+    // Monaco does not resolve CSS custom properties, so the editor reads the console's --font-mono
+    // token itself and re-reads it whenever Settings → Appearance swaps the monospace face.
+    const monoFace = () => getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() || "monospace";
+    const editor = monaco.editor.create(host.current!, { model: null, automaticLayout: true, theme: "vs-dark", fontFamily: monoFace(), fontSize: 13, scrollBeyondLastLine: false, padding: { top: 12 }, fixedOverflowWidgets: true, tabSize: 2, ariaLabel: "Code editor", renderWhitespace: "selection" });
     instance.current = editor;
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => callbacks.current.onSave());
     const change = editor.onDidChangeModelContent(() => callbacks.current.onChange(editor.getModel()!.getValue(undefined, true)));
@@ -54,7 +57,8 @@ export function CodeEditor(props: EditorProps) {
       monaco.editor.defineTheme("ggo", { base: "vs-dark", inherit: true, rules: [], colors: { "editor.background": color("--bg-1"), "editor.foreground": color("--text"), "editorLineNumber.foreground": color("--text-faint"), "editorCursor.foreground": color("--accent"), "editor.selectionBackground": color("--bg-3") } });
       monaco.editor.setTheme("ggo");
     };
-    theme(); const observer = new MutationObserver(theme); observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    const repaint = () => { theme(); editor.updateOptions({ fontFamily: monoFace() }); };
+    theme(); const observer = new MutationObserver(repaint); observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-font-mono"] });
     return () => { observer.disconnect(); change.dispose(); cursor.dispose(); markers.dispose(); editor.dispose(); instance.current = null; models.current.forEach(m => m.model.dispose()); models.current.clear(); };
   }, []);
   useEffect(() => {
