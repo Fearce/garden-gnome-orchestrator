@@ -11,15 +11,15 @@
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { readStamp, assessStamp, fingerprintFile } = require("./gates-provenance.cjs");
-const { STAMP, GATES } = require("./run-gates.cjs");
+const { STAMP, GATES, gitStatusPaths } = require("./run-gates.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const ROOT_DIR = path.resolve(SERVER_DIR, "..");
 const RUNNER = path.join(SERVER_DIR, "scripts", "run-gates.cjs");
 
-function git(args) {
+function git(args, run = execFileSync) {
   try {
-    return execFileSync("git", args, { cwd: ROOT_DIR, encoding: "utf8", windowsHide: true }).trim();
+    return run("git", args, { cwd: ROOT_DIR, encoding: "utf8", windowsHide: true }).trim();
   } catch {
     return null;
   }
@@ -36,14 +36,17 @@ function ago(ms) {
   return hrs < 48 ? `${hrs.toFixed(1)}h ago` : `${(hrs / 24).toFixed(1)}d ago`;
 }
 
-function currentState(stamp) {
-  const head = git(["rev-parse", "HEAD"]);
-  const changedSince = stamp?.head && head && stamp.head !== head ? lines(git(["diff", "--name-only", `${stamp.head}..${head}`])) : [];
+function currentState(stamp, run = execFileSync) {
+  const head = git(["rev-parse", "HEAD"], run);
+  const changedSince = stamp?.head && head && stamp.head !== head ? lines(git(["diff", "--name-only", `${stamp.head}..${head}`], run)) : [];
   return {
     head,
     runnerFingerprint: fingerprintFile(RUNNER),
     changedSince,
-    dirty: lines(git(["status", "--porcelain"])).map((l) => l.slice(3)),
+    // Porcelain's leading status columns are data. Reuse the runner's tested parser; the former
+    // `.trim()` path dropped the first character from the first unstaged filename and made every
+    // green over a dirty shared tree report STALE immediately.
+    dirty: gitStatusPaths(run),
   };
 }
 

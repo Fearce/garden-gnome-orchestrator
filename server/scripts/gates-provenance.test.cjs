@@ -16,6 +16,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { classifyPath, buildStamp, readStamp, assessStamp, fingerprint, STAMP_VERSION } = require("./gates-provenance.cjs");
 const { STAMP } = require("./run-gates.cjs");
+const { currentState } = require("./gates-status.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const ROOT = path.resolve(SERVER_DIR, "..");
@@ -118,6 +119,36 @@ assert.match(overDirty.caveats.join(" "), /DIRTY tree/, "a shared checkout makes
 const stillDirty = assessStamp(dirtyRun, { ...unchanged, dirty: ["server/src/x.ts"] });
 assert.equal(stillDirty.verdict, "fresh", "the same uncommitted file the run covered cannot stale that run");
 assert.match(stillDirty.caveats.join(" "), /not pinned/, "…but its content since is unverifiable, and that must be said");
+
+// Exercise the real state reader, not only assessStamp. `git status --porcelain` begins an unstaged row
+// with a space; trimming the whole response before removing its three-column prefix turns `server/...`
+// into `erver/...`. The stamp then sees a fictional new gate file and reports a fresh run as stale.
+const sharedDirtyState = currentState(
+  { head: "aaaaaaaa" },
+  (_command, args) => {
+    if (args[0] === "rev-parse") return "aaaaaaaa\n";
+    if (args[0] === "status") return " M server/scripts/failover-ladder.test.cjs\r\n?? server/scripts/new.cjs\r\n";
+    throw new Error(`unexpected git call: ${args.join(" ")}`);
+  },
+);
+assert.deepEqual(
+  sharedDirtyState.dirty,
+  ["server/scripts/failover-ladder.test.cjs", "server/scripts/new.cjs"],
+  "the first porcelain path keeps its first byte",
+);
+assert.equal(
+  assessStamp(
+    buildStamp({
+      ...cleanStamp,
+      dirty: sharedDirtyState.dirty,
+      runnerFingerprint: sharedDirtyState.runnerFingerprint,
+      results: green,
+    }),
+    sharedDirtyState,
+  ).verdict,
+  "fresh",
+  "an unchanged dirty tree stays fresh instead of inventing a new `erver/...` gate path",
+);
 
 // The other direction, which is the one that must NOT be loosened: dirt that appeared AFTERWARDS.
 const newDirt = assessStamp(dirtyRun, { ...unchanged, dirty: ["server/src/x.ts", "server/src/y.ts"] });
