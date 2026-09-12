@@ -71,6 +71,8 @@
     "test:director-supervisor": "tsx src/tests/directorSupervisor.test.ts",
     "test:auto-review-health": "node scripts/auto-review-health.test.cjs",
     "test:supervisor-chat-probe": "node scripts/supervisor-chat-probe.test.cjs",
+    "test:inject-thread": "node scripts/inject-thread.test.cjs",
+    "test:thread-feed-probe": "node scripts/probe-thread-feed.test.cjs",
     "test:concise-communication": "tsx src/tests/conciseCommunication.test.ts",
     "test:run-error": "tsx src/tests/runError.test.ts",
     "test:run-classify": "node scripts/run-classify.test.cjs",

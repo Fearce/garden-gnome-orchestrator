@@ -52,12 +52,44 @@ assert.deepEqual(stale, [], `GATES lists script(s) that no longer exist in packa
 const exempted = [...NOT_FREE.keys()].filter((s) => gates.has(s));
 assert.deepEqual(exempted, [], `script(s) marked NOT_FREE but still registered as a gate: ${exempted.join(", ")}`);
 
+// Every directory that holds test files, not just src/tests. 43 of this repo's tests are
+// `scripts/*.test.cjs` — the probe/sweep/health half — and drift #2 hides there just as well:
+// `inject-thread.test.cjs` was committed in b8b6e51 and had never once been run by the sweep.
+// A script body may live in any workspace's package.json (the root `scripts/` tests are declared
+// in server/package.json), so referencing is checked against all of them.
+const TEST_DIRS = [
+  path.join(ROOT_DIR, "scripts"),
+  path.join(SERVER_DIR, "scripts"),
+  path.join(SERVER_DIR, "src", "tests"),
+  path.join(ROOT_DIR, "web", "scripts"),
+];
+const WORKSPACE_PKGS = [ROOT_DIR, SERVER_DIR, path.join(ROOT_DIR, "web"), path.join(ROOT_DIR, "relay")];
+
+const scriptBodies = WORKSPACE_PKGS.filter((d) => fs.existsSync(path.join(d, "package.json"))).flatMap((d) =>
+  Object.values(JSON.parse(fs.readFileSync(path.join(d, "package.json"), "utf8")).scripts ?? {}),
+);
+
 // `_`-prefixed files are throwaway scratch harnesses (see .claude/rules/e2e-a-pipeline-lane.md).
-const testFiles = fs
-  .readdirSync(path.join(SERVER_DIR, "src", "tests"))
-  .filter((f) => /\.(test|itest)\.ts$/.test(f) && !f.startsWith("_"));
-const scriptBodies = Object.values(pkg.scripts);
-const unreferenced = testFiles.filter((f) => !scriptBodies.some((cmd) => cmd.includes(`src/tests/${f}`)));
+const testFiles = TEST_DIRS.filter((d) => fs.existsSync(d)).flatMap((dir) =>
+  fs
+    .readdirSync(dir)
+    .filter((f) => /\.(test|itest)\.(cjs|mjs|ts|tsx)$/.test(f) && !f.startsWith("_"))
+    .map((f) => ({ file: f, rel: path.relative(ROOT_DIR, path.join(dir, f)).split(path.sep).join("/") })),
+);
+// Matched on the file NAME, because a script body spells the path relative to its own workspace:
+// `server/scripts/x.test.cjs` is referenced as `scripts/x.test.cjs` and the root one as
+// `../scripts/…`. That is only sound while the names are unique, so require it — two same-named
+// tests in different directories would otherwise let one vouch for the other.
+const byName = new Map();
+for (const t of testFiles) byName.set(t.file, [...(byName.get(t.file) ?? []), t.rel]);
+const collisions = [...byName.values()].filter((rels) => rels.length > 1);
+assert.deepEqual(
+  collisions,
+  [],
+  `test file name(s) reused across directories — one would vouch for the other: ${collisions.flat().join(", ")}`,
+);
+
+const unreferenced = testFiles.filter((t) => !scriptBodies.some((cmd) => cmd.includes(t.file))).map((t) => t.rel);
 assert.deepEqual(
   unreferenced,
   [],
@@ -65,5 +97,5 @@ assert.deepEqual(
 );
 
 console.log(
-  `Gate registration OK — ${testScripts.length} test script(s) all registered, ${testFiles.length} test file(s) all reachable.`,
+  `Gate registration OK — ${testScripts.length} test script(s) all registered, ${testFiles.length} test file(s) across ${TEST_DIRS.length} directories all reachable.`,
 );

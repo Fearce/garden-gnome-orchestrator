@@ -72,6 +72,8 @@ const GATES = [
   "test:director-supervisor",
   "test:auto-review-health",
   "test:supervisor-chat-probe",
+  "test:inject-thread",
+  "test:thread-feed-probe",
   "test:concise-communication",
   "test:run-error",
   "test:run-classify",
