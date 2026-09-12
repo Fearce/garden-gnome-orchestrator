@@ -7004,9 +7004,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.renewQaRecoveryAllowances(thread.id);
       return verdict;
     }
-    // An empty run is NOT a review that found nothing — it never reached the model at all. Checked before
-    // the turn-ceiling branch because it arrives as a SUCCESS result, so `isTurnLimitStop` is false and the
-    // round would otherwise fall straight through to the owner.
+    // A hollow run is NOT a review that found nothing — it never reached the model at all. Usually it is
+    // completely empty, but a resumed SDK session can replay a pending tool call from the cut-off query while
+    // still reporting 0 turns / $0 for this query. `ranSilently` treats that telemetry as authoritative.
+    // Checked before the turn-ceiling branch because it arrives as a SUCCESS result, so `isTurnLimitStop` is
+    // false and the round would otherwise fall straight through to the owner.
     if (this.ranSilently(thread.id, "qa", attemptFrom, res)) return this.retrySilentQa(thread, opts);
     if (!this.isTurnLimitStop(res)) return undefined;
     return this.continueCutOffQa(thread, opts);
@@ -7947,10 +7949,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return (runId ? this.db.getRun(runId)?.startedAt : undefined) ?? Date.now();
   }
 
-  /** Whether a role's attempt returned a SUCCESS result having produced nothing at all — no text, no
-   *  reasoning, no tool call — since `from`. Seen when a warm `--resume` comes back in seconds with 0 turns
-   *  and $0: the CLI loads the session, emits `system:init`, and exits without ever reaching the model. That
-   *  is not a finish, but it looks exactly like one to the caller, which is how half-done work reached QA.
+  /** Whether a role's attempt returned a SUCCESS result without reaching the model. Usually that means no
+   *  text, reasoning or tool call since `from`. A resumed SDK session can also replay one pending tool call
+   *  from the cut-off query while reporting 0 turns / $0 for the new query; that is still hollow — no new
+   *  model turn ran and no verdict can follow. That replay shape parked task 7b4d99a0 after its verifier hit
+   *  the ceiling.
    *
    *  Counted from the persisted messages rather than the run's own events on purpose: `awaitImplementorResult`
    *  can relaunch the run internally on an account failover, so the result may come from a DIFFERENT run than
@@ -7960,7 +7963,16 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // A cancelled run legitimately stops without output — that's the user's doing, not a failed resume, and
     // mislabelling it would both retry a task the user killed and file it as a failure in the run history.
     if (!res || res.isError || this.cancelled(threadId)) return false;
-    return this.db.countAgentMessagesSince(threadId, role, from) === 0;
+    if (this.db.countAgentMessagesSince(threadId, role, from) === 0) return true;
+    // Message traffic alone is not proof that the resumed query reached the model: the Agent SDK may
+    // replay a pending tool_use from the cut-off query, then return success without a structured result.
+    // Explicit zero telemetry is the stronger signal. Require BOTH fields and the current attempt's row so
+    // providers that omit metering (null) and an older 0-turn run cannot create a false retry.
+    const attempt = this.db
+      .listRuns(threadId)
+      .filter((run) => run.role === role && run.startedAt >= from)
+      .sort((a, b) => b.startedAt - a.startedAt)[0];
+    return attempt?.numTurns === 0 && attempt.costUsd === 0;
   }
 
   /** Record a silent run as the failure it is instead of leaving a `done` row with 0 turns. The run-history

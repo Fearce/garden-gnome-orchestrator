@@ -166,7 +166,7 @@ interface QaRoleCall {
  *  The stub also persists the `agent_runs` row the real `runRole` would have written, error text and
  *  all: the park path reads the latest QA run's error to stay diagnosable, and a harness with an empty
  *  runs table would silently exercise the generic fallback instead. */
-function stubQaRunRole(h: Harness, results: unknown[]): QaRoleCall[] {
+function stubQaRunRole(h: Harness, results: unknown[], replayOnlyCalls: number[] = []): QaRoleCall[] {
   const calls: QaRoleCall[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = h.mgr as any;
@@ -176,12 +176,20 @@ function stubQaRunRole(h: Harness, results: unknown[]): QaRoleCall[] {
     calls.push({ kickoff: typeof kickoff === "string" ? kickoff : JSON.stringify(kickoff), resume });
     const res = results[Math.min(calls.length - 1, results.length - 1)] as { isError?: boolean };
     const run = h.db.createRun({ threadId: t.id, role: role as "qa", model: "claude-opus-5" });
+    const replayOnly = replayOnlyCalls.includes(calls.length);
     h.db.updateRun(run.id, {
       sessionId: QA_SESSION,
       state: res.isError ? "error" : "done",
       error: res.isError ? runErrorText(res as ResultEvent) : null,
+      ...(replayOnly ? { numTurns: 0, costUsd: 0 } : {}),
       endedAt: Date.now(),
     });
+    // A resumed Agent SDK session can replay the cut-off query's pending tool_use even though the resumed
+    // query itself never reaches the model (0 turns / $0). This is the exact production signature that a
+    // message-count-only silent check misread as work.
+    if (replayOnly) {
+      h.db.addMessage({ threadId: t.id, runId: run.id, role: "qa", kind: "tool", content: "Bash { replayed pending tool call }" });
+    }
     return res;
   };
   return calls;
@@ -555,6 +563,37 @@ async function main(): Promise<void> {
       check("both recovery budgets were charged once each", h.db.getThreadStageOutputs(id).qaCutoffResumes === 1 && h.db.getThreadStageOutputs(id).qaSilentRetries === 1, JSON.stringify(h.db.getThreadStageOutputs(id)));
       check("still only one QA round was spent", h.db.getThreadStageOutputs(id).qaRoundsUsed === 1, String(h.db.getThreadStageOutputs(id).qaRoundsUsed));
       check("the task reached a verdict instead of the owner's queue", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test L2: the production replay shape is hollow too ---------------------------------------------
+  // Task 7b4d99a0 did not look silent by message count: its cut-off verifier's resumed SDK query replayed
+  // one pending Bash tool_use, then exited success with 0 turns / $0 and no structured verdict. The replay
+  // belongs to the old query; it is not proof that a new model turn ran. The explicit zero telemetry must
+  // trigger the same bounded fresh-session recovery as a completely empty resume.
+  console.log("\nTest L2 — a 0-turn continuation with one replayed tool call still restarts fresh");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const qaCalls = stubQaRunRole(
+        h,
+        [CUTOFF, SILENT, verdictResult({ pass: true, summary: "verified", changed: false })],
+        [2],
+      );
+      await runLoop(h, id, 4);
+      const qaRuns = h.db.listRuns(id).filter((run) => run.role === "qa").sort((a, b) => a.startedAt - b.startedAt);
+      const replayRun = qaRuns.find((run) => run.numTurns === 0 && run.costUsd === 0);
+      const replayMessages = h.db.listMessages(id).filter((message) => message.runId === replayRun?.id);
+      check("the continuation really was non-silent by the old message-count test", replayMessages.length === 1, JSON.stringify(replayMessages));
+      check("QA ran three times: cutoff, replay-only continuation, fresh retry", qaCalls.length === 3, `calls=${qaCalls.length}`);
+      check("the replay-only continuation resumed the cut-off session", qaCalls[1]?.resume === QA_SESSION, String(qaCalls[1]?.resume));
+      check("zero-turn telemetry forced the next attempt onto a fresh session", qaCalls[2]?.resume === undefined, String(qaCalls[2]?.resume));
+      check("the hollow continuation is recorded as an error, not a clean done run", replayRun?.state === "error", `state=${replayRun?.state}`);
+      check("the recovery still spends only the existing bounded fresh-retry allowance", h.db.getThreadStageOutputs(id).qaSilentRetries === 1);
+      check("the fresh verifier completed the task instead of parking it", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
     } finally {
       h.dispose();
     }
