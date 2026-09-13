@@ -66,3 +66,6 @@ Conventions that bite:
 
 Verify: `npm run typecheck && npm run build`, then a throwaway-instance browser E2E
 (recipe: `e2e-a-pipeline-lane.md` + project memory `browser-test-throwaway-instance`).
+For a reported Scheduled Tasks delay on the running console, use
+`npm run probe:scheduler-latency --prefix server -- --confirm`: it times create/enable/disable/delete
+over the authenticated WebSocket and independently verifies that its inert temporary row was removed.
