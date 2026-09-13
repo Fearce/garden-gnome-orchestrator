@@ -890,9 +890,10 @@ const STALE_MS = 35_000;
 // costs nothing and satisfies the same requirement. A full resync still runs, just rarely; a reconnect
 // and a re-shown tab (the two cases that really do miss events) still take a snapshot immediately.
 const RESYNC_MS = 5 * 60_000;
+const PING_FALLBACK_MS = 5_000;
 let lastRecvAt = 0;
 let lastResyncAt = 0;
-// Set false for good once a server answers two pings with nothing — that server predates the command.
+// Set false for this socket once a server answers a ping with nothing — that server predates the command.
 // It can happen for real: web/dist deploys the instant it is built, while the server bounces later.
 let pingSupported = true;
 let unansweredPings = 0;
@@ -908,12 +909,19 @@ function beat(): void {
     sendCommand({ type: "snapshot.request" });
     return;
   }
-  if (unansweredPings >= 2) {
+  if (!sendCommand({ type: "ping" })) return;
+  unansweredPings++;
+  // A freshly built web bundle can arrive before its matching server restart. The old server silently
+  // ignores this command, so fall back BEFORE the 35-second stale-socket watchdog tears down a healthy
+  // old-server tunnel. A real `pong` clears the count; a response delayed beyond this small grace period
+  // merely makes this connection use the existing snapshot heartbeat, which is safe.
+  setTimeout(() => {
+    if (!pingSupported || unansweredPings === 0) return;
     pingSupported = false;
+    unansweredPings = 0;
+    lastResyncAt = Date.now();
     sendCommand({ type: "snapshot.request" });
-    return;
-  }
-  if (sendCommand({ type: "ping" })) unansweredPings++;
+  }, PING_FALLBACK_MS);
 }
 
 function clearTimers(): void {
@@ -2449,6 +2457,9 @@ export function connect(): void {
     // that reached the server just before the old tunnel died. Then replay anything still missing.
     sendCommand({ type: "snapshot.request" });
     lastResyncAt = Date.now();
+    // A server can be upgraded between reconnects. Re-probe rather than making a stale compatibility
+    // verdict permanent for the lifetime of this browser tab.
+    pingSupported = true;
     unansweredPings = 0;
     replaySendingOutbound();
     heartbeat = setInterval(beat, HEARTBEAT_MS);
