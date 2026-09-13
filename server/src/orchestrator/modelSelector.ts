@@ -31,9 +31,12 @@ const MAX_REASON_CHARS = 200;
  * spend ("frontier-tier spend is justified by the migration risk", "needs frontier capacity") carries
  * no negation and is deliberately left untouched — the selector is instructed to write exactly that,
  * and rewriting it would destroy the evidence the owner needs.
+ *
+ * Deliberately NOT global: `scrubFrontierAvoidance` uses `.test()`/`.exec()` per clause, and a /g regex
+ * carries `lastIndex` between calls, which would make every second check skip the start of its string.
  */
 const FRONTIER_AVOIDANCE_CLAIM =
-  /\b(?:(?:do(?:es)?|did|will|would|can|could)\s+not\s+(?:(?:need|require)\s+(?:to\s+(?:use|spend)\s+)?|(?:\w+\s+){0,2})|\w+n['’]t\s+(?:(?:need|require)\s+(?:to\s+(?:use|spend)\s+)?|(?:\w+\s+){0,2})|without\s+(?:\w+\s+){0,2}|no\s+(?:(?:need|reason)\s+(?:for\s+|to\s+(?:use|spend)\s+)?)?|not\s+(?:(?:worth|using|needing|requiring|spending)\s+)?|(?:\w+\s+enough\s+to\s+)?avoid(?:s|ing)?\s+|(?:\w+\s+enough\s+to\s+)?skip(?:s|ping)?\s+|instead\s+of\s+|rather\s+than\s+|away\s+from\s+|(?:keep(?:s|ing)?\s+(?:\w+\s+){0,3})?off\s+)(?:a\s+|the\s+|any\s+)?frontier(?:[-\s]?tier)?(?:\s+(?:spend|cost|model|capacity|tokens?|run|route|tier|budget))?\b/gi;
+  /\b(?:(?:do(?:es)?|did|will|would|can|could)\s+not\s+(?:(?:need|require)\s+(?:to\s+(?:use|spend)\s+)?|(?:\w+\s+){0,2})|\w+n['’]t\s+(?:(?:need|require)\s+(?:to\s+(?:use|spend)\s+)?|(?:\w+\s+){0,2})|without\s+(?:\w+\s+){0,2}|no\s+(?:(?:need|reason)\s+(?:for\s+|to\s+(?:use|spend)\s+)?)?|not\s+(?:(?:worth|using|needing|requiring|spending)\s+)?|(?:\w+\s+enough\s+to\s+)?avoid(?:s|ing)?\s+|(?:\w+\s+enough\s+to\s+)?skip(?:s|ping)?\s+|instead\s+of\s+|rather\s+than\s+|away\s+from\s+|(?:keep(?:s|ing)?\s+(?:\w+\s+){0,3})?off\s+)(?:a\s+|the\s+|any\s+)?frontier(?:[-\s]?tier)?(?:\s+(?:spend|costs?|model|capacity|tokens?|run|route|tier|budget))?\b/i;
 const CODEX_CLI_BRIDGE_NOTE = "separate CLI with no interactive bus tools, but text bridges preserve office chat, owner notes, and deliverables";
 
 type Block = { type?: string; text?: string };
@@ -149,12 +152,64 @@ function isFrontierTierCandidate(candidate: ModelCandidate): boolean {
   return isPolicyApprovedFlagship(candidate) || /\bfrontier(?:[-\s]?tier| reasoning)\b/i.test(candidate.note);
 }
 
+/** What replaces a scrubbed claim. A whole sentence, because the scrub removes whole clauses. */
+const FRONTIER_DELIBERATE_NOTE = "Frontier-tier capacity chosen deliberately.";
+/** A trailing word the offending clause was leading INTO — keeping it strands a dangling connective. */
+const DANGLING_TAIL =
+  /(?:\b(?:and|or|but|so|yet|while|because|since|although|though|whereas|that|which|who|to|for|of|in|on|at|by|with|from|as|than|then|thus|is|are|was|were|be|being|been|it|this|these|those|the|a|an|its|our|we|I)\b|[,;:\-–—]+)\s*$/i;
+
+/**
+ * Remove an owner-facing claim that a frontier-tier pick avoids frontier spend, at CLAUSE level.
+ *
+ * The first shape of this guard spliced a replacement phrase in place of the matched words, which is
+ * not a safe edit on free-form prose: it shipped "picked to using frontier-tier capacity deliberately
+ * while keeping quality", "This using frontier-tier capacity deliberately." and "Handles this using
+ * frontier-tier capacity deliberately costs." into the same owner-facing finding the reported bug was
+ * about. A clause either makes the contradictory claim or it does not, so the only edit guaranteed to
+ * stay grammatical is to drop the claim and everything it governs, keep whatever full clause preceded
+ * it, and state the honest fact in one appended sentence.
+ */
+function scrubFrontierAvoidance(reason: string): string {
+  // Sentence/semicolon boundaries only. A comma-level split shreds ordinary lists ("scheduler, UI,
+  // process control"); a decimal model id ("gpt-5.6") is safe because a boundary needs trailing space.
+  const clauses = reason.split(/(?<=[.!?;])\s+|;\s*/).map((c) => c.trim()).filter(Boolean);
+  let scrubbed = false;
+  const kept: string[] = [];
+  for (const clause of clauses) {
+    const hit = FRONTIER_AVOIDANCE_CLAIM.exec(clause);
+    if (!hit) {
+      kept.push(clause);
+      continue;
+    }
+    scrubbed = true;
+    // Keep the clause's prefix only when it still reads as a statement on its own: everything AFTER the
+    // claim was governed by it ("… frontier spend WHILE KEEPING QUALITY") and cannot be salvaged.
+    // Repeat until stable: a run-up to the claim strands several at once (", and it does not need …").
+    let prefix = clause.slice(0, hit.index).trim();
+    for (let next = prefix.replace(DANGLING_TAIL, "").trim(); next !== prefix; next = prefix.replace(DANGLING_TAIL, "").trim()) prefix = next;
+    if (prefix.split(/\s+/).filter(Boolean).length >= 3) kept.push(prefix);
+  }
+  if (!scrubbed) return reason;
+  // Re-punctuate rather than re-join the originals: two surviving SENTENCES would otherwise read
+  // "Alpha.; Beta." One terminal stop is added once, at the end, below.
+  const body = kept.map((c) => c.replace(/[\s.,;:!?]+$/, "")).filter(Boolean).join("; ");
+  if (!body) return FRONTIER_DELIBERATE_NOTE;
+  const sentence = /[.!?]$/.test(body) ? body : `${body}.`;
+  const room = MAX_REASON_CHARS - FRONTIER_DELIBERATE_NOTE.length - 1;
+  return `${sentence.length > room ? clampWords(sentence, room) : sentence} ${FRONTIER_DELIBERATE_NOTE}`;
+}
+
+/** Cut at a word boundary so the appended sentence never lands after half a word. */
+function clampWords(text: string, max: number): string {
+  const cut = text.slice(0, max);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > 0 ? cut.slice(0, space) : cut).replace(/[\s,;:.]+$/, "")}.`;
+}
+
 function sanitizeReason(reason: string, candidate: ModelCandidate): string {
   const normalized = reason.trim().replace(/\s+/g, " ");
   if (!normalized) return "";
-  const safe = isFrontierTierCandidate(candidate)
-    ? normalized.replace(FRONTIER_AVOIDANCE_CLAIM, "using frontier-tier capacity deliberately")
-    : normalized;
+  const safe = isFrontierTierCandidate(candidate) ? scrubFrontierAvoidance(normalized) : normalized;
   return safe.slice(0, MAX_REASON_CHARS);
 }
 

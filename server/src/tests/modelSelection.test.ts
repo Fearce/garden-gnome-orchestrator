@@ -208,7 +208,12 @@ console.log("Flagship capability floor");
     astraCtx,
   );
   const reason = pick?.reason ?? "";
-  check("a frontier pick cannot claim it avoids frontier spend", reason.includes("using frontier-tier capacity deliberately") && !/without needing frontier spend/i.test(reason), reason);
+  const NOTE = "Frontier-tier capacity chosen deliberately.";
+  check(
+    "a frontier pick cannot claim it avoids frontier spend",
+    reason === `Strong autonomous coder; task spans scheduler, UI, process control, and script-hub integration. ${NOTE}`,
+    reason,
+  );
 
   // The prompt instruction alone leaves this at the mercy of one free-form string, so the scrub has to
   // survive ordinary rephrasings of the same claim — and must NOT eat a reason that argues FOR the spend,
@@ -228,9 +233,35 @@ console.log("Flagship capability floor");
     "not worth frontier spend",
     "won't need any frontier budget",
   ]) {
-    check(`a frontier pick cannot claim: "${claim}"`, !/frontier/i.test(reasonFor(claim).replace(/using frontier-tier capacity deliberately/g, "")), reasonFor(claim));
+    check(`a frontier pick cannot claim: "${claim}"`, !/frontier/i.test(reasonFor(claim).replace(NOTE, "")), reasonFor(claim));
   }
-  check("frontier-avoidance replacement stays grammatical after stale prefixes", reasonFor("cheap enough to skip frontier spend") === "using frontier-tier capacity deliberately" && reasonFor("keeps the task off frontier spend") === "using frontier-tier capacity deliberately", `${reasonFor("cheap enough to skip frontier spend")} | ${reasonFor("keeps the task off frontier spend")}`);
+  // The first shape of this guard spliced the replacement in place of the matched words and shipped
+  // broken English into the owner's finding ("picked to using frontier-tier capacity deliberately while
+  // keeping quality", "This using frontier-tier capacity deliberately."). The scrub drops whole clauses
+  // precisely so every surviving result is a sentence; assert the exact strings, not just the absence.
+  for (const [raw, expected] of [
+    ["Broad multi-file work; picked to avoid frontier spend while keeping quality.", `Broad multi-file work. ${NOTE}`],
+    ["Handles this without frontier costs.", NOTE],
+    ["This keeps us off the frontier tier.", NOTE],
+    ["Chosen to skip the frontier tier entirely.", NOTE],
+    ["cheap enough to skip frontier spend", NOTE],
+    ["keeps the task off frontier spend", NOTE],
+    ["Broad refactor without frontier spend. It also avoids frontier cost. Terra could not finish it.", `Terra could not finish it. ${NOTE}`],
+    // Two surviving SENTENCES must not be re-joined as "Alpha.; Beta." — one terminal stop, at the end.
+    ["Alpha is risky. Beta spans four modules. Gamma without frontier spend.", `Alpha is risky; Beta spans four modules. ${NOTE}`],
+    [
+      "Wide blast radius across auth, billing and the migration path, so the deepest available autonomous reasoning is warranted here for correctness, and it does not need frontier spend.",
+      `Wide blast radius across auth, billing and the migration path, so the deepest available autonomous reasoning is warranted here for correctness. ${NOTE}`,
+    ],
+  ] as const) {
+    check(`the scrubbed reason is still a sentence: "${raw.slice(0, 48)}…"`, reasonFor(raw) === expected, `${reasonFor(raw)} !== ${expected}`);
+  }
+  const longClaim = "This change reaches across the scheduler, the process supervisor, the websocket protocol, the console bundle and the script-hub registration, and every one of those halves has its own restart semantics to preserve, without needing frontier spend.";
+  check(
+    "a scrubbed reason still fits the reason budget and keeps the note whole",
+    reasonFor(longClaim).length <= 200 && reasonFor(longClaim).endsWith(NOTE) && !/frontier/i.test(reasonFor(longClaim).replace(NOTE, "")),
+    `${reasonFor(longClaim)} [${reasonFor(longClaim).length}]`,
+  );
   for (const justified of [
     "frontier-tier spend is justified by the migration risk",
     "subtle cross-cutting debugging needs frontier reasoning",
@@ -238,6 +269,22 @@ console.log("Flagship capability floor");
   ]) {
     check(`a justified frontier reason survives intact: "${justified}"`, reasonFor(justified) === justified, reasonFor(justified));
   }
+  // The matcher is checked per clause with .test()/.exec(), so a /g flag would carry `lastIndex` between
+  // calls and let the SECOND identical reason through untouched. Pin that the same input scrubs twice.
+  const repeated = "Avoids frontier spend.";
+  check("the scrub is stateless across calls", reasonFor(repeated) === NOTE && reasonFor(repeated) === NOTE, reasonFor(repeated));
+
+  // ...and a genuinely cheap pick may still say it avoids frontier spend, because that is true.
+  const lunaCtx = {
+    candidates: [{ provider: "codex" as const, model: "gpt-5.6-luna", efforts: ["low" as const], note: modelNote("codex", "gpt-5.6-luna") }],
+    efforts: ["low" as const],
+  };
+  const lunaReason = "small mechanical edit without needing frontier spend";
+  check(
+    "the scrub never reaches a non-frontier pick",
+    parseSelection(JSON.stringify({ model: "gpt-5.6-luna", effort: "low", reason: lunaReason }), lunaCtx)?.reason === lunaReason,
+    String(parseSelection(JSON.stringify({ model: "gpt-5.6-luna", effort: "low", reason: lunaReason }), lunaCtx)?.reason),
+  );
 }
 
 {
