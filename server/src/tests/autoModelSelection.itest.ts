@@ -272,7 +272,7 @@ async function main(): Promise<void> {
   {
     const h = makeHarness();
     try {
-      const codex = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
+      const codex = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-4.1", "o3"];
       const grok = ["grok-4.6", "grok-4.7", "grok-4.8", "grok-4.9", "grok-4.10"];
       // Deliberately NOT the curated ids: z.ai's live roster is what the key can actually reach, and a
       // curated list is only the cold-start fallback. Stubbing the picker here would assert nothing —

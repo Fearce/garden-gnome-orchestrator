@@ -165,24 +165,29 @@ console.log("Flagship capability floor");
     terra: modelNote("codex", "gpt-5.6-terra"),
     luna: modelNote("codex", "gpt-5.6-luna"),
     legacy: modelNote("codex", "gpt-5.5"),
+    older: modelNote("codex", "gpt-4.1"),
+    oSeries: modelNote("codex", "o3"),
   };
   check("Astra is described as expensive frontier capacity", /highest-cost.*frontier-tier.*justify the spend/i.test(notes.astra), notes.astra);
   check("Sol, Terra, and Luna carry distinct cost tiers", /premium GPT-5\.6/i.test(notes.sol) && /balanced GPT-5\.6/i.test(notes.terra) && /budget GPT-5\.6/i.test(notes.luna), JSON.stringify(notes));
   check("Luna is framed above legacy 5.5/5.4 for value", /beat legacy GPT-5\.5\/5\.4.*quality and cost/i.test(notes.luna), notes.luna);
-  check("legacy Codex notes warn against extra-high spend", /legacy pre-5\.6.*avoid extra-high/i.test(notes.legacy), notes.legacy);
+  check("older Codex notes warn against extra-high spend", /older\/non-GPT-5\.6.*avoid extra-high/i.test(notes.legacy) && /older\/non-GPT-5\.6.*avoid extra-high/i.test(notes.older) && /older\/non-GPT-5\.6.*avoid extra-high/i.test(notes.oSeries), JSON.stringify(notes));
 }
 
 {
   const roster: ModelCandidate[] = [
     { provider: "codex", model: "gpt-5.5", efforts: ["low", "medium", "high", "xhigh"], note: modelNote("codex", "gpt-5.5") },
+    { provider: "codex", model: "gpt-4.1", efforts: ["low", "medium", "high", "xhigh"], note: modelNote("codex", "gpt-4.1") },
+    { provider: "codex", model: "o3", efforts: ["low", "medium", "high", "xhigh"], note: modelNote("codex", "o3") },
     { provider: "codex", model: "gpt-5.6-luna", efforts: ["low", "medium", "high", "max"], note: modelNote("codex", "gpt-5.6-luna") },
     { provider: "claude", model: "claude-sonnet-5", efforts: ["low", "medium", "high"], note: "workhorse" },
   ];
   const filtered = filterAutoSelectionCandidates(roster);
-  check("legacy Codex is hidden while GPT-5.6+ Codex is dispatchable", !filtered.some((candidate) => candidate.model === "gpt-5.5") && filtered.some((candidate) => candidate.model === "gpt-5.6-luna"), JSON.stringify(filtered));
+  check("older Codex models are hidden while GPT-5.6+ Codex is dispatchable", !filtered.some((candidate) => ["gpt-5.5", "gpt-4.1", "o3"].includes(candidate.model)) && filtered.some((candidate) => candidate.model === "gpt-5.6-luna"), JSON.stringify(filtered));
   const fallback = filterAutoSelectionCandidates(roster.filter((candidate) => candidate.model !== "gpt-5.6-luna"));
   check("legacy Codex remains available when it is the only Codex fallback", fallback.some((candidate) => candidate.model === "gpt-5.5"), JSON.stringify(fallback));
   check("legacy Codex auto-selection offers no extra-high tier", autoSelectableEffortsForCandidate(roster[0]!, roster[0]!.efforts).join(",") === "low,medium,high");
+  check("older non-GPT-5 Codex auto-selection is capped too", autoSelectableEffortsForCandidate(roster[1]!, roster[1]!.efforts).join(",") === "low,medium,high" && autoSelectableEffortsForCandidate(roster[2]!, roster[2]!.efforts).join(",") === "low,medium,high");
 }
 
 {
@@ -213,14 +218,19 @@ console.log("Flagship capability floor");
   for (const claim of [
     "does not require frontier spend",
     "doesn't need frontier capacity",
+    "does not need to use frontier capacity",
     "avoids frontier-tier cost",
     "cheap enough to skip frontier spend",
     "chosen instead of frontier capacity",
     "keeps the task off frontier spend",
+    "no need for frontier spend",
+    "no need to use frontier capacity",
+    "not worth frontier spend",
     "won't need any frontier budget",
   ]) {
     check(`a frontier pick cannot claim: "${claim}"`, !/frontier/i.test(reasonFor(claim).replace(/using frontier-tier capacity deliberately/g, "")), reasonFor(claim));
   }
+  check("frontier-avoidance replacement stays grammatical after stale prefixes", reasonFor("cheap enough to skip frontier spend") === "using frontier-tier capacity deliberately" && reasonFor("keeps the task off frontier spend") === "using frontier-tier capacity deliberately", `${reasonFor("cheap enough to skip frontier spend")} | ${reasonFor("keeps the task off frontier spend")}`);
   for (const justified of [
     "frontier-tier spend is justified by the migration risk",
     "subtle cross-cutting debugging needs frontier reasoning",

@@ -25,15 +25,15 @@ const MAX_REASON_CHARS = 200;
  * roster — being announced as chosen "without needing frontier spend"; the prompt instruction alone
  * left that at the mercy of one free-form JSON string, so this is the deterministic half.
  *
- * Every alternative is an explicit negation/avoidance, and the small `(?:\w+\s+){0,2}` windows let one
- * or two words sit between it and "frontier" ("does not REQUIRE frontier spend"). Punctuation ends a
- * `\w+\s+` run, so the window cannot reach across a clause into a legitimate justification. A reason
- * that argues FOR the spend ("frontier-tier spend is justified by the migration risk", "needs frontier
- * capacity") carries no negation and is deliberately left untouched — the selector is instructed to
- * write exactly that, and rewriting it would destroy the evidence the owner needs.
+ * Every alternative is an explicit negation/avoidance, and the small word windows let normal phrasing
+ * sit between it and "frontier" ("does not REQUIRE frontier spend", "no NEED for frontier spend")
+ * without reaching across punctuation into a legitimate justification. A reason that argues FOR the
+ * spend ("frontier-tier spend is justified by the migration risk", "needs frontier capacity") carries
+ * no negation and is deliberately left untouched — the selector is instructed to write exactly that,
+ * and rewriting it would destroy the evidence the owner needs.
  */
 const FRONTIER_AVOIDANCE_CLAIM =
-  /\b(?:(?:do(?:es)?|did|will|would|can|could)\s+not\s+(?:\w+\s+){0,2}|\w+n['’]t\s+(?:\w+\s+){0,2}|without\s+(?:\w+\s+){0,2}|avoid(?:s|ing)?\s+|skip(?:s|ping)?\s+|instead\s+of\s+|rather\s+than\s+|away\s+from\s+|off\s+|no\s+|not\s+)(?:a\s+|the\s+|any\s+)?frontier(?:[-\s]?tier)?(?:\s+(?:spend|cost|model|capacity|tokens?|run|route|tier|budget))?\b/gi;
+  /\b(?:(?:do(?:es)?|did|will|would|can|could)\s+not\s+(?:(?:need|require)\s+(?:to\s+(?:use|spend)\s+)?|(?:\w+\s+){0,2})|\w+n['’]t\s+(?:(?:need|require)\s+(?:to\s+(?:use|spend)\s+)?|(?:\w+\s+){0,2})|without\s+(?:\w+\s+){0,2}|no\s+(?:(?:need|reason)\s+(?:for\s+|to\s+(?:use|spend)\s+)?)?|not\s+(?:(?:worth|using|needing|requiring|spending)\s+)?|(?:\w+\s+enough\s+to\s+)?avoid(?:s|ing)?\s+|(?:\w+\s+enough\s+to\s+)?skip(?:s|ping)?\s+|instead\s+of\s+|rather\s+than\s+|away\s+from\s+|(?:keep(?:s|ing)?\s+(?:\w+\s+){0,3})?off\s+)(?:a\s+|the\s+|any\s+)?frontier(?:[-\s]?tier)?(?:\s+(?:spend|cost|model|capacity|tokens?|run|route|tier|budget))?\b/gi;
 const CODEX_CLI_BRIDGE_NOTE = "separate CLI with no interactive bus tools, but text bridges preserve office chat, owner notes, and deliverables";
 
 type Block = { type?: string; text?: string };
@@ -95,7 +95,7 @@ function codexModelNote(id: string): string {
   if (/^gpt-5\.6-sol(?:[-.]|$)/i.test(id)) return `premium GPT-5.6 Codex tier; strong autonomous coding below Astra, suited to high-uncertainty implementation when Terra/Luna are too small; ${CODEX_CLI_BRIDGE_NOTE}`;
   if (/^gpt-5\.6-terra(?:[-.]|$)/i.test(id)) return `balanced GPT-5.6 Codex workhorse; cheaper than Sol/Astra and suitable for ordinary multi-file implementation at the smallest confident effort; ${CODEX_CLI_BRIDGE_NOTE}`;
   if (/^gpt-5\.6-luna(?:[-.]|$)/i.test(id)) return `budget GPT-5.6 Codex tier; low/medium effort should usually beat legacy GPT-5.5/5.4 on both quality and cost for small or mechanical work; ${CODEX_CLI_BRIDGE_NOTE}`;
-  if (isLegacyCodexId(id)) return `legacy pre-5.6 Codex tier; automatic routing should use it only when no GPT-5.6+ Codex option is dispatchable and should avoid extra-high spend; ${CODEX_CLI_BRIDGE_NOTE}`;
+  if (isLegacyCodexId(id)) return `older/non-GPT-5.6 Codex tier; automatic routing should use it only when no GPT-5.6+ Codex option is dispatchable and should avoid extra-high spend; ${CODEX_CLI_BRIDGE_NOTE}`;
   return `Codex CLI coding model; compare exact outcomes and token-window burn before spending high effort; ${CODEX_CLI_BRIDGE_NOTE}`;
 }
 
@@ -104,17 +104,26 @@ function codexGpt5Minor(model: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
+function isPreferredCodexId(model: string): boolean {
+  const id = model.trim();
+  return /^gpt-6(?:[-.]|$)/i.test(id) || (codexGpt5Minor(id) ?? 0) >= 6 || /^gpt-daybreak-blue-latest(?:[-.]|$)/i.test(id);
+}
+
 function isLegacyCodexId(model: string): boolean {
   const id = model.trim().toLowerCase();
-  const minor = codexGpt5Minor(id);
-  if (minor != null) return minor < 6;
-  return /^gpt-5(?:-|$)/.test(id);
+  if (isPreferredCodexId(id)) return false;
+  const gpt = /^gpt-(\d+)(?:\.(\d+))?(?:[-.]|[a-z]|$)/i.exec(id);
+  if (gpt) {
+    const major = Number(gpt[1]);
+    const minor = gpt[2] == null ? null : Number(gpt[2]);
+    return major < 5 || (major === 5 && (minor == null || minor < 6));
+  }
+  return /^o\d/i.test(id) || /^codex(?:[-.]|$)/i.test(id);
 }
 
 export function isPreferredCodexAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {
   if (candidate.provider !== "codex") return false;
-  const id = candidate.model.trim();
-  return /^gpt-6(?:[-.]|$)/i.test(id) || (codexGpt5Minor(id) ?? 0) >= 6 || /^gpt-daybreak-blue-latest(?:[-.]|$)/i.test(id);
+  return isPreferredCodexId(candidate.model);
 }
 
 export function isLegacyCodexAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {
