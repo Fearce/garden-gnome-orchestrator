@@ -165,6 +165,7 @@ const GATES = [
   "test:image-limit",
   "test:stale-gnomes",
   "test:git",
+  "test:git-progress",
   "test:repo-ops",
   "test:supervisor",
   "test:audit-deps",

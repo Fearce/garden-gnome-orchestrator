@@ -95,6 +95,7 @@ import {
   type CapacityWindow,
 } from "./capacityRouting.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
+import { buildGitProgressBlock } from "./gitProgress.js";
 import { ROUTE_POLICY_VERSION, selectRoute } from "./routeSelection.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
@@ -8561,30 +8562,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     sessionId?: string,
     opts?: { directorNote?: string; qaFollows?: boolean; restartNote?: string },
   ): Promise<string> {
-    // Three git reads on every implementor resume. In-process on Windows that is three CreateProcess
-    // calls blocking the whole server (~0.8 s each on the owner's box), which is a visible share of the
-    // delay between clicking Inject and the agent moving; runChild puts them on a worker thread.
-    const git = async (args: string[]): Promise<string> => {
-      const r = await runChild("git", ["-C", thread.workspace, "--no-pager", ...args], { maxStdoutBytes: 8 * 1024 * 1024 });
-      return (r.stdout || r.stderr || "").trim();
-    };
-    const gitProgress = async (): Promise<string> => {
-      const [log, stat, diff] = await Promise.all([git(["log", "--oneline", "-8"]), git(["diff", "--stat"]), git(["diff"])]);
-      const cappedDiff = diff.length > 6000 ? diff.slice(0, 6000) + "\n… (diff truncated — read the files for the rest)" : diff;
-      return [
-        "Recent commits:",
-        log || "(none yet)",
-        "",
-        "Uncommitted changes (git diff --stat):",
-        stat || "(none)",
-        cappedDiff ? `\nUncommitted diff:\n${cappedDiff}` : "",
-      ].join("\n");
-    };
-
+    // The git progress block is built by `buildGitProgressBlock` (gitProgress.ts): it runs on real git
+    // repos AND on a workspace that is merely the PARENT of one (a normal, currently-live setup here),
+    // where a naive `git diff`/`git diff --stat` falls back to `--no-index` mode and dumps its full usage
+    // text into the prompt. See that module's header for the measured byte counts and the fix.
+    //
     // Compress the prior session locally (free static strip + cheap Haiku summary) rather than
     // reloading it. Runs alongside the git read; tolerates failure (→ plan + git only).
     const [progress, handoff] = await Promise.all([
-      gitProgress(),
+      buildGitProgressBlock(thread.workspace),
       sessionId
         ? // auxToken() is a read-only token grab — it must NOT run the dispatch selector (which would
           // bump round-robin state and flicker the "active account" badge for a non-dispatch).
