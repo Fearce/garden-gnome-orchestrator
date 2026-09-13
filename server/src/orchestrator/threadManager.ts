@@ -97,7 +97,7 @@ import {
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
 import { buildGitProgressBlock } from "./gitProgress.js";
 import { ROUTE_POLICY_VERSION, selectRoute } from "./routeSelection.js";
-import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
+import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, runGit, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
@@ -119,7 +119,6 @@ import { DirectorSupervisor, SUPERVISOR_JUDGE_MAX_TURNS, type SupervisorJudgemen
 import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
 import type { FreeProviderService } from "../freeProviders/service.js";
 import { config, fallbackModelFor } from "../config.js";
-import { runChild } from "../childRunner.js";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -5538,16 +5537,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return true;
   }
 
-  /** git diff + recent log of a thread's workspace, for in-GUI change review. */
+  /** git diff + recent log of a thread's workspace, for in-GUI change review. Same guard as
+   *  `gitProgress.ts`: only a SUCCESSFUL command's stdout counts, never a fallback to stderr, so a
+   *  non-repo workspace reaches the "(no commits / not a git repo)" fallback below instead of the
+   *  `git diff --no-index` usage dump `git diff` prints to stderr when the cwd isn't a repo. */
   async getChanges(threadId: string): Promise<{ diff: string; log: string }> {
     const t = this.db.getThread(threadId);
     if (!t) return { diff: "", log: "(no such task)" };
-    const run = async (args: string[]): Promise<string> => {
-      const r = await runChild("git", ["-C", t.workspace, "--no-pager", ...args], { maxStdoutBytes: 8 * 1024 * 1024 });
-      return r.stdout || r.stderr || "";
+    const [diff, log] = await Promise.all([runGit(t.workspace, ["diff"]), runGit(t.workspace, ["log", "--oneline", "-10"])]);
+    return {
+      diff: (diff.code === 0 ? diff.stdout.trim() : "") || "(no uncommitted changes)",
+      log: (log.code === 0 ? log.stdout.trim() : "") || "(no commits / not a git repo)",
     };
-    const [diff, log] = await Promise.all([run(["diff"]), run(["log", "--oneline", "-10"])]);
-    return { diff: diff.trim() || "(no uncommitted changes)", log: log.trim() || "(no commits / not a git repo)" };
   }
 
   /** Bump a thread's updatedAt (recent-activity timestamp) without changing its state, and
