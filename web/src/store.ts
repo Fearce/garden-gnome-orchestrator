@@ -443,7 +443,8 @@ interface State {
   updateSchedule: (id: string, patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null }) => boolean;
   deleteSchedule: (id: string) => boolean;
   runSchedule: (id: string) => void;
-  // The owner's note list — same optimism-free contract: send, let the `notes` broadcast reconcile.
+  // The owner's note list — still optimism-free (unlike the schedule writes above): send, let the
+  // `notes` broadcast reconcile. Nobody watches a note row for a response, so it needs no projection.
   addNote: (body: string, url?: string) => void;
   deleteNote: (id: string) => void;
   clearNotes: () => void;

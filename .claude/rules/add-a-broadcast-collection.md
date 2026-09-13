@@ -36,6 +36,19 @@ Conventions that bite:
 - The broadcast is the ONLY source of truth the client trusts — mutations are
   optimism-free (send the command, let the `x` broadcast reconcile). Don't mirror
   state locally on write.
+- **The one documented exception is a control the owner CLICKS** (`schedules`, 2026-09-13:
+  "creating or toggling a scheduled task takes 20-30 seconds"). A switch whose `checked`
+  comes from the broadcast cannot move until the server answers, so every millisecond of
+  socket lag is visible as a dead control — and the console's socket carries a ~1.3 MB
+  `hello` every 20s plus live agent streaming, so head-of-line delay there is measured in
+  seconds, not the ~10ms the server actually takes. Such an action may project locally, on
+  three conditions: it projects only AFTER `sendCommand` returned true (never for a write
+  that was dropped while reconnecting), the action returns that boolean so its form stays
+  open instead of closing over a lost command, and the projection is plain overwritten by
+  the next authoritative list — a created row gets a LOCAL-ONLY `pending:` id and its
+  controls are disabled until the server's row replaces it. Anything the owner does not sit
+  and watch (notes, settings collections) stays optimism-free; the default is still no
+  mirroring.
 - **`schema.ts` is one TEMPLATE LITERAL** — a backtick in a `--` SQL comment ends it and
   the build dies in esbuild with a bare "Expected ;". Write column names unquoted there.
 - **Order on an explicit `seq`, never on `created_at`.** A burst of writes lands inside one
