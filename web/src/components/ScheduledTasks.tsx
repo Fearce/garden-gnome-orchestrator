@@ -68,6 +68,7 @@ export function ScheduledTasks() {
 
 function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => void }) {
   const now = useCoarseNow();
+  const pending = sched.id.startsWith("pending:");
   const updateSchedule = useStore((s) => s.updateSchedule);
   const deleteSchedule = useStore((s) => s.deleteSchedule);
   const runSchedule = useStore((s) => s.runSchedule);
@@ -88,7 +89,12 @@ function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => v
           {sched.title}
         </div>
         <label className="sched-switch" title={sched.enabled ? "Enabled — click to pause" : "Paused — click to enable"}>
-          <input type="checkbox" checked={sched.enabled} onChange={(e) => updateSchedule(sched.id, { enabled: e.target.checked })} />
+          <input
+            type="checkbox"
+            checked={sched.enabled}
+            disabled={pending}
+            onChange={(e) => updateSchedule(sched.id, { enabled: e.target.checked })}
+          />
           <span className="sched-switch-track" aria-hidden="true">
             <span className="sched-switch-thumb" />
           </span>
@@ -114,10 +120,14 @@ function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => v
       </div>
 
       <div className="sched-times">
-        {sched.enabled && sched.nextRunAt ? (
+        {pending ? (
+          <span className="faint">Saving…</span>
+        ) : sched.enabled && sched.nextRunAt ? (
           <span title={new Date(sched.nextRunAt).toLocaleString()}>
             Next: <b>{until(now, sched.nextRunAt)}</b>
           </span>
+        ) : sched.enabled ? (
+          <span className="faint">Updating next run…</span>
         ) : (
           <span className="faint">Paused — no next run</span>
         )}
@@ -135,14 +145,15 @@ function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => v
       </div>
 
       <div className="sched-actions">
-        <button className="btn ghost sm" onClick={() => runSchedule(sched.id)} title="Dispatch a run right now (doesn't change the schedule)">
+        <button className="btn ghost sm" disabled={pending} onClick={() => runSchedule(sched.id)} title="Dispatch a run right now (doesn't change the schedule)">
           Run now
         </button>
-        <button className="btn ghost sm" onClick={onEdit} title="Edit this schedule">
+        <button className="btn ghost sm" disabled={pending} onClick={onEdit} title="Edit this schedule">
           Edit
         </button>
         <button
           className="btn danger sm"
+          disabled={pending}
           title="Delete this schedule"
           onClick={() => {
             if (window.confirm(`Delete scheduled task "${sched.title}"? Future runs stop; already-dispatched tasks are unaffected.`)) deleteSchedule(sched.id);
@@ -174,9 +185,8 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
   const save = () => {
     if (!canSave) return;
     const payload = { title: title.trim(), workspace: workspace.trim(), prompt: prompt.trim(), cron, effort: effort || null, enabled };
-    if (initial) updateSchedule(initial.id, payload);
-    else createSchedule(payload);
-    onClose();
+    const saved = initial ? updateSchedule(initial.id, payload) : createSchedule(payload);
+    if (saved) onClose();
   };
 
   return (

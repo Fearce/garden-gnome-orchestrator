@@ -51,7 +51,7 @@
     "test:grok-usage": "tsx src/tests/grokUsage.test.ts",
     "test:codex-usage": "tsx src/tests/codexUsage.test.ts",
     "test:schedule-detect": "tsx src/tests/scheduleDetect.test.ts",
-    "test:scheduler": "tsx src/tests/scheduler.test.ts",
+    "test:scheduler": "tsx src/tests/scheduler.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/scheduled-tasks-ui.test.ts",
     "test:notes": "tsx src/tests/operatorNotes.test.ts",
     "test:task-search": "tsx src/tests/taskSearch.test.ts",
     "test:performance-paths": "tsx src/tests/performancePaths.test.ts",

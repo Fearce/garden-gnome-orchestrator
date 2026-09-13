@@ -436,12 +436,12 @@ interface State {
   postChat: (room: string, body: string) => boolean;
   // Dismiss the current notice banner.
   clearNotice: () => void;
-  // Scheduled tasks: switch the center pane, and CRUD the recurring dispatches (server is authoritative —
-  // each mutation is optimism-free and reconciled by the `schedules` broadcast).
+  // Scheduled tasks: switch the center pane, and CRUD the recurring dispatches. Mutations return whether
+  // they reached the socket so forms never close on a command that was silently dropped while reconnecting.
   setBoardView: (v: BoardView) => void;
-  createSchedule: (input: { title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null }) => void;
-  updateSchedule: (id: string, patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null }) => void;
-  deleteSchedule: (id: string) => void;
+  createSchedule: (input: { title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null }) => boolean;
+  updateSchedule: (id: string, patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null }) => boolean;
+  deleteSchedule: (id: string) => boolean;
   runSchedule: (id: string) => void;
   // The owner's note list — same optimism-free contract: send, let the `notes` broadcast reconcile.
   addNote: (body: string, url?: string) => void;
@@ -904,6 +904,74 @@ function sendCommand(cmd: ClientCommand): boolean {
       return false;
     }
   }
+  return false;
+}
+
+type ScheduleMutation = Extract<ClientCommand, { type: "schedule.create" | "schedule.update" | "schedule.delete" }>;
+
+/**
+ * Project a schedule write locally so its control responds in the same click, then let either the normal
+ * `schedules` broadcast or the requested snapshot replace that projection with server-owned timestamps
+ * and next-run bookkeeping. Without these two layers, a degraded long-lived/proxied socket could carry
+ * the owner command while missing its EventHub push, leaving the screen unchanged until the 20-second
+ * heartbeat. Pending create IDs are deliberately local-only and disappear on the first authoritative list.
+ */
+function projectScheduleMutation(cmd: ScheduleMutation): void {
+  const now = Date.now();
+  useStore.setState((state) => {
+    switch (cmd.type) {
+      case "schedule.create":
+        return {
+          schedules: [
+            ...state.schedules,
+            {
+              id: `pending:${newOutboundId()}`,
+              title: cmd.title,
+              workspace: cmd.workspace,
+              prompt: cmd.prompt,
+              cron: cmd.cron,
+              enabled: cmd.enabled ?? true,
+              effort: cmd.effort ?? null,
+              lastRunAt: null,
+              nextRunAt: null,
+              lastThreadId: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        };
+      case "schedule.update":
+        return {
+          schedules: state.schedules.map((schedule) =>
+            schedule.id === cmd.id
+              ? {
+                  ...schedule,
+                  ...cmd.patch,
+                  ...(cmd.patch.enabled === false ? { nextRunAt: null } : {}),
+                  updatedAt: now,
+                }
+              : schedule,
+          ),
+        };
+      case "schedule.delete":
+        return { schedules: state.schedules.filter((schedule) => schedule.id !== cmd.id) };
+    }
+  });
+}
+
+function sendScheduleMutation(cmd: ScheduleMutation): boolean {
+  if (sendCommand(cmd)) {
+    projectScheduleMutation(cmd);
+    sendCommand({ type: "snapshot.request" });
+    return true;
+  }
+  useStore.setState({
+    notice: {
+      level: "warn",
+      title: "Schedule not changed",
+      message: "The console is reconnecting. Try again when it is connected.",
+    },
+  });
   return false;
 }
 
@@ -1421,9 +1489,9 @@ export const useStore = create<State>((set) => ({
   },
   clearNotice: () => set({ notice: null }),
   setBoardView: (v) => set({ boardView: v }),
-  createSchedule: (input) => sendCommand({ type: "schedule.create", ...input }),
-  updateSchedule: (id, patch) => sendCommand({ type: "schedule.update", id, patch }),
-  deleteSchedule: (id) => sendCommand({ type: "schedule.delete", id }),
+  createSchedule: (input) => sendScheduleMutation({ type: "schedule.create", ...input }),
+  updateSchedule: (id, patch) => sendScheduleMutation({ type: "schedule.update", id, patch }),
+  deleteSchedule: (id) => sendScheduleMutation({ type: "schedule.delete", id }),
   runSchedule: (id) => sendCommand({ type: "schedule.run", id }),
   addNote: (body, url) => {
     const text = body.trim();
