@@ -32,15 +32,29 @@ toward conserving instead: an id it has never seen gets downgraded once, which i
 quietly burning the reserve on a model nobody has reviewed for this feature yet. When two checks look
 like the same predicate, check which direction each one fails before reusing either.
 
-## 3. A downgraded model can collide with a DEDICATED pool's own slug
-Codex's economy pick (`gpt-5.6-luna`) is a plain string, and a dedicated Codex pool (Spark, etc.) is
-keyed by matching a model slug too (`poolForModel`, `agents/codexPools.ts`). If conservation's economy
-model ever equals a dedicated pool's slug, resolving to it would silently spend THAT pool's own cap latch
-instead of the general 5h/weekly window conservation is meant to protect — a different budget, tracked
-and reset independently. `providerRoleModel`'s Codex branch checks `poolForModel(pools,
-conserved)?.modelSlug` and falls back to the unconserved `base` model rather than let that happen. Inert
-today (no overlap between the two current economy lists), but keep the guard — the two lists are
-maintained independently and nothing stops a future one from colliding.
+## 3. Conservation must not cross a DEDICATED Codex pool — in EITHER direction
+`conservationResolvedModel` only ever compares model IDs, and which BUDGET a Codex model spends is not
+a property of its id: a model with a dedicated pool (Spark today) is metered by its own independent
+5h/weekly windows and its own cap latch (`poolForModel`, `agents/codexPools.ts`), and never touches the
+general weekly window this feature protects. So the Codex caller must use
+`conservationResolvedCodexModel`, which injects a live pool predicate and guards both sides:
+
+- **The CONSERVED model is on a dedicated pool** — resolving to it would silently spend THAT pool's own
+  cap latch instead of the general window. Falls back to the unconserved `base`. Inert today (no overlap
+  between the two current lists), but the lists are maintained independently.
+- **The BASE model is already on a dedicated pool** — downgrading it MOVES the run off an independent,
+  frequently idle allowance and onto the very window we are conserving. Strictly worse than doing
+  nothing. Passes through. This one was NOT inert: it shipped live for one commit when
+  `gpt-5.3-codex-spark` was dropped from `TOKEN_CONSERVATION_ECONOMY_MODELS` (correctly, as an id-tier
+  judgement) without anyone asking which pool it spends. Reachable via any operator Codex model-matrix
+  override or `setting_codex_model` naming a dedicated-pool model.
+
+The lesson generalizes past Spark: **an economy-tier ALLOWLIST answers "is this model cheap?", never
+"whose budget does it charge?"** — the second question needs the runtime pool map, so it cannot live in
+this module and must not be inferred from the id.
+
+A caller with no live pool snapshot passes an always-false predicate and conserves, matching
+`conservationActive`'s "missing data biases toward conserving" contract.
 
 ## Also worth knowing
 - **No-op under `autoModelSelection`** when the selector actually produces a pick — both resolve before

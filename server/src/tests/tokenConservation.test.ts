@@ -11,6 +11,7 @@ import {
   TOKEN_CONSERVATION_RESET_GRACE_MS,
   TOKEN_CONSERVATION_THRESHOLD_PCT,
   conservationActive,
+  conservationResolvedCodexModel,
   conservationResolvedModel,
 } from "../orchestrator/tokenConservation.js";
 
@@ -131,9 +132,41 @@ check(
   conservationResolvedModel("codex", "gpt-5.4-mini", ACTIVE, NOW) === "gpt-5.6-luna",
 );
 check(
-  "a legacy Spark pick is also pulled up to the reviewed Luna economy floor",
+  "the pool-blind layer treats Spark like any other legacy id — it compares ids, nothing more",
   conservationResolvedModel("codex", "gpt-5.3-codex-spark", ACTIVE, NOW) === "gpt-5.6-luna",
 );
+
+// --- the Codex wrapper: which BUDGET a model spends is not a property of its id ------------------
+// Both directions matter, and each is silently wrong in the flattering direction: a downgrade that
+// MOVES a run onto the window being conserved, and one that spends a dedicated pool's separate latch.
+{
+  const sparkOnItsOwnPool = (model: string): boolean => model === "gpt-5.3-codex-spark";
+  const never = (): boolean => false;
+  check(
+    "a model on its own dedicated pool is NOT downgraded — that would move the run onto the very window being conserved",
+    conservationResolvedCodexModel("gpt-5.3-codex-spark", ACTIVE, NOW, sparkOnItsOwnPool) === "gpt-5.3-codex-spark",
+  );
+  check(
+    "a legacy GENERAL-pool model is still pulled down to Luna",
+    conservationResolvedCodexModel("gpt-5.5", ACTIVE, NOW, sparkOnItsOwnPool) === "gpt-5.6-luna",
+  );
+  check(
+    "a flagship general-pool model is still pulled down to Luna",
+    conservationResolvedCodexModel("gpt-6-astra", ACTIVE, NOW, sparkOnItsOwnPool) === "gpt-5.6-luna",
+  );
+  check(
+    "the economy target colliding with a dedicated pool falls back to the unconserved base, never that pool's latch",
+    conservationResolvedCodexModel("gpt-6-astra", ACTIVE, NOW, (model) => model === "gpt-5.6-luna") === "gpt-6-astra",
+  );
+  check(
+    "with no live pool snapshot the caller's predicate is always false, so conservation still applies",
+    conservationResolvedCodexModel("gpt-6-astra", ACTIVE, NOW, never) === "gpt-5.6-luna",
+  );
+  check(
+    "an inactive window leaves a dedicated-pool model alone too",
+    conservationResolvedCodexModel("gpt-5.3-codex-spark", INACTIVE_LOW_USAGE, NOW, never) === "gpt-5.3-codex-spark",
+  );
+}
 check(
   "a fully-spent window with no reset reading at all is active — the case most likely to occur in production",
   conservationActive({ usedPct: 100, resetAt: null }, NOW),

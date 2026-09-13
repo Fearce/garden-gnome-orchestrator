@@ -19,7 +19,21 @@ const MAX_OUTPUT_TOKENS = 300;
 const BRIEF_CHARS = 4000;
 const PLAN_CHARS = 3000;
 const MAX_REASON_CHARS = 200;
-const FRONTIER_AVOIDANCE_CLAIM = /\b(?:without\s+(?:needing\s+)?|avoid(?:s|ing)?\s+|skip(?:s|ping)?\s+|no\s+|not\s+)(?:a\s+)?frontier(?:[-\s]?tier)?(?:\s+(?:spend|cost|model|capacity|tokens?|run|route|tier))?\b/gi;
+/**
+ * An owner-facing reason that claims the pick AVOIDS frontier spend, matched only where it is a
+ * negation of "frontier". The reported defect was Astra — the single most expensive model on the
+ * roster — being announced as chosen "without needing frontier spend"; the prompt instruction alone
+ * left that at the mercy of one free-form JSON string, so this is the deterministic half.
+ *
+ * Every alternative is an explicit negation/avoidance, and the small `(?:\w+\s+){0,2}` windows let one
+ * or two words sit between it and "frontier" ("does not REQUIRE frontier spend"). Punctuation ends a
+ * `\w+\s+` run, so the window cannot reach across a clause into a legitimate justification. A reason
+ * that argues FOR the spend ("frontier-tier spend is justified by the migration risk", "needs frontier
+ * capacity") carries no negation and is deliberately left untouched — the selector is instructed to
+ * write exactly that, and rewriting it would destroy the evidence the owner needs.
+ */
+const FRONTIER_AVOIDANCE_CLAIM =
+  /\b(?:(?:do(?:es)?|did|will|would|can|could)\s+not\s+(?:\w+\s+){0,2}|\w+n['’]t\s+(?:\w+\s+){0,2}|without\s+(?:\w+\s+){0,2}|avoid(?:s|ing)?\s+|skip(?:s|ping)?\s+|instead\s+of\s+|rather\s+than\s+|away\s+from\s+|off\s+|no\s+|not\s+)(?:a\s+|the\s+|any\s+)?frontier(?:[-\s]?tier)?(?:\s+(?:spend|cost|model|capacity|tokens?|run|route|tier|budget))?\b/gi;
 const CODEX_CLI_BRIDGE_NOTE = "separate CLI with no interactive bus tools, but text bridges preserve office chat, owner notes, and deliverables";
 
 type Block = { type?: string; text?: string };

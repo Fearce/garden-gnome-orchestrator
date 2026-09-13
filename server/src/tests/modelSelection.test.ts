@@ -204,6 +204,30 @@ console.log("Flagship capability floor");
   );
   const reason = pick?.reason ?? "";
   check("a frontier pick cannot claim it avoids frontier spend", reason.includes("using frontier-tier capacity deliberately") && !/without needing frontier spend/i.test(reason), reason);
+
+  // The prompt instruction alone leaves this at the mercy of one free-form string, so the scrub has to
+  // survive ordinary rephrasings of the same claim — and must NOT eat a reason that argues FOR the spend,
+  // which is exactly what the selector is instructed to write and what the owner reads as evidence.
+  const reasonFor = (raw: string): string =>
+    parseSelection(JSON.stringify({ model: "gpt-6-astra", effort: "high", reason: raw }), astraCtx)?.reason ?? "";
+  for (const claim of [
+    "does not require frontier spend",
+    "doesn't need frontier capacity",
+    "avoids frontier-tier cost",
+    "cheap enough to skip frontier spend",
+    "chosen instead of frontier capacity",
+    "keeps the task off frontier spend",
+    "won't need any frontier budget",
+  ]) {
+    check(`a frontier pick cannot claim: "${claim}"`, !/frontier/i.test(reasonFor(claim).replace(/using frontier-tier capacity deliberately/g, "")), reasonFor(claim));
+  }
+  for (const justified of [
+    "frontier-tier spend is justified by the migration risk",
+    "subtle cross-cutting debugging needs frontier reasoning",
+    "auth and money paths warrant frontier capacity",
+  ]) {
+    check(`a justified frontier reason survives intact: "${justified}"`, reasonFor(justified) === justified, reasonFor(justified));
+  }
 }
 
 {

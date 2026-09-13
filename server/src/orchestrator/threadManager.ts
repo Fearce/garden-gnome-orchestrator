@@ -77,7 +77,7 @@ import {
   applyImplementorModelPolicy,
   modelMatchesPolicy,
 } from "./modelRoutingPolicy.js";
-import { conservationResolvedModel } from "./tokenConservation.js";
+import { conservationResolvedCodexModel, conservationResolvedModel } from "./tokenConservation.js";
 import { providerIntent } from "./providerIntent.js";
 import { detectModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
 import { LiveBenchScores } from "./liveBenchScores.js";
@@ -2761,16 +2761,12 @@ export class ThreadManager implements OrchestratorApi {
       const base = ov[CODEX_SUB_ID]?.[role]?.trim() || this.codexModel();
       if (opts.conserve === false || !this.settingBool("setting_token_conservation_mode", false)) return base;
       const usage = readCodexUsage();
-      const conserved = conservationResolvedModel("codex", base, { usedPct: usage?.sevenDay ?? null, resetAt: usage?.sevenDayReset }, Date.now());
-      if (conserved === base) return conserved;
-      // The conservation target must never coincide with a dedicated Codex pool's model: codexProviderCandidate
-      // switches a role to that pool's own windows/latch the moment its model matches, which would silently
-      // stop consulting the general pool's cap latch this feature exists to protect. TOKEN_CONSERVATION_MODEL
-      // is chosen not to collide today, but the pool map is built at runtime from the live plan — guard it
-      // rather than trust that forever.
+      // Neither side of this may cross a dedicated Codex pool — see `conservationResolvedCodexModel` for
+      // both directions. The pool map is built at runtime from the live plan, so the predicate is resolved
+      // here and injected rather than assumed in the pure module.
       const pools = this.codexPoolSnapshot();
-      if (pools && poolForModel(pools, conserved)?.modelSlug) return base;
-      return conserved;
+      const dedicated = (model: string): boolean => !!pools && !!poolForModel(pools, model)?.modelSlug;
+      return conservationResolvedCodexModel(base, { usedPct: usage?.sevenDay ?? null, resetAt: usage?.sevenDayReset }, Date.now(), dedicated);
     }
     if (provider === "grok") return ov[GROK_SUB_ID]?.[role]?.trim() || this.grokModel();
     return ov[ZAI_SUB_ID]?.[role]?.trim() || this.zaiModel();

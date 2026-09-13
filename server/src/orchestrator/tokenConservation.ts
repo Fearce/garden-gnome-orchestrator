@@ -80,10 +80,13 @@ export function conservationActive(window: ConservationWindow, now: number): boo
 
 /**
  * Apply conservation to one resolved model. A pick that is already economy-tier (an explicit Haiku
- * override, a dedicated Codex pool model, a Grok/z.ai model, or anything else on
- * `TOKEN_CONSERVATION_ECONOMY_MODELS`) passes through unchanged: conservation only ever pulls a
- * non-economy pick down to the provider's economy tier, it never substitutes a different economy model
- * for another.
+ * override, a Grok/z.ai model, or anything else on `TOKEN_CONSERVATION_ECONOMY_MODELS`) passes through
+ * unchanged: conservation only ever pulls a non-economy pick down to the provider's economy tier, it
+ * never substitutes a different economy model for another.
+ *
+ * This function knows nothing about Codex's dedicated per-model pools — it cannot, they are built at
+ * runtime from the live plan. `conservationResolvedCodexModel` wraps it with that knowledge; the Codex
+ * caller must use the wrapper, not this function directly.
  */
 export function conservationResolvedModel(
   provider: ImplementorProvider,
@@ -96,4 +99,34 @@ export function conservationResolvedModel(
   if (!conservationActive(window, now)) return model;
   if (TOKEN_CONSERVATION_ECONOMY_MODELS[provider]?.has(model)) return model;
   return cheap;
+}
+
+/**
+ * Conservation for Codex, where "which budget does this model spend?" is not a property of the id.
+ *
+ * A ChatGPT plan is not one allowance: a model with a DEDICATED pool (Spark today — `agents/codexPools.ts`)
+ * is metered by its own independent 5h/weekly windows and its own cap latch, and does not touch the
+ * general weekly window this feature exists to protect. Both directions of that must be respected, and
+ * both are easy to get wrong because `conservationResolvedModel` only ever compares model ids:
+ *
+ *  - **The BASE model is on a dedicated pool.** Downgrading it MOVES the run off an independent
+ *    (frequently idle) allowance and onto the very window we are conserving — strictly worse than
+ *    leaving it alone. Pass it through.
+ *  - **The CONSERVED model is on a dedicated pool.** Resolving to it would silently spend THAT pool's
+ *    separate cap latch instead of the general window. Fall back to the unconserved base.
+ *
+ * `isDedicatedPoolModel` is injected so this stays a pure function: the caller owns the live pool
+ * snapshot. A caller with NO snapshot passes a predicate that is always false, which conserves — the
+ * same "missing data biases toward conserving" contract `conservationActive` documents.
+ */
+export function conservationResolvedCodexModel(
+  base: string,
+  window: ConservationWindow,
+  now: number,
+  isDedicatedPoolModel: (model: string) => boolean,
+): string {
+  if (isDedicatedPoolModel(base)) return base;
+  const conserved = conservationResolvedModel("codex", base, window, now);
+  if (conserved === base) return base;
+  return isDedicatedPoolModel(conserved) ? base : conserved;
 }
