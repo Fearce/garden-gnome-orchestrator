@@ -39,7 +39,7 @@ const { classifyListenerShape } = require("./listener-shape.cjs");
 const { newestSrcMtimeMs, srcFilesNewerThan } = require("./src-mtime.cjs");
 const { serverRuntimeDiff, readWebStamp, webDistState } = require("./compiled-diff.cjs");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
-const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, isDeadEndLine } = require("./probe-parks.cjs");
+const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, isDeadEndLine, stallBudget, PARK_CLASSES } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
 const { inspectAccountUsage } = require("./account-usage-health.cjs");
 const { inspectRestartCoordinator } = require("./restart-coordinator-health.cjs");
@@ -532,13 +532,19 @@ async function main() {
       //     threadManager's wording. Warn, because a silent demotion here hides a stalled task.
       const reviewRows = db.prepare("SELECT id, error, updated_at FROM threads WHERE state='review'").all();
       const STALE_PARK_MS = 2 * 3600 * 1000;
-      const parks = { capWait: 0, stalled: 0, verdict: 0, unknown: 0 };
+      // Tally EVERY class the probe can return, derived from PARK_CLASSES rather than hand-listed. The
+      // literal this replaces named four of the six, so `parks[key]++` on a `deadline` or `flagshipWait`
+      // park incremented undefined to NaN. Silent, because neither key is read back below, and it would
+      // have gone on being silent for each class added after it.
+      const parks = Object.fromEntries(PARK_CLASSES.map((c) => [c.key, 0]));
       let staleAutoResume = 0;
       let qaDeadEnds = 0;
       let oldestAutoResumeH = 0;
+      let stallsOutOfBudget = 0;
       for (const r of reviewRows) {
         const key = classifyPark(r.error).key;
         parks[key]++;
+        if (key === "capacityStall" && stallBudget(db, r.id).spent) stallsOutOfBudget++;
         if (key === "capWait") {
           const ageMs = Date.now() - r.updated_at;
           if (ageMs > STALE_PARK_MS) staleAutoResume++;
@@ -559,6 +565,14 @@ async function main() {
       if (parks.stalled) {
         const spent = qaDeadEnds ? `, ${qaDeadEnds} after a QA recovery budget was spent (mechanism ran, reviewer still couldn't finish)` : "";
         warn(`${parks.stalled} thread(s) parked mid-pipeline — QA/auto-review/resume couldn't finish${spent}; ${NAME_THEM}`);
+      }
+      // A capacity stall owns itself only while it has continuations left. Warn on the spent ones for the
+      // same reason step 4 counts them as the owner's: nothing wakes those again, and their park text is
+      // identical to the self-owning ones, so a count alone would hide them.
+      if (stallsOutOfBudget) {
+        warn(`${stallsOutOfBudget} of ${parks.capacityStall} capacity-stalled park(s) are out of rollover continuations, so nothing will wake them; ${NAME_THEM}`);
+      } else if (parks.capacityStall) {
+        ok(`${parks.capacityStall} capacity-stalled park(s): the next window rollover continues each in its own session`);
       }
       if (parks.unknown) warn(`${parks.unknown} park(s) with text no class recognizes — ${NAME_THEM}`);
       if (parks.verdict) ok(`${parks.verdict} park(s) awaiting your verdict by design, not stuck`);

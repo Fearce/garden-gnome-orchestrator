@@ -28,6 +28,13 @@ about your fix, and the more convincing lie because red is what you were hoping 
 So: `cp <file> /tmp/x.bak`, `diff` after the revert, read the ASSERTION message rather than the
 exit code, and `diff` again after restoring to prove it went back byte-identical.
 
+**`sed -i` is never the revert here, and its damage looks like your diff.** This repo's blobs are CRLF;
+`sed -i` rewrites every line ending to LF, so the one-line revert you asked for comes back as a `diff`
+reporting all ~13,900 lines changed (paid for 2026-09-13, on `threadManager.ts`). Nothing is lost if you
+kept the `cp` backup, but the signal you needed is gone: you can no longer see WHAT you reverted, which is
+the whole point of diffing. Same family as the hunk-splitting trap in `nightly-quality-sweep.md`. Use the
+Edit tool, as above, and read the `diff` as confirmation that exactly one line moved.
+
 **A verified revert that stays GREEN condemns the ASSERTION, not the fix.** The diff proves the code
 left, so the gate is watching a proxy the bug doesn't move — ask what OBSERVABLE state the bug
 changes and assert THAT. "The probe never writes to the DB" compared size+mtime and passed while the

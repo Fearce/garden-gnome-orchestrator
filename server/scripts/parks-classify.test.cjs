@@ -16,7 +16,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { classifyPark, classifyAbandoned, spentRecoveryBudget, recoveryLineFor, isDeadEndLine, PARK_CLASSES, ABANDON_CLASSES } = require("./probe-parks.cjs");
+const { classifyPark, classifyAbandoned, spentRecoveryBudget, recoveryLineFor, isDeadEndLine, capacityStall, PARK_CLASSES, ABANDON_CLASSES } = require("./probe-parks.cjs");
 const { resolveShipDate } = require("./recovery-features.cjs");
 
 const cls = (err) => classifyPark(err).key;
@@ -116,12 +116,61 @@ assert.equal(
   "a genuine cap park keeps capWait, so the cap supervisor still owns it",
 );
 
+// --- the capacity stall: a park whose text is COMPOSED, so it has no literal to pin -------------------
+// Every other class matches a fixed settleReview string. This one matches `implementorParkReason`, which
+// lifts the run's own failure text, so the probe imports the app's predicate from dist instead of
+// re-implementing it. That import is the thing to guard: if it silently fell back to a stub, these parks
+// would quietly rejoin `unknown` and the class would look present while classifying nothing.
+const SEP = ` ${String.fromCharCode(0x2014)} `;
+const stallPark = (reason) => `Implementor ended without completing${SEP}${reason}`;
+
+assert.ok(capacityStall.loaded, "probe-parks could not import the capacityStall predicate from dist: run npm run build --prefix server");
+assert.ok(
+  typeof capacityStall.max === "number" && capacityStall.max > 0,
+  "the continuation budget must come from the app, since the probe reports each task against it",
+);
+assert.equal(
+  cls(stallPark("Stopped at the per-session turn ceiling (error_max_turns), an involuntary cutoff, not a crash.")),
+  "capacityStall",
+  "a turn-ceiling park is continued by the rollover, so it is not unrecognized wording",
+);
+assert.equal(
+  cls(stallPark("You've hit your session limit · resets 7pm (Europe/Copenhagen)")),
+  "capacityStall",
+  "a provider session-limit park is the same class, whatever words the backend chose",
+);
+// The three directions this class must never widen into. Each is someone else's already.
+assert.equal(
+  cls(`⏳ Auto-resume pending${SEP}every backend was capped mid-task.`),
+  "capWait",
+  "a cap-marked park stays with the cap supervisor, which is on a much faster clock",
+);
+assert.equal(
+  cls(stallPark("needs your review (QA is disabled for this task).")),
+  "verdict",
+  "an implementor park that asks for the owner stays the owner's, capacity words or not",
+);
+assert.equal(
+  cls(`QA could not complete${SEP}Stopped at the per-session turn ceiling (error_max_turns).`),
+  "stalled",
+  "a QA park naming the same capacity reason must not wake the implementor",
+);
+
 // --- unknown is a signal, not a dumping ground -------------------------------------------------------
 assert.equal(cls(""), "unknown", "an empty park message classifies rather than throwing");
 assert.equal(cls(null), "unknown", "a NULL error column (the schema allows it) classifies rather than throwing");
 assert.equal(cls("Something nobody has written yet"), "unknown", "unrecognized text surfaces instead of being guessed");
 assert.equal(PARK_CLASSES.at(-1).key, "unknown", "the catch-all must stay last, or it swallows the real classes");
-assert.equal(PARK_CLASSES.filter((c) => !c.human).length, 1, "capWait is the only class not waiting on a human");
+// Exactly which classes own themselves, named rather than counted. A count let any new class opt out of
+// the owner's attention by setting one flag; naming them forces the question "what mechanism, on what
+// clock, will actually pick this up?" to be answered here. Only two can answer it: the cap supervisor
+// (every ~2m, on any backend freeing up) and the token-reset rollover (once per window, and only while
+// the task has continuations left, which is why `main` still counts a spent one as the owner's).
+assert.deepEqual(
+  PARK_CLASSES.filter((c) => !c.human).map((c) => c.key).sort(),
+  ["capWait", "capacityStall"],
+  "a park class may only skip the owner's count when a named mechanism is on the hook for resuming it",
+);
 
 // --- the spent-budget flag health prints alongside a QA park -----------------------------------------
 // QA has TWO exhaustible recovery budgets and this predicate knew only the turn-ceiling one, so an

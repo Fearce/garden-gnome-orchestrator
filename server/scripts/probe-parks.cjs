@@ -38,6 +38,29 @@ const Database = require("better-sqlite3");
 
 const { recoveryAnnotationFor } = require("./recovery-features.cjs");
 
+/**
+ * The capacity-stall predicate, IMPORTED from the built app rather than re-implemented here. The park
+ * text it reads is composed at runtime (`implementorParkReason` lifts the run's own failure text), so
+ * unlike every other class below there is no fixed literal a hand-written matcher could pin. A second
+ * copy of the regexes is exactly the drift this repo has been burned by before (`CAP_RE`,
+ * `MIRRORED_HEADROOM_TERMS`), and it would drift in the flattering direction: the probe would keep
+ * reporting "the rollover owns this" long after the app stopped agreeing.
+ *
+ * A missing/old `dist` degrades toward NOISE, never toward silence: the class simply never matches, so
+ * these parks fall through to `unknown` and raise the ⚠ they raised before this class existed. `main`
+ * says so rather than leaving a reader to wonder why the count moved.
+ */
+function loadCapacityStall() {
+  try {
+    const mod = require(path.resolve(__dirname, "..", "dist", "orchestrator", "capacityStall.js"));
+    if (typeof mod.isCapacityStallPark !== "function") throw new Error("predicate missing");
+    return { match: mod.isCapacityStallPark, max: mod.MAX_CAPACITY_STALL_RESUMES, loaded: true };
+  } catch {
+    return { match: () => false, max: null, loaded: false };
+  }
+}
+const capacityStall = loadCapacityStall();
+
 const DB_PATH = path.resolve(__dirname, "..", "data", "orchestrator.sqlite");
 
 // Every marker below is a literal `settleReview`/`setState(…,"review")` message in
@@ -90,6 +113,20 @@ const PARK_CLASSES = [
     title: "stopped by the operator's hard deadline — by design",
     match: (err) => err.includes("⏰ Hard deadline reached"),
     action: "deliberate stop: extend/clear the clock, then click Resume — nothing automatic will touch it",
+  },
+  {
+    // An implementor that stopped on a capacity reason which never earned the cap marker (a per-session
+    // turn/cost ceiling, a provider session limit). Before the rollover learned to continue these, they
+    // matched no class at all and read as `unknown`, i.e. the sweep's alarm for wording that had drifted,
+    // which is the opposite of what they are. Ranked above stalled/verdict for the same reason `deadline`
+    // is: the lifted run text can carry another class's words.
+    key: "capacityStall",
+    human: false,
+    title: "capacity-stalled implementor: the next window rollover continues it in place",
+    match: (err) => capacityStall.match(err),
+    action:
+      "leave it while budget remains: the rollover resumes it in its OWN session (same thread, no QA). " +
+      "Each task's remaining continuations are on its trailing line; probe:accounts shows when the window turns over",
   },
   {
     key: "stalled",
@@ -240,6 +277,27 @@ function recoveryLineFor(parkClass, error, run) {
   return spent ? DEAD_END_LINES[spent] : null;
 }
 
+/**
+ * How many rollover continuations this task has already spent, and whether that budget is gone. Read per
+ * task rather than joined into `threadsInState`, because only one class needs it and `stage_outputs` is a
+ * JSON blob that can run to kilobytes.
+ *
+ * This is the half of the class a reader ACTS on. A capacity stall with budget left owns itself, like a
+ * capWait; one whose budget is spent will never be woken again by anything and is a plain hand-off, but
+ * its park TEXT is identical either way, so without this line the two are indistinguishable.
+ */
+function stallBudget(db, threadId) {
+  const row = db.prepare("SELECT stage_outputs FROM threads WHERE id = ?").get(threadId);
+  let used = 0;
+  try {
+    used = JSON.parse(row?.stage_outputs ?? "{}").capacityStallResumes ?? 0;
+  } catch {
+    used = 0; // an unparsable blob is not a reason to fail a read-only probe
+  }
+  const max = capacityStall.max;
+  return { used, max, spent: max != null && used >= max };
+}
+
 function reportThread(db, t, parkClass) {
   console.log(`- ${t.id.slice(0, 8)}  ${short(t.title, 58)}`);
   console.log(`    parked ${age(t.updated_at)} · ${t.workspace}`);
@@ -247,6 +305,14 @@ function reportThread(db, t, parkClass) {
   const run = lastRun(db, t.id);
   const recovery = recoveryLineFor(parkClass, t.error, run);
   if (recovery) console.log(`    ↳ ${recovery}`);
+  if (parkClass === "capacityStall") {
+    const { used, max, spent } = stallBudget(db, t.id);
+    console.log(
+      spent
+        ? `    ↳ rollover continuations ${used}/${max} SPENT: nothing will wake this again, it is yours now`
+        : `    ↳ rollover continuations ${used}/${max ?? "?"} used: the next window rollover picks this up`,
+    );
+  }
   if (!run) {
     console.log("    last run: none recorded — the task parked before any agent ran");
     return;
@@ -297,11 +363,23 @@ function main() {
   if (!abandoned.length) console.log("  ✓ nothing abandoned — no task was left behind by a restart.");
   const lost = reportSection(db, abandoned, ABANDON_CLASSES, classifyAbandoned);
 
-  const needsOwner = parks("stalled") + parks("unknown") + lost("promised") + lost("otherFailure");
+  // A capacity stall is only self-owning while it has budget. Once spent, nothing wakes it again, so it
+  // has to reach the owner's count or this class becomes a place for work to disappear into quietly.
+  const stallSpent = parked.filter(
+    (t) => classifyPark(t.error).key === "capacityStall" && stallBudget(db, t.id).spent,
+  ).length;
+  const needsOwner = parks("stalled") + parks("unknown") + stallSpent + lost("promised") + lost("otherFailure");
   console.log(
     `\n  ${needsOwner ? "⚠" : "✓"} ${parks("stalled") + parks("unknown")} park(s) stopped mid-pipeline, ` +
-      `${parks("verdict")} awaiting a verdict by design, ${parks("capWait")} on the supervisor.`,
+      `${parks("verdict")} awaiting a verdict by design, ${parks("capWait")} on the supervisor, ` +
+      `${parks("capacityStall")} capacity-stalled (${stallSpent} out of continuations).`,
   );
+  if (!capacityStall.loaded && parks("unknown")) {
+    console.log(
+      "  ↳ note: server/dist has no capacityStall module, so capacity-stalled parks could not be told " +
+        "from drifted wording and are counted under unrecognized. Run npm run build --prefix server.",
+    );
+  }
   console.log(
     `  ${lost("promised") + lost("otherFailure") ? "⚠" : "·"} ${lost("promised")} abandoned task(s) still promising a resume, ` +
       `${lost("clickResume")} handed back for a click, ${lost("otherFailure")} unclassified.`,
@@ -312,4 +390,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { classifyPark, classifyAbandoned, spentRecoveryBudget, recoveryLineFor, lastRun, isDeadEndLine, DEAD_END_LINES, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
+module.exports = { classifyPark, classifyAbandoned, spentRecoveryBudget, recoveryLineFor, lastRun, isDeadEndLine, stallBudget, capacityStall, DEAD_END_LINES, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
