@@ -71,7 +71,7 @@ import { OperatorNotes } from "./notes.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { recoveryHistoryBlock } from "./recoveryHistory.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
-import { buildSelectionPrompt, defaultCandidateEffort, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
+import { autoSelectableEffortsForCandidate, buildSelectionPrompt, defaultCandidateEffort, filterAutoSelectionCandidates, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
 import {
   DEFAULT_FLAGSHIP_MODEL,
   applyImplementorModelPolicy,
@@ -3216,18 +3216,19 @@ export class ThreadManager implements OrchestratorApi {
       const routedZai = zai.hasHeadroom ? zai : { ...zai, hasHeadroom: true, capacityWindows: [] };
       add("zai", models, (model) => underCap(zaiEffortsForModel(model), this.zaiEffort(model)), () => routedZai);
     }
-    const capacity = preferCapacity(entries, (entry) => candidateCapacityWindows(entry.candidate), demand);
+    const autoEntries = filterAutoSelectionCandidates(entries);
+    const capacity = preferCapacity(autoEntries, (entry) => candidateCapacityWindows(entry.candidate), demand);
     // Usage forecasts rank model pools but never suppress one that has not actually capped.
     const selected = [
       ...capacity.candidates,
-      ...entries.filter((entry) => !capacity.candidates.includes(entry)),
+      ...autoEntries.filter((entry) => !capacity.candidates.includes(entry)),
     ];
     return selected.map((entry) => {
       const benchmark = this.liveBench.note(entry.model);
       return {
         provider: entry.provider,
         model: entry.model,
-        efforts: entry.efforts,
+        efforts: autoSelectableEffortsForCandidate(entry, entry.efforts),
         note: [modelNote(entry.provider, entry.model), benchmark].filter(Boolean).join(". "),
         capacity: modelCapacityNote(entry.provider, entry.model, entry.candidate, demand),
       };

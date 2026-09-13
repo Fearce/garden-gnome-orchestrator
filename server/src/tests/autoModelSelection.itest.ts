@@ -268,7 +268,7 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log("Test roster — CLI and GLM providers are not truncated");
+  console.log("Test roster — modern CLI and GLM providers are not truncated");
   {
     const h = makeHarness();
     try {
@@ -302,7 +302,8 @@ async function main(): Promise<void> {
       h.internals.zaiEffort = (): Effort => "max";
       const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
       const modelsFor = (provider: ImplementorProvider): string[] => roster.filter((candidate) => candidate.provider === provider).map((candidate) => candidate.model);
-      check("all Codex models reach the selector", codex.every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
+      check("modern Codex models reach the selector", codex.slice(0, 5).every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
+      check("legacy Codex models stay out while GPT-5.6+ options are dispatchable", codex.slice(5).every((model) => !modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
       check("Codex Ultra reaches the selector when the live model advertises it", roster.find((candidate) => candidate.model === "gpt-5.6-sol")?.efforts.includes("ultra") === true);
       check("all live Grok models reach the selector", grok.every((model) => modelsFor("grok").includes(model)), JSON.stringify(modelsFor("grok")));
       check("every live z.ai model reaches the selector", zai.every((model) => modelsFor("zai").includes(model)), JSON.stringify(modelsFor("zai")));
@@ -310,6 +311,26 @@ async function main(): Promise<void> {
       check("GLM-5.3 carries exactly Low, High, and Max into the selector", roster.find((candidate) => candidate.model === "glm-5.3")?.efforts.join(",") === "low,high,max", JSON.stringify(roster.find((candidate) => candidate.model === "glm-5.3")));
       check("unknown GLM models keep the conservative verified tiers", roster.find((candidate) => candidate.model === "glm-9.9-unreleased")?.efforts.join(",") === "low,medium,high", JSON.stringify(roster.find((candidate) => candidate.model === "glm-9.9-unreleased")));
       check("Grok 4.6 carries Extra High into the selector", roster.find((candidate) => candidate.model === "grok-4.6")?.efforts.includes("xhigh") === true);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("Test roster — legacy Codex remains a capped fallback only when no 5.6+ choice exists");
+  {
+    const h = makeHarness();
+    try {
+      const codex = ["gpt-5.5", "gpt-5.4-mini"];
+      h.internals.codexImplementorReady = (): boolean => true;
+      h.internals.codexPoolSnapshot = (): null => null;
+      h.internals.codexProviderCandidate = (): { provider: "codex"; hasHeadroom: boolean } => ({ provider: "codex", hasHeadroom: true });
+      h.internals.codexRosterModels = (): string[] => codex;
+      h.internals.codexSupportedEfforts = (): Effort[] => ["low", "medium", "high", "xhigh"];
+      h.internals.codexEffort = (): Effort => "ultra";
+      const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
+      const codexRoster = roster.filter((candidate) => candidate.provider === "codex");
+      check("legacy Codex can still be selected when it is the only Codex catalog", codex.every((model) => codexRoster.some((candidate) => candidate.model === model)), JSON.stringify(codexRoster));
+      check("legacy Codex fallback is capped to High for automatic selection", codexRoster.every((candidate) => candidate.efforts.join(",") === "low,medium,high"), JSON.stringify(codexRoster));
     } finally {
       h.dispose();
     }

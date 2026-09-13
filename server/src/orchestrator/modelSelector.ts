@@ -12,12 +12,15 @@
 // blocked by this, and a hallucinated model id never reaches a spawn.
 
 import { EFFORTS, type Effort, type ImplementorProvider, type ModelEffortStat, type ModelPick, type ModelStat } from "../types.js";
+import { isPolicyApprovedFlagship } from "./modelRoutingPolicy.js";
 
 const SELECTOR_TIMEOUT_MS = 45_000;
 const MAX_OUTPUT_TOKENS = 300;
 const BRIEF_CHARS = 4000;
 const PLAN_CHARS = 3000;
 const MAX_REASON_CHARS = 200;
+const FRONTIER_AVOIDANCE_CLAIM = /\b(?:without\s+(?:needing\s+)?|avoid(?:s|ing)?\s+|skip(?:s|ping)?\s+|no\s+|not\s+)(?:a\s+)?frontier(?:[-\s]?tier)?(?:\s+(?:spend|cost|model|capacity|tokens?|run|route|tier))?\b/gi;
+const CODEX_CLI_BRIDGE_NOTE = "separate CLI with no interactive bus tools, but text bridges preserve office chat, owner notes, and deliverables";
 
 type Block = { type?: string; text?: string };
 
@@ -62,8 +65,8 @@ const PROVIDER_LABEL: Record<ImplementorProvider, string> = {
  * scoreboard, not this line, is what should move the decision once there is any history.
  */
 export function modelNote(provider: ImplementorProvider, model: string): string {
-  const id = model.toLowerCase();
-  if (provider === "codex") return "strong autonomous coder with substantial reasoning; frontier-tier model, separate CLI with no interactive bus tools, but text bridges preserve office chat, owner notes, and deliverables";
+  const id = model.trim().toLowerCase();
+  if (provider === "codex") return codexModelNote(id);
   if (provider === "grok") return "capable generalist, frontier-tier reasoning; separate CLI with no interactive bus tools, but text bridges preserve office chat, owner notes, and deliverables";
   if (provider === "zai") return "GLM coding-plan model on an Anthropic-compatible endpoint — keeps every tool a Claude run has; solid mid-tier coder";
   if (id.includes("haiku")) return "fastest and cheapest; well suited to small, well-scoped, mechanical changes";
@@ -71,6 +74,65 @@ export function modelNote(provider: ImplementorProvider, model: string): string 
   if (id.includes("fable")) return "frontier reasoning, drawn from its own separate limited allowance — worth spending on genuinely hard work";
   if (id.includes("opus")) return "the strongest Claude tier; multi-file features, subtle debugging, long-horizon work";
   return "general-purpose coding model";
+}
+
+function codexModelNote(id: string): string {
+  if (/^gpt-6-astra(?:[-.]|$)/i.test(id)) return `highest-cost Codex frontier-tier model; reserve for work that truly needs maximum autonomous reasoning and justify the spend; ${CODEX_CLI_BRIDGE_NOTE}`;
+  if (/^gpt-5\.6-sol(?:[-.]|$)/i.test(id)) return `premium GPT-5.6 Codex tier; strong autonomous coding below Astra, suited to high-uncertainty implementation when Terra/Luna are too small; ${CODEX_CLI_BRIDGE_NOTE}`;
+  if (/^gpt-5\.6-terra(?:[-.]|$)/i.test(id)) return `balanced GPT-5.6 Codex workhorse; cheaper than Sol/Astra and suitable for ordinary multi-file implementation at the smallest confident effort; ${CODEX_CLI_BRIDGE_NOTE}`;
+  if (/^gpt-5\.6-luna(?:[-.]|$)/i.test(id)) return `budget GPT-5.6 Codex tier; low/medium effort should usually beat legacy GPT-5.5/5.4 on both quality and cost for small or mechanical work; ${CODEX_CLI_BRIDGE_NOTE}`;
+  if (isLegacyCodexId(id)) return `legacy pre-5.6 Codex tier; automatic routing should use it only when no GPT-5.6+ Codex option is dispatchable and should avoid extra-high spend; ${CODEX_CLI_BRIDGE_NOTE}`;
+  return `Codex CLI coding model; compare exact outcomes and token-window burn before spending high effort; ${CODEX_CLI_BRIDGE_NOTE}`;
+}
+
+function codexGpt5Minor(model: string): number | null {
+  const match = /^gpt-5\.(\d+)(?:[-.]|$)/i.exec(model.trim());
+  return match ? Number(match[1]) : null;
+}
+
+function isLegacyCodexId(model: string): boolean {
+  const id = model.trim().toLowerCase();
+  const minor = codexGpt5Minor(id);
+  if (minor != null) return minor < 6;
+  return /^gpt-5(?:-|$)/.test(id);
+}
+
+export function isPreferredCodexAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {
+  if (candidate.provider !== "codex") return false;
+  const id = candidate.model.trim();
+  return /^gpt-6(?:[-.]|$)/i.test(id) || (codexGpt5Minor(id) ?? 0) >= 6 || /^gpt-daybreak-blue-latest(?:[-.]|$)/i.test(id);
+}
+
+export function isLegacyCodexAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {
+  if (candidate.provider !== "codex") return false;
+  return isLegacyCodexId(candidate.model);
+}
+
+export function filterAutoSelectionCandidates<T extends Pick<ModelCandidate, "provider" | "model">>(candidates: readonly T[]): T[] {
+  const preferredCodexAvailable = candidates.some(isPreferredCodexAutoModel);
+  return candidates.filter((candidate) => !preferredCodexAvailable || !isLegacyCodexAutoModel(candidate));
+}
+
+export function autoSelectableEffortsForCandidate(
+  candidate: Pick<ModelCandidate, "provider" | "model">,
+  efforts: readonly Effort[],
+): Effort[] {
+  if (!isLegacyCodexAutoModel(candidate)) return [...efforts];
+  const capped = efforts.filter((effort) => EFFORTS.indexOf(effort) <= EFFORTS.indexOf("high"));
+  return capped.length ? capped : [...efforts];
+}
+
+function isFrontierTierCandidate(candidate: ModelCandidate): boolean {
+  return isPolicyApprovedFlagship(candidate) || /\bfrontier(?:[-\s]?tier| reasoning)\b/i.test(candidate.note);
+}
+
+function sanitizeReason(reason: string, candidate: ModelCandidate): string {
+  const normalized = reason.trim().replace(/\s+/g, " ");
+  if (!normalized) return "";
+  const safe = isFrontierTierCandidate(candidate)
+    ? normalized.replace(FRONTIER_AVOIDANCE_CLAIM, "using frontier-tier capacity deliberately")
+    : normalized;
+  return safe.slice(0, MAX_REASON_CHARS);
 }
 
 export function defaultCandidateEffort(candidate: Pick<ModelCandidate, "efforts">): Effort {
@@ -147,6 +209,8 @@ export function buildSelectionPrompt(ctx: SelectionContext): string {
     "### Model + effort outcomes across all repositories",
     ctx.globalEffortStats?.length ? ctx.globalEffortStats.map(effortStatLine).join("\n") : "(no effort-specific history yet)",
     "",
+    "If you pick a candidate described as frontier-tier or frontier reasoning, the reason must say why that spend is justified. Never say that pick avoids, skips, or does not need frontier spend.",
+    "",
     "Reply with ONE JSON object and nothing else:",
     `{"model": "<exact id from the list above>", "effort": "${ctx.efforts.join("|")}", "reason": "<20 words or fewer: why this model for this task>"}`,
   ].join("\n");
@@ -188,9 +252,10 @@ export function parseSelection(text: string, ctx: Pick<SelectionContext, "candid
   const wanted = raw.model.trim().toLowerCase();
   const candidate = ctx.candidates.find((c) => c.model.toLowerCase() === wanted);
   if (!candidate) return null;
+  const selectableEfforts = autoSelectableEffortsForCandidate(candidate, candidate.efforts);
   const requested = String(raw.effort ?? "").trim().toLowerCase();
-  const effort = candidate.efforts.find((e) => e === requested) ?? defaultCandidateEffort(candidate);
-  const reason = typeof raw.reason === "string" ? raw.reason.trim().replace(/\s+/g, " ").slice(0, MAX_REASON_CHARS) : "";
+  const effort = selectableEfforts.find((e) => e === requested) ?? defaultCandidateEffort({ efforts: selectableEfforts });
+  const reason = typeof raw.reason === "string" ? sanitizeReason(raw.reason, candidate) : "";
   return { provider: candidate.provider, model: candidate.model, effort, reason };
 }
 

@@ -127,6 +127,14 @@ check(
   conservationResolvedModel("codex", "gpt-5.4", ACTIVE, NOW) === "gpt-5.6-luna",
 );
 check(
+  "a legacy mini Codex pick is also pulled up to the reviewed Luna economy floor",
+  conservationResolvedModel("codex", "gpt-5.4-mini", ACTIVE, NOW) === "gpt-5.6-luna",
+);
+check(
+  "a legacy Spark pick is also pulled up to the reviewed Luna economy floor",
+  conservationResolvedModel("codex", "gpt-5.3-codex-spark", ACTIVE, NOW) === "gpt-5.6-luna",
+);
+check(
   "a fully-spent window with no reset reading at all is active — the case most likely to occur in production",
   conservationActive({ usedPct: 100, resetAt: null }, NOW),
 );

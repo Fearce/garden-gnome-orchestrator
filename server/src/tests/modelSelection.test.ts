@@ -14,7 +14,7 @@
  * Run:  npm run test:model-select   (from server/)   — or:  npx tsx src/tests/modelSelection.test.ts
  */
 
-import { buildSelectionPrompt, modelNote, parseSelection, selectImplementorModel, type ModelCandidate } from "../orchestrator/modelSelector.js";
+import { autoSelectableEffortsForCandidate, buildSelectionPrompt, filterAutoSelectionCandidates, modelNote, parseSelection, selectImplementorModel, type ModelCandidate } from "../orchestrator/modelSelector.js";
 import { gradeSettledTask, outcomeOfState, scoreOutcome } from "../orchestrator/modelGrading.js";
 import { CURATED_CODEX_MODELS, fetchZaiModels } from "../agents/modelCatalog.js";
 import { WAKE_MODEL } from "../agents/codexUsagePing.js";
@@ -105,7 +105,7 @@ console.log("Flagship capability floor");
 
   const blocked = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model === "claude-sonnet-5"), FLAGSHIP_POLICY);
   check("a workhorse-only roster blocks instead of silently downgrading", blocked.mode === "blocked" && blocked.eligible.length === 0, JSON.stringify(blocked));
-  check("the approved families include Astra and exclude cheaper model tiers", isPolicyApprovedFlagship({ provider: "claude", model: "claude-fable-5" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-astra" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-terra" }) && !isPolicyApprovedFlagship({ provider: "zai", model: "glm-5.3" }));
+  check("the approved families include Astra/Sol and exclude cheaper or legacy tiers", isPolicyApprovedFlagship({ provider: "claude", model: "claude-fable-5" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-astra" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-sol" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-terra" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.5" }) && !isPolicyApprovedFlagship({ provider: "zai", model: "glm-5.3" }));
 }
 
 {
@@ -159,11 +159,60 @@ console.log("Flagship capability floor");
 }
 
 {
+  const notes = {
+    astra: modelNote("codex", "gpt-6-astra"),
+    sol: modelNote("codex", "gpt-5.6-sol"),
+    terra: modelNote("codex", "gpt-5.6-terra"),
+    luna: modelNote("codex", "gpt-5.6-luna"),
+    legacy: modelNote("codex", "gpt-5.5"),
+  };
+  check("Astra is described as expensive frontier capacity", /highest-cost.*frontier-tier.*justify the spend/i.test(notes.astra), notes.astra);
+  check("Sol, Terra, and Luna carry distinct cost tiers", /premium GPT-5\.6/i.test(notes.sol) && /balanced GPT-5\.6/i.test(notes.terra) && /budget GPT-5\.6/i.test(notes.luna), JSON.stringify(notes));
+  check("Luna is framed above legacy 5.5/5.4 for value", /beat legacy GPT-5\.5\/5\.4.*quality and cost/i.test(notes.luna), notes.luna);
+  check("legacy Codex notes warn against extra-high spend", /legacy pre-5\.6.*avoid extra-high/i.test(notes.legacy), notes.legacy);
+}
+
+{
+  const roster: ModelCandidate[] = [
+    { provider: "codex", model: "gpt-5.5", efforts: ["low", "medium", "high", "xhigh"], note: modelNote("codex", "gpt-5.5") },
+    { provider: "codex", model: "gpt-5.6-luna", efforts: ["low", "medium", "high", "max"], note: modelNote("codex", "gpt-5.6-luna") },
+    { provider: "claude", model: "claude-sonnet-5", efforts: ["low", "medium", "high"], note: "workhorse" },
+  ];
+  const filtered = filterAutoSelectionCandidates(roster);
+  check("legacy Codex is hidden while GPT-5.6+ Codex is dispatchable", !filtered.some((candidate) => candidate.model === "gpt-5.5") && filtered.some((candidate) => candidate.model === "gpt-5.6-luna"), JSON.stringify(filtered));
+  const fallback = filterAutoSelectionCandidates(roster.filter((candidate) => candidate.model !== "gpt-5.6-luna"));
+  check("legacy Codex remains available when it is the only Codex fallback", fallback.some((candidate) => candidate.model === "gpt-5.5"), JSON.stringify(fallback));
+  check("legacy Codex auto-selection offers no extra-high tier", autoSelectableEffortsForCandidate(roster[0]!, roster[0]!.efforts).join(",") === "low,medium,high");
+}
+
+{
   const pick = parseSelection('{"model":"claude-haiku-4-5-20251001","effort":"low","reason":"one-line copy edit"}', CTX);
   check("a clean reply parses", pick?.model === "claude-haiku-4-5-20251001", JSON.stringify(pick));
   check("effort is taken from the reply", pick?.effort === "low", String(pick?.effort));
   check("provider comes from the ROSTER, not the reply", pick?.provider === "claude", String(pick?.provider));
   check("reason is carried", pick?.reason === "one-line copy edit", String(pick?.reason));
+}
+
+{
+  const astraCtx = {
+    candidates: [{ provider: "codex" as const, model: "gpt-6-astra", efforts: ["high" as const], note: modelNote("codex", "gpt-6-astra") }],
+    efforts: ["high" as const],
+  };
+  const pick = parseSelection(
+    '{"model":"gpt-6-astra","effort":"high","reason":"Strong autonomous coder; task spans scheduler, UI, process control, and script-hub integration without needing frontier spend."}',
+    astraCtx,
+  );
+  const reason = pick?.reason ?? "";
+  check("a frontier pick cannot claim it avoids frontier spend", reason.includes("using frontier-tier capacity deliberately") && !/without needing frontier spend/i.test(reason), reason);
+}
+
+{
+  const legacyCtx: { candidates: ModelCandidate[]; efforts: Effort[] } = {
+    candidates: [{ provider: "codex", model: "gpt-5.5", efforts: ["low", "medium", "high", "xhigh"], note: modelNote("codex", "gpt-5.5") }],
+    efforts: ["low", "medium", "high", "xhigh"],
+  };
+  const pick = parseSelection('{"model":"gpt-5.5","effort":"xhigh","reason":"legacy fallback"}', legacyCtx);
+  check("a legacy Codex fallback cannot spend extra-high effort", pick?.effort === "high", JSON.stringify(pick));
 }
 
 {
@@ -242,6 +291,7 @@ console.log("\n=== the prompt carries what the decision needs ===\n");
   check("LiveBench is framed as a secondary effort/category prior", /LiveBench.*secondary capability prior.*category scores.*smallest reasoning effort/s.test(prompt), "benchmark weighting guidance missing");
   check("exact live pool capacity reaches the model roster", prompt.includes("Live capacity: Codex general pool: 5h 42% free"), "capacity line missing");
   check("the selector must avoid at-risk pools for substantial work", /Do not put substantial work on an at-risk pool/.test(prompt), "runway policy missing");
+  check("frontier-tier picks must justify frontier spend", /frontier-tier.*reason must say why that spend is justified.*Never say.*avoids.*frontier spend/s.test(prompt), "frontier-spend reason guidance missing");
 }
 
 {

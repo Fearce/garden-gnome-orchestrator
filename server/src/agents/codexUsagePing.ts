@@ -32,13 +32,13 @@ const RESET_BUFFER_MS = 5_000; // re-read shortly after a window reset so the me
 const ROLLOUT_POLL_MS = 30_000; // refresh the already-known meter state + change broadcast
 
 // ---- the cheap wake turn ----
-// gpt-5.5 is the cheapest model a ChatGPT-plan login can run: the mini/codex-mini ids 400 with "not
-// supported when using Codex with a ChatGPT account" (verified live, CLI 0.142.4). Effort "low", not
-// "minimal" — minimal 400s against the built-in web_search tool. CODEX_WAKE=off disables waking.
+// GPT-5.6 Luna is the current economy floor: lower effort should be both better and cheaper than the
+// legacy GPT-5.5/5.4 tiers. Effort "low", not "minimal" — minimal 400s against the built-in web_search
+// tool. CODEX_WAKE=off disables waking.
 const WAKE_OFF = process.env.CODEX_WAKE === "off";
 /** Exported because it is a claim about what ChatGPT-plan auth can run, which `config.codex.models`
  *  makes independently — under that auth the curated list IS the whole roster, so the two must agree. */
-export const WAKE_MODEL = process.env.CODEX_WAKE_MODEL?.trim() || "gpt-5.5";
+export const WAKE_MODEL = process.env.CODEX_WAKE_MODEL?.trim() || "gpt-5.6-luna";
 const WAKE_EFFORT = "low";
 const WAKE_PROMPT = "Reply with exactly: ok";
 const WAKE_TIMEOUT_MS = 180_000;

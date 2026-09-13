@@ -26,12 +26,17 @@ function normalized(model: string): string {
   return model.trim().toLowerCase();
 }
 
+function gpt5Minor(model: string): number | null {
+  const match = /^gpt-5\.(\d+)(?:-(?:codex|sol))?$/.exec(model);
+  return match ? Number(match[1]) : null;
+}
+
 /** Explicitly reviewed fallback classes. Workhorse/economy variants such as Sonnet, Terra, Luna,
  * Mini, Spark, Grok and GLM are intentionally absent. They remain valid adaptive or owner-pinned picks. */
 export function isPolicyApprovedFlagship(candidate: RoutableModel): boolean {
   const model = normalized(candidate.model);
   if (candidate.provider === "claude") return /^claude-(?:opus|fable)-/.test(model);
-  if (candidate.provider === "codex") return model === "gpt-6-astra" || /^gpt-5(?:\.\d+)?(?:-codex|-sol)?$/.test(model);
+  if (candidate.provider === "codex") return model === "gpt-6-astra" || (gpt5Minor(model) ?? 0) >= 6;
   return false;
 }
 

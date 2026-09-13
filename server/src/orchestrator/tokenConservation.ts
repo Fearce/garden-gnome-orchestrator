@@ -33,8 +33,10 @@ export const TOKEN_CONSERVATION_MODEL: Partial<Record<ImplementorProvider, strin
 /**
  * Models this module has reviewed and confirmed are ALREADY economy-tier — conservation never touches
  * these (an operator's or policy's own cheap pick is exactly what conservation exists to protect from
- * further downgrade, not something to replace with a different cheap model). Every other id — including
- * one this list has never seen — is treated as conservable.
+ * further downgrade, not something to replace with a different cheap model). Legacy pre-5.6 Codex ids
+ * are deliberately absent: Luna is the reviewed economy floor and should replace older tiers when
+ * conservation is active. Every other id — including one this list has never seen — is treated as
+ * conservable.
  *
  * This deliberately does NOT reuse `modelRoutingPolicy.isPolicyApprovedFlagship`: that predicate fails
  * CLOSED (an unknown id is excluded from flagship-only routing, the safe direction for THAT policy), so
@@ -47,7 +49,7 @@ export const TOKEN_CONSERVATION_MODEL: Partial<Record<ImplementorProvider, strin
  */
 const TOKEN_CONSERVATION_ECONOMY_MODELS: Partial<Record<ImplementorProvider, ReadonlySet<string>>> = {
   claude: new Set(["claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]),
-  codex: new Set(["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.4-mini", "gpt-5.3-codex-spark"]),
+  codex: new Set(["gpt-5.6-luna", "gpt-5.6-terra"]),
 };
 
 export interface ConservationWindow {
