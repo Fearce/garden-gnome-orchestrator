@@ -200,6 +200,13 @@ export type ServerEvent =
   // Voice mode: a task-tailored spoken line for a just-completed task. Only published while voice
   // mode is on (gateway up AND wake/mic enabled); the gateway speaks it, the web console ignores it.
   | { type: "voice.announce"; threadId: string; text: string }
+  // The heartbeat's answer. The console has to keep bidirectional traffic on the tunnel (a reverse proxy
+  // half-closes an idle WS without the browser noticing), and it used to do that by re-requesting the
+  // whole `hello` every 20 seconds — 1343 KB on this owner's board, 3.9 MB/min per open console, rebuilt
+  // and stringified on the main event loop each time. Worse than the bytes: while that frame is being
+  // written every later frame on the socket queues behind it, so the reply to whatever the owner just
+  // clicked arrives late. This is the same keep-alive with nothing in it.
+  | { type: "pong"; at: number }
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
 // ---- Client -> Server commands (inbound; zod-validated) ----
@@ -543,6 +550,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // gates remain in DirectorSupervisor.
   z.object({ type: z.literal("supervisor.runNow") }),
   z.object({ type: z.literal("snapshot.request") }),
+  // The cheap heartbeat. `snapshot.request` still exists and is still what a reconnect, a re-shown tab
+  // and the slow periodic resync use — this is only for keeping the tunnel warm.
+  z.object({ type: z.literal("ping") }),
 ]);
 
 export type ClientCommand = z.infer<typeof clientCommandSchema>;

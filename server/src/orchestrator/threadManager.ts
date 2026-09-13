@@ -118,7 +118,7 @@ import { DirectorSupervisor, SUPERVISOR_JUDGE_MAX_TURNS, type SupervisorJudgemen
 import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
 import type { FreeProviderService } from "../freeProviders/service.js";
 import { config, fallbackModelFor } from "../config.js";
-import { execFile } from "node:child_process";
+import { runChild } from "../childRunner.js";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -4373,6 +4373,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const u = readGrokUsage();
     const capActive = this.grokCapActive();
     const startupCooldownUntil = this.providerStartupCooldownUntil("grok", now);
+    // A plan that STATES it meters no allowance (the free tier's billing line — see
+    // noteGrokNoCreditAllowance) leaves every window null, and a null window is read as headroom that
+    // merely hasn't been measured. So retiring the lying `7d 10%` reading alone was not enough: it
+    // turned a wrong number into no number, and routing kept offering a backend that rejects every run.
+    // The absence of a meter is unknown; the plan saying it meters NOTHING is an answer, and it is the
+    // one door here that no window can express. It re-opens by itself the moment an upgraded plan's
+    // metered reading lands, because that reading retires the free-tier verdict.
+    const noAllowance = u.creditAllowance === "none";
     const nearWeekly =
       u.sevenDay != null && u.sevenDay >= PROVIDER_HARD_LIMIT && (u.sevenDayReset == null || u.sevenDayReset > now);
     const monthlyPct = u.monthlyUsed != null && u.monthlyLimit != null && u.monthlyLimit > 0
@@ -4386,7 +4394,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       provider: "grok",
       // Keep the actual latch guard in this expression: probe-accounts.cjs structurally mirrors every
       // dispatch door so its operator-facing failover ladder cannot overstate usable capacity.
-      hasHeadroom: startupCooldownUntil == null && !capActive && !nearWeekly && !monthlyExhausted,
+      hasHeadroom: startupCooldownUntil == null && !capActive && !noAllowance && !nearWeekly && !monthlyExhausted,
       fiveHour: null,
       fiveHourReset: null,
       sevenDay: u.sevenDay,
@@ -5533,12 +5541,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   async getChanges(threadId: string): Promise<{ diff: string; log: string }> {
     const t = this.db.getThread(threadId);
     if (!t) return { diff: "", log: "(no such task)" };
-    const run = (args: string[]): Promise<string> =>
-      new Promise((res) =>
-        execFile("git", ["-C", t.workspace, "--no-pager", ...args], { maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) =>
-          res(stdout || stderr || (err ? err.message : "")),
-        ),
-      );
+    const run = async (args: string[]): Promise<string> => {
+      const r = await runChild("git", ["-C", t.workspace, "--no-pager", ...args], { maxStdoutBytes: 8 * 1024 * 1024 });
+      return r.stdout || r.stderr || "";
+    };
     const [diff, log] = await Promise.all([run(["diff"]), run(["log", "--oneline", "-10"])]);
     return { diff: diff.trim() || "(no uncommitted changes)", log: log.trim() || "(no commits / not a git repo)" };
   }
@@ -8555,12 +8561,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     sessionId?: string,
     opts?: { directorNote?: string; qaFollows?: boolean; restartNote?: string },
   ): Promise<string> {
-    const git = (args: string[]): Promise<string> =>
-      new Promise((res) =>
-        execFile("git", ["-C", thread.workspace, "--no-pager", ...args], { maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, out, errOut) =>
-          res((out || errOut || (err ? err.message : "")).trim()),
-        ),
-      );
+    // Three git reads on every implementor resume. In-process on Windows that is three CreateProcess
+    // calls blocking the whole server (~0.8 s each on the owner's box), which is a visible share of the
+    // delay between clicking Inject and the agent moving; runChild puts them on a worker thread.
+    const git = async (args: string[]): Promise<string> => {
+      const r = await runChild("git", ["-C", thread.workspace, "--no-pager", ...args], { maxStdoutBytes: 8 * 1024 * 1024 });
+      return (r.stdout || r.stderr || "").trim();
+    };
     const gitProgress = async (): Promise<string> => {
       const [log, stat, diff] = await Promise.all([git(["log", "--oneline", "-8"]), git(["diff", "--stat"]), git(["diff"])]);
       const cappedDiff = diff.length > 6000 ? diff.slice(0, 6000) + "\n… (diff truncated — read the files for the rest)" : diff;

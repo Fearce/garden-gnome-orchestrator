@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
+import { runChild } from "./childRunner.js";
 import { config } from "./config.js";
 import { isConfiguredCommitOnlyOrigin } from "./git/commitOnly.js";
 
@@ -37,39 +37,15 @@ export interface GitResult {
  *  credential prompt, GIT_OPTIONAL_LOCKS=0 so a read never races an index lock a concurrent agent holds.
  *  Exported for `git/repoOps.ts` (the write-side repo console), so every git surface in the app goes
  *  through this one hardened, shell-free spawn. */
-export function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
-  return new Promise((resolveP) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    const child = spawn("git", ["--no-pager", ...args], {
-      cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
-      windowsHide: true,
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill();
-      } catch {
-        /* already gone */
-      }
-    }, timeoutMs);
-    timer.unref();
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (c: string) => {
-      if (stdout.length < DIFF_MAX_BYTES * 2) stdout += c;
-    });
-    child.stderr.on("data", (c: string) => (stderr += c));
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      resolveP({ code: -1, stdout, stderr: stderr + String((e as Error).message), timedOut });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolveP({ code, stdout, stderr, timedOut });
-    });
+export async function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
+  // Runs on a worker thread (see childRunner.ts). This is the busiest git surface in the app — a board
+  // of cards, the Changes drawer and the Git console all land here — and on Windows an in-process spawn
+  // blocks the whole server for the duration of CreateProcess.
+  return runChild("git", ["--no-pager", ...args], {
+    cwd,
+    env: { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
+    timeoutMs,
+    maxStdoutBytes: DIFF_MAX_BYTES * 2,
   });
 }
 

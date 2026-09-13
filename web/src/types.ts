@@ -1190,6 +1190,9 @@ export type ServerEvent =
   | { type: "notice"; level: "info" | "warn"; title: string; message: string }
   // Voice mode: spoken completion line for a finished task — consumed by the voice-gateway, ignored here.
   | { type: "voice.announce"; threadId: string; text: string }
+  // The heartbeat's answer. Re-requesting the whole `hello` every 20s to keep the tunnel warm cost
+  // 1.3 MB a beat on a board of ~860 tasks, and delayed every frame queued behind it.
+  | { type: "pong"; at: number }
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
 export type ClientCommand =
@@ -1252,7 +1255,9 @@ export type ClientCommand =
   | { type: "note.clear" }
   | { type: "supervisor.message"; content: string; targetIds: string[]; clientId?: string }
   | { type: "supervisor.runNow" }
-  | { type: "snapshot.request" };
+  | { type: "snapshot.request" }
+  // The cheap keep-alive; `snapshot.request` stays for reconnect, tab re-show and the slow resync.
+  | { type: "ping" };
 
 // ---- Director Supervisor: a lightweight watchdog over active tasks (mirrors server/src/types.ts) ----
 

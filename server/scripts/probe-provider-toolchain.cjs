@@ -177,8 +177,14 @@ function assessStagedRuntime(distBuild, restartResult) {
       detail: `restart coordinator has ${status.pending.failures} refused attempt${status.pending.failures === 1 ? "" : "s"}`,
     };
   }
-  if (!status.draining) return { verified: false, detail: "pending restart is not holding the coordinated drain" };
-
+  // NOT gated on `status.draining`. That flag meant "a pending restart is holding admission" when this
+  // check was written (9177de2, 09-10 07:23); four hours later 90f6bdf redefined `isDraining()` as
+  // `this.firing` alone, so a pending deploy deliberately leaves fresh work available and reports
+  // `draining: false` right up to the sub-second bounce (pinned by restartDrain.itest.ts, "a pending
+  // deploy leaves fresh work available"). Requiring it made the STAGED verdict unreachable: every sweep
+  // run while a correct deploy waited for idle reported a FAIL with no deployment gap behind it. What
+  // actually proves the replacement is owned is below and in CLAUDE.md's three conditions — a clean,
+  // identifiable dist stamp, an exact commit+stamp requester, and zero refused attempts.
   const stampAt = distBuild?.at;
   const commit = typeof distBuild?.commit === "string" ? distBuild.commit.trim() : "";
   if (!Number.isFinite(stampAt) || stampAt <= 0 || !commit || distBuild?.dirty !== false) {

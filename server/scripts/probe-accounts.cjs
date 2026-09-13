@@ -99,6 +99,7 @@ const MIRRORED_HEADROOM_TERMS = {
   grokProviderCandidate: {
     startupCooldownUntil: "cooldownKey latch → reason 'startup cooldown'",
     capActive: "capKey latch → reason 'capped'",
+    noAllowance: "unmetered cache flag → reason 'no allowance'",
     nearWeekly: "spentWindow (7d)",
     monthlyExhausted: "spentCredits (monthly pool)",
   },
@@ -153,6 +154,13 @@ function backendState({ enabledKey, capKey, cooldownKey, usageFile, freshness },
   const until = Number(kv(capKey));
   if (Number.isFinite(until) && until > at) return { available: false, reason: "capped", until };
   const meters = usageFile ? usage(usageFile) : null;
+  // Mirrors grokProviderCandidate's `noAllowance`. A plan that STATES it meters nothing has no window to
+  // run down, so every spent-window test below passes it and it would print as a live rung forever — the
+  // "no windows left to check, therefore fine" shape of the same blind spot the header describes. A real
+  // metered reading still wins (an upgraded plan reports again), exactly as readGrokUsage resolves it.
+  if (meters?.unmetered && typeof meters.sevenDay !== "number") {
+    return { available: false, reason: "no allowance", meters };
+  }
   const spent = meters ? (spentWindow(meters, at, freshness) ?? spentCredits(meters, at, freshness)) : null;
   if (spent) {
     return {
@@ -469,6 +477,10 @@ function main() {
           ? `, reset unknown (backend reported ${new Date(s.reportedReset).toISOString().slice(0, 10)}, too far out to be a ${s.window} period)`
           : ", reset unknown"),
     ready: (s) => "available" + (s.meters ? ` (${meterSummary(s.meters)})` : " (no usage reading yet)"),
+    // No countdown: nothing is going to elapse. Only an upgraded plan clears this, so say what to do.
+    "no allowance": (s) =>
+      `NO ROOM — ${s.meters?.plan ? `the ${s.meters.plan} plan` : "this plan"} includes no metered allowance` +
+      `; upgrade it or turn the backend off in Settings`,
   };
   const backends = BACKENDS.map((b) => ({ ...b, ...backendState(b, kv, now, readBackendUsage) }));
   console.log("Failover ladder — where an implementor lands when every Claude sub above is capped:");

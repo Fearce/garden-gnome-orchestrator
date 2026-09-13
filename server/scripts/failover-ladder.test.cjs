@@ -482,4 +482,22 @@ assert.equal(meterSummary({ unmetered: true }), "no metered allowance on this pl
 assert.equal(meterSummary({}), "no windows metered");
 assert.equal(meterSummary({ sevenDay: 12, unmetered: true }), "7d 12%", "a real meter still wins — an upgraded plan reports again");
 
+// …and the VERDICT has to follow the wording, or the ladder counts a rung that rejects every run. A
+// plan stating it meters nothing runs no window down, so every spent-window test passes it: without an
+// explicit door it is "available" forever. Mirrors grokProviderCandidate's `noAllowance`.
+const GROK_RUNG = BACKENDS.find((b) => b.name === "Grok");
+const freePlan = backendState(GROK_RUNG, kvOf({ setting_grok_enabled: "1" }), NOW, usageOf({ plan: "Free", unmetered: true }));
+assert.equal(freePlan.available, false, "a plan that meters no allowance is NOT a live rung");
+assert.equal(freePlan.reason, "no allowance");
+assert.equal(
+  backendState(GROK_RUNG, kvOf({ setting_grok_enabled: "1" }), NOW, usageOf({ plan: "SuperGrok", sevenDay: 12, weeklyAt: NOW, unmetered: true })).available,
+  true,
+  "a real metered reading still wins — an upgraded plan is a rung again without waiting for the flag to clear",
+);
+assert.equal(
+  backendState(GROK_RUNG, kvOf({ setting_grok_enabled: "1" }), NOW, usageOf({ plan: "Free" })).available,
+  true,
+  "…and a plan nobody has read yet stays a rung: silence is not a verdict, only the stated flag is",
+);
+
 console.log("failoverLadder: all assertions passed");

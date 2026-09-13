@@ -115,12 +115,26 @@ const coordinator = (overrides = {}) => ({
       retryAt: null,
     },
     pendingLabel: "waiting for 1 active work item to finish",
-    draining: true,
+    // `false` is what a WAITING deploy really reports: `isDraining()` is `this.firing` alone, so a
+    // pending restart leaves fresh work available and only closes admission for the bounce itself
+    // (restartDrain.itest.ts, "a pending deploy leaves fresh work available"). The fixture used to say
+    // `true` beside this same waiting label — a state the coordinator cannot produce — which is why a
+    // green gate sat on top of a STAGED verdict that was unreachable in production.
+    draining: false,
     ...overrides,
   },
   error: null,
 });
-assert.equal(assessStagedRuntime(distBuild, coordinator()).verified, true, "the exact clean dist build may ride a healthy drain");
+assert.equal(
+  assessStagedRuntime(distBuild, coordinator()).verified,
+  true,
+  "the exact clean dist build riding a pending restart is staged, drain flag or not",
+);
+assert.equal(
+  assessStagedRuntime(distBuild, coordinator({ draining: true })).verified,
+  true,
+  "…and the same holds once that restart is actually firing",
+);
 assert.equal(
   assessStagedRuntime(distBuild, coordinator({
     pending: { ...coordinator().body.pending, requesters: [{ at: 1_234_600, commit: "other", stampedAt: distBuild.at, label: null }] },

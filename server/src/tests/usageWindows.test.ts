@@ -233,6 +233,30 @@ const credits = withGrok.shifts.find((s) => s.window === "monthly credits");
 check("Grok's monthly credit pool is tracked as its own window", credits?.resetAt === NOW + 11 * DAY && credits?.usedPct === 25, JSON.stringify(credits));
 check("a stale reading is flagged on the window it came from", credits?.stale === true);
 
+// A free plan still reports a weekly billing PERIOD, so its end would otherwise be counted as a pending
+// shift — answering "is it worth waiting before dispatching heavy work?" with a rollover that hands back
+// nothing. Named with its reason instead, like a disabled subscription. Mirrors the `noAllowance` door
+// routing now refuses the backend on.
+const freeGrok = tokenShiftReport(
+  snapshot({
+    grok: {
+      usage: { ...grok, plan: "Free", sevenDay: null, monthlyUsed: null, monthlyLimit: null, monthlyReset: null, creditAllowance: "none" },
+      enabled: true,
+    },
+  }),
+  NOW,
+);
+check(
+  "a plan that meters no allowance contributes no pending shift",
+  !freeGrok.shifts.some((s) => s.pool.startsWith("Grok")),
+  JSON.stringify(freeGrok.shifts.map((s) => `${s.pool} ${s.window}`)),
+);
+check(
+  "…and says why, rather than vanishing from the readout",
+  freeGrok.notCounted.some((n) => n.subject === "Grok (Free)" && n.reason.includes("no metered allowance")),
+  JSON.stringify(freeGrok.notCounted),
+);
+
 const zai: ZaiUsageDTO = {
   configured: true,
   plan: "pro",

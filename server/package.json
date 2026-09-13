@@ -43,6 +43,7 @@
     "test:spread-usage": "tsx src/tests/spreadUsage.test.ts",
     "test:capacity-routing": "tsx src/tests/capacityRouting.test.ts",
     "test:usage-windows": "tsx src/tests/usageWindows.test.ts",
+    "test:child-runner": "tsx src/tests/childRunner.test.ts",
     "test:ext-wake": "tsx src/tests/extWakeProbe.test.ts",
     "test:account-usage": "tsx src/tests/accountUsageSnapshot.test.ts",
     "test:grok-runner": "tsx src/tests/grokRunner.test.ts",
@@ -211,7 +212,7 @@
     "code-nav-lab": "node scripts/code-nav-lab.cjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.269",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.270",
     "@fastify/static": "^10.1.2",
     "@fastify/websocket": "^11.2.0",
     "@sentropic/graphify": "^0.17.1",

@@ -431,6 +431,9 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
     case "snapshot.request":
       send(socket, buildHello(ctx));
       break;
+    case "ping":
+      send(socket, { type: "pong", at: Date.now() });
+      break;
     default:
       break;
   }

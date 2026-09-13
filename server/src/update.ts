@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { runChild } from "./childRunner.js";
 import { config } from "./config.js";
 import { restartRoute } from "./selfRestart.js";
 import type { RestartRequestResult } from "./orchestrator/restartCoordinator.js";
@@ -82,39 +83,18 @@ interface GitResult {
   stderr: string;
 }
 
-function runGit(args: string[], cwd = REPO_ROOT, timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
-  return new Promise((resolveP) => {
-    let stdout = "";
-    let stderr = "";
-    // GIT_TERMINAL_PROMPT=0 makes a private remote fail fast instead of blocking on a credential
-    // prompt (which would hang the poll forever); GIT_OPTIONAL_LOCKS=0 keeps a read from racing an
-    // index lock held by a concurrent agent's git command.
-    const child = spawn("git", args, {
-      cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
-      windowsHide: true,
-    });
-    const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* already gone */
-      }
-    }, timeoutMs);
-    timer.unref();
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (c: string) => (stdout += c));
-    child.stderr.on("data", (c: string) => (stderr += c));
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      resolveP({ code: -1, stdout, stderr: stderr + String((e as Error).message) });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolveP({ code, stdout, stderr });
-    });
+async function runGit(args: string[], cwd = REPO_ROOT, timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
+  // Off the main event loop (see childRunner.ts): this poller alone spends four CreateProcess calls a
+  // cycle, and on the owner's box each one blocked the whole server for up to 3.5 s.
+  // GIT_TERMINAL_PROMPT=0 makes a private remote fail fast instead of blocking on a credential prompt
+  // (which would hang the poll forever); GIT_OPTIONAL_LOCKS=0 keeps a read from racing an index lock
+  // held by a concurrent agent's git command.
+  const r = await runChild("git", args, {
+    cwd,
+    env: { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
+    timeoutMs,
   });
+  return { code: r.code, stdout: r.stdout, stderr: r.stderr };
 }
 
 /** Compare the working dir's HEAD against its tracked upstream (no network — read the local refs only;

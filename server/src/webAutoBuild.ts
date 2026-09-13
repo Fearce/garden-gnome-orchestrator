@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { config } from "./config.js";
 
@@ -28,36 +29,40 @@ function shouldRunAutoBuild(): boolean {
   return !/(^|:)(dev|serve)(:|$)/.test(event);
 }
 
-function indexMtimeMs(): number | null {
+async function indexMtimeMs(): Promise<number | null> {
   const indexPath = join(config.webDist, "index.html");
   try {
-    return statSync(indexPath).mtimeMs;
+    return (await stat(indexPath)).mtimeMs;
   } catch {
     return null;
   }
 }
 
-function scanWebSources(): WebScan | null {
+// Deliberately async: this walks the whole web/ tree every POLL_MS, forever, in production. Done with
+// readdirSync/statSync it is a few thousand blocking syscalls on the main event loop every five seconds,
+// which on a busy disk shows up as the server going briefly unresponsive for no reason a user can see.
+// The promise API runs the same calls on libuv's threadpool, so the cost stays off the loop.
+async function scanWebSources(): Promise<WebScan | null> {
   if (!existsSync(WEB_ROOT)) return null;
 
   const entries: string[] = [];
   let newestMtimeMs = 0;
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) walk(join(dir, entry.name));
+        if (!SKIP_DIRS.has(entry.name)) await walk(join(dir, entry.name));
         continue;
       }
       if (!entry.isFile()) continue;
 
       const path = join(dir, entry.name);
-      const stat = statSync(path);
-      newestMtimeMs = Math.max(newestMtimeMs, stat.mtimeMs);
-      entries.push(`${relative(WEB_ROOT, path)}:${stat.size}:${Math.trunc(stat.mtimeMs)}`);
+      const info = await stat(path);
+      newestMtimeMs = Math.max(newestMtimeMs, info.mtimeMs);
+      entries.push(`${relative(WEB_ROOT, path)}:${info.size}:${Math.trunc(info.mtimeMs)}`);
     }
   };
 
-  walk(WEB_ROOT);
+  await walk(WEB_ROOT);
   entries.sort();
   return { signature: entries.join("|"), newestMtimeMs };
 }
@@ -132,12 +137,12 @@ export function startWebAutoBuild(): void {
     if (polling) return;
     polling = true;
     try {
-      const scan = scanWebSources();
+      const scan = await scanWebSources();
       if (!scan) return;
 
       const previous = lastSignature;
       lastSignature = scan.signature;
-      const distMtime = indexMtimeMs();
+      const distMtime = await indexMtimeMs();
       const distMissing = distMtime === null;
       const sourceNewerThanDist = distMtime !== null && scan.newestMtimeMs > distMtime + OUTDATED_SLOP_MS;
       const changed = previous !== null && previous !== scan.signature;

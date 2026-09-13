@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { runChild } from "../childRunner.js";
 
 // Read-only git for the reader lane. The reader micro-pipeline gets git HISTORY without a shell: an
 // allowlisted git_read MCP tool (see ../bus/gitReadServer.ts) that runs ONLY a handful of strictly
@@ -22,38 +22,16 @@ interface GitResult {
 /** Run git in `cwd`, resolving with its exit code + captured output (never rejects). Env hardening:
  *  GIT_TERMINAL_PROMPT=0 so a private remote fails fast instead of hanging on a credential prompt,
  *  GIT_OPTIONAL_LOCKS=0 so a read never races an index lock a concurrent process holds. No shell. */
-function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
-  return new Promise((resolveP) => {
-    let stdout = "";
-    let stderr = "";
-    const child = spawn("git", ["--no-pager", ...args], {
-      cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
-      windowsHide: true,
-    });
-    const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* already gone */
-      }
-    }, timeoutMs);
-    timer.unref();
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (c: string) => {
-      if (stdout.length < OUTPUT_MAX_BYTES * 2) stdout += c;
-    });
-    child.stderr.on("data", (c: string) => (stderr += c));
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      resolveP({ code: -1, stdout, stderr: stderr + String((e as Error).message) });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolveP({ code, stdout, stderr });
-    });
+async function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
+  // Off the main event loop (see ../childRunner.ts) — the reader lane answers while agents stream, and an
+  // in-process spawn on Windows freezes every one of them for the length of CreateProcess.
+  const r = await runChild("git", ["--no-pager", ...args], {
+    cwd,
+    env: { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
+    timeoutMs,
+    maxStdoutBytes: OUTPUT_MAX_BYTES * 2,
   });
+  return { code: r.code, stdout: r.stdout, stderr: r.stderr };
 }
 
 // ---- repo resolution --------------------------------------------------------------------------------

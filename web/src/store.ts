@@ -883,9 +883,38 @@ function replaySendingOutbound(): void {
 const HEARTBEAT_MS = 20_000;
 const WATCHDOG_MS = 10_000;
 const STALE_MS = 35_000;
+// The heartbeat only has to keep traffic flowing, and `snapshot.request` is an expensive way to do it:
+// the `hello` it pulls back is 1.3 MB on a board of ~860 tasks, so an idle console cost the server
+// 3.9 MB/min of rebuilt-and-stringified snapshot per socket — and while that frame is written, every
+// later frame queues behind it, so the answer to whatever the owner just clicked arrives late. `ping`
+// costs nothing and satisfies the same requirement. A full resync still runs, just rarely; a reconnect
+// and a re-shown tab (the two cases that really do miss events) still take a snapshot immediately.
+const RESYNC_MS = 5 * 60_000;
 let lastRecvAt = 0;
+let lastResyncAt = 0;
+// Set false for good once a server answers two pings with nothing — that server predates the command.
+// It can happen for real: web/dist deploys the instant it is built, while the server bounces later.
+let pingSupported = true;
+let unansweredPings = 0;
 let heartbeat: ReturnType<typeof setInterval> | null = null;
 let watchdog: ReturnType<typeof setInterval> | null = null;
+
+/** One heartbeat tick: cheap by default, a real snapshot when the slow resync is due (or when this
+ *  server turned out not to know `ping`). */
+function beat(): void {
+  if (!pingSupported || Date.now() - lastResyncAt >= RESYNC_MS) {
+    lastResyncAt = Date.now();
+    unansweredPings = 0;
+    sendCommand({ type: "snapshot.request" });
+    return;
+  }
+  if (unansweredPings >= 2) {
+    pingSupported = false;
+    sendCommand({ type: "snapshot.request" });
+    return;
+  }
+  if (sendCommand({ type: "ping" })) unansweredPings++;
+}
 
 function clearTimers(): void {
   if (heartbeat) clearInterval(heartbeat);
@@ -2323,6 +2352,11 @@ function applyEvent(ev: ServerEvent): void {
       useStore.setState({ notice: { level: ev.level, title: ev.title, message: ev.message } });
       notify(ev.title, ev.message);
       break;
+    case "pong":
+      // The heartbeat's receipt. Nothing to store — arriving at all is the signal, and `lastRecvAt`
+      // (set by onmessage for every frame) is what the staleness watchdog reads.
+      unansweredPings = 0;
+      break;
     // `log` events are intentionally ignored client-side — there is no log surface in the UI, and
     // buffering them was dead state. Re-add a slice here if a log panel is ever built.
     default:
@@ -2414,8 +2448,10 @@ export function connect(): void {
     // Ask for the authoritative snapshot first: it may already contain the receipt from a message
     // that reached the server just before the old tunnel died. Then replay anything still missing.
     sendCommand({ type: "snapshot.request" });
+    lastResyncAt = Date.now();
+    unansweredPings = 0;
     replaySendingOutbound();
-    heartbeat = setInterval(() => sendCommand({ type: "snapshot.request" }), HEARTBEAT_MS);
+    heartbeat = setInterval(beat, HEARTBEAT_MS);
     watchdog = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN && Date.now() - lastRecvAt > STALE_MS) ws.close();
     }, WATCHDOG_MS);
@@ -2447,6 +2483,8 @@ export function connect(): void {
 // path reconnects shortly after.
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") sendCommand({ type: "snapshot.request" });
+    if (document.visibilityState !== "visible") return;
+    sendCommand({ type: "snapshot.request" });
+    lastResyncAt = Date.now();
   });
 }

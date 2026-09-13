@@ -278,6 +278,15 @@ function addGrok(collect: ShiftCollector, usage: GrokUsageDTO | null, enabled: b
     return;
   }
   const pool = usage.plan ? `Grok (${usage.plan})` : "Grok";
+  // A plan that states it meters no allowance still reports a weekly PERIOD, so its end date would be
+  // counted as a pending shift — telling the owner capacity arrives in a day and a half when the
+  // rollover frees nothing routable. That is the question this tool exists to answer correctly ("is it
+  // worth waiting before dispatching heavy work?"), and routing already refuses the backend for the same
+  // reason (grokProviderCandidate's `noAllowance`). Same shape as a disabled subscription's skip.
+  if (usage.creditAllowance === "none") {
+    collect.skip(pool, "this plan includes no metered allowance, so its billing period rolls over but frees nothing routable");
+    return;
+  }
   collect.add({ pool, window: "weekly window", durationLabel: SEVEN_DAY, usedPct: usage.sevenDay, resetAt: usage.sevenDayReset, stale: usage.stale });
   collect.add({
     pool,
