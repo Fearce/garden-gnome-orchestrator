@@ -46,6 +46,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
+const { MAX_CAPACITY_STALL_RESUMES } = await import("../orchestrator/capacityStall.js");
 
 // The exact CAP_PARK marker the supervisor keys off (private in threadManager.ts — mirrored here on purpose).
 const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
@@ -90,6 +91,16 @@ class StubAccounts {
   hasHeadroom(): boolean {
     return this.headroom;
   }
+  /** Set ONLY by the capacity pre-check test. Left undefined everywhere else so the other tests keep
+   *  claudeCapacityOptions' plain headroom-only fallback, which is the signal they were written against. */
+  capacityOptions?: (
+    demand: unknown,
+    now?: number,
+  ) => Array<{
+    account: { id: string; label: string };
+    windows: { label: string; usedPct: number | null; resetAt: number | null; burnWeight?: number }[];
+    hasHeadroom: boolean;
+  }>;
   setPingInterval(_ms: number): void {}
   applyEnabled(_id: string, _enabled: boolean): void {}
   applyWeeklySafetyPct(_id: string, _pct: number): void {}
@@ -104,6 +115,9 @@ interface Harness {
   workspace: string;
   logs: string[];
   resumeCalls: { threadId: string; resumeSession: string | undefined }[];
+  /** Thread ids that entered the FULL pipeline (planner/implementor/QA loop). A resume that continues a
+   *  stalled task must not appear here: runPipeline is the only path that can spend another QA round. */
+  pipelineCalls: string[];
   dir: string;
   dispose(): void;
 }
@@ -136,6 +150,14 @@ function makeHarness(): Harness {
     db.updateThread(thread.id, { state: "done", error: null }); // resumed → ran to completion (leaf stubbed)
     return null;
   };
+  // Record entries into the full pipeline WITHOUT replacing it: the cap-park tests below depend on
+  // runPipeline really running, and the stall tests depend on it never being reached.
+  const pipelineCalls: string[] = [];
+  const realRunPipeline = internals.runPipeline.bind(mgr);
+  internals.runPipeline = async (threadId: string, note?: string) => {
+    pipelineCalls.push(threadId);
+    return realRunPipeline(threadId, note);
+  };
 
   return {
     mgr,
@@ -144,6 +166,7 @@ function makeHarness(): Harness {
     workspace,
     logs,
     resumeCalls,
+    pipelineCalls,
     dir,
     dispose() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -170,6 +193,25 @@ function seedFrozenTask(h: Harness, frozenState: ThreadState, capParked = false)
     error: capParked ? `${CAP_PARK_PREFIX} — every account was rate-limited mid-task.` : null,
   });
   return { threadId: t.id, session };
+}
+
+// The separator `implementorParkReason` writes, from its code point so these fixtures are byte-identical
+// to production park text without this file carrying the character.
+const SEP = ` ${String.fromCharCode(0x2014)} `;
+/** The exact park a capacity-shaped implementor stop leaves behind: no cap marker, plain `review`. */
+const STALL_PARK = `Implementor ended without completing${SEP}Stopped at the per-session turn ceiling (error_max_turns)${SEP}an involuntary cutoff, not a crash.`;
+
+/** Seed a task parked in `review` with an arbitrary (unmarked) reason, its implementor session intact. */
+function seedParkedTask(h: Harness, error: string, spent = 0): { threadId: string; session: string } {
+  const seeded = seedFrozenTask(h, "review");
+  h.db.updateThread(seeded.threadId, { state: "review", error });
+  if (spent) h.db.updateThreadStageOutputs(seeded.threadId, { capacityStallResumes: spent });
+  return seeded;
+}
+
+/** The durable per-task continuation budget, read the way the manager reads it. */
+function stallResumesUsed(h: Harness, threadId: string): number {
+  return h.db.getThreadStageOutputs(threadId).capacityStallResumes ?? 0;
 }
 
 // ====================================================================================================
@@ -419,6 +461,158 @@ async function main(): Promise<void> {
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // -- Test H: the population the owner used to sweep BY HAND -----------------------------------------
+  // A capacity-shaped implementor stop that never earned the cap marker. It must continue as ITS OWN
+  // session, in place: same thread, prior context, no new task row, and no extra QA pass.
+  console.log("\nTest H: an UNMARKED capacity stall continues its own session, with no new task and no QA");
+  {
+    const h = makeHarness();
+    try {
+      const { threadId, session } = seedParkedTask(h, STALL_PARK);
+      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
+      const before = h.db.listThreads().length;
+      h.stub.util = 4;
+      h.stub.headroom = true;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).fireTokenResume();
+      await delay(150);
+
+      const call = h.resumeCalls.find((c) => c.threadId === threadId);
+      check("the stalled task was resumed", !!call, `calls=${JSON.stringify(h.resumeCalls)}`);
+      check(
+        "it continued the SAME session (prior context intact, not a rebuilt one)",
+        call?.resumeSession === session,
+        `resumeSession=${call?.resumeSession} expected=${session}`,
+      );
+      check("no new task row was created for the resume", h.db.listThreads().length === before, `${before} -> ${h.db.listThreads().length}`);
+      check(
+        "the resume never entered the pipeline, so it cannot spend a QA round",
+        h.pipelineCalls.length === 0,
+        `pipelineCalls=${JSON.stringify(h.pipelineCalls)}`,
+      );
+      check("the continuation was charged to the task's durable budget", stallResumesUsed(h, threadId) === 1, `used=${stallResumesUsed(h, threadId)}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test I: the budget is what stops this becoming the very loop it replaces ------------------------
+  console.log("\nTest I: a task that has spent its stall budget is left for a person");
+  {
+    const h = makeHarness();
+    try {
+      const { threadId } = seedParkedTask(h, STALL_PARK, MAX_CAPACITY_STALL_RESUMES);
+      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
+      h.stub.util = 4;
+      h.stub.headroom = true;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).fireTokenResume();
+      await delay(120);
+
+      check("no resume was attempted once the budget is spent", h.resumeCalls.length === 0, `calls=${JSON.stringify(h.resumeCalls)}`);
+      check("the task stays parked in review", h.db.getThread(threadId)?.state === "review", `state=${h.db.getThread(threadId)?.state}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test J: the one-way safety bias ----------------------------------------------------------------
+  console.log("\nTest J: an owner-verdict park is never woken by a rollover");
+  {
+    const h = makeHarness();
+    try {
+      const { threadId } = seedParkedTask(h, `QA still not satisfied after 3 rounds${SEP}needs your review.`);
+      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
+      h.stub.util = 4;
+      h.stub.headroom = true;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).fireTokenResume();
+      await delay(120);
+
+      check("a task waiting on the owner is not resumed", h.resumeCalls.length === 0, `calls=${JSON.stringify(h.resumeCalls)}`);
+      check("it stays exactly where the owner left it", h.db.getThread(threadId)?.state === "review");
+      check(
+        "the wake reported that nothing was waiting on capacity",
+        h.logs.some((l) => /no task is waiting on capacity/i.test(l)),
+        h.logs.slice(-3).join(" | "),
+      );
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test K: the pre-check --------------------------------------------------------------------------
+  // A rollover is not a promise of runway. With the 5h window still spent, the wake must cost nothing and
+  // re-arm for the COUPLED-GATE reset (the pool's own), not the account manager's plain soonest one.
+  console.log("\nTest K: a wake into a still-exhausted window resumes nothing and re-arms on the pool's own reset");
+  {
+    const h = makeHarness();
+    try {
+      const { threadId } = seedParkedTask(h, STALL_PARK);
+      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
+      const poolReset = Date.now() + 90 * 60_000;
+      const plainReset = Date.now() + 8 * 60 * 60_000; // deliberately LATER, so a pass proves which one won
+      h.stub.reset = plainReset;
+      h.stub.headroom = false;
+      h.stub.capacityOptions = () => [
+        {
+          account: { id: "sub-alpha", label: "alpha" },
+          windows: [{ label: "5h session window", usedPct: 100, resetAt: poolReset }],
+          hasHeadroom: false,
+        },
+      ];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).fireTokenResume();
+      await delay(120);
+
+      check("nothing was resumed into the exhausted window", h.resumeCalls.length === 0, `calls=${JSON.stringify(h.resumeCalls)}`);
+      check("the task is untouched", h.db.getThread(threadId)?.state === "review");
+      check(
+        "the re-arm used the pool's own reset, not the coarser account-manager one",
+        h.db.kvGet(WAKEUP_KEY) === String(poolReset),
+        `kv=${h.db.kvGet(WAKEUP_KEY)} pool=${poolReset} plain=${plainReset}`,
+      );
+      check(
+        "the early wake was logged as a runway shortfall",
+        h.logs.some((l) => /fired early: none of the 1 waiting task/i.test(l)),
+        h.logs.slice(-3).join(" | "),
+      );
+      check("the unspent budget was not charged for a wake that did nothing", stallResumesUsed(h, threadId) === 0, `used=${stallResumesUsed(h, threadId)}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test L: ordering ------------------------------------------------------------------------------
+  console.log("\nTest L: several stalled tasks resume oldest-first, bounded by the free slots");
+  {
+    const h = makeHarness();
+    try {
+      const oldest = seedParkedTask(h, STALL_PARK);
+      await delay(5);
+      const middle = seedParkedTask(h, STALL_PARK);
+      await delay(5);
+      const newest = seedParkedTask(h, STALL_PARK);
+      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80, maxConcurrent: 2 });
+      h.stub.util = 4;
+      h.stub.headroom = true;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).fireTokenResume();
+      await delay(250);
+
+      const order = h.resumeCalls.map((c) => c.threadId);
+      check("only as many tasks as there are free slots were woken", order.length === 2, `resumed=${order.length}`);
+      check(
+        "the two oldest stalls went first, in order",
+        order[0] === oldest.threadId && order[1] === middle.threadId,
+        `order=${JSON.stringify(order)} oldest=${oldest.threadId} middle=${middle.threadId} newest=${newest.threadId}`,
+      );
+      check("the task left behind keeps its unspent budget for a later window", stallResumesUsed(h, newest.threadId) === 0);
+    } finally {
+      h.dispose();
     }
   }
 

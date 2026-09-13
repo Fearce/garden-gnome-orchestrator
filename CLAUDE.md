@@ -249,7 +249,19 @@ Read the run trail to tell causes apart:
   in `review` with the marker `⏳ Auto-resume pending` in its `error` — a supervisor (`resumeCapParked`,
   every `CAP_RETRY_MS`/120s) auto-resumes it the moment a Claude sub OR Codex frees up; a QA-stage park
   (message carries "(QA runs on Claude)") waits for a Claude window specifically. A plain "needs your
-  review" park carries no marker and is left for a human. **A cap the owner clears BY HAND (usage reset,
+  review" park carries no marker and is left for a human. **The window rollover picks up one more class:
+  an implementor stop that was capacity-shaped but never earned the marker** (a per-session turn/cost
+  ceiling, a provider "session limit · resets 7pm"). `orchestrator/capacityStall.ts` classifies those
+  conservatively (implementor park + a capacity reason + no owner marker; anything ambiguous stays
+  parked), and `fireTokenResume` continues them IN PLACE: the task keeps its `review` state, so
+  `resumeThread` takes the same implementor-only path the owner's own Resume button takes. Same thread,
+  same SDK session, no new task row, no planner, and no QA pass on the resume event. Bounded by a durable
+  lifetime budget (`stage_outputs.capacityStallResumes`, max 3) because the stall repeats, and gated by
+  the same per-thread `capacitySnapshotForThread` the cap supervisor uses, so a rollover never wakes a
+  task into a window that still cannot carry it. This exists because the owner was hand-dispatching a
+  "Token-shift resume" sweep task at every rollover instead: 8 in 24h, each a fresh Opus implementor
+  rebuilding context from zero plus a QA pass reviewing the sweep itself. Gates: `test:capacity-stall`,
+  `test:token-freeze`. **A cap the owner clears BY HAND (usage reset,
   credit top-up), or that the provider stated wrongly, is disproved by live telemetry, not by run
   history** — `codexAllowanceReopened`, and since 2026-09-11 `grokAllowanceReopened`/`zaiAllowanceReopened`
   over the shared `agents/usageFreshness.ts`: a stated reset once needed a newer successful run on that

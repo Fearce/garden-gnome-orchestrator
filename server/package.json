@@ -42,6 +42,7 @@
     "test:weekly-safety": "tsx src/tests/weeklySafety.test.ts",
     "test:spread-usage": "tsx src/tests/spreadUsage.test.ts",
     "test:capacity-routing": "tsx src/tests/capacityRouting.test.ts",
+    "test:capacity-stall": "tsx src/tests/capacityStall.test.ts",
     "test:usage-windows": "tsx src/tests/usageWindows.test.ts",
     "test:child-runner": "tsx src/tests/childRunner.test.ts",
     "test:ext-wake": "tsx src/tests/extWakeProbe.test.ts",

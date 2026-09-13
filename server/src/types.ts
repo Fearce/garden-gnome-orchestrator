@@ -867,6 +867,11 @@ export interface StageOutputs {
   // implementor goes live, then 'implementing') — so it is the MARKER, never the state, that tells a restart
   // this work is already accepted. Without it a bounce auto-resumes the task back into the pipeline and
   // spends another implementor + QA round on it; with it the restart settles it where it was headed: done.
+  capacityStallResumes?: number; // continuations a usage-window rollover has already spent on THIS task after
+  // it parked on a capacity-shaped implementor stop that carried no durable cap marker (a per-session turn or
+  // cost ceiling, a provider session limit). Durable and never reset except by Retry, because the stall
+  // repeats: without a lifetime bound the rollover would wake the same task every window forever, which is
+  // the spend the mechanism exists to remove. Enforced against MAX_CAPACITY_STALL_RESUMES.
   autoResumeRevivals?: number; // times a boot has re-armed a restart auto-resume that an EARLIER boot promised
   // (state 'failed' + the auto-resuming marker) but died before delivering. Durable because the whole failure
   // mode is a process not surviving long enough to keep its own promise; reset by the next real interruption,

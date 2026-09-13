@@ -102,6 +102,7 @@ import { validRepoPath } from "../git/repoOps.js";
 import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { tokenShiftReport, type TokenShiftReport } from "./usageWindows.js";
+import { isCapacityStallPark, MAX_CAPACITY_STALL_RESUMES } from "./capacityStall.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import {
   declareManualDeployment,
@@ -1533,27 +1534,24 @@ export class ThreadManager implements OrchestratorApi {
     this.tokenResumeArmedFor = undefined;
     this.db.kvSet("token_resume_wakeup_at", "");
     if (!this.settings().autoResumeOnTokenReset) return; // toggled off while the timer was pending
-    if (!this.accounts.hasHeadroom()) {
-      const next = this.accounts.soonestResetAt();
-      if (next != null) {
-        this.hub.log("info", `Token window reset fired early — no headroom yet, re-arming resume ${untilReset(next, Date.now())}.`);
-        this.armTokenResume(next);
-      } else {
-        this.hub.log("info", "Token window reset fired but no account has headroom yet — will re-arm on the next usage ping.");
-      }
+    const now = Date.now();
+    const waiting = this.tokenResumeCandidates();
+    if (waiting.length === 0) {
+      this.hub.log("info", "Token window reset: no task is waiting on capacity.");
       return;
     }
-    const stuck = this.db
-      .listThreads()
-      .filter(
-        (t) =>
-          (t.state === "paused" || (t.state === "review" && (t.error ?? "").startsWith(CAP_PARK_PREFIX))) &&
-          !this.cancelled(t.id),
-      )
-      .sort((a, b) => a.updatedAt - b.updatedAt); // oldest-stuck first — same fairness as the cap supervisor
+    // The pre-check. A rollover is not a promise of runway: ask the SAME per-thread capacity snapshot the
+    // cap supervisor gates on, so a wake never spends a session discovering the window is still spent, and
+    // so a task whose workload only fits on another backend is still seen.
+    const { viable, nextAt } = this.capacityForWaiting(waiting, now);
+    if (viable.length === 0) {
+      this.rearmTokenResumeFor(nextAt, now, waiting.length);
+      return;
+    }
+    const stuck = viable;
     const slots = this.settings().maxConcurrent - this.activePipelines.size;
-    if (stuck.length === 0 || slots <= 0) {
-      this.hub.log("info", `Token window reset — ${stuck.length} task(s) waiting${slots <= 0 ? ", but no free slots" : ", none stuck"}.`);
+    if (slots <= 0) {
+      this.hub.log("info", `Token window reset: ${stuck.length} task(s) have runway, but no free slots.`);
       return;
     }
     // Select up to `slots` tasks (global cap), skipping any whose repo is already at its per-repo cap.
@@ -1569,7 +1567,7 @@ export class ThreadManager implements OrchestratorApi {
       pending.set(key, (pending.get(key) ?? 0) + 1);
     }
     if (resuming.length === 0) {
-      this.hub.log("info", `Token window reset — ${stuck.length} task(s) waiting, but all are at their per-repo cap.`);
+      this.hub.log("info", `Token window reset: ${stuck.length} task(s) have runway, but all are at their per-repo cap.`);
       return;
     }
     const n = resuming.length;
@@ -1588,10 +1586,72 @@ export class ThreadManager implements OrchestratorApi {
       // Keep the CAP marker durable until runPipeline has actually claimed the task. A restart in
       // the tiny gap between this write and resumeThread used to leave an ordinary failed row that
       // neither the cap supervisor nor boot recovery could discover.
-      if (t.state === "review") this.db.updateThread(t.id, { state: "failed", error: t.error });
+      if (t.state === "review" && (t.error ?? "").startsWith(CAP_PARK_PREFIX)) {
+        this.db.updateThread(t.id, { state: "failed", error: t.error });
+      } else if (t.state === "review") {
+        // An UNMARKED capacity stall. It stays in `review`, so resumeThread takes the same
+        // implementor-only path the owner's own Resume button takes: the task continues its own session
+        // with no new pipeline, no planner, and no extra QA pass. Charge the durable budget FIRST, so a
+        // crash between here and the spawn cannot hand this task an unlimited supply of wakes.
+        this.db.updateThreadStageOutputs(t.id, { capacityStallResumes: this.capacityStallResumesUsed(t.id) + 1 });
+      }
       const id = t.id;
       void this.resumeThread(id).catch((e) => this.hub.log("error", `Token-reset resume of ${id.slice(0, 8)} failed: ${String(e)}`));
     }
+  }
+
+  /** Everything one usage-window rollover may continue, most-blocking first. Three shapes: a `paused`
+   *  task (nothing else auto-resumes these), a cap-marked `review` park (shared with the cap supervisor,
+   *  whose own guards stop a double start), and a capacity-shaped implementor park that never earned the
+   *  marker. The last one is the population the owner used to sweep by hand at every rollover. */
+  private tokenResumeCandidates(): Thread[] {
+    return this.db
+      .listThreadsByStates(["paused", "review"])
+      .filter((t) => !this.cancelled(t.id) && this.tokenResumeEligible(t))
+      .sort((a, b) => a.updatedAt - b.updatedAt); // oldest-stuck first: the same fairness as the cap supervisor
+  }
+
+  private tokenResumeEligible(thread: Thread): boolean {
+    if (thread.state === "paused") return true;
+    if (thread.state !== "review") return false;
+    const error = thread.error ?? "";
+    if (error.startsWith(CAP_PARK_PREFIX)) return true;
+    return isCapacityStallPark(error) && this.capacityStallResumesUsed(thread.id) < MAX_CAPACITY_STALL_RESUMES;
+  }
+
+  private capacityStallResumesUsed(threadId: string): number {
+    return this.db.getThreadStageOutputs(threadId).capacityStallResumes ?? 0;
+  }
+
+  /** Split the waiting tasks into those a compatible pool can carry right now and the soonest reset that
+   *  would change that. `nextAt` comes from the same coupled-gate simulation the token-shift report reads,
+   *  so a re-arm never promises a 5h rollover while the weekly window is still exhausted. */
+  private capacityForWaiting(waiting: Thread[], now: number): { viable: Thread[]; nextAt?: number } {
+    const viable: Thread[] = [];
+    const future: number[] = [];
+    for (const thread of waiting) {
+      const role = this.capParkStage(thread);
+      const snapshot = this.capacitySnapshotForThread(thread, role, this.capacityDemand(thread, role), now);
+      if (snapshot.ready.length) viable.push(thread);
+      else if (snapshot.nextAt != null && snapshot.nextAt > now) future.push(snapshot.nextAt);
+    }
+    return { viable, nextAt: future.length ? Math.min(...future) : undefined };
+  }
+
+  /** The reset fired but nothing can run yet. Re-arm for the first moment one of the waiting tasks could,
+   *  preferring the coupled-gate answer and falling back to the account manager's plain soonest reset.
+   *  Only a FUTURE epoch is armed: a stale past reset would schedule a zero-delay timer and spin. */
+  private rearmTokenResumeFor(nextAt: number | undefined, now: number, waiting: number): void {
+    const next = nextAt ?? this.accounts.soonestResetAt() ?? undefined;
+    if (next != null && next > now) {
+      this.hub.log(
+        "info",
+        `Token window reset fired early: none of the ${waiting} waiting task(s) has viable runway, re-arming resume ${untilReset(next, now)}.`,
+      );
+      this.armTokenResume(next);
+      return;
+    }
+    this.hub.log("info", "Token window reset fired but nothing has viable runway yet, so this will re-arm on the next usage ping.");
   }
 
   /** Restore a token-reset wakeup across a restart: re-arm the timer if the reset is still ahead, or fire
