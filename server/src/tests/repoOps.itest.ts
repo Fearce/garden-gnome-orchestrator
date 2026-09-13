@@ -499,10 +499,11 @@ try {
   // trivial one measured 19–57s it got killed after doing the work. Both halves are pinned here.
   console.log("\nM. slow git — a working-tree write outlives the read budget; a killed run says so");
   {
-    // `hash-object --stdin` blocks on a stdin that is piped and never written to, so this is a git that
-    // genuinely hangs rather than a contrived one.
+    // The child runner deliberately ignores stdin so every production command is noninteractive.
+    // Use a Git alias whose shell command stays alive instead of depending on an unwritten stdin pipe:
+    // this remains a real Git process, and it exercises the deadline on every child-runner transport.
     const { work } = setupClone(root, "timeout");
-    const killed = await runGit(work, ["hash-object", "--stdin"], 300);
+    const killed = await runGit(work, ["-c", "alias.wait=!sleep 2", "wait"], 300);
     check("a run we killed at its deadline is flagged timedOut", killed.timedOut === true, String(killed.timedOut));
     check("...and did not exit 0, so no caller reads it as success", killed.code !== 0, String(killed.code));
 
