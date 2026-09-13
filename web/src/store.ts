@@ -911,11 +911,18 @@ function sendCommand(cmd: ClientCommand): boolean {
 type ScheduleMutation = Extract<ClientCommand, { type: "schedule.create" | "schedule.update" | "schedule.delete" }>;
 
 /**
- * Project a schedule write locally so its control responds in the same click, then let either the normal
- * `schedules` broadcast or the requested snapshot replace that projection with server-owned timestamps
- * and next-run bookkeeping. Without these two layers, a degraded long-lived/proxied socket could carry
- * the owner command while missing its EventHub push, leaving the screen unchanged until the 20-second
- * heartbeat. Pending create IDs are deliberately local-only and disappear on the first authoritative list.
+ * Project a schedule write locally so its control responds in the same click, then let the `schedules`
+ * broadcast the server emits on every accepted write replace that projection with server-owned
+ * timestamps and next-run bookkeeping. Pending create IDs are deliberately local-only and disappear on
+ * the first authoritative list.
+ *
+ * The projection is the WHOLE fix, so do not "reinforce" it by also requesting a snapshot per click.
+ * That costs a full ~1.3 MB `hello` on the very socket whose head-of-line delay produced this bug —
+ * making the congestion worse and arriving LATER than the small `schedules` frame it duplicates. It also
+ * buys nothing: `schedules` is not in the hub's shed-when-backed-up `STREAMING_EVENTS` set, so an
+ * accepted write is always queued, never dropped. The only write that emits no broadcast is one the
+ * server REJECTS, which the editor's own `canSave` mirrors `Scheduler.sanitize` exactly to prevent — and
+ * the 20-second heartbeat snapshot already reconciles that corner, as it does for every other collection.
  */
 function projectScheduleMutation(cmd: ScheduleMutation): void {
   const now = Date.now();
@@ -963,7 +970,6 @@ function projectScheduleMutation(cmd: ScheduleMutation): void {
 function sendScheduleMutation(cmd: ScheduleMutation): boolean {
   if (sendCommand(cmd)) {
     projectScheduleMutation(cmd);
-    sendCommand({ type: "snapshot.request" });
     return true;
   }
   useStore.setState({
