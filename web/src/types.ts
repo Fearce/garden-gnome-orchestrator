@@ -60,6 +60,16 @@ export function zaiEffortsForModel(model: string): readonly ZaiEffort[] {
   return ZAI_PRE_MAX_EFFORTS;
 }
 
+/** Per-subscription exact fallback used once either available 5-hour or weekly meter reaches the threshold. */
+export interface UsageSavingPolicy {
+  enabled: boolean;
+  thresholdPct: number;
+  model: string;
+  effort: Effort;
+}
+
+export type UsageSavingPolicies = Record<string, UsageSavingPolicy>;
+
 /** Live backend/model for the director. This is server runtime state, not a settings-derived guess. */
 export interface DirectorStatus {
   provider: ImplementorProvider;
@@ -567,6 +577,7 @@ export interface OrchestratorSettings {
   // every role dispatched against it is capped to that provider's economy-tier model (Claude Sonnet /
   // GPT-5.6 Luna) instead of a flagship one. Never overrides a strict model pin or an auto-select pick.
   tokenConservationMode: boolean;
+  usageSaving: UsageSavingPolicies; // off by default; each subscription defaults to a 90% threshold
   // Subscriptions: which provider backs the implementor (server-authoritative hard gate). Claude is the
   // default backend; individual Claude accounts toggle via AccountDTO.enabled (account.set), not here.
   codexEnabled: boolean;

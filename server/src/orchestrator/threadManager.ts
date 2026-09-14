@@ -79,6 +79,7 @@ import {
 } from "./modelRoutingPolicy.js";
 import { codexReviewTarget, type CodexReviewTarget } from "./reviewModelFloor.js";
 import { conservationResolvedCodexModel, conservationResolvedModel } from "./tokenConservation.js";
+import { usageSavingActive } from "./usageSaving.js";
 import { providerIntent } from "./providerIntent.js";
 import { detectModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
 import { LiveBenchScores } from "./liveBenchScores.js";
@@ -170,6 +171,8 @@ import type {
   StageOutputs,
   SupervisorSnapshot,
   Thread,
+  UsageSavingPolicies,
+  UsageSavingPolicy,
   ZaiEffort,
 } from "../types.js";
 import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, DIRECTORS_ROOM, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, resolveZaiEffort, zaiEffortsForModel, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
@@ -246,6 +249,26 @@ function sanitizeAccountEffortCaps(input: Record<string, Effort>): Record<string
   for (const [id, eff] of Object.entries(input ?? {})) {
     if (typeof id !== "string" || id.length > 64) continue;
     if (typeof eff === "string" && CLAUDE_EFFORTS.includes(eff) && eff !== "max") out[id] = eff;
+    if (Object.keys(out).length >= MAX_MODEL_SUB_ENTRIES) break;
+  }
+  return out;
+}
+
+/** Bound and normalize the per-subscription usage-saving map before storing it. Direct callers in tests
+ * are not required to pass through the WebSocket schema, so this remains the final trust boundary. */
+function sanitizeUsageSaving(input: UsageSavingPolicies): UsageSavingPolicies {
+  const out: UsageSavingPolicies = {};
+  for (const [id, policy] of Object.entries(input ?? {})) {
+    if (typeof id !== "string" || !id || id.length > 64 || !policy || typeof policy !== "object") continue;
+    const model = typeof policy.model === "string" ? policy.model.trim().slice(0, 100) : "";
+    if (!model || !EFFORTS.includes(policy.effort)) continue;
+    const threshold = Number(policy.thresholdPct);
+    out[id] = {
+      enabled: policy.enabled === true,
+      thresholdPct: Number.isFinite(threshold) ? Math.min(100, Math.max(1, Math.round(threshold))) : 90,
+      model,
+      effort: policy.effort,
+    };
     if (Object.keys(out).length >= MAX_MODEL_SUB_ENTRIES) break;
   }
   return out;
@@ -2437,6 +2460,7 @@ export class ThreadManager implements OrchestratorApi {
       fastUsagePolling: this.settingBool("setting_fast_usage_polling", false),
       spreadUsage: this.settingBool("setting_spread_usage", false),
       tokenConservationMode: this.settingBool("setting_token_conservation_mode", false),
+      usageSaving: this.usageSavingSettings(),
       codexEnabled: this.settingBool("setting_codex_enabled", false),
       codexModel: this.codexModel(),
       codexEffort: this.codexEffort(),
@@ -2520,6 +2544,103 @@ export class ThreadManager implements OrchestratorApi {
     }
   }
 
+  /** Persisted per-subscription saving choices. Missing/corrupt data means the feature is off. */
+  private storedUsageSaving(): UsageSavingPolicies {
+    const raw = this.db.kvGet("setting_usage_saving");
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw) as UsageSavingPolicies;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? sanitizeUsageSaving(parsed) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** Full UI projection, including useful off/90% defaults for every currently-known subscription. */
+  private usageSavingSettings(): UsageSavingPolicies {
+    const saved = this.storedUsageSaving();
+    const defaults: UsageSavingPolicies = {
+      [CODEX_SUB_ID]: { enabled: false, thresholdPct: 90, model: "gpt-5.6-luna", effort: "low" },
+      [GROK_SUB_ID]: { enabled: false, thresholdPct: 90, model: this.grokModel(), effort: "low" },
+      [ZAI_SUB_ID]: { enabled: false, thresholdPct: 90, model: this.zaiModel(), effort: "low" },
+    };
+    for (const account of this.usageSavingAccounts()) {
+      defaults[account.id] = { enabled: false, thresholdPct: 90, model: "claude-sonnet-5", effort: "low" };
+    }
+    return { ...defaults, ...saved };
+  }
+
+  /** Exact fallback for a subscription right now. Either exposed rolling meter can activate it. */
+  private usageSavingTarget(subId: string): UsageSavingPolicy | undefined {
+    const policy = this.usageSavingSettings()[subId];
+    let meters: { fiveHour: number | null | undefined; sevenDay: number | null | undefined };
+    if (subId === CODEX_SUB_ID) {
+      const usage = readCodexUsage();
+      meters = { fiveHour: usage?.fiveHour, sevenDay: usage?.sevenDay };
+    } else if (subId === GROK_SUB_ID) {
+      const usage = readGrokUsage();
+      meters = { fiveHour: null, sevenDay: usage.sevenDay };
+    } else if (subId === ZAI_SUB_ID) {
+      const usage = readZaiUsage();
+      meters = { fiveHour: usage.fiveHour, sevenDay: usage.sevenDay };
+    } else {
+      const account = this.usageSavingAccounts().find((entry) => entry.id === subId);
+      meters = { fiveHour: account?.fiveHour, sevenDay: account?.sevenDay };
+    }
+    if (!policy || !usageSavingActive(policy, meters)) return undefined;
+    return { ...policy, effort: this.resolveUsageSavingEffort(subId, policy.model, policy.effort) };
+  }
+
+  private resolveUsageSavingEffort(subId: string, model: string, requested: Effort): Effort {
+    if (subId === CODEX_SUB_ID) {
+      const effort = CODEX_EFFORTS.includes(requested as CodexEffort) ? requested as CodexEffort : "low";
+      return resolveCodexEffort(model, effort, this.codexSupportedEfforts(model));
+    }
+    if (subId === GROK_SUB_ID) {
+      const supported = grokEffortsForModel(model) as readonly Effort[];
+      return supported.includes(requested)
+        ? requested
+        : [...supported].reverse().find((effort) => EFFORTS.indexOf(effort) <= EFFORTS.indexOf(requested)) ?? "low";
+    }
+    if (subId === ZAI_SUB_ID) return resolveZaiEffort(model, requested);
+    const allowed = requested === "xhigh" && !config.enableXhigh ? "high" : requested;
+    return resolveClaudeEffort(model, allowed);
+  }
+
+  private usageSavingSubId(provider: ImplementorProvider, accountId?: string): string {
+    return provider === "claude" ? (accountId ?? this.accounts.dispatchPreview().account.id) : provider;
+  }
+
+  /** AccountManager's DTO surface is present in production; a handful of focused legacy harnesses expose
+   * only dispatchPreview, so keep settings construction source-compatible with those narrow fakes. */
+  private usageSavingAccounts(): Array<{ id: string; enabled: boolean; fiveHour: number | null; sevenDay: number | null }> {
+    const api = this.accounts as unknown as {
+      dto?: () => Array<{ id: string; enabled?: boolean; fiveHour?: number | null; sevenDay?: number | null }>;
+      dispatchPreview?: () => Partial<AccountDispatchPreview> & { account: { id: string } };
+    };
+    if (typeof api.dto === "function") {
+      return api.dto().map((account) => ({
+        id: account.id,
+        enabled: account.enabled !== false,
+        fiveHour: account.fiveHour ?? null,
+        sevenDay: account.sevenDay ?? null,
+      }));
+    }
+    if (typeof api.dispatchPreview === "function") {
+      const preview = api.dispatchPreview();
+      return [{ id: preview.account.id, enabled: true, fiveHour: preview.fiveHour ?? null, sevenDay: preview.sevenDay ?? null }];
+    }
+    return [];
+  }
+
+  private anyUsageSavingActive(): boolean {
+    const ids = this.usageSavingAccounts().filter((account) => account.enabled).map((account) => account.id);
+    if (this.settingBool("setting_codex_enabled", false)) ids.push(CODEX_SUB_ID);
+    if (this.settingBool("setting_grok_enabled", false)) ids.push(GROK_SUB_ID);
+    if (this.settingBool("setting_zai_enabled", false)) ids.push(ZAI_SUB_ID);
+    return ids.some((subId) => this.usageSavingTarget(subId) != null);
+  }
+
   /** The model matrix as Settings should display it. An old QA/reviewer Codex pin is projected to the
    *  dispatchable floor target without overwriting its raw value, so the visible choice and the actual
    *  run agree while `codexRoleTarget` can still apply the low-effort substitution. */
@@ -2547,6 +2668,8 @@ export class ThreadManager implements OrchestratorApi {
    *  resolved fresh per dispatch (a Co-work session's first-turn pin; see `prepareCoworkerRun`), since a
    *  transient conservation downgrade must never become that session's permanent, strictly-pinned model. */
   modelFor(subId: string, role: Role, opts: { conserve?: boolean } = {}): string {
+    const saving = this.usageSavingTarget(subId);
+    if (saving) return saving.model;
     const ov = this.modelOverrides();
     const base = this.poolResolved(subId, ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim() || config.models[role]);
     if (opts.conserve === false || !this.settingBool("setting_token_conservation_mode", false)) return base;
@@ -2583,13 +2706,16 @@ export class ThreadManager implements OrchestratorApi {
       if (subId === CODEX_SUB_ID || subId === GROK_SUB_ID || subId === ZAI_SUB_ID) continue; // non-Claude ids belong to their own lists
       for (const m of Object.values(roles)) if (m) selected.push(m);
     }
-    return uniq([...this.modelCatalog.claudeModels(), ...CURATED_CLAUDE_MODELS, ...Object.values(config.models), ...selected]);
+    const saving = Object.entries(this.storedUsageSaving())
+      .filter(([id]) => id !== CODEX_SUB_ID && id !== GROK_SUB_ID && id !== ZAI_SUB_ID)
+      .map(([, policy]) => policy.model);
+    return uniq([...this.modelCatalog.claudeModels(), ...CURATED_CLAUDE_MODELS, ...Object.values(config.models), ...selected, ...saving]);
   }
 
   /** Pickable Codex model ids for the Settings dropdown: curated flagships first, then any additional
    *  models the ACTIVE auth mode exposes, plus the currently-selected model so a manual pin never vanishes. */
   private pickableCodexModels(): string[] {
-    const selected = [this.codexModel(), ...Object.values(this.modelOverrides()[CODEX_SUB_ID] ?? {})].filter((x): x is string => !!x);
+    const selected = [this.codexModel(), this.storedUsageSaving()[CODEX_SUB_ID]?.model, ...Object.values(this.modelOverrides()[CODEX_SUB_ID] ?? {})].filter((x): x is string => !!x);
     return uniq([...this.codexRosterModels(), ...selected]);
   }
 
@@ -2764,14 +2890,14 @@ export class ThreadManager implements OrchestratorApi {
   /** Pickable Grok model ids for the Settings dropdown: curated defaults first, then any additional models
    *  the CLI's local cache reports, plus the currently-selected Grok model. */
   private pickableGrokModels(): string[] {
-    const selected = [this.grokModel(), ...Object.values(this.modelOverrides()[GROK_SUB_ID] ?? {})].filter((x): x is string => !!x);
+    const selected = [this.grokModel(), this.storedUsageSaving()[GROK_SUB_ID]?.model, ...Object.values(this.modelOverrides()[GROK_SUB_ID] ?? {})].filter((x): x is string => !!x);
     return uniq([...CURATED_GROK_MODELS, ...this.modelCatalog.grokModels(), ...selected]);
   }
 
   /** Pickable z.ai (GLM) model ids for the Settings dropdown: whatever the key can actually access,
    *  then the curated fallback and the current pick so a manual pin never vanishes. */
   private pickableZaiModels(): string[] {
-    const selected = [this.zaiModel(), ...Object.values(this.modelOverrides()[ZAI_SUB_ID] ?? {})].filter((x): x is string => !!x);
+    const selected = [this.zaiModel(), this.storedUsageSaving()[ZAI_SUB_ID]?.model, ...Object.values(this.modelOverrides()[ZAI_SUB_ID] ?? {})].filter((x): x is string => !!x);
     return uniq([...this.modelCatalog.zaiModels(), ...CURATED_ZAI_MODELS, ...selected]);
   }
 
@@ -2786,6 +2912,8 @@ export class ThreadManager implements OrchestratorApi {
 
   /** `opts.conserve` — see `modelFor`'s doc comment; propagated to the Claude branch. */
   private providerRoleModel(provider: ImplementorProvider, role: Role, accountId?: string, opts: { conserve?: boolean } = {}): string {
+    const saving = this.usageSavingTarget(this.usageSavingSubId(provider, accountId));
+    if (saving) return saving.model;
     const ov = this.modelOverrides();
     if (provider === "claude") return this.modelFor(accountId ?? this.accounts.dispatchPreview().account.id, role, opts);
     if (provider === "codex") {
@@ -2816,7 +2944,10 @@ export class ThreadManager implements OrchestratorApi {
     };
     const claude = this.accounts.dispatchPreview(demand);
     if (claude.hasHeadroom) {
-      const models = allModels
+      const saving = this.usageSavingTarget(claude.account.id);
+      const models = saving
+        ? [saving.model]
+        : allModels
         ? this.claudeRosterModels().map((m) => this.poolResolved(claude.account.id, m))
         : [this.providerRoleModel("claude", "director", claude.account.id)];
       const candidate = providerCandidateFromClaude(claude);
@@ -2827,7 +2958,10 @@ export class ThreadManager implements OrchestratorApi {
     const codexKey = this.openaiApiKey();
     if (this.settings().codexEnabled && codexAuthAvailable(!!codexKey && /^sk-/.test(codexKey))) {
       const pools = this.codexPoolSnapshot();
-      const models = allModels
+      const saving = this.usageSavingTarget(CODEX_SUB_ID);
+      const models = saving
+        ? [saving.model]
+        : allModels
         ? this.codexRosterModels().filter((model) => !poolForModel(pools ?? [], model)?.modelSlug)
         : [this.providerRoleModel("codex", "director")];
       for (const model of uniq(models)) {
@@ -2839,7 +2973,10 @@ export class ThreadManager implements OrchestratorApi {
     }
     if (this.grokProviderReady()) {
       const live = this.modelCatalog.grokModels();
-      const models = allModels
+      const saving = this.usageSavingTarget(GROK_SUB_ID);
+      const models = saving
+        ? [saving.model]
+        : allModels
         ? (live.length ? live : this.pickableGrokModels())
         : [this.providerRoleModel("grok", "director")];
       const available = live.length ? models.filter((m) => live.includes(m)) : models;
@@ -2850,7 +2987,8 @@ export class ThreadManager implements OrchestratorApi {
     }
     if (this.zaiImplementorReady()) {
       const candidate = this.zaiProviderCandidate(demand);
-      add("zai", "zai", "z.ai", allModels ? this.pickableZaiModels() : [this.providerRoleModel("zai", "director")], describeProviderCapacity(candidate, demand));
+      const saving = this.usageSavingTarget(ZAI_SUB_ID);
+      add("zai", "zai", "z.ai", saving ? [saving.model] : allModels ? this.pickableZaiModels() : [this.providerRoleModel("zai", "director")], describeProviderCapacity(candidate, demand));
     }
     return out;
   }
@@ -2859,6 +2997,8 @@ export class ThreadManager implements OrchestratorApi {
    *  reselects only on a provider/account cap, hard usage ceiling, or the operator disabling/removing
    *  that backend. */
   directorTargetReady(target: DirectorTarget): boolean {
+    const saving = this.usageSavingTarget(this.usageSavingSubId(target.provider, target.accountId));
+    if (saving && normalizeModelId(saving.model) !== normalizeModelId(target.model)) return false;
     const demand = demandForRole("director");
     const candidate = this.directorCandidateForTarget(target, demand);
     if (!candidate.hasHeadroom) return false;
@@ -2955,6 +3095,10 @@ export class ThreadManager implements OrchestratorApi {
     opts?: { resume?: string; cliSchema?: JsonSchemaLike },
   ): AgentRunLike {
     const resolved = { ...cfg, model: target.model };
+    const saving = this.usageSavingTarget(this.usageSavingSubId(target.provider, target.accountId));
+    if (saving && (target.provider === "claude" || target.provider === "zai")) {
+      resolved.effort = saving.effort as Exclude<Effort, "ultra">;
+    }
     if (opts?.resume) resolved.resume = opts.resume;
     if (target.provider === "claude") {
       resolved.oauthToken = this.accounts.byId(target.accountId)?.token || undefined;
@@ -2963,20 +3107,20 @@ export class ThreadManager implements OrchestratorApi {
     if (target.provider === "zai") {
       resolved.baseUrl = config.zai.baseUrl;
       resolved.authToken = this.zaiApiKey();
-      resolved.effort = resolveZaiEffort(target.model, resolved.effort ?? this.zaiEffort(target.model));
+      resolved.effort = resolveZaiEffort(target.model, saving?.effort ?? resolved.effort ?? this.zaiEffort(target.model));
       return new ZaiAgentRun(resolved);
     }
     const cwd = join(config.dataDir, "director-sandbox");
     mkdirSync(cwd, { recursive: true });
     if (target.provider === "codex") {
       return new CodexAgentRun({
-        model: target.model, effort: this.codexEffort(target.model), cwd,
+        model: target.model, effort: (saving?.effort ?? this.codexEffort(target.model)) as CodexEffort, cwd,
         apiKey: this.openaiApiKey() ?? "", resume: opts?.resume,
         outputSchema: opts?.cliSchema, directorMode: true,
       });
     }
     return new GrokAgentRun({
-      model: target.model, effort: this.grokEffort(target.model), cwd, resume: opts?.resume,
+      model: target.model, effort: (saving?.effort ?? this.grokEffort(target.model)) as GrokEffort, cwd, resume: opts?.resume,
       outputSchema: opts?.cliSchema, directorMode: true,
     });
   }
@@ -3061,10 +3205,11 @@ export class ThreadManager implements OrchestratorApi {
       if (provider === "claude") {
         const account = session.account ? this.acctById(session.account) : this.dispatchAccount(demand);
         if (!account) return { error: "The Claude subscription linked to this Co-work context is unavailable. Restore it or create a new session; no account was substituted." };
+        const saving = model ? undefined : this.usageSavingTarget(account.id);
         // conserve:false — this pick FREEZES as the session's strict pin for every later turn (see this
         // method's doc comment), so a transient token-conservation downgrade must never land here.
         model ??= this.modelFor(account.id, "implementor", { conserve: false });
-        const requestedEffort = session.effort ?? "high";
+        const requestedEffort = saving?.effort ?? session.effort ?? "high";
         const effort = resolveClaudeEffort(model, clampEffort(requestedEffort, this.accountMaxEffort(account.id)));
         const cfg = coworkerRunOptions(session.workspace, {
           resume,
@@ -3077,9 +3222,10 @@ export class ThreadManager implements OrchestratorApi {
         agent = new AgentRun(cfg);
         startContent = this.communicationContent(contentWithImages(prompt, images));
       } else if (provider === "codex") {
+        const saving = model ? undefined : this.usageSavingTarget(CODEX_SUB_ID);
         // conserve:false — see the Claude branch above; this freezes as the session's strict pin too.
         model ??= this.providerRoleModel("codex", "implementor", undefined, { conserve: false });
-        const effort = (session.effort ?? this.codexEffort(model)) as CodexEffort;
+        const effort = (saving?.effort ?? session.effort ?? this.codexEffort(model)) as CodexEffort;
         target = { provider, model, effort, accountId: "openai-codex", accountLabel: `codex:${model}` };
         const fresh = coworkFreshKickoff(this.db, history, prompt);
         agent = new CodexAgentRun({
@@ -3092,8 +3238,9 @@ export class ThreadManager implements OrchestratorApi {
         });
         startContent = this.communicationContent(contentWithImages(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"), images));
       } else if (provider === "grok") {
-        model ??= this.grokModel();
-        const effort = (session.effort ?? this.grokEffort(model)) as GrokEffort;
+        const saving = model ? undefined : this.usageSavingTarget(GROK_SUB_ID);
+        model ??= saving?.model ?? this.grokModel();
+        const effort = (saving?.effort ?? session.effort ?? this.grokEffort(model)) as GrokEffort;
         target = { provider, model, effort, accountId: "xai-grok", accountLabel: `grok:${model}` };
         const fresh = coworkFreshKickoff(this.db, history, prompt);
         agent = new GrokAgentRun({
@@ -3105,8 +3252,9 @@ export class ThreadManager implements OrchestratorApi {
         });
         startContent = this.communicationContent(contentWithImages(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"), images));
       } else {
-        model ??= this.zaiModel();
-        const effort = resolveZaiEffort(model, session.effort ?? this.zaiEffort(model));
+        const saving = model ? undefined : this.usageSavingTarget(ZAI_SUB_ID);
+        model ??= saving?.model ?? this.zaiModel();
+        const effort = resolveZaiEffort(model, saving?.effort ?? session.effort ?? this.zaiEffort(model));
         const cfg = coworkerRunOptions(session.workspace, {
           resume,
           effort,
@@ -3275,33 +3423,43 @@ export class ThreadManager implements OrchestratorApi {
       supported.filter((effort) => EFFORTS.indexOf(effort) <= EFFORTS.indexOf(cap) && (effort !== "xhigh" || config.enableXhigh));
     if (this.accounts.hasHeadroom()) {
       const claude = this.claudeProviderCandidate(demand);
-      const cap = this.accountMaxEffort(this.accounts.dispatchPreview(demand).account.id);
-      add("claude", this.claudeRosterModels(), (model) => underCap(claudeEffortsForModel(model), cap), () => claude);
+      const accountId = this.accounts.dispatchPreview(demand).account.id;
+      const saving = this.usageSavingTarget(accountId);
+      const cap = this.accountMaxEffort(accountId);
+      add(
+        "claude",
+        saving ? [saving.model] : this.claudeRosterModels(),
+        (model) => saving ? [saving.effort] : underCap(claudeEffortsForModel(model), cap),
+        () => claude,
+      );
     }
     if (this.codexImplementorReady("implementor", demand)) {
       const pools = this.codexPoolSnapshot();
+      const saving = this.usageSavingTarget(CODEX_SUB_ID);
       // Dedicated one-shot models are intentionally excluded from implementation; see codexPools.ts.
-      const models = this.codexRosterModels().filter((model) => !poolForModel(pools ?? [], model)?.modelSlug);
+      const models = saving ? [saving.model] : this.codexRosterModels().filter((model) => !poolForModel(pools ?? [], model)?.modelSlug);
       add(
         "codex",
         models,
-        (model) => underCap(this.codexSupportedEfforts(model), this.codexEffort(model)),
+        (model) => saving ? [saving.effort] : underCap(this.codexSupportedEfforts(model), this.codexEffort(model)),
         (model) => this.codexProviderCandidate("implementor", demand, model),
       );
     }
     if (this.grokImplementorReady()) {
       const live = this.modelCatalog.grokModels();
-      const models = live.length ? this.pickableGrokModels().filter((model) => live.includes(model)) : this.pickableGrokModels();
+      const saving = this.usageSavingTarget(GROK_SUB_ID);
+      const models = saving ? [saving.model] : live.length ? this.pickableGrokModels().filter((model) => live.includes(model)) : this.pickableGrokModels();
       const grok = this.grokProviderCandidate(demand);
       const routedGrok = grok.hasHeadroom ? grok : { ...grok, hasHeadroom: true, capacityWindows: [] };
-      add("grok", models, (model) => underCap(grokEffortsForModel(model), this.grokEffort(model)), () => routedGrok);
+      add("grok", models, (model) => saving ? [saving.effort] : underCap(grokEffortsForModel(model), this.grokEffort(model)), () => routedGrok);
     }
     if (this.zaiImplementorReady()) {
       const live = this.modelCatalog.zaiModels();
-      const models = live.length ? this.pickableZaiModels().filter((model) => live.includes(model)) : this.pickableZaiModels();
+      const saving = this.usageSavingTarget(ZAI_SUB_ID);
+      const models = saving ? [saving.model] : live.length ? this.pickableZaiModels().filter((model) => live.includes(model)) : this.pickableZaiModels();
       const zai = this.zaiProviderCandidate(demand);
       const routedZai = zai.hasHeadroom ? zai : { ...zai, hasHeadroom: true, capacityWindows: [] };
-      add("zai", models, (model) => underCap(zaiEffortsForModel(model), this.zaiEffort(model)), () => routedZai);
+      add("zai", models, (model) => saving ? [saving.effort] : underCap(zaiEffortsForModel(model), this.zaiEffort(model)), () => routedZai);
     }
     const autoEntries = filterAutoSelectionCandidates(entries);
     const capacity = preferCapacity(autoEntries, (entry) => candidateCapacityWindows(entry.candidate), demand);
@@ -3362,6 +3520,15 @@ export class ThreadManager implements OrchestratorApi {
     // A task-local owner pin is not a candidate for automatic judgement. It remains exact across every
     // resume/cap cycle and must never be overwritten by a cheaper/stronger model recommendation.
     if (this.db.getThread(thread.id)?.modelRequest) return undefined;
+    // Usage saving is an explicit operator override whose purpose is to keep work moving on the chosen
+    // economy model. Do not let a sticky automatic pick or the flagship policy reintroduce another model
+    // (or park instead of working) while any subscription's threshold policy is active.
+    if (this.anyUsageSavingActive()) {
+      if (this.db.getThreadStageOutputs(thread.id).modelPick) {
+        this.db.updateThreadStageOutputs(thread.id, { modelPick: undefined });
+      }
+      return undefined;
+    }
     const stage = this.db.getThreadStageOutputs(thread.id);
     const policy = stage.routeDecision?.modelPolicy;
     let saved = stage.modelPick;
@@ -3699,6 +3866,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   /** `codexRoleModel` plus the effort a review-stage substitution carries, resolved together so the
    *  capacity check, the run row and the spawned turn can never disagree about which model this is. */
   private codexRoleTarget(role: Role, demand?: CapacityDemand): CodexReviewTarget {
+    const saving = this.usageSavingTarget(CODEX_SUB_ID);
+    if (saving) return { model: saving.model, effort: saving.effort as CodexEffort };
     return this.codexReviewFloored(role, this.codexDedicatedPoolModel(role, demand));
   }
 
@@ -3823,7 +3992,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * confirms that this login can no longer use it. A missing cache remains permissive for first login. */
   private grokModelAvailable(): boolean {
     const available = this.modelCatalog.grokModels();
-    return available.length === 0 || available.includes(this.grokModel());
+    const selected = this.usageSavingTarget(GROK_SUB_ID)?.model ?? this.grokModel();
+    return available.length === 0 || available.includes(selected);
   }
 
   /** The Grok CLI reasoning-effort cap. Grok 4.6+ exposes xhigh; older cached models stop at high. */
@@ -3969,6 +4139,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.accounts.setSpreadUsage(patch.spreadUsage);
     }
     if (patch.tokenConservationMode !== undefined) this.db.kvSet("setting_token_conservation_mode", patch.tokenConservationMode ? "1" : "0");
+    if (patch.usageSaving !== undefined) this.db.kvSet("setting_usage_saving", JSON.stringify(sanitizeUsageSaving(patch.usageSaving)));
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
     if (patch.codexEffort !== undefined && CODEX_EFFORTS.includes(patch.codexEffort)) this.db.kvSet("setting_codex_effort", patch.codexEffort);
     if (patch.codexWeeklySafetyPct !== undefined) this.db.kvSet("setting_codex_weekly_safety", String(patch.codexWeeklySafetyPct));
@@ -4607,7 +4778,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // both the doors and the reported windows switch to it. Quoting the general pool's exhausted weekly
     // for a run that will never touch it is exactly what would keep an idle pool out of the ladder —
     // and conversely, quoting the idle pool for an implementor would claim room it cannot use.
-    const model = modelOverride ?? (role ? this.codexRoleModel(role, demand) : this.codexModel());
+    const saving = ignoreGeneralCapLatch ? undefined : this.usageSavingTarget(CODEX_SUB_ID);
+    const model = modelOverride ?? saving?.model ?? (role ? this.codexRoleModel(role, demand) : this.codexModel());
     const pools = this.codexPoolSnapshot();
     const pool = pools ? poolForModel(pools, model) : undefined;
     const dedicated = pool?.modelSlug ? pool : undefined;
@@ -4925,17 +5097,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (codexAuthAvailable(!!key && /^sk-/.test(key))) {
         const usage = readCodexUsage();
         const pools = this.codexPoolSnapshot();
-        const reviewFloor = this.codexReviewFloored(role, this.providerRoleModel("codex", role));
+        const saving = this.usageSavingTarget(CODEX_SUB_ID);
+        const reviewFloor = this.codexRoleTarget(role, demand);
         if (reviewFloor.blocked) return options;
         const configured = reviewFloor.model;
         const models = new Set<string>([configured]);
         const explicitRoleModel = !!this.modelOverrides()[CODEX_SUB_ID]?.[role]?.trim();
-        if (this.settings().autoModelSelection && (role === "director" || role === "implementor")) {
+        if (!saving && this.settings().autoModelSelection && (role === "director" || role === "implementor")) {
           for (const model of this.codexRosterModels()) {
             if (!poolForModel(pools ?? [], model)?.modelSlug) models.add(model);
           }
         }
-        if (!explicitRoleModel && roleMayUseDedicatedPool(role) && pools) {
+        if (!saving && !explicitRoleModel && roleMayUseDedicatedPool(role) && pools) {
           const dispatchable = new Set(this.codexRosterModels().map((model) => normalizeModelId(model)));
           for (const pool of dedicatedPools(pools)) {
             if (pool.modelSlug && dispatchable.has(pool.modelSlug)) models.add(pool.modelSlug);
@@ -6571,18 +6744,22 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         acct = this.dispatchAccount(demand);
         triedClaudeAccounts.add(acct.id);
       }
+      const saving = this.usageSavingTarget(this.usageSavingSubId(provider, acct?.id));
       const codexTarget = provider === "codex" ? this.codexRoleTarget(role, demand) : undefined;
       const model = codexTarget ? codexTarget.model : provider === "grok" ? this.providerRoleModel("grok", role) : provider === "zai" ? this.providerRoleModel("zai", role) : this.modelFor(acct!.id, role);
       const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : provider === "zai" ? `zai:${model}` : acct!.label;
       // A review-stage substitution carries its own cheap effort; the configured Codex effort applies to
       // everything else, including a review role already pinned to a current model.
       const codexEffort = codexTarget ? (codexTarget.effort ?? this.codexEffort(model)) : undefined;
-      const effort = codexEffort ?? (provider === "grok" ? this.grokEffort(model) : provider === "zai" ? this.zaiEffort(model) : undefined);
+      const effort = saving?.effort ?? codexEffort ?? (provider === "grok" ? this.grokEffort(model) : provider === "zai" ? this.zaiEffort(model) : undefined);
       if (codexTarget?.replaced) this.noteReviewModelFloor(thread.id, role, codexTarget);
       const run = this.db.createRun({ threadId: thread.id, role, model, account: accountLabel, effort });
       this.emitRun(run.id);
       const cfg = makeCfg({ token: provider === "claude" ? acct!.token : undefined, resume: provider === "claude" ? resume : undefined, runId: run.id });
       cfg.model = model;
+      if (saving && (provider === "claude" || provider === "zai")) {
+        cfg.effort = saving.effort as Exclude<Effort, "ultra">;
+      }
       let agent: AgentRunLike;
       let startMessage: string | unknown[] = message;
       let accountId = provider === "claude" ? acct!.id : "";
@@ -6617,7 +6794,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Grok");
         agent = this.createRoleAgent("grok", () => new GrokAgentRun({
           model,
-          effort: this.grokEffort(model),
+          effort: effort as GrokEffort,
           cwd: thread.workspace,
           resume,
           freshFallback: resume ? this.communicationContent(fullKickoff) : undefined,
@@ -6639,7 +6816,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         accountId = "zai";
         cfg.baseUrl = config.zai.baseUrl;
         cfg.authToken = this.zaiApiKey();
-        cfg.effort = this.zaiEffort(model);
+        cfg.effort = effort as ZaiEffort;
         if (resume) cfg.resume = resume;
         agent = this.createRoleAgent("zai", () => new ZaiAgentRun(cfg));
       } else {
@@ -7372,10 +7549,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // patches the working tree and stops, never committing — breaking the implementor→commit contract.
     let startKickoff = kickoff;
     if (provider === "codex") {
-      const model = this.pickedModel(thread.id, "codex") ?? this.providerRoleModel("codex", "implementor");
+      const requested = this.db.getThread(thread.id)?.modelRequest;
+      const saving = requested ? undefined : this.usageSavingTarget(CODEX_SUB_ID);
+      const model = saving?.model ?? this.pickedModel(thread.id, "codex") ?? this.providerRoleModel("codex", "implementor");
       // The director/planner picks the per-task effort; the Codex subscription's setting is its MAX cap, so
       // a tiny task still runs cheap while nothing exceeds what the operator allowed for this backend.
-      const effort = clampEffort(plannerEffort, this.codexEffort(model)) as CodexEffort;
+      const effort = (saving?.effort ?? clampEffort(plannerEffort, this.codexEffort(model))) as CodexEffort;
       accountId = "openai-codex";
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `codex:${model}`, effort });
       runId = run.id;
@@ -7413,9 +7592,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       codexAgent.onEnd(() => { if (codexAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
       agent = codexAgent;
     } else if (provider === "grok") {
-      const model = this.pickedModel(thread.id, "grok") ?? this.grokModel();
+      const requested = this.db.getThread(thread.id)?.modelRequest;
+      const saving = requested ? undefined : this.usageSavingTarget(GROK_SUB_ID);
+      const model = saving?.model ?? this.pickedModel(thread.id, "grok") ?? this.grokModel();
       // Same as Codex: the per-task effort is capped at the Grok subscription's configured maximum.
-      const effort = clampEffort(plannerEffort, this.grokEffort(model)) as GrokEffort;
+      const effort = (saving?.effort ?? clampEffort(plannerEffort, this.grokEffort(model))) as GrokEffort;
       accountId = "xai-grok";
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `grok:${model}`, effort });
       runId = run.id;
@@ -7452,8 +7633,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // Codex/Grok — it gets the in-process bus + office MCP servers (post_finding/ask_user/deliverables,
       // real chat_post) and the standard implementor system prompt. The per-task effort is capped at the
       // z.ai subscription's configured maximum, like the other backends.
-      const model = this.pickedModel(thread.id, "zai") ?? this.zaiModel();
-      const effort = resolveZaiEffort(model, clampEffort(plannerEffort, this.zaiEffort(model)));
+      const requested = this.db.getThread(thread.id)?.modelRequest;
+      const saving = requested ? undefined : this.usageSavingTarget(ZAI_SUB_ID);
+      const model = saving?.model ?? this.pickedModel(thread.id, "zai") ?? this.zaiModel();
+      const effort = saving
+        ? saving.effort as ZaiEffort
+        : resolveZaiEffort(model, clampEffort(plannerEffort, this.zaiEffort(model)));
       accountId = "zai";
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: `zai:${model}`, effort });
       runId = run.id;
@@ -7478,15 +7663,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // override → default → built-in). Either way the Fable-pool fallback applies on this account.
       const requested = this.db.getThread(thread.id)?.modelRequest;
       const picked = this.pickedModel(thread.id, "claude");
+      const saving = requested ? undefined : this.usageSavingTarget(acct.id);
       // Account-local gated-model fallback is valid for configured/automatic picks, but it would violate
       // a task-local strict request. A requested model either runs exactly or its gate parks the task.
       const model = requested?.provider === "claude" && requested.model
         ? requested.model
-        : picked
-          ? this.poolResolved(acct.id, picked)
-          : this.modelFor(acct.id, "implementor");
+        : saving
+          ? saving.model
+          : picked
+            ? this.poolResolved(acct.id, picked)
+            : this.modelFor(acct.id, "implementor");
       // Apply both the account ceiling and the chosen model's exact effort support.
-      const effort = resolveClaudeEffort(model, clampEffort(plannerEffort, this.accountMaxEffort(acct.id)));
+      const effort = saving?.effort ?? resolveClaudeEffort(model, clampEffort(plannerEffort, this.accountMaxEffort(acct.id)));
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: acct.label, effort });
       runId = run.id;
       this.emitRun(run.id);

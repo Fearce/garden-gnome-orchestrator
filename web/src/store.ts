@@ -653,6 +653,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   fastUsagePolling: false,
   spreadUsage: false,
   tokenConservationMode: false,
+  usageSaving: {},
   codexEnabled: false,
   codexModel: "gpt-6-astra",
   codexEffort: "ultra",

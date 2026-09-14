@@ -343,6 +343,17 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         fastUsagePolling: z.boolean(),
         spreadUsage: z.boolean(),
         tokenConservationMode: z.boolean(),
+        usageSaving: z
+          .record(
+            z.string().min(1).max(64),
+            z.object({
+              enabled: z.boolean(),
+              thresholdPct: z.number().int().min(1).max(100),
+              model: z.string().trim().min(1).max(100),
+              effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]),
+            }),
+          )
+          .refine((m) => Object.keys(m).length <= 64, { message: "too many usage-saving entries" }),
         codexEnabled: z.boolean(),
         codexModel: z.string().min(1).max(64),
         // Use the domain constant so a new supported tier cannot be accepted by the runner but

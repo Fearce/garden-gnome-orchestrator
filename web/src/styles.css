@@ -1250,6 +1250,15 @@ button { font-family: inherit; cursor: pointer; }
 .model-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
 
 .sub-field { margin-top: 11px; }
+.usage-saving {
+  margin-top: 11px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--accent) 4%, var(--bg));
+}
+.usage-saving-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.usage-saving-head .sub-label { margin-bottom: 0; }
+.usage-saving-head .sub-msg { display: block; margin-top: 4px; }
+.usage-saving > .sub-field { margin-top: 9px; }
+.usage-saving-selectors { padding-top: 1px; }
 .sub-label { display: block; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 5px; }
 .key-input { display: flex; align-items: center; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); overflow: hidden; }
 .key-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }

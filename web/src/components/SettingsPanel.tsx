@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { IDLE_MINUTES_MAX, IDLE_MINUTES_MIN, useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type ZaiEffort } from "../types.js";
+import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, claudeEffortsForModel, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type UsageSavingPolicy, type ZaiEffort } from "../types.js";
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
 import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
@@ -1399,6 +1399,12 @@ function AccountEffort({ accountId }: { accountId: string }) {
   return <EffortCapField value={value} options={options} onChange={onChange} />;
 }
 
+function AccountUsageSaving({ accountId }: { accountId: string }) {
+  const models = useStore((s) => s.settings.claudeModels);
+  const defaultModel = useStore((s) => s.settings.modelDefaults.implementor ?? "claude-sonnet-5");
+  return <UsageSavingField subId={accountId} models={models} defaultModel={defaultModel} effortsFor={claudeEffortsForModel} />;
+}
+
 /** The soft WEEKLY-safety ceiling for one Claude account. At/above this weekly utilization the sub sheds new
  *  tasks to a fresher one — a transparent failover, never a freeze. 100 = off (hard-cap-only, unchanged). */
 function AccountWeeklySafety({ accountId, value }: { accountId: string; value: number }) {
@@ -1412,6 +1418,90 @@ function AccountWeeklySafety({ accountId, value }: { accountId: string; value: n
       max={100}
       onChange={(v) => setAccountWeeklySafety(accountId, v)}
     />
+  );
+}
+
+/** Per-subscription exact low-usage route. The threshold stays editable while off; model and effort only
+ * appear once enabled so each provider card remains compact by default. */
+function UsageSavingField({
+  subId,
+  models,
+  defaultModel,
+  effortsFor,
+}: {
+  subId: string;
+  models: readonly string[];
+  defaultModel: string;
+  effortsFor: (model: string) => readonly Effort[];
+}) {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const policies = settings.usageSaving ?? {};
+  const policy = policies[subId] ?? { enabled: false, thresholdPct: 90, model: defaultModel, effort: "low" };
+  const efforts = effortsFor(policy.model);
+  const update = (patch: Partial<UsageSavingPolicy>) => {
+    const next = { ...policies, [subId]: { ...policy, ...patch } };
+    setSettings({ usageSaving: next });
+  };
+  const setModel = (model: string) => {
+    if (!model) return;
+    const supported = effortsFor(model);
+    update({ model, effort: supported.includes(policy.effort) ? policy.effort : supported[0] ?? "low" });
+  };
+
+  return (
+    <div className="usage-saving">
+      <div className="usage-saving-head">
+        <div>
+          <span className="sub-label">Usage saving</span>
+          <span className="sub-msg dim">Use one exact low-cost model once either available 5h or weekly meter reaches the threshold.</span>
+        </div>
+        <button
+          className={"switch" + (policy.enabled ? " on" : "")}
+          role="switch"
+          aria-checked={policy.enabled}
+          aria-label={`Usage saving for ${subId}`}
+          onClick={() => update({ enabled: !policy.enabled })}
+        >
+          <span className="switch-knob" />
+        </button>
+      </div>
+      <SubStepperField
+        label="Usage saving threshold %"
+        hint="The fallback activates at this used percentage. Default: 90%."
+        value={policy.thresholdPct}
+        min={1}
+        max={100}
+        onChange={(thresholdPct) => update({ thresholdPct })}
+      />
+      {policy.enabled && (
+        <div className="usage-saving-selectors">
+          <div className="sub-field">
+            <label className="sub-label">Usage saving model</label>
+            <ModelSelect
+              value={policy.model}
+              options={models}
+              allowInherit={false}
+              ariaLabel={`Usage saving model for ${subId}`}
+              onChange={setModel}
+            />
+          </div>
+          <div className="sub-field">
+            <label className="sub-label">Usage saving effort</label>
+            <div className="sub-segment">
+              <div className="segment">
+                {efforts.map((effort) => (
+                  <button key={effort} className={policy.effort === effort ? "on" : ""} onClick={() => update({ effort })}>
+                    {effortLabel(effort)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="sub-msg dim">While active, this exact model and effort override per-role settings and automatic model picks on this subscription.</div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1559,6 +1649,12 @@ function SubscriptionsSection() {
 
         <CodexModels />
         <CodexEffortField />
+        <UsageSavingField
+          subId={CODEX_SUB_ID}
+          models={codexModelOptions(settings.codexModels)}
+          defaultModel={settings.codexModel}
+          effortsFor={(model) => settings.codexModelEfforts[model] ?? codexEffortsForModel(model)}
+        />
         <CodexWeeklySafety />
       </SubCard>
 
@@ -1591,6 +1687,7 @@ function SubscriptionsSection() {
 
         <GrokModels />
         <EffortCapField value={settings.grokEffort} options={grokEffortsForModel(settings.grokModel)} onChange={(v) => setSettings({ grokEffort: v as GrokEffort })} />
+        <UsageSavingField subId={GROK_SUB_ID} models={grokModelOptions(settings.grokModels)} defaultModel={settings.grokModel} effortsFor={grokEffortsForModel} />
         <GrokWeeklySafety />
       </SubCard>
 
@@ -1671,6 +1768,7 @@ function SubscriptionsSection() {
 
         <ZaiModels />
         <EffortCapField value={settings.zaiEffort} options={zaiEffortsForModel(settings.zaiModel)} onChange={(v) => setSettings({ zaiEffort: v as ZaiEffort })} />
+        <UsageSavingField subId={ZAI_SUB_ID} models={zaiModelOptions(settings.zaiModels)} defaultModel={settings.zaiModel} effortsFor={zaiEffortsForModel} />
         <ZaiWeeklySafety />
       </SubCard>
     </div>
@@ -1720,6 +1818,7 @@ function AccountCard({
       <div className="sub-card-meta">{meta}</div>
       {acct.enabled && <AccountModels accountId={acct.id} />}
       {acct.enabled && <AccountEffort accountId={acct.id} />}
+      {acct.enabled && <AccountUsageSaving accountId={acct.id} />}
       {acct.enabled && <AccountWeeklySafety accountId={acct.id} value={acct.weeklySafetyPct} />}
     </div>
   );

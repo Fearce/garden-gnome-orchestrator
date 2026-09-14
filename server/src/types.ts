@@ -113,6 +113,18 @@ export function resolveZaiEffort(model: string, effort: Effort): ZaiEffort {
   return [...supported].reverse().find((tier) => EFFORTS.indexOf(tier) < requested) ?? supported.at(-1) ?? "high";
 }
 
+/** Per-subscription low-usage fallback. Once either available rolling meter reaches the threshold,
+ * every newly-started role on that subscription uses this exact model and effort. */
+export interface UsageSavingPolicy {
+  enabled: boolean;
+  thresholdPct: number;
+  model: string;
+  effort: Effort;
+}
+
+/** Keyed by a Claude account id, or the stable `codex` / `grok` / `zai` provider id. */
+export type UsageSavingPolicies = Record<string, UsageSavingPolicy>;
+
 export type AgentRunState =
   | "starting"
   | "running"
@@ -955,6 +967,9 @@ export interface OrchestratorSettings {
   // for runway so the window doesn't hard-cap outright. Never overrides a strict owner model pin or an
   // auto-model-selection pick. Grok/z.ai have no reviewed economy tier in this app, so they're unaffected.
   tokenConservationMode: boolean;
+  // Per-subscription exact model/effort fallback. Off by default; the threshold defaults to 90% and
+  // trips when EITHER a provider's 5-hour or weekly used-percent reaches it.
+  usageSaving: UsageSavingPolicies;
   // ---- Subscriptions: which provider backs the implementor (hard routing gate at dispatch) ----
   // Claude is the default backend. Planner/researcher/QA start on Claude and fail over to an enabled
   // Codex/Grok CLI when every Claude sub is capped (structured-output adapters recover the role result).
