@@ -27,6 +27,7 @@ const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstanc
 
 const PORT = 4337;
 const BASE = `http://127.0.0.1:${PORT}`;
+const SELF_REPO_NAME = path.basename(SERVER_ROOT);
 
 // ---- the fixture repository ------------------------------------------------------------------------
 
@@ -116,7 +117,7 @@ async function drive(page, work, keep) {
   console.log("\nAUTO-PICK — opening from a task lands in that task's repo");
   // Remember a DIFFERENT repo as the last one used, so landing on the task's repo can only be the
   // task preference winning — not the fallback happening to agree.
-  await page.evaluate(() => localStorage.setItem("orch-git-console-repo", "C:\\claude-orchestrator"));
+  await page.evaluate(() => localStorage.setItem("orch-git-console-repo", "C:\\not-the-selected-repository"));
   await page.click(".gc-close");
   await page.click('.card:has-text("Sample project task")');
   await page.waitForSelector(".detail-head", { timeout: 10_000 });
@@ -127,9 +128,9 @@ async function drive(page, work, keep) {
   check("it opened on the selected task's repository", landed.includes("sample-project"), landed.join(","));
   // …and an explicit pick still wins over it, so the auto-pick can't fight the operator.
   await page.click('[aria-label="Choose a repository"]');
-  await page.fill(".gc-menu-head .gc-filter", "claude-orchestrator");
-  await page.click('.gc-menu-row:has(.gc-menu-name:text-is("claude-orchestrator"))');
-  await page.waitForSelector('.gc-pick-value:text-is("claude-orchestrator")', { timeout: 15_000 });
+  await page.fill(".gc-menu-head .gc-filter", SELF_REPO_NAME);
+  await page.click(`.gc-menu-row:has(.gc-menu-name:text-is("${SELF_REPO_NAME}"))`);
+  await page.waitForSelector(`.gc-pick-value:text-is("${SELF_REPO_NAME}")`, { timeout: 15_000 });
   check("an explicit pick overrides the auto-pick", true);
 
   console.log("\nBROWSE — the folder picker modal is searchable");
@@ -172,7 +173,7 @@ async function drive(page, work, keep) {
   await page.click('[aria-label="Choose a repository"]');
   await page.waitForSelector(".gc-menu-row");
   const repoNames = await page.$$eval(".gc-menu .gc-menu-name", (els) => els.map((e) => e.textContent));
-  check("it lists the recent repo and this app's own checkout", repoNames.includes("sample-project") && repoNames.includes("claude-orchestrator"), repoNames.join(","));
+  check("it lists the recent repo and this app's own checkout", repoNames.includes("sample-project") && repoNames.includes(SELF_REPO_NAME), repoNames.join(","));
   // Discovery is the whole point: repos nobody configured must appear under their own heading.
   check("it discovered repositories on disk", await page.isVisible('.gc-menu-sep:has-text("Found on disk")'));
   check("…more than just the configured ones", repoNames.length > 2, `${repoNames.length} listed`);

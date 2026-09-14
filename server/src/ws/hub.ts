@@ -321,7 +321,7 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
     case "repo.list":
       send(socket, {
         type: "repo.list",
-        repos: await ctx.repos.list(cmd.rescan),
+        repos: await ctx.repos.list(cmd.rescan, cmd.forThread),
         preferred: cmd.forThread ? await ctx.repos.repoForThread(cmd.forThread) : null,
         forThread: cmd.forThread ?? null,
       });

@@ -167,6 +167,7 @@
     "test:readme-claims": "tsx src/tests/readmeClaims.test.ts",
     "test:stale-gnomes": "tsx src/tests/staleGnomeCleanup.itest.ts",
     "test:git": "tsx src/tests/gitService.itest.ts",
+    "test:repo-console": "tsx src/tests/repoConsole.test.ts",
     "test:git-console-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/git-console-ui.test.ts",
     "test:lazy-chunks-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/lazy-chunks-ui.test.ts",
     "test:git-progress": "tsx src/tests/gitProgress.itest.ts",

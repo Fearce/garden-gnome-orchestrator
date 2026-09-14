@@ -206,6 +206,28 @@ try {
     check("pushState = pushed after push", after.pushState === "pushed", after.pushState);
   }
 
+  // ---- B2. Windows-compatible path handling ---------------------------------------------------------
+  console.log("\nB2. paths with spaces — status and diffs keep staged, unstaged, and untracked files distinct");
+  {
+    const { work } = setupClone(root, "space repo");
+    writeFileSync(join(work, "tracked file.txt"), "base\n");
+    git(work, "add", "tracked file.txt");
+    git(work, "commit", "--quiet", "-m", "seed spaced file");
+    writeFileSync(join(work, "tracked file.txt"), "base\nunstaged\n");
+    writeFileSync(join(work, "staged file.txt"), "staged\n");
+    git(work, "add", "staged file.txt");
+    writeFileSync(join(work, "untracked file.txt"), "untracked\n");
+
+    const s = await getGitStatus(work);
+    const paths = new Map(s.files.map((f) => [f.path, f]));
+    check("space-named repo resolves", s.isRepo && s.repoRoot?.replace(/\\/g, "/").toLowerCase() === work.replace(/\\/g, "/").toLowerCase(), String(s.repoRoot));
+    check("unstaged space-named file is shown", paths.get("tracked file.txt")?.status === "modified");
+    check("staged space-named file is shown", paths.get("staged file.txt")?.status === "added");
+    check("untracked space-named file is shown", paths.get("untracked file.txt")?.status === "untracked");
+    const diff = await getFileDiff(work, "tracked file.txt");
+    check("diff for a space-named file renders its change", diff.patch.includes("+unstaged"), diff.patch.slice(0, 120));
+  }
+
   // ---- D. configured commit-only policy -------------------------------------------------------------
   console.log("\nD. configured origin substring → commit-only, never a push nag");
   {

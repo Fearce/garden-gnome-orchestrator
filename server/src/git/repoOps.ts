@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
 import {
   COMMIT_LOG_FORMAT,
@@ -260,15 +260,10 @@ async function defaultRemote(root: string): Promise<string | null> {
  *  state, commit-only policy detection, behind/unpushed) and adds what a repo-level console needs on top. Never
  *  throws — a path that isn't a repo comes back isRepo:false with a reason. */
 export async function getRepoState(path: string): Promise<RepoState> {
+  const invalid = repoPathProblem(path);
+  if (invalid) return emptyRepoState(path, invalid);
   const root = await resolveRepoRoot(path);
-  if (!root) {
-    return {
-      path, name: basename(path.replace(/[\\/]+$/, "")) || path, isRepo: false,
-      error: "Not a git repository.", branch: null, detached: false, branches: [], remoteBranches: [],
-      remotes: [], upstreamRef: null, pushRef: null, ahead: 0, behind: 0, isCommitOnly: false,
-      pushState: "no-remote", files: [], commits: [], lastFetchAt: null, webUrl: null,
-    };
-  }
+  if (!root) return emptyRepoState(path, "No Git repository found here. Choose the repository folder (the folder containing .git), or a parent with one checkout.");
 
   const status = await getGitStatus(root);
   const [branches, remoteBranches, remotes, commits, fetchedAt, staged, unstaged, operation] = await Promise.all([
@@ -306,6 +301,28 @@ export async function getRepoState(path: string): Promise<RepoState> {
     lastFetchAt: fetchedAt,
     // `origin` is what the owner means by "the repo" when it exists; fall back to the first remote.
     webUrl: remoteWebUrl((remotes.find((r) => r.name === "origin") ?? remotes[0])?.url ?? "", status.branch),
+  };
+}
+
+/** Keep an invalid or inaccessible folder actionable in the console; a bare Git failure gives the owner
+ * no clue whether to correct the path or fix permissions. This is only presentation — commands still
+ * resolve and validate a real repository root before Git runs. */
+function repoPathProblem(path: string): string | null {
+  if (!existsSync(path)) return "That folder no longer exists. Choose an existing repository folder.";
+  try {
+    if (!statSync(path).isDirectory()) return "That path is a file. Choose the repository folder, not a file inside it.";
+  } catch {
+    return "This folder can't be read. Check its permissions, then choose the repository folder again.";
+  }
+  return null;
+}
+
+function emptyRepoState(path: string, error: string): RepoState {
+  return {
+    path, name: basename(path.replace(/[\\/]+$/, "")) || path, isRepo: false,
+    error, branch: null, detached: false, branches: [], remoteBranches: [], remotes: [], upstreamRef: null,
+    pushRef: null, ahead: 0, behind: 0, isCommitOnly: false, pushState: "no-remote", files: [], commits: [],
+    lastFetchAt: null, webUrl: null,
   };
 }
 

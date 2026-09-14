@@ -74,5 +74,19 @@ assert.equal(useStore.getState().repoListPending, false, "the top-bar Git consol
 assert.deepEqual(useStore.getState().repos, [repoA]);
 assert.equal(useStore.getState().repoPreferred, null);
 
+// Switching repositories must not briefly render the previous repository's branch/files while the new
+// state request is in flight. The old behavior made a fast picker switch look as though opening the
+// selected repo failed, because the prior snapshot stayed visible until the response arrived.
+useStore.setState({
+  repoStates: { "repo-a": {} as never },
+  repoDiffs: { "repo-a": {} },
+  repoCommits: { "repo-a": {} },
+});
+useStore.getState().loadRepoState("repo-a");
+assert.equal(useStore.getState().repoStates["repo-a"], undefined, "switching clears a stale repository snapshot before loading");
+assert.equal(useStore.getState().repoDiffs["repo-a"], undefined, "switching clears stale working-tree diffs");
+assert.equal(useStore.getState().repoCommits["repo-a"], undefined, "switching clears stale commit details");
+assert.deepEqual(socket.sent.at(-1), { type: "repo.state", path: "repo-a" });
+
 console.log("Git console repo-list replies are compatible with null, scoped, and legacy reply shapes.");
 process.exit(0);

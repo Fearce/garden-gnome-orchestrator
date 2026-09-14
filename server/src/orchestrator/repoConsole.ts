@@ -39,11 +39,6 @@ const WORKING_STATES: ReadonlySet<ThreadState> = new Set([
   "awaiting_user",
 ]);
 
-/** How many distinct task workspaces we bother resolving into repo roots for the picker. Resolution is
- *  cached in gitService, and workspaces repeat heavily across tasks, so this is generous in practice —
- *  it exists so a DB with thousands of threads can't turn the picker into a filesystem sweep. */
-const MAX_WORKSPACE_SCAN = 80;
-
 /** How long a disk scan for repositories is reused. Long enough that opening the console repeatedly
  *  never re-walks the drives, short enough that a repo cloned earlier today shows up on its own; the
  *  picker's Rescan is there for the impatient case. */
@@ -91,22 +86,27 @@ export class RepoConsole {
     private readonly selfRepo: string,
   ) {}
 
-  /** Every repository the console offers, so the picker is populated without anyone typing a path:
-   *  the orchestrator's own checkout, the operator's recent repos and every task workspace (the repos
-   *  actually in use), plus every git checkout found by scanning the configured search roots. All
-   *  resolved to real repo roots and deduped, so the parent-of-a-nested-checkout spellings that tasks
-   *  use collapse onto one entry. Ordered by how much this console has to do with each: live agents,
-   *  then task count, then the ones merely found on disk. */
-  async list(rescan = false): Promise<RepoRef[]> {
+  /** Every repository the console offers, so the picker is populated without anyone typing a path.
+   *
+   * An ordinary console open is a latency-sensitive control path: resolving every historical task
+   * workspace can mean hundreds of Windows process launches, and a drive scan is deliberately allowed
+   * several seconds. Return the self/recent/focused repositories immediately, reuse an existing scan
+   * cache, and warm a scan in the background. The explicit Rescan button is the one operation that waits
+   * for a fresh disk walk. This keeps opening a valid repository independent of old task history. */
+  async list(rescan = false, focusedThreadId?: string): Promise<RepoRef[]> {
     const threads = this.db.listThreads();
     const cowork = this.db.listCoworkSessions();
-    const known = [this.selfRepo, ...this.recentRepos(), ...threads.map((t) => t.workspace), ...cowork.map((session) => session.workspace)]
+    const focusedWorkspace = focusedThreadId ? this.db.getThread(focusedThreadId)?.workspace : null;
+    const known = [this.selfRepo, ...this.recentRepos(), focusedWorkspace]
       .map((p) => (p ?? "").trim())
       .filter(Boolean);
 
-    const selfRoot = await resolveRepoRoot(this.selfRepo);
+    // De-dupe before launching git. Recent paths often repeat the selected task workspace.
+    const uniqueKnown = [...new Set(known)];
+    const resolved = await Promise.all(uniqueKnown.map(async (path) => [path, await resolveRepoRoot(path)] as const));
+    const workspaceRoot = new Map(resolved);
+    const selfRoot = workspaceRoot.get(this.selfRepo) ?? null;
     const roots = new Map<string, RepoRef>();
-    const workspaceRoot = new Map<string, string | null>();
 
     const add = (root: string, discovered: boolean): void => {
       if (roots.has(root)) return;
@@ -120,19 +120,18 @@ export class RepoConsole {
       });
     };
 
-    // Known repos first: a workspace can be the PARENT of its checkout, so each needs resolving, and
-    // the mapping is kept to attribute task counts below.
-    let scanned = 0;
-    for (const candidate of known) {
-      if (workspaceRoot.has(candidate)) continue;
-      if (scanned >= MAX_WORKSPACE_SCAN) break;
-      scanned++;
-      const root = await resolveRepoRoot(candidate);
-      workspaceRoot.set(candidate, root);
+    // Known repos first. A focused task workspace can be the PARENT of its checkout, so use its resolved
+    // root for the picker preference and its task count without waiting on unrelated historical rows.
+    for (const candidate of uniqueKnown) {
+      const root = workspaceRoot.get(candidate);
       if (root) add(root, false);
     }
 
-    for (const root of await this.discovered(rescan)) add(root, true);
+    const discovered = rescan
+      ? await this.discovered(true)
+      : this.cachedDiscovery();
+    for (const root of discovered) add(root, true);
+    if (!rescan && discovered.length === 0) void this.discovered(false);
 
     for (const t of threads) {
       const root = workspaceRoot.get((t.workspace ?? "").trim());
@@ -183,6 +182,13 @@ export class RepoConsole {
         this.discoveryInFlight = null;
       });
     return this.discoveryInFlight;
+  }
+
+  /** Return an already-completed scan without making the picker wait. */
+  private cachedDiscovery(): string[] {
+    return this.discoveryCache && Date.now() - this.discoveryCache.at < DISCOVERY_TTL_MS
+      ? this.discoveryCache.roots
+      : [];
   }
 
   /** Full console state for one repo, plus the tasks currently working in it (which is what makes the

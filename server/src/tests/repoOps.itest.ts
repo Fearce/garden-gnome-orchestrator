@@ -135,6 +135,13 @@ try {
     check("origin remote is reported with its url", s.remotes.some((r) => r.name === "origin" && r.url.length > 0));
     check("ahead reflects the unpushed commit", s.ahead === 1, String(s.ahead));
     check("push state is 'unpushed'", s.pushState === "unpushed", s.pushState);
+
+    const missing = await getRepoState(join(root, "missing repository"));
+    check("a missing repository path gives an actionable error", !missing.isRepo && /no longer exists.*choose an existing/i.test(missing.error ?? ""), String(missing.error));
+    const file = join(root, "not-a-repository.txt");
+    writeFileSync(file, "not a folder\n");
+    const notFolder = await getRepoState(file);
+    check("a file path tells the owner to choose a folder", !notFolder.isRepo && /path is a file.*repository folder/i.test(notFolder.error ?? ""), String(notFolder.error));
   }
 
   // ---- B. fetch -------------------------------------------------------------------------------------

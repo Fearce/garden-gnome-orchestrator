@@ -1433,7 +1433,17 @@ export const useStore = create<State>((set) => ({
     set({ repoListPending: true, repoListFor: forThread, repoPreferred: null });
     sendCommand({ type: "repo.list", rescan, ...(forThread ? { forThread } : {}) });
   },
-  loadRepoState: (path) => sendCommand({ type: "repo.state", path }),
+  loadRepoState: (path) => {
+    // Do not paint a previously cached snapshot while the operator has switched repositories. A stale
+    // branch/file list is worse than the short, honest loading state, especially after a checkout.
+    useStore.setState((s) => {
+      const { [path]: _state, ...repoStates } = s.repoStates;
+      const { [path]: _diffs, ...repoDiffs } = s.repoDiffs;
+      const { [path]: _commits, ...repoCommits } = s.repoCommits;
+      return { repoStates, repoDiffs, repoCommits };
+    });
+    sendCommand({ type: "repo.state", path });
+  },
   loadRepoDiff: (path, file, commit) => sendCommand({ type: "repo.diff", path, file, ...(commit ? { commit } : {}) }),
   loadRepoCommit: (path, hash) => sendCommand({ type: "repo.commit", path, hash }),
   repoAction: (path, op, force = false) => {
