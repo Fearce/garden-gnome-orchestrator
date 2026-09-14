@@ -55,4 +55,15 @@ npm run probe:deliverables --prefix server        # read-only census of the LIVE
 get; keep the two in step when either moves. It is red only for a card that was born broken (no path,
 no task row, or a workspace escape inside the last 7 days) and amber for a file that has since gone
 away, because the owner deleting an old screenshot is housekeeping and a permanently red probe stops
-being read. Browser proof of View/Download/Copy-path wants a throwaway instance, never prod.
+being read.
+
+Browser proof of View/Download/Copy-path is `npm run deliverables-lab --prefix server` (add
+`-- --shots <dir>` to keep the pictures). It boots its OWN throwaway instance, seeds a task with real
+files on disk, and for each card hovers the chip, opens the preview, diffs the downloaded bytes against
+the file, GETs the route directly, and checks the copied path. Never drive prod for this: the real
+detail panel is usually live-streaming, and its sticky-to-bottom autoscroll fights hover and click
+timing, which is what made two agents hand-roll a seeded instance before this lab existed.
+
+One trap the lab had to design around, which is app behaviour rather than a bug: the popover shows on
+`:hover` OR `:focus-within`, so clicking one card's Download leaves that popover open on focus, and it
+can then overlap a neighbour's. Finish one card's whole round before moving to the next.

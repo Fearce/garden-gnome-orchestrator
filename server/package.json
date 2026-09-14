@@ -20,6 +20,7 @@
     "inject-lab": "node scripts/inject-lab.cjs",
     "layout-lab": "node scripts/layout-lab.cjs",
     "panel-scroll-lab": "node scripts/panel-scroll-lab.cjs",
+    "deliverables-lab": "node scripts/deliverables-lab.cjs",
     "model-lab": "node scripts/model-select-lab.cjs",
     "task-model-lab": "node scripts/task-model-lab.cjs",
     "appearance-lab": "node scripts/appearance-lab.cjs",
