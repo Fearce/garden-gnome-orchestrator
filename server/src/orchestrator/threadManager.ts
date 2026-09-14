@@ -4915,7 +4915,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (codexAuthAvailable(!!key && /^sk-/.test(key))) {
         const usage = readCodexUsage();
         const pools = this.codexPoolSnapshot();
-        const configured = this.codexReviewFloored(role, this.providerRoleModel("codex", role)).model;
+        const reviewFloor = this.codexReviewFloored(role, this.providerRoleModel("codex", role));
+        if (reviewFloor.blocked) return options;
+        const configured = reviewFloor.model;
         const models = new Set<string>([configured]);
         const explicitRoleModel = !!this.modelOverrides()[CODEX_SUB_ID]?.[role]?.trim();
         if (this.settings().autoModelSelection && (role === "director" || role === "implementor")) {

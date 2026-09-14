@@ -311,6 +311,11 @@ console.log("\n=== review model floor — the wiring (real ThreadManager, real D
       "the preferred-provider resume gate refuses Codex too, so a warm QA session cannot bypass the floor",
       h.internals.providerSafeForRole("codex", "qa", demandForRole("qa")) === false,
     );
+    check(
+      "capacity inventory does not advertise blocked Codex review models as ready",
+      !h.internals.roleCapacitySnapshot("qa", demandForRole("qa")).ready.some((candidate: { provider: string }) => candidate.provider === "codex"),
+      JSON.stringify(h.internals.roleCapacitySnapshot("qa", demandForRole("qa")).ready),
+    );
   } finally {
     h.dispose();
   }
