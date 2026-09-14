@@ -10,7 +10,7 @@
 // printed as evidence alongside it.
 
 import assert from "node:assert/strict";
-import { childRunnerState, runChild, runChildInProcess, stopChildRunner } from "../childRunner.js";
+import { childRunnerState, runChild, runChildInProcess, simulateLostWorkerForTest, stopChildRunner } from "../childRunner.js";
 
 const NODE = process.execPath;
 
@@ -139,6 +139,45 @@ async function worstLoopLag(fn: () => Promise<unknown>): Promise<number> {
     workerLag <= Math.max(inProcessLag, 150),
     `running children on a worker should not block the main loop MORE than doing it in-process (worker ${Math.round(workerLag)}ms vs in-process ${Math.round(inProcessLag)}ms)`,
   );
+}
+
+// ---- a worker that stops answering must not take the pool with it ----------------------------------
+
+// The 2026-09-14 outage: every git surface in the app went silent at once while SQLite commands answered
+// in 7ms. Nothing had crashed and no git.exe was running. The command timeout is enforced INSIDE the
+// worker, so a worker that never replies leaves its slot busy forever, and once POOL_SIZE slots are lost
+// that way the pool has no capacity left and every later caller queues behind it, silently, for good.
+//
+// The grace is read per dispatch, so shortening it here drives the watchdog without a second pool. It is
+// restored immediately after, and this block is last, so no assertion above runs under it.
+{
+  process.env.CHILD_WORKER_WATCHDOG_GRACE_MS = "300";
+  try {
+    // Lose the worker mid-job, with no exit event to notice it by: only the main thread's watchdog can
+    // end this, which is exactly the case that used to hang the caller and the slot forever.
+    const started = Date.now();
+    const pending = runChild(NODE, ["-e", "setTimeout(() => {}, 4000)"], { timeoutMs: 400 });
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(simulateLostWorkerForTest(), true, "the job should still have been in flight to lose");
+    const abandoned = await pending;
+    const waited = Date.now() - started;
+    assert.equal(abandoned.code, -1, "an unanswering worker must resolve its caller, not hang it");
+    assert.equal(abandoned.timedOut, true, "and must report the timeout so callers do not quote its output as a verdict");
+    assert.match(abandoned.stderr, /did not answer within/, abandoned.stderr);
+    assert.ok(waited < 10_000, `the caller must be released promptly, waited ${waited}ms`);
+
+    // The capacity check, which is the half that actually failed in production: the pool must still
+    // serve work afterwards. Run more jobs than POOL_SIZE so a slot that was never reclaimed cannot hide.
+    delete process.env.CHILD_WORKER_WATCHDOG_GRACE_MS;
+    const after = await Promise.all(
+      Array.from({ length: 3 }, (_, i) => runChild(NODE, ["-e", `process.stdout.write('after${i}')`])),
+    );
+    assert.deepEqual(after.map((r) => r.stdout), ["after0", "after1", "after2"], "the pool must rebuild after abandoning a lost worker");
+    assert.equal(childRunnerState().queued, 0, "nothing may be left queued behind a dead slot");
+    assert.equal(childRunnerState().fellBack, false, "abandoning one worker must not condemn the whole pool");
+  } finally {
+    delete process.env.CHILD_WORKER_WATCHDOG_GRACE_MS;
+  }
 }
 
 await stopChildRunner();

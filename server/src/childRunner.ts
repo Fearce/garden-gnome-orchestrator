@@ -46,6 +46,15 @@ const MAX_STDERR = 64_000;
 // a burst of git reads doesn't itself become the thing loading the machine. Tunable for a box where
 // process creation is slower still.
 const POOL_SIZE = Math.max(1, Math.min(8, Number(process.env.CHILD_WORKER_POOL ?? 2) || 2));
+/** How long past a job's own timeout the main thread waits before declaring the WORKER lost. Generous,
+ *  because a healthy worker that killed its child at the deadline still has to drain the child's pipes
+ *  and post its reply, and a false positive costs a rebuilt worker. Read per dispatch rather than frozen
+ *  at import, so the gate can drive the watchdog without standing up a second pool, and so an operator
+ *  can shorten it on a live box without a rebuild. */
+const watchdogGraceMs = (): number => Math.max(50, Number(process.env.CHILD_WORKER_WATCHDOG_GRACE_MS ?? 5_000) || 5_000);
+/** How long the worker waits for a killed child to actually close before answering anyway. A child that
+ *  ignores the kill must not cost the caller its reply, nor the pool a slot. */
+const KILL_GRACE_MS = 2_000;
 
 // Inline source, not a separate file, because this server runs in two shapes: compiled `dist/*.js` under
 // script-hub and TypeScript source under tsx. A worker loaded by path would need a different extension in
@@ -85,6 +94,9 @@ parentPort.on("message", (job) => {
   timer = setTimeout(() => {
     timedOut = true;
     try { child.kill(); } catch (e) { /* already gone */ }
+    // A killed child normally emits 'close' immediately. When it does not, answering anyway is what
+    // keeps one stubborn command from holding this worker (and so a whole pool slot) for good.
+    setTimeout(() => finish(null, " (killed at timeout; the child never closed)"), ${KILL_GRACE_MS});
   }, job.timeoutMs);
 
   child.stdout.setEncoding("utf8");
@@ -117,6 +129,18 @@ interface Slot {
   /** The job this worker is executing, or null when free. A worker stuck inside CreateProcessW cannot
    *  even read its message port, so dispatch is one job per worker — never a queue inside the worker. */
   busy: Job | null;
+  /** The MAIN thread's own deadline for the job in flight. `timeoutMs` is enforced inside the worker,
+   *  which is no help at all when the worker itself is what stopped answering: the slot then stays busy
+   *  forever, and with POOL_SIZE slots lost the pool has zero capacity while every later git read queues
+   *  behind it silently. That is not hypothetical. It took the whole Git surface down on 2026-09-14,
+   *  when repo.list, repo.state and thread.gitSummary all hung indefinitely on a server whose SQLite
+   *  commands answered in 7ms, with no error, no crash-log entry and no git.exe running. */
+  watchdog: NodeJS.Timeout | null;
+  /** Reclaim the slot: clear the job + watchdog, unref the worker, and return the job it was running. */
+  release: () => Job | null;
+  /** Take the slot out of the pool, so the next dispatch builds a fresh worker instead of reusing one
+   *  that is dead or has been abandoned. */
+  drop: () => void;
 }
 
 const slots: Slot[] = [];
@@ -136,30 +160,47 @@ function spawnSlot(): Slot | null {
     if (slots.length === 0) poolBroken = true;
     return null;
   }
-  const slot: Slot = { worker, busy: null };
+  const slot: Slot = {
+    worker,
+    busy: null,
+    watchdog: null,
+    release: () => {
+      const job = slot.busy;
+      slot.busy = null;
+      if (slot.watchdog) {
+        clearTimeout(slot.watchdog);
+        slot.watchdog = null;
+      }
+      // Idle again, so stop holding the process open (see the ref() in pump).
+      worker.unref();
+      return job;
+    },
+    drop: () => {
+      const i = slots.indexOf(slot);
+      if (i >= 0) slots.splice(i, 1);
+    },
+  };
   worker.on("message", (m: { id?: number } & ChildResult) => {
     if (m.id == null) return; // the boot handshake
-    const job = slot.busy;
-    slot.busy = null;
-    // Idle again, so stop holding the process open (see the ref() in pump).
-    worker.unref();
+    const job = slot.release();
     if (job) job.resolve({ code: m.code, stdout: m.stdout, stderr: m.stderr, timedOut: m.timedOut });
     pump();
   });
   // A worker that dies mid-command must not strand its caller: answer the job as a spawn failure (the
   // shape every caller already handles) and drop the slot so the next call builds a fresh one.
   const die = (reason: string): void => {
-    const job = slot.busy;
-    slot.busy = null;
-    worker.unref();
-    const i = slots.indexOf(slot);
-    if (i >= 0) slots.splice(i, 1);
+    const job = slot.release();
+    slot.drop();
     if (job) job.resolve({ code: -1, stdout: "", stderr: reason, timedOut: false });
     pump();
   };
   worker.on("error", (e: Error) => die(String(e?.message ?? e)));
+  // An exit while IDLE has to drop the slot too. Left in `slots` it still looks like a free worker, so
+  // the next pump() hands it a job and postMessage to a terminated worker silently does nothing: the
+  // slot is then busy forever with a job that can never be answered. Two of those is the whole pool.
   worker.on("exit", (code) => {
     if (slot.busy) die(`command worker exited (${code})`);
+    else slot.drop();
   });
   // Never hold the process open. An unref'd worker still receives and answers messages.
   worker.unref();
@@ -187,6 +228,29 @@ function pump(): void {
       timeoutMs: job.timeoutMs,
       maxStdoutBytes: job.maxStdoutBytes,
     });
+    // The worker owes an answer by its own deadline. Past that plus a grace, it is the worker that is
+    // lost, not the command: answer the caller, terminate it, and drop the slot so the pool rebuilds.
+    // Without this a single unanswering worker removes one slot from the pool permanently and the
+    // caller never returns, which is how every git surface in the app went silent at once.
+    const deadline = job.timeoutMs + watchdogGraceMs();
+    slot.watchdog = setTimeout(() => {
+      const abandoned = slot.release();
+      slot.drop();
+      void slot.worker.terminate().catch(() => undefined);
+      if (abandoned) {
+        abandoned.resolve({
+          code: -1,
+          stdout: "",
+          stderr: `command worker did not answer within ${deadline}ms`,
+          timedOut: true,
+        });
+      }
+      pump();
+    }, deadline);
+    // Deliberately NOT unref'd. It is the only handle left once the worker is gone, and the job in
+    // flight is supposed to hold the process open (the ref() above): unref'd, a short-lived caller like
+    // a probe or a gate exits before its own answer can arrive. It is bounded by the deadline and
+    // cleared the moment the slot is released, so it never outlives the job.
   }
 }
 
@@ -245,6 +309,11 @@ export function runChildInProcess(cmd: string, args: string[], options: RunChild
       } catch {
         /* already gone */
       }
+      // Same guarantee the worker gives: a child that ignores the kill must not cost the caller its
+      // reply. Without this the fallback path hangs its caller forever on exactly the commands the
+      // timeout exists to bound.
+      const grace = setTimeout(() => finish(null, " (killed at timeout; the child never closed)"), KILL_GRACE_MS);
+      grace.unref();
     }, timeoutMs);
     timer.unref();
     child.stdout?.setEncoding("utf8");
@@ -263,6 +332,23 @@ export function runChildInProcess(cmd: string, args: string[], options: RunChild
 /** Test/diagnostic hook: how many worker threads the pool has built, and whether it fell back. */
 export function childRunnerState(): { workers: number; queued: number; fellBack: boolean } {
   return { workers: slots.length, queued: waiting.length, fellBack: poolBroken };
+}
+
+/** Test hook: make the worker running a job go SILENT, the way the wedged production pool had. Its
+ *  listeners are detached first, so no `exit` reaches the pool and only the main thread's watchdog can
+ *  recover the slot. A bare `terminate()` would not reproduce it: that fires `exit`, which `die()`
+ *  already handled. Returns false when no job is in flight to lose. */
+export function simulateLostWorkerForTest(): boolean {
+  const slot = slots.find((s) => s.busy);
+  if (!slot) return false;
+  slot.worker.removeAllListeners("message");
+  slot.worker.removeAllListeners("exit");
+  slot.worker.removeAllListeners("error");
+  // `ws`-style trap: a listener-less worker still emits on termination, and an unhandled `error` takes
+  // the process down. Leave a sink behind.
+  slot.worker.on("error", () => undefined);
+  void slot.worker.terminate().catch(() => undefined);
+  return true;
 }
 
 /** Shut the pool down. Only the gates need this — the workers are unref'd, so the server never does. */
