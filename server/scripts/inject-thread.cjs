@@ -104,8 +104,15 @@ async function login(baseUrl, password) {
   });
   if (!response.ok) throw new Error(`login failed (${response.status})`);
   const cookie = cookieHeader(response.headers);
-  if (!cookie) throw new Error("login succeeded but returned no session cookie");
-  return cookie;
+  if (cookie) return cookie;
+  // No cookie is not automatically a failure: an instance with neither AUTH_PASSWORD nor Google
+  // configured is open on localhost, and /api/login answers `{ ok: true }` without minting one
+  // (index.ts's `if (!passwordEnabled()) return { ok: !authRequired() }`). Every authed route then
+  // accepts a cookie-less request, so the caller gets an empty cookie header and carries on. An
+  // instance that DOES require auth answers `{ ok: false }` here, which is still fatal.
+  const body = await response.json().catch(() => null);
+  if (body?.ok === true) return "";
+  throw new Error("login succeeded but returned no session cookie (this instance requires a sign-in)");
 }
 
 function inspectAndInject({ url, cookie, threadId, message, mode, confirm, timeoutMs = 15_000 }) {
