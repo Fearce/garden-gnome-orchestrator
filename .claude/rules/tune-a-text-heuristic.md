@@ -1,10 +1,12 @@
 ---
 paths:
   - server/src/orchestrator/director.ts
+  - server/src/orchestrator/supervisorChat.ts
   - server/src/agents/prompts.ts
   - server/src/bus/directorServer.ts
   - server/src/tools/probeScheduleDetect.ts
   - server/src/tests/scheduleDetect.test.ts
+  - server/src/tests/directorSupervisor.test.ts
 ---
 
 # Tuning a heuristic that classifies the owner's prompts
@@ -19,6 +21,17 @@ When they state the bar in words ("it's never a scheduled task unless I specific
 say *schedule* and *task*"), implement THAT literally — don't preserve the old
 cleverness underneath it. The 2026-07-26 fix deleted the whole frequency-adverb +
 action-verb branch rather than patching one more exception onto it.
+
+## Preserve the outcome when the literal mechanism is unsafe
+An owner often names the result they want, not the internal operation that safely produces it. For
+example, "mark every task currently in review as Done" must not directly bypass review, but refusing the
+request also throws away valid intent: Supervisor should start the existing board-wide Auto-review path,
+whose reviewers verify each task and are the only autonomous actors allowed to accept it.
+
+When one deterministic, already-authorized safe action satisfies the requested outcome, map to it and
+act without another confirmation round. Keep the safety boundary intact, and make the reply name the
+translation. Paste the real owner sentence into the gate and assert both halves: the safe action fires
+for the full requested scope, and the forbidden literal action remains impossible.
 
 ## Fix all three surfaces, not just the predicate
 The same judgment is usually encoded three times, and the code one is the least
