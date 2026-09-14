@@ -2700,11 +2700,17 @@ export class ThreadManager implements OrchestratorApi {
     const unchanged = current?.provider === request?.provider && current?.model === request?.model && (!!current === !!request);
     if (unchanged) return { ok: true, state: thread.state, message: request ? "That exact task model is already pinned." : "This task already uses Auto routing." };
 
-    if (thread.state === "implementing" || this.live.has(threadId) || this.resuming.has(threadId)) {
+    // A model pin is an owner-directed routing change. Stop the live implementor first, then persist
+    // the new request so the next start uses it. Requiring a separate Pause click made the otherwise
+    // safe operation fail precisely when it was most useful (while work was running).
+    if (this.live.has(threadId)) {
+      const interrupted = await this.interruptThread(threadId);
+      if (!interrupted.ok) return interrupted;
+    } else if (thread.state === "implementing" || this.resuming.has(threadId)) {
       return {
         ok: false,
         state: thread.state,
-        error: "Interrupt the running implementor before changing its model. Its current provider process cannot switch models safely mid-run.",
+        error: "The implementor is changing state; wait for its current transition to finish, then change the model.",
       };
     }
 

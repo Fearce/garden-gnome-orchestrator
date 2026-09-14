@@ -179,8 +179,11 @@ async function main(): Promise<void> {
   check("a half-specified provider/model pair is rejected", !halfPair.ok && db.getThread(selectable.id)?.modelRequest?.model === SPARK, halfPair.error);
 
   db.updateThread(selectable.id, { state: "implementing" });
+  internals.live.set(selectable.id, {
+    run: { interrupt: async () => undefined },
+  });
   const liveChange = await mgr.setThreadModel(selectable.id, "claude", "claude-opus-5");
-  check("a running implementor cannot acquire a request/runtime mismatch", !liveChange.ok && db.getThread(selectable.id)?.modelRequest?.model === SPARK, liveChange.error);
+  check("a running implementor is interrupted before acquiring the new pin", liveChange.ok && db.getThread(selectable.id)?.modelRequest?.model === "claude-opus-5", liveChange.error);
   db.updateThread(selectable.id, { state: "paused" });
   const auto = await mgr.setThreadModel(selectable.id, null, null);
   check("a parked task can return to automatic routing", auto.ok && db.getThread(selectable.id)?.modelRequest == null);
