@@ -35,6 +35,11 @@ export interface CodexUsageDTO {
    *  `codexPools.ts`. Available from the live app-server ping only — a rollout snapshot carries just
    *  the plan-wide windows — so it is absent until the first successful ping. */
   pools?: CodexPool[];
+  /** Last soft-failure reason when no meter reading is available at all (CLI missing, no auth, RPC
+   *  failure, or simply nothing read yet), mirroring GrokUsageDTO/ZaiUsageDTO's `error`. Cleared on the
+   *  next successful ping/rollout read. Only ever set when the DTO carries no fiveHour/sevenDay reading,
+   *  so a chip can tell "genuinely no data, here's why" apart from a silent blank. */
+  error?: string | null;
 }
 
 interface RateLimitWindow {
@@ -112,6 +117,24 @@ export function codexUsageCapped(now: number): boolean {
 // the cap checks all see live data between real runs instead of a snapshot frozen at the last turn.
 let livePing: CodexUsageDTO | null = null;
 
+// Last soft-failure reason from a ping attempt that found no usable reading (CLI missing, no auth,
+// RPC failure, empty response). Cleared the moment any read succeeds. This is what lets the
+// presentation snapshot tell "nothing read yet" and "here is exactly why" apart from a silent blank
+// chip, mirroring the `lastError` pattern already used by z.ai/Grok's usage readers.
+let lastError: string | null = null;
+// When `lastError` was last set (module load time counts as the initial "never read yet" stamp). Used
+// as the fallback DTO's `updatedAt` instead of a fresh `Date.now()` on every read, so the monitor's
+// change-detection signature stays stable across repeated identical failures rather than "changing"
+// (and re-broadcasting) on every poll tick purely because the clock moved.
+let lastErrorAt = Date.now();
+
+/** Record (or clear, with null) the reason a ping attempt found no usable reading. Called by
+ *  codexUsagePing on every failed probe; cleared automatically by `noteCodexPing` on success. */
+export function noteCodexUsageError(msg: string | null): void {
+  lastError = msg;
+  lastErrorAt = Date.now();
+}
+
 // A live ping older than this stops outranking the rollout snapshot: if the pings break (auth expiry,
 // a CLI upgrade changing the RPC), a last-known 100%-capped reading must not pin the cap checks past
 // reality — fall back to the rollout truth instead. ~3× the default ping cadence.
@@ -184,6 +207,7 @@ export function codexAllowanceReopened(capRecordedAt: number | undefined): Codex
 /** Record a live app-server rate-limit read. Called by the usage ping on every successful probe. */
 export function noteCodexPing(usage: CodexUsageDTO): void {
   livePing = usage;
+  lastError = null;
   clearReadCache();
   // A probe must never turn into a recursive rollout scan just to update its on-disk cache.
   // The live result is already the freshest reading the probe has, and keeping this write cheap
@@ -216,6 +240,12 @@ function persistCache(usage: CodexUsageDTO): void {
  *
  * A slow or very large `~/.codex/sessions` must never hold the WebSocket hello frame hostage. The
  * dashboard can receive a subsequent live `codex.usage` event when the monitor refreshes the meters.
+ *
+ * Never returns a bare null: when no reading exists anywhere (nothing has ever been read, or every
+ * attempt so far has failed) this returns a DTO with null meters and `error` naming the reason, so the
+ * top-bar chip and any other consumer can show an honest "usage n/a, because X" instead of silently
+ * rendering blank. `error` is left unset once any reading is available, even a stale one, matching the
+ * existing stale-badge convention.
  */
 export function readCodexUsageForSnapshot(): CodexUsageDTO | null {
   const now = Date.now();
@@ -224,7 +254,17 @@ export function readCodexUsageForSnapshot(): CodexUsageDTO | null {
     readCache?.value ?? null,
     persistedCache,
   ].filter((usage): usage is CodexUsageDTO => usage != null);
-  if (!candidates.length) return null;
+  if (!candidates.length) {
+    return {
+      fiveHour: null,
+      sevenDay: null,
+      fiveHourReset: null,
+      sevenDayReset: null,
+      planType: null,
+      updatedAt: lastErrorAt,
+      error: lastError ?? "Codex usage has not been read yet",
+    };
+  }
   const freshest = candidates.reduce((best, usage) => usage.updatedAt > best.updatedAt ? usage : best);
   const wakeAt = plannedWakeAt != null && plannedWakeAt > now ? plannedWakeAt : null;
   const live = liveCodexUsage();
@@ -456,6 +496,8 @@ export const __codexUsageTestHooks = {
     rolloutScanCount = 0;
     livePing = null;
     plannedWakeAt = null;
+    lastError = null;
+    lastErrorAt = Date.now();
   },
   rolloutScanCount(): number {
     return rolloutScanCount;

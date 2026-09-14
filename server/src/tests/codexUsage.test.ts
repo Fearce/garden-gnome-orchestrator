@@ -24,6 +24,7 @@ const {
   __codexUsageTestHooks,
   codexUsageCapped,
   noteCodexPing,
+  noteCodexUsageError,
   noteCodexWake,
   readCodexUsage,
   readCodexUsageForSnapshot,
@@ -75,6 +76,28 @@ try {
   writeRollout(home, now, 12, 34);
   __codexUsageTestHooks.reset();
 
+  // --- the presentation snapshot must never render a silent blank: with nothing read yet (no live
+  // ping, no cache, no scan performed), it carries an explicit, honest reason instead of a bare null. ---
+  const neverRead = readCodexUsageForSnapshot();
+  check(
+    "with nothing read yet, the snapshot is a real DTO (never null) carrying a default reason",
+    neverRead != null && neverRead.error === "Codex usage has not been read yet",
+    JSON.stringify(neverRead),
+  );
+  check(
+    "the never-read snapshot carries no fabricated meter data",
+    neverRead?.fiveHour == null && neverRead?.sevenDay == null,
+    JSON.stringify(neverRead),
+  );
+  noteCodexUsageError("Codex CLI not found at /fake/path/codex.js (install it globally: npm install -g @openai/codex)");
+  const cliMissing = readCodexUsageForSnapshot();
+  check(
+    "a recorded ping failure surfaces its EXACT reason on the snapshot",
+    cliMissing?.error === "Codex CLI not found at /fake/path/codex.js (install it globally: npm install -g @openai/codex)",
+    JSON.stringify(cliMissing),
+  );
+  __codexUsageTestHooks.reset();
+
   const first = readCodexUsage();
   const firstScanCount = __codexUsageTestHooks.rolloutScanCount();
   check("synthetic rollout is parsed", first?.fiveHour === 12 && first.sevenDay === 34, JSON.stringify(first));
@@ -102,6 +125,8 @@ try {
   readCodexUsage();
   check("reads after the wake invalidation are cached again", __codexUsageTestHooks.rolloutScanCount() === afterWakeScanCount);
 
+  // Simulate an earlier failed ping so the next assertion proves a SUCCESSFUL one clears it.
+  noteCodexUsageError("simulated transient failure");
   const liveAt = Date.now() + 1_000;
   noteCodexPing({
     fiveHour: 4,
@@ -125,6 +150,11 @@ try {
   check(
     "dashboard snapshot uses the live ping without scanning rollouts",
     snapshotUsage?.fiveHour === 4 && __codexUsageTestHooks.rolloutScanCount() === afterPingScanCount,
+    JSON.stringify(snapshotUsage),
+  );
+  check(
+    "a successful ping clears an earlier recorded error off the snapshot",
+    !snapshotUsage?.error,
     JSON.stringify(snapshotUsage),
   );
   const live = readCodexUsage();

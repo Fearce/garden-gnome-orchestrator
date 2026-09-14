@@ -212,6 +212,18 @@ check(
     (n) => n.subject === "Codex" && n.reason.includes("no usage reading yet"),
   ),
 );
+check(
+  "an enabled Codex with a recorded failure reason reports THAT reason, not the generic fallback",
+  tokenShiftReport(
+    snapshot({
+      codex: {
+        usage: { fiveHour: null, sevenDay: null, fiveHourReset: null, sevenDayReset: null, planType: null, updatedAt: NOW, error: "Codex CLI not found" },
+        enabled: true,
+      },
+    }),
+    NOW,
+  ).notCounted.some((n) => n.subject === "Codex" && n.reason === "Codex CLI not found"),
+);
 
 const grok: GrokUsageDTO = {
   signedIn: true,

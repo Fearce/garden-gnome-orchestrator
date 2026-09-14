@@ -229,8 +229,8 @@ function addCodex(collect: ShiftCollector, usage: CodexUsageDTO | null, enabled:
     collect.skip("Codex", "backend disabled in Settings");
     return;
   }
-  if (!usage) {
-    collect.skip("Codex", "enabled, but there is no usage reading yet, so no window to report");
+  if (!usage || (usage.fiveHour == null && usage.sevenDay == null)) {
+    collect.skip("Codex", usage?.error ?? "enabled, but there is no usage reading yet, so no window to report");
     return;
   }
   const pool = usage.planType ? `Codex (${usage.planType})` : "Codex";

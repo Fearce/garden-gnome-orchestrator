@@ -255,6 +255,14 @@ function CodexChip({
     state === "implementing" ? "implementing" : state === "ready" ? "ready" : state === "capped" ? "capped" : state === "noauth" ? "no auth" : "off";
   const tagCls = state === "noauth" || state === "capped" ? "acct-tag" : state === "off" ? "acct-tag dim" : "acct-tag ok";
   const authNote = chatgpt ? "via your ChatGPT plan" : "via API key";
+  // Render meters whenever we have any usage reading, regardless of on/off — the headroom is real and
+  // useful even when Codex isn't the active backend right now.
+  const showMeters = !!usage && (usage.fiveHour != null || usage.sevenDay != null);
+  const stale = !!usage && now - usage.updatedAt > CODEX_STALE_MS;
+  // No meter and a recorded reason: a genuinely failed or never-attempted read (CLI missing, no auth,
+  // RPC failure). Surface it explicitly instead of quietly falling back to the plain "model · effort"
+  // line, which used to look identical whether Codex was healthy-but-unpolled or actually broken.
+  const errored = !showMeters && !!usage?.error;
   const title =
     state === "implementing"
       ? `Codex is implementing a task now · ${authNote} · model ${model} · ${effortLabel(effort)} effort`
@@ -265,10 +273,6 @@ function CodexChip({
           : state === "noauth"
             ? "Codex is enabled but has no usable auth — sign in with `codex login` or add an API key in Settings → Subscriptions"
             : `Codex (OpenAI) configured but off · model ${model} · ${effortLabel(effort)} effort`;
-  // Render meters whenever we have any usage reading, regardless of on/off — the headroom is real and
-  // useful even when Codex isn't the active backend right now.
-  const showMeters = !!usage && (usage.fiveHour != null || usage.sevenDay != null);
-  const stale = !!usage && now - usage.updatedAt > CODEX_STALE_MS;
   return (
     <div
       className={
@@ -276,14 +280,16 @@ function CodexChip({
         (state === "implementing" ? " active" : "") +
         (state === "off" ? " is-off" : "") +
         (state === "capped" ? " limited" : "") +
-        (stale ? " stale" : "")
+        (stale ? " stale" : "") +
+        (errored ? " errored" : "")
       }
-      title={title}
+      title={errored ? `usage unavailable: ${usage!.error}` : title}
     >
       <div className="acct-head">
         <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
         <span className="acct-label">Codex</span>
         <span className={tagCls}>{tag}</span>
+        {errored ? <span className="acct-tag">no usage</span> : null}
       </div>
       {showMeters ? (
         <div className="acct-meters">
@@ -299,9 +305,16 @@ function CodexChip({
           />
           <Meter k="7d" pct={usage!.sevenDay} kind="week" stale={stale} reset={usage!.sevenDayReset} now={now} />
         </div>
+      ) : errored ? (
+        <div className="acct-err" title={usage!.error ?? undefined}>
+          usage n/a
+        </div>
       ) : (
-        <div className="codex-model" title={`${model} · ${effortLabel(effort)} effort`}>
-          {model} · {effortLabel(effort)}
+        <div
+          className="codex-model"
+          title={hasAuth ? `polling Codex ChatGPT-plan usage, model ${model}, ${effortLabel(effort)} effort` : `${model} · ${effortLabel(effort)} effort`}
+        >
+          {hasAuth ? "polling usage…" : `${model} · ${effortLabel(effort)}`}
         </div>
       )}
     </div>

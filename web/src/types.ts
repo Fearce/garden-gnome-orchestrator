@@ -487,6 +487,9 @@ export interface CodexUsageDTO {
   planType: string | null;
   updatedAt: number;
   wakeAt?: number | null; // 5h window idle — a cheap wake turn is scheduled at this epoch ms (stagger slot)
+  /** Last soft failure reason when no meter reading is available at all (CLI missing, no auth, RPC
+   *  failure, or nothing read yet). Only set when fiveHour/sevenDay are both null. */
+  error?: string | null;
 }
 
 /** Grok (SuperGrok) usage — mirrors the server's GrokUsageDTO. Weekly used-% comes from the CLI log /

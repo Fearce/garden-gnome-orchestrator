@@ -71,7 +71,31 @@ const GROK_STATES = {
   }),
 };
 
-const SCENARIO_NAMES = [...Object.keys(SCENARIOS), ...Object.keys(GROK_STATES)];
+/**
+ * Codex chip states. Unlike the Grok/z.ai scenarios above (which seed a usage-cache file the reader
+ * loads at import), the "no CLI" state is produced by pointing CODEX_BIN_JS at a path that does not
+ * exist, so the real `pingCodexUsage` failure path runs for real and records the real error text via
+ * `noteCodexUsageError` (agents/codexUsage.ts) rather than a fixture standing in for it. This is the
+ * exact 2026-09-14 bug: Codex enabled, its CLI never installed, and the chip used to render a bare
+ * "model · effort" with no percentage and no hint why. CODEX_HOME_DIR/CODEX_SOURCE_HOME are also
+ * pointed at empty temp dirs for both states, so the lab never depends on (or scans) whatever real
+ * Codex session history happens to exist on the machine running it.
+ */
+const CODEX_STATES = {
+  "codex-no-cli": () => ({ noCli: true }),
+  // The healthy counterpart, from a persisted cache file the way a real successful ping writes one
+  // (agents/codexUsage.ts persistCache): proves the meters still render once a reading exists.
+  "codex-healthy": (at) => ({
+    fiveHour: 28,
+    sevenDay: 63,
+    fiveHourReset: at + 3 * HOUR,
+    sevenDayReset: at + 5 * DAY,
+    planType: "plus",
+    updatedAt: at - 60_000,
+  }),
+};
+
+const SCENARIO_NAMES = [...Object.keys(SCENARIOS), ...Object.keys(GROK_STATES), ...Object.keys(CODEX_STATES)];
 
 function parseArgs(argv) {
   const out = { scenario: "lapsed-weekly", widths: [1280, 1440, 1600, 1850, 1900, 1920], keep: false, list: false };
@@ -109,6 +133,17 @@ function seed(dataDir, scenario) {
     kv("setting_grok_enabled", "1");
     fs.writeFileSync(path.join(dataDir, "grok-usage-cache.json"), JSON.stringify(GROK_STATES[scenario](at)), "utf8");
   }
+  if (CODEX_STATES[scenario]) {
+    // Enabled AND a key present, exactly the 2026-09-14 production combination (setting_codex_enabled=1,
+    // an openai_api_key stored, no CLI installed). Without a key the chip reads "no auth" instead of
+    // "ready", which is a different (also real, but not THIS) state.
+    kv("setting_codex_enabled", "1");
+    kv("openai_api_key", "sk-chip-lab-not-a-real-key");
+    const state = CODEX_STATES[scenario](at);
+    // "codex-no-cli" deliberately writes NO cache file: readCodexUsageForSnapshot must find zero
+    // candidates and fall back to the live-ping failure reason, not a stale fixture reading.
+    if (!state.noCli) fs.writeFileSync(path.join(dataDir, "codex-usage-cache.json"), JSON.stringify(state), "utf8");
+  }
   db.close();
 }
 
@@ -144,7 +179,8 @@ async function readStrip(page) {
         })),
         // A chip with no meters says why on this line instead — "polling usage…", an error, or (a free
         // Grok plan) "no metered allowance". Without it such a chip reads as blank in the transcript.
-        note: (el.querySelector(".codex-model")?.textContent || "").trim(),
+        note: (el.querySelector(".codex-model")?.textContent || el.querySelector(".acct-err")?.textContent || "").trim(),
+        errTitle: el.querySelector(".acct-err")?.getAttribute("title") || null,
       })),
     };
   });
@@ -157,7 +193,7 @@ function report(width, strip) {
     const tags = c.tags.length ? ` [${c.tags.join(", ")}]` : "";
     console.log(`    ${c.label}${tags}`);
     for (const m of c.meters) console.log(`      ${m.k.padEnd(3)} ${(m.v || "").padStart(5)}  ${m.r.padEnd(12)} ${m.tip ?? ""}`);
-    if (!c.meters.length && c.note) console.log(`      ${c.note}`);
+    if (!c.meters.length && c.note) console.log(`      ${c.note}${c.errTitle ? ` (${c.errTitle})` : ""}`);
   }
 }
 
@@ -174,7 +210,18 @@ async function main() {
   requireBuild();
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "chip-lab-"));
-  const env = GROK_STATES[args.scenario] ? { ...ACCOUNT_ENV, GROK_HOME_DIR: seedGrokHome(dataDir) } : ACCOUNT_ENV;
+  const env = GROK_STATES[args.scenario]
+    ? { ...ACCOUNT_ENV, GROK_HOME_DIR: seedGrokHome(dataDir) }
+    : CODEX_STATES[args.scenario]
+      ? {
+          ...ACCOUNT_ENV,
+          // A path that never exists, so `existsSync(config.codex.binJs)` fails deterministically
+          // regardless of whether the box running this lab happens to have the real CLI installed.
+          CODEX_BIN_JS: path.join(dataDir, "no-such-codex-cli", "codex.js"),
+          CODEX_HOME_DIR: path.join(dataDir, "codex-home"),
+          CODEX_SOURCE_HOME: path.join(dataDir, "codex-source-home"),
+        }
+      : ACCOUNT_ENV;
   console.log(`chip-lab — scenario "${args.scenario}" on ${BASE} (data ${dataDir})`);
   let clipped = false;
   try {

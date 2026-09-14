@@ -7,7 +7,7 @@ import type { EventHub } from "../events.js";
 import type { ResetStagger } from "../accounts/resetStagger.js";
 import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
-import { classifyRateWindows, noteCodexPing, noteCodexWake, readCodexUsageForSnapshot, type CodexLimitState, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
+import { classifyRateWindows, noteCodexPing, noteCodexUsageError, noteCodexWake, readCodexUsageForSnapshot, type CodexLimitState, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 import { GENERAL_LIMIT_ID, normalizeLimitName, type CodexPool } from "./codexPools.js";
 
 /**
@@ -80,10 +80,16 @@ interface RpcRateLimitsResult {
  *  Returns null on any failure — no auth, spawn error, RPC error, timeout — callers keep the last
  *  snapshot in that case rather than blanking the meters. */
 export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PING_TIMEOUT_MS): Promise<CodexUsageDTO | null> {
-  if (!existsSync(config.codex.binJs)) return null;
+  if (!existsSync(config.codex.binJs)) {
+    noteCodexUsageError(`Codex CLI not found at ${config.codex.binJs} (install it globally: npm install -g @openai/codex)`);
+    return null;
+  }
   await mkdir(config.codex.home, { recursive: true }).catch(() => {});
   const authMode = await seedCodexAuth(apiKey).catch(() => "none" as const);
-  if (authMode === "none") return null;
+  if (authMode === "none") {
+    noteCodexUsageError("Codex has no usable auth (sign in with `codex login`, or add an API key in Settings > Subscriptions)");
+    return null;
+  }
   // Mirror runTurn's env rules: point the CLI at the seeded isolated home, and carry OPENAI_API_KEY
   // only in apikey mode (an inherited key under a ChatGPT login could nudge the CLI to the API path).
   const env: NodeJS.ProcessEnv = withAgentToolPath({ ...process.env, CODEX_HOME: config.codex.home });
@@ -95,6 +101,7 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
   try {
     child = spawn(process.execPath, [config.codex.binJs, "app-server"], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
   } catch {
+    noteCodexUsageError("failed to start the Codex CLI process");
     return null;
   }
   try {
@@ -106,7 +113,10 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
     const readAt = Date.now();
     const result = await appServerRateLimits(child, timeoutMs);
     const rl = result?.rateLimits;
-    if (!rl) return null;
+    if (!rl) {
+      noteCodexUsageError("the Codex app-server returned no rate-limit data (RPC failed or timed out)");
+      return null;
+    }
     const pools = toPools(result);
     const usage: CodexUsageDTO = {
       ...classifyRateWindows(toMeterWindow(rl.primary), toMeterWindow(rl.secondary)),
@@ -115,7 +125,11 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
       ...withLimitState(rl),
       ...(pools.length ? { pools } : {}),
     };
-    if (usage.fiveHour == null && usage.sevenDay == null) return null; // no meter info — treat as a failed read
+    if (usage.fiveHour == null && usage.sevenDay == null) {
+      // no meter info in the response — treat as a failed read
+      noteCodexUsageError("the Codex app-server reported no usage windows in its rate-limit response");
+      return null;
+    }
     noteCodexPing(usage);
     return usage;
   } finally {
