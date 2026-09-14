@@ -14,6 +14,13 @@ CLAUDE.md § "Contextual code navigation" has the shape. This is what bites, plu
 ## The one thing to keep true
 **A route is rendered only when it can be taken.** `canOpenIde`/`canOpenGit`/`ideFileTarget` all return null rather than a best guess, and the caller renders nothing. A button that opens the wrong file is worse than no button, because the operator believes it. The unavailable cases explain themselves in place of the routes (`RepoReading` prints `context.error` verbatim) — "no context" and "still loading" must stay distinguishable, so the row never silently blanks.
 
+**The route is also the first answer, never the last one.** `code.context` is progressive: `resolveQuick`
+returns the verified workspace + IDE id without starting Git, and the hub sends that frame immediately;
+the Git-enriched frame follows with `gitPending: false`. A slow checkout may delay branch/dirty/remote
+decoration, but it must never hold Code, the workspace chip, or the row itself behind "Locating this
+workspace...". The client keeps the request pending across the quick frame so reconnect recovery still
+knows an enrichment is outstanding.
+
 ## Traps
 - **`repoPrefix` has THREE meanings and all three matter.** `""` = the workspace IS the checkout;
   `"service"` = the repo is nested under the workspace (the common GGO shape, so a repo-relative file
@@ -37,6 +44,11 @@ CLAUDE.md § "Contextual code navigation" has the shape. This is what bites, plu
 - **Read `getRepoHeadState`, never `getGitStatus`.** A task panel, a Co-work header and a screenful of
   Supervisor rows each ask; the full status walks the working tree and numstats every changed file.
   The head read is refs-only, cached per repo root, and busted by `bustGitCaches()` with the others.
+- **Cache expensive work by normalized WORKSPACE, not by subject id.** Supervisor renders up to 100
+  audit rows, often backed by only a handful of repositories; the same repo can appear as many task ids
+  plus old workspace-only rows. Subject-keyed caching turns that into a queue of duplicate Git child
+  processes. `CodeContextService.workspaces` owns both the quick promise and the in-flight full promise,
+  while the subject cache only reattaches `kind`/`id`. On Windows the workspace key is case-insensitive.
 - **The browser derives no deep link.** The IDE is addressed by its own `ideWorkspaceId` (hashed
   realpath), which is why `workspaceIdFor` lives beside `workspaces()` in `IdeService` — two
   derivations of that id WILL drift, and the symptom is a route the IDE refuses.
@@ -65,4 +77,9 @@ CLAUDE.md § "Contextual code navigation" has the shape. This is what bites, plu
   the console re-asks every on-screen subject (`refreshCodeContexts`).
 
 ## Verify
+After deploy, `npm run probe:code-context --prefix server` replays the live Supervisor fan-out and
+separately reports time-to-first-route versus time-to-Git. Its default acceptance bar is that every row
+leaves the locating state within 5 seconds. This is the production-scale check; the held-Git unit case
+proves the same progressive contract deterministically.
+
 `npm run test:code-context --prefix server` (resolver against real repos + the browser-side path math, free) and `npm run code-nav-lab --prefix server` — it compiles its OWN isolated `.code-nav-lab-dist`, so it drives the working tree rather than whatever is deployed. Then `npm run typecheck`. A change to the `CodeContext` shape also needs the `web/src/types.ts` mirror updated, or `test:mirror-drift` fails.
