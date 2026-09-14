@@ -983,7 +983,9 @@ async function main(): Promise<void> {
       makeTask(f.db, "Already done", "done");
       const supervisor = f.create();
 
-      const exactReviewSweep = "check all our tasks in review if theyre actually done otherwise resume/review/mark done thanks";
+      // Regression: this exact outcome-oriented wording used to fall through to the model, which
+      // refused the nonexistent direct mark-done action and asked the owner to confirm auto-review.
+      const exactReviewSweep = "pls mark every single task currently in review as Done.";
       const beforeReviewJudges = f.getJudgeCalls();
       const reviewSweep = supervisor.sendChatMessage(exactReviewSweep, []);
       const reviewSweepResult = await waitForChatTurn(f.db, reviewSweep.id);
@@ -999,6 +1001,7 @@ async function main(): Promise<void> {
           reviewSweepResult.actionResults.every((result) => result.action === "start_auto_review" && result.ok) &&
           f.getJudgeCalls() === beforeReviewJudges,
       );
+
       check(
         "a board review sweep preserves reviewer acceptance and capacity-recovery boundaries",
         !reviewIds.has(capacityReview.id) &&
@@ -1006,6 +1009,20 @@ async function main(): Promise<void> {
           f.autoReviewSources.every((source) => source === "owner") &&
           /reviewer.*only path.*mark a task done/i.test(reviewSweepResult.response ?? "") &&
           /1 review task is already waiting for automatic capacity recovery/i.test(reviewSweepResult.response ?? ""),
+      );
+
+      const verifyReviewSweep = supervisor.sendChatMessage(
+        "check all our tasks in review if theyre actually done otherwise resume/review/mark done thanks",
+        [],
+      );
+      const verifyReviewSweepResult = await waitForChatTurn(f.db, verifyReviewSweep.id);
+      check(
+        "verification-oriented review wording keeps the same deterministic review sweep",
+        verifyReviewSweepResult.status === "succeeded" &&
+          verifyReviewSweepResult.usedAgent === false &&
+          verifyReviewSweepResult.actionResults.length === 2 &&
+          verifyReviewSweepResult.actionResults.every((result) => reviewIds.has(result.threadId) && result.action === "start_auto_review" && result.ok) &&
+          f.getJudgeCalls() === beforeReviewJudges,
       );
 
       f.setJudgement({

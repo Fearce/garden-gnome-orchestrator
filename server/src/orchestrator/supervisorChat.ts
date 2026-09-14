@@ -195,7 +195,14 @@ function deterministicBoardDecision(turn: SupervisorChatTurn): SupervisorChatDec
     /\b(?:check|verify|auto[- ]review)\b/i.test(text) ||
     /\breview\b.{0,40}\b(?:all|every)\b/i.test(text) ||
     /\b(?:have|let)\b.{0,30}\b(?:the\s+)?reviewer\b/i.test(text);
-  if (namesReviewBacklog && asksToVerifyReview) {
+  // Owners naturally describe the outcome they want ("mark every task in review done") rather than
+  // naming the implementation primitive ("start auto-review"). Inside this tightly scoped review-
+  // backlog command, treat that completion wording as a request to RUN the verifier, never as authority
+  // to bypass it. This keeps the safety boundary while avoiding a useless confirmation round-trip.
+  const asksToCompleteReview =
+    /\b(?:mark|set|move|make)\b.{0,100}\b(?:done|complete(?:d)?)\b/i.test(text) ||
+    /\b(?:finish|complete)\b.{0,80}\b(?:reviews?|tasks?|items?|backlog)\b/i.test(text);
+  if (namesReviewBacklog && (asksToVerifyReview || asksToCompleteReview)) {
     return {
       reply: "I will delegate each eligible review item to the existing auto-reviewer. The reviewer verifies the work, sends unfinished work through its normal fix or hand-back flow, and is the only path here that can mark a task done.",
       needsOwner: false,
