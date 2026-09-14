@@ -27,7 +27,9 @@ const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstanc
 
 const PORT = 4337;
 const BASE = `http://127.0.0.1:${PORT}`;
-const SELF_REPO_NAME = path.basename(SERVER_ROOT);
+// SERVER_ROOT is the server package. The console receives it as its self path, then resolves the
+// enclosing Git checkout before naming the picker row.
+const SELF_REPO_NAME = path.basename(path.resolve(SERVER_ROOT, ".."));
 
 // ---- the fixture repository ------------------------------------------------------------------------
 
@@ -43,7 +45,10 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8",
   const originBare = path.join(base, "origin.git");
   const work = path.join(base, "sample-project");
   git(base, "init", "--quiet", "--bare", originBare);
-  git(base, "clone", "--quiet", originBare, work);
+  // Set line-ending behavior before checkout. Configuring it after `clone` is too late on Windows:
+  // a global core.autocrlf=true can make the untouched seed files look modified, and the upstream
+  // fixture then commits those conversions and creates a false rebase conflict.
+  git(base, "-c", "core.autocrlf=false", "clone", "--quiet", originBare, work);
   configure(work);
   fs.writeFileSync(path.join(work, "README.md"), "# sample\n\nbase line\n");
   fs.writeFileSync(path.join(work, "app.js"), "console.log('one');\n");
@@ -54,7 +59,7 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8",
   git(work, "branch", "feature/existing");
 
   const other = path.join(base, "upstream-clone");
-  git(base, "clone", "--quiet", originBare, other);
+  git(base, "-c", "core.autocrlf=false", "clone", "--quiet", originBare, other);
   configure(other);
   fs.writeFileSync(path.join(other, "upstream.txt"), "landed upstream\n");
   git(other, "add", "-A");
