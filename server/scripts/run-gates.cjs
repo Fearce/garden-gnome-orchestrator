@@ -176,6 +176,7 @@ const GATES = [
   "test:git-progress",
   "test:repo-ops",
   "test:repo-console",
+  "test:git-console-probe",
   "test:supervisor",
   "test:audit-deps",
   "test:audit-overrides",
