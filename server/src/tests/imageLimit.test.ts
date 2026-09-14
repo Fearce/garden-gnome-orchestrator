@@ -30,24 +30,21 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const { contentWithImages, toImageBlock, MAX_IMAGE_BASE64_BYTES } = await import("../attachments.js");
+const imageFile = await import("../../../web/src/lib/imageFile.js");
 
 /** The console's thresholds, read out of the SHIPPED file rather than restated here. Restating them
  *  would leave this gate green through exactly the regression it exists to catch — the bug was a
  *  constant set to the wrong quantity, so a copy of the right quantity proves nothing. Both right-hand
  *  sides are evaluated, not string-matched, so reformatting them is not a failure. */
 const consoleSource = readFileSync(fileURLToPath(new URL("../../../web/src/lib/attachments.tsx", import.meta.url)), "utf8");
+const intakeSource = readFileSync(fileURLToPath(new URL("../../../web/src/lib/imageFile.ts", import.meta.url)), "utf8");
 
 function consoleLimits(): { base64Cap: number; fileCap: number; sourceCap: number } {
-  const src = consoleSource;
-  const rhs = (name: string): string => {
-    const m = new RegExp(`export const ${name}\\s*=\\s*([^;]+);`).exec(src);
-    if (!m?.[1]) throw new Error(`${name} is gone from web/src/lib/attachments.tsx — this gate reads it`);
-    return m[1];
+  return {
+    base64Cap: imageFile.MAX_IMAGE_BASE64_BYTES,
+    fileCap: imageFile.MAX_IMAGE_BYTES,
+    sourceCap: imageFile.MAX_IMAGE_SOURCE_BYTES,
   };
-  const base64Cap = Number(new Function(`return (${rhs("MAX_IMAGE_BASE64_BYTES")});`)());
-  const fileCap = Number(new Function("MAX_IMAGE_BASE64_BYTES", `return (${rhs("MAX_IMAGE_BYTES")});`)(base64Cap));
-  const sourceCap = Number(new Function(`return (${rhs("MAX_IMAGE_SOURCE_BYTES")});`)());
-  return { base64Cap, fileCap, sourceCap };
 }
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
@@ -126,24 +123,46 @@ console.log("\nE. re-encode — an oversized pick is resized, and the resized pa
   const attachFn = /async function fileToAttachment\(([\s\S]*?)\n}/.exec(consoleSource)?.[1] ?? "";
   check("fileToAttachment is still the single entry point", attachFn.length > 0);
   check(
-    "a pick past the operator ceiling is refused outright",
-    /f\.size > MAX_IMAGE_SOURCE_BYTES\)\s*return "size"/.test(attachFn),
+    "the client reads file bytes before deciding whether it is an image",
+    /head:\s*await readHead\(f\)/.test(attachFn),
     attachFn,
   );
   check(
-    "a pick past the API's own cap is re-encoded, never read straight through",
-    /f\.size > MAX_IMAGE_BYTES\)\s*return \(await shrinkImage\(f\)\)/.test(attachFn),
+    "a non-transport image is re-encoded, never sent straight through",
+    /intake\.action === "re-encode"/.test(attachFn),
     attachFn,
   );
 
-  const shrinkFn = /async function shrinkImage\(([\s\S]*?)\n}/.exec(consoleSource)?.[1] ?? "";
-  check("shrinkImage exists", shrinkFn.length > 0);
+  const shrinkFn = /async function renderToSupported\(([\s\S]*?)\n}/.exec(consoleSource)?.[1] ?? "";
+  check("renderToSupported exists", shrinkFn.length > 0);
   check(
     "...and only returns a payload that fits the API's cap",
     /dataBase64\.length <= MAX_IMAGE_BASE64_BYTES/.test(shrinkFn),
     shrinkFn,
   );
   check("...else it reports failure rather than attaching something oversized", /return null;\s*$/.test(shrinkFn.trim()));
+}
+
+// ---- F. mobile file facts -----------------------------------------------------------------------------
+console.log("\nF. mobile intake — the bytes win when a phone picker lies about the MIME type");
+{
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const heic = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]);
+  const image = imageFile.planImageIntake({ declaredType: "application/octet-stream", name: "Screenshot.png", size: 1000, head: png });
+  check("an Android generic-MIME PNG passes as PNG", image.action === "pass-through" && image.mediaType === "image/png", JSON.stringify(image));
+
+  const phoneHeic = imageFile.planImageIntake({ declaredType: "image/heic", name: "IMG_0001.HEIC", size: 1_000_000, head: heic });
+  check("a phone HEIC is accepted for conversion", phoneHeic.action === "re-encode" && phoneHeic.sourceType === "image/heic", JSON.stringify(phoneHeic));
+
+  const oversized = imageFile.planImageIntake({ declaredType: "", name: "Screenshot.png", size: imageFile.MAX_IMAGE_BYTES + 1, head: png });
+  check("a large phone PNG is accepted for resizing", oversized.action === "re-encode", JSON.stringify(oversized));
+
+  const notImage = imageFile.planImageIntake({ declaredType: "application/octet-stream", name: "notes.bin", size: 1000, head: new Uint8Array([1, 2, 3]) });
+  check("an opaque non-image is still refused", notImage.action === "reject" && notImage.reason === "type", JSON.stringify(notImage));
+
+  check("the picker permits mobile image containers", /accept="image\/\*"/.test(consoleSource));
+  check("paste uses the byte-based intake rather than a File.type image gate", !/f\.type\.startsWith\("image\/"\)/.test(consoleSource));
+  check("mobile signatures are covered by the shipped intake module", /sniffIsoBmff/.test(intakeSource) && /image\/heic/.test(intakeSource));
 }
 
 // ---- B. drop -----------------------------------------------------------------------------------------
