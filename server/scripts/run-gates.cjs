@@ -53,6 +53,7 @@ const GATES = [
   "test:grok-reasoning",
   "test:grok-usage",
   "test:codex-usage",
+  "test:codex-launcher",
   "test:schedule-detect",
   "test:scheduler",
   "test:scheduler-latency",
