@@ -30,6 +30,23 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const { contentWithImages, toImageBlock, MAX_IMAGE_BASE64_BYTES } = await import("../attachments.js");
+type ImageIntakePlan =
+  | { action: "reject"; reason: "type" | "size" }
+  | { action: "pass-through"; mediaType: string }
+  | { action: "re-encode"; sourceType: string; preferLossless: boolean };
+
+/** The gate intentionally executes the browser module rather than parsing its source, but the server
+ * compiler must not pull web's separate TS project under server/src. An absolute file URL keeps this a
+ * runtime-only cross-project import, like the browser owns in production. */
+const loadImageFile = new Function("path", "return import(path);") as (path: string) => Promise<{
+  MAX_IMAGE_BYTES: number;
+  MAX_IMAGE_SOURCE_BYTES: number;
+  planImageIntake: (facts: { declaredType: string; name: string; size: number; head: Uint8Array | null }) => ImageIntakePlan;
+  sniffImageType: (head: Uint8Array) => string | null;
+}>;
+const { MAX_IMAGE_BYTES, MAX_IMAGE_SOURCE_BYTES, planImageIntake, sniffImageType } = await loadImageFile(
+  new URL("../../../web/src/lib/imageFile.ts", import.meta.url).href,
+);
 
 /** The console's thresholds, read out of the SHIPPED file rather than restated here. Restating them
  *  would leave this gate green through exactly the regression it exists to catch — the bug was a
@@ -153,11 +170,50 @@ console.log("\nF. mobile intake — the bytes win when a phone picker lies about
 {
   check("the picker permits mobile image containers", /accept="image\/\*"/.test(consoleSource));
   check("paste uses the byte-based intake rather than a File.type image gate", !/f\.type\.startsWith\("image\/"\)/.test(consoleSource));
-  check("the intake reads file bytes before its declared MIME type", /sniffImageType\(file\.head\)[\s\S]*declared/.test(intakeSource), intakeSource);
-  check("a generic-MIME phone PNG resolves to the PNG transport type", /0x89, 0x50, 0x4e, 0x47/.test(intakeSource) && /pass-through", mediaType: effective/.test(intakeSource));
-  check("HEIC files are identified and re-encoded rather than sent under an unsupported type", /sniffIsoBmff/.test(intakeSource) && /image\/heic/.test(intakeSource) && /action: "re-encode"/.test(intakeSource));
-  check("a large phone PNG is routed to the re-encode path", /file\.size <= MAX_IMAGE_BYTES[\s\S]*action: "re-encode"/.test(intakeSource));
-  check("an opaque non-image is refused", /if \(!effective\) return \{ action: "reject", reason: "type" \}/.test(intakeSource));
+  const pngHead = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const heicHead = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]);
+  check("the PNG signature is recognized from bytes", sniffImageType(pngHead) === "image/png");
+  check("the HEIC container is recognized from bytes", sniffImageType(heicHead) === "image/heic");
+
+  const genericPng = planImageIntake({
+    declaredType: "application/octet-stream",
+    name: "Screenshot_20260914.png",
+    size: MAX_IMAGE_BYTES,
+    head: pngHead,
+  });
+  check(
+    "a generic-MIME phone PNG passes as PNG",
+    genericPng.action === "pass-through" && genericPng.mediaType === "image/png",
+    JSON.stringify(genericPng),
+  );
+
+  const largePhonePng = planImageIntake({
+    declaredType: "",
+    name: "Screenshot_20260914.png",
+    size: 12 * 1024 * 1024,
+    head: pngHead,
+  });
+  check(
+    "a 12MB phone PNG is accepted for lossless-first re-encoding",
+    largePhonePng.action === "re-encode" && largePhonePng.sourceType === "image/png" && largePhonePng.preferLossless,
+    JSON.stringify(largePhonePng),
+  );
+
+  const heic = planImageIntake({ declaredType: "image/heic", name: "IMG_1234.HEIC", size: 3 * 1024 * 1024, head: heicHead });
+  check(
+    "HEIC is re-encoded instead of being sent with an unsupported transport type",
+    heic.action === "re-encode" && heic.sourceType === "image/heic",
+    JSON.stringify(heic),
+  );
+
+  const opaque = planImageIntake({
+    declaredType: "application/octet-stream",
+    name: "unknown.bin",
+    size: 32,
+    head: new Uint8Array([0, 1, 2, 3]),
+  });
+  check("an opaque non-image is refused", opaque.action === "reject" && opaque.reason === "type", JSON.stringify(opaque));
+  check("the source limit remains above a representative phone screenshot", MAX_IMAGE_SOURCE_BYTES >= 12 * 1024 * 1024);
 }
 
 // ---- B. drop -----------------------------------------------------------------------------------------
