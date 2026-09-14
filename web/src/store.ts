@@ -68,6 +68,7 @@ import {
   type MonoFontId,
 } from "./lib/font.js";
 import { mergeImplementationMemos } from "./implementationMemos.js";
+import { deliverablesByThread, mergeDeliverableIndexes, mergeThreadDeliverables } from "./threadDeliverables.js";
 
 interface ThreadDraft {
   runId: string;
@@ -145,6 +146,9 @@ interface State {
   threads: Record<string, Thread>;
   runs: Record<string, AgentRun>;
   findings: Finding[];
+  // Owner-facing files are durable task data, not transcript rows. Keeping this separate from the
+  // capped activity feed means a long run cannot evict a valid deliverable card from its task.
+  threadDeliverables: Record<string, Finding[]>;
   questions: Question[];
   director: DirectorItem[];
   directorDraft: string;
@@ -1084,6 +1088,7 @@ export const useStore = create<State>((set) => ({
   threads: {},
   runs: {},
   findings: [],
+  threadDeliverables: {},
   questions: [],
   director: [],
   directorDraft: "",
@@ -1759,6 +1764,9 @@ function applyEvent(ev: ServerEvent): void {
         coworkSessions,
         coworkCreating: false,
         findings: ev.findings,
+        // Hello only carries a bounded board snapshot. Preserve the full index already loaded for
+        // an open task while its follow-up history reply is in flight after reconnect.
+        threadDeliverables: mergeDeliverableIndexes(s.threadDeliverables, deliverablesByThread(ev.findings)),
         questions: ev.questions,
         director,
         directorStatus: ev.directorStatus ?? null,
@@ -2095,6 +2103,7 @@ function applyEvent(ev: ServerEvent): void {
         return {
           threads: drop(s.threads),
           threadFeeds: drop(s.threadFeeds),
+          threadDeliverables: drop(s.threadDeliverables),
           threadHistoryCursors: drop(s.threadHistoryCursors),
           threadHistoryHasMore: drop(s.threadHistoryHasMore),
           threadHistoryLoading: drop(s.threadHistoryLoading),
@@ -2141,6 +2150,7 @@ function applyEvent(ev: ServerEvent): void {
           findings: s.findings.filter((f) => f.threadId !== ev.threadId),
           questions: s.questions.filter((q) => q.threadId !== ev.threadId),
           threadFeeds: drop(s.threadFeeds),
+          threadDeliverables: drop(s.threadDeliverables),
           threadHistoryCursors: drop(s.threadHistoryCursors),
           threadHistoryHasMore: drop(s.threadHistoryHasMore),
           threadHistoryLoading: drop(s.threadHistoryLoading),
@@ -2210,6 +2220,10 @@ function applyEvent(ev: ServerEvent): void {
           (cursor.createdAt < first.createdAt || (cursor.createdAt === first.createdAt && cursor.id < first.id));
         return {
           threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged },
+          threadDeliverables: {
+            ...s.threadDeliverables,
+            [ev.threadId]: mergeThreadDeliverables(s.threadDeliverables[ev.threadId] ?? [], ev.findings),
+          },
           threadHistoryPages: { ...s.threadHistoryPages, [ev.threadId]: olderPages },
           ...(cursor ? { threadHistoryCursors: { ...s.threadHistoryCursors, [ev.threadId]: cursor } } : {}),
           threadHistoryHasMore: {
@@ -2302,7 +2316,16 @@ function applyEvent(ev: ServerEvent): void {
       pushFeed(ev.threadId, { kind: "thinking", at: Date.now(), role: ev.role, runId: ev.runId, id: ev.messageId, text: ev.text });
       break;
     case "finding":
-      useStore.setState((s) => ({ findings: [...s.findings, ev.finding] }));
+      useStore.setState((s) => ({
+        findings: [...s.findings, ev.finding],
+        threadDeliverables:
+          ev.finding.kind === "deliverable"
+            ? {
+                ...s.threadDeliverables,
+                [ev.finding.threadId]: mergeThreadDeliverables(s.threadDeliverables[ev.finding.threadId] ?? [], [ev.finding]),
+              }
+            : s.threadDeliverables,
+      }));
       pushFeed(ev.finding.threadId, { kind: "finding", at: Date.now(), finding: ev.finding });
       break;
     case "question.ask":

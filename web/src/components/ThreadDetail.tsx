@@ -466,6 +466,7 @@ export function ThreadDetail() {
   const threads = useStore((s) => s.threads);
   const runs = useStore((s) => s.runs);
   const feeds = useStore((s) => s.threadFeeds);
+  const threadDeliverables = useStore((s) => s.threadDeliverables);
   const implementationMemos = useStore((s) => s.implementationMemos);
   const drafts = useStore((s) => s.threadDrafts);
   const thinkingDrafts = useStore((s) => s.thinkingDrafts);
@@ -539,15 +540,9 @@ export function ThreadDetail() {
   const thinkingDraftRaw = id ? thinkingDrafts[id] : undefined;
   const thinkingDraft = thinkingDraftRaw?.text.trim() ? thinkingDraftRaw : undefined;
 
-  // Deliverables (findings tagged kind 'deliverable') render in their own section, not the feed —
-  // so split them out here: `deliverables` feeds the section, `feedItems` is the feed minus them.
-  const deliverables = useMemo(
-    () =>
-      feed
-        .filter((f): f is Extract<FeedItem, { kind: "finding" }> => f.kind === "finding" && f.finding.kind === "deliverable")
-        .map((f) => f.finding),
-    [feed],
-  );
+  // Deliverables are a durable file index, intentionally independent of transcript retention. A long
+  // task can trim old activity without hiding files the owner still needs to View or Download.
+  const deliverables = id ? threadDeliverables[id] ?? [] : [];
   const feedItems = useMemo(() => feed.filter((f) => !(f.kind === "finding" && f.finding.kind === "deliverable")), [feed]);
 
   const [roleFilter, setRoleFilter] = useState<Role | "all">("all");
