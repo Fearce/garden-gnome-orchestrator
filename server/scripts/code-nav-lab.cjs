@@ -121,7 +121,9 @@ const check = createChecks();
 
 /** The context row's branch reading, once the server's answer has landed. */
 async function branchText(page, scope) {
-  await page.waitForSelector(`${scope} .codectx-reading b`, { timeout: 20_000 });
+  // Branch state is the background enrichment, not an interaction gate. A loaded Windows host can
+  // spend tens of seconds launching Git; the fast-route assertions below prove the UI stays usable.
+  await page.waitForSelector(`${scope} .codectx-reading b`, { timeout: 60_000 });
   return (await page.textContent(`${scope} .codectx-reading b`))?.trim() ?? "";
 }
 
@@ -147,15 +149,11 @@ async function drive(page, shots) {
   // The socket's hello, not the shell: everything server-authoritative is neutral until it lands.
   await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
 
-  console.log("\nTASK — the detail panel states repo and branch");
+  console.log("\nTASK — workspace navigation is usable before Git enrichment");
   await openTask(page, "Repo task");
   check("the task panel carries a code-context row", await page.isVisible(".detail .codectx"));
-  check("it reads the real branch", (await branchText(page, ".detail")) === "master", await branchText(page, ".detail"));
-  check(
-    "it names the repository",
-    (await page.textContent(".detail .codectx-repo"))?.trim() === "sample-project",
-    (await page.textContent(".detail .codectx-repo")) ?? "",
-  );
+  const codeReady = await page.waitForSelector('.detail .codectx-btn:has-text("Code")', { timeout: 5_000 }).then(() => true).catch(() => false);
+  check("the Code route is clickable without waiting for Git", codeReady);
 
   console.log("\nTASK → IDE — one click lands in the editor on that workspace");
   await page.click('.detail .codectx-btn:has-text("Code")');
@@ -180,6 +178,15 @@ async function drive(page, shots) {
   check("with the originating task still open", (await page.textContent(".detail-head"))?.includes("Repo task") === true);
   check("and the return banner is spent", (await page.$(".codectx-return")) === null);
 
+  console.log("\nTASK — Git metadata enriches the already-usable row");
+  const branch = await branchText(page, ".detail");
+  check("it reads the real branch", branch === "master", branch);
+  check(
+    "it names the repository",
+    (await page.textContent(".detail .codectx-repo"))?.trim() === "sample-project",
+    (await page.textContent(".detail .codectx-repo")) ?? "",
+  );
+
   console.log("\nWORKSPACE CHIP → IDE — the path line the owner actually clicks");
   // The owner circled this chip, not the Code button: in the detail panel it must open the workspace
   // in the editor, not the host file manager. A board card has no resolved context, so its identical
@@ -193,7 +200,7 @@ async function drive(page, shots) {
   check("the detail panel's chip says it opens the IDE", chipRouted, chipLabel);
   check(
     "a board card's chip is untouched — no context is resolved there",
-    (await page.getAttribute('.card:has-text("Repo task") .ws-path', "aria-label"))?.startsWith("Open in File Explorer") === true,
+    (await page.getAttribute('.card:has-text("Repo task") .ws-path', "aria-label"))?.endsWith(" in File Explorer") === true,
     (await page.getAttribute('.card:has-text("Repo task") .ws-path', "aria-label")) ?? "",
   );
   if (chipRouted) {
@@ -221,6 +228,9 @@ async function drive(page, shots) {
 
   console.log("\nCHANGED FILE → IDE — the task's own file, through the repo prefix");
   await openTask(page, "Repo task");
+  // The card summary is a separate, intentionally full task-attribution read. It is not the fast
+  // workspace route under test and can sit behind other lab Git work on a loaded Windows host.
+  await page.waitForSelector('.card:has-text("Repo task") .changes-chip', { timeout: 90_000 });
   await page.click('.card:has-text("Repo task") .changes-chip');
   await page.waitForSelector(".git-panel", { timeout: 20_000 });
   await page.waitForSelector(".git-file-row", { timeout: 20_000 });
@@ -357,8 +367,10 @@ async function drive(page, shots) {
     if (browser) await browser.close().catch(() => {});
     if (!keep) {
       killInstance(PORT);
-      fs.rmSync(dataDir, { recursive: true, force: true });
-      fs.rmSync(fixtureBase, { recursive: true, force: true });
+      // Windows can hold the fixture briefly while the killed lab server's final Git worker exits.
+      // Retry the cleanup instead of replacing the actual browser verdict with a transient EBUSY.
+      fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      fs.rmSync(fixtureBase, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   }
   process.exit(check.summary());

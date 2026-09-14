@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { CodeContextService, repoPrefixOf } from "../orchestrator/codeContext.js";
+import { CodeContextService, repoPrefixOf, type CodeContextGit } from "../orchestrator/codeContext.js";
 import { IdeService } from "../ide/service.js";
-import { runGit, bustGitCaches } from "../gitService.js";
+import { runGit, bustGitCaches, type RepoHeadState } from "../gitService.js";
 import type { CoworkSession, Thread } from "../types.js";
 
 /**
@@ -58,7 +58,7 @@ const session = (id: string, workspace: string): CoworkSession =>
   ({ id, workspace, name: id }) as unknown as CoworkSession;
 
 /** The service under test, wired to exactly the records this scenario claims. */
-function build(input: { threads?: Thread[]; sessions?: CoworkSession[]; self: string; now?: () => number }) {
+function build(input: { threads?: Thread[]; sessions?: CoworkSession[]; self: string; now?: () => number; git?: CodeContextGit }) {
   const threads = input.threads ?? [];
   const sessions = input.sessions ?? [];
   const ide = new IdeService(
@@ -69,7 +69,7 @@ function build(input: { threads?: Thread[]; sessions?: CoworkSession[]; self: st
     getThread: (id: string) => threads.find((t) => t.id === id) ?? null,
     getCoworkSession: (id: string) => sessions.find((s) => s.id === id) ?? null,
   };
-  return new CodeContextService(db, ide, input.now);
+  return new CodeContextService(db, ide, input.now, input.git);
 }
 
 try {
@@ -203,6 +203,62 @@ try {
       service.resolve({ kind: "thread", id: t.id }),
     ]);
     assert.ok(Object.is(first, second), "a screenful of surfaces must not each run git");
+  });
+
+  await test("navigation answers before Git and same-workspace subjects share one slow sweep", async () => {
+    const workspace = join(base, "progressive");
+    await makeRepo(workspace);
+    const firstThread = thread("t-progressive-1", workspace);
+    const secondThread = thread("t-progressive-2", workspace);
+    let releaseGit: () => void = () => {};
+    const heldGit = new Promise<void>((resolve) => { releaseGit = resolve; });
+    let rootCalls = 0;
+    let headCalls = 0;
+    const head: RepoHeadState = {
+      isRepo: true,
+      repoRoot: workspace,
+      branch: "work",
+      detached: false,
+      upstreamRef: null,
+      pushRef: null,
+      behind: 0,
+      unpushed: 0,
+      isCommitOnly: false,
+      pushState: "no-remote",
+      hasUncommitted: false,
+      error: null,
+    };
+    const fakeGit: CodeContextGit = {
+      generation: () => 1,
+      resolveRepoRoot: async () => {
+        rootCalls++;
+        await heldGit;
+        return workspace;
+      },
+      getRepoHeadState: async () => {
+        headCalls++;
+        return head;
+      },
+    };
+    const service = build({ threads: [firstThread, secondThread], self, git: fakeGit });
+
+    const quick = await service.resolveQuick({ kind: "thread", id: firstThread.id });
+    assert.equal(quick.gitPending, true);
+    assert.ok(quick.ideWorkspaceId, "the Code route must be ready without waiting for Git");
+    assert.equal(rootCalls, 0, "quick resolution must start no Git work");
+
+    const first = service.resolve({ kind: "thread", id: firstThread.id });
+    const second = service.resolve({ kind: "thread", id: secondThread.id });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(rootCalls, 1, "two task ids in one workspace must share one repo lookup");
+    releaseGit();
+
+    const [firstFull, secondFull] = await Promise.all([first, second]);
+    assert.equal(headCalls, 1, "two task ids in one workspace must share one head-state sweep");
+    assert.equal(firstFull.gitPending, false);
+    assert.equal(secondFull.gitPending, false);
+    assert.equal(firstFull.branch, "work");
+    assert.equal(secondFull.repoPath, workspace);
   });
 
   // The console re-asks for every visible subject the instant a repo action returns — well inside the

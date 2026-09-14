@@ -339,8 +339,18 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
       });
       break;
     case "code.context": {
-      const context = await ctx.codeContext.resolve({ kind: cmd.kind, id: cmd.id });
-      send(socket, { type: "code.context", key: `${cmd.kind}:${cmd.id}`, context });
+      const subject = { kind: cmd.kind, id: cmd.id };
+      const key = `${cmd.kind}:${cmd.id}`;
+      // Make the workspace/IDE route usable first. Git status can require several child processes and
+      // used to hold every button behind "Locating this workspace…"—for minutes when 100 Supervisor
+      // rows queued duplicate checks. The enriched frame follows in the background.
+      const quick = await ctx.codeContext.resolveQuick(subject);
+      send(socket, { type: "code.context", key, context: quick });
+      if (quick.gitPending) {
+        void ctx.codeContext.resolve(subject).then((context) => {
+          send(socket, { type: "code.context", key, context });
+        });
+      }
       break;
     }
     case "repo.commit":

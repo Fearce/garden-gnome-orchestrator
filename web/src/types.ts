@@ -961,6 +961,8 @@ export interface CodeContext {
   workspaceName: string | null;
   ideWorkspaceId: string | null;
   repoPath: string | null;
+  /** Workspace navigation is ready while slower Git metadata is still loading. */
+  gitPending: boolean;
   repoName: string | null;
   repoPrefix: string | null;
   branch: string | null;

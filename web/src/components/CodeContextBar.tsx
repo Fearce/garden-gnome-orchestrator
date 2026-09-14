@@ -111,6 +111,13 @@ export function CodeRoutes({ subject, origin }: { subject: { kind: CodeSubjectKi
 
 /** Branch, repo and remote standing — or the reason there is none. */
 function RepoReading({ context }: { context: CodeContext }) {
+  if (context.gitPending) {
+    return (
+      <span className="codectx-note" title={context.workspace ?? undefined}>
+        Workspace ready · loading Git details…
+      </span>
+    );
+  }
   if (!context.repoPath) {
     return (
       <span className="codectx-note" title={context.workspace ?? undefined}>

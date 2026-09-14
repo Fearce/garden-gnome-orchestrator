@@ -318,27 +318,35 @@ interface RepoHead {
 }
 
 async function readRepoHead(repoRoot: string): Promise<RepoHead> {
-  const branchRaw = out(await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]));
+  // These reads are independent. Running them serially made one compact context row pay up to five
+  // Windows process-launch delays before it could even start its ahead/behind counts. The bounded child
+  // pool still limits machine pressure; concurrency here only lets both existing workers stay useful.
+  const [branchResult, upstreamResult, pushResult, isCommitOnly, hasHeadResult] = await Promise.all([
+    runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    runGit(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]),
+    runGit(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"]),
+    isCommitOnlyRepo(repoRoot),
+    runGit(repoRoot, ["rev-parse", "--verify", "-q", "HEAD"]),
+  ]);
+  const branchRaw = out(branchResult);
   const detached = branchRaw === "HEAD" || branchRaw === "";
 
-  const upstreamRef = okOut(await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]));
-  const pushRef = okOut(await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"]));
+  const upstreamRef = okOut(upstreamResult);
+  const pushRef = okOut(pushResult);
 
   // behind = commits @{u} has that HEAD lacks. unpushed = commits on HEAD not yet on @{push} (fall back
   // to @{u} when no distinct push ref is configured).
-  let behind = 0;
-  if (upstreamRef) {
-    const c = okOut(await runGit(repoRoot, ["rev-list", "--count", `HEAD..${upstreamRef}`]));
-    behind = c ? Number.parseInt(c, 10) || 0 : 0;
-  }
   const unpushedRef = pushRef ?? upstreamRef;
+  const [behindResult, unpushedResult] = await Promise.all([
+    upstreamRef ? runGit(repoRoot, ["rev-list", "--count", `HEAD..${upstreamRef}`]) : Promise.resolve(null),
+    unpushedRef ? runGit(repoRoot, ["rev-list", `${unpushedRef}..HEAD`]) : Promise.resolve(null),
+  ]);
+  const behindRaw = behindResult ? okOut(behindResult) : null;
+  const behind = behindRaw ? Number.parseInt(behindRaw, 10) || 0 : 0;
   const unpushedShas = new Set<string>();
-  if (unpushedRef) {
-    const list = okOut(await runGit(repoRoot, ["rev-list", `${unpushedRef}..HEAD`]));
-    if (list) for (const s of list.split("\n").map((x) => x.trim()).filter(Boolean)) unpushedShas.add(s);
-  }
+  const list = unpushedResult ? okOut(unpushedResult) : null;
+  if (list) for (const s of list.split("\n").map((x) => x.trim()).filter(Boolean)) unpushedShas.add(s);
 
-  const isCommitOnly = await isCommitOnlyRepo(repoRoot);
   return {
     branch: detached ? null : branchRaw,
     detached,
@@ -349,7 +357,7 @@ async function readRepoHead(repoRoot: string): Promise<RepoHead> {
     unpushedShas,
     isCommitOnly,
     pushState: derivePushState(isCommitOnly, unpushedShas.size, pushRef !== null),
-    hasHead: (await runGit(repoRoot, ["rev-parse", "--verify", "-q", "HEAD"])).code === 0,
+    hasHead: hasHeadResult.code === 0,
   };
 }
 
@@ -427,10 +435,12 @@ export async function getRepoHeadState(workspace: string): Promise<RepoHeadState
   const cached = headStateCache.get(repoRoot);
   if (cached && Date.now() - cached.at < SUMMARY_TTL_MS) return cached.value;
 
-  const head = await readRepoHead(repoRoot);
-  // Dirty-or-not only: the same porcelain call the full status parses, without the numstat pass that
-  // gives each file its ±counts. A caller wanting the files themselves asks for the status.
-  const dirty = await runGit(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  // Dirty state is independent of the ref reads. Start it beside them so a context row does not pay one
+  // final process-launch delay after every other piece of Git metadata has already arrived.
+  const [head, dirty] = await Promise.all([
+    readRepoHead(repoRoot),
+    runGit(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
+  ]);
   const value: RepoHeadState = {
     isRepo: true,
     repoRoot,

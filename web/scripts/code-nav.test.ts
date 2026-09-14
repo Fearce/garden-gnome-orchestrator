@@ -18,6 +18,7 @@ const context = (over: Partial<CodeContext> = {}): CodeContext => ({
   workspaceName: "project",
   ideWorkspaceId: "a".repeat(24),
   repoPath: "C:/temp/project",
+  gitPending: false,
   repoName: "project",
   repoPrefix: "",
   branch: "master",
@@ -33,9 +34,15 @@ const context = (over: Partial<CodeContext> = {}): CodeContext => ({
 // ---- the two route gates -------------------------------------------------------------------------
 
 assert.equal(canOpenIde(context()), true);
+assert.equal(
+  canOpenIde(context({ repoPath: null, gitPending: true })),
+  true,
+  "the editor route is usable while slower Git metadata is still loading",
+);
 assert.equal(canOpenIde(context({ ideWorkspaceId: null })), false, "an unregistered workspace offers no editor route");
 assert.equal(canOpenIde(undefined), false, "an unresolved context offers nothing at all");
 assert.equal(canOpenGit(context()), true);
+assert.equal(canOpenGit(context({ repoPath: null, gitPending: true })), false, "the Git route waits for a verified repo root");
 assert.equal(canOpenGit(context({ repoPath: null })), false, "a plain folder offers no Git route");
 
 assert.deepEqual(ideWorkspaceTarget(context()), { workspaceId: "a".repeat(24), mode: "files" });

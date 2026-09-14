@@ -2,7 +2,7 @@ import { basename, relative, resolve, sep } from "node:path";
 import { lstat, realpath } from "node:fs/promises";
 import type { Db } from "../db/db.js";
 import type { IdeService } from "../ide/service.js";
-import { getRepoHeadState, gitCacheGeneration, resolveRepoRoot, type PushState } from "../gitService.js";
+import { getRepoHeadState, gitCacheGeneration, resolveRepoRoot, type PushState, type RepoHeadState } from "../gitService.js";
 
 // One resolved answer to "where does this work live, and how do I get into it" — the single seam the
 // console's contextual navigation runs on. Everything here already exists somewhere (a thread's
@@ -34,6 +34,8 @@ export interface CodeContext {
   ideWorkspaceId: string | null;
   /** Resolved git repo root for the workspace, or null when it isn't a checkout. */
   repoPath: string | null;
+  /** The folder/IDE route is ready while slower Git metadata is still being filled in. */
+  gitPending: boolean;
   repoName: string | null;
   /** The repo root relative to the workspace, forward slashes ("" when they are the same folder). Null
    *  when the repo is ABOVE the workspace: a repo-relative changed file then has no path the IDE can
@@ -58,6 +60,36 @@ const CACHE_TTL_MS = 4000;
 
 const subjectKey = (subject: CodeSubject): string => `${subject.kind}:${subject.id}`;
 
+type WorkspaceContext = Omit<CodeContext, "kind" | "id">;
+
+interface WorkspaceCacheEntry {
+  at: number;
+  generation: number;
+  quick: Promise<WorkspaceContext>;
+  full?: Promise<WorkspaceContext>;
+}
+
+interface SubjectCacheEntry {
+  at: number;
+  generation: number;
+  shared?: WorkspaceCacheEntry;
+  quick: Promise<CodeContext>;
+  full?: Promise<CodeContext>;
+}
+
+/** Injectable so the gate can hold the expensive half unresolved and verify the fast route. */
+export interface CodeContextGit {
+  resolveRepoRoot(workspace: string): Promise<string | null>;
+  getRepoHeadState(workspace: string): Promise<RepoHeadState>;
+  generation(): number;
+}
+
+const DEFAULT_GIT: CodeContextGit = {
+  resolveRepoRoot,
+  getRepoHeadState,
+  generation: gitCacheGeneration,
+};
+
 const emptyContext = (subject: CodeSubject, error: string | null, workspace: string | null = null): CodeContext => ({
   kind: subject.kind,
   id: subject.id,
@@ -65,6 +97,7 @@ const emptyContext = (subject: CodeSubject, error: string | null, workspace: str
   workspaceName: workspace ? basename(workspace.replace(/[\\/]+$/, "")) || workspace : null,
   ideWorkspaceId: null,
   repoPath: null,
+  gitPending: false,
   repoName: null,
   repoPrefix: null,
   branch: null,
@@ -77,7 +110,10 @@ const emptyContext = (subject: CodeSubject, error: string | null, workspace: str
 });
 
 export class CodeContextService {
-  private cache = new Map<string, { at: number; generation: number; value: Promise<CodeContext> }>();
+  private subjects = new Map<string, SubjectCacheEntry>();
+  /** The expensive answer belongs to a workspace, not a task id. A Supervisor screen can contain 100
+   *  rows backed by only a few repos; sharing here prevents 100 identical Git sweeps. */
+  private workspaces = new Map<string, WorkspaceCacheEntry>();
 
   constructor(
     private readonly db: Pick<Db, "getThread" | "getCoworkSession">,
@@ -86,59 +122,101 @@ export class CodeContextService {
      *  Against a real clock, a git call slow enough to outlast the TTL expires the entry anyway, and
      *  the cache-busting assertion then passes without the code that makes it true. */
     private readonly now: () => number = Date.now,
+    private readonly git: CodeContextGit = DEFAULT_GIT,
   ) {}
 
-  async resolve(subject: CodeSubject): Promise<CodeContext> {
-    const key = subjectKey(subject);
-    const generation = gitCacheGeneration();
-    const hit = this.cache.get(key);
-    // The generation check is what makes a checkout/pull/commit visible AT ONCE. The console re-asks
-    // for every on-screen subject the moment a repo action returns — inside this TTL — so a cache that
-    // only expired on time would answer that refresh with the branch from before the switch, and then
-    // nothing would ask again until the client's own much longer TTL lapsed.
-    if (hit && hit.generation === generation && this.now() - hit.at < CACHE_TTL_MS) return hit.value;
-    const value = this.resolveUncached(subject).catch((e) => emptyContext(subject, reason(e)));
-    this.cache.set(key, { at: this.now(), generation, value });
-    if (this.cache.size > 200) this.evict();
-    return value;
+  /** Resolve only the local folder + IDE identity. This starts no Git process, so navigation becomes
+   *  clickable before branch, remote and dirty-state metadata have finished. */
+  resolveQuick(subject: CodeSubject): Promise<CodeContext> {
+    return this.entryFor(subject).quick;
   }
 
-  private async resolveUncached(subject: CodeSubject): Promise<CodeContext> {
+  resolve(subject: CodeSubject): Promise<CodeContext> {
+    const entry = this.entryFor(subject);
+    if (!entry.shared) return entry.quick;
+    entry.full ??= this.fullWorkspace(entry.shared).then((value) => ({ kind: subject.kind, id: subject.id, ...value }));
+    return entry.full;
+  }
+
+  private entryFor(subject: CodeSubject): SubjectCacheEntry {
+    const key = subjectKey(subject);
+    const generation = this.git.generation();
+    const hit = this.subjects.get(key);
+    // Git writes invalidate the answer immediately. A time-only cache would show the pre-checkout
+    // branch until the browser's much longer refresh interval elapsed.
+    if (hit && hit.generation === generation && this.now() - hit.at < CACHE_TTL_MS) return hit;
+
     const workspace = this.workspaceOf(subject);
     if (!workspace) {
-      return emptyContext(
+      const quick = Promise.resolve(emptyContext(
         subject,
         subject.kind === "workspace" ? "GGO has no work registered in that folder." : "That task no longer exists.",
-      );
+      ));
+      const entry: SubjectCacheEntry = { at: this.now(), generation, quick };
+      this.subjects.set(key, entry);
+      return entry;
     }
 
+    const shared = this.workspaceEntry(workspace, generation);
+    const quick = shared.quick.then((value) => ({ kind: subject.kind, id: subject.id, ...value }));
+    const entry: SubjectCacheEntry = { at: this.now(), generation, shared, quick };
+    this.subjects.set(key, entry);
+    if (this.subjects.size > 200 || this.workspaces.size > 200) this.evict();
+    return entry;
+  }
+
+  private workspaceEntry(workspace: string, generation: number): WorkspaceCacheEntry {
+    const key = workspaceCacheKey(workspace);
+    const hit = this.workspaces.get(key);
+    if (hit && hit.generation === generation && this.now() - hit.at < CACHE_TTL_MS) return hit;
+    const quick = this.resolveQuickWorkspace(workspace).catch((e) => asWorkspace(
+      emptyContext({ kind: "workspace", id: workspace }, reason(e), workspace),
+    ));
+    const entry: WorkspaceCacheEntry = { at: this.now(), generation, quick };
+    this.workspaces.set(key, entry);
+    return entry;
+  }
+
+  private async resolveQuickWorkspace(workspace: string): Promise<WorkspaceContext> {
     let root: string;
     try {
       root = await realpath(workspace);
-      if (!(await lstat(root)).isDirectory()) return emptyContext(subject, "The workspace path is not a folder.", workspace);
+      if (!(await lstat(root)).isDirectory()) {
+        return asWorkspace(emptyContext({ kind: "workspace", id: workspace }, "The workspace path is not a folder.", workspace));
+      }
     } catch {
-      return emptyContext(subject, "The workspace folder is missing on this machine.", workspace);
+      return asWorkspace(emptyContext({ kind: "workspace", id: workspace }, "The workspace folder is missing on this machine.", workspace));
     }
 
-    const base = emptyContext(subject, null, root);
+    const base = asWorkspace(emptyContext({ kind: "workspace", id: workspace }, null, root));
     base.ideWorkspaceId = await this.ide.workspaceIdFor(workspace);
-    const repoPath = await resolveRepoRoot(root);
-    if (!repoPath) return { ...base, error: "This workspace is not a Git checkout." };
+    base.gitPending = true;
+    return base;
+  }
 
-    const status = await getRepoHeadState(root);
-    return {
-      ...base,
-      repoPath,
-      repoName: basename(repoPath.replace(/[\\/]+$/, "")) || repoPath,
-      repoPrefix: repoPrefixOf(root, repoPath),
-      branch: status.branch,
-      detached: status.detached,
-      pushState: status.pushState,
-      unpushed: status.unpushed,
-      behind: status.behind,
-      hasUncommitted: status.hasUncommitted,
-      error: status.error,
-    };
+  private fullWorkspace(entry: WorkspaceCacheEntry): Promise<WorkspaceContext> {
+    entry.full ??= entry.quick.then(async (base) => {
+      if (!base.gitPending || !base.workspace) return base;
+      const repoPath = await this.git.resolveRepoRoot(base.workspace);
+      if (!repoPath) return { ...base, gitPending: false, error: "This workspace is not a Git checkout." };
+
+      const status = await this.git.getRepoHeadState(base.workspace);
+      return {
+        ...base,
+        repoPath,
+        gitPending: false,
+        repoName: basename(repoPath.replace(/[\\/]+$/, "")) || repoPath,
+        repoPrefix: repoPrefixOf(base.workspace, repoPath),
+        branch: status.branch,
+        detached: status.detached,
+        pushState: status.pushState,
+        unpushed: status.unpushed,
+        behind: status.behind,
+        hasUncommitted: status.hasUncommitted,
+        error: status.error,
+      };
+    }).catch(async (e) => ({ ...await entry.quick, gitPending: false, error: reason(e) }));
+    return entry.full;
   }
 
   /** The absolute workspace path behind a subject. A `workspace` subject carries its own path, and that
@@ -153,9 +231,17 @@ export class CodeContextService {
   }
 
   private evict(): void {
-    for (const [key, entry] of this.cache) if (this.now() - entry.at >= CACHE_TTL_MS) this.cache.delete(key);
+    for (const [key, entry] of this.subjects) if (this.now() - entry.at >= CACHE_TTL_MS) this.subjects.delete(key);
+    for (const [key, entry] of this.workspaces) if (this.now() - entry.at >= CACHE_TTL_MS) this.workspaces.delete(key);
   }
 }
+
+const asWorkspace = ({ kind: _kind, id: _id, ...context }: CodeContext): WorkspaceContext => context;
+
+const workspaceCacheKey = (path: string): string => {
+  const key = resolve(path);
+  return process.platform === "win32" ? key.toLowerCase() : key;
+};
 
 const trimmed = (value: string | null | undefined): string | null => {
   const v = (value ?? "").trim();

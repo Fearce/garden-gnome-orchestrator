@@ -2044,8 +2044,10 @@ function applyEvent(ev: ServerEvent): void {
         const { [ev.key]: _done, ...codeContextPending } = s.codeContextPending;
         return {
           codeContexts: { ...s.codeContexts, [ev.key]: ev.context },
-          codeContextAt: { ...s.codeContextAt, [ev.key]: Date.now() },
-          codeContextPending,
+          // The first frame deliberately contains a usable IDE route but not Git metadata. Keep the
+          // request pending so reconnect recovery re-asks if the enriched frame was lost in transit.
+          codeContextAt: ev.context.gitPending ? s.codeContextAt : { ...s.codeContextAt, [ev.key]: Date.now() },
+          codeContextPending: ev.context.gitPending ? s.codeContextPending : codeContextPending,
         };
       });
       break;
