@@ -54,6 +54,25 @@ routes); a screenful of them through the full status walks the tree once per sur
 - **Legacy**: `ThreadDetail`'s "Diff" button opens a raw `git diff`/`git log` modal
   (`loadChanges` → `thread.changes` → `getChanges`). Neither of the above.
 
+## When the answer is "git never replies at all", suspect the POOL, not this surface
+2026-09-14: the Git console, the board's Changes chips and the contextual rows all went silent at once
+on the live server, while `thread.history` answered in 7ms. Nothing had thrown, `crash.log` was clean
+and no `git.exe` was running. It was none of the code above: **every git surface funnels through
+`gitService.runGit` to `childRunner.runChild`, a two-worker pool**, and a worker that stops answering
+used to hold its slot forever (the command timeout is enforced INSIDE the worker, so it is no help when
+the worker itself is what is lost). Two lost workers is zero capacity, permanently and silently.
+`childRunner` now arms a MAIN-thread watchdog per job, drops a slot whose worker exits even while idle,
+and answers from the worker anyway when a killed child never closes. Gate: `test:child-runner`.
+
+Diagnosis, in this order, so you do not re-derive it:
+1. `npm run probe:git-console --prefix server` (read-only, safe against prod). It times the picker's
+   `repo.list`, a `repo.state`, the first changed file's `repo.diff`, a warm second `repo.list`, and the
+   error a non-repository path returns. `--thread <id>` reproduces the focused open a task does.
+2. A leg that never returns while `thread.history` is instant means the git pool, not the console.
+   Confirm by running the same read in a FRESH process (`getRepoState` directly): healthy there and
+   hung in the server is the pool wedged, and a restart clears it.
+3. `childRunnerState()` reports `{ workers, queued }` for a process you can get a handle on.
+
 Four traps the console hit, all in the reply path:
 - `repo.list` echoes `forThread`; a reply not matching the request in flight is DISCARDED. The
   first list costs a disk scan, so a previous open's answer routinely arrives after the current
