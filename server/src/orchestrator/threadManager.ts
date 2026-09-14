@@ -759,7 +759,11 @@ const CLOSEABLE: ReadonlySet<Thread["state"]> = new Set(["done", "failed", "canc
 // Parked states a human can manually accept as finished. 'review' (QA bounced it, or an inject/manual
 // resume settled here with no QA loop) and 'paused' are work the owner can sign off on directly — the
 // pipeline's own only-QA-marks-done rule never applies to these, so without this they'd be stuck.
-const DONEABLE: ReadonlySet<Thread["state"]> = new Set(["review", "paused"]);
+// An owner can explicitly finish a task while its optional auto-review is running.
+// This is intentionally distinct from the ordinary pipeline states: it gives the
+// owner an immediate escape hatch when an auto-review was started by mistake and
+// prevents that reviewer from continuing to consume a paid model window.
+const DONEABLE: ReadonlySet<Thread["state"]> = new Set(["review", "paused", "reviewing"]);
 const COWORK_CONFLICT_STATES: ReadonlySet<Thread["state"]> = new Set([
   "planning",
   "researching",
@@ -11109,7 +11113,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return { ok: true, state: "closed" };
   }
 
-  /** Manually accept a parked task (review/paused) as finished — the only path by which the owner,
+  /** Manually accept a parked task (review/paused), or stop an in-flight optional auto-review, as finished — the only path by which the owner,
    *  rather than QA, moves a task to 'done'. The pipeline reserves 'done' for QA, so injected/manual-
    *  resume work (which runs with no QA loop and settles to 'review') and QA-bounced work would
    *  otherwise have no way to reach 'done' but cancelling. Mirrors closeThread's force-stop teardown
@@ -11126,7 +11130,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       return { ok: false, state: "review", error: "This task was stopped mid-work by its hard deadline. Clear or extend it and Resume before marking the work done." };
     }
     if (!DONEABLE.has(thread.state)) {
-      return { ok: false, error: `A ${thread.state} task can't be marked done — only a parked (review/paused) task can.` };
+      return { ok: false, error: `A ${thread.state} task can't be marked done — only a parked (review/paused) task or optional auto-review can.` };
     }
     await this.forceStopThreadRuns(threadId);
     const deployment = this.verifyManualDeploymentAtBoundary(thread, "owner");
