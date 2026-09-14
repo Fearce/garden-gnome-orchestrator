@@ -31,6 +31,7 @@
     "supervisor-lab": "node scripts/supervisor-lab.cjs",
     "tablet-lab": "node scripts/tablet-lab.cjs",
     "phone-lab": "node scripts/phone-lab.cjs",
+    "mobile-chunk-lab": "node scripts/mobile-chunk-lab.cjs",
     "test:token-freeze": "tsx src/tests/tokenFreezeResume.itest.ts",
     "test:reader": "tsx src/tests/reader.itest.ts",
     "test:route-selection": "tsx src/tests/routeSelection.test.ts",

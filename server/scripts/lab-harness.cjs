@@ -171,6 +171,26 @@ async function boot({ dataDir, port, env = {}, entry }) {
   throw new Error(`instance never came up — see ${path.join(dataDir, "lab.log")}`);
 }
 
+/** Refuse to run when `web/dist` is older than `web/src`: the lab would measure the PREVIOUS bundle
+ *  and report it as the current one, which is the failure a lab exists to rule out. */
+function requireFreshWebBuild() {
+  const webRoot = path.resolve(SERVER_ROOT, "..", "web");
+  const built = fs.statSync(path.join(webRoot, "dist", "index.html")).mtimeMs;
+  let newest = 0;
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else newest = Math.max(newest, fs.statSync(p).mtimeMs);
+    }
+  };
+  walk(path.join(webRoot, "src"));
+  if (newest > built) {
+    console.error("web/dist is older than web/src — run `npm run build --prefix web` first, or this lab measures the previous bundle.");
+    process.exit(2);
+  }
+}
+
 /** Kill whatever owns `port`. Precise, and cannot touch prod on :4317. */
 function killInstance(port) {
   try {
@@ -235,4 +255,4 @@ function shotDir(dataDir) {
   return chosen;
 }
 
-module.exports = { SERVER_ROOT, loadChromium, allowConcurrentContexts, authPassword, requireBuild, boot, killInstance, createChecks, boxBounds, shotDir };
+module.exports = { SERVER_ROOT, loadChromium, allowConcurrentContexts, authPassword, requireBuild, requireFreshWebBuild, boot, killInstance, createChecks, boxBounds, shotDir };
