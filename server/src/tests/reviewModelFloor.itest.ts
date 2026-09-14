@@ -43,6 +43,7 @@ const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { codexReviewTarget, isReviewFloorRole, reviewModelAllowed, REVIEW_SUBSTITUTE_EFFORT } =
   await import("../orchestrator/reviewModelFloor.js");
+const { demandForRole } = await import("../orchestrator/capacityRouting.js");
 
 let passed = 0;
 let failed = 0;
@@ -298,12 +299,18 @@ console.log("\n=== review model floor — the wiring (real ThreadManager, real D
 {
   const h = makeHarness({ codex: { qa: "gpt-5.5" } }, ["gpt-5.5", "gpt-5.4", "o3"]);
   try {
+    h.db.kvSet("setting_codex_enabled", "1");
+    h.db.kvSet("openai_api_key", "sk-test-review-floor");
     check(
       "a legacy-only catalog leaves the stored pin alone rather than guessing",
       h.overrides().codex?.qa === "gpt-5.5",
       JSON.stringify(h.overrides().codex),
     );
     check("and the floor reports it blocked, so Codex is refused for QA", h.internals.codexRoleTarget("qa").blocked === true);
+    check(
+      "the preferred-provider resume gate refuses Codex too, so a warm QA session cannot bypass the floor",
+      h.internals.providerSafeForRole("codex", "qa", demandForRole("qa")) === false,
+    );
   } finally {
     h.dispose();
   }

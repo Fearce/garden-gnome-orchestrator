@@ -4846,9 +4846,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   private providerSafeForRole(provider: ImplementorProvider, role: Role, demand: CapacityDemand): boolean {
-    return this.roleCapacityOptions(role, demand).some(
-      (option) => option.provider === provider && this.roleCapacityReady(option, demand),
-    );
+    return this.readyRoleCandidates(role, demand).some((candidate) => candidate.provider === provider);
   }
 
   /** AccountManager's full API is always present in production. The fallback keeps old embedders and
