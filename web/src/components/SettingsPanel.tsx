@@ -1336,7 +1336,7 @@ function SubRoleModels({
               <span className="sub-model-label">{role}</span>
               <ModelSelect
                 value={sub[role] ?? ""}
-                options={models}
+                options={subId === CODEX_SUB_ID && role === "qa" ? models.filter(reviewCodexModelAllowed) : models}
                 defaultLabel={`Inherit (${defaultLabelFor(role)})`}
                 onChange={(m) => setModel(subId, role, m)}
               />
@@ -1346,6 +1346,16 @@ function SubRoleModels({
       )}
     </div>
   );
+}
+
+/** QA is a review stage, not the implementor selector: legacy Codex tiers stay available for general
+ * routing but are never offered in its dropdown. The server applies the same floor at dispatch, which
+ * also covers pasted custom ids and persisted settings from older builds. */
+function reviewCodexModelAllowed(model: string): boolean {
+  const id = model.trim().toLowerCase();
+  if (/^gpt-5\.[0-5](?:[-.]|$)/.test(id)) return false;
+  if (/^gpt-[0-4](?:[-.]|[a-z]|$)/.test(id)) return false;
+  return !/^o\d/i.test(id) && !/^codex(?:[-.]|$)/i.test(id);
 }
 
 const Caret = () => (

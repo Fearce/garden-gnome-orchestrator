@@ -134,6 +134,7 @@
     "test:implementation-memos": "tsx src/tests/implementationMemos.itest.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/implementation-memos-ui.test.tsx",
     "test:reveal-workspace": "tsx src/tests/revealWorkspace.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/workspace-path-ui.test.tsx",
     "test:model-select": "tsx src/tests/modelSelection.test.ts",
+    "test:review-model-floor": "tsx src/tests/reviewModelFloor.itest.ts",
     "test:model-catalog": "tsx src/tests/modelCatalog.test.ts",
     "test:model-catalog-health": "node scripts/model-catalog-health.test.cjs",
     "test:auto-model": "tsx src/tests/autoModelSelection.itest.ts",

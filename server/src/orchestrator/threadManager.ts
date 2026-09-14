@@ -77,6 +77,7 @@ import {
   applyImplementorModelPolicy,
   modelMatchesPolicy,
 } from "./modelRoutingPolicy.js";
+import { codexReviewTarget, type CodexReviewTarget } from "./reviewModelFloor.js";
 import { conservationResolvedCodexModel, conservationResolvedModel } from "./tokenConservation.js";
 import { providerIntent } from "./providerIntent.js";
 import { detectModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
@@ -2466,7 +2467,10 @@ export class ThreadManager implements OrchestratorApi {
       skipDirectorRetitle: this.settingBool("setting_skip_director_retitle", true),
       maxRecentRepos: this.settingNum("setting_max_recent_repos", 5, 1, 20),
       recentRepos: this.recentRepos(),
-      modelOverrides: this.modelOverrides(),
+      // Show the safe review target, not an old stored id that dispatch will refuse. Keep the raw
+      // override below unchanged: that preserves the fact that this is a substitution, which is what
+      // makes the replacement run at the owner's requested low effort.
+      modelOverrides: this.reviewSafeModelOverrides(),
       accountEffortCaps: this.accountEffortCaps(),
       modelDefaults: { ...config.models },
       claudeModels: this.pickableClaudeModels(),
@@ -2510,6 +2514,23 @@ export class ThreadManager implements OrchestratorApi {
     } catch {
       return {};
     }
+  }
+
+  /** The model matrix as Settings should display it. An old QA/reviewer Codex pin is projected to the
+   *  dispatchable floor target without overwriting its raw value, so the visible choice and the actual
+   *  run agree while `codexRoleTarget` can still apply the low-effort substitution. */
+  private reviewSafeModelOverrides(): ModelOverrides {
+    const overrides = this.modelOverrides();
+    const codex = overrides[CODEX_SUB_ID];
+    if (!codex) return overrides;
+    const safe = { ...codex };
+    for (const role of ["qa", "reviewer"] as const) {
+      const configured = codex[role];
+      if (!configured) continue;
+      const target = this.codexReviewFloored(role, configured);
+      if (!target.blocked) safe[role] = target.model;
+    }
+    return { ...overrides, [CODEX_SUB_ID]: safe };
   }
 
   /** The Claude model a given subscription runs a role on: the sub's own per-role override, else the
@@ -3660,17 +3681,34 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return codexPools();
   }
 
+  /** The Codex model this ROLE should run on: the dedicated-pool substitution, then the review floor. */
+  private codexRoleModel(role: Role, demand?: CapacityDemand): string {
+    return this.codexRoleTarget(role, demand).model;
+  }
+
+  /** `codexRoleModel` plus the effort a review-stage substitution carries, resolved together so the
+   *  capacity check, the run row and the spawned turn can never disagree about which model this is. */
+  private codexRoleTarget(role: Role, demand?: CapacityDemand): CodexReviewTarget {
+    return this.codexReviewFloored(role, this.codexDedicatedPoolModel(role, demand));
+  }
+
+  /** The review floor, applied against the models this installation can dispatch right now. A
+   *  non-review role and an already-current model both pass through untouched. */
+  private codexReviewFloored(role: Role, configured: string): CodexReviewTarget {
+    return codexReviewTarget(role, configured, this.codexRosterModels());
+  }
+
   /**
-   * The Codex model this ROLE should run on. A bounded role (reader/planner/researcher) is moved onto a
-   * model with its own dedicated allowance whenever that pool is visible, un-latched and has headroom —
-   * spending capacity that is otherwise wasted while the general pool burns down. Every other role, and
-   * every case where we can't see a usable pool, gets the configured Codex model unchanged.
+   * A bounded role (reader/planner/researcher) is moved onto a model with its own dedicated allowance
+   * whenever that pool is visible, un-latched and has headroom — spending capacity that is otherwise
+   * wasted while the general pool burns down. Every other role, and every case where we can't see a
+   * usable pool, gets the configured Codex model unchanged.
    *
    * Restricted to the roles in DEDICATED_POOL_ROLES on capability grounds, not to save quota: see
    * `codexPools.ts` for why a model instructed never to verify its own work must not be an implementor
    * or a reviewer.
    */
-  private codexRoleModel(role: Role, demand?: CapacityDemand): string {
+  private codexDedicatedPoolModel(role: Role, demand?: CapacityDemand): string {
     const configured = this.providerRoleModel("codex", role);
     if (!roleMayUseDedicatedPool(role)) return configured;
     const pools = this.codexPoolSnapshot();
@@ -3956,7 +3994,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Write-only bot token: stored server-side, never echoed back (only discordTokenPresent/last4 are).
     // An empty string clears it, falling back to DISCORD_BOT_TOKEN.
     if (patch.discordBotToken !== undefined) this.db.kvSet("discord_bot_token", patch.discordBotToken.trim());
-    if (patch.modelOverrides !== undefined) this.db.kvSet("setting_model_overrides", JSON.stringify(sanitizeModelOverrides(patch.modelOverrides)));
+    if (patch.modelOverrides !== undefined) {
+      this.db.kvSet("setting_model_overrides", JSON.stringify(sanitizeModelOverrides(patch.modelOverrides)));
+    }
     if (patch.accountEffortCaps !== undefined) this.db.kvSet("setting_account_effort_caps", JSON.stringify(sanitizeAccountEffortCaps(patch.accountEffortCaps)));
     // Write-only key: store the trimmed value, or clear it (empty string) so settings() falls back to
     // the env key (if any). The raw key is never returned to clients — only hasOpenaiKey/last4 are.
@@ -4877,7 +4917,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (codexAuthAvailable(!!key && /^sk-/.test(key))) {
         const usage = readCodexUsage();
         const pools = this.codexPoolSnapshot();
-        const configured = this.providerRoleModel("codex", role);
+        const configured = this.codexReviewFloored(role, this.providerRoleModel("codex", role)).model;
         const models = new Set<string>([configured]);
         const explicitRoleModel = !!this.modelOverrides()[CODEX_SUB_ID]?.[role]?.trim();
         if (this.settings().autoModelSelection && (role === "director" || role === "implementor")) {
@@ -5059,6 +5099,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!this.settings().codexEnabled) return false;
     const key = this.openaiApiKey();
     if (!codexAuthAvailable(!!key && /^sk-/.test(key))) return false;
+    // A review stage whose configured model is retired and whose catalog offers nothing current to take
+    // its place cannot run here WITHIN POLICY. Refusing the backend routes the role to another one; the
+    // alternative is spending the turn on the exact model the owner retired.
+    if (role && this.codexRoleTarget(role, demand).blocked) return false;
     // A bounded role routed to its own dedicated allowance is unaffected by the general pool's state,
     // so it stays available when only the general pool is capped or spent. Checked BEFORE the general
     // gates precisely so idle dedicated capacity is reachable rather than hidden behind them. Resolve
@@ -5312,6 +5356,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       .at(-1);
     if (previous?.summary === note.summary) return;
     this.postFinding({ threadId, fromRole, summary: note.summary, detail: note.detail, severity: note.severity });
+  }
+
+  /** Say ONCE per task that a review stage was moved off a retired Codex model. Every later round of the
+   *  same task repeats the substitution, and a note per QA round would bury the feed the owner reads. */
+  private noteReviewModelFloor(threadId: string, role: Role, target: CodexReviewTarget): void {
+    const summary = `${role === "qa" ? "QA" : "Review"} moved off ${target.replaced} to ${target.model}`;
+    if (this.db.listFindings(threadId).some((finding) => finding.summary === summary)) return;
+    this.postFinding({
+      threadId,
+      fromRole: role,
+      summary,
+      detail: `${target.replaced} is retired for the review stages, so this run uses ${target.model} at ${target.effort} effort. Pick a different current Codex model for QA in Settings → Subscriptions; the implementor's own model selection is untouched.`,
+      severity: "info",
+    });
   }
 
   // ---- concurrency queue ----
@@ -6503,9 +6561,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         acct = this.dispatchAccount(demand);
         triedClaudeAccounts.add(acct.id);
       }
-      const model = provider === "codex" ? this.codexRoleModel(role, demand) : provider === "grok" ? this.providerRoleModel("grok", role) : provider === "zai" ? this.providerRoleModel("zai", role) : this.modelFor(acct!.id, role);
+      const codexTarget = provider === "codex" ? this.codexRoleTarget(role, demand) : undefined;
+      const model = codexTarget ? codexTarget.model : provider === "grok" ? this.providerRoleModel("grok", role) : provider === "zai" ? this.providerRoleModel("zai", role) : this.modelFor(acct!.id, role);
       const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : provider === "zai" ? `zai:${model}` : acct!.label;
-      const effort = provider === "codex" ? this.codexEffort(model) : provider === "grok" ? this.grokEffort(model) : provider === "zai" ? this.zaiEffort(model) : undefined;
+      // A review-stage substitution carries its own cheap effort; the configured Codex effort applies to
+      // everything else, including a review role already pinned to a current model.
+      const codexEffort = codexTarget ? (codexTarget.effort ?? this.codexEffort(model)) : undefined;
+      const effort = codexEffort ?? (provider === "grok" ? this.grokEffort(model) : provider === "zai" ? this.zaiEffort(model) : undefined);
+      if (codexTarget?.replaced) this.noteReviewModelFloor(thread.id, role, codexTarget);
       const run = this.db.createRun({ threadId: thread.id, role, model, account: accountLabel, effort });
       this.emitRun(run.id);
       const cfg = makeCfg({ token: provider === "claude" ? acct!.token : undefined, resume: provider === "claude" ? resume : undefined, runId: run.id });
@@ -6519,7 +6582,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Codex");
         agent = this.createRoleAgent("codex", () => new CodexAgentRun({
           model,
-          effort: this.codexEffort(model),
+          effort: codexEffort!,
           cwd: thread.workspace,
           apiKey: this.openaiApiKey() ?? "",
           resume,
