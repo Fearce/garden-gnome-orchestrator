@@ -8,6 +8,7 @@ import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
 import { Office } from "./components/Office.js";
 import { NoticeBanner } from "./components/NoticeBanner.js";
+import { LazyChunkBoundary } from "./components/LazyChunkBoundary.js";
 import { useIdle } from "./components/screensaver/useIdle.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
@@ -112,8 +113,8 @@ export function App() {
       <MobileNav pane={mobilePane} setPane={setMobilePane} />
       <QuestionModal />
       <NoticeBanner />
-      {settingsOpen ? <Suspense fallback={null}><SettingsPanel onClose={() => setSettingsOpen(false)} /></Suspense> : null}
-      {gitOpen ? <Suspense fallback={null}><GitConsole onClose={closeGitConsole} /></Suspense> : null}
+      {settingsOpen ? <LazyChunkBoundary label="Settings" className="modal-load-error"><Suspense fallback={null}><SettingsPanel onClose={() => setSettingsOpen(false)} /></Suspense></LazyChunkBoundary> : null}
+      {gitOpen ? <LazyChunkBoundary label="Git console" className="modal-load-error"><Suspense fallback={null}><GitConsole onClose={closeGitConsole} /></Suspense></LazyChunkBoundary> : null}
       <ScreensaverGate />
     </div>
   );
@@ -129,9 +130,11 @@ function ScreensaverGate() {
   const idle = useIdle(idleMinutes * 60_000, enabled);
   if (!idle) return null;
   return (
-    <Suspense fallback={null}>
-      <Screensaver />
-    </Suspense>
+    <LazyChunkBoundary label="Screensaver" className="modal-load-error">
+      <Suspense fallback={null}>
+        <Screensaver />
+      </Suspense>
+    </LazyChunkBoundary>
   );
 }
 

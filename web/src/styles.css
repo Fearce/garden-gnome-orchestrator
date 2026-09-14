@@ -904,6 +904,21 @@ button { font-family: inherit; cursor: pointer; }
 .git-btn:hover { color: var(--text-dim); border-color: var(--line-strong); }
 .git-btn.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); }
 
+.lazy-error, .ide-load-error {
+  display: grid; place-items: center; min-height: 180px; padding: 18px;
+  color: var(--text-dim);
+}
+.modal-load-error {
+  position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 20px;
+  background: oklch(0 0 0 / 0.48); backdrop-filter: blur(2px);
+}
+.lazy-error-card {
+  width: min(420px, 100%); padding: 18px; border: 1px solid var(--line-strong);
+  border-radius: var(--r-md); background: var(--bg-1); box-shadow: var(--shadow-2);
+}
+.lazy-error-card strong { display: block; color: var(--text); font-size: 14px; }
+.lazy-error-card p { margin: 6px 0 12px; font-size: 12.5px; line-height: 1.45; color: var(--text-faint); }
+
 /* ---- categorized settings dialog ---- */
 .settings-scrim {
   position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;

@@ -28,6 +28,7 @@ import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { CoWork } from "./CoWork.js";
 import { CoworkBoardCards } from "./CoworkCards.js";
 import { ManualDeploymentBadge } from "./ManualDeploymentStatus.js";
+import { LazyChunkBoundary } from "./LazyChunkBoundary.js";
 const Ide = lazy(() => import("./ide/Ide.js").then(m => ({ default: m.Ide })));
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
@@ -237,7 +238,7 @@ export function Board() {
           </div>
         ) : null}
       </div>
-      {(ideOpened || boardView === "ide") && <div className="ide-mount" hidden={boardView !== "ide"}><Suspense fallback={<p>Opening IDE…</p>}><Ide /></Suspense></div>}
+      {(ideOpened || boardView === "ide") && <div className="ide-mount" hidden={boardView !== "ide"}><LazyChunkBoundary label="IDE" className="ide-load-error"><Suspense fallback={<p>Opening IDE…</p>}><Ide /></Suspense></LazyChunkBoundary></div>}
       {/* Co-work stays MOUNTED once opened, hidden the way the IDE is. Unmounting it was the whole
           "leaving the tab mid-turn loses your place" complaint: the session data lives in the store and
           keeps streaming either way, but the transcript's scroll position, expanded tool bursts, draft

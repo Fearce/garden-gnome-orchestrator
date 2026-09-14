@@ -4,6 +4,7 @@ import { ideApi, cachedIde, invalidateIde, type Entry, type FileData, type Searc
 import { parseSnippets, type Snippet } from "./snippets.js";
 import { readSnippetVsix, snippetSource } from "./vsix.js";
 import { ReturnToOrigin } from "../CodeContextBar.js";
+import { LazyChunkBoundary } from "../LazyChunkBoundary.js";
 import type { EditorSettings } from "./CodeEditor.js";
 import "./ide.css";
 
@@ -175,9 +176,9 @@ export function Ide() {
       {([ ["files", "Files"], ["search", "Search"], ["git", "Source control"], ["extensions", "Extensions & editor"] ] as const).map(([value, label]) => <button key={value} aria-pressed={mode === value} onClick={() => { setMode(value); if (value === "git") setGitOpened(true); setSidebar(true); }}>{label}</button>)}
     </nav>
     {error && <div className="ide-error" role="alert">{error}<button aria-label="Dismiss IDE error" onClick={() => setError("")}>×</button></div>}
-    {gitOpened && <div className="ide-git" hidden={mode !== "git"}><Suspense fallback={<p>Opening source control…</p>}>
+    {gitOpened && <div className="ide-git" hidden={mode !== "git"}><LazyChunkBoundary label="IDE source control" className="ide-load-error"><Suspense fallback={<p>Opening source control…</p>}>
       {repo.path ? <GitWorkspace key={workspace} visible={mode === "git" && boardView === "ide"} workspace={workspace} path={repo.path} onOpenFile={p => { setMode("files"); void openFile([repo.prefix, p].filter(Boolean).join("/")); }} hasDrafts={tabs.some(t => t.workspace === workspace && dirty(t))} /> : <div className="ide-welcome"><h3>No repository in this workspace</h3><p>Choose a workspace containing a Git checkout to use source control.</p></div>}
-    </Suspense></div>}<div className="ide-preferences" hidden={mode !== "extensions"}>
+    </Suspense></LazyChunkBoundary></div>}<div className="ide-preferences" hidden={mode !== "extensions"}>
       <h3>Editor & extensions</h3><p>Monaco powers desktop editing, with completion and diagnostics for JavaScript, TypeScript, JSON, HTML and CSS. Other bundled languages have syntax highlighting. Language analysis covers open files; project builds and language servers run outside GGO.</p>
       <div className="ide-setting"><label>Font size <input type="number" min={11} max={24} value={settings.fontSize} onChange={e => setSettings(s => ({ ...s, fontSize: Math.max(11, Math.min(24, Number(e.target.value) || 13)) }))} /></label><label><input type="checkbox" checked={settings.wrap} onChange={e => setSettings(s => ({ ...s, wrap: e.target.checked }))} /> Word wrap</label><label><input type="checkbox" checked={settings.minimap} onChange={e => setSettings(s => ({ ...s, minimap: e.target.checked }))} /> Minimap</label></div>
       <h3>VS Code snippets</h3><p>Import a .code-snippets or language snippet JSON file. Prefixes, scopes, tab stops and placeholders work in desktop completion (Ctrl+Space). Imported snippets stay in this browser. A language file without a scope applies to all languages.</p>
@@ -202,7 +203,7 @@ export function Ide() {
       <div className="ide-editor-area">
         <div className="ide-tabs" role="tablist" aria-label="Open files">{tabs.filter(t => t.workspace === workspace).map(t => <div className={"ide-tab" + (active === keyOf(t) ? " active" : "")} key={keyOf(t)}><button role="tab" aria-selected={active === keyOf(t)} title={t.path} onClick={() => { setActive(keyOf(t)); setCompare(null); }}>{dirty(t) ? "● " : ""}{t.path.split("/").pop()}</button><button aria-label={`Close ${t.path}`} onClick={() => close(t)}>×</button></div>)}</div>
         {tab && <div className="ide-breadcrumb"><span title={tab.path}>{tab.path}</span><button disabled={saving || tab.version === null} onClick={() => void reload()}>Reload</button><button disabled={tab.version === null} onClick={() => void ideApi<FileData>("file", { workspace, path: tab.path }, undefined, undefined, true).then(setCompare).catch(report)}>Compare disk</button></div>}
-        {compare && tab ? <div className="ide-compare"><div><h4>Your draft</h4><pre>{tab.text}</pre></div><div><h4>Current disk version</h4><pre>{compare.text}</pre></div><button onClick={() => setCompare(null)}>Back to editor</button></div> : editorProps ? <Suspense fallback={<div className="ide-welcome">Loading editor…</div>}>{touch ? <TouchEditor {...editorProps} /> : <CodeEditor {...editorProps} />}</Suspense> : <div className="ide-welcome"><span className="ide-watermark">{`{ }`}</span><h3>Your development workspace</h3><p>Open a file from the explorer or search the project.</p><div><kbd>Ctrl P</kbd> Find a file <kbd>Ctrl S</kbd> Save</div><p className="faint">UTF-8 text · 2 MB per file · Safe saves</p></div>}
+        {compare && tab ? <div className="ide-compare"><div><h4>Your draft</h4><pre>{tab.text}</pre></div><div><h4>Current disk version</h4><pre>{compare.text}</pre></div><button onClick={() => setCompare(null)}>Back to editor</button></div> : editorProps ? <LazyChunkBoundary label="Editor" className="ide-load-error"><Suspense fallback={<div className="ide-welcome">Loading editor…</div>}>{touch ? <TouchEditor {...editorProps} /> : <CodeEditor {...editorProps} />}</Suspense></LazyChunkBoundary> : <div className="ide-welcome"><span className="ide-watermark">{`{ }`}</span><h3>Your development workspace</h3><p>Open a file from the explorer or search the project.</p><div><kbd>Ctrl P</kbd> Find a file <kbd>Ctrl S</kbd> Save</div><p className="faint">UTF-8 text · 2 MB per file · Safe saves</p></div>}
       </div>
     </div>
     <footer className="ide-status" role="status"><span>{status}</span><span>{tabs.filter(dirty).length} unsaved{touch ? " · Touch text editor" : " · UTF-8"}</span></footer>

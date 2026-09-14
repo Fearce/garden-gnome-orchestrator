@@ -2023,11 +2023,13 @@ function applyEvent(ev: ServerEvent): void {
       }));
       break;
     case "repo.list":
-      useStore.setState((s) =>
+      useStore.setState((s) => {
         // Not the reply to the request in flight — an earlier open's answer, arriving late. Taking it
         // would auto-select the wrong repo AND clear the pending flag the real answer still needs.
-        ev.forThread !== s.repoListFor ? {} : { repos: ev.repos, repoPreferred: ev.preferred, repoListPending: false },
-      );
+        // During a mixed web/server deploy, older servers omit `forThread`; treat that as this request.
+        const replyFor = Object.prototype.hasOwnProperty.call(ev, "forThread") ? (ev.forThread ?? null) : s.repoListFor;
+        return replyFor !== s.repoListFor ? {} : { repos: ev.repos, repoPreferred: ev.preferred, repoListPending: false };
+      });
       break;
     case "repo.state":
       useStore.setState((s) => ({ repoStates: { ...s.repoStates, [ev.path]: ev.state } }));

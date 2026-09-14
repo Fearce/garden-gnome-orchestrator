@@ -1323,7 +1323,12 @@ function SubRoleModels({
   const [open, setOpen] = useState(false);
   const { overrides, setModel } = useModelOverrides();
   const sub = overrides[subId] ?? {};
-  const count = roles.filter((r) => sub[r]).length;
+  const codexQa = (role: Role): boolean => subId === CODEX_SUB_ID && role === "qa";
+  const modelVisible = (role: Role, model: string): boolean => !codexQa(role) || reviewCodexModelAllowed(model);
+  const count = roles.filter((r) => {
+    const model = sub[r];
+    return !!model && modelVisible(r, model);
+  }).length;
   return (
     <div className="sub-field">
       <button className={"sub-disclosure" + (open ? " open" : "")} onClick={() => setOpen((o) => !o)}>
@@ -1331,17 +1336,22 @@ function SubRoleModels({
       </button>
       {open && (
         <div className="sub-models">
-          {roles.map((role) => (
-            <div className="sub-model-row" key={role}>
-              <span className="sub-model-label">{role}</span>
-              <ModelSelect
-                value={sub[role] ?? ""}
-                options={subId === CODEX_SUB_ID && role === "qa" ? models.filter(reviewCodexModelAllowed) : models}
-                defaultLabel={`Inherit (${defaultLabelFor(role)})`}
-                onChange={(m) => setModel(subId, role, m)}
-              />
-            </div>
-          ))}
+          {roles.map((role) => {
+            const roleOptions = codexQa(role) ? models.filter(reviewCodexModelAllowed) : models;
+            const stored = sub[role] ?? "";
+            const visibleValue = stored && modelVisible(role, stored) ? stored : "";
+            return (
+              <div className="sub-model-row" key={role}>
+                <span className="sub-model-label">{role}</span>
+                <ModelSelect
+                  value={visibleValue}
+                  options={roleOptions}
+                  defaultLabel={`Inherit (${defaultLabelFor(role)})`}
+                  onChange={(m) => setModel(subId, role, m)}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
