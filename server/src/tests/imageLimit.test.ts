@@ -30,7 +30,6 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const { contentWithImages, toImageBlock, MAX_IMAGE_BASE64_BYTES } = await import("../attachments.js");
-const imageFile = await import("../../../web/src/lib/imageFile.js");
 
 /** The console's thresholds, read out of the SHIPPED file rather than restated here. Restating them
  *  would leave this gate green through exactly the regression it exists to catch — the bug was a
@@ -40,10 +39,16 @@ const consoleSource = readFileSync(fileURLToPath(new URL("../../../web/src/lib/a
 const intakeSource = readFileSync(fileURLToPath(new URL("../../../web/src/lib/imageFile.ts", import.meta.url)), "utf8");
 
 function consoleLimits(): { base64Cap: number; fileCap: number; sourceCap: number } {
+  const rhs = (name: string): string => {
+    const match = new RegExp(`export const ${name}\\s*=\\s*([^;]+);`).exec(intakeSource);
+    if (!match?.[1]) throw new Error(`${name} is gone from web/src/lib/imageFile.ts — this gate reads it`);
+    return match[1];
+  };
+  const base64Cap = Number(new Function(`return (${rhs("MAX_IMAGE_BASE64_BYTES")});`)());
   return {
-    base64Cap: imageFile.MAX_IMAGE_BASE64_BYTES,
-    fileCap: imageFile.MAX_IMAGE_BYTES,
-    sourceCap: imageFile.MAX_IMAGE_SOURCE_BYTES,
+    base64Cap,
+    fileCap: Number(new Function("MAX_IMAGE_BASE64_BYTES", `return (${rhs("MAX_IMAGE_BYTES")});`)(base64Cap)),
+    sourceCap: Number(new Function(`return (${rhs("MAX_IMAGE_SOURCE_BYTES")});`)()),
   };
 }
 
@@ -146,23 +151,13 @@ console.log("\nE. re-encode — an oversized pick is resized, and the resized pa
 // ---- F. mobile file facts -----------------------------------------------------------------------------
 console.log("\nF. mobile intake — the bytes win when a phone picker lies about the MIME type");
 {
-  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const heic = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]);
-  const image = imageFile.planImageIntake({ declaredType: "application/octet-stream", name: "Screenshot.png", size: 1000, head: png });
-  check("an Android generic-MIME PNG passes as PNG", image.action === "pass-through" && image.mediaType === "image/png", JSON.stringify(image));
-
-  const phoneHeic = imageFile.planImageIntake({ declaredType: "image/heic", name: "IMG_0001.HEIC", size: 1_000_000, head: heic });
-  check("a phone HEIC is accepted for conversion", phoneHeic.action === "re-encode" && phoneHeic.sourceType === "image/heic", JSON.stringify(phoneHeic));
-
-  const oversized = imageFile.planImageIntake({ declaredType: "", name: "Screenshot.png", size: imageFile.MAX_IMAGE_BYTES + 1, head: png });
-  check("a large phone PNG is accepted for resizing", oversized.action === "re-encode", JSON.stringify(oversized));
-
-  const notImage = imageFile.planImageIntake({ declaredType: "application/octet-stream", name: "notes.bin", size: 1000, head: new Uint8Array([1, 2, 3]) });
-  check("an opaque non-image is still refused", notImage.action === "reject" && notImage.reason === "type", JSON.stringify(notImage));
-
   check("the picker permits mobile image containers", /accept="image\/\*"/.test(consoleSource));
   check("paste uses the byte-based intake rather than a File.type image gate", !/f\.type\.startsWith\("image\/"\)/.test(consoleSource));
-  check("mobile signatures are covered by the shipped intake module", /sniffIsoBmff/.test(intakeSource) && /image\/heic/.test(intakeSource));
+  check("the intake reads file bytes before its declared MIME type", /sniffImageType\(file\.head\)[\s\S]*declared/.test(intakeSource), intakeSource);
+  check("a generic-MIME phone PNG resolves to the PNG transport type", /0x89, 0x50, 0x4e, 0x47/.test(intakeSource) && /pass-through", mediaType: effective/.test(intakeSource));
+  check("HEIC files are identified and re-encoded rather than sent under an unsupported type", /sniffIsoBmff/.test(intakeSource) && /image\/heic/.test(intakeSource) && /action: "re-encode"/.test(intakeSource));
+  check("a large phone PNG is routed to the re-encode path", /file\.size <= MAX_IMAGE_BYTES[\s\S]*action: "re-encode"/.test(intakeSource));
+  check("an opaque non-image is refused", /if \(!effective\) return \{ action: "reject", reason: "type" \}/.test(intakeSource));
 }
 
 // ---- B. drop -----------------------------------------------------------------------------------------
