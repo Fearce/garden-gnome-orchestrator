@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { Account } from "./accounts/account.js";
+import { resolveCodexLauncher } from "./agents/codexLauncher.js";
 import { testInvocationUsesDefaultData } from "./runtimeIsolation.js";
 
 // Parse a numeric env var, falling back when unset OR non-numeric — so a typo'd value can't become a
@@ -183,11 +184,12 @@ export const config = {
       "gpt-5.4-mini",
       "gpt-5.3-codex-spark",
     ] as const,
-    // The Codex CLI is a global npm install; we spawn its bin/codex.js with this node binary directly
-    // (PATH-independent, no .cmd shim). Override CODEX_BIN_JS to point at a different install.
-    binJs:
-      process.env.CODEX_BIN_JS ||
-      resolve(process.env.APPDATA ?? resolve(homedir(), "AppData", "Roaming"), "npm", "node_modules", "@openai", "codex", "bin", "codex.js"),
+    // An explicit CODEX_BIN_JS remains the compatibility override. Otherwise discover the global npm
+    // CLI or the native CLI installed by Codex Desktop, so enabling a Codex subscription works for a
+    // normal desktop-app installation without an extra npm setup step.
+    // Resolve on use, not only at process boot: a user can install Codex Desktop while GGO is
+    // already running, then enable their Codex subscription without needing a server restart.
+    launcher: () => resolveCodexLauncher(),
     // A dedicated CODEX_HOME isolated from the operator's personal ~/.codex, so the orchestrator's
     // config/sessions don't inherit personal plugins/notify hooks (which would misfire under headless
     // `codex exec`). Auth is SEEDED into it — see sourceAuthHome — rather than relying on env vars

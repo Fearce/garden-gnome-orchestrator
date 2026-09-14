@@ -339,10 +339,11 @@ async function main() {
   const sdkInstalled = parseVersion(sdkManifest?.version);
   const claudeRuntimeInstalled = parseVersion(sdkManifest?.claudeCodeVersion);
 
-  const codexExists = fs.existsSync(config.codex.binJs);
+  const codexLauncher = config.codex.launcher();
+  const codexExists = fs.existsSync(codexLauncher.path);
   const codexResult = codexExists
-    ? runCommand(process.execPath, [config.codex.binJs, "--version"], { shell: false })
-    : { ok: false, output: "", error: `not found at ${config.codex.binJs}` };
+    ? runCommand(codexLauncher.command, [...codexLauncher.args, "--version"], { shell: false })
+    : { ok: false, output: "", error: `not found at ${codexLauncher.path}` };
   const grokExists = fs.existsSync(config.grok.bin);
   const grokResult = grokExists
     // `npm run` publishes npm_* variables. Grok mistakes their presence for an npm-based Grok
@@ -410,7 +411,7 @@ async function main() {
       localError: codexResult.error,
       latestError: codexLatest.error,
       updateCommand: "npm install -g @openai/codex@latest",
-      detail: config.codex.binJs,
+      detail: `${codexLauncher.source}: ${codexLauncher.path}`,
     },
     {
       label: "Grok CLI",

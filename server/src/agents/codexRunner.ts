@@ -510,9 +510,10 @@ export class CodexAgentRun implements AgentRunLike {
     // A resumed invocation already has a durable thread id even before the CLI repeats thread.started.
     // Keeping it here lets an immediate priority-now message safely interrupt the startup window.
     this.sessionId = resumeId;
-    if (!existsSync(config.codex.binJs)) {
+    const launcher = config.codex.launcher();
+    if (!existsSync(launcher.path)) {
       this.turnStarting = false;
-      this.finishTurn({ subtype: "error", isError: true, result: `Codex CLI not found at ${config.codex.binJs}. Install it with \`npm i -g @openai/codex\` or set CODEX_BIN_JS.` });
+      this.finishTurn({ subtype: "error", isError: true, result: `Codex CLI not found at ${launcher.path}. Install Codex Desktop or run \`npm i -g @openai/codex\`; CODEX_BIN_JS can override the npm launcher.` });
       return;
     }
     // Auth: the modern Codex CLI (>=0.14x) does NOT read OPENAI_API_KEY from the env for its
@@ -558,7 +559,7 @@ export class CodexAgentRun implements AgentRunLike {
     else delete env.OPENAI_API_KEY;
     let child: ChildProcess;
     try {
-      child = spawn(process.execPath, [config.codex.binJs, ...args], { cwd: this.cfg.cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+      child = spawn(launcher.command, [...launcher.args, ...args], { cwd: this.cfg.cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     } catch (err) {
       this.turnStarting = false;
       this.turnActive = false;

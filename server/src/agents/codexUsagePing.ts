@@ -80,8 +80,9 @@ interface RpcRateLimitsResult {
  *  Returns null on any failure — no auth, spawn error, RPC error, timeout — callers keep the last
  *  snapshot in that case rather than blanking the meters. */
 export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PING_TIMEOUT_MS): Promise<CodexUsageDTO | null> {
-  if (!existsSync(config.codex.binJs)) {
-    noteCodexUsageError(`Codex CLI not found at ${config.codex.binJs} (install it globally: npm install -g @openai/codex)`);
+  const launcher = config.codex.launcher();
+  if (!existsSync(launcher.path)) {
+    noteCodexUsageError(`Codex CLI not found at ${launcher.path} (install Codex Desktop or run: npm install -g @openai/codex)`);
     return null;
   }
   await mkdir(config.codex.home, { recursive: true }).catch(() => {});
@@ -99,7 +100,7 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
 
   let child: ChildProcess;
   try {
-    child = spawn(process.execPath, [config.codex.binJs, "app-server"], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    child = spawn(launcher.command, [...launcher.args, "app-server"], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
   } catch {
     noteCodexUsageError("failed to start the Codex CLI process");
     return null;
@@ -258,7 +259,8 @@ function toMeterWindow(w: RpcWindow | null | undefined): MeterWindow | null {
  *  the point: it STARTS a fresh 5h window. The rollout it writes doubles as a free meter snapshot.
  *  Resolves true only on a completed turn. */
 export async function codexWakeTurn(apiKey: string | undefined, model: string, timeoutMs = WAKE_TIMEOUT_MS): Promise<boolean> {
-  if (!existsSync(config.codex.binJs)) return false;
+  const launcher = config.codex.launcher();
+  if (!existsSync(launcher.path)) return false;
   await mkdir(config.codex.home, { recursive: true }).catch(() => {});
   const authMode = await seedCodexAuth(apiKey).catch(() => "none" as const);
   if (authMode === "none") return false;
@@ -267,7 +269,7 @@ export async function codexWakeTurn(apiKey: string | undefined, model: string, t
   if (authMode === "apikey" && key) env.OPENAI_API_KEY = key;
   else delete env.OPENAI_API_KEY;
   const args = [
-    config.codex.binJs,
+    ...launcher.args,
     "exec",
     "--json",
     "--skip-git-repo-check",
@@ -286,7 +288,7 @@ export async function codexWakeTurn(apiKey: string | undefined, model: string, t
   return new Promise((resolve) => {
     let child: ChildProcess;
     try {
-      child = spawn(process.execPath, args, { cwd: config.codex.home, env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+      child = spawn(launcher.command, args, { cwd: config.codex.home, env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
     } catch {
       resolve(false);
       return;

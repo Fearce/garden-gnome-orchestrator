@@ -53,6 +53,7 @@
     "test:grok-reasoning": "tsx src/tests/grokReasoning.test.ts",
     "test:grok-usage": "tsx src/tests/grokUsage.test.ts",
     "test:codex-usage": "tsx src/tests/codexUsage.test.ts",
+    "test:codex-launcher": "tsx src/tests/codexLauncher.test.ts",
     "test:schedule-detect": "tsx src/tests/scheduleDetect.test.ts",
     "test:scheduler": "tsx src/tests/scheduler.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/scheduled-tasks-ui.test.ts",
     "test:scheduler-latency": "node scripts/probe-scheduler-latency.test.cjs",
