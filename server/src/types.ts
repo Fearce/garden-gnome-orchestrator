@@ -194,9 +194,13 @@ export interface Thread {
 /** The board-card projection sent in the initial WebSocket snapshot. The full enriched brief and the
  * raw owner prompt are task-detail content, fetched only after the owner opens that task — but the
  * card's activity strip falls back to the brief's first line for any task that isn't streaming, so a
- * short preview travels with the summary. Dropping the full brief saves ~80% of those bytes while
- * keeping the board's subtitles. */
-export type ThreadSummary = Omit<Thread, "brief" | "rawPrompt"> & { briefPreview: string };
+ * short preview travels with the summary. The latest conversational message also rides along, so
+ * compact surfaces such as the screensaver can show current task context without loading every
+ * task's history. Dropping the full brief/history saves the overwhelming majority of those bytes. */
+export type ThreadSummary = Omit<Thread, "brief" | "rawPrompt"> & {
+  briefPreview: string;
+  latestMessagePreview: string;
+};
 
 /** How much of the brief the board card can show — one truncated line, never the whole brief. */
 export const BRIEF_PREVIEW_CHARS = 200;

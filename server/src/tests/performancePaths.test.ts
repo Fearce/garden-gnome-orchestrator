@@ -60,6 +60,9 @@ try {
     insert.run({ id, threadId: thread.id, content: id, createdAt });
   }
 
+  const messageSummary = db.listThreadSummaries().find((item) => item.id === thread.id);
+  assert.equal(messageSummary?.latestMessagePreview, "m-e", "board summary carries the newest readable task message");
+
   const newest = db.listMessagePage(thread.id, 2);
   assert.deepEqual(newest.messages.map((message) => message.id), ["m-d", "m-e"], "newest page is chronological");
   assert.equal(newest.hasMore, true, "newest page advertises older history");

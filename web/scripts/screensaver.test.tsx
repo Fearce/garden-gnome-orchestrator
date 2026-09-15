@@ -231,6 +231,24 @@ const narrated = sceneTasks(
 check("a working lane narrates the live agent stream", narrated[0]?.activity === "now the second thing", narrated[0]?.activity);
 const quiet = sceneTasks({ a: thread({ id: "a", state: "queued", briefPreview: "from the brief" }) }, {}, {});
 check("a silent lane falls back to the brief", quiet[0]?.activity === "from the brief", quiet[0]?.activity);
+const previewed = sceneTasks({ a: thread({ id: "a", state: "queued", briefPreview: "from the brief", latestMessagePreview: "latest snapshot message" }) }, {}, {});
+check("an unloaded task uses its latest snapshot message", previewed[0]?.activity === "latest snapshot message", previewed[0]?.activity);
+const messaged = sceneTasks(
+  { a: thread({ id: "a", state: "queued", briefPreview: "from the brief" }) },
+  {},
+  {},
+  MAX_LANES,
+  { a: [{ kind: "system", at: NOW - 2_000, text: "owner's earlier note" }, { kind: "text", at: NOW - 1_000, role: "implementor", runId: "r", text: "- latest task update" }] },
+);
+check("the line below a house shows the task's latest message", messaged[0]?.activity === "latest task update", messaged[0]?.activity);
+const toolsOnly = sceneTasks(
+  { a: thread({ id: "a", state: "queued", briefPreview: "from the brief" }) },
+  {},
+  {},
+  MAX_LANES,
+  { a: [{ kind: "tool_result", at: NOW, runId: "r", id: "result", isError: false, preview: "private tool output" }] },
+);
+check("tool output never replaces the readable task message", toolsOnly[0]?.activity === "from the brief", toolsOnly[0]?.activity);
 check("the card shows the repo leaf, not the whole path", quiet[0]?.workspace === "garden-gnome-orchestrator", quiet[0]?.workspace);
 
 /* ---- 3. the lifecycle --------------------------------------------------------------------------- */
@@ -299,6 +317,9 @@ Object.assign(useStore.getInitialState(), {
   },
   runs: { r1: run({ id: "r1", threadId: "a", role: "implementor" }) },
   threadDrafts: {},
+  threadFeeds: {
+    a: [{ kind: "text", at: NOW, role: "implementor", runId: "r1", text: "Latest implementation message" }],
+  },
 });
 const markup = renderToStaticMarkup(React.createElement(Screensaver));
 check("the scene renders a lane per task", (markup.match(/class="gs-card"/g) ?? []).length === 4, markup.slice(0, 120));
@@ -308,10 +329,11 @@ check("the queued planner holds a saw", markup.includes("gs-worker gs-t-saw"));
 check("every card carries the full thirteen-piece build", (markup.match(/gs-b-piece/g) ?? []).length === 4 * 13);
 check("a task's real title is on its card", markup.includes("Rope physics for the office gnomes"));
 check("a task's real state is on its badge", markup.includes(">implementing<") && markup.includes(">failed<"));
+check("the latest task message renders below its house", markup.includes("Latest implementation message"));
 check("nothing in the scene is focusable or clickable", !/<(?:button|a |input|select)/.test(markup));
 check("the scene is inert to assistive tech", markup.includes('role="presentation"'));
 
-Object.assign(useStore.getInitialState(), { threads: {}, runs: {} });
+Object.assign(useStore.getInitialState(), { threads: {}, runs: {}, threadFeeds: {} });
 const bare = renderToStaticMarkup(React.createElement(Screensaver));
 check("an empty board still shows the beam", bare.includes("gs-beam"));
 check("an empty board says so instead of drawing nothing", bare.includes("gs-empty") && !bare.includes('class="gs-card"'));

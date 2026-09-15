@@ -22,7 +22,7 @@
  * numbers instead of re-walking every run sixty times a second.
  */
 
-import type { AgentRun, Role, Thread, ThreadState } from "../../types.js";
+import type { AgentRun, FeedItem, Role, Thread, ThreadState } from "../../types.js";
 import { stateColor, stateLabel } from "../../lib/format.js";
 import type { Tool } from "./rig.js";
 
@@ -56,7 +56,7 @@ export interface SceneTask {
   badge: string;
   /** A CSS colour expression for the card's state accent, from the console's own state palette. */
   stateColor: string;
-  /** The task's own live line: the streaming agent text if any, else its brief preview. */
+  /** The newest task message, or the live agent text while it is still streaming. */
   activity: string;
   /** When the clock started, so the lane can show a real elapsed time. Null while never started. */
   startedAt: number | null;
@@ -220,6 +220,18 @@ function laneLine(text: string): string {
 /** As much of the activity line as a lane card fits on its two wrapped rows. */
 const LANE_LINE_MAX = 120;
 
+/** The latest conversational line for a task. Tool calls and reasoning are intentionally omitted:
+ *  this sits below the house as a readable status from the task, not a stream of implementation
+ *  mechanics. A user/director system line still counts because it is a real task message. */
+function latestMessage(feed: FeedItem[] | undefined): string | undefined {
+  if (!feed) return undefined;
+  for (let i = feed.length - 1; i >= 0; i -= 1) {
+    const item = feed[i]!;
+    if ((item.kind === "text" || item.kind === "system") && item.text.trim()) return item.text;
+  }
+  return undefined;
+}
+
 /** The last path segment of a workspace, which is the only part that fits a card. */
 function workspaceLeaf(workspace: string): string {
   const parts = workspace.split(/[\\/]+/).filter(Boolean);
@@ -255,13 +267,14 @@ function groupRuns(runs: Record<string, AgentRun>): Map<string, AgentRun[]> {
  *  Collaborator threads (`parentId`) are left out for the same reason the board leaves them out:
  *  they belong inside their lead. Closed tasks are off the board entirely.
  *
- *  `drafts` is the live streaming agent text keyed by task id, so a working gnome's card narrates
- *  what its agent is actually saying rather than a canned line. */
+ *  `drafts` is the live streaming agent text keyed by task id. `feeds` supplies a loaded durable
+ *  conversation; the compact board snapshot provides `latestMessagePreview` for every other task. */
 export function sceneTasks(
   threads: Record<string, Thread>,
   runs: Record<string, AgentRun>,
   drafts: Record<string, string | undefined> = {},
   maxLanes = MAX_LANES,
+  feeds: Record<string, FeedItem[] | undefined> = {},
 ): SceneTask[] {
   const byThread = groupRuns(runs);
 
@@ -274,7 +287,7 @@ export function sceneTasks(
     const threadRuns = byThread.get(thread.id) ?? [];
     const role = roleFor(thread, threadRuns);
     const target = targetPhase(thread.state);
-    const line = drafts[thread.id] || thread.briefPreview || thread.brief?.split("\n")[0] || thread.title;
+    const line = drafts[thread.id] || latestMessage(feeds[thread.id]) || thread.latestMessagePreview || thread.briefPreview || thread.brief?.split("\n")[0] || thread.title;
     return {
       id: thread.id,
       title: thread.title,

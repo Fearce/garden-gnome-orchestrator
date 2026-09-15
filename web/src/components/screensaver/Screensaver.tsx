@@ -140,11 +140,12 @@ export function Screensaver() {
   const threads = useStore((s) => s.threads);
   const runs = useStore((s) => s.runs);
   const drafts = useStore((s) => s.threadDrafts);
+  const feeds = useStore((s) => s.threadFeeds);
   const tasks = useMemo(() => {
     const text: Record<string, string | undefined> = {};
     for (const [id, draft] of Object.entries(drafts)) text[id] = draft?.text;
-    return sceneTasks(threads, runs, text);
-  }, [threads, runs, drafts]);
+    return sceneTasks(threads, runs, text, undefined, feeds);
+  }, [threads, runs, drafts, feeds]);
 
   const reducedMotion = usePrefersReducedMotion();
   const hidden = useDocumentHidden();

@@ -168,11 +168,13 @@ function rowToThreadFromListing(r: Row): Thread {
 /** The board only needs task-card fields. Keep the task's often-long prompt and full enriched brief out
  * of the hello/reconnect snapshot; opening a task fetches its brief with the rest of its history. The
  * card's activity strip still falls back to the brief's first line, so a truncated preview rides along
- * (`brief_preview`, clipped in SQL) instead of the whole thing. */
+ * (`brief_preview`, clipped in SQL) instead of the whole thing. The latest readable message is another
+ * bounded card field; the correlated indexed lookup avoids loading every task history at connect. */
 function rowToThreadSummaryFromListing(r: Row): ThreadSummary {
   const { brief: _brief, rawPrompt: _rawPrompt, ...summary } = rowToThreadFromListing(r);
   const preview = typeof r.brief_preview === "string" ? r.brief_preview : "";
-  return { ...summary, briefPreview: preview.split(/[\r\n]/)[0]!.trim() };
+  const latestMessagePreview = typeof r.latest_message_preview === "string" ? r.latest_message_preview : "";
+  return { ...summary, briefPreview: preview.split(/[\r\n]/)[0]!.trim(), latestMessagePreview };
 }
 
 /** Every `threads` column the DTO needs, MINUS the heavy `stage_outputs` blob — that column is
@@ -185,6 +187,9 @@ const THREAD_LISTING_COLUMNS = `id, title, state, workspace, brief, raw_prompt, 
 
 const THREAD_SUMMARY_COLUMNS = `id, title, state, workspace, error, effort_override,
   substr(brief, 1, ${BRIEF_PREVIEW_CHARS}) AS brief_preview,
+  (SELECT substr(content, 1, ${BRIEF_PREVIEW_CHARS}) FROM messages
+   WHERE thread_id = threads.id AND kind IN ('text', 'system')
+   ORDER BY created_at DESC, rowid DESC LIMIT 1) AS latest_message_preview,
   model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
   active_deadline_at, agent_count, parent_id, assignment, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;

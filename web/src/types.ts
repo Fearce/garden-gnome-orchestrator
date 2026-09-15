@@ -137,6 +137,8 @@ export interface Thread {
   /** First line of the brief, clipped — the board snapshot carries this instead of the full brief so a
    * card that isn't streaming still has its activity line. Absent on full-Thread upserts. */
   briefPreview?: string;
+  /** Latest readable task message, clipped for the board snapshot. Full history remains lazy-loaded. */
+  latestMessagePreview?: string;
   /** Internal task context; omitted from the board hello snapshot. */
   rawPrompt?: string;
   error?: string | null;
