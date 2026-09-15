@@ -32,6 +32,13 @@ const archive = path.join(dir, "archive.md");
 const body = `# archive\n\n## Prototype\n\n- **id**: \`task-1\`\n\n### Deliverables (2)\n\n- **Design rationale** : \`${report}\` (2026-09-13 18:43:38 UTC)\n- **Overview** : \`${shot}\` (2026-09-13 18:43:44 UTC)\n\n### Run trail (0)\n`;
 fs.writeFileSync(archive, body);
 assert.equal(parseDeliverables(body, "task-1").length, 2, "parses only the named task's structured block");
+const multiTask = `# archive\n\n---\n\n## Empty\n\n- **id**: \`empty-task\`\n\n### Deliverables (0)\n\n_None._\n\n### Run trail (0)\n\n---\n\n## Other\n\n- **id**: \`other-task\`\n\n### Deliverables (1)\n\n- **Other file** : \`${shot}\` (2026-09-13 18:43:44 UTC)\n\n### Run trail (0)\n`;
+assert.throws(
+  () => parseDeliverables(multiTask, "empty-task"),
+  /no parseable deliverables for this task/,
+  "a task with no files never consumes a later task's Deliverables section",
+);
+assert.equal(parseDeliverables(multiTask, "other-task")[0].label, "Other file", "the requested task still parses inside a batch archive");
 const logs = [];
 assert.equal(main(["task-1", "--archive", archive], { dbPath, log: (line) => logs.push(line), warn: () => {} }), 0);
 assert.match(logs[0], /restored 1 deliverable card\(s\), 1 already present/, "same file under a newer label is not duplicated");

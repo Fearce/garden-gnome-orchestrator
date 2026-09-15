@@ -38,13 +38,18 @@ function parseArgs(argv) {
 /** Parse only the structured Deliverables block produced by archive-thread.cjs. The archive can contain
  * arbitrary agent prose, so no content outside this block is ever interpreted as a file card. */
 function parseDeliverables(markdown, taskId) {
+  const normalized = markdown.replace(/\r\n/g, "\n");
   const taskMarker = `- **id**: \`${taskId}\``;
-  const taskStart = markdown.indexOf(taskMarker);
+  const taskStart = normalized.indexOf(taskMarker);
   if (taskStart < 0) throw new Error(`archive does not contain task ${taskId}`);
-  const deliverablesStart = markdown.indexOf("### Deliverables (", taskStart);
+  const nextTask = normalized.indexOf("\n---\n\n## ", taskStart);
+  const taskBlock = normalized.slice(taskStart, nextTask < 0 ? undefined : nextTask);
+  // Work backwards from the renderer-owned Run trail heading. Finding prose is arbitrary and may
+  // itself quote a Deliverables heading; the real structured section is the last one before Run trail.
+  const runTrailStart = taskBlock.lastIndexOf("\n### Run trail (");
+  const deliverablesStart = runTrailStart < 0 ? -1 : taskBlock.lastIndexOf("\n### Deliverables (", runTrailStart);
   if (deliverablesStart < 0) throw new Error("archive has no Deliverables section for this task");
-  const nextSection = markdown.indexOf("\n### ", deliverablesStart + 1);
-  const block = markdown.slice(deliverablesStart, nextSection < 0 ? undefined : nextSection);
+  const block = taskBlock.slice(deliverablesStart, runTrailStart);
   const result = [];
   for (const line of block.split(/\r?\n/)) {
     // archive-thread.cjs emits: - **label** : `path` (2026-... UTC)
