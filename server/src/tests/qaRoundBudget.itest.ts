@@ -383,6 +383,67 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test E2: a QA-fixes reviewer that cannot edit must return work to the implementor ------------
+  // QA used to park this ordinary repair for human review. The reviewer has already supplied an
+  // actionable defect, so the normal implementor↔QA loop must carry it forward instead.
+  console.log("\nTest E2 — QA-fixes hands an unresolved, unchanged defect back to implementation");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      let calls = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).runQA = async (_thread: Thread, opts: { round: number; applyFixes?: boolean }): Promise<{ pass: boolean; summary: string; changed: boolean }> => {
+        h.qaRounds.push(opts.round);
+        check("QA-fixes remains enabled on the repair verification", opts.applyFixes === true, String(opts.applyFixes));
+        calls++;
+        return calls === 1
+          ? { pass: false, summary: "automatic discovery is still missing", changed: false }
+          : { pass: true, summary: "automatic discovery now works", changed: false };
+      };
+      await runLoop(h, id, 4, true);
+      check("the unresolved QA finding re-launched the implementor", h.implementorStarts() === 2, `starts=${h.implementorStarts()}`);
+      check("QA reviewed the implementor repair in the next round", JSON.stringify(h.qaRounds) === JSON.stringify([1, 2]), JSON.stringify(h.qaRounds));
+      check("the repaired task completed instead of parking for review", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check(
+        "the task never emitted the obsolete human-review finding",
+        !h.db.listFindings(id).some((f) => f.summary.includes("unresolved issues without making changes")),
+        JSON.stringify(h.db.listFindings(id).map((f) => f.summary)),
+      );
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test E3: the one obsolete QA hand-back resumes automatically on the next boot ----------------
+  console.log("\nTest E3 — an obsolete QA-fixes hand-back is recovered into an automatic implementation retry");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const implementor = h.db.createRun({ threadId: id, role: "implementor", model: "gpt-5.6-terra" });
+      h.db.updateRun(implementor.id, { sessionId: "legacy-implementor-session", state: "done", endedAt: Date.now() });
+      const qa = h.db.createRun({ threadId: id, role: "qa", model: "gpt-5.6-luna" });
+      h.db.updateRun(qa.id, { sessionId: "legacy-qa-session", state: "done", endedAt: Date.now() });
+      h.db.updateThread(id, { state: "review", error: "QA found unresolved issues it could not safely fix - needs your review." });
+      const scheduled: string[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).scheduleAutoResume = (threadId: string): void => { scheduled.push(threadId); };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).recoverLegacyQaFixParks();
+      check("the obsolete park enters the pipeline-resume state", h.db.getThread(id)?.state === "failed", `state=${h.db.getThread(id)?.state}`);
+      check("the recovery is durably marked for a restart-safe retry", !!h.db.getThread(id)?.error?.includes("restarting implementation automatically"), String(h.db.getThread(id)?.error));
+      check("the recovered task schedules its automatic implementation retry", JSON.stringify(scheduled) === JSON.stringify([id]), JSON.stringify(scheduled));
+      check(
+        "the recovery leaves a clear audit finding",
+        h.db.listFindings(id).some((f) => f.summary.includes("Recovered an obsolete QA hand-back")),
+        JSON.stringify(h.db.listFindings(id).map((f) => f.summary)),
+      );
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Test F: the fresh verifier kickoff still carries the task context ---------------------------
   // A verifier pass is a fresh session on effectively every route (a different provider cannot resume
   // the editor's session, and a same-provider verifier is deliberately forced fresh). If it only got

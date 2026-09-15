@@ -681,6 +681,10 @@ const MAX_STRANDED_AGE_MS = 24 * 3600_000;
 // auto-resumes those tasks once an account frees up — so a cap wave doesn't leave the owner to
 // hand-resume every task. A normal "needs your review" park carries no such prefix and is left alone.
 const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
+// Earlier editing-QA builds treated a verifier's actionable-but-unfixed defect as an owner hand-back.
+// Keep a distinct durable marker while recovering those rows, so a restart in the short boot-resume
+// window repeats the automatic repair rather than leaving the old task on the owner's board.
+const LEGACY_QA_FIX_RETRY_PREFIX = "QA found an actionable issue that the prior QA run could not safely fix — restarting implementation automatically.";
 // Marker written into QA-stage cap-park messages so logs/search can still find them. Historical parks
 // may still carry the older "(QA runs on Claude)" wording — resumeCapParked no longer gates on either
 // string (runRole fails QA over to Codex/Grok, so any free backend unparks).
@@ -1067,6 +1071,10 @@ export class ThreadManager implements OrchestratorApi {
     // those provably quota-caused legacy parks into the durable QA-only retry state before the boot
     // supervisor scans them; completed/cancelled tasks remain untouched.
     this.recoverLegacyQaCapParks();
+    // A former editing-QA branch parked an actionable defect for the owner instead of returning it to
+    // the implementor. Recover only that exact obsolete terminal shape; ordinary owner-review parks
+    // remain untouched.
+    this.recoverLegacyQaFixParks();
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
@@ -1148,6 +1156,34 @@ export class ThreadManager implements OrchestratorApi {
       recovered++;
     }
     if (recovered) this.hub.log("warn", `Recovered ${recovered} legacy QA usage-limit ${recovered === 1 ? "park" : "parks"} for automatic provider fallback.`);
+  }
+
+  /** Resume the one obsolete editing-QA hand-back that represented ordinary implementor work. The old
+   * error text was emitted only when QA reported a real unresolved issue but declined to edit it. It is
+   * therefore safe to preserve genuine review parks and recover only this exact historical shape. */
+  private recoverLegacyQaFixParks(): void {
+    let recovered = 0;
+    for (const thread of this.db.listThreads()) {
+      const oldPark = thread.state === "review" && thread.error === "QA found unresolved issues it could not safely fix - needs your review.";
+      const interruptedRecovery = thread.state === "failed" && thread.error === LEGACY_QA_FIX_RETRY_PREFIX;
+      if (!oldPark && !interruptedRecovery) continue;
+      const stage = this.db.getThreadStageOutputs(thread.id);
+      if (!stage.kickoff || !this.latestRoleRun(thread.id, "implementor") || !this.latestRoleRun(thread.id, "qa")) continue;
+
+      if (oldPark) {
+        this.db.updateThread(thread.id, { state: "failed", error: LEGACY_QA_FIX_RETRY_PREFIX });
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "qa",
+          summary: "Recovered an obsolete QA hand-back — returning the issue to implementation",
+          detail: "QA had already identified an actionable defect. The implementor will resume and QA will check the repair again.",
+          severity: "note",
+        });
+      }
+      this.scheduleAutoResume(thread.id, thread.title);
+      recovered++;
+    }
+    if (recovered) this.hub.log("warn", `Recovered ${recovered} obsolete editing-QA ${recovered === 1 ? "hand-back" : "hand-backs"} for automatic implementation.`);
   }
 
   /** Reconcile persisted provider latches with recorded capped runs. This deliberately does not change a
@@ -9303,42 +9339,49 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           continue;
         }
 
-        // An unchanged QA run is the acceptance decision. A fail here means it could not safely fix a
-        // real issue, so park instead of silently bouncing it back to the implementor.
+        // An unchanged passing QA run is the acceptance decision. If QA found a real issue it could not
+        // safely edit, return that issue to the implementor through the same handoff as ordinary QA.
+        // QA is a verifier, not an owner-decision gate: an actionable defect is implementation work,
+        // including when the optional editing-QA mode is enabled.
         if (!qa.pass) {
-          this.postFinding({ threadId: thread.id, fromRole: "qa", summary: "QA found unresolved issues without making changes - needs your review", detail: qa.summary, severity: "warning" });
-          this.settleReview(thread.id, "QA found unresolved issues it could not safely fix - needs your review.");
-          return;
-        }
-        // A user-queued follow-up is still implementor work. Preserve the existing hand-off contract,
-        // then begin a fresh editing-QA cycle for that new work rather than accepting it unreviewed.
-        if (this.queuedForImplementor.get(thread.id)?.length && res && !res.isError && !this.cancelled(thread.id)) {
-          res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
-          if (this.cancelled(thread.id)) return;
-          if (this.settleOwnerQaBypass(thread, res)) return;
-          if (round < pipe.maxQaRounds) {
-            qaFixForcedProvider = undefined;
-            qaFixForceFresh = false;
-            qaFixSummary = undefined;
-            continue;
+          this.postFinding({
+            threadId: thread.id,
+            fromRole: "qa",
+            summary: "QA found an issue it could not safely fix — returning it to implementation",
+            detail: qa.summary,
+            severity: "warning",
+          });
+        } else {
+          // A user-queued follow-up is still implementor work. Preserve the existing hand-off contract,
+          // then begin a fresh editing-QA cycle for that new work rather than accepting it unreviewed.
+          if (this.queuedForImplementor.get(thread.id)?.length && res && !res.isError && !this.cancelled(thread.id)) {
+            res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
+            if (this.cancelled(thread.id)) return;
+            if (this.settleOwnerQaBypass(thread, res)) return;
+            if (round < pipe.maxQaRounds) {
+              qaFixForcedProvider = undefined;
+              qaFixForceFresh = false;
+              qaFixSummary = undefined;
+              continue;
+            }
           }
-        }
-        const deployment = this.verifyManualDeploymentAtBoundary(
-          thread,
-          "qa",
-          qa.manualDeployment,
-          this.latestRunIdOf(thread.id, "qa"),
-          (qa.issues ?? []).map((issue) => `QA still reports an issue: ${issue.description}`),
-        );
-        if (deployment.attempted) {
-          if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
+          const deployment = this.verifyManualDeploymentAtBoundary(
+            thread,
+            "qa",
+            qa.manualDeployment,
+            this.latestRunIdOf(thread.id, "qa"),
+            (qa.issues ?? []).map((issue) => `QA still reports an issue: ${issue.description}`),
+          );
+          if (deployment.attempted) {
+            if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
+            return;
+          }
+          this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed without further changes: ${qa.summary}`, severity: "info" });
+          await this.runSelfImprovement(thread, effort, kickoff);
+          if (this.cancelled(thread.id)) return;
+          this.setState(thread.id, "done");
           return;
         }
-        this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed without further changes: ${qa.summary}`, severity: "info" });
-        await this.runSelfImprovement(thread, effort, kickoff);
-        if (this.cancelled(thread.id)) return;
-        this.setState(thread.id, "done");
-        return;
       }
 
       if (qa.pass) {
