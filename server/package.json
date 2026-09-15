@@ -138,7 +138,7 @@
     "test:manual-deployment": "tsx src/tests/manualDeployment.test.ts && tsx src/tests/manualDeployment.itest.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/manual-deployment-ui.test.tsx",
     "test:manual-deployment-probe": "node scripts/manual-deployment-probe.test.cjs",
     "test:implementation-memos": "tsx src/tests/implementationMemos.itest.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/implementation-memos-ui.test.tsx",
-    "test:deliverables": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/deliverables-ui.test.tsx",
+    "test:deliverables": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/deliverables-ui.test.tsx && tsx --tsconfig ../web/tsconfig.json ../web/scripts/deliverables-retry-reset.test.ts",
     "test:deliverables-probe": "node scripts/deliverables-probe.test.cjs",
     "test:reveal-workspace": "tsx src/tests/revealWorkspace.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/workspace-path-ui.test.tsx",
     "test:model-select": "tsx src/tests/modelSelection.test.ts",
