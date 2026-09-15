@@ -11018,19 +11018,35 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Reserve the thread synchronously BEFORE backgrounding, flip the board immediately, then resume
     // in the background — the cold path may compress the prior session first and this WS command must
     // not block on a Haiku call.
+    // A newly injected follow-up changes the completed work. Preserve a task's configured QA
+    // route for that new work; a bare Resume remains an owner-review path.
+    const recheckWithQa =
+      thread.state === "review" &&
+      !!message?.trim() &&
+      this.resumeFollowupRequiresQa(thread);
     this.resuming.add(threadId);
     this.setState(threadId, "implementing");
     void this.resumeImplementorOnly(
       thread,
       message,
       this.reviewInjections.pendingImplementor(threadId, "reviewer").map((row) => row.id),
+      recheckWithQa,
     );
     return { ok: true, state: "implementing" };
   }
 
+  /** A follow-up injected into a completed review task is new work, so retain the task's sticky QA
+   * route unless QA was disabled globally or the owner explicitly opted out. */
+  private resumeFollowupRequiresQa(thread: Thread): boolean {
+    const settings = this.settings();
+    const route = this.db.getThreadStageOutputs(thread.id).routeDecision;
+    return settings.qaEnabled && (route?.useQa ?? true) && !thread.parentId && !this.qaBypassedByOwner(thread.id);
+  }
+
   /** Manual resume (the Resume control, or an inject into a cold/non-live task) that talks ONLY to
-   *  the implementor — no QA loop; it settles to 'review' when the implementor finishes so the owner
-   *  gets the result. Crucially it reuses the prior session through the SAME warm/cold gate as the
+   *  the implementor. A normal Resume settles to 'review' when it finishes so the owner gets the
+   *  result; a QA-routed injected follow-up starts a fresh direct QA pass after implementation.
+   *  Crucially it reuses the prior session through the SAME warm/cold gate as the
    *  pipeline, so a manual resume on a cold cache compresses the prior session instead of paying the
    *  full-transcript reload it used to. Runs in the background so the triggering command returns at
    *  once. Awaited via awaitImplementorCompletion — the same account-failover PLUS turn-limit/stall
@@ -11038,7 +11054,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  once the deploy finishes" is nudged to block in-turn instead of re-parking on the Resume button.
    *  The caller must have added threadId to `resuming`; this clears it once the implementor is live
    *  (or the start was abandoned). */
-  private async resumeImplementorOnly(thread: Thread, message?: string, reviewInjectionIds: string[] = []): Promise<void> {
+  private async resumeImplementorOnly(
+    thread: Thread,
+    message?: string,
+    reviewInjectionIds: string[] = [],
+    recheckWithQa = false,
+  ): Promise<void> {
     // A manual resume occupies a concurrency slot for the run's lifetime (like a pipeline), so it
     // counts toward maxConcurrent and frees a queued task when it settles.
     this.activePipelines.add(thread.id);
@@ -11094,7 +11115,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         effort: this.implementorEffort(thread.id),
         resumeNudge,
         directorNote: effectiveMessage ? resumeNudge : undefined,
-        qaFollows: false,
+        qaFollows: recheckWithQa,
         images: this.reviewInjectionImages(reviewRows),
       });
     } catch (e) {
@@ -11125,12 +11146,30 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       for (const m of buffered) this.sendCommunication(start.run, acknowledgedInjection(m), { priority: "next" });
     }
     let implementationFinished = false;
-    await this.awaitImplementorCompletion(thread, this.implementorEffort(thread.id), baseKickoff, start.run, start.accountId, false, resumeNudge, false)
-      .then((result) => {
+    await this.awaitImplementorCompletion(thread, this.implementorEffort(thread.id), baseKickoff, start.run, start.accountId, false, resumeNudge, recheckWithQa)
+      .then(async (result) => {
         implementationFinished = !!result && !result.isError;
-        const deployment = implementationFinished
+        const deployment = implementationFinished && !recheckWithQa
           ? this.verifyManualDeploymentAtBoundary(thread, "implementor_no_qa", undefined, start!.runId)
           : { attempted: false, done: false };
+        if (implementationFinished && recheckWithQa && this.db.getThread(thread.id)?.state === "implementing") {
+          // This is a new QA episode for a newly injected follow-up, not a retry of the verdict
+          // that parked the task. Reuse the direct-QA continuation path so no second implementor
+          // starts before the reviewer runs.
+          const settings = this.settings();
+          this.db.updateThreadStageOutputs(thread.id, {
+            qaRoundsUsed: 0,
+            qaCapRetryRound: undefined,
+            qaInterruptedRetryRound: 1,
+          });
+          await this.runImplementorQaLoop(thread, baseKickoff, this.implementorEffort(thread.id), undefined, undefined, {
+            qaEnabled: true,
+            maxQaRounds: settings.maxQaRounds,
+            qaAppliesFixes: settings.qaAppliesFixes,
+            autoPush: settings.autoPush,
+          });
+          return;
+        }
         // A re-cap during the manual resume tags it for the supervisor; an ordinary clean finish parks
         // for review. The strictly verified deployment-only exception is already terminalized above.
         if (this.db.getThread(thread.id)?.state === "implementing") {

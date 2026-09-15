@@ -1010,6 +1010,27 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- A new follow-up on a QA-routed review task starts a fresh direct QA pass -------------------------
+  console.log("\nTest L — an injected follow-up from review preserves the configured QA route");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "review" });
+      h.db.updateThreadStageOutputs(id, { qaRoundsUsed: 1 });
+      const agents = stubQaRunRole(h, async () => {});
+      const action = await h.mgr.injectThread(id, "verify the deployed release and report the result", "append");
+      await settle();
+      await settle();
+      check("the follow-up started implementation", action.ok && action.state === "implementing", JSON.stringify(action));
+      check("the resumed follow-up received one fresh QA pass", agents.length === 1, `qaRuns=${agents.length}`);
+      check("a passing QA verdict settles the follow-up done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      check("the new QA episode restarted its round budget", h.db.getThreadStageOutputs(id).qaRoundsUsed === 1, JSON.stringify(h.db.getThreadStageOutputs(id)));
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Parked task: explicit owner acceptance should not spawn an implementor just to mark it done -----
   console.log("\nOwner override D - a parked task is accepted directly");
   {
