@@ -11,6 +11,7 @@ const {
   validateProviders,
   validateSmallTaskBundle,
   validateSmallTaskPolicy,
+  within,
 } = require("./console-smoke.cjs");
 
 const defaults = parseOptions([], {});
@@ -106,4 +107,11 @@ assert.match(validateSmallTaskPolicy({ ...routing, summary: "" })[0], /owner-fac
 assert.deepEqual(validateSmallTaskBundle(`before ${SMALL_TASK_POLICY_LABEL} after`), []);
 assert.match(validateSmallTaskBundle("Use free pool")[0], /served UI bundle/);
 
-console.log("console-smoke: provider, routing-policy, and bundle assertions passed");
+void (async () => {
+  assert.equal(await within(Promise.resolve("ready"), 20, "immediate operation"), "ready");
+  await assert.rejects(within(new Promise(() => {}), 10, "stalled operation"), /stalled operation exceeded 10ms/);
+  console.log("console-smoke: provider, routing-policy, bundle, and timeout assertions passed");
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

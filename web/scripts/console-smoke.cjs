@@ -29,6 +29,11 @@ const path = require("path");
 // Ignorable request noise: absent favicons and the dev-only HMR socket are not console health.
 const IGNORABLE_REQUEST = /favicon|\/@vite\/|hot-update/i;
 const SMALL_TASK_POLICY_LABEL = "Use free pool for small tasks only";
+const CLI_DEADLINE_MS = 25_000;
+const BROWSER_LAUNCH_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 10_000;
+const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
+const WEBSOCKET_READY_TIMEOUT_MS = 10_000;
 
 // NODE_PATH is unset in agent shells, so a bare require misses a global install. The resolver is
 // shared with the labs (server/scripts/findPlaywright.cjs) because this probe and lab-harness once
@@ -209,6 +214,15 @@ function validateProviders(providers, options) {
   return failures;
 }
 
+/** Reject a stalled Playwright operation with enough context for the sweep to act on it. */
+function within(promise, timeoutMs, action) {
+  let timer;
+  return new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${action} exceeded ${timeoutMs}ms`)), timeoutMs);
+    Promise.resolve(promise).then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
+
 /** Everything the page can tell us in one pass — no interaction, just reads. */
 function inspect() {
   const text = (sel) => document.querySelector(sel)?.textContent?.trim() || "";
@@ -244,21 +258,27 @@ async function main() {
   let smallTaskBundleText = null;
   let smallTaskBundleError = null;
 
-  const browser = await chromium.launch({ headless: true });
+  console.log(`[INFO] starting browser smoke: ${base}`);
+  const browser = await within(
+    chromium.launch({ headless: true, timeout: BROWSER_LAUNCH_TIMEOUT_MS }),
+    BROWSER_LAUNCH_TIMEOUT_MS + 1_000,
+    "browser launch",
+  );
   let page;
   let view;
   try {
-    page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    console.log("[INFO] browser launched; authenticating");
+    page = await within(browser.newPage({ viewport: { width: 1280, height: 900 } }), REQUEST_TIMEOUT_MS, "new page");
     page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text().slice(0, 300)));
     page.on("pageerror", (e) => consoleErrors.push(`uncaught: ${String(e).slice(0, 300)}`));
     page.on("requestfailed", (r) => {
       if (!IGNORABLE_REQUEST.test(r.url())) failedRequests.push(`${r.url()} — ${r.failure()?.errorText}`);
     });
 
-    const login = await page.request.post(`${base}/api/login`, { data: { password: resolvePassword() } });
+    const login = await page.request.post(`${base}/api/login`, { data: { password: resolvePassword() }, timeout: REQUEST_TIMEOUT_MS });
     if (!login.ok()) throw new Error(`login failed: HTTP ${login.status()} (check AUTH_PASSWORD in server/.env)`);
     if (options.providers) {
-      const response = await page.request.get(`${base}/api/free-providers`);
+      const response = await page.request.get(`${base}/api/free-providers`, { timeout: REQUEST_TIMEOUT_MS });
       if (!response.ok()) throw new Error(`/api/free-providers failed: HTTP ${response.status()}`);
       const payload = await response.json();
       providers = normalizeProviderPayload(payload);
@@ -267,23 +287,31 @@ async function main() {
 
     // Not networkidle: the selected thread pulls a burst of multi-MB /api/attachment images and the
     // app polls /api/voice/status, so idle is data-dependent and can outlast any budget. The .topbar
-    // wait below is the real ready signal, and its absence is reported as a finding rather than a timeout.
-    await page.goto(`${base}/`, { waitUntil: "domcontentloaded", timeout: 45_000 });
-    await page.waitForSelector(".topbar", { timeout: 20_000 }).catch(() => {});
-    await page.waitForTimeout(2500); // let the WS hello land and the board hydrate
-    view = await page.evaluate(inspect);
+    // then a live connection are the real ready signals.
+    console.log("[INFO] loading console");
+    await page.goto(`${base}/`, { waitUntil: "domcontentloaded", timeout: REQUEST_TIMEOUT_MS });
+    await page.waitForSelector(".topbar", { timeout: REQUEST_TIMEOUT_MS }).catch(() => {});
+    console.log("[INFO] waiting for live websocket");
+    await page.waitForFunction(
+      () => {
+        const conn = document.querySelector(".conn")?.textContent || "";
+        return /live/i.test(conn) && !/reconnect/i.test(conn);
+      },
+      { timeout: WEBSOCKET_READY_TIMEOUT_MS },
+    ).catch(() => {});
+    view = await within(page.evaluate(inspect), REQUEST_TIMEOUT_MS, "console inspection");
     if (options.expectSmallTaskPolicy && view.bundle) {
       try {
-        const response = await page.request.get(new URL(view.bundle, base).toString());
+        const response = await page.request.get(new URL(view.bundle, base).toString(), { timeout: REQUEST_TIMEOUT_MS });
         if (!response.ok()) smallTaskBundleError = `served entry bundle failed: HTTP ${response.status()}`;
         else smallTaskBundleText = await response.text();
       } catch (error) {
         smallTaskBundleError = `could not read served entry bundle: ${error.message || error}`;
       }
     }
-    if (options.shot) await page.screenshot({ path: options.shot });
+    if (options.shot) await page.screenshot({ path: options.shot, timeout: REQUEST_TIMEOUT_MS });
   } finally {
-    await browser.close();
+    await within(browser.close(), BROWSER_CLOSE_TIMEOUT_MS, "browser shutdown");
   }
 
   const failures = [];
@@ -350,14 +378,19 @@ module.exports = {
   validateProviders,
   validateSmallTaskBundle,
   validateSmallTaskPolicy,
+  within,
 };
 
 if (require.main === module) {
+  const deadline = setTimeout(() => {
+    console.error(`[FAIL] smoke probe exceeded ${CLI_DEADLINE_MS}ms without a verdict`);
+    process.exit(1);
+  }, CLI_DEADLINE_MS);
   main().then(
     (code) => { process.exitCode = code; },
     (e) => {
       console.error(`[FAIL] ${e.message || e}`);
       process.exitCode = 1;
     },
-  );
+  ).finally(() => clearTimeout(deadline));
 }
