@@ -5,7 +5,8 @@
 //
 //   node scripts/restore-archived-deliverables.cjs <task-id> --archive data/archives/task.md
 //
-// It is safe to rerun. Existing (label, path) rows are retained and only missing cards are inserted.
+// It is safe to rerun. Existing files are retained even when a later retry used a different label or
+// path spelling, and only missing artifacts are inserted.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -83,8 +84,19 @@ function restore(db, { taskId, archive }, log = console.log) {
   // Validate every archive claim before writing one row. A partial repair implies a complete set when
   // it is not, and can conceal a missing or escaped artifact.
   const validated = archived.map((entry) => ({ ...entry, realPath: confinedFile(thread.workspace, entry.artifactPath) }));
-  const existing = db.prepare("SELECT label, path FROM findings WHERE thread_id=? AND kind='deliverable'").all(taskId);
-  const identity = new Set(existing.map((row) => `${row.label ?? ""}\u0000${row.path ?? ""}`));
+  const existing = db.prepare("SELECT path FROM findings WHERE thread_id=? AND kind='deliverable' AND path IS NOT NULL").all(taskId);
+  // One artifact is one card for restoration purposes. Retries often relabel the same screenshot and
+  // Windows paths may switch slash/case spelling; compare canonical paths rather than (label, raw path)
+  // so repairing an archive beside a newer partial recapture does not create duplicate cards.
+  const pathKey = (realPath) => (process.platform === "win32" ? realPath.toLowerCase() : realPath);
+  const identity = new Set();
+  for (const row of existing) {
+    try {
+      identity.add(pathKey(confinedFile(thread.workspace, row.path)));
+    } catch {
+      // A dead or unsafe existing card must not suppress restoration of a valid archived artifact.
+    }
+  }
   const insert = db.prepare(
     "INSERT INTO findings(id,thread_id,from_run_id,from_role,kind,summary,detail,path,label,severity,routed,created_at) VALUES (@id,@threadId,NULL,'implementor','deliverable',@summary,@detail,@path,@label,'info',0,@createdAt)",
   );
@@ -94,7 +106,7 @@ function restore(db, { taskId, archive }, log = console.log) {
     for (const entry of validated) {
       // Retain the archived spelling of a valid path. Copy-path must reproduce what the original agent
       // surfaced; the API repeats realpath containment when it serves it.
-      const key = `${entry.label}\u0000${entry.artifactPath}`;
+      const key = pathKey(entry.realPath);
       if (identity.has(key)) {
         skipped++;
         continue;

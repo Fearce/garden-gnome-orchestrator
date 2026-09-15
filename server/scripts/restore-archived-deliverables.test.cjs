@@ -24,17 +24,21 @@ const dbPath = path.join(dir, "orchestrator.sqlite");
 const db = new Database(dbPath);
 db.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, workspace TEXT NOT NULL); CREATE TABLE findings (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, from_run_id TEXT, from_role TEXT, kind TEXT NOT NULL, summary TEXT NOT NULL, detail TEXT, path TEXT, label TEXT, severity TEXT NOT NULL, routed INTEGER NOT NULL, created_at INTEGER NOT NULL);");
 db.prepare("INSERT INTO threads(id, workspace) VALUES (?, ?)").run("task-1", workspace);
+db.prepare("INSERT INTO findings(id,thread_id,kind,summary,path,label,severity,routed,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+  .run("existing-report", "task-1", "deliverable", "Newer rationale label", report, "Newer rationale label", "info", 0, Date.now());
 db.close();
 
 const archive = path.join(dir, "archive.md");
 const body = `# archive\n\n## Prototype\n\n- **id**: \`task-1\`\n\n### Deliverables (2)\n\n- **Design rationale** : \`${report}\` (2026-09-13 18:43:38 UTC)\n- **Overview** : \`${shot}\` (2026-09-13 18:43:44 UTC)\n\n### Run trail (0)\n`;
 fs.writeFileSync(archive, body);
 assert.equal(parseDeliverables(body, "task-1").length, 2, "parses only the named task's structured block");
-assert.equal(main(["task-1", "--archive", archive], { dbPath, log: () => {}, warn: () => {} }), 0);
+const logs = [];
+assert.equal(main(["task-1", "--archive", archive], { dbPath, log: (line) => logs.push(line), warn: () => {} }), 0);
+assert.match(logs[0], /restored 1 deliverable card\(s\), 1 already present/, "same file under a newer label is not duplicated");
 let verify = new Database(dbPath, { readonly: true });
 assert.deepEqual(verify.prepare("SELECT label, path FROM findings ORDER BY created_at").all(), [
-  { label: "Design rationale", path: report },
   { label: "Overview", path: shot },
+  { label: "Newer rationale label", path: report },
 ]);
 verify.close();
 assert.equal(main(["task-1", "--archive", archive], { dbPath, log: () => {}, warn: () => {} }), 0, "rerun is idempotent");
