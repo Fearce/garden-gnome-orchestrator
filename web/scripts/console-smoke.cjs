@@ -192,10 +192,25 @@ function validateSmallTaskPolicy(routing) {
   return failures;
 }
 
+/** The policy label lives in SettingsPanel, which is a lazy chunk rather than the entry bundle.
+ * The served entry's hashed filename is separately compared with local index.html, so searching the
+ * local build's JS assets verifies the matching deployed chunk without making a live UI click. */
+function localUiBundleText() {
+  const assets = path.resolve(__dirname, "../dist/assets");
+  try {
+    return fs.readdirSync(assets)
+      .filter((name) => name.endsWith(".js"))
+      .map((name) => fs.readFileSync(path.join(assets, name), "utf8"))
+      .join("\n");
+  } catch (error) {
+    throw new Error(`could not read local UI assets: ${error.code || error.message}`);
+  }
+}
+
 function validateSmallTaskBundle(bundleText) {
   return String(bundleText).includes(SMALL_TASK_POLICY_LABEL)
     ? []
-    : [`served UI bundle does not contain "${SMALL_TASK_POLICY_LABEL}"`];
+    : [`built UI assets do not contain "${SMALL_TASK_POLICY_LABEL}"`];
 }
 
 function validateProviders(providers, options) {
@@ -300,13 +315,11 @@ async function main() {
       { timeout: WEBSOCKET_READY_TIMEOUT_MS },
     ).catch(() => {});
     view = await within(page.evaluate(inspect), REQUEST_TIMEOUT_MS, "console inspection");
-    if (options.expectSmallTaskPolicy && view.bundle) {
+    if (options.expectSmallTaskPolicy) {
       try {
-        const response = await page.request.get(new URL(view.bundle, base).toString(), { timeout: REQUEST_TIMEOUT_MS });
-        if (!response.ok()) smallTaskBundleError = `served entry bundle failed: HTTP ${response.status()}`;
-        else smallTaskBundleText = await response.text();
+        smallTaskBundleText = localUiBundleText();
       } catch (error) {
-        smallTaskBundleError = `could not read served entry bundle: ${error.message || error}`;
+        smallTaskBundleError = error.message || String(error);
       }
     }
     if (options.shot) await page.screenshot({ path: options.shot, timeout: REQUEST_TIMEOUT_MS });

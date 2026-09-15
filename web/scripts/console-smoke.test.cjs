@@ -105,7 +105,7 @@ assert.match(validateSmallTaskPolicy({ ...routing, mode: "all-tasks" })[0], /exp
 assert.match(validateSmallTaskPolicy({ ...routing, maxModelCalls: null })[0], /maxModelCalls/);
 assert.match(validateSmallTaskPolicy({ ...routing, summary: "" })[0], /owner-facing summary/);
 assert.deepEqual(validateSmallTaskBundle(`before ${SMALL_TASK_POLICY_LABEL} after`), []);
-assert.match(validateSmallTaskBundle("Use free pool")[0], /served UI bundle/);
+assert.match(validateSmallTaskBundle("Use free pool")[0], /built UI assets/);
 
 void (async () => {
   assert.equal(await within(Promise.resolve("ready"), 20, "immediate operation"), "ready");
