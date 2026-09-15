@@ -112,6 +112,11 @@ State + run history live in `server/data/orchestrator.sqlite` (open read-only wi
 For one task, run `npm run probe:task-runs --prefix server -- <thread-id|title-substring>` instead of
 hand-joining tables. Its control-flow timeline correlates run/account/cap verdicts, routing-capacity
 findings, owner/supervisor messages, and matching server boot/reconcile records in local time plus UTC.
+For the narrower question "why did this task choose Codex instead of Claude?", run
+`npm run probe:routing --prefix server -- <thread-id|title-substring>`. It reports the saved route,
+current non-secret routing settings and Claude disable overrides, the exact decision-time capacity
+finding, and whether Claude actually ran. It never pings a provider or changes quota state. Gate:
+`test:routing-probe`.
 It also prints the durable auto-review episode, source, revision, attempts, terminal reason, and any
 ownership inconsistency. Add `--prompt` when the exact saved provider intent matters. For a board-wide
 auto-review check, run `npm run probe:auto-review --prefix server`; exit 0 means all recorded episodes
