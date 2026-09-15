@@ -254,8 +254,37 @@ async function testMarkerLifecycle(): Promise<void> {
   h.dispose();
 }
 
+async function testConcurrentRoundIsOneShot(): Promise<void> {
+  console.log("\nTest C — concurrent completion signals start one self-improvement round\n");
+  const { db, dir, workspace } = makeDb("self-improve-once-");
+  const h = boot(db, dir, workspace);
+  h.mgr.setSettings({ selfImproveEnabled: true });
+
+  const id = seedAcceptedTask(db, workspace, false);
+  h.mgr.latestImplementorSession = (): string => "session-abc";
+  const round = stubRoundLeaves(h);
+
+  await Promise.all([
+    h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF: mock"),
+    h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF: mock"),
+    h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF: mock"),
+  ]);
+
+  check("only one resumed implementor was started", round.markerDuringRound.length === 1, String(round.markerDuringRound.length));
+  check(
+    "only one self-improvement status finding was posted",
+    db.listFindings(id).filter((f) => f.summary.startsWith("Self-improvement round:")).length === 1,
+  );
+  check(
+    "only one self-improvement system marker was posted",
+    db.listMessages(id).filter((m) => m.content.includes("self-improvement round before settling to done")).length === 1,
+  );
+
+  h.dispose();
+}
+
 async function testStaleMarkerCleared(): Promise<void> {
-  console.log("\nTest C — a fresh pipeline entry drops a stale marker\n");
+  console.log("\nTest D — a fresh pipeline entry drops a stale marker\n");
   const { db, dir, workspace } = makeDb("self-improve-stale-");
   const h = boot(db, dir, workspace);
   const id = seedAcceptedTask(db, workspace, true);
@@ -275,7 +304,7 @@ async function testStaleMarkerCleared(): Promise<void> {
 }
 
 async function testInjectReachesTheRound(): Promise<void> {
-  console.log("\nTest D — the round owns the slot: steering reaches it, nothing spawns beside it\n");
+  console.log("\nTest E — the round owns the slot: steering reaches it, nothing spawns beside it\n");
   const { db, dir, workspace } = makeDb("self-improve-inject-");
   const h = boot(db, dir, workspace);
   const id = seedAcceptedTask(db, workspace, true); // 'implementing' — the state the round really holds
@@ -327,6 +356,7 @@ async function main(): Promise<void> {
   console.log("\n=== Self-improvement round is restart-safe — integration test (real machinery) ===");
   await testRestartDuringTheRound();
   await testMarkerLifecycle();
+  await testConcurrentRoundIsOneShot();
   await testStaleMarkerCleared();
   await testInjectReachesTheRound();
 

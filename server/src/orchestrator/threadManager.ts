@@ -9811,6 +9811,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // job needed, so it belongs to the lead — running it per share would spend N bonus Opus rounds on N
     // partial views, and each one would be reflecting on a tree the other shares are still changing.
     if (thread.parentId) return;
+    // Several completion paths can converge in the same tick (for example, an accepted QA result and a
+    // queued hand-off). This round is intentionally a single best-effort bonus pass, not one pass per
+    // completion notification. Claim it before the first await so only the winner posts its status and
+    // starts the resumed implementor. The durable marker also protects against a second manager seeing
+    // the same live task during a hand-over.
+    if (this.selfImproving.has(thread.id) || this.db.getThreadStageOutputs(thread.id).selfImproving) return;
     const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
     if (!session) return; // no implementor session to build on — nothing this round could reflect over
     // Two markers, two jobs. The DURABLE one survives the process: it is how markInterrupted knows a
