@@ -2647,6 +2647,12 @@ export class ThreadManager implements OrchestratorApi {
     return provider === "claude" ? (accountId ?? this.accounts.dispatchPreview().account.id) : provider;
   }
 
+  /** A task-local pin normally wins routing, except while its requested provider is in its own saving
+   * mode. The saving control promises that provider will use only its selected economy model. */
+  private usageSavingOverridesRequest(request: Thread["modelRequest"]): boolean {
+    return !!request?.provider && this.usageSavingTarget(this.usageSavingSubId(request.provider)) != null;
+  }
+
   /** AccountManager's DTO surface is present in production; a handful of focused legacy harnesses expose
    * only dispatchPreview, so keep settings construction source-compatible with those narrow fakes. */
   private usageSavingAccounts(): Array<{ id: string; enabled: boolean; fiveHour: number | null; sevenDay: number | null }> {
@@ -3241,10 +3247,10 @@ export class ThreadManager implements OrchestratorApi {
       if (provider === "claude") {
         const account = session.account ? this.acctById(session.account) : this.dispatchAccount(demand);
         if (!account) return { error: "The Claude subscription linked to this Co-work context is unavailable. Restore it or create a new session; no account was substituted." };
-        const saving = model ? undefined : this.usageSavingTarget(account.id);
+        const saving = this.usageSavingTarget(account.id);
         // conserve:false — this pick FREEZES as the session's strict pin for every later turn (see this
         // method's doc comment), so a transient token-conservation downgrade must never land here.
-        model ??= this.modelFor(account.id, "implementor", { conserve: false });
+        model = saving?.model ?? model ?? this.modelFor(account.id, "implementor", { conserve: false });
         const requestedEffort = saving?.effort ?? session.effort ?? "high";
         const effort = resolveClaudeEffort(model, clampEffort(requestedEffort, this.accountMaxEffort(account.id)));
         const cfg = coworkerRunOptions(session.workspace, {
@@ -3258,9 +3264,9 @@ export class ThreadManager implements OrchestratorApi {
         agent = new AgentRun(cfg);
         startContent = this.communicationContent(contentWithImages(prompt, images));
       } else if (provider === "codex") {
-        const saving = model ? undefined : this.usageSavingTarget(CODEX_SUB_ID);
+        const saving = this.usageSavingTarget(CODEX_SUB_ID);
         // conserve:false — see the Claude branch above; this freezes as the session's strict pin too.
-        model ??= this.providerRoleModel("codex", "implementor", undefined, { conserve: false });
+        model = saving?.model ?? model ?? this.providerRoleModel("codex", "implementor", undefined, { conserve: false });
         const effort = (saving?.effort ?? session.effort ?? this.codexEffort(model)) as CodexEffort;
         target = { provider, model, effort, accountId: "openai-codex", accountLabel: `codex:${model}` };
         const fresh = coworkFreshKickoff(this.db, history, prompt);
@@ -3274,8 +3280,8 @@ export class ThreadManager implements OrchestratorApi {
         });
         startContent = this.communicationContent(contentWithImages(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"), images));
       } else if (provider === "grok") {
-        const saving = model ? undefined : this.usageSavingTarget(GROK_SUB_ID);
-        model ??= saving?.model ?? this.grokModel();
+        const saving = this.usageSavingTarget(GROK_SUB_ID);
+        model = saving?.model ?? model ?? this.grokModel();
         const effort = (saving?.effort ?? session.effort ?? this.grokEffort(model)) as GrokEffort;
         target = { provider, model, effort, accountId: "xai-grok", accountLabel: `grok:${model}` };
         const fresh = coworkFreshKickoff(this.db, history, prompt);
@@ -3288,8 +3294,8 @@ export class ThreadManager implements OrchestratorApi {
         });
         startContent = this.communicationContent(contentWithImages(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"), images));
       } else {
-        const saving = model ? undefined : this.usageSavingTarget(ZAI_SUB_ID);
-        model ??= saving?.model ?? this.zaiModel();
+        const saving = this.usageSavingTarget(ZAI_SUB_ID);
+        model = saving?.model ?? model ?? this.zaiModel();
         const effort = resolveZaiEffort(model, saving?.effort ?? session.effort ?? this.zaiEffort(model));
         const cfg = coworkerRunOptions(session.workspace, {
           resume,
@@ -3553,18 +3559,19 @@ export class ThreadManager implements OrchestratorApi {
    * normal usage routing in charge. Returns null only for a visible flagship-policy wait.
    */
   private async autoSelectModel(thread: Thread, plan?: PlanOutput): Promise<ModelPick | null | undefined> {
-    // A task-local owner pin is not a candidate for automatic judgement. It remains exact across every
-    // resume/cap cycle and must never be overwritten by a cheaper/stronger model recommendation.
-    if (this.db.getThread(thread.id)?.modelRequest) return undefined;
     // Usage saving is an explicit operator override whose purpose is to keep work moving on the chosen
-    // economy model. Do not let a sticky automatic pick or the flagship policy reintroduce another model
-    // (or park instead of working) while any subscription's threshold policy is active.
+    // economy model. It applies even to a task-local pin: once enabled, the saving model is the only
+    // model this provider may run. Do not let a sticky automatic pick, task pin, or flagship policy
+    // reintroduce another model (or park instead of working) while any subscription is saving.
     if (this.anyUsageSavingActive()) {
       if (this.db.getThreadStageOutputs(thread.id).modelPick) {
         this.db.updateThreadStageOutputs(thread.id, { modelPick: undefined });
       }
       return undefined;
     }
+    // A task-local owner pin is not a candidate for automatic judgement. It remains exact across every
+    // resume/cap cycle while no usage-saving policy is active.
+    if (this.db.getThread(thread.id)?.modelRequest) return undefined;
     const stage = this.db.getThreadStageOutputs(thread.id);
     const policy = stage.routeDecision?.modelPolicy;
     let saved = stage.modelPick;
@@ -5029,7 +5036,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   private capacitySnapshotForThread(thread: Thread, role: CapParkStage, demand: CapacityDemand, now = Date.now()): RoleCapacitySnapshot & { error?: string } {
-    return role === "implementor" && thread.modelRequest
+    return role === "implementor" && thread.modelRequest && !this.usageSavingOverridesRequest(thread.modelRequest)
       ? this.requestedModelCapacitySnapshot(thread, demand, now)
       : this.roleCapacitySnapshot(role, demand, now);
   }
@@ -5446,7 +5453,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   ): ImplementorProvider | null {
     thread = this.ensureThreadModelRequest(this.db.getThread(thread.id) ?? thread);
     const demand = this.capacityDemand(thread, "implementor", opts?.effort);
-    if (thread.modelRequest) return this.gateRequestedModel(thread, demand);
+    if (thread.modelRequest && !this.usageSavingOverridesRequest(thread.modelRequest)) return this.gateRequestedModel(thread, demand);
     const { provider, error, allCandidatesCapped, candidates = [] } = this.resolveImplementorProvider(demand);
     if (!provider) {
       this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
@@ -7585,8 +7592,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // patches the working tree and stops, never committing — breaking the implementor→commit contract.
     let startKickoff = kickoff;
     if (provider === "codex") {
-      const requested = this.db.getThread(thread.id)?.modelRequest;
-      const saving = requested ? undefined : this.usageSavingTarget(CODEX_SUB_ID);
+      const saving = this.usageSavingTarget(CODEX_SUB_ID);
       const model = saving?.model ?? this.pickedModel(thread.id, "codex") ?? this.providerRoleModel("codex", "implementor");
       // The director/planner picks the per-task effort; the Codex subscription's setting is its MAX cap, so
       // a tiny task still runs cheap while nothing exceeds what the operator allowed for this backend.
@@ -7628,8 +7634,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       codexAgent.onEnd(() => { if (codexAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
       agent = codexAgent;
     } else if (provider === "grok") {
-      const requested = this.db.getThread(thread.id)?.modelRequest;
-      const saving = requested ? undefined : this.usageSavingTarget(GROK_SUB_ID);
+      const saving = this.usageSavingTarget(GROK_SUB_ID);
       const model = saving?.model ?? this.pickedModel(thread.id, "grok") ?? this.grokModel();
       // Same as Codex: the per-task effort is capped at the Grok subscription's configured maximum.
       const effort = (saving?.effort ?? clampEffort(plannerEffort, this.grokEffort(model))) as GrokEffort;
@@ -7669,8 +7674,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // Codex/Grok — it gets the in-process bus + office MCP servers (post_finding/ask_user/deliverables,
       // real chat_post) and the standard implementor system prompt. The per-task effort is capped at the
       // z.ai subscription's configured maximum, like the other backends.
-      const requested = this.db.getThread(thread.id)?.modelRequest;
-      const saving = requested ? undefined : this.usageSavingTarget(ZAI_SUB_ID);
+      const saving = this.usageSavingTarget(ZAI_SUB_ID);
       const model = saving?.model ?? this.pickedModel(thread.id, "zai") ?? this.zaiModel();
       const effort = saving
         ? saving.effort as ZaiEffort
@@ -7699,13 +7703,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // override → default → built-in). Either way the Fable-pool fallback applies on this account.
       const requested = this.db.getThread(thread.id)?.modelRequest;
       const picked = this.pickedModel(thread.id, "claude");
-      const saving = requested ? undefined : this.usageSavingTarget(acct.id);
-      // Account-local gated-model fallback is valid for configured/automatic picks, but it would violate
-      // a task-local strict request. A requested model either runs exactly or its gate parks the task.
-      const model = requested?.provider === "claude" && requested.model
-        ? requested.model
-        : saving
-          ? saving.model
+      const saving = this.usageSavingTarget(acct.id);
+      // Usage saving is provider-wide: while active it wins even over a task-local strict request.
+      // Otherwise a requested model either runs exactly or its gate parks the task.
+      const model = saving
+        ? saving.model
+        : requested?.provider === "claude" && requested.model
+          ? requested.model
           : picked
             ? this.poolResolved(acct.id, picked)
             : this.modelFor(acct.id, "implementor");
@@ -7804,16 +7808,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)}: implementor backend changed to ${resolvedProvider} since the prior session — its session id is incompatible, starting fresh.`);
       resumeSession = undefined;
     }
-    const requestedModel = this.db.getThread(thread.id)?.modelRequest?.model;
-    const selectedModel = requestedModel ?? this.db.getThreadStageOutputs(thread.id).modelPick?.model;
+    const request = this.db.getThread(thread.id)?.modelRequest;
+    const saving = this.usageSavingTarget(this.usageSavingSubId(resolvedProvider, opts.account?.id));
+    const requestedModel = saving ? undefined : request?.model;
+    const selectedModel = saving?.model ?? requestedModel ?? this.db.getThreadStageOutputs(thread.id).modelPick?.model;
     const priorModel = this.db
       .listRuns(thread.id)
       .filter((candidate) => candidate.role === "implementor")
       .sort((a, b) => b.startedAt - a.startedAt)[0]?.model;
     if (resumeSession && selectedModel && priorModel && normalizeModelId(priorModel) !== normalizeModelId(selectedModel)) {
-      const why = requestedModel
-        ? `the task is strictly pinned to ${selectedModel}`
-        : `the current route policy selected ${selectedModel}`;
+      const why = saving
+        ? `usage saving selected ${selectedModel}`
+        : requestedModel
+          ? `the task is strictly pinned to ${selectedModel}`
+          : `the current route policy selected ${selectedModel}`;
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)}: prior session used ${priorModel}, but ${why} — starting a fresh selected-model session.`);
       resumeSession = undefined;
     }
@@ -8001,7 +8009,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const fbSession = this.lastImplementorSession.get(thread.id);
       const runModel = this.latestImplementorRunModel(thread.id);
       if (
-        !this.db.getThread(thread.id)?.modelRequest &&
+        (!this.db.getThread(thread.id)?.modelRequest || this.usageSavingOverridesRequest(this.db.getThread(thread.id)?.modelRequest)) &&
         sameAcct &&
         fbSession &&
         runModel &&
@@ -8141,7 +8149,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (providerStartupWedged) this.quarantineStartupWedge(from, failedRun.transientApiErrorMessage);
       unavailableProviders.add(from);
       const strictRequest = this.db.getThread(thread.id)?.modelRequest;
-      if (strictRequest) {
+      if (strictRequest && !this.usageSavingOverridesRequest(strictRequest)) {
         await failedRun.stop();
         this.postFinding({
           threadId: thread.id,
@@ -8212,7 +8220,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       else if (from === "zai") this.noteZaiCap(current.rateLimitInfo);
       unavailableProviders.add(from);
       const strictRequest = this.db.getThread(thread.id)?.modelRequest;
-      if (strictRequest) {
+      if (strictRequest && !this.usageSavingOverridesRequest(strictRequest)) {
         await current.stop();
         this.capParked.set(thread.id, "implementor");
         this.postFinding({
@@ -9698,7 +9706,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * cleared provider map from defaulting to a known-capped Claude turn while Codex is already viable. */
   private routeQaSupersedeImplementor(thread: Thread, effort: Effort | undefined): boolean {
     const demand = this.capacityDemand(thread, "implementor", effort);
-    if (this.db.getThread(thread.id)?.modelRequest) {
+    if (this.db.getThread(thread.id)?.modelRequest && !this.usageSavingOverridesRequest(this.db.getThread(thread.id)?.modelRequest)) {
       return this.gateImplementorProvider(thread, { capParkOnExhaustion: true, effort }) != null;
     }
     const current = this.implementorProvider.get(thread.id);

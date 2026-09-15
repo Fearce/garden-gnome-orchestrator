@@ -101,8 +101,16 @@ try {
   });
   check("5-hour usage selects the exact configured model for every role", manager.modelFor("account-a", "planner") === "claude-haiku-4-5-20251001" && manager.modelFor("account-a", "implementor") === "claude-haiku-4-5-20251001");
   check("the runtime target carries the exact configured effort", internals.usageSavingTarget("account-a")?.effort === "low");
+  check(
+    "active saving supersedes a strict request on the same provider",
+    internals.usageSavingOverridesRequest({ provider: "claude", model: "claude-opus-4-6", requested: "claude-opus-4-6", strict: true }) === true,
+  );
   accounts.fiveHour = 89;
   check("dropping below both meters restores normal model routing", manager.modelFor("account-a", "implementor") !== "claude-haiku-4-5-20251001");
+  check(
+    "an inactive saving policy leaves a strict request authoritative",
+    internals.usageSavingOverridesRequest({ provider: "claude", model: "claude-opus-4-6", requested: "claude-opus-4-6", strict: true }) === false,
+  );
 } finally {
   if (internals.capSupervisor) clearInterval(internals.capSupervisor);
   db.raw.close();
