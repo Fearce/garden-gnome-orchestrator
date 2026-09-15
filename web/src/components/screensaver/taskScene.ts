@@ -199,26 +199,24 @@ export function buildHeight(build: BuildProgress, now: number): number {
   return Math.min(1, build.floor + (build.ceil - build.floor) * (1 - Math.exp(-seconds / build.tau)));
 }
 
-/** The one line a lane's card narrates.
+/** The readable message excerpt a lane's card narrates.
  *
- *  An agent's draft arrives as markdown that grows a line at a time, so the NEWEST non-empty line is
- *  what it is saying right now. That is deliberately not what the board's own card shows: the board
- *  is read to find out how a task ended and prefers a verdict headline, while the scene is watched
- *  from across the room and wants the line that is moving. Bullet markers and bold runs are stripped
- *  because a card at this size has no room to render them. */
+ *  An agent's draft arrives as markdown that grows a line at a time. The scene preserves its complete
+ *  readable message as one paragraph, rather than showing only its final line: four card rows give an
+ *  owner enough context to read it from across the room. Bullet markers and bold runs are stripped
+ *  because this compact surface does not render markdown. */
 function laneLine(text: string): string {
   const lines = text
     .replace(/\r\n/g, "\n")
     .split("\n")
-    .map((l) => l.trim())
+    .map((line) => line.trim().replace(/^[-*+•]\s+/, ""))
     .filter(Boolean);
-  const newest = lines.length ? lines[lines.length - 1]! : text.trim();
-  const plain = newest.replace(/^[-*+•]\s+/, "").replace(/\*\*/g, "").trim();
-  return plain.length > LANE_LINE_MAX ? `${plain.slice(0, LANE_LINE_MAX - 1)}…` : plain;
+  const message = lines.join(" ").replace(/\*\*/g, "").trim();
+  return message.length > LANE_MESSAGE_MAX ? `${message.slice(0, LANE_MESSAGE_MAX - 1)}…` : message;
 }
 
-/** As much of the activity line as a lane card fits on its two wrapped rows. */
-const LANE_LINE_MAX = 120;
+/** Four readable card rows, with a little extra headroom for wider desktop cards. */
+const LANE_MESSAGE_MAX = 360;
 
 /** The latest conversational line for a task. Tool calls and reasoning are intentionally omitted:
  *  this sits below the house as a readable status from the task, not a stream of implementation

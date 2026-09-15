@@ -228,7 +228,13 @@ const narrated = sceneTasks(
   {},
   { a: "- checked the first thing\n- now the second thing" },
 );
-check("a working lane narrates the live agent stream", narrated[0]?.activity === "now the second thing", narrated[0]?.activity);
+check("a working lane preserves the readable live agent stream", narrated[0]?.activity === "checked the first thing now the second thing", narrated[0]?.activity);
+const lengthy = sceneTasks(
+  { a: thread({ id: "a", state: "implementing" }) },
+  {},
+  { a: "x".repeat(500) },
+);
+check("a lane keeps a substantial message excerpt", lengthy[0]?.activity.length === 360 && lengthy[0]?.activity.endsWith("…"), String(lengthy[0]?.activity.length));
 const quiet = sceneTasks({ a: thread({ id: "a", state: "queued", briefPreview: "from the brief" }) }, {}, {});
 check("a silent lane falls back to the brief", quiet[0]?.activity === "from the brief", quiet[0]?.activity);
 const previewed = sceneTasks({ a: thread({ id: "a", state: "queued", briefPreview: "from the brief", latestMessagePreview: "latest snapshot message" }) }, {}, {});
@@ -397,6 +403,7 @@ check("the scene never redefines a console token", !/^\s*:root\s*\{/m.test(sheet
 
 // The accent, role and state hues are read through var(), so a theme retints the whole scene.
 check("the pennant flies the console's accent", /\.gs-b-pennant\s*\{\s*fill:\s*var\(--accent\)/.test(sheet));
+check("the message area reserves four readable lines", /\.gs-activity\s*\{[^}]*-webkit-line-clamp:\s*4[^}]*min-height:\s*5\.4em/s.test(sheet));
 check("styles.css is left alone", !read("src/styles.css").includes("gs-root"));
 
 /* ---- summary ------------------------------------------------------------------------------------ */

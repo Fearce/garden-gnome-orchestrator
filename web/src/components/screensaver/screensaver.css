@@ -205,10 +205,12 @@
 .gs-root .gs-activity {
   font-size: 11px;
   color: var(--text-faint);
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
   overflow: hidden;
-  text-overflow: ellipsis;
-  min-height: 16px;
+  line-height: 1.35;
+  min-height: 5.4em;
 }
 .gs-root .gs-foot {
   display: flex;
