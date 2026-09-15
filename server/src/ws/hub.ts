@@ -394,7 +394,7 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
       ctx.manager.directorChatPost(cmd.room, cmd.body, cmd.clientId);
       break;
     case "schedule.create":
-      ctx.scheduler.create({ title: cmd.title, workspace: cmd.workspace, prompt: cmd.prompt, cron: cmd.cron, enabled: cmd.enabled, effort: cmd.effort ?? null });
+      ctx.scheduler.create({ title: cmd.title, workspace: cmd.workspace, prompt: cmd.prompt, cron: cmd.cron, enabled: cmd.enabled, effort: cmd.effort ?? null, model: cmd.model ?? null });
       break;
     case "schedule.update":
       ctx.scheduler.update(cmd.id, cmd.patch);

@@ -45,10 +45,11 @@ async function main(): Promise<void> {
   console.log("scheduler: create");
   // Use the current workspace (the repo) as an existing path so runNow's existsSync guard passes.
   const ws = process.cwd();
-  const created = scheduler.create({ title: "Nightly audit", workspace: ws, prompt: "audit deps", cron: "0 3 * * *", effort: "high" });
+  const created = scheduler.create({ title: "Nightly audit", workspace: ws, prompt: "audit deps", cron: "0 3 * * *", effort: "high", model: "gpt-5.6-luna" });
   check("create ok", created.ok && !!created.schedule);
   check("create computes a future nextRunAt", (created.schedule?.nextRunAt ?? 0) > Date.now());
   check("create broadcasts the list", !!lastBroadcast && (lastBroadcast as { schedules: unknown[] }).schedules.length === 1);
+  check("create retains the strict model pin", created.schedule?.model === "gpt-5.6-luna");
   const id = created.schedule!.id;
 
   console.log("scheduler: validation");
@@ -88,11 +89,16 @@ async function main(): Promise<void> {
   check("dispatch got the prompt as the brief", last.brief === "audit deps v2");
   check("dispatch got the title", last.title === "Nightly audit");
   check("dispatch got the effort override", last.effort === "high");
+  check("dispatch got the strict model pin", last.requestedModel === "gpt-5.6-luna");
   check("runNow records lastRunAt + lastThreadId", db.getScheduledTask(id)!.lastRunAt != null && db.getScheduledTask(id)!.lastThreadId != null);
 
   console.log("scheduler: effort clear");
   scheduler.update(id, { effort: null });
   check("effort cleared to null", db.getScheduledTask(id)!.effort == null);
+
+  console.log("scheduler: model clear");
+  scheduler.update(id, { model: null });
+  check("model pin cleared to null", db.getScheduledTask(id)!.model == null);
 
   console.log("scheduler: start() re-anchors from now (no backlog)");
   // Simulate a schedule left with a stale past nextRunAt (as if the server was down): start() should move

@@ -448,6 +448,7 @@ function rowToScheduledTask(r: Row): ScheduledTask {
     cron: r.cron as string,
     enabled: Boolean(r.enabled),
     effort: (r.effort as Effort | null) ?? null,
+    model: (r.model as string | null) ?? null,
     lastRunAt: (r.last_run_at as number | null) ?? null,
     nextRunAt: (r.next_run_at as number | null) ?? null,
     lastThreadId: (r.last_thread_id as string | null) ?? null,
@@ -781,6 +782,7 @@ export class Db {
       "ALTER TABLE model_grades ADD COLUMN token_usage_complete INTEGER",
       "ALTER TABLE chat_messages ADD COLUMN remote_instance TEXT",
       "ALTER TABLE auto_review_episodes ADD COLUMN unattended_streak INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE scheduled_tasks ADD COLUMN model TEXT",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -3207,6 +3209,7 @@ export class Db {
     cron: string;
     enabled: boolean;
     effort?: Effort | null;
+    model?: string | null;
     nextRunAt?: number | null;
   }): ScheduledTask {
     const t: ScheduledTask = {
@@ -3217,6 +3220,7 @@ export class Db {
       cron: input.cron,
       enabled: input.enabled,
       effort: input.effort ?? null,
+      model: input.model ?? null,
       lastRunAt: null,
       nextRunAt: input.nextRunAt ?? null,
       lastThreadId: null,
@@ -3225,8 +3229,8 @@ export class Db {
     };
     this.raw
       .prepare(
-        `INSERT INTO scheduled_tasks(id, title, workspace, prompt, cron, enabled, effort, last_run_at, next_run_at, last_thread_id, created_at, updated_at)
-         VALUES(@id, @title, @workspace, @prompt, @cron, @enabled, @effort, @lastRunAt, @nextRunAt, @lastThreadId, @createdAt, @updatedAt)`,
+        `INSERT INTO scheduled_tasks(id, title, workspace, prompt, cron, enabled, effort, model, last_run_at, next_run_at, last_thread_id, created_at, updated_at)
+         VALUES(@id, @title, @workspace, @prompt, @cron, @enabled, @effort, @model, @lastRunAt, @nextRunAt, @lastThreadId, @createdAt, @updatedAt)`,
       )
       .run({ ...t, enabled: t.enabled ? 1 : 0 });
     return t;
@@ -3243,7 +3247,7 @@ export class Db {
 
   updateScheduledTask(
     id: string,
-    patch: Partial<Pick<ScheduledTask, "title" | "workspace" | "prompt" | "cron" | "enabled" | "effort" | "lastRunAt" | "nextRunAt" | "lastThreadId">>,
+    patch: Partial<Pick<ScheduledTask, "title" | "workspace" | "prompt" | "cron" | "enabled" | "effort" | "model" | "lastRunAt" | "nextRunAt" | "lastThreadId">>,
   ): ScheduledTask | null {
     const current = this.getScheduledTask(id);
     if (!current) return null;
@@ -3256,6 +3260,7 @@ export class Db {
       cron: "cron",
       enabled: "enabled",
       effort: "effort",
+      model: "model",
       lastRunAt: "last_run_at",
       nextRunAt: "next_run_at",
       lastThreadId: "last_thread_id",

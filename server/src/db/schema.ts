@@ -227,6 +227,7 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   cron           TEXT NOT NULL,
   enabled        INTEGER NOT NULL DEFAULT 1,
   effort         TEXT,
+  model          TEXT,
   last_run_at    INTEGER,
   next_run_at    INTEGER,
   last_thread_id TEXT,

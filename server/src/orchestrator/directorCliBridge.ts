@@ -113,9 +113,9 @@ Commands and fields:
 - read_findings: threadId? (omit for all)
 - next_token_shift: all? (read-only) — when the next usage window rolls over and hands capacity back. Timestamps come back server-local with an explicit date and UTC offset; quote them as-is.
 - post_operator_note: note, url?
-- create_scheduled_task: title, workspace, prompt, cron, enabled?, effort?
+- create_scheduled_task: title, workspace, prompt, cron, enabled?, effort?, model? (model is a strict pin when explicitly requested)
 - list_scheduled_tasks
-- update_scheduled_task: id plus any of title/workspace/prompt/cron/enabled/effort
+- update_scheduled_task: id plus any of title/workspace/prompt/cron/enabled/effort/model
 - delete_scheduled_task: id
 
 Never say something was dispatched/changed until the server has returned a successful TOOL RESULT.
@@ -239,7 +239,7 @@ export async function executeDirectorCliAction(
         if (!existsSync(workspace)) return outcome("create_scheduled_task", `ERROR: workspace "${workspace}" does not exist.`);
         const r = scheduler.create({
           title: required(action, "title"), workspace, prompt: required(action, "prompt"),
-          cron: required(action, "cron"), enabled: action.enabled ?? true, effort: action.effort,
+          cron: required(action, "cron"), enabled: action.enabled ?? true, effort: action.effort, model: action.model,
         });
         return outcome("create_scheduled_task", r.ok && r.schedule ? `Created scheduled task ${r.schedule.id}.` : `ERROR: ${r.error}`);
       }
@@ -259,6 +259,7 @@ export async function executeDirectorCliAction(
           ...(action.cron != null ? { cron: action.cron } : {}),
           ...(action.enabled != null ? { enabled: action.enabled } : {}),
           ...(action.effort != null ? { effort: action.effort } : {}),
+          ...(action.model != null ? { model: action.model } : {}),
         });
         return outcome("update_scheduled_task", r.ok && r.schedule ? `Updated scheduled task ${id}.` : `ERROR: ${r.error}`);
       }

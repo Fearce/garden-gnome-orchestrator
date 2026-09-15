@@ -13,6 +13,8 @@ export interface ScheduleInput {
   cron: string;
   enabled?: boolean;
   effort?: Effort | null;
+  /** Exact model request retained as a strict pin for each dispatched run. */
+  model?: string | null;
 }
 export type SchedulePatch = Partial<ScheduleInput>;
 
@@ -69,6 +71,7 @@ export class Scheduler {
       ...clean,
       enabled,
       effort: input.effort ?? null,
+      model: clean.model,
       nextRunAt: enabled ? nextRun(clean.cron, Date.now()) : null,
     });
     this.broadcast();
@@ -84,6 +87,7 @@ export class Scheduler {
       workspace: patch.workspace ?? current.workspace,
       prompt: patch.prompt ?? current.prompt,
       cron: patch.cron ?? current.cron,
+      model: patch.model !== undefined ? patch.model : current.model,
     });
     if (typeof merged === "string") return { ok: false, error: merged };
     const enabled = patch.enabled ?? current.enabled;
@@ -92,6 +96,7 @@ export class Scheduler {
       ...merged,
       enabled,
       effort,
+      model: merged.model,
       // Re-anchor the next fire on any change to the cadence or the enabled flag; a pure metadata edit
       // (prompt/title) keeps the existing slot so it doesn't drift.
       nextRunAt: enabled ? (patch.cron || patch.enabled !== undefined ? nextRun(merged.cron, Date.now()) : current.nextRunAt) : null,
@@ -144,6 +149,7 @@ export class Scheduler {
         workspace: s.workspace,
         brief: s.prompt,
         effort: s.effort ?? undefined,
+        requestedModel: s.model ?? undefined,
       });
       this.db.updateScheduledTask(s.id, { lastRunAt: Date.now(), lastThreadId: threadId });
       this.hub.log("info", `Scheduled task "${s.title}" fired → task ${threadId.slice(0, 8)}`);
@@ -158,15 +164,16 @@ export class Scheduler {
   }
 
   /** Trim + validate the human-supplied fields; returns the cleaned values or an error string. */
-  private sanitize(input: ScheduleInput): { title: string; workspace: string; prompt: string; cron: string } | string {
+  private sanitize(input: ScheduleInput): { title: string; workspace: string; prompt: string; cron: string; model: string | null } | string {
     const title = input.title.trim().slice(0, 200);
     const workspace = input.workspace.trim();
     const prompt = input.prompt.trim();
     const cron = input.cron.trim();
+    const model = input.model?.trim().slice(0, 100) || null;
     if (!title) return "Title is required.";
     if (!workspace) return "Workspace path is required.";
     if (!prompt) return "Prompt is required.";
     if (!isValidCron(cron)) return `Invalid cron expression: "${cron}".`;
-    return { title, workspace, prompt, cron };
+    return { title, workspace, prompt, cron, model };
   }
 }

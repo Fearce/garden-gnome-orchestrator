@@ -327,12 +327,13 @@ export function createDirectorServer(
       cron: z.string().describe(`The cron schedule. ${cronHelp}`),
       enabled: z.boolean().default(true).describe("Whether it starts active (default true)."),
       effort: z.enum(["low", "medium", "high", "max"]).optional().describe("Optional implementor effort for each run; omit to let the planner decide."),
+      model: z.string().optional().describe("Exact model requested by the owner. This is a strict pin for every run; omit unless explicitly requested."),
     },
     async (args) => {
       if (!existsSync(args.workspace)) {
         return { content: [{ type: "text", text: `Workspace "${args.workspace}" does not exist on disk. Confirm the exact absolute path with ${config.ownerName} and retry.` }], isError: true };
       }
-      const r = scheduler.create({ title: args.title, workspace: args.workspace, prompt: args.prompt, cron: args.cron, enabled: args.enabled, effort: args.effort });
+      const r = scheduler.create({ title: args.title, workspace: args.workspace, prompt: args.prompt, cron: args.cron, enabled: args.enabled, effort: args.effort, model: args.model });
       if (!r.ok || !r.schedule) return { content: [{ type: "text", text: `Could not create the scheduled task: ${r.error}` }], isError: true };
       const next = r.schedule.nextRunAt ? new Date(r.schedule.nextRunAt).toLocaleString() : "—";
       return { content: [{ type: "text", text: `Created scheduled task "${r.schedule.title}" (${r.schedule.cron}) in ${r.schedule.workspace}. Next run: ${next}.` }] };
@@ -364,6 +365,7 @@ export function createDirectorServer(
       cron: z.string().optional().describe(cronHelp),
       enabled: z.boolean().optional(),
       effort: z.enum(["low", "medium", "high", "max"]).optional(),
+      model: z.string().nullable().optional().describe("Exact strict model pin for each run; pass null to clear it."),
     },
     async (args) => {
       const { id, ...patch } = args;

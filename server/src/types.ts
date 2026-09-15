@@ -219,6 +219,8 @@ export interface ScheduledTask {
   cron: string; // 5-field cron expression (server-local time)
   enabled: boolean; // off → the schedule is kept but never fires
   effort?: Effort | null; // optional implementor effort override for each run; null = the planner decides
+  /** Exact model request forwarded as a strict task-local pin for every dispatch. */
+  model?: string | null;
   lastRunAt?: number | null; // epoch ms of the last fire, or null if it hasn't run yet
   nextRunAt?: number | null; // epoch ms of the next fire while enabled, else null
   lastThreadId?: string | null; // the task id created by the most recent fire (jump target in the UI)
