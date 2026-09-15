@@ -2238,6 +2238,24 @@ export class Db {
     return r ? rowToFinding(r) : null;
   }
 
+  /** In-place repair of a finding's owner-facing fields (deliverable dedup: a repost for a file
+   * already surfaced updates its existing card instead of stacking a duplicate). Never touches
+   * id/thread/kind/created_at, so an updated deliverable card keeps its original sort position. */
+  updateFinding(id: string, patch: { summary?: string; detail?: string | null; path?: string | null; label?: string | null }): Finding | null {
+    const existing = this.getFinding(id);
+    if (!existing) return null;
+    this.raw
+      .prepare("UPDATE findings SET summary=@summary, detail=@detail, path=@path, label=@label WHERE id=@id")
+      .run({
+        id,
+        summary: patch.summary ?? existing.summary,
+        detail: patch.detail !== undefined ? patch.detail : (existing.detail ?? null),
+        path: patch.path !== undefined ? patch.path : (existing.path ?? null),
+        label: patch.label !== undefined ? patch.label : (existing.label ?? null),
+      });
+    return this.getFinding(id);
+  }
+
   markFindingRouted(id: string): void {
     this.raw.prepare("UPDATE findings SET routed = 1 WHERE id = ?").run(id);
   }

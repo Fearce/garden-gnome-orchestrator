@@ -99,6 +99,8 @@ const GATES = [
   "test:park-classify",
   "test:archive-thread",
   "test:restore-archived-deliverables",
+  "test:deliverable-dedup",
+  "test:dedupe-deliverable-findings",
   "test:recovery-features",
   "test:office-bridge",
   "test:office-gating",

@@ -123,8 +123,8 @@ import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
 import type { FreeProviderService } from "../freeProviders/service.js";
 import { config, fallbackModelFor } from "../config.js";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import { coworkContentWithAttachments } from "../coworkAttachments.js";
 import { acknowledgedInjection, injectionSendOptions, structuredAcknowledgedInjection } from "./injection.js";
@@ -12314,7 +12314,73 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (memo) this.hub.publish({ type: "thread.memo", threadId, memo });
   }
 
+  /** Resolve an agent-supplied deliverable path to its canonical real file path, confined inside the
+   * task workspace (mirrors GET /api/deliverable/:id's containment check: symlinks resolved on both
+   * sides, no `..`/absolute/cross-drive escape, files only). Returns null rather than throwing for
+   * anything that doesn't resolve, since an unresolvable path is simply not a dedup candidate; the
+   * finding is still recorded as-is, and the route reports the real problem once it's opened. */
+  private resolveDeliverablePath(workspace: string, artifactPath: string): string | null {
+    const candidate = isAbsolute(artifactPath) ? artifactPath : join(workspace, artifactPath);
+    let realWorkspace: string;
+    let realFile: string;
+    try {
+      realWorkspace = realpathSync(workspace);
+      realFile = realpathSync(candidate);
+    } catch {
+      return null;
+    }
+    const rel = relative(realWorkspace, realFile);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return null;
+    try {
+      if (!statSync(realFile).isFile()) return null;
+    } catch {
+      return null;
+    }
+    return realFile;
+  }
+
+  /** Two deliverable findings that resolve to the SAME real file are the same card, however their
+   * label or path spelling drifted (a restore repair, a second recovery attempt, a retried agent
+   * re-posting after an earlier partial run): mirrors restore-archived-deliverables.cjs's identity
+   * rule, which exists for exactly this reason. Case-insensitive on Windows, exact elsewhere. */
+  private findDuplicateDeliverable(threadId: string, workspace: string, artifactPath: string): Finding | null {
+    const real = this.resolveDeliverablePath(workspace, artifactPath);
+    if (!real) return null;
+    const key = process.platform === "win32" ? real.toLowerCase() : real;
+    for (const existing of this.db.listFindings(threadId)) {
+      if (existing.kind !== "deliverable" || !existing.path) continue;
+      const existingReal = this.resolveDeliverablePath(workspace, existing.path);
+      if (!existingReal) continue;
+      const existingKey = process.platform === "win32" ? existingReal.toLowerCase() : existingReal;
+      if (existingKey === key) return existing;
+    }
+    return null;
+  }
+
   postFinding(input: PostFindingInput): Finding {
+    // A second deliverable posted for a file already surfaced on this task is a repair/re-post, not a
+    // new artifact: update the existing card in place instead of stacking a duplicate the owner would
+    // see as two cards for one file. Emission-side backstop for the exact failure mode the recovery
+    // tooling exists to fix, where multiple recovery attempts (a restore script, a resumed agent)
+    // converge on the same file.
+    if (input.kind === "deliverable" && input.path) {
+      const thread = this.db.getThread(input.threadId);
+      if (thread) {
+        const dup = this.findDuplicateDeliverable(input.threadId, thread.workspace, input.path);
+        if (dup) {
+          const updated = this.db.updateFinding(dup.id, {
+            summary: input.summary,
+            detail: input.detail ?? null,
+            path: input.path,
+            label: input.label ?? null,
+          });
+          if (updated) {
+            this.hub.publish({ type: "finding", finding: updated });
+            return updated;
+          }
+        }
+      }
+    }
     const finding = this.db.addFinding(input);
     this.hub.publish({ type: "finding", finding });
     // CLI bridge output can land after the terminal result callback. Refresh the already-created memo
