@@ -199,6 +199,16 @@ The office MCP tools stay allowlisted throughout so a mid-run join can coordinat
 add tools mid-query). Dedup is durable via `chatThreadInRoom`, so a restart/auto-resume never re-pings.
 Gate: `test:office-gating`.
 
+## Shared-worktree commits
+
+The index is shared too. Before committing, inspect both `git diff --cached` and `git diff`; never use
+`git add -A`, `git add .`, or a bare `git commit`. For separate files, use
+`python C:/Users/theke/.claude/scripts/safe_commit.py -m "type: summary" -- path/to/file` so foreign
+staged work cannot enter the commit. When another agent changed the same file, use
+`python C:/Users/theke/.claude/scripts/stage_my_hunks.py --list path/to/file`, select only your hunks,
+verify the cached diff, then commit that verified index without a pathspec. These tools are the required
+commit boundary for concurrent work; do not hand-roll an index patch or rely on interactive `git add -p`.
+
 ## Deliverables (agent-produced files)
 A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the
 right panel. It's a `findings` row with `kind='deliverable'`, a `path` (absolute or workspace-relative)
