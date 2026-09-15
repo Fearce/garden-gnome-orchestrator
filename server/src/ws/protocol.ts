@@ -157,8 +157,9 @@ export type ServerEvent =
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
   // A cancelled task was restarted from scratch: its prior runs/findings/feed were deleted server-side,
-  // so the client prunes that stale slice (keeping the thread row) before the fresh pipeline streams in.
-  | { type: "thread.reset"; threadId: string }
+  // while owner-facing deliverables stay addressable. The client prunes transient data but restores this
+  // durable file index before the fresh pipeline streams in.
+  | { type: "thread.reset"; threadId: string; deliverables: Finding[] }
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: Thread["state"]; error?: string; message?: string; result: ThreadActionResult }
   | {

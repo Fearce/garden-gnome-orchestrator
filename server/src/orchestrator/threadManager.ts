@@ -11333,7 +11333,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // lingers in the UI until the next full snapshot).
     this.reviewInjections.deleteThread(threadId);
     this.db.resetThreadForRetry(threadId);
-    this.hub.publish({ type: "thread.reset", threadId });
+    // Deliverables intentionally survive a fresh execution attempt. Put the retained index directly
+    // on the reset event so an already-open console never flashes away the owner's file cards while
+    // waiting for the next history request.
+    const deliverables = this.db.listFindings(threadId).filter((finding) => finding.kind === "deliverable");
+    this.hub.publish({ type: "thread.reset", threadId, deliverables });
 
     // Leave the 'cancelled' state BEFORE dispatch — the pipeline's cancelled() guards (and the "planner
     // disabled → no early setState('planning')" branch) would otherwise abort the retry as a silent no-op,

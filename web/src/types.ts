@@ -1168,9 +1168,9 @@ export type ServerEvent =
   | { type: "code.context"; key: string; context: CodeContext }
   | { type: "thread.upsert"; thread: Thread }
   | { type: "thread.removed"; threadId: string }
-  // A cancelled task was restarted from scratch: prune its now-deleted runs/findings/feed (keeping the
-  // thread row) before the fresh pipeline streams in.
-  | { type: "thread.reset"; threadId: string }
+  // A cancelled task was restarted from scratch: prune its transient run/finding/feed slice while
+  // retaining the owner-facing file cards supplied by the server.
+  | { type: "thread.reset"; threadId: string; deliverables: Finding[] }
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: ThreadState; error?: string; message?: string; result: ThreadActionResult }
   // Optional only for rolling compatibility with a console bundle loaded just before the server restart.

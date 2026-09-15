@@ -98,6 +98,7 @@ const GATES = [
   "test:provider-fallback",
   "test:park-classify",
   "test:archive-thread",
+  "test:restore-archived-deliverables",
   "test:recovery-features",
   "test:office-bridge",
   "test:office-gating",

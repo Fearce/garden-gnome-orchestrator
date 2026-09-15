@@ -2142,10 +2142,10 @@ function applyEvent(ev: ServerEvent): void {
     case "thread.reset":
       // Keep implementationMemos here: Retry clears the transient run/feed rows, but each prior work
       // revision remains part of the audit trail and the new implementor pass appends another revision.
-      // A cancelled task was restarted from scratch server-side: its prior runs/findings/feed were
-      // deleted. Prune that stale slice so the fresh pipeline's events repopulate cleanly — but KEEP
-      // the thread row (its state updates via thread.upsert) and the selection (mirrors thread.removed
-      // minus the thread drop).
+      // A cancelled task was restarted from scratch server-side: its prior runs, ordinary findings and
+      // feed were deleted. Preserve the separately supplied, durable deliverables index so retrying a
+      // task never makes an owner-facing file card vanish. Keep the thread row (its state updates via
+      // thread.upsert) and selection (mirrors thread.removed minus the thread drop).
       useStore.setState((s) => {
         const drop = <V,>(rec: Record<string, V>): Record<string, V> => {
           if (!(ev.threadId in rec)) return rec;
@@ -2158,10 +2158,13 @@ function applyEvent(ev: ServerEvent): void {
         }
         return {
           runs,
-          findings: s.findings.filter((f) => f.threadId !== ev.threadId),
+          findings: [...s.findings.filter((f) => f.threadId !== ev.threadId), ...ev.deliverables],
           questions: s.questions.filter((q) => q.threadId !== ev.threadId),
           threadFeeds: drop(s.threadFeeds),
-          threadDeliverables: drop(s.threadDeliverables),
+          threadDeliverables: {
+            ...drop(s.threadDeliverables),
+            ...(ev.deliverables.length ? { [ev.threadId]: mergeThreadDeliverables([], ev.deliverables) } : {}),
+          },
           threadHistoryCursors: drop(s.threadHistoryCursors),
           threadHistoryHasMore: drop(s.threadHistoryHasMore),
           threadHistoryLoading: drop(s.threadHistoryLoading),

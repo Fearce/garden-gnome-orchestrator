@@ -2041,13 +2041,15 @@ export class Db {
   }
 
   /** Wipe a thread's prior attempt for a from-scratch retry: delete its agent_runs (incl. the
-   *  implementor session a resume would otherwise reuse), findings, feed messages and questions,
+   *  implementor session a resume would otherwise reuse), ordinary findings, feed messages and questions,
    *  and clear every saved stage output except the OWNER-supplied context + the error — the reader
    *  escalation evidence that lets a retry choose its route correctly, and the standing owner directives
    *  ("put this on a separate branch"), which are corrections to the brief the retry re-runs and so must
    *  outlive the attempt they were sent into, exactly as they outlive a resume. The office chat_messages are
    *  intentionally left (a durable cross-task record, no thread FK), as are implementation_memos (the
-   *  prior work-revision audit). Transactional so the wipe is all-or-nothing. */
+   *  prior work-revision audit) and owner-facing deliverable findings. A Retry is a fresh execution,
+   *  not permission to make files the owner was already shown disappear. Transactional so the wipe is
+   *  all-or-nothing. */
   resetThreadForRetry(id: string): void {
     this.raw.transaction((tid: string) => {
       const preservedStage = this.getThreadStageOutputs(tid);
@@ -2055,7 +2057,9 @@ export class Db {
       const preservedDirectives = preservedStage.standingDirectives;
       const blobs = this.threadAttachmentIds(tid);
       this.raw.prepare("DELETE FROM agent_runs WHERE thread_id = ?").run(tid);
-      this.raw.prepare("DELETE FROM findings WHERE thread_id = ?").run(tid);
+      // Deliverables are a durable owner-facing file index. Their paths remain guarded at serve time,
+      // and retaining rows does not let an old agent run resume or old findings steer the new attempt.
+      this.raw.prepare("DELETE FROM findings WHERE thread_id = ? AND kind <> 'deliverable'").run(tid);
       this.raw.prepare("DELETE FROM messages WHERE thread_id = ?").run(tid);
       this.raw.prepare("DELETE FROM questions WHERE thread_id = ?").run(tid);
       // A retry is a brand-new task attempt. Its old review revision/outcome must not suppress the new

@@ -226,8 +226,8 @@ check("authoritative interruption corrects an optimistic same-run memo", correct
 console.log("\nE. Retry and post-task self-improvement semantics");
 db.resetThreadForRetry(work.id);
 const afterRetry = db.listImplementationMemos(work.id);
-check("Retry retains every prior memo even after deleting runs/feed/findings", afterRetry.length === 5, String(afterRetry.length));
-check("deleted deliverable finding becomes an archived snapshot, not lost", afterRetry[0]?.deliverables[0]?.available === false);
+check("Retry retains every prior memo even after deleting runs/feed/ordinary findings", afterRetry.length === 5, String(afterRetry.length));
+check("Retry preserves deliverable findings as live owner file cards", afterRetry[0]?.deliverables[0]?.available === true);
 
 const afterRetryRun = db.createRun({ threadId: work.id, role: "implementor", model: "gpt-5.6-sol", account: "codex:gpt-5.6-sol" });
 db.updateRun(afterRetryRun.id, { state: "done", endedAt: Date.now() });
