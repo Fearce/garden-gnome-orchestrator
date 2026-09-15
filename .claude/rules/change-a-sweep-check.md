@@ -1,6 +1,7 @@
 ---
 paths:
   - server/scripts/**
+  - web/scripts/**
 ---
 
 # Changing a check inside a sweep script (`probe:*` / `audit:*` / `health`)
@@ -58,3 +59,17 @@ Write the "still reports X" assertion in the same commit as the "now ignores Y" 
 A fix here is **scripts-only — no deploy**: nothing under `scripts/` is compiled into `dist`, so
 health will still report `dist` matching HEAD. Keep any new `probe:*` query read-only; they run
 against prod's live SQLite.
+
+## A browser probe needs two timeout layers
+
+An explicit Playwright timeout on launch, login, navigation, selector waiting, and shutdown gives a
+useful failure naming the stalled operation. It does **not** guarantee the Node process exits: a wedged
+browser transport or teardown can keep the event loop open after an operation-level timeout. Give the
+CLI an outer watchdog shorter than the sweep's own kill budget; it must print a `[FAIL]` verdict and
+terminate the process. Clear that watchdog only once the probe settles.
+
+Print a short phase marker before each major awaited step: browser launch, authentication, page load,
+and the real readiness condition. This turns an otherwise silent sweep timeout into an actionable
+failure. Do not substitute a sleep for readiness: wait for the condition the probe asserts (for the
+console, the WebSocket connection reading `live`) with its own bounded timeout. Export the timeout
+wrapper and test both a resolving promise and a never-settling promise.
