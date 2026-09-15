@@ -62,6 +62,9 @@ class StubAccounts {
   hasHeadroom(): boolean {
     return true;
   }
+  dispatchPreview(): Record<string, unknown> {
+    return { account: { id: "acct-a", label: "acct-a" }, hasHeadroom: true };
+  }
   setPingInterval(_ms: number): void {}
   applyEnabled(_id: string, _enabled: boolean): void {}
   applyWeeklySafetyPct(_id: string, _pct: number): void {}
