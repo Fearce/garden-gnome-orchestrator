@@ -148,32 +148,43 @@ try {
   // reconnecting client silently receives a board that is already wrong.
   const hub = new EventHub();
   let builds = 0;
-  const snapshot = createHelloCache(() => {
-    builds++;
-    return { type: "hello", builds } as unknown as ServerEvent;
-  }, hub, 10_000);
+  const makeCache = (ttlMs: number) =>
+    createHelloCache(() => {
+      builds++;
+      return { type: "hello", builds } as unknown as ServerEvent;
+    }, hub, ttlMs);
 
-  snapshot();
-  snapshot();
-  snapshot();
-  assert.equal(builds, 1, "a reconnect storm with no state change must rebuild the snapshot once, not once per socket");
+  // 1. A quiet board reuses one snapshot however many sockets ask for it.
+  const quiet = makeCache(0);
+  quiet();
+  quiet();
+  quiet();
+  assert.equal(builds, 1, "a reconnect storm with no state change must build the snapshot once, not once per socket");
 
+  // 2. A durable event makes it stale, so the next connect gets fresh state.
   hub.publish({ type: "log", level: "info", message: "something changed" });
-  snapshot();
-  assert.equal(builds, 2, "any published event must invalidate the snapshot — a reused one would be stale");
-  snapshot();
+  quiet();
+  assert.equal(builds, 2, "a durable event must make the snapshot stale — a reused one would be a wrong board");
+  quiet();
   assert.equal(builds, 2, "and it is reusable again once the board is quiet");
 
-  // The TTL is the backstop for state that changes without publishing; without it a missed publish
-  // would serve a wrong board indefinitely rather than for a bounded moment.
-  const expiring = createHelloCache(() => {
-    builds++;
-    return { type: "hello" } as unknown as ServerEvent;
-  }, hub, -1);
-  const before = builds;
-  expiring();
-  expiring();
-  assert.equal(builds, before + 2, "an expired snapshot is rebuilt rather than served stale");
+  // 3. Streaming deltas are not durable board state. They are also almost all of the traffic, so
+  //    letting them dirty the snapshot is exactly why invalidation alone fixed nothing: while agents
+  //    run, the snapshot was never clean and every reconnect rebuilt it.
+  for (let i = 0; i < 50; i++) hub.publish({ type: "agent.delta", threadId: "t", runId: "r", role: "implementor", text: "x" } as never);
+  quiet();
+  assert.equal(builds, 2, "streaming deltas must not dirty the snapshot");
+
+  // 4. Even while durable events never stop, rebuilds are rate-limited — that is what makes a
+  //    reconnect burst cost one build instead of one per socket.
+  const busy = makeCache(10_000);
+  busy();
+  const afterFirst = builds;
+  for (let i = 0; i < 5; i++) {
+    hub.publish({ type: "log", level: "info", message: "still working" });
+    busy();
+  }
+  assert.equal(builds, afterFirst, "a dirty snapshot is rebuilt at most once per interval, however many events and sockets arrive");
 
   console.log("Performance paths OK — board summary is slim, task history keyset-pages through its composite index, and the connect snapshot survives a reconnect storm.");
 } finally {

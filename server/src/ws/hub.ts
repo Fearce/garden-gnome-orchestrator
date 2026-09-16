@@ -80,7 +80,8 @@ const SNAPSHOT_FINDINGS = 250;
 const SNAPSHOT_DIRECTOR_MSGS = 150;
 const SNAPSHOT_CHAT = 150;
 const THREAD_HISTORY_PAGE = THREAD_HISTORY_PAGE_SIZE;
-/** Backstop only; an event invalidates the snapshot immediately, so this bounds nothing normal. */
+/** Shortest interval between two rebuilds of the connect snapshot while the board keeps changing, and
+ *  therefore the most stale a board can be at the moment a client connects. See `createHelloCache`. */
 const HELLO_CACHE_MS = 2_000;
 
 function buildHello(ctx: WsContext): ServerEvent {
@@ -127,13 +128,23 @@ function buildHello(ctx: WsContext): ServerEvent {
  * which trips the watchdog again. Measured at the same time: 7 distinct client sockets in 30s against 3
  * concurrent connections. That feedback loop is what took stalls from 17s to 119s.
  *
- * Invalidating on ANY published event rather than on a timer is what makes reuse free of staleness: the
- * snapshot is only reused while no event has been published, so a client that receives it and then
- * subscribes has missed nothing. The TTL is only a backstop for state that can change without
- * publishing — a live-update bug in its own right, but one this must not amplify into a wrong board.
+ * Two rules, and the second is the one that was missing on the first attempt:
+ *
+ *  - An event marks the snapshot DIRTY, so a quiet server reuses one indefinitely and a client that
+ *    receives it has missed nothing. Streaming deltas are excluded: they are not durable board state,
+ *    and they are the overwhelming majority of traffic.
+ *  - A dirty snapshot is still rebuilt at most once per `ttlMs`. Dirty-on-every-event ALONE was measured
+ *    to change nothing (still 58% of busy time in `listThreadSummaries -> all`): while agents run,
+ *    durable events never stop, so the snapshot was always dirty and every reconnect rebuilt it anyway.
+ *    Rate-limiting is what actually collapses a storm — the cost of a reconnect burst stops scaling with
+ *    the number of sockets in it.
+ *
+ * The trade is explicit: on a BUSY server a connecting client can receive a board up to `ttlMs` stale,
+ * which the live subscription it opens immediately afterwards corrects.
  */
 export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs: number = HELLO_CACHE_MS): () => ServerEvent {
   let cached: { at: number; event: ServerEvent } | null = null;
+  let dirty = false;
   // Armed on first use, not at registration: `registerWs` never touched the hub until a socket
   // connected, and tightening that would make a partial context (an auth-rejection test, any other
   // entry point) fail at wiring time for a subscription that has nothing to invalidate yet.
@@ -141,14 +152,18 @@ export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs:
   return () => {
     if (!armed) {
       armed = true;
-      hub.subscribe(() => {
-        cached = null;
+      hub.subscribe((event) => {
+        // A streaming delta is not durable board state — it cannot change any field of the snapshot,
+        // and it is by far the most frequent event, so letting it dirty the snapshot would mean an
+        // active server never reuses one.
+        if (!STREAMING_EVENTS.has(event.type)) dirty = true;
       });
     }
     const at = Date.now();
-    if (cached && at - cached.at <= ttlMs) return cached.event;
+    if (cached && !(dirty && at - cached.at >= ttlMs)) return cached.event;
     const event = build();
     cached = { at, event };
+    dirty = false;
     return event;
   };
 }
