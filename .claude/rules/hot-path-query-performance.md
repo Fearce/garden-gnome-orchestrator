@@ -1,18 +1,9 @@
 # Ordering, paging, and snapshot-slimming a hot SQLite read (`messages`/`findings`/`threads`)
 
-Read before touching `db.ts`'s `listMessagePage`/`listMessages`/`listFindings`/`listThreadSummaries`,
-their indexes in `schema.ts`, or `ws/hub.ts`'s `buildHello` — or before adding any NEW query that
-orders/pages a UUID-keyed table by `created_at`. The 2026-09-04 perf pass (`14daac9`, `04154de`,
-`7a0cbca`) got this wrong twice before it got it right; each mistake shipped, passed its own gate, and
-was only caught by measuring the LIVE 800-task/512k-message DB. (Pagination retention is documented
-separately in `add-a-message-kind.md` §"the task feed is PAGINATED" — don't duplicate it here.)
+Read before touching `db.ts`'s `listMessagePage`/`listMessages`/`listFindings`/`listThreadSummaries`, their indexes in `schema.ts`, or `ws/hub.ts`'s `buildHello` — or before adding any NEW query that orders/pages a UUID-keyed table by `created_at`. The 2026-09-04 perf pass (`14daac9`, `04154de`, `7a0cbca`) got this wrong twice before it got it right; each mistake shipped, passed its own gate, and was only caught by measuring the LIVE 800-task/512k-message DB. (Pagination retention is documented separately in `add-a-message-kind.md` §"the task feed is PAGINATED" — don't duplicate it here.)
 
 ## The rowid tie-break — the one that bit hardest
-A `TEXT PRIMARY KEY id` is a **random UUID** in this codebase (`crypto.randomUUID()`), so it carries
-**zero relationship to write order**. Tie-breaking an `ORDER BY created_at` on `id` — which a naive
-"make paging exact" fix reaches for — reorders every row written inside the same millisecond into UUID
-order instead of insert order. Measured on the live DB: 1,290 of 2,422 same-millisecond groups reordered,
-including tool RESULTS rendering above the tool CALLS that produced them.
+A `TEXT PRIMARY KEY id` is a **random UUID** in this codebase (`crypto.randomUUID()`), so it carries **zero relationship to write order**. Tie-breaking an `ORDER BY created_at` on `id` — which a naive "make paging exact" fix reaches for — reorders every row written inside the same millisecond into UUID order instead of insert order. Measured on the live DB: 1,290 of 2,422 same-millisecond groups reordered, including tool RESULTS rendering above the tool CALLS that produced them.
 
 **The fix, not a workaround:** SQLite appends the table's `rowid` to every non-`WITHOUT ROWID` index's
 key automatically. A two-column index `(thread_id, created_at)` is therefore physically
@@ -29,14 +20,14 @@ key automatically. A two-column index `(thread_id, created_at)` is therefore phy
   the start. A sibling pattern for a broadcast COLLECTION (not a paged feed) is `add-a-broadcast-
   collection.md`'s explicit `seq` column; use `seq` there, `rowid` here — don't mix the two.
 
-## Don't ship a broadcast snapshot's full free-text fields
-`buildHello` fans a `ThreadSummary` out to every connected client on every reconnect. A task's `brief`
-and `raw_prompt` can run to kilobytes and are read by almost no card (the board only needs the first
-line, as a fallback for when the task isn't actively streaming). Shipping them in full cost ~639KB
-across 799 tasks for text nothing on the card actually shows. Clip in SQL
-(`substr(brief, 1, BRIEF_PREVIEW_CHARS)`), not in JS after the fetch — the whole point is to never pull
-the bytes across the SQLite↔JS boundary. `BRIEF_PREVIEW_CHARS` (`types.ts`) is the shared clip width; a
-task's FULL brief/prompt still arrives once its detail panel is opened (`thread.history`).
+## The broadcast snapshot: clip its free text, and never derive a field PER ROW
+`buildHello` fans a `ThreadSummary` out to every client on every reconnect, so anything it does per row it does ~900 times. Two separate costs, and the second is far worse than the first.
+
+**Bytes.** `brief`/`raw_prompt` run to kilobytes and no card renders them (the board needs the first line, as a fallback for when the task isn't streaming). Clip in SQL (`substr(brief, 1, BRIEF_PREVIEW_CHARS)`), never in JS after the fetch — the point is to not pull the bytes across the SQLite↔JS boundary at all. The FULL brief arrives when the panel opens (`thread.history`).
+
+**Reads.** `latest_message_preview` was a correlated subquery for each task's newest readable message: indexed, unsorted, ~0.3ms alone — and 2,773 of the snapshot's 3,312 random page reads, because it ran 907 times. At the ~8ms/read this box gives under load that is a **45-second** frozen event loop, which is what "I click a task and wait 30 seconds" actually was: the click arrives at a loop already inside that query. It now lives in a `threads` column kept by an AFTER INSERT trigger (`db.ts` `installLatestMessagePreviewTrigger`) — a table invariant, not one writer's job, so raw inserts in tests and migrations cannot bypass it. Seeding old rows is the same expensive lookup, so it runs chunked off the boot path (`previewBackfill.ts`): in the constructor it would just move the stall to every boot, where keepAlive reads an unresponsive server as a dead one and restarts into it again.
+
+**Measure read COUNT, not milliseconds.** Time here is whatever the page cache happened to hold — the same query measured 45.8s and 174ms an hour apart. Windows counts a read op served from cache too, so `Win32_Process.ReadOperationCount` around a query is the cache-independent number (it read 3,312 both times). A plan check catches this class where a timing never will: `planVerdict(..., {forbidTable})` fails a snapshot that touches `messages` at all, since an indexed seek is still a random read.
 
 ## Verify against the LIVE database, not just a synthetic gate
 `test:performance-paths` gates these query SHAPES on every `test:gates` run (fast, free, synthetic —
@@ -56,5 +47,4 @@ SQLite's planner to make the same choice. Two tools close that gap:
   snapshot of the live DB per `rehearse-a-data-migration.md` before it ships — that recipe is what caught
   the 1,290-group reordering above; a synthetic-only gate did not.
 
-Gate: `test:hot-paths` (proves the checker in `probe-hot-paths.cjs` actually DETECTS an unindexed query
-before trusting it to stay quiet on a fixed one — same revert-check discipline as `db-size.test.cjs`).
+Gate: `test:hot-paths` (proves the checker in `probe-hot-paths.cjs` actually DETECTS an unindexed query before trusting it to stay quiet on a fixed one — same revert-check discipline as `db-size.test.cjs`).

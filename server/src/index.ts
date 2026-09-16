@@ -11,6 +11,7 @@ import { installCrashGuards, logBoot, logCrash, logRestartReconcile, registerCra
 import { eventLoopHealth, startEventLoopMonitor } from "./eventLoopMonitor.js";
 import { Db } from "./db/db.js";
 import { startSearchIndexBackfill } from "./db/searchIndex.js";
+import { startLatestMessagePreviewBackfill } from "./db/previewBackfill.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
 import { AccountManager, type PersistedAccountUsage } from "./accounts/accountManager.js";
@@ -203,6 +204,7 @@ async function main(): Promise<void> {
       () => freeProviders.start(),
       () => startUpdatePoll(),
       () => startSearchIndexBackfill(db, (message) => hub.publish({ type: "log", level: "info", message })),
+      () => startLatestMessagePreviewBackfill(db, (message) => hub.publish({ type: "log", level: "info", message })),
       () =>
         startCodexUsageMonitor(hub, {
           apiKey: () => manager.openaiApiKey(),

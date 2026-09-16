@@ -47,6 +47,15 @@ CREATE TABLE IF NOT EXISTS threads (
   -- CONTRACT that keeps parallel agents from overwriting each other in the one shared working tree, so it
   -- is persisted rather than held in memory: a resumed collaborator must be handed the same share.
   assignment    TEXT,
+  -- Clipped copy of this task's newest readable (text/system) message, for the board snapshot. Stored
+  -- rather than derived: deriving it per row is a correlated seek into the messages table, and the
+  -- snapshot reads EVERY task, so on this installation it cost 2,773 random page reads per client
+  -- connect -- measured at 8ms each under disk contention, which is where the owner's 30-second wait
+  -- for a task to open came from. Maintained by the messages_latest_preview_ai trigger, installed in
+  -- db.ts migrate() because on an existing database the column does not exist until the ALTER runs.
+  -- NULL means only "a row that predates this column", which is what backfillLatestMessagePreviews
+  -- walks; createThread writes the empty string, so a new task is never a backfill candidate.
+  latest_message_preview TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );

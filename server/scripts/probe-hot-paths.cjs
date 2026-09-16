@@ -50,14 +50,39 @@ function explain(db, sql, params = []) {
 
 /** A plan is healthy when it never sorts by hand (TEMP B-TREE) and never falls back to a bare table scan
  *  for a query that filters on an indexed column — "SCAN <table> USING INDEX …" (walking an index, still
- *  cheap) is fine; a bare "SCAN <table>" with no index in sight means the planner gave up on one. */
-function planVerdict(label, detail, { table } = {}) {
+ *  cheap) is fine; a bare "SCAN <table>" with no index in sight means the planner gave up on one.
+ *
+ *  `forbidTable` is the stronger claim, for a query that must not visit a table AT ALL: an indexed seek
+ *  is still a random read, and a per-row one inside a query that reads every task is thousands of them. */
+function planVerdict(label, detail, { table, forbidTable } = {}) {
   const problems = [];
   if (/TEMP B-TREE/.test(detail)) problems.push(`sorts by hand (TEMP B-TREE): ${detail}`);
   if (table && new RegExp(`\\bSCAN ${table}\\b(?! USING)`).test(detail)) {
     problems.push(`full scan instead of an index seek: ${detail}`);
   }
+  if (forbidTable && new RegExp(`\\b(?:SCAN|SEARCH) ${forbidTable}\\b`).test(detail)) {
+    problems.push(`reads ${forbidTable} once per task instead of a stored column: ${detail}`);
+  }
   return { label, detail, ok: problems.length === 0, problems };
+}
+
+/** What `listThreadSummaries` runs, as literal SQL — see the note on `hotQueryPlans` for why these are
+ *  literals here rather than an import of `dist`. Drift from `db.ts` is what `test:hot-paths` catches. */
+const BOARD_SNAPSHOT_SQL = `SELECT id, title, state, workspace, error, effort_override,
+         substr(brief, 1, ${BRIEF_PREVIEW_CHARS}) AS brief_preview,
+         latest_message_preview,
+         model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
+         active_deadline_at, agent_count, parent_id, assignment, created_at, updated_at,
+         json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw
+  FROM threads ORDER BY created_at DESC`;
+
+/** The board snapshot reads EVERY task, so anything it does per row it does ~900 times. It carried a
+ *  correlated lookup of each task's newest readable message until 2026-09-16; measured on the live DB
+ *  that was 2,773 of the query's 3,312 random page reads, and at the ~8ms/read this disk gives under
+ *  load it is where a click on a task spent its tens of seconds. `threads.latest_message_preview` now
+ *  stores that line, so the plan must name `threads` and nothing else. */
+function boardSnapshotPlan(db) {
+  return planVerdict("board snapshot (hello)", explain(db, BOARD_SNAPSHOT_SQL), { forbidTable: "messages" });
 }
 
 /** The exact SQL shapes `db.ts` runs for a board/history read — see listMessagePage, listMessages, and
@@ -129,13 +154,7 @@ function helloSnapshotFootprint(db) {
  *  run (measured against the live DB: first run 58ms, second run 1-2ms — a >30x difference that has
  *  nothing to do with the index). */
 function timeSnapshotQuery(db) {
-  const sql = `SELECT id, title, state, workspace, error, effort_override,
-              substr(brief, 1, ${BRIEF_PREVIEW_CHARS}) AS brief_preview,
-              model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
-              active_deadline_at, agent_count, parent_id, assignment, created_at, updated_at,
-              json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw
-       FROM threads ORDER BY created_at DESC`;
-  const stmt = db.prepare(sql);
+  const stmt = db.prepare(BOARD_SNAPSHOT_SQL);
   stmt.all(); // warm-up
   const start = process.hrtime.bigint();
   const rows = stmt.all();
@@ -179,7 +198,7 @@ function main() {
   }
   console.log(`  busiest task: ${busiest.thread_id} (${num(busiest.n)} messages)`);
 
-  const plans = hotQueryPlans(db, busiest.thread_id);
+  const plans = [...hotQueryPlans(db, busiest.thread_id), boardSnapshotPlan(db)];
   for (const p of plans) {
     console.log(`  ${p.ok ? "✓" : "✗"} ${p.label}`);
     if (!p.ok) for (const problem of p.problems) console.log(`      ${problem}`);
@@ -224,6 +243,8 @@ module.exports = {
   explain,
   planVerdict,
   hotQueryPlans,
+  boardSnapshotPlan,
+  BOARD_SNAPSHOT_SQL,
   busiestThread,
   helloSnapshotFootprint,
   timeSnapshotQuery,

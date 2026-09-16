@@ -185,11 +185,19 @@ const THREAD_LISTING_COLUMNS = `id, title, state, workspace, brief, raw_prompt, 
   active_deadline_at, agent_count, parent_id, assignment, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
 
+/** The message kinds a board card can quote back as "what this task last said" — the two the feed
+ *  renders as prose. Tool calls, tool results and reasoning are not readable lines. Shared by the
+ *  trigger that maintains `threads.latest_message_preview` and the backfill that seeds it, so the two
+ *  cannot drift into disagreeing about what the column means. */
+const PREVIEW_MESSAGE_KINDS_SQL = `'text', 'system'`;
+
+/** Tasks per turn of the preview backfill. The per-task lookup is ~3 random reads, so this keeps one
+ *  turn near 100ms even at the 8ms/read this installation's disk was measured at under load. */
+const LATEST_PREVIEW_BACKFILL_CHUNK = 12;
+
 const THREAD_SUMMARY_COLUMNS = `id, title, state, workspace, error, effort_override,
   substr(brief, 1, ${BRIEF_PREVIEW_CHARS}) AS brief_preview,
-  (SELECT substr(content, 1, ${BRIEF_PREVIEW_CHARS}) FROM messages
-   WHERE thread_id = threads.id AND kind IN ('text', 'system')
-   ORDER BY created_at DESC, rowid DESC LIMIT 1) AS latest_message_preview,
+  latest_message_preview,
   model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
   active_deadline_at, agent_count, parent_id, assignment, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
@@ -783,6 +791,7 @@ export class Db {
       "ALTER TABLE chat_messages ADD COLUMN remote_instance TEXT",
       "ALTER TABLE auto_review_episodes ADD COLUMN unattended_streak INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE scheduled_tasks ADD COLUMN model TEXT",
+      "ALTER TABLE threads ADD COLUMN latest_message_preview TEXT",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -793,6 +802,7 @@ export class Db {
     // After the ALTER, never in SCHEMA: on a pre-sha256 DB the column doesn't exist yet when
     // SCHEMA runs, and exec(SCHEMA) is unguarded — the failed index would abort boot.
     this.raw.exec("CREATE INDEX IF NOT EXISTS idx_attachments_content ON attachments(sha256, name, media_type)");
+    this.installLatestMessagePreviewTrigger();
     this.backfillDirectorThreadLinks();
     this.backfillRemoteChatInstances();
     this.retireSupersededIndexes();
@@ -800,6 +810,55 @@ export class Db {
     this.backfillAutoReviewEpisodes();
     this.repairAutoReviewBackfillFreshWork();
     this.backfillImplementationMemos();
+  }
+
+  /** Keep `threads.latest_message_preview` true for every insert path, including the raw ones in tests
+   *  and migrations: the column is derived data, so its invariant belongs to the table rather than to
+   *  whichever function happened to write the row. Installed here and not in SCHEMA because on an
+   *  existing database the column does not exist until the ALTER above has run — the same reason
+   *  `idx_attachments_content` is created here (`exec(SCHEMA)` is unguarded, so a failure aborts boot).
+   *
+   *  Dropped and recreated on every boot so the trigger cannot outlive a change to
+   *  `BRIEF_PREVIEW_CHARS` or to which kinds count as readable. It is metadata only — no table rewrite.
+   *
+   *  There is deliberately NO matching delete trigger: it would fire once per row, and the one bulk
+   *  delete this table has (`resetThreadForRetry`) empties a whole task's feed, so 14k recomputes would
+   *  replace one assignment. That path clears the column itself. */
+  private installLatestMessagePreviewTrigger(): void {
+    this.raw.exec(`
+      DROP TRIGGER IF EXISTS messages_latest_preview_ai;
+      CREATE TRIGGER messages_latest_preview_ai AFTER INSERT ON messages
+      WHEN new.kind IN (${PREVIEW_MESSAGE_KINDS_SQL})
+      BEGIN
+        UPDATE threads SET latest_message_preview = substr(new.content, 1, ${BRIEF_PREVIEW_CHARS})
+         WHERE id = new.thread_id;
+      END;
+    `);
+  }
+
+  /** Fill in the preview for rows written before the column existed, `limit` tasks at a time.
+   *
+   *  Chunked and driven off the boot path (`startLatestMessagePreviewBackfill`) because this is the
+   *  very work the column exists to remove: the per-task lookup is the correlated seek that made the
+   *  board snapshot cost thousands of random reads, and doing all of it at once inside the `Db`
+   *  constructor would simply move a ~20-second stall from every client connect to every boot — where
+   *  script-hub's keepAlive probe would read it as a dead server and restart into it again.
+   *
+   *  Self-terminating and crash-safe with no cursor: a walked task is written `''` when it has no
+   *  readable message, so the NULL set only ever shrinks and a restart resumes where this left off. */
+  backfillLatestMessagePreviews(limit = LATEST_PREVIEW_BACKFILL_CHUNK): { filled: number; done: boolean } {
+    const filled = this.raw
+      .prepare(
+        `UPDATE threads
+            SET latest_message_preview = IFNULL((
+                  SELECT substr(content, 1, ${BRIEF_PREVIEW_CHARS}) FROM messages
+                   WHERE thread_id = threads.id AND kind IN (${PREVIEW_MESSAGE_KINDS_SQL})
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1), '')
+          WHERE id IN (SELECT id FROM threads WHERE latest_message_preview IS NULL
+                        ORDER BY created_at DESC LIMIT ?)`,
+      )
+      .run(limit).changes;
+    return { filled, done: filled < limit };
   }
 
   /** The current composite indexes are created idempotently by SCHEMA before this runs. Remove only
@@ -1494,10 +1553,14 @@ export class Db {
     };
     this.raw
       .prepare(
+        // latest_message_preview starts as the empty string, not NULL: a task with no messages yet has
+        // nothing to quote, and NULL is reserved to mean "a row older than the column" so the backfill
+        // walk has an exact, shrinking set to work through.
         `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, effort_override, model_request, lane,
-                             duration_ms, deadline_at, agent_count, parent_id, assignment, created_at, updated_at)
+                             duration_ms, deadline_at, agent_count, parent_id, assignment, latest_message_preview,
+                             created_at, updated_at)
          VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @effortOverride, @modelRequest, @lane,
-                @durationMs, @deadlineAt, @agentCount, @parentId, @assignment, @createdAt, @updatedAt)`,
+                @durationMs, @deadlineAt, @agentCount, @parentId, @assignment, '', @createdAt, @updatedAt)`,
       )
       // better-sqlite3 binds only primitives, so the assignment rides as JSON text (the mapper parses
       // it back); everything else on the DTO is already a scalar.
@@ -2065,8 +2128,11 @@ export class Db {
       // A retry is a brand-new task attempt. Its old review revision/outcome must not suppress the new
       // attempt if it happens to have no agent run yet, and any stale claim token must be fenced out.
       this.raw.prepare("DELETE FROM auto_review_episodes WHERE thread_id = ?").run(tid);
+      // The feed this task's card was quoting has just been deleted, and the insert trigger that keeps
+      // the preview true has nothing to fire on for a delete. Empty, not NULL: NULL would put a live
+      // task back into the backfill walk's set.
       this.raw
-        .prepare("UPDATE threads SET stage_outputs = @stageOutputs, error = NULL WHERE id = @id")
+        .prepare("UPDATE threads SET stage_outputs = @stageOutputs, error = NULL, latest_message_preview = '' WHERE id = @id")
         .run({
           id: tid,
           stageOutputs:

@@ -14,8 +14,11 @@ const path = require("node:path");
 const Database = require("better-sqlite3");
 
 const {
+  explain,
   planVerdict,
   hotQueryPlans,
+  boardSnapshotPlan,
+  BOARD_SNAPSHOT_SQL,
   busiestThread,
   helloSnapshotFootprint,
   verdictFor,
@@ -95,6 +98,59 @@ assert.equal(
   "slim = the clipped brief only — th1's brief is longer than the clip, th2's is shorter",
 );
 assert.ok(footprint.savedBytes > 0 && footprint.savedPct > 0, "the slim snapshot must measurably shrink the payload");
+
+// ---- the board snapshot must not read `messages` once per task ---------------------------------------
+//
+// The defect this catches shipped as a plain, indexed, fast-looking subquery: it SEEKS its index and
+// sorts nothing, so every existing check above stayed green on it. What made it the worst query in the
+// process was that the snapshot runs it for every task on the board — 2,773 random reads per client
+// connect on the live database. So the assertion is about the table it touches, not the plan's shape.
+assert.equal(
+  planVerdict("x", "SCAN threads | CORRELATED SCALAR SUBQUERY 1 | SEARCH messages USING INDEX idx_messages_thread_time (thread_id=?)", {
+    forbidTable: "messages",
+  }).ok,
+  false,
+  "a per-task seek into messages must be flagged even though it is indexed and unsorted",
+);
+assert.equal(planVerdict("x", "SCAN threads USING INDEX idx_threads_created", { forbidTable: "messages" }).ok, true);
+
+// …and against a real database, on the two shapes themselves. The fixture needs the snapshot's columns.
+db.exec(`
+  ALTER TABLE threads ADD COLUMN title TEXT;
+  ALTER TABLE threads ADD COLUMN state TEXT;
+  ALTER TABLE threads ADD COLUMN workspace TEXT;
+  ALTER TABLE threads ADD COLUMN error TEXT;
+  ALTER TABLE threads ADD COLUMN effort_override TEXT;
+  ALTER TABLE threads ADD COLUMN latest_message_preview TEXT;
+  ALTER TABLE threads ADD COLUMN model_request TEXT;
+  ALTER TABLE threads ADD COLUMN closed_at INTEGER;
+  ALTER TABLE threads ADD COLUMN closed_prev_state TEXT;
+  ALTER TABLE threads ADD COLUMN lane TEXT;
+  ALTER TABLE threads ADD COLUMN baseline_head TEXT;
+  ALTER TABLE threads ADD COLUMN duration_ms INTEGER;
+  ALTER TABLE threads ADD COLUMN deadline_at INTEGER;
+  ALTER TABLE threads ADD COLUMN active_deadline_at INTEGER;
+  ALTER TABLE threads ADD COLUMN agent_count INTEGER;
+  ALTER TABLE threads ADD COLUMN parent_id TEXT;
+  ALTER TABLE threads ADD COLUMN assignment TEXT;
+  ALTER TABLE threads ADD COLUMN stage_outputs TEXT;
+  ALTER TABLE threads ADD COLUMN updated_at INTEGER;
+  ALTER TABLE messages ADD COLUMN kind TEXT;
+  CREATE INDEX idx_threads_created ON threads(created_at);
+`);
+const defectiveSnapshot = BOARD_SNAPSHOT_SQL.replace(
+  "latest_message_preview,",
+  `(SELECT substr(content, 1, ${BRIEF_PREVIEW_CHARS}) FROM messages
+     WHERE thread_id = threads.id AND kind IN ('text', 'system')
+     ORDER BY created_at DESC, rowid DESC LIMIT 1) AS latest_message_preview,`,
+);
+assert.notEqual(defectiveSnapshot, BOARD_SNAPSHOT_SQL, "the probe's snapshot SQL must still read the stored column to be reverted");
+assert.equal(
+  planVerdict("defective snapshot", explain(db, defectiveSnapshot), { forbidTable: "messages" }).ok,
+  false,
+  "the pre-2026-09-16 snapshot, which derived the preview per task, must fail the check",
+);
+assert.equal(boardSnapshotPlan(db).ok, true, `the stored-column snapshot must pass, got ${JSON.stringify(boardSnapshotPlan(db).problems)}`);
 
 db.close();
 fs.rmSync(dir, { recursive: true, force: true });
